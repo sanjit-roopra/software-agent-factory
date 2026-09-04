@@ -58,7 +58,7 @@ jobs:
           print(platform.python_version())
           PY
           )
-          PYTHONPATH=src python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run python scripts/release/generate_build_info.py \
             --output packaging/validate/build-info.json \
             --tag "$RELEASE_TAG" \
             --validate-tag-match \
@@ -71,7 +71,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(PYTHONPATH=src python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY

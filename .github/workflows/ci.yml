@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           python -m venv packaging/venvs/wheel-smoke
           packaging/venvs/wheel-smoke/bin/pip install dist/*.whl
-          VERSION=$(PYTHONPATH=src python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
@@ -108,7 +108,7 @@ jobs:
           set -euo pipefail
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          VERSION=$(PYTHONPATH=src python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
@@ -189,7 +189,7 @@ jobs:
           set -euo pipefail
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          VERSION=$(PYTHONPATH=src python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY

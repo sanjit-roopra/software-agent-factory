@@ -87,6 +87,8 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "--expect-architecture \"x86_64\"" in text
     assert "COPYFILE_DISABLE=1 tar" in text
     assert "python -m venv packaging/venvs/wheel-smoke" in text
+    assert "VERSION=$(PYTHONPATH=src uv run python" in text
+    assert "VERSION=$(PYTHONPATH=src python" not in text
 
 
 def test_ci_workflow_limits_native_macos_to_main_tags_and_manual_dispatch() -> None:
@@ -123,6 +125,8 @@ def test_release_workflow_has_immutable_publish_shape() -> None:
     assert "gh release view" in text
     assert "uv run ruff check ." in text
     assert "uv run pytest -q" in text
+    assert "PYTHONPATH=src uv run python scripts/release/generate_build_info.py" in text
+    assert "VERSION=$(PYTHONPATH=src uv run python" in text
     assert "shasum -a 256 -c SHA256SUMS" in text
     assert "macos-15" in text
     assert "macos-15-intel" in text
