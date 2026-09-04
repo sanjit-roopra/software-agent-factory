@@ -455,6 +455,10 @@ def test_run_with_copilot_runtime_selects_the_real_runtime(
             return delegate.run(request)  # type: ignore[arg-type]
 
     monkeypatch.setattr("software_agent_factory.cli.CopilotAgentRuntime", StubCopilotRuntime)
+    monkeypatch.setattr(
+        "software_agent_factory.cli.missing_prerequisites",
+        lambda **_kwargs: (),
+    )
 
     result = runner.invoke(
         app,

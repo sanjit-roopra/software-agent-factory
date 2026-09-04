@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from software_agent_factory import cli
@@ -846,10 +847,16 @@ def test_service_program_arguments_match_the_start_command_options(
     arguments = build_program_arguments(request)
 
     assert arguments[1] == "start"
-    help_output = runner.invoke(app, ["start", "--help"]).output
+    root_command = get_command(app)
+    start = root_command.commands["start"]  # type: ignore[attr-defined]
+    option_names = {
+        option
+        for parameter in start.params
+        for option in getattr(parameter, "opts", ())
+    }
     for token in arguments:
         if token.startswith("--"):
-            assert token in help_output
+            assert token in option_names
 
 
 def test_service_status_is_read_only_and_renders_both_shapes(
