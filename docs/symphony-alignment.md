@@ -2,7 +2,7 @@
 
 ## Purpose
 
-OpenAI Symphony is the primary orchestration reference for this project.
+OpenAI Symphony is the primary coordination reference for this project.
 
 We are NOT attempting to reproduce Symphony exactly.
 
@@ -16,11 +16,20 @@ Symphony orchestration principles
 specialized multi-model SDLC pipeline
 ```
 
+This project is Symphony-inspired at the coordination layer. It is not a
+Symphony implementation or conformance target: it uses GitHub Copilot rather
+than the Codex app-server protocol and gives deterministic factory code broader
+ownership of SDLC transitions, Git operations, quality gates and acceptance.
+
+The alignment was reviewed against OpenAI Symphony Draft v1 at commit
+`8001b52e3062495a16e520e4ceaf8f9de868c4d0` on 2026-09-04.
+
 # Symphony concepts to preserve
 
 ## 1. One authoritative orchestrator
 
-The orchestrator owns task execution state.
+The orchestrator owns scheduler reservations, active execution, retries,
+concurrency and factory SDLC transitions.
 
 Agents/workers produce results.
 
@@ -92,21 +101,23 @@ Potential initial default:
 
 Manual execution remains available.
 
-## 4. Claim before dispatch
+## 4. Reserve before dispatch
 
-An eligible item must be claimed before work starts.
+An eligible item must be reserved before work starts.
 
 ```text
 candidate
    ↓
- claim
+ reserve
    ↓
 ensure not already active
    ↓
 dispatch
 ```
 
-Even while the factory is single-process, model this concept explicitly.
+In Symphony this is an in-memory duplicate-prevention mechanism, not a durable
+tracker lease. The manual Phase 1 CLI uses an exclusive per-work-item lock. The
+future scheduler must revalidate tracker state immediately before dispatch.
 
 It will matter when parallel execution is introduced.
 
@@ -140,7 +151,9 @@ task remains active
 preserve workspace
 ```
 
-When terminal (`DONE`, `FAILED`, `CANCELLED`) the workspace may be cleaned according to policy.
+Failed attempts preserve the workspace for retry and diagnosis. Workspace
+cleanup is explicit in the manual phase and later follows configured terminal
+tracker state rather than treating every internal failure as terminal.
 
 For debugging, run artifacts should remain.
 
@@ -170,6 +183,9 @@ Example:
 └── workspaces/
     └── TASK-123/
 ```
+
+Durable run artifacts and retry history are a factory extension. Symphony's
+live reservations and retry timers are in-memory and do not survive restart.
 
 After process restart:
 
@@ -254,7 +270,8 @@ record reason
 retry or escalate
 ```
 
-V1 can implement this simply.
+The synchronous manual phase uses hard agent and command timeouts. Activity
+tracking and worker heartbeats arrive with the scheduler.
 
 Do not build complex distributed heartbeats.
 
@@ -423,6 +440,57 @@ Examples:
 - GitHub Actions
 
 These signals should be authoritative where applicable.
+
+## Explicit trust boundary
+
+The controller owns tracker and future GitHub credentials. Agent processes
+receive only credentials required for their assigned role. Approval or input
+requests do not wait indefinitely; they terminate the active invocation,
+preserve workspace evidence and move the run to `NEEDS_HUMAN`.
+
+## Adopted Symphony concepts
+
+`factory start` now implements the coordination layer:
+
+- **Polling, not webhooks.** `Scheduler.run_forever` blocks on an injected
+  stop/sleep abstraction; there is no server, no webhook and no asyncio
+  framework.
+- **Reconciliation before dispatch.** Every tick reconciles this process's
+  active handles and re-reads persisted `FactoryRun` state before evaluating
+  candidates, so a manual `factory run` started since the last tick is honored
+  immediately.
+- **Reserve before dispatch.** A candidate is reserved in-memory before
+  `dispatch()` is called, and revalidated against the tracker immediately
+  before reservation.
+- **Tracker adapters and candidate normalization.** `TrackerProvider` is
+  generic; `GitHubIssueProvider` normalizes GitHub issues (label
+  `agent-ready`) into `TrackerItem`s. The scheduler has no GitHub dependency.
+- **Bounded concurrency.** `scheduler.max_concurrent_tasks` is validated to be
+  1 or 2 and dispatch runs through a thread pool.
+- **Deterministic per-task workspaces.** `deterministic_work_item_id` keys both
+  the workspace and duplicate prevention, so a manual run and the daemon can
+  never dispatch the same issue twice.
+- **Worker activity heartbeats.** Every controller transition refreshes
+  `FactoryRun.last_activity_at` and the `RunLease` heartbeat; stall detection
+  reads that persisted signal rather than inspecting lock files.
+- **Recovery using tracker + filesystem.** Startup reconciliation inspects
+  persisted runs and escalates abandoned ones to `NEEDS_HUMAN` through the
+  controller (ADR-011).
+
+## Deliberately not adopted
+
+- **Repository-owned, hot-reloaded workflow configuration.** The factory's
+  typed configuration (`FactoryConfig`, strict `extra="forbid"`) plus the
+  role-scoped prompt builders in `prompts.py` are the intentional replacement.
+  A repository cannot redefine the factory's stages, gates or budgets: those
+  are factory authority, not repository input. A repository only supplies its
+  own `install`/`verify`/`build` commands.
+- **Durable scheduler claims.** Live reservations stay in-memory. The durable
+  source of truth is the persisted `FactoryRun` plus the workspace `flock`,
+  which is sufficient for a single local process and avoids introducing a
+  database (`AGENTS.md`: "Keep V1 small").
+- **The Codex app-server protocol.** Execution goes through
+  `CopilotAgentRuntime`.
 
 # Summary
 

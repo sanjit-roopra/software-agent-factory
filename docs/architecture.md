@@ -4,34 +4,48 @@
 
 Build a local autonomous software engineering factory that can eventually process backlog work through the entire SDLC.
 
-V1 focuses only on:
+The implemented pipeline is:
 
 ```text
-manual task
+task (manual or GitHub issue)
    ↓
 triage
    ↓
 refine
    ↓
+research (only when triage asks for it, at most once)
+   ↓
 plan
    ↓
 implement
    ↓
-verify
+deterministic verification (install → verify → build)
    ↓
-review
+scope-drift governance
+   ↓
+independent tester
+   ↓
+independent reviewer
    ↓
 ready for PR
+   ↓
+pull request        (opt-in: pull_request.enabled)
+   ↓
+CI observation      (opt-in: ci.enabled)
+   ↓
+bounded CI repair
+   ↓
+done
 ```
 
-Later phases introduce:
-- PR
-- CI observation
-- repair
-- backlog polling
-- prioritization
+Everything after "ready for PR" is strictly opt-in. With the packaged
+configuration a run performs no network access at all and completes at
+`PR_READY`.
+
+Still out of scope (Phase 15, optional):
 - staging
 - deployment
+- Jira, Postgres, Temporal, Docker/Kubernetes workers, dashboards
 
 ## High-level architecture
 
@@ -116,19 +130,32 @@ Suggested properties:
 id
 work_item_id
 state
-attempt
+attempt_records
 workspace_path
 branch_name
 created_at
 updated_at
+last_activity_at
+lease
 completed_at
 failure_reason
+commit_sha
 pull_request_url
 ```
 
+`attempt_records` is the durable retry budget: every implementation or repair
+attempt appends exactly one record carrying its `budget`
+(`IMPLEMENTATION`/`CI_REPAIR`) and `triggered_by` reason. Attempt numbers are
+always derived from this persisted list, never from an in-process counter, so a
+restart cannot grant a run a fresh budget.
+
+`lease` records the host/pid currently executing the run, and
+`last_activity_at` is refreshed on every transition so the scheduler can detect
+a stalled run without inspecting lock files.
+
 ## Workflow states
 
-Initial detailed SDLC states:
+The implemented SDLC states are exactly:
 
 ```text
 CREATED
@@ -136,7 +163,6 @@ TRIAGING
 REFINING
 RESEARCHING
 PLANNING
-PLAN_READY
 IMPLEMENTING
 VERIFYING
 REVIEWING
@@ -144,20 +170,58 @@ PR_READY
 PR_CREATED
 CI_RUNNING
 CI_DIAGNOSIS
-REPAIRING
 DONE
-BLOCKED
 NEEDS_HUMAN
 FAILED
 ```
 
-Not every state must be implemented in Phase 1.
+There is deliberately no `REPAIRING`, `PLAN_READY` or `BLOCKED` state: repair is
+a bounded transition back to `IMPLEMENTING` (or, for scope drift, back to
+`PLANNING`), not a second workflow, and "blocked" is expressed as
+`NEEDS_HUMAN` with a recorded reason.
 
-The workflow controller owns transitions.
+The workflow controller owns every transition. The full table is declared as
+data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
+
+```text
+CREATED      → TRIAGING
+TRIAGING     → REFINING
+REFINING     → RESEARCHING | PLANNING
+RESEARCHING  → PLANNING
+PLANNING     → IMPLEMENTING
+IMPLEMENTING → VERIFYING
+VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
+REVIEWING    → PR_READY | IMPLEMENTING
+PR_READY     → PR_CREATED
+PR_CREATED   → CI_RUNNING | DONE
+CI_RUNNING   → DONE | CI_DIAGNOSIS
+CI_DIAGNOSIS → IMPLEMENTING
+```
+
+Every non-terminal state may additionally escalate to `NEEDS_HUMAN` (a business
+decision: eligibility, risk, scope, exhausted budget, non-repairable CI) or
+`FAILED` (an operational agent/infrastructure failure).
+
+Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
+
+`PR_READY` is *not* terminal. When pull requests are enabled it continues to
+`PR_CREATED`; when they are disabled it is the completed endpoint of the manual
+flow and the controller finalizes it explicitly by stamping `completed_at`.
+`workflow.is_run_finished` is the single predicate that expresses this, and the
+scheduler uses it rather than a raw state comparison.
 
 ## Scheduling state
 
-Scheduling ownership is separate from detailed SDLC state.
+Scheduling ownership is separate from detailed SDLC state. `Scheduler` owns
+reservations, ordering, bounded concurrency and stall detection entirely
+in-memory; it never mutates a `FactoryRun`. `FactoryService` composes it with
+`GitHubIssueProvider` and `WorkflowController`, and dispatches through a thread
+pool bounded by `scheduler.max_concurrent_tasks` (1 or 2).
+
+Recovery is conservative: a persisted, non-terminal run left behind by a dead
+process is transitioned to `NEEDS_HUMAN` *through the controller*, never
+auto-resumed. No paid retry is spent, the persisted budget is untouched, and the
+workspace plus artifacts stay on disk.
 
 Potential concepts:
 
@@ -257,9 +321,13 @@ tests_added
 commands_run
 ```
 
-The actual Git diff is stored separately as evidence.
+`changed_files` and the actual Git diff are derived by the controller from the
+workspace. They are not trusted agent claims. Git evidence must include
+untracked files.
 
 ### VerificationReport
+
+Deterministic, factory-produced evidence only. Nothing in it is an agent claim.
 
 Fields approximately:
 
@@ -270,6 +338,43 @@ failures
 coverage_change
 test_findings
 confidence
+```
+
+### TestReport
+
+Independent AI tester judgement, deliberately a *separate* artifact so a
+model's opinion can never be mistaken for deterministic evidence. `passed` is
+advisory: gating still uses the `VerificationReport`.
+
+Fields approximately:
+
+```text
+passed
+findings
+suggested_tests
+confidence
+```
+
+### CIReport
+
+Normalized, persisted CI evidence (`ci.json`). Produced by the controller from
+`gh pr checks` output; expressed with plain strings so the domain layer has no
+dependency on the `gh` adapter.
+
+Fields approximately:
+
+```text
+overall
+checks:
+  - name
+  - status
+  - description
+  - details_url
+  - failure_category
+  - log_excerpt
+observed_at
+repair_attempts_used
+timed_out
 ```
 
 ### ReviewReport
@@ -417,9 +522,10 @@ Receives:
 - actual diff
 - repository
 
-Do not provide implementer's self-assessment unless explicitly necessary.
+The implementer's `ChangeSet` (including its summary) is never provided: the
+tester sees only controller-derived Git evidence plus deterministic results.
 
-Output: `VerificationReport`
+Output: `TestReport`
 
 ### Reviewer
 Model: `GPT-5.6 Sol`
@@ -427,8 +533,11 @@ Model: `GPT-5.6 Sol`
 Receives:
 - Specification
 - ExecutionPlan
-- diff
-- deterministic test results
+- controller-derived diff and changed files
+- deterministic `VerificationReport`
+- independent `TestReport`
+
+Never receives the implementer's `ChangeSet` summary.
 
 Checks:
 - correctness
@@ -494,8 +603,7 @@ Initial proposal:
 
 ```text
 same implementation model attempts: 2
-maximum total implementation attempts: 4
-review repair attempts: 2
+maximum total implementation and repair attempts: 6
 later CI repair attempts: 3
 ```
 
@@ -515,7 +623,9 @@ Opus continues failing
 NEEDS_HUMAN
 ```
 
-Actual limits belong in configuration.
+Every entry into `IMPLEMENTING` appends one attempt record. Verification and
+review failures consume the same monotonic budget so alternating failures cannot
+evade the limit. Actual limits belong in configuration.
 
 ## Local workspace
 
@@ -540,8 +650,17 @@ Suggested layout:
 │       ├── change-set.json
 │       ├── patch.diff
 │       ├── verification.json
+│       ├── test-report.json
 │       ├── review.json
-│       └── logs/
+│       ├── ci.json
+│       ├── logs/
+│       └── attempts/
+│           └── NN/
+│               ├── change-set.json
+│               ├── patch.diff
+│               ├── verification.json
+│               ├── test-report.json
+│               └── review.json
 └── workspaces/
     └── TASK-ID/
         └── repository worktree
@@ -564,7 +683,8 @@ A future implementation might be: `PostgresRunStore`
 
 Do not implement a database until needed.
 
-Writes should be atomic where practical.
+Writes are atomically replaced and versioned because filesystem data is the V1
+recovery source of truth.
 
 ## Workspace abstraction
 
@@ -580,23 +700,31 @@ Initial implementation: `GitWorktreeWorkspace`
 
 Do not build generic remote-worker abstractions yet.
 
+Workspaces use sanitized, root-contained paths and are preserved by default.
+Cleanup must refuse paths outside the configured workspace root. A short-lived
+exclusive lock prevents simultaneous ownership of the same work item.
+
 ## Agent runtime abstraction
 
 Conceptually:
 
 ```text
 AgentRuntime.run(
-    role,
-    model,
-    reasoning,
-    instructions,
-    context
+    request
 ) -> AgentResult
 ```
 
-Initial production runtime: `CopilotAgentRuntime`
+`AgentRequest` includes the role, configured model and reasoning level, typed
+context, assigned workspace path where applicable, and a timeout.
 
-Tests use: `FakeAgentRuntime`
+Production runtime: `CopilotAgentRuntime` (`--runtime copilot`), which builds a
+role-scoped prompt, runs the `copilot` CLI with constrained tool permissions and
+a scrubbed environment, and validates exactly one typed artifact from the final
+response. Malformed output is an explicit agent failure, never a silent pass.
+
+Default runtime: `FakeAgentRuntime` (`--runtime fake`). It is the CLI default so
+no command can make a paid call by accident, and it is the only runtime the test
+suite uses.
 
 The domain and workflow layers must not depend on Copilot-specific SDK objects.
 
@@ -643,6 +771,9 @@ The factory runs deterministic checks after implementation.
 
 Only after they pass should independent AI verification/review occur.
 
+The small command runner is part of Phase 1. Empty command lists pass, keeping
+repositories usable before they add factory-specific configuration.
+
 ## Scope drift
 
 Compare plan expectations with actual Git diff.
@@ -659,7 +790,14 @@ Later add:
 - public API detection
 - authentication/authorization changes
 
-Unexpected scope should cause `REPLAN` or `NEEDS_HUMAN` depending on risk.
+Unexpected scope causes `REPLAN` or `NEEDS_HUMAN` depending on risk.
+
+Assessment runs after deterministic verification passes and before the tester,
+reviewer or any publishing. `REPLAN` returns the run to `PLANNING` at most
+`scope_drift.max_replans` times (counted from persisted attempt records
+triggered by `SCOPE`), then escalates. The risk/sensitive-scope gate is
+re-evaluated at the PR boundary, together with a deterministic publish gate
+enforcing `repository.max_changed_files` and `repository.protected_file_patterns`.
 
 ## Git ownership
 
@@ -679,6 +817,17 @@ Initial branch naming:
 ```text
 factory/<task-id>
 ```
+
+`GitPublisher` never force-pushes, never merges, never mutates repository
+configuration or remotes (only `git remote get-url` is permitted), and refuses
+remotes whose host is outside `pull_request.allowed_hosts`. A CI repair pushes
+an additional normal commit to the same branch, updating the existing PR rather
+than creating a new one.
+
+GitHub credentials are read from the controller's own environment and handed to
+`gh` through the child environment only. `CopilotAgentRuntime` independently
+strips `GH_TOKEN`/`GITHUB_TOKEN`/etc. from every agent subprocess, so no agent
+ever sees them.
 
 ## Observability
 

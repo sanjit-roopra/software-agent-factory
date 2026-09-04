@@ -1,5 +1,34 @@
 # Implementation Plan
 
+## Status
+
+Phases 0-14 are implemented and integrated.
+
+Phase 15 is explicitly NOT implemented and remains optional.
+
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 0 | Architecture sanity check | done |
+| 1 | Deterministic vertical slice | done |
+| 2 | Real Copilot planner | done (`CopilotAgentRuntime`) |
+| 3 | Real specification + triage | done |
+| 4 | Real implementer | done |
+| 5 | Repository verification policy | done (`governance.RepositoryVerifier`) |
+| 6 | Tester + reviewer | done (independent `TestReport`/`ReviewReport`) |
+| 7 | Routing calibration | done (`routing.ModelRouter`) |
+| 8 | Research | done (optional, at most once per run) |
+| 9 | Scope drift | done (`governance.ScopeDriftPolicy`) |
+| 10 | Pull request creation | done, opt-in (`pull_request.enabled`) |
+| 11 | GitHub Actions observation | done, opt-in (`ci.enabled`) |
+| 12 | CI repair | done, bounded by `ci.repair_attempts` |
+| 13 | Local backlog daemon | done (`factory start`, opt-in) |
+| 14 | Parallelism | done (`max_concurrent_tasks` 1 or 2) |
+| 15 | Later integrations | NOT implemented, optional |
+
+Every integration is disabled by default: with the packaged configuration
+`factory run` performs no network access, makes no paid model call
+(`--runtime fake` is the default) and finishes at `PR_READY`.
+
 ## Principle
 
 Build a complete but extremely small vertical slice first.
@@ -29,12 +58,16 @@ docs architecture is internally consistent
 
 No production integrations required.
 
-# Phase 1. Domain + fake workflow
+# Phase 1. Small deterministic vertical slice
 
-Implement:
+Implement one synchronous, useful path rather than a workflow with no repository
+boundary.
+
+Domain:
 - WorkItem
 - FactoryRun
 - WorkflowState
+- persisted implementation AttemptRecord
 
 Typed artifacts:
 - TriageResult
@@ -45,22 +78,25 @@ Typed artifacts:
 - VerificationReport
 - ReviewReport
 
-Implement:
-- workflow transitions
-- FileRunStore
-- ModelRouter
-- simple retry policy
+Runtime:
+- one authoritative WorkflowController
+- FileRunStore with versioned atomic JSON writes
+- deterministic ModelRouter
+- one global bounded implementation/repair budget
 - FakeAgentRuntime
+- Git worktree workspace handling
+- deterministic repository command runner
+- controller-derived changed files and Git diff
+- minimal risk gate
 
 CLI:
 - factory run
 - factory runs
 - factory show
 
-For Phase 1:
-
 ```bash
 factory run \
+  --repo /path/to/repository \
   --title "Test task" \
   --description "A demonstration task"
 ```
@@ -85,76 +121,69 @@ REVIEWING
 PR_READY
 ```
 
-using fake agents.
+using fake agents. The fake implementer makes a deterministic sample edit so
+the slice proves that changes happen only inside an isolated worktree.
 
-Persist artifacts under:
+Persist state and artifacts under:
 
 ```text
 ~/.software-factory/runs/
 ```
 
+Workspace behavior:
+- create or safely restore a worktree under the configured data directory
+- preserve workspaces by default
+- reject unsafe or conflicting paths
+- prevent two active runs from owning the same work item
+- include untracked files in the collected diff
+
+The controller, not the agent, derives `changed_files` and `patch.diff` from Git.
+
+Repository verification commands are optional. An empty command list passes.
+Configured commands run with a timeout and their results are persisted.
+
+Every implementation or repair entry appends one attempt record and consumes
+one global maximum. Verification and review failures share that budget.
+Exhaustion ends in `NEEDS_HUMAN`.
+
 ## Acceptance criteria
 
-- all workflow transitions tested
-- invalid transitions rejected
-- artifacts serialize to JSON
-- run survives process termination as inspectable files
-- retry counts persist
-- no network access required
-- no LLM access required
+- all workflow transitions are exhaustively tested
+- invalid transitions are rejected
+- artifacts serialize to versioned JSON
+- state writes are atomic
+- run state and attempt history survive process termination
+- source working tree remains untouched
+- each run gets an isolated workspace
+- new and modified files appear in controller-derived Git evidence
+- interrupted workspaces remain recoverable
+- duplicate active work is rejected without corrupting a workspace
+- deterministic verification failure drives bounded model escalation
+- risk requiring human approval cannot reach `PR_READY`
+- no network or LLM access is required
+- `uv run ruff check .` passes
 - `uv run pytest` passes
+
+Explicitly deferred:
+- scheduler and `factory start`
+- backlog polling and tracker adapters
+- durable scheduler claims and retry timers
+- multi-task concurrency
+- long-running worker heartbeats
+- real Copilot calls
+- pull requests and CI
+- scope-drift policy beyond collecting authoritative Git evidence
+
+The synchronous CLI uses short-lived per-work-item lock files and command
+timeouts as the smallest useful substitutes for claim ownership and stall
+detection.
 
 Stop after completing this phase and inspect the design.
 
-# Phase 2. Real Git workspaces
+# Phase 2. Real Copilot Planner
 
-Implement Git worktree support.
-
-Input:
-
-```text
---repo /path/to/repository
-```
-
-When a run starts:
-
-```text
-source repository
-     ↓
-create branch
-     ↓
-create worktree
-     ↓
-execute against isolated worktree
-```
-
-Branch naming:
-
-```text
-factory/<task-id>
-```
-
-Implement:
-- prepare workspace
-- locate workspace
-- collect changed files
-- collect Git diff
-- cleanup policy
-
-Fake implementation agent may make a deterministic sample modification for tests.
-
-## Acceptance criteria
-
-- source working tree remains untouched
-- each run gets isolated workspace
-- diff can be collected
-- interrupted workspace remains recoverable
-- duplicate task does not accidentally create conflicting active workspace
-- tests cover workspace lifecycle
-
-Stop and review.
-
-# Phase 3. Real Copilot Planner
+Status: done. `CopilotAgentRuntime` runs every role; `--runtime copilot`
+opts in, `--runtime fake` (the default) never spends money.
 
 Implement `CopilotAgentRuntime`, but initially connect ONLY the Planner.
 
@@ -186,7 +215,9 @@ Normal unit tests still use FakeAgentRuntime.
 
 Stop and review.
 
-# Phase 4. Real Specification + Triage
+# Phase 3. Real Specification + Triage
+
+Status: done.
 
 Connect:
 
@@ -215,7 +246,9 @@ A vague task can become an explicit specification containing:
 
 The refiner must distinguish assumptions from facts.
 
-# Phase 5. Real Implementer
+# Phase 4. Real Implementer
+
+Status: done. Complexity routing arrived with Phase 7.
 
 Initially use only:
 
@@ -249,9 +282,12 @@ After execution, persist:
 
 A simple task can produce a real code change inside the worktree.
 
-# Phase 6. Deterministic local verification
+# Phase 5. Repository verification policy
 
-Implement repository configuration.
+Status: done. `governance.RepositoryVerifier` runs install -> verify -> build,
+persists per-command logs under `runs/RUN-ID/logs/`, and classifies failures.
+
+Expand the Phase 1 command runner into repository-specific verification policy.
 
 Example:
 
@@ -266,7 +302,7 @@ commands:
     - bun run build
 ```
 
-Run these automatically after implementation.
+Run these automatically after real implementation.
 
 Capture:
 - command
@@ -274,13 +310,17 @@ Capture:
 - stdout/stderr reference
 - duration
 
-Failure returns workflow to bounded implementation repair.
+Add install/build policy, durable log files, and failure classification. Failure
+continues to use the global bounded implementation repair budget.
 
 ## Acceptance criteria
 
 Broken code cannot reach `REVIEWING` while required deterministic checks fail.
 
-# Phase 7. Tester + Reviewer
+# Phase 6. Tester + Reviewer
+
+Status: done. The tester returns a `TestReport` (never a `VerificationReport`),
+and neither gate receives the implementer's `ChangeSet` summary.
 
 Add:
 
@@ -325,7 +365,9 @@ PR_READY
 
 Reviewer rejection enters a bounded repair cycle.
 
-# Phase 8. Complexity routing
+# Phase 7. Routing calibration
+
+Status: done. Model choice and attempt are persisted on every `AttemptRecord`.
 
 Enable:
 
@@ -343,7 +385,7 @@ L3
   Claude Opus 5
 ```
 
-Implement deterministic ModelRouter.
+Calibrate the deterministic ModelRouter using measured outcomes.
 
 Add escalation:
 
@@ -361,7 +403,10 @@ Persist model choice and attempt.
 
 Model routing is fully unit tested without calling models.
 
-# Phase 9. Research
+# Phase 8. Research
+
+Status: done. Triage's `needs_research` runs the researcher exactly once, the
+`ResearchReport` is persisted, and planning continues. It no longer escalates.
 
 Enable optional Researcher:
 
@@ -375,7 +420,10 @@ Output: `ResearchReport`
 
 Do not make every task pay for a research step.
 
-# Phase 10. Scope drift
+# Phase 9. Scope drift
+
+Status: done. Assessed after successful deterministic verification and again at
+the PR boundary. `REPLAN` is bounded by `scope_drift.max_replans`.
 
 Compare `ExecutionPlan.expected_scope` against actual Git diff.
 
@@ -394,7 +442,9 @@ Result may be:
 
 depending on risk.
 
-# Phase 11. Pull request creation
+# Phase 10. Pull request creation
+
+Status: done, opt-in via `pull_request.enabled` (default false). Never merges.
 
 Controller handles:
 - commit
@@ -414,7 +464,10 @@ PR description should include:
 
 Do not merge automatically.
 
-# Phase 12. GitHub Actions observation
+# Phase 11. GitHub Actions observation
+
+Status: done, opt-in via `ci.enabled` (default false, and it requires
+`pull_request.enabled`). Normalized CI evidence is persisted as `ci.json`.
 
 Poll PR check status.
 
@@ -440,7 +493,11 @@ Classify failures:
 
 Only appropriate failure types should cause code repair.
 
-# Phase 13. CI repair
+# Phase 12. CI repair
+
+Status: done. Only `CODE_FAILURE`/`TEST_FAILURE` may trigger code repair; every
+other category escalates to `NEEDS_HUMAN` with evidence. The CI budget is
+separate from the pre-PR implementation budget and also caps PR update cycles.
 
 Add bounded CI repair.
 
@@ -460,7 +517,10 @@ Repeated failures eventually:
 NEEDS_HUMAN
 ```
 
-# Phase 14. Local backlog daemon
+# Phase 13. Local backlog daemon
+
+Status: done, opt-in via `scheduler.enabled` (default false). GitHub is only
+contacted when `factory start` runs with the scheduler enabled.
 
 Only after manual flow is reliable.
 
@@ -506,7 +566,11 @@ Initial concurrency:
 
 Polling should be configurable.
 
-# Phase 15. Parallelism
+# Phase 14. Parallelism
+
+Status: done. `scheduler.max_concurrent_tasks` is validated to be 1 or 2, work
+is dispatched through a thread pool, and repository-global `git worktree`
+administration is serialized under a per-source-repo lock.
 
 After single-task scheduling is stable:
 
@@ -524,7 +588,10 @@ Test:
 
 Do not jump directly to large concurrency.
 
-# Phase 16. Later integrations
+# Phase 15. Later integrations
+
+Status: NOT implemented, and deliberately optional. Nothing in the codebase
+depends on any of these, and none may be added without a documented need.
 
 Only after actual usage demonstrates need:
 - Jira
@@ -541,6 +608,9 @@ Only after actual usage demonstrates need:
 These are explicitly NOT part of the initial build.
 
 # First useful end-to-end demo
+
+This milestone is reached. With the packaged configuration the demo runs
+entirely locally and ends at `PR_READY`.
 
 Target:
 

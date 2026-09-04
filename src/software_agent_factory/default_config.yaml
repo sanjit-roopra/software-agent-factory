@@ -1,17 +1,3 @@
-# Example factory configuration.
-#
-# This file mirrors src/software_agent_factory/default_config.yaml exactly:
-# every section, key and value is identical, and tests assert that equality
-# (tests/test_config.py). Copy it, edit it, and pass it explicitly:
-#
-#   factory run --repo ~/projects/example --title "..." --description "..." \
-#     --config config/factory.example.yaml
-#
-# Every integration is opt-in and disabled here: pull_request.enabled,
-# ci.enabled and scheduler.enabled are all false, so a run performs no network
-# access and finishes at PR_READY. The loader is strict (extra="forbid"), so an
-# unknown key is rejected rather than silently ignored.
-
 factory:
   data_dir: "~/.software-factory"
   agent_timeout_seconds: 900

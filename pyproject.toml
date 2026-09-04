@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "software-agent-factory"
+version = "0.1.0"
+description = "Local-first autonomous software engineering factory foundations."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "pydantic>=2.9,<3.0",
+  "pyyaml>=6.0",
+  "typer>=0.12,<1.0",
+]
+
+[project.scripts]
+factory = "software_agent_factory.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9.0",
+  "ruff>=0.6,<1.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+software_agent_factory = ["default_config.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
