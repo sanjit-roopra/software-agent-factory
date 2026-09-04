@@ -3,3 +3,12 @@
 __pycache__/
 *.egg-info/
 *.py[cod]
+
+# Build and release artifacts (PLAN.md Phase 15.1/15.2). Everything under
+# packaging/ except the checked-in PyInstaller spec is generated output, and
+# build-info.json is written per build by scripts/release/generate_build_info.py.
+dist/
+build/
+packaging/*
+!packaging/pyinstaller.spec
+src/software_agent_factory/build-info.json

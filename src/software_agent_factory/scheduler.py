@@ -113,7 +113,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Callable, Protocol, Sequence
 
@@ -406,6 +406,7 @@ class TickReport:
     stalled: tuple[str, ...]
     skipped_stale: tuple[str, ...]
     at_capacity: bool
+    rate_limited: bool = False
 
 
 class Scheduler:
@@ -414,6 +415,9 @@ class Scheduler:
     Owns:
     - bounded concurrency (``max_concurrent_tasks``, restricted to ``1`` or
       ``2`` -- see "Integration assumptions" above)
+    - a bounded daily dispatch-rate safety control (``max_runs_per_day``,
+      independent of ``max_concurrent_tasks``; requires ``store`` to count
+      persisted runs against, see :meth:`_remaining_daily_quota`)
     - reservation-before-dispatch duplicate prevention, both in-memory
       (this process's own active work) and, when ``store`` is supplied,
       against persisted ``FactoryRun`` state so a manual invocation and
@@ -454,6 +458,7 @@ class Scheduler:
         max_stall_retries: int = 1,
         on_stall: StallCallback | None = None,
         store: FileRunStore | None = None,
+        max_runs_per_day: int | None = None,
     ) -> None:
         if max_concurrent_tasks not in self.SUPPORTED_CONCURRENCY_LEVELS:
             raise ValueError(
@@ -465,6 +470,8 @@ class Scheduler:
             raise ValueError("stall_timeout_seconds must be > 0 when provided")
         if max_stall_retries < 0:
             raise ValueError("max_stall_retries must be >= 0")
+        if max_runs_per_day is not None and max_runs_per_day <= 0:
+            raise ValueError("max_runs_per_day must be > 0 when provided")
 
         self.provider = provider
         self.dispatch = dispatch
@@ -475,12 +482,22 @@ class Scheduler:
         self.max_stall_retries = max_stall_retries
         self.on_stall = on_stall
         self.store = store
-        """Optional ``FileRunStore`` used for two purposes: (1) each tick,
+        """Optional ``FileRunStore`` used for three purposes: (1) each tick,
         excluding candidates that already have a persisted, non-terminal
         ``FactoryRun`` under their :func:`deterministic_work_item_id`
-        (manual/daemon duplicate prevention), and (2) as the default target
-        of :meth:`recover` when called from :meth:`run_forever`. Leave
-        unset for pure in-memory usage (e.g. most tests)."""
+        (manual/daemon duplicate prevention), (2) as the default target
+        of :meth:`recover` when called from :meth:`run_forever`, and (3)
+        counting today's (UTC) persisted runs against ``max_runs_per_day``.
+        Leave unset for pure in-memory usage (e.g. most tests)."""
+        self.max_runs_per_day = max_runs_per_day
+        """Bounded dispatch-rate safety control (PLAN.md Phase 15 core
+        safety foundation), independent of ``max_concurrent_tasks``: the
+        maximum number of runs this scheduler may claim within one rolling
+        UTC day, counted from persisted ``FactoryRun.created_at`` timestamps
+        via ``store``. ``None`` means unbounded. Requires ``store`` to have
+        any effect -- without a store there is nothing to count against, so
+        the limit is silently not enforced, matching the no-op behavior of
+        the other ``store``-optional features above."""
 
         self._active: dict[str, _ActiveEntry] = {}
         self._escalated: set[str] = set()
@@ -597,6 +614,31 @@ class Scheduler:
         return frozenset(
             run.work_item_id for run in self.store.list_runs() if not is_run_finished(run)
         )
+
+    def _remaining_daily_quota(self) -> int | None:
+        """Remaining number of runs this scheduler may still claim within
+        the current UTC calendar day, per ``max_runs_per_day`` (PLAN.md Phase
+        15 core safety foundation). ``None`` means unbounded: either no
+        ``max_runs_per_day`` was configured, or no ``store`` is available to
+        count persisted runs against (mirrors ``_persisted_active_work_item_ids``:
+        the feature is a no-op without a store). Never negative -- floored at
+        ``0`` once the day's quota is exhausted. Counting only persisted
+        runs means an in-flight dispatch this scheduler already reserved
+        in-memory (but whose ``FactoryRun`` a slower dispatch implementation
+        has not yet persisted) is not double-counted against tomorrow's
+        quota either; the loop in :meth:`tick` compensates by also counting
+        runs it dispatches within the same tick (see ``dispatched`` there)."""
+        if self.max_runs_per_day is None or self.store is None:
+            return None
+        # ``clock()`` is injectable and not guaranteed to return a
+        # UTC-zoned datetime (unlike ``FactoryRun.created_at``, which
+        # ``UtcDateTime`` always normalizes to UTC) -- convert explicitly so
+        # a non-UTC-offset clock can never compute the wrong calendar day.
+        today = self.clock().astimezone(timezone.utc).date()
+        created_today = sum(
+            1 for run in self.store.list_runs() if run.created_at.date() == today
+        )
+        return max(0, self.max_runs_per_day - created_today)
 
     def _is_eligible(self, item: TrackerItem, persisted_active_ids: frozenset[str]) -> bool:
         if not item.dispatchable:
@@ -726,6 +768,23 @@ class Scheduler:
                 at_capacity=True,
             )
 
+        remaining_quota = self._remaining_daily_quota()
+        if remaining_quota == 0:
+            # Daily dispatch-rate quota is exhausted (PLAN.md Phase 15 core
+            # safety foundation): reconciliation above still ran, so
+            # existing in-flight work is unaffected, but no new candidate
+            # may be claimed until the next UTC calendar day.
+            return TickReport(
+                candidates_fetched=0,
+                eligible_count=0,
+                dispatched=(),
+                completed=completed,
+                stalled=stalled,
+                skipped_stale=(),
+                at_capacity=False,
+                rate_limited=True,
+            )
+
         persisted_active_ids = self._persisted_active_work_item_ids()
 
         candidates = list(self.provider.fetch_candidates())
@@ -736,8 +795,15 @@ class Scheduler:
 
         dispatched: list[str] = []
         skipped_stale: list[str] = []
+        rate_limited = False
         for item in eligible:
             if len(self._active) >= self.max_concurrent_tasks:
+                break
+            if remaining_quota is not None and len(dispatched) >= remaining_quota:
+                # Enough candidates remained eligible this tick to exceed the
+                # day's remaining quota; stop claiming new work without
+                # touching what has already been reserved/dispatched above.
+                rate_limited = True
                 break
 
             fresh = self._revalidate(item, persisted_active_ids)
@@ -769,6 +835,7 @@ class Scheduler:
             stalled=stalled,
             skipped_stale=tuple(skipped_stale),
             at_capacity=False,
+            rate_limited=rate_limited,
         )
 
     # -- polling daemon loop --------------------------------------------------

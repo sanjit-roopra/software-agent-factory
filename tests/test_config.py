@@ -197,6 +197,7 @@ def test_phase_1_config_still_loads_and_new_sections_default(tmp_path: Path) -> 
     assert config.scheduler.max_concurrent_tasks == 1
     assert config.scheduler.stall_timeout_seconds == 900
     assert config.scheduler.required_label == "agent-ready"
+    assert config.scheduler.max_runs_per_day == 20
     assert config.repository.env_passthrough == []
     assert config.repository.log_capture_bytes == 32768
     assert config.repository.max_changed_files == 100
@@ -212,6 +213,7 @@ def test_packaged_default_config_publishes_every_section() -> None:
     assert config.pull_request.allowed_hosts == ["github.com"]
     assert config.ci.repair_attempts == 3
     assert config.scheduler.required_label == "agent-ready"
+    assert config.scheduler.max_runs_per_day == 20
     assert config.repository.log_capture_bytes == 32768
     assert config.repository.max_changed_files == 100
     assert config.repository.protected_file_patterns
@@ -261,6 +263,20 @@ def test_scheduler_concurrency_is_capped_at_two(tmp_path: Path) -> None:
     assert allowed.scheduler.max_concurrent_tasks == 2
 
 
+def test_max_runs_per_day_accepts_null_for_unbounded_and_a_custom_positive_value(
+    tmp_path: Path,
+) -> None:
+    unbounded = load_config(
+        _config_with(tmp_path, {"scheduler": {"max_runs_per_day": None}}, name="unbounded")
+    )
+    assert unbounded.scheduler.max_runs_per_day is None
+
+    custom = load_config(
+        _config_with(tmp_path, {"scheduler": {"max_runs_per_day": 5}}, name="custom")
+    )
+    assert custom.scheduler.max_runs_per_day == 5
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -273,6 +289,8 @@ def test_scheduler_concurrency_is_capped_at_two(tmp_path: Path) -> None:
         {"scheduler": {"max_concurrent_tasks": 0}},
         {"scheduler": {"stall_timeout_seconds": 0}},
         {"scheduler": {"poll_interval_seconds": 600, "stall_timeout_seconds": 60}},
+        {"scheduler": {"max_runs_per_day": 0}},
+        {"scheduler": {"max_runs_per_day": -1}},
         {"repository": {"log_capture_bytes": 0}},
         {"repository": {"max_changed_files": 0}},
         {"scope_drift": {"max_replans": -1}},

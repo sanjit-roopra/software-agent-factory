@@ -287,6 +287,11 @@ class WorkflowController:
             run.id,
             new_state.value,
             f" ({failure_reason})" if failure_reason else "",
+            # Correlation fields for the structured JSON log
+            # (observability._RedactingJsonFormatter); ignored by a plain
+            # console handler, so this costs nothing when logging is not
+            # configured.
+            extra={"run_id": run.id, "state": new_state.value},
         )
         return run
 

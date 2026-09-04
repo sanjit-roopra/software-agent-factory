@@ -198,6 +198,17 @@ class CiConfig(ConfigModel):
         return self
 
 
+#: Conservative default dispatch-rate ceiling for the local backlog daemon
+#: (PLAN.md Phase 15 core safety foundation). The packaged default runtime
+#: is ``fake`` (no cost either way), but ``scheduler.enabled`` and
+#: ``--runtime`` are independent knobs: a user may enable the daemon and
+#: separately opt into ``--runtime copilot`` (a real, paid model call per
+#: run), so this bound must be safe even then, not merely generous for
+#: offline/local development. Set to ``null`` to opt out of a daily cap
+#: entirely.
+DEFAULT_MAX_RUNS_PER_DAY = 20
+
+
 class SchedulerConfig(ConfigModel):
     """Local backlog daemon policy (``PLAN.md`` Phases 13 and 14)."""
 
@@ -206,6 +217,7 @@ class SchedulerConfig(ConfigModel):
     max_concurrent_tasks: PositiveInt = 1
     stall_timeout_seconds: PositiveInt = 900
     required_label: str = Field(default="agent-ready", min_length=1)
+    max_runs_per_day: PositiveInt | None = DEFAULT_MAX_RUNS_PER_DAY
 
     @model_validator(mode="after")
     def _validate_concurrency(self) -> Self:

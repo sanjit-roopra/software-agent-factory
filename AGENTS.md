@@ -188,7 +188,7 @@ Do not introduce unless explicitly required:
 - Kafka
 - Kubernetes
 - cloud infrastructure
-- web dashboard
+- web dashboard (one narrow exception below)
 - Jira
 - Slack
 - Teams
@@ -201,6 +201,22 @@ Do not introduce unless explicitly required:
 - complex plugin architecture
 
 The first version uses filesystem persistence.
+
+#### The one permitted dashboard
+
+A local, read-only dashboard has been explicitly requested (Phase 15.11,
+ADR-016). It is the only exception to the ban above and is allowed only as:
+
+- bound to `127.0.0.1`, started by an explicit command, disabled by default
+- read-only: no endpoint may change configuration, runs or workflow state
+- token protected
+- served from the Python standard library, with no web framework, no npm, no
+  bundler and no build step
+- no logs and no diffs rendered by default
+
+Everything else in the list stays banned. Nothing may become a hosted service,
+a multi-user application or a control plane. If a dashboard change would need a
+framework, a package manager or a write path, stop and update the ADR first.
 
 ## Initial technologies
 Prefer:

@@ -15,10 +15,11 @@ dependencies = [
 ]
 
 [project.scripts]
-factory = "software_agent_factory.cli:app"
+factory = "software_agent_factory.__main__:main"
 
 [dependency-groups]
 dev = [
+  "pyinstaller==6.22.2",
   "pytest>=8.3,<9.0",
   "ruff>=0.6,<1.0",
 ]
@@ -30,7 +31,10 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-software_agent_factory = ["default_config.yaml"]
+software_agent_factory = [
+  "build-info.json",
+  "default_config.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

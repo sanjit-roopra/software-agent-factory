@@ -1,50 +1,120 @@
-"""The ``factory`` command-line interface.
+"""The ``factory`` command-line interface (``PLAN.md`` Phases 1-15).
 
 ```bash
+factory --version
 factory run --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
 factory runs
 factory show RUN_ID
 factory start --repo PATH --github-repo OWNER/NAME [--once]
+factory doctor [--json]
+factory status [--json]
+factory dashboard [--port 8765] [--open-browser]
+factory service install|status|uninstall
 ```
 
 ``--runtime`` defaults to ``fake`` so no command ever makes a paid model call
 by accident; ``--runtime copilot`` opts in to the real
 :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`.
 
-Pull request creation, CI observation and the backlog daemon are all strictly
-opt-in through configuration (``pull_request.enabled``, ``ci.enabled``,
-``scheduler.enabled``). With the packaged defaults, ``factory run`` performs no
-network access at all and finishes at ``PR_READY``.
+Pull request creation, CI observation, the backlog daemon, the dashboard and
+the launchd service are all strictly opt-in (``pull_request.enabled``,
+``ci.enabled``, ``scheduler.enabled``, and an explicit ``factory dashboard`` /
+``factory service install`` command). With the packaged defaults, ``factory
+run`` performs no network access at all and finishes at ``PR_READY``.
 
 ``--data-dir`` overrides the configured data directory so tests and demos can
-point the CLI at an isolated temporary directory without editing a config file.
+point the CLI at an isolated temporary directory without editing a config
+file.
+
+Three conventions hold across every command here:
+
+- **Fail before you work.** Configuration problems and missing external
+  prerequisites (``git``, and ``gh``/``copilot`` only when the requested
+  feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE` and one
+  explicit line, never a traceback from deep inside a workspace or tracker.
+- **Read-only stays read-only.** ``runs``, ``show`` and ``status`` derive
+  everything from persisted artifacts and never create or mutate a run, a
+  workspace or configuration -- not even the data directory itself.
+- **Structured logs where work happens.** ``run``, ``start`` and
+  ``dashboard`` attach the bounded rotating JSON log under
+  ``<data_dir>/logs`` once the configuration and data directory are
+  resolved. The dashboard token is printed to stdout and never logged.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import platform
 import signal
 import threading
+import webbrowser
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
 import typer
+import yaml
+from pydantic import ValidationError
 
 from .agents import AgentRuntime, FakeAgentRuntime
+from .cli_output import render_doctor_report, render_service_status, render_status_report
 from .config import FactoryConfig, load_config
 from .copilot_runtime import CopilotAgentRuntime
+from .dashboard import LOOPBACK_HOST, DashboardConfig, create_server
+from .doctor import missing_prerequisites, run_doctor
 from .models import ChangeSet, WorkflowState, WorkItem
+from .observability import (
+    DEFAULT_MAX_SCANNED_RUNS,
+    build_monitoring_snapshot,
+    build_operational_health,
+    build_run_detail,
+    configure_factory_logging,
+)
 from .service import FactoryService
+from .service_install import (
+    DEFAULT_LABEL,
+    ServiceInstallError,
+    ServiceInstallRequest,
+    ServiceRuntime,
+    default_launch_agents_dir,
+    get_service_status,
+    install_service,
+    resolve_factory_executable,
+    uninstall_service,
+)
 from .store import FileRunStore
+from .version import format_version_line
 from .workflow import WorkflowController
 
 app = typer.Typer(help="Local-first autonomous software engineering factory.")
+service_app = typer.Typer(
+    help="Manage the opt-in per-user macOS launchd service (never automatic)."
+)
+app.add_typer(service_app, name="service")
+
+logger = logging.getLogger(__name__)
 
 #: States that mean "the factory finished this work item successfully".
 SUCCESS_STATES = frozenset({WorkflowState.PR_READY, WorkflowState.DONE})
 
+#: Exit code for "you asked for something this environment or configuration
+#: cannot do": invalid/unloadable configuration, a disabled feature, a missing
+#: external prerequisite, an unusable port, or a refused service install.
 CONFIG_ERROR_EXIT_CODE = 2
+
+#: Exit code for "the command ran, and the answer is no": a run that did not
+#: reach a success state, an unknown run id, or a doctor report with errors.
+FAILURE_EXIT_CODE = 1
+
+#: Default dashboard port. Fixed and memorable so a bookmark keeps working
+#: across restarts; ``--port 0`` asks the OS for an ephemeral free port.
+DEFAULT_DASHBOARD_PORT = 8765
+
+#: Default page size for ``factory status``. Small enough to stay readable in
+#: a terminal; ``--limit``/``--offset`` page through the rest.
+DEFAULT_STATUS_LIMIT = 20
 
 
 class RuntimeChoice(StrEnum):
@@ -52,8 +122,40 @@ class RuntimeChoice(StrEnum):
     COPILOT = "copilot"
 
 
+def _current_system() -> str:
+    """The host OS name. A function (not an inline ``platform.system()``
+    call) so macOS-only commands can be exercised deterministically from any
+    development platform."""
+    return platform.system()
+
+
+def _fail(message: str, *, code: int = CONFIG_ERROR_EXIT_CODE) -> typer.Exit:
+    """Print ``message`` to stderr and return an ``Exit`` for the caller to
+    raise. Returning rather than raising keeps ``raise _fail(...)`` explicit
+    at the call site, so a reader always sees the control flow."""
+    typer.echo(message, err=True)
+    return typer.Exit(code=code)
+
+
 def _load_config(config: Path | None, data_dir: Path | None) -> FactoryConfig:
-    loaded = load_config(config)
+    """Load configuration, applying an optional ``--data-dir`` override.
+
+    Every expected failure mode -- a missing file, an unreadable file,
+    malformed YAML, or a schema violation -- becomes one explicit stderr line
+    and :data:`CONFIG_ERROR_EXIT_CODE`, never a traceback.
+    """
+    label = str(config) if config is not None else "(packaged default)"
+    try:
+        loaded = load_config(config)
+    except FileNotFoundError:
+        raise _fail(f"config file not found: {label}") from None
+    except OSError as exc:
+        raise _fail(f"config file at {label} could not be read: {exc}") from None
+    except yaml.YAMLError as exc:
+        raise _fail(f"config at {label} is not valid YAML: {exc}") from None
+    except (ValidationError, ValueError) as exc:
+        raise _fail(f"config at {label} is invalid: {exc}") from None
+
     if data_dir is not None:
         loaded = loaded.model_copy(
             update={
@@ -65,10 +167,92 @@ def _load_config(config: Path | None, data_dir: Path | None) -> FactoryConfig:
     return loaded
 
 
+def _require_prerequisites(*, require_gh: bool, require_copilot: bool) -> None:
+    """Refuse to start work when a required external executable is absent.
+
+    Uses the same ``PATH`` lookup ``factory doctor`` uses
+    (:func:`~software_agent_factory.doctor.missing_prerequisites`), so the
+    two can never disagree, and runs before any workspace, tracker or agent
+    code -- the alternative is a traceback from a failed ``git`` exec several
+    layers down.
+    """
+    missing = missing_prerequisites(
+        require_gh=require_gh, require_copilot=require_copilot
+    )
+    if not missing:
+        return
+    raise _fail(
+        f"missing required executable(s) on PATH: {', '.join(missing)}. "
+        "Install them and retry; 'factory doctor' explains each requirement."
+    )
+
+
+def _configure_logging(config: FactoryConfig) -> None:
+    """Attach the bounded structured log under ``<data_dir>/logs``.
+
+    A logging destination that cannot be created is reported as a warning
+    rather than aborting the command: losing the on-disk log copy must never
+    stop the factory (or the read-only dashboard) from running.
+    """
+    try:
+        configure_factory_logging(config.data_dir)
+    except OSError as exc:
+        typer.echo(f"warning: could not open the structured log: {exc}", err=True)
+
+
 def _build_runtime(choice: RuntimeChoice) -> AgentRuntime:
     if choice is RuntimeChoice.COPILOT:
         return CopilotAgentRuntime()
     return FakeAgentRuntime()
+
+
+def _warn_fake_backlog_claims() -> None:
+    """Explain the non-obvious consequence of polling with the fake runtime."""
+    typer.echo(
+        "warning: the fake runtime still persists completed runs, so matching "
+        "backlog items will not be dispatched again automatically. Use it only "
+        "for a deliberate dry run, or select --runtime copilot before polling "
+        "real agent-ready issues.",
+        err=True,
+    )
+
+
+def _stale_after(config: FactoryConfig, override_seconds: int | None) -> timedelta:
+    """Staleness threshold for monitoring surfaces.
+
+    Defaults to the configured scheduler stall timeout, so "stale" means the
+    same thing to ``factory status``, the dashboard and the scheduler's own
+    stall detection instead of being an independently drifting constant.
+    """
+    seconds = override_seconds if override_seconds is not None else (
+        config.scheduler.stall_timeout_seconds
+    )
+    return timedelta(seconds=seconds)
+
+
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the factory version and exit.",
+        is_eager=True,
+    ),
+) -> None:
+    """Print the version, or show help when invoked with no subcommand.
+
+    The exact line ``python -m software_agent_factory --version`` and the
+    installed console script print, resolved once in ``version.py`` so the
+    frozen bundle, the wheel and a source checkout can never disagree.
+    """
+    if version:
+        typer.echo(format_version_line())
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
 
 
 @app.command("run")
@@ -101,6 +285,15 @@ def run_command(
 ) -> None:
     """Run one work item synchronously through the factory workflow."""
     factory_config = _load_config(config, data_dir)
+    # A manual run needs ``gh`` only for the publishing/CI features it would
+    # actually reach; the scheduler is irrelevant here, so an offline default
+    # run requires nothing but ``git``.
+    _require_prerequisites(
+        require_gh=factory_config.pull_request.enabled or factory_config.ci.enabled,
+        require_copilot=runtime is RuntimeChoice.COPILOT,
+    )
+    _configure_logging(factory_config)
+
     store = FileRunStore(factory_config.data_dir)
     controller = WorkflowController(factory_config, store, _build_runtime(runtime))
 
@@ -131,7 +324,7 @@ def run_command(
         typer.echo(f"changed files: {', '.join(change_set.changed_files) or '(none)'}")
 
     if run.state not in SUCCESS_STATES:
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=FAILURE_EXIT_CODE)
 
 
 @app.command("start")
@@ -162,12 +355,18 @@ def start_command(
     """
     factory_config = _load_config(config, data_dir)
     if not factory_config.scheduler.enabled:
-        typer.echo(
+        raise _fail(
             "scheduler is disabled: set 'scheduler.enabled: true' in the factory "
-            "configuration before running 'factory start'.",
-            err=True,
+            "configuration before running 'factory start'."
         )
-        raise typer.Exit(code=CONFIG_ERROR_EXIT_CODE)
+    # Polling the backlog is a GitHub operation, so ``gh`` is required here
+    # even when publishing and CI observation are both disabled.
+    _require_prerequisites(
+        require_gh=True, require_copilot=runtime is RuntimeChoice.COPILOT
+    )
+    if runtime is RuntimeChoice.FAKE:
+        _warn_fake_backlog_claims()
+    _configure_logging(factory_config)
 
     store = FileRunStore(factory_config.data_dir)
     service = FactoryService(
@@ -178,11 +377,22 @@ def start_command(
         github_repo=github_repo,
     )
 
+    daily_limit = factory_config.scheduler.max_runs_per_day
+    daily_limit_text = "unbounded" if daily_limit is None else f"{daily_limit}/day"
+
     if once:
         try:
             report = service.run_once()
             typer.echo(f"candidates: {report.candidates_fetched}")
             typer.echo(f"dispatched: {', '.join(report.dispatched) or '(none)'}")
+            typer.echo(f"daily run limit: {daily_limit_text}")
+            if report.rate_limited:
+                typer.echo(
+                    "rate limited: the daily run limit "
+                    f"({daily_limit_text}) stopped further dispatch this tick"
+                )
+            if report.at_capacity:
+                typer.echo("at capacity: no dispatch slot was free this tick")
         finally:
             service.shutdown()
         return
@@ -198,9 +408,17 @@ def start_command(
 
     typer.echo(
         f"polling {github_repo} every {factory_config.scheduler.poll_interval_seconds}s "
-        f"(concurrency {factory_config.scheduler.max_concurrent_tasks})"
+        f"(concurrency {factory_config.scheduler.max_concurrent_tasks}, "
+        f"daily run limit {daily_limit_text})"
     )
-    service.run_forever(stop_event)
+    try:
+        service.run_forever(stop_event)
+    except Exception as exc:  # noqa: BLE001 - top-level daemon boundary
+        logger.exception("factory backlog daemon stopped unexpectedly")
+        raise _fail(
+            f"factory backlog daemon stopped unexpectedly: {exc}",
+            code=FAILURE_EXIT_CODE,
+        ) from None
 
 
 @app.command("runs")
@@ -241,11 +459,375 @@ def show_command(
 
     try:
         run = store.load_run(run_id)
-    except FileNotFoundError:
-        typer.echo(f"no such run: {run_id}", err=True)
-        raise typer.Exit(code=1) from None
+    except (FileNotFoundError, ValueError):
+        raise _fail(f"no such run: {run_id}", code=FAILURE_EXIT_CODE) from None
 
     typer.echo(json.dumps(json.loads(run.model_dump_json()), indent=2))
+
+
+@app.command("doctor")
+def doctor_command(
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+    runtime: RuntimeChoice = typer.Option(
+        RuntimeChoice.FAKE,
+        "--runtime",
+        help="Check prerequisites for this runtime ('copilot' additionally requires copilot).",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the report as JSON instead of human-readable text."
+    ),
+) -> None:
+    """Check this machine's prerequisites for the configured feature set.
+
+    Never makes a paid model call: the only ``copilot`` interaction is a
+    bounded ``copilot --version`` probe, and only when ``--runtime copilot``
+    is requested. ``gh`` is required only when configuration enables pull
+    requests, CI observation or the backlog daemon. Exits nonzero if any
+    check errored; warnings alone do not fail the report.
+    """
+    report = run_doctor(
+        config_path=config,
+        data_dir_override=data_dir,
+        requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
+    )
+
+    if json_output:
+        typer.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        for line in render_doctor_report(report):
+            typer.echo(line)
+
+    if not report.success:
+        raise typer.Exit(code=FAILURE_EXIT_CODE)
+
+
+@app.command("status")
+def status_command(
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+    limit: int = typer.Option(
+        DEFAULT_STATUS_LIMIT, "--limit", min=1, help="How many runs to list."
+    ),
+    offset: int = typer.Option(0, "--offset", min=0, help="Where to start the run listing."),
+    stale_after_seconds: int = typer.Option(
+        None,
+        "--stale-after-seconds",
+        min=1,
+        help="Idle time before a non-terminal run counts as stale "
+        "(default: scheduler.stall_timeout_seconds).",
+    ),
+    max_scanned_runs: int = typer.Option(
+        DEFAULT_MAX_SCANNED_RUNS,
+        "--max-scanned-runs",
+        min=1,
+        help="Hard cap on how many run files this command parses.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit snapshot and health as JSON instead of human-readable text."
+    ),
+) -> None:
+    """Report derived run metrics and operational health, read-only.
+
+    Everything is recomputed from persisted artifacts on each call
+    (``ADR-017``): this command never creates, mutates or repairs a run, a
+    workspace, a lock or the data directory itself. A scan that was
+    truncated by ``--max-scanned-runs``, or that hit an unreadable run, is
+    reported as ``DEGRADED`` rather than presented as a complete picture.
+    """
+    factory_config = _load_config(config, data_dir)
+    store = FileRunStore(factory_config.data_dir)
+    stale_after = _stale_after(factory_config, stale_after_seconds)
+
+    snapshot = build_monitoring_snapshot(
+        store,
+        stale_after=stale_after,
+        limit=limit,
+        offset=offset,
+        max_scanned_runs=max_scanned_runs,
+    )
+    health = build_operational_health(
+        store,
+        data_dir=factory_config.data_dir,
+        stale_after=stale_after,
+        max_scanned_runs=max_scanned_runs,
+    )
+
+    if json_output:
+        payload = {
+            "data_dir": str(factory_config.data_dir),
+            "snapshot": snapshot.model_dump(mode="json"),
+            "health": health.model_dump(mode="json"),
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"data dir: {factory_config.data_dir}")
+    for line in render_status_report(snapshot, health):
+        typer.echo(line)
+
+
+@app.command("dashboard")
+def dashboard_command(
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+    port: int = typer.Option(
+        DEFAULT_DASHBOARD_PORT,
+        "--port",
+        min=0,
+        max=65535,
+        help="Loopback port to listen on (0 asks the OS for a free port).",
+    ),
+    open_browser: bool = typer.Option(
+        False,
+        "--open-browser",
+        help="Open the tokenized dashboard URL in the default browser.",
+    ),
+    max_scanned_runs: int = typer.Option(
+        DEFAULT_MAX_SCANNED_RUNS,
+        "--max-scanned-runs",
+        min=1,
+        help="Hard cap on how many run files one dashboard request parses.",
+    ),
+) -> None:
+    """Serve the read-only local dashboard until interrupted (ADR-016).
+
+    Blocks in the foreground and is the *only* thing that ever starts a
+    dashboard: nothing in ``factory run`` or ``factory start`` opens a
+    socket. The server binds ``127.0.0.1`` and nothing else, answers ``GET``
+    only, and is protected by a token generated for this process; the
+    tokenized URL is printed to stdout once and never written to the log.
+    Ctrl-C stops it and closes the socket.
+    """
+    factory_config = _load_config(config, data_dir)
+    _configure_logging(factory_config)
+
+    store = FileRunStore(factory_config.data_dir)
+    stale_after = _stale_after(factory_config, None)
+
+    def snapshot_provider(*, limit: int, offset: int) -> object:
+        return build_monitoring_snapshot(
+            store,
+            stale_after=stale_after,
+            limit=limit,
+            offset=offset,
+            max_scanned_runs=max_scanned_runs,
+        )
+
+    def run_detail_provider(run_id: str) -> object | None:
+        # Returns None (rendered as 404) for a run that does not exist or
+        # cannot be read, and only ever carries allowlisted summary fields
+        # plus attempt metadata -- never a log, a diff, a prompt or a raw
+        # artifact body.
+        return build_run_detail(store, run_id, stale_after=stale_after)
+
+    def health_provider() -> object:
+        return build_operational_health(
+            store,
+            data_dir=factory_config.data_dir,
+            stale_after=stale_after,
+            max_scanned_runs=max_scanned_runs,
+        )
+
+    try:
+        server = create_server(
+            DashboardConfig(
+                snapshot_provider=snapshot_provider,
+                run_detail_provider=run_detail_provider,
+                health_provider=health_provider,
+                host=LOOPBACK_HOST,
+                port=port,
+            )
+        )
+    except OSError as exc:
+        raise _fail(f"could not bind the dashboard to {LOOPBACK_HOST}:{port}: {exc}") from None
+
+    typer.echo(f"dashboard: {server.dashboard_url}")
+    typer.echo("read-only, loopback only. press Ctrl-C to stop.")
+    if open_browser:
+        webbrowser.open(server.dashboard_url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("stopping dashboard...")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# -- factory service -------------------------------------------------------
+
+
+def _require_macos() -> None:
+    system = _current_system()
+    if system != "Darwin":
+        raise _fail(
+            f"'factory service' manages a macOS launchd LaunchAgent and cannot run on {system}."
+        )
+
+
+@service_app.command("install")
+def service_install_command(
+    repo: Path = typer.Option(
+        ..., "--repo", help="Absolute path to the target Git repository."
+    ),
+    github_repo: str = typer.Option(
+        ..., "--github-repo", help="Backlog repository in 'OWNER/NAME' format."
+    ),
+    config: Path = typer.Option(
+        None,
+        "--config",
+        help="Config file the service will load (must enable scheduler.enabled).",
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory for the service."
+    ),
+    runtime: RuntimeChoice = typer.Option(
+        RuntimeChoice.FAKE,
+        "--runtime",
+        help="Runtime the service runs with. Defaults to 'fake' so it cannot spend money.",
+    ),
+    executable: Path = typer.Option(
+        None,
+        "--executable",
+        help="Explicit 'factory' executable to run (default: this frozen build or the "
+        "installed console script).",
+    ),
+    label: str = typer.Option(
+        DEFAULT_LABEL, "--label", help="LaunchAgent label to install under."
+    ),
+    allow_source_dev: bool = typer.Option(
+        False,
+        "--allow-source-dev",
+        help="Permit an executable in an otherwise-refused location (source checkout).",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the resulting service status as JSON."
+    ),
+) -> None:
+    """Install the per-user LaunchAgent that runs ``factory start``.
+
+    Only ever happens because someone typed this command: nothing installs a
+    service as a side effect of extracting an archive, running the factory or
+    upgrading it (``ADR-018``). Refuses unless the target configuration
+    enables the scheduler, refuses if ``factory doctor`` reports any error,
+    and defaults to ``--runtime fake`` so an installed-but-forgotten agent
+    cannot spend money.
+    """
+    _require_macos()
+
+    factory_config = _load_config(config, data_dir)
+    if not factory_config.scheduler.enabled:
+        raise _fail(
+            "refusing to install a service for a disabled scheduler: set "
+            "'scheduler.enabled: true' in the configuration passed with --config."
+        )
+    if runtime is RuntimeChoice.FAKE:
+        _warn_fake_backlog_claims()
+
+    report = run_doctor(
+        config_path=config,
+        data_dir_override=data_dir,
+        requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
+    )
+    if not report.success:
+        for line in render_doctor_report(report):
+            typer.echo(line, err=True)
+        raise _fail(
+            "refusing to install a service while 'factory doctor' reports errors."
+        )
+
+    try:
+        resolved_executable = resolve_factory_executable(executable)
+        request = ServiceInstallRequest(
+            executable=resolved_executable,
+            repo=repo.expanduser(),
+            github_repo=github_repo,
+            data_dir=factory_config.data_dir,
+            config_path=config.expanduser().resolve() if config is not None else None,
+            poll_interval_seconds=factory_config.scheduler.poll_interval_seconds,
+            runtime=ServiceRuntime(runtime.value),
+            label=label,
+            allow_source_dev=allow_source_dev,
+        )
+        status = install_service(request, launch_agents_dir=default_launch_agents_dir())
+    except ServiceInstallError as exc:
+        raise _fail(f"service install refused: {exc}") from None
+
+    if json_output:
+        typer.echo(json.dumps({**status.to_dict(), "runtime": runtime.value}, indent=2))
+        return
+
+    typer.echo(f"installed service for {resolved_executable}")
+    typer.echo(f"runtime: {runtime.value}")
+    typer.echo(f"poll interval: {factory_config.scheduler.poll_interval_seconds}s")
+    for line in render_service_status(status):
+        typer.echo(line)
+
+
+@service_app.command("status")
+def service_status_command(
+    label: str = typer.Option(
+        DEFAULT_LABEL, "--label", help="LaunchAgent label to inspect."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the service status as JSON."
+    ),
+) -> None:
+    """Report whether the LaunchAgent is installed and loaded (read-only)."""
+    _require_macos()
+    try:
+        status = get_service_status(label, launch_agents_dir=default_launch_agents_dir())
+    except ServiceInstallError as exc:
+        raise _fail(f"service status unavailable: {exc}") from None
+
+    if json_output:
+        typer.echo(json.dumps(status.to_dict(), indent=2))
+        return
+    for line in render_service_status(status):
+        typer.echo(line)
+
+
+@service_app.command("uninstall")
+def service_uninstall_command(
+    label: str = typer.Option(
+        DEFAULT_LABEL, "--label", help="LaunchAgent label to remove."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the uninstall result as JSON."
+    ),
+) -> None:
+    """Unload the LaunchAgent and remove its plist.
+
+    Leaves every run, artifact and workspace on disk: uninstalling the
+    service stops future polling, it does not delete history.
+    """
+    _require_macos()
+    try:
+        removed = uninstall_service(label, launch_agents_dir=default_launch_agents_dir())
+    except ServiceInstallError as exc:
+        raise _fail(f"service uninstall failed: {exc}") from None
+
+    if json_output:
+        typer.echo(json.dumps({"label": label, "removed": removed}, indent=2))
+        return
+    if removed:
+        typer.echo(f"removed LaunchAgent {label}; runs and workspaces were left on disk")
+    else:
+        typer.echo(f"no LaunchAgent plist found for {label}; nothing to remove")
 
 
 if __name__ == "__main__":

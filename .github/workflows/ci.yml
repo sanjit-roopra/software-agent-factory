@@ -1,0 +1,230 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu:
+    name: ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Sync development environment
+        run: uv sync --locked --group dev
+
+      - name: Check lockfile
+        run: uv lock --check
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        run: uv run pytest -q
+
+      - name: Build wheel and sdist
+        run: uv build --wheel --sdist
+
+      - name: Smoke installed wheel in a clean virtualenv
+        run: |
+          set -euo pipefail
+          python -m venv packaging/venvs/wheel-smoke
+          packaging/venvs/wheel-smoke/bin/pip install dist/*.whl
+          VERSION=$(PYTHONPATH=src python - <<'PY'
+          from software_agent_factory.version import get_version
+          print(get_version())
+          PY
+          )
+          packaging/venvs/wheel-smoke/bin/python scripts/release/smoke_factory.py \
+            --factory-executable packaging/venvs/wheel-smoke/bin/factory \
+            --workspace-root packaging/wheel-smoke \
+            --expect-version "$VERSION"
+
+  macos-arm64:
+    name: macos-arm64
+    runs-on: macos-15
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      # PRs rely on the required Ubuntu job; native arm64 packaging smoke runs on
+      # main, release tags, and manual dispatches to control hosted-runner cost.
+      - name: Run packaging-focused tests
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          uv run pytest -q \
+            tests/test_cli.py \
+            tests/test_cli_operations.py \
+            tests/test_doctor.py \
+            tests/test_service_install.py \
+            tests/test_dashboard.py \
+            tests/test_version.py \
+            tests/test_release_workflows.py
+
+      - name: Build and smoke the archived native frozen executable
+        run: |
+          set -euo pipefail
+          BUILD_INFO=src/software_agent_factory/build-info.json
+          trap 'rm -f "$BUILD_INFO"' EXIT
+          VERSION=$(PYTHONPATH=src python - <<'PY'
+          from software_agent_factory.version import get_version
+          print(get_version())
+          PY
+          )
+          PYTHON_VERSION=$(uv run python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYINSTALLER_VERSION=$(uv run python - <<'PY'
+          import PyInstaller
+          print(PyInstaller.__version__)
+          PY
+          )
+          PYTHONPATH=src uv run python scripts/release/generate_build_info.py \
+            --output "$BUILD_INFO" \
+            --tag "ci-$GITHUB_SHA" \
+            --commit-sha "$GITHUB_SHA" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --target-architecture "arm64"
+          uv run pyinstaller --clean --noconfirm \
+            --distpath packaging/dist/arm64 \
+            --workpath packaging/build/arm64 \
+            packaging/pyinstaller.spec
+          uv run python scripts/release/prepare_frozen_bundle.py \
+            --bundle-dir packaging/dist/arm64/software-agent-factory \
+            --version "$VERSION" \
+            --architecture "arm64"
+          ARCHIVE=packaging/artifacts/software-agent-factory-${VERSION}-macos-arm64.tar.gz
+          mkdir -p packaging/artifacts
+          COPYFILE_DISABLE=1 tar -C packaging/dist/arm64 -czf "$ARCHIVE" software-agent-factory
+          uv run python scripts/release/smoke_factory.py \
+            --archive "$ARCHIVE" \
+            --workspace-root packaging/frozen-smoke/arm64 \
+            --expect-architecture "arm64" \
+            --expect-version "$VERSION"
+
+  macos-x86_64:
+    name: macos-x86_64
+    runs-on: macos-15-intel
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      # PRs rely on the required Ubuntu job; native x86_64 packaging smoke runs
+      # on main, release tags, and manual dispatches to control hosted-runner cost.
+      - name: Run packaging-focused tests
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          uv run pytest -q \
+            tests/test_cli.py \
+            tests/test_cli_operations.py \
+            tests/test_doctor.py \
+            tests/test_service_install.py \
+            tests/test_dashboard.py \
+            tests/test_version.py \
+            tests/test_release_workflows.py
+
+      - name: Build and smoke the archived native frozen executable
+        run: |
+          set -euo pipefail
+          BUILD_INFO=src/software_agent_factory/build-info.json
+          trap 'rm -f "$BUILD_INFO"' EXIT
+          VERSION=$(PYTHONPATH=src python - <<'PY'
+          from software_agent_factory.version import get_version
+          print(get_version())
+          PY
+          )
+          PYTHON_VERSION=$(uv run python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYINSTALLER_VERSION=$(uv run python - <<'PY'
+          import PyInstaller
+          print(PyInstaller.__version__)
+          PY
+          )
+          PYTHONPATH=src uv run python scripts/release/generate_build_info.py \
+            --output "$BUILD_INFO" \
+            --tag "ci-$GITHUB_SHA" \
+            --commit-sha "$GITHUB_SHA" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --target-architecture "x86_64"
+          uv run pyinstaller --clean --noconfirm \
+            --distpath packaging/dist/x86_64 \
+            --workpath packaging/build/x86_64 \
+            packaging/pyinstaller.spec
+          uv run python scripts/release/prepare_frozen_bundle.py \
+            --bundle-dir packaging/dist/x86_64/software-agent-factory \
+            --version "$VERSION" \
+            --architecture "x86_64"
+          ARCHIVE=packaging/artifacts/software-agent-factory-${VERSION}-macos-x86_64.tar.gz
+          mkdir -p packaging/artifacts
+          COPYFILE_DISABLE=1 tar -C packaging/dist/x86_64 -czf "$ARCHIVE" software-agent-factory
+          uv run python scripts/release/smoke_factory.py \
+            --archive "$ARCHIVE" \
+            --workspace-root packaging/frozen-smoke/x86_64 \
+            --expect-architecture "x86_64" \
+            --expect-version "$VERSION"

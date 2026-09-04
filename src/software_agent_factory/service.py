@@ -24,6 +24,17 @@ the backlog and GitHub never withdraws an issue by itself, an item with any
 persisted ``FactoryRun`` is filtered out of the candidate set
 (:class:`AlreadyRunFilter`). Otherwise a finished issue would be re-dispatched
 on the very next tick under a new run id with a fresh, empty retry budget.
+
+Two configured safety bounds are applied here rather than left implicit
+(``PLAN.md`` Phase 15): ``scheduler.max_concurrent_tasks`` bounds how much
+work runs at once, and ``scheduler.max_runs_per_day`` bounds how much work may
+be *claimed* per UTC calendar day. Both are passed to the scheduler by this
+composition root; the scheduler owns their enforcement.
+
+Dispatch and completion are also emitted as structured, ``run_id``-tagged log
+records (``observability.log_run_event``), so an installed launchd service
+leaves a durable, bounded audit trail under ``<data_dir>/logs/factory.log``
+without any workflow change.
 """
 
 from __future__ import annotations
@@ -39,8 +50,10 @@ from uuid import uuid4
 
 from .agents import AgentRuntime
 from .config import FactoryConfig
+from .github import GitHubCommandError
 from .github_tracker import GitHubIssueProvider
 from .models import FactoryRun, WorkflowState, WorkItem, utc_now
+from .observability import log_run_event
 from .scheduler import (
     DispatchOutcome,
     ReconciliationAction,
@@ -232,6 +245,7 @@ class FactoryService:
             max_concurrent_tasks=self.config.scheduler.max_concurrent_tasks,
             stall_timeout_seconds=float(self.config.scheduler.stall_timeout_seconds),
             store=self.store,
+            max_runs_per_day=self.config.scheduler.max_runs_per_day,
         )
 
     # -- dispatch ---------------------------------------------------------
@@ -248,8 +262,20 @@ class FactoryService:
 
     def _execute(self, work_item: WorkItem, repository: Path, run_id: str) -> FactoryRun:
         assert self.controller is not None
-        logger.info("dispatching %s as run %s", work_item.id, run_id)
-        return self.controller.run(work_item, repository, run_id=run_id)
+        log_run_event(
+            logger,
+            f"dispatching {work_item.id} as run {run_id}",
+            run_id=run_id,
+            state=WorkflowState.CREATED,
+        )
+        run = self.controller.run(work_item, repository, run_id=run_id)
+        log_run_event(
+            logger,
+            f"run {run_id} finished for {work_item.id}",
+            run_id=run_id,
+            state=run.state,
+        )
+        return run
 
     # -- lifecycle --------------------------------------------------------
 
@@ -277,8 +303,22 @@ class FactoryService:
         """One bounded cycle: recover, tick once, wait for dispatched work."""
         self.recover()
         report = self.scheduler.tick()
+        self._log_tick(report)
         self.drain(drain_timeout_seconds)
         return report
+
+    def _log_tick(self, report: TickReport) -> None:
+        """Emit one structured record per tick, so a rate-limited or
+        at-capacity cycle is visible in the on-disk log and not only in the
+        foreground CLI output."""
+        logger.info(
+            "tick: %d candidate(s), %d eligible, dispatched %s%s%s",
+            report.candidates_fetched,
+            report.eligible_count,
+            ", ".join(report.dispatched) or "(none)",
+            "; at capacity" if report.at_capacity else "",
+            "; daily run limit reached" if report.rate_limited else "",
+        )
 
     def drain(self, timeout_seconds: float = DEFAULT_DRAIN_TIMEOUT_SECONDS) -> None:
         """Block until every dispatched run finishes (or the timeout lapses)."""
@@ -297,11 +337,19 @@ class FactoryService:
         """Poll until ``stop_event`` is set, reconciling before the first tick."""
         try:
             self.recover()
-            self.scheduler.run_forever(
-                stop_event,
-                float(self.config.scheduler.poll_interval_seconds),
-                store=self.store,
-            )
+            poll_interval = float(self.config.scheduler.poll_interval_seconds)
+            while not stop_event.is_set():
+                try:
+                    report = self.scheduler.tick()
+                except GitHubCommandError:
+                    logger.exception(
+                        "GitHub backlog polling failed; retrying after %.1f seconds",
+                        poll_interval,
+                    )
+                else:
+                    self._log_tick(report)
+                if stop_event.wait(poll_interval):
+                    break
         finally:
             self.shutdown()
 

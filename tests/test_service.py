@@ -6,6 +6,7 @@ deterministic ``FakeAgentRuntime``, and pull requests/CI stay disabled.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ import pytest
 from factory_testing import build_config, git
 
 from software_agent_factory.agents import FakeAgentRuntime
+from software_agent_factory.github import GitHubCommandError
 from software_agent_factory.models import FactoryRun, WorkflowState
 from software_agent_factory.scheduler import (
     ReconciliationAction,
@@ -328,6 +330,54 @@ def test_run_forever_stops_on_the_stop_event(source_repo: Path, data_dir: Path) 
     assert provider.fetch_calls == 0
 
 
+def test_run_forever_retries_transient_github_poll_failures(
+    source_repo: Path,
+    data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FailingOnceProvider(LocalProvider):
+        def fetch_candidates(self) -> Sequence[TrackerItem]:
+            self.fetch_calls += 1
+            if self.fetch_calls == 1:
+                raise GitHubCommandError(("issue", "list"), 1, "temporary outage")
+            return []
+
+    class StopAfterTwoWaits:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, _timeout: float) -> bool:
+            self.wait_calls += 1
+            return self.wait_calls == 2
+
+    provider = FailingOnceProvider([])
+    service = _service(data_dir, source_repo, provider)
+    waiter = StopAfterTwoWaits()
+
+    with caplog.at_level("ERROR", logger="software_agent_factory.service"):
+        service.run_forever(waiter)
+
+    assert provider.fetch_calls == 2
+    assert waiter.wait_calls == 2
+    assert "GitHub backlog polling failed; retrying after 1.0 seconds" in caplog.text
+
+
+def test_run_forever_does_not_hide_unexpected_poll_failures(
+    source_repo: Path, data_dir: Path
+) -> None:
+    class BrokenProvider(LocalProvider):
+        def fetch_candidates(self) -> Sequence[TrackerItem]:
+            raise RuntimeError("programming error")
+
+    service = _service(data_dir, source_repo, BrokenProvider([]))
+
+    with pytest.raises(RuntimeError, match="programming error"):
+        service.run_forever(threading.Event())
+
+
 
 # ---------------------------------------------------------------------------
 # Once-only dispatch of an item the backlog never withdraws
@@ -406,3 +456,117 @@ def test_already_run_filter_hides_items_from_both_provider_methods(
         item.opaque_id
         for item in filtered.fetch_by_ids([fresh.opaque_id, done.opaque_id])
     ] == [fresh.opaque_id]
+
+
+# ---------------------------------------------------------------------------
+# Configured safety bounds reach the scheduler
+# ---------------------------------------------------------------------------
+
+
+def _service_with_scheduler(
+    data_dir: Path, source_repo: Path, provider: LocalProvider, **scheduler: object
+) -> FactoryService:
+    settings: dict[str, object] = {
+        "enabled": True,
+        "poll_interval_seconds": 1,
+        "max_concurrent_tasks": 1,
+        "stall_timeout_seconds": 300,
+        "required_label": "agent-ready",
+    }
+    settings.update(scheduler)
+    return FactoryService(
+        config=build_config(data_dir, scheduler=settings),
+        store=FileRunStore(data_dir),
+        runtime=FakeAgentRuntime(),
+        source_repo=source_repo,
+        github_repo="acme/repo",
+        provider=provider,
+    )
+
+
+def test_configured_daily_run_limit_reaches_the_scheduler(
+    source_repo: Path, data_dir: Path
+) -> None:
+    service = _service_with_scheduler(
+        data_dir, source_repo, LocalProvider([]), max_runs_per_day=7
+    )
+    try:
+        assert service.scheduler.max_runs_per_day == 7
+        assert service.scheduler.store is service.store
+    finally:
+        service.shutdown()
+
+
+def test_daily_run_limit_stops_dispatch_once_the_quota_is_spent(
+    source_repo: Path, data_dir: Path
+) -> None:
+    """The bound is enforced against persisted runs, so it survives a
+    restart instead of resetting with the process."""
+    store = FileRunStore(data_dir)
+    now = datetime.now(timezone.utc)
+    store.save_run(
+        FactoryRun(
+            id="run-earlier-today",
+            work_item_id="tracker-acme/repo#999",
+            state=WorkflowState.DONE,
+            created_at=now,
+            updated_at=now,
+            completed_at=now,
+        )
+    )
+    service = _service_with_scheduler(
+        data_dir, source_repo, LocalProvider([_item(1, source_repo)]), max_runs_per_day=1
+    )
+
+    try:
+        report = service.run_once(drain_timeout_seconds=60)
+    finally:
+        service.shutdown()
+
+    assert report.dispatched == ()
+    assert report.rate_limited is True
+    assert [run.id for run in store.list_runs()] == ["run-earlier-today"]
+
+
+def test_a_null_daily_run_limit_is_unbounded(source_repo: Path, data_dir: Path) -> None:
+    service = _service_with_scheduler(
+        data_dir, source_repo, LocalProvider([_item(1, source_repo)]), max_runs_per_day=None
+    )
+
+    try:
+        report = service.run_once(drain_timeout_seconds=60)
+    finally:
+        service.shutdown()
+
+    assert service.scheduler.max_runs_per_day is None
+    assert report.rate_limited is False
+    assert report.dispatched == ("acme/repo#1",)
+
+
+def test_dispatch_and_completion_are_logged_with_run_correlation(
+    source_repo: Path, data_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``factory start`` under launchd has no console; the structured record
+    is how an operator later reconstructs what ran."""
+    service = _service_with_scheduler(
+        data_dir, source_repo, LocalProvider([_item(1, source_repo)])
+    )
+
+    # Attach the capture handler to the service logger directly: the package
+    # logger stops propagating once structured logging is configured, so
+    # relying on propagation to the root logger would be fragile.
+    service_logger = logging.getLogger("software_agent_factory.service")
+    service_logger.addHandler(caplog.handler)
+    previous_level = service_logger.level
+    service_logger.setLevel(logging.INFO)
+    try:
+        service.run_once(drain_timeout_seconds=60)
+    finally:
+        service.shutdown()
+        service_logger.removeHandler(caplog.handler)
+        service_logger.setLevel(previous_level)
+
+    tagged = [record for record in caplog.records if getattr(record, "run_id", None)]
+    assert tagged, "expected run-tagged dispatch/completion records"
+    assert {record.state for record in tagged} >= {WorkflowState.PR_READY}
+    assert any("tick:" in record.message for record in caplog.records)

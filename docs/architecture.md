@@ -42,10 +42,20 @@ Everything after "ready for PR" is strictly opt-in. With the packaged
 configuration a run performs no network access at all and completes at
 `PR_READY`.
 
-Still out of scope (Phase 15, optional):
-- staging
-- deployment
-- Jira, Postgres, Temporal, Docker/Kubernetes workers, dashboards
+Still out of scope (deferred Phase 15 items):
+- staging (15.3)
+- deployment/promotion (15.4)
+- Jira, Postgres, Temporal, Docker/Kubernetes workers, remote workers
+
+Implemented (requested Phase 15 sub-phases, see `PLAN.md`):
+- 15.0 factory CI for this repository
+- 15.1 tag-driven release of immutable macOS artifacts
+- 15.2 macOS runtime packaging and an opt-in user launchd service
+- 15.5 local monitoring and health (`factory doctor`, `factory status`)
+- 15.11 a read-only, loopback-only local dashboard (`factory dashboard`)
+
+None of those change what the factory is allowed to do autonomously. They make
+it installable, observable and inspectable on one MacBook.
 
 ## High-level architecture
 
@@ -217,6 +227,21 @@ reservations, ordering, bounded concurrency and stall detection entirely
 in-memory; it never mutates a `FactoryRun`. `FactoryService` composes it with
 `GitHubIssueProvider` and `WorkflowController`, and dispatches through a thread
 pool bounded by `scheduler.max_concurrent_tasks` (1 or 2).
+
+Two configured bounds are enforced, and both are supplied by the composition
+root rather than assumed by the scheduler:
+
+```text
+scheduler.max_concurrent_tasks   how much may run at once   (1 or 2, in memory)
+scheduler.max_runs_per_day       how much may be claimed    (per rolling UTC
+                                 per day                     day, counted from
+                                                             persisted runs)
+```
+
+The daily ceiling is counted from persisted `FactoryRun.created_at` timestamps,
+so it survives a restart instead of resetting with the process. A tick stopped
+by it reports `rate_limited` rather than looking like an empty backlog, and
+reconciliation of already-running work is unaffected.
 
 Recovery is conservative: a persisted, non-terminal run left behind by a dead
 process is transitioned to `NEEDS_HUMAN` *through the controller*, never
@@ -829,6 +854,34 @@ GitHub credentials are read from the controller's own environment and handed to
 strips `GH_TOKEN`/`GITHUB_TOKEN`/etc. from every agent subprocess, so no agent
 ever sees them.
 
+## Command surface
+
+One CLI, with an explicit split between commands that may change something and
+commands that may not:
+
+```text
+factory --version              version only, no side effects
+factory run                    mutates: creates a run, a worktree, artifacts
+factory start                  mutates: dispatches runs (opt-in scheduler)
+factory runs / show            read-only
+factory doctor                 read-only apart from the data-dir write probe
+factory status                 read-only; does not even create the data dir
+factory dashboard              read-only server, explicit and blocking
+factory service install        mutates: one per-user LaunchAgent plist
+factory service status         read-only
+factory service uninstall      mutates: removes that plist only
+```
+
+`run`, `start` and `dashboard` attach the bounded structured log under
+`<data_dir>/logs` once configuration and the data directory are resolved. The
+dashboard token is printed to stdout and never logged.
+
+Exit codes are uniform: `2` means "this environment or configuration cannot do
+what you asked" (invalid configuration, disabled feature, missing prerequisite,
+unusable port, refused install), `1` means "the command ran and the answer is
+no" (a run that did not succeed, an unknown run id, a doctor report with
+errors).
+
 ## Observability
 
 Record every agent invocation:
@@ -852,24 +905,177 @@ Record task metrics:
 - review findings
 - final status
 
-No dashboard initially.
+JSON + structured logs are the substrate. Structured logs are written locally,
+bounded in size, inside the configured data directory, with the same credential
+redaction already applied to captured command output. Nothing is exported: no
+telemetry backend, no exporter, no network egress.
 
-JSON + structured logs are sufficient.
+Token usage and cost are recorded only when the runtime actually reports them.
+An unreported value stays unknown; it is never defaulted to zero and never
+reconstructed from a price table (ADR-017).
+
+## Health and metrics
+
+Persisted run artifacts are the source of truth, so health and metrics are
+*derived* on demand rather than accumulated. There is no counter store and no
+time-series database.
+
+Metrics are pure functions over the run store:
+
+```text
+runs by final state
+first-pass success rate
+attempts per run
+scope replans
+CI repair cycles
+escalations to NEEDS_HUMAN
+stage and run durations
+```
+
+`factory status` renders both surfaces (human-readable or `--json`) and is
+strictly read-only: it will not even create the data directory.
+
+Health reports operational facts about this machine:
+
+```text
+factory doctor
+  data directory writable
+  configuration valid
+  git available
+  prerequisites present for enabled features only
+factory status / dashboard
+  stale work-item locks
+  orphaned worktrees
+  non-terminal runs left behind by a dead process
+factory service status
+  launchd service registered / not registered
+```
+
+Both are strictly read-only. They report a stale lock, an orphaned worktree or
+an abandoned run as findings; repairing one remains an explicit operator action
+through the controller, exactly as in ADR-011.
+
+## Delivery and packaging
+
+Delivery ends at an immutable artifact. A `v*` tag builds a GitHub Release; it
+does not install, restart, promote or self-update anything (ADR-015).
+
+```text
+version tag
+    ↓
+factory CI (lint + tests, macos-15 and macos-15-intel)
+    ↓
+build
+    ↓
+GitHub Release (immutable)
+    ↓
+human downloads and extracts
+```
+
+A release contains:
+
+```text
+software-agent-factory-<version>-macos-arm64.tar.gz     PyInstaller onedir
+software-agent-factory-<version>-macos-x86_64.tar.gz    PyInstaller onedir
+software_agent_factory-<version>-py3-none-any.whl
+software_agent_factory-<version>.tar.gz
+SHA256SUMS
+build-info.json
+```
+
+The two macOS archives are built natively on their own runners. There is no
+`universal2` build.
+
+Artifacts are unsigned or ad-hoc signed; Developer ID signing and notarization
+are deferred, so Gatekeeper quarantine is a documented, expected condition and
+release notes must explain it.
+
+A frozen runtime bundles Python and the factory, not the toolchain:
+
+```text
+required always      git
+required if enabled  gh        (pull_request.enabled / ci.enabled /
+                                scheduler.enabled)
+required if chosen   copilot   (--runtime copilot)
+```
+
+Preflight validates prerequisites for *enabled* features only, so a default
+offline run never demands `gh` or `copilot`. `gh` covers every GitHub-touching
+feature, including the backlog daemon: `scheduler.enabled` polls GitHub Issues
+through `gh`.
+
+`factory doctor` runs the full report; `factory run` and `factory start` apply
+the same rule as a cheap `PATH`-only gate that fails with one explicit line and
+exit code 2 before any work starts.
+
+## Local service
+
+Continuous operation is a per-user `launchd` LaunchAgent, installed by an
+explicit CLI command and by nothing else (ADR-018).
+
+```text
+~/Library/LaunchAgents/<label>.plist
+    ↓
+factory start
+    ↓
+--runtime fake by default
+```
+
+No root `LaunchDaemon`, no automatic installation, no installation as a side
+effect of extracting an archive or running a command. The installer captures an
+explicit `PATH` snapshot because launchd agents inherit a minimal environment,
+refuses unless the given configuration enables the scheduler, and refuses while
+`factory doctor` reports an error.
+
+launchd's own stdout/stderr go to `/dev/null`: the factory writes its own
+bounded, rotating structured log under `<data_dir>/logs/factory.log`, and a
+launchd-captured stdio file is never rotated. `KeepAlive` is `Crashed`-only, so
+no exit code — including the CLI's configuration-error code 2 — can produce a
+restart loop.
+
+Uninstall unloads the agent and removes the plist, leaving runs and workspaces
+intact.
+
+## Local dashboard
+
+`AGENTS.md` bans web dashboards in V1. One narrow, explicitly requested
+exception exists (ADR-016) and it is a viewer, not a control plane.
+
+```text
+factory dashboard          explicit command, disabled by default
+    ↓
+127.0.0.1 only
+    ↓
+token required (generated per start)
+    ↓
+GET only, read-only
+```
+
+Implemented with the Python standard library: no web framework, no npm, no
+bundler, no build step. It renders the run list, run detail, workflow state,
+attempt history and the derived metrics above. It renders no command logs and
+no diffs at all, because those are where repository content and near-secret
+material would leak into a browser.
+
+Data minimization is applied twice, independently. The detail provider builds a
+typed `RunDetail` containing only summary fields, completion facts and attempt
+metadata — never `failure_reason`, agent reasoning or a raw artifact — and the
+request handler then allowlists the fields it renders, so a future provider
+mistake still cannot leak content. A run that does not exist, or whose id is
+not even shaped like one, is a 404.
+
+It cannot approve, retry, cancel or reconfigure anything. Authority stays with
+`WorkflowController`.
 
 ## Long-term architecture
 
 The current abstractions should permit later addition of:
-- GitHub Issues polling
 - Jira
-- parallel runs
-- PR lifecycle
-- GitHub Actions
-- repair loops
 - staging
 - deployment
 - Postgres
 - remote workers
 - Kubernetes
-- dashboard
+- Docker sandboxes
 
 Do not implement those merely to prove future compatibility.

@@ -111,6 +111,10 @@ scheduler:
   max_concurrent_tasks: 1
   stall_timeout_seconds: 900
   required_label: "agent-ready"
+  # Safety bound on how many runs the local backlog daemon may claim per
+  # UTC calendar day, independent of max_concurrent_tasks. Set to null for no
+  # daily cap.
+  max_runs_per_day: 20
 
 risk:
   R0:

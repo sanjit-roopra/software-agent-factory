@@ -1,0 +1,362 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  validate-tag:
+    name: validate-tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Run the release quality gate
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          uv lock --check
+          uv run ruff check .
+          uv run pytest -q
+
+      - name: Validate the tag matches the packaged version
+        run: |
+          set -euo pipefail
+          PYTHON_VERSION=$(python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYTHONPATH=src python scripts/release/generate_build_info.py \
+            --output packaging/validate/build-info.json \
+            --tag "$RELEASE_TAG" \
+            --validate-tag-match \
+            --commit-sha "$(git rev-parse HEAD)" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --target-architecture "validation"
+
+      - name: Resolve release version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(PYTHONPATH=src python - <<'PY'
+          from software_agent_factory.version import get_version
+          print(get_version())
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  python-distributions:
+    name: python-distributions
+    runs-on: ubuntu-latest
+    needs: validate-tag
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build wheel and sdist
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          BUILD_INFO=src/software_agent_factory/build-info.json
+          trap 'rm -f "$BUILD_INFO"' EXIT
+          PYTHON_VERSION=$(uv run python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYINSTALLER_VERSION=$(uv run python - <<'PY'
+          import PyInstaller
+          print(PyInstaller.__version__)
+          PY
+          )
+          PYTHONPATH=src uv run python scripts/release/generate_build_info.py \
+            --output "$BUILD_INFO" \
+            --tag "$RELEASE_TAG" \
+            --validate-tag-match \
+            --commit-sha "$(git rev-parse HEAD)" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --target-architecture "py3-none-any"
+          cp "$BUILD_INFO" packaging/build-info-py3-none-any.json
+          uv build --wheel --sdist
+          python -m venv packaging/venvs/release-wheel-smoke
+          packaging/venvs/release-wheel-smoke/bin/pip install dist/*.whl
+          packaging/venvs/release-wheel-smoke/bin/python scripts/release/smoke_factory.py \
+            --factory-executable packaging/venvs/release-wheel-smoke/bin/factory \
+            --workspace-root packaging/release-wheel-smoke \
+            --expect-version "${{ needs.validate-tag.outputs.version }}"
+          mkdir -p packaging/python-distributions
+          cp dist/*.whl dist/*.tar.gz packaging/build-info-py3-none-any.json \
+            packaging/python-distributions/
+
+      - name: Upload Python release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: packaging/python-distributions/
+          if-no-files-found: error
+
+  macos-arm64:
+    name: macos-arm64
+    runs-on: macos-15
+    needs: validate-tag
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build, archive, and smoke the native arm64 bundle
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          BUILD_INFO=src/software_agent_factory/build-info.json
+          trap 'rm -f "$BUILD_INFO"' EXIT
+          PYTHON_VERSION=$(uv run python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYINSTALLER_VERSION=$(uv run python - <<'PY'
+          import PyInstaller
+          print(PyInstaller.__version__)
+          PY
+          )
+          PYTHONPATH=src uv run python scripts/release/generate_build_info.py \
+            --output "$BUILD_INFO" \
+            --tag "$RELEASE_TAG" \
+            --validate-tag-match \
+            --commit-sha "$(git rev-parse HEAD)" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --target-architecture "arm64"
+          uv run pyinstaller --clean --noconfirm \
+            --distpath packaging/dist/arm64 \
+            --workpath packaging/build/arm64 \
+            packaging/pyinstaller.spec
+          ARCHIVE=packaging/artifacts/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-arm64.tar.gz
+          mkdir -p packaging/artifacts
+          uv run python scripts/release/prepare_frozen_bundle.py \
+            --bundle-dir packaging/dist/arm64/software-agent-factory \
+            --version "${{ needs.validate-tag.outputs.version }}" \
+            --architecture "arm64"
+          COPYFILE_DISABLE=1 tar -C packaging/dist/arm64 -czf "$ARCHIVE" software-agent-factory
+          uv run python scripts/release/smoke_factory.py \
+            --archive "$ARCHIVE" \
+            --workspace-root packaging/archive-smoke/arm64 \
+            --expect-architecture "arm64" \
+            --expect-version "${{ needs.validate-tag.outputs.version }}"
+          cp "$BUILD_INFO" packaging/artifacts/build-info-arm64.json
+
+      - name: Upload arm64 release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-arm64
+          path: |
+            packaging/artifacts/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-arm64.tar.gz
+            packaging/artifacts/build-info-arm64.json
+          if-no-files-found: error
+
+  macos-x86_64:
+    name: macos-x86_64
+    runs-on: macos-15-intel
+    needs: validate-tag
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build, archive, and smoke the native x86_64 bundle
+        run: |
+          set -euo pipefail
+          uv sync --locked --group dev
+          BUILD_INFO=src/software_agent_factory/build-info.json
+          trap 'rm -f "$BUILD_INFO"' EXIT
+          PYTHON_VERSION=$(uv run python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYINSTALLER_VERSION=$(uv run python - <<'PY'
+          import PyInstaller
+          print(PyInstaller.__version__)
+          PY
+          )
+          PYTHONPATH=src uv run python scripts/release/generate_build_info.py \
+            --output "$BUILD_INFO" \
+            --tag "$RELEASE_TAG" \
+            --validate-tag-match \
+            --commit-sha "$(git rev-parse HEAD)" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --target-architecture "x86_64"
+          uv run pyinstaller --clean --noconfirm \
+            --distpath packaging/dist/x86_64 \
+            --workpath packaging/build/x86_64 \
+            packaging/pyinstaller.spec
+          ARCHIVE=packaging/artifacts/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-x86_64.tar.gz
+          mkdir -p packaging/artifacts
+          uv run python scripts/release/prepare_frozen_bundle.py \
+            --bundle-dir packaging/dist/x86_64/software-agent-factory \
+            --version "${{ needs.validate-tag.outputs.version }}" \
+            --architecture "x86_64"
+          COPYFILE_DISABLE=1 tar -C packaging/dist/x86_64 -czf "$ARCHIVE" software-agent-factory
+          uv run python scripts/release/smoke_factory.py \
+            --archive "$ARCHIVE" \
+            --workspace-root packaging/archive-smoke/x86_64 \
+            --expect-architecture "x86_64" \
+            --expect-version "${{ needs.validate-tag.outputs.version }}"
+          cp "$BUILD_INFO" packaging/artifacts/build-info-x86_64.json
+
+      - name: Upload x86_64 release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-x86_64
+          path: |
+            packaging/artifacts/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-x86_64.tar.gz
+            packaging/artifacts/build-info-x86_64.json
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    needs:
+      - validate-tag
+      - python-distributions
+      - macos-arm64
+      - macos-x86_64
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: packaging/downloads
+
+      - name: Assemble release payload
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/release-assets
+          find packaging/downloads -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} packaging/release-assets/ \;
+          PYTHONPATH=src python scripts/release/combine_build_info.py \
+            --output packaging/release-assets/build-info.json \
+            packaging/downloads/python-distributions/build-info-py3-none-any.json \
+            packaging/downloads/macos-arm64/build-info-arm64.json \
+            packaging/downloads/macos-x86_64/build-info-x86_64.json
+          (
+            cd packaging/release-assets
+            shasum -a 256 \
+              software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-arm64.tar.gz \
+              software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-x86_64.tar.gz \
+              software_agent_factory-${{ needs.validate-tag.outputs.version }}-py3-none-any.whl \
+              software_agent_factory-${{ needs.validate-tag.outputs.version }}.tar.gz \
+              build-info.json \
+              > SHA256SUMS
+            shasum -a 256 -c SHA256SUMS
+          )
+          python scripts/release/render_release_notes.py \
+            --tag "$RELEASE_TAG" \
+            --version "${{ needs.validate-tag.outputs.version }}" \
+            --output packaging/release-notes.txt
+
+      - name: Fail if the release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to replace immutable artifacts." >&2
+            exit 1
+          fi
+
+      - name: Publish immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            packaging/release-assets/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-arm64.tar.gz \
+            packaging/release-assets/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-x86_64.tar.gz \
+            packaging/release-assets/software_agent_factory-${{ needs.validate-tag.outputs.version }}-py3-none-any.whl \
+            packaging/release-assets/software_agent_factory-${{ needs.validate-tag.outputs.version }}.tar.gz \
+            packaging/release-assets/SHA256SUMS \
+            packaging/release-assets/build-info.json \
+            --title "$RELEASE_TAG" \
+            --notes-file packaging/release-notes.txt

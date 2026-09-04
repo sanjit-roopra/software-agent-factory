@@ -169,22 +169,70 @@ Python 3.13+
 uv
 ```
 
-Install dependencies (including dev tools):
+### External prerequisites
 
-```bash
-uv sync --group dev
+The factory bundles no toolchain. On `PATH` it needs:
+
+```text
+required always      git
+required if enabled  gh        (pull_request.enabled / ci.enabled / scheduler.enabled)
+required if chosen   copilot   (--runtime copilot)
 ```
 
-Run the test suite:
+`factory run` and `factory start` refuse to start with an explicit message and
+exit code `2` when a tool they actually need is missing — never a traceback.
+`factory doctor` explains every requirement for your configuration.
+
+### Install from source
 
 ```bash
-uv run pytest
+git clone https://github.com/<owner>/software-agent-factory.git
+cd software-agent-factory
+uv sync --group dev          # dependencies, including dev tools
+uv run pytest                # the full offline test suite
+uv run ruff check .          # the linter
+uv run factory --version
 ```
 
-Run the linter:
+Every command below can be run either as `uv run factory ...` from a source
+checkout or as `factory ...` from an installed wheel or an extracted macOS
+archive.
+
+### Install a released macOS archive
+
+Releases are built by tag and attached to a GitHub Release: one native
+`arm64` archive, one native `x86_64` archive (no `universal2`), a wheel, an
+sdist, `SHA256SUMS` and `build-info.json`.
 
 ```bash
-uv run ruff check .
+# 1. download the archive for your architecture plus SHA256SUMS, then verify
+shasum -a 256 -c SHA256SUMS --ignore-missing
+
+# 2. extract and move it somewhere permanent (not Downloads, not /tmp)
+tar -xzf software-agent-factory-<version>-macos-arm64.tar.gz
+mkdir -p ~/.local/opt
+mv software-agent-factory ~/.local/opt/software-agent-factory
+
+# 3. clear the Gatekeeper quarantine flag (see below), then run it
+xattr -dr com.apple.quarantine ~/.local/opt/software-agent-factory
+~/.local/opt/software-agent-factory/factory --version
+~/.local/opt/software-agent-factory/factory doctor
+```
+
+Release artifacts are **unsigned or ad-hoc signed**. Apple Developer ID
+signing and notarization are deferred, so macOS Gatekeeper quarantines a
+downloaded archive and refuses to run it until the quarantine attribute is
+removed with the `xattr` command above. Every archive ships an `INSTALL.txt`
+repeating these steps.
+
+Extracting an archive installs nothing, starts nothing and changes no system
+state.
+
+Alternatively, if you already have Python 3.13:
+
+```bash
+pip install software_agent_factory-<version>-py3-none-any.whl
+factory --version
 ```
 
 ### Demo
@@ -245,6 +293,94 @@ runs before dispatching, and runs up to `scheduler.max_concurrent_tasks` (1 or
 contacts GitHub — unless `scheduler.enabled` is true in configuration. Use
 `--once` for a single bounded tick.
 
+Two configured bounds apply: `scheduler.max_concurrent_tasks` limits how much
+runs at once, and `scheduler.max_runs_per_day` (default 20, `null` to disable)
+limits how much may be *claimed* per UTC calendar day. Both are reported at
+startup, and a tick stopped by the daily ceiling says so instead of looking
+like an empty backlog.
+
+### Health check
+
+```bash
+uv run factory doctor
+uv run factory doctor --json --config ~/my-factory.yaml
+```
+
+`doctor` reports the platform, whether this is a frozen or source build,
+`launchctl`, `git`, configuration validity, the executables behind your
+configured repository commands, and the writability of the data directory.
+`gh` is required only when `pull_request.enabled`, `ci.enabled` or
+`scheduler.enabled` is set; `copilot` only with `--runtime copilot`. It never
+makes a paid model call — the only `copilot` interaction is a bounded
+`copilot --version` probe. It exits nonzero if any check errored; warnings
+alone do not fail it.
+
+### Monitoring
+
+```bash
+uv run factory status
+uv run factory status --json --limit 50 --offset 50
+```
+
+`status` is strictly read-only: it derives run counts, attempt tallies,
+first-pass success, durations and operational health (stale runs, stale
+workspace locks, orphaned workspaces) from persisted artifacts, and creates or
+modifies nothing — not even the data directory. Staleness defaults to
+`scheduler.stall_timeout_seconds`; override it with `--stale-after-seconds`.
+`--max-scanned-runs` bounds the work one call may do, and a truncated or
+partially unreadable scan is reported as `DEGRADED` rather than presented as a
+complete picture.
+
+Structured JSON logs are written by `run`, `start` and `dashboard` to
+`<data_dir>/logs/factory.log`, rotated and size-bounded, with credentials
+redacted. Nothing is exported anywhere.
+
+### Read-only dashboard
+
+```bash
+uv run factory dashboard                 # http://127.0.0.1:8765/?token=...
+uv run factory dashboard --port 0 --open-browser
+```
+
+`dashboard` blocks in the foreground and is the only thing that ever starts a
+server: no other command opens a socket. It binds `127.0.0.1` and nothing
+else, answers `GET` only, and requires a token generated for that process,
+printed once as part of the URL and never written to a log. Pages show the run
+list, run detail, workflow state, attempt history and the derived metrics —
+never command logs, diffs, prompts or raw artifacts. Ctrl-C stops it.
+
+It is built from the Python standard library: no framework, no npm, no
+bundler, no build step.
+
+### Background service (macOS, opt-in)
+
+```bash
+uv run factory service install \
+  --repo ~/projects/example \
+  --github-repo acme/example \
+  --config ~/my-factory.yaml
+uv run factory service status --json
+uv run factory service uninstall
+```
+
+`service install` writes exactly one per-user LaunchAgent under
+`~/Library/LaunchAgents` and nothing under `/Library`. It is macOS-only,
+refuses unless the given configuration sets `scheduler.enabled`, refuses while
+`factory doctor` reports any error, captures a `PATH` snapshot (launchd agents
+get a minimal environment) and defaults to `--runtime fake`, so an
+installed-but-forgotten agent cannot spend money. Use `--runtime copilot` to
+opt in deliberately, `--executable` to point at a specific build, and
+`--allow-source-dev` to install from a source checkout.
+
+The fake runtime is a real dry run, not a preview: it persists completed runs,
+and the scheduler will not automatically dispatch those same backlog items
+again. Select `--runtime copilot` before polling real `agent-ready` issues, or
+use a separate data directory for fake-runtime service testing.
+
+A service is *never* installed as a side effect of extracting an archive,
+running the factory or upgrading it. `service uninstall` unloads the agent and
+removes the plist, leaving every run and workspace on disk.
+
 ## What is implemented
 
 Phases 0-14 of `PLAN.md` are implemented and integrated:
@@ -279,11 +415,37 @@ Phases 0-14 of `PLAN.md` are implemented and integrated:
 - **Local backlog daemon** (opt-in) — GitHub Issues polling, reconciliation,
   reservation before dispatch, duplicate protection and concurrency up to two.
 
-### Not implemented (Phase 15, optional)
+### Phase 15: delivery and operations (selected sub-phases)
 
-Jira, dashboards, Postgres, Temporal, remote workers, Docker/Kubernetes
-sandboxes, staging, deployment and production monitoring are explicitly *not*
-part of this build and are not required by anything in the codebase.
+The requested Phase 15 sub-phases are implemented; the rest stay deferred:
+
+- **15.0 Factory CI** — this repository's own lint and tests in GitHub Actions,
+  plus native `macos-15` (arm64) and `macos-15-intel` (x86_64) packaging jobs,
+  with no secrets and no paid model calls.
+- **15.1 Tag-driven release** — a `v*` tag publishes an immutable GitHub
+  Release: separate arm64 and x86_64 PyInstaller archives, a wheel, an sdist,
+  `SHA256SUMS` and `build-info.json`. Continuous *delivery*, not deployment:
+  nothing installs, updates or promotes itself, and re-running a tag refuses to
+  replace published artifacts.
+- **15.2 macOS packaging and a launchd service** — runnable archives that still
+  require an external `git` (and `gh`/`copilot` only for enabled features), plus
+  the opt-in, manually installed per-user LaunchAgent described above.
+- **15.5 Local monitoring and health** — `factory doctor`, `factory status` and
+  bounded structured logs under the data directory. No cloud observability, and
+  no invented cost figures: token usage and cost are reported only if a runtime
+  actually returns them, which none does today.
+- **15.11 Read-only local dashboard** — the loopback-only, token-protected,
+  `GET`-only viewer described above.
+
+Release artifacts are unsigned or ad-hoc signed: Apple Developer ID signing and
+notarization are deferred, so macOS Gatekeeper quarantines a downloaded archive
+until it is cleared manually.
+
+### Deferred (rest of Phase 15)
+
+Staging, deployment/promotion, Jira, Postgres, Temporal, remote workers,
+Docker/Kubernetes sandboxes and any hosted or multi-user service remain
+explicitly *not* part of this build, and nothing in the codebase requires them.
 
 ### Safety defaults
 
@@ -299,8 +461,10 @@ scheduler:
 ```
 
 With those defaults, and the default `--runtime fake`, the factory performs no
-network access and makes no paid model call. The test suite runs entirely
-offline: it never calls a model and never reaches GitHub.
+network access and makes no paid model call. The dashboard is off unless
+`factory dashboard` is running, and no launchd service exists unless someone
+ran `factory service install`. The test suite runs entirely offline: it never
+calls a model and never reaches GitHub.
 
 ## Documentation
 
@@ -313,5 +477,7 @@ Read:
 
 `PLAN.md` defines the implementation order and records which phases are done.
 
-Phases 0-14 are implemented. Phase 15 is optional and deliberately not built;
-do not add any of it without a documented, demonstrated need.
+Phases 0-14 are implemented. Phase 15 is split into sub-phases with individual
+statuses: 15.0, 15.1, 15.2, 15.5 and 15.11 are implemented; everything else,
+including staging and deployment, stays deferred and must not be added without
+a documented, demonstrated need.

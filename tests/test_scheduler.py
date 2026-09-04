@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
+import pytest
+
 from software_agent_factory.models import AgentRole, AttemptRecord, FactoryRun, WorkflowState
 from software_agent_factory.scheduler import (
     DispatchOutcome,
@@ -859,3 +861,238 @@ def test_repository_lock_is_reused_per_path_and_distinct_across_paths() -> None:
     assert lock_a1.acquire(blocking=False) is True
     assert lock_a1.acquire(blocking=False) is False
     lock_a1.release()
+
+
+# ---------------------------------------------------------------------------
+# Bounded daily dispatch-rate control (PLAN.md Phase 15 core safety
+# foundation): max_runs_per_day, independent of max_concurrent_tasks.
+# ---------------------------------------------------------------------------
+
+
+def _seed_persisted_run(
+    store: FileRunStore, *, run_id: str, work_item_id: str, created_at: datetime
+) -> None:
+    store.save_run(
+        FactoryRun(
+            id=run_id,
+            work_item_id=work_item_id,
+            state=WorkflowState.PR_READY,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+    )
+
+
+def test_max_runs_per_day_rejects_non_positive_values() -> None:
+    provider = FakeProvider([])
+
+    with pytest.raises(ValueError, match="max_runs_per_day must be > 0"):
+        Scheduler(provider, lambda i: FakeHandle(), max_runs_per_day=0)
+
+    with pytest.raises(ValueError, match="max_runs_per_day must be > 0"):
+        Scheduler(provider, lambda i: FakeHandle(), max_runs_per_day=-1)
+
+
+def test_max_runs_per_day_is_a_noop_without_a_store() -> None:
+    """Matches ``_persisted_active_work_item_ids``: a store-optional feature
+    has nothing to count against without one, so it never blocks dispatch."""
+    item = make_item("issue-1")
+    provider = FakeProvider([item])
+    scheduler = Scheduler(
+        provider, lambda i: FakeHandle(), max_concurrent_tasks=1, max_runs_per_day=1
+    )
+
+    report = scheduler.tick()
+
+    assert report.dispatched == ("issue-1",)
+    assert report.rate_limited is False
+
+
+def test_tick_stops_claiming_new_work_once_the_daily_quota_is_reached(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    clock = FakeClock(_dt(0))
+    _seed_persisted_run(
+        store, run_id="run-today-1", work_item_id="WI-existing-1", created_at=_dt(0)
+    )
+    _seed_persisted_run(
+        store, run_id="run-today-2", work_item_id="WI-existing-2", created_at=_dt(60)
+    )
+
+    item = make_item("issue-1")
+    provider = FakeProvider([item])
+    scheduler = Scheduler(
+        provider,
+        lambda i: FakeHandle(),
+        max_concurrent_tasks=1,
+        clock=clock,
+        store=store,
+        max_runs_per_day=2,
+    )
+
+    report = scheduler.tick()
+
+    assert report.dispatched == ()
+    assert report.rate_limited is True
+    assert report.at_capacity is False
+    assert report.candidates_fetched == 0
+    assert report.eligible_count == 0
+
+
+def test_tick_dispatches_only_up_to_the_remaining_daily_quota(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    clock = FakeClock(_dt(0))
+    _seed_persisted_run(
+        store, run_id="run-today-1", work_item_id="WI-existing-1", created_at=_dt(0)
+    )
+
+    item_a = make_item("issue-a", created_at=_dt(0))
+    item_b = make_item("issue-b", created_at=_dt(1))
+    provider = FakeProvider([item_a, item_b])
+    dispatched: list[str] = []
+
+    def dispatch(item: TrackerItem) -> FakeHandle:
+        dispatched.append(item.opaque_id)
+        return FakeHandle(done=False)
+
+    scheduler = Scheduler(
+        provider,
+        dispatch,
+        max_concurrent_tasks=2,
+        clock=clock,
+        store=store,
+        max_runs_per_day=2,
+    )
+
+    report = scheduler.tick()
+
+    # Quota allows exactly one more run today (2 - 1 already persisted),
+    # even though max_concurrent_tasks(2) and both candidates are eligible.
+    assert dispatched == ["issue-a"]
+    assert report.dispatched == ("issue-a",)
+    assert report.rate_limited is True
+
+
+def test_daily_quota_resets_on_a_new_utc_day(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    clock = FakeClock(_dt(0))
+    _seed_persisted_run(
+        store, run_id="run-today-1", work_item_id="WI-existing-1", created_at=_dt(0)
+    )
+
+    item = make_item("issue-1")
+    provider = FakeProvider([item])
+    scheduler = Scheduler(
+        provider,
+        lambda i: FakeHandle(),
+        max_concurrent_tasks=1,
+        clock=clock,
+        store=store,
+        max_runs_per_day=1,
+    )
+
+    exhausted = scheduler.tick()
+    assert exhausted.rate_limited is True
+    assert exhausted.dispatched == ()
+
+    # Advance the clock past midnight UTC into the next rolling day: the
+    # quota is computed from *today's* persisted runs only, so yesterday's
+    # persisted run no longer counts against it.
+    clock.advance(24 * 60 * 60)
+    reset = scheduler.tick()
+
+    assert reset.dispatched == ("issue-1",)
+    assert reset.rate_limited is False
+
+
+def test_rate_limiting_never_mutates_existing_in_flight_work(tmp_path: Path) -> None:
+    """Exhausting the daily quota must stop *new* claims only: reconciliation
+    of already-active runs (completion/stall detection) still happens."""
+    store = FileRunStore(tmp_path / "data")
+    clock = FakeClock(_dt(0))
+
+    active_item = make_item("already-active")
+    new_item = make_item("brand-new")
+    provider = FakeProvider([active_item])
+    handle = FakeHandle(done=False)
+
+    def dispatch(item: TrackerItem) -> FakeHandle:
+        # Mirrors a real dispatch implementation persisting a FactoryRun as
+        # part of starting work, which is what the quota counts against.
+        store.save_run(
+            FactoryRun(
+                id=f"run-{item.opaque_id}",
+                work_item_id=item.opaque_id,
+                state=WorkflowState.IMPLEMENTING,
+                created_at=clock(),
+                updated_at=clock(),
+            )
+        )
+        return handle
+
+    scheduler = Scheduler(
+        provider,
+        dispatch,
+        max_concurrent_tasks=2,
+        clock=clock,
+        store=store,
+        max_runs_per_day=1,
+    )
+
+    first = scheduler.tick()
+    assert first.dispatched == ("already-active",)
+    assert scheduler.active_count == 1
+
+    # Quota (1) is now fully consumed by the persisted run above. A
+    # brand-new candidate must not be claimed, but the already-active run's
+    # own completion must still be reconciled normally.
+    provider.candidates = [new_item]
+    handle.done = True
+    second = scheduler.tick()
+
+    assert second.completed == (("already-active", DispatchOutcome.SUCCEEDED),)
+    assert second.rate_limited is True
+    assert second.dispatched == ()
+    assert second.dispatched == ()
+
+
+def test_daily_quota_uses_the_clocks_utc_calendar_day_not_its_local_offset(
+    tmp_path: Path,
+) -> None:
+    """Regression test: an injected clock is not guaranteed to return a
+    UTC-zoned datetime. If ``_remaining_daily_quota`` used the clock's own
+    (non-UTC) wall-clock date instead of converting to UTC first, a clock
+    running in, say, +09:00 could compute a different calendar day than the
+    UTC day ``FactoryRun.created_at`` (always UTC-normalized) is compared
+    against, silently under- or over-counting today's persisted runs."""
+    store = FileRunStore(tmp_path / "data")
+    utc_instant = datetime(2026, 1, 1, 20, 0, tzinfo=timezone.utc)
+    # The exact same instant, expressed in a +09:00 offset: its *local* date
+    # (2026-01-02) differs from its *UTC* date (2026-01-01).
+    plus_nine = timezone(timedelta(hours=9))
+    same_instant_plus_nine = utc_instant.astimezone(plus_nine)
+    assert same_instant_plus_nine.date() != utc_instant.date()
+
+    _seed_persisted_run(
+        store, run_id="run-today-1", work_item_id="WI-existing-1", created_at=utc_instant
+    )
+
+    item = make_item("issue-1")
+    provider = FakeProvider([item])
+    scheduler = Scheduler(
+        provider,
+        lambda i: FakeHandle(),
+        max_concurrent_tasks=1,
+        clock=lambda: same_instant_plus_nine,
+        store=store,
+        max_runs_per_day=1,
+    )
+
+    report = scheduler.tick()
+
+    # If the quota were computed from the clock's raw (+09:00) local date
+    # instead of its UTC date, the seeded run (UTC 2026-01-01) would not
+    # count as "today" and this tick would incorrectly dispatch.
+    assert report.dispatched == ()
+    assert report.rate_limited is True
