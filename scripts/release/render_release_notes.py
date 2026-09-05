@@ -1,4 +1,4 @@
-"""Render immutable GitHub Release notes for macOS artifacts."""
+"""Render GitHub Release notes for macOS artifacts."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def main() -> int:
     args = parse_args()
     notes = f"""software-agent-factory {args.tag}
 
-Immutable release artifacts:
+Release artifacts:
 - software-agent-factory-{args.version}-macos-arm64.tar.gz
 - software-agent-factory-{args.version}-macos-x86_64.tar.gz
 - software_agent_factory-{args.version}-py3-none-any.whl
@@ -40,6 +40,10 @@ External prerequisites:
 
 This release does not auto-install, auto-update, notarize, deploy or publish to a
 package index.
+
+Verify provenance after this repository is public:
+
+  gh attestation verify <artifact> --repo sanjit-roopra/software-agent-factory
 """
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(notes, encoding="utf-8")

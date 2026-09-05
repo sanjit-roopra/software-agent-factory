@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a focused improvement
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful change.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What can users do today?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Workflow
+        - Agent runtime
+        - GitHub integration
+        - CLI
+        - Packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This keeps workflow authority in deterministic factory code.
+          required: true
+        - label: This does not require automatic merge or deployment.
+          required: true

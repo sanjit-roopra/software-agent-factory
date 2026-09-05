@@ -49,7 +49,7 @@ Still out of scope (deferred Phase 15 items):
 
 Implemented (requested Phase 15 sub-phases, see `PLAN.md`):
 - 15.0 factory CI for this repository
-- 15.1 tag-driven release of immutable macOS artifacts
+- 15.1 tag-driven release of native macOS artifacts
 - 15.2 macOS runtime packaging and an opt-in user launchd service
 - 15.5 local monitoring and health (`factory doctor`, `factory status`)
 - 15.11 a read-only, loopback-only local dashboard (`factory dashboard`)
@@ -957,8 +957,9 @@ through the controller, exactly as in ADR-011.
 
 ## Delivery and packaging
 
-Delivery ends at an immutable artifact. A `v*` tag builds a GitHub Release; it
-does not install, restart, promote or self-update anything (ADR-015).
+Delivery ends at a published release artifact. A `v*` tag builds a GitHub
+Release; it does not install, restart, promote or self-update anything
+(ADR-015).
 
 ```text
 version tag
@@ -969,10 +970,19 @@ build + validate distributions and native macOS artifacts
     ↓
 attest public-repository artifacts
     ↓
-GitHub Release (immutable by policy and overwrite refusal)
+GitHub Release (workflow refuses to replace an existing one)
     ↓
 human downloads and extracts
 ```
+
+Releases are treated as write-once by convention, not by platform guarantee. The
+release workflow fails if the tag's release already exists, so a re-run cannot
+replace published artifacts. It cannot stop an edit or delete through the GitHub
+UI or API. GitHub's own release immutability is a repository setting, it is off
+by default, and the current releases report `immutable=false`; enable it in the
+repository settings before relying on platform enforcement. `SHA256SUMS` and
+`build-info.json` are what let a consumer detect a swapped artifact in the
+meantime.
 
 A release contains:
 
