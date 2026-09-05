@@ -22,10 +22,6 @@ ACTION_LINE = (
 EXPECTED_ACTIONS = {
     "actions/attest": ("1e69f48acb82d1966a394da916b4c1698aa569d6", "v4.2.2"),
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
-    "actions/dependency-review-action": (
-        "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
-        "v5.0.0",
-    ),
     "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97", "v7.0.0"),
     "astral-sh/setup-uv": ("20cfd1bf945f4377ade1205e4dbc17946fc9a30d", "v10.0.1"),
     "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
@@ -131,15 +127,18 @@ def test_ci_workflow_limits_native_macos_to_main_and_manual_dispatch() -> None:
         assert "refs/tags/" not in condition
 
 
-def test_security_workflow_has_dependency_review_codeql_and_locked_audit() -> None:
+def test_security_workflow_has_pull_request_audit_codeql_and_locked_audit() -> None:
     text, workflow = _load_workflow("security.yml")
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["on"]["pull_request"] in ("", None)
     assert workflow["on"]["push"]["branches"] == ["main"]
     assert workflow["on"]["schedule"]
     assert "pull_request_target" not in text
-    assert "actions/dependency-review-action@" in text
-    assert "fail-on-severity: moderate" in text
+    assert "actions/dependency-review-action@" not in text
+    dependency_review = workflow["jobs"]["dependency-review"]
+    assert dependency_review["if"] == "github.event_name == 'pull_request'"
+    assert "uv sync --locked --no-default-groups --group security" in str(dependency_review)
+    assert "uv run --no-sync pip-audit --skip-editable" in str(dependency_review)
     assert {"python", "actions"} == set(
         workflow["jobs"]["codeql"]["strategy"]["matrix"]["language"]
     )
@@ -167,6 +166,10 @@ def test_dependabot_updates_uv_dependencies_and_actions() -> None:
     config = yaml.load((ROOT / ".github" / "dependabot.yml").read_text(), Loader=yaml.BaseLoader)
     ecosystems = {entry["package-ecosystem"] for entry in config["updates"]}
     assert ecosystems == {"uv", "github-actions"}
+    for entry in config["updates"]:
+        group = next(iter(entry["groups"].values()))
+        assert group["patterns"] == ["*"]
+        assert group["update-types"] == ["minor", "patch"]
 
 
 def test_release_workflow_has_immutable_publish_shape() -> None:

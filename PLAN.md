@@ -650,11 +650,12 @@ Scope:
 - strict mypy with the Pydantic plugin
 - offline pytest with branch coverage and a 90% floor
 - wheel/sdist metadata, contents, clean-install and CLI smoke checks
-- dependency review, CodeQL and scheduled locked-environment auditing
+- pull-request and scheduled locked-environment dependency auditing, plus CodeQL
 - CodeQL findings enforced from retained SARIF artifacts when GitHub Advanced
   Security is unavailable for the private repository
 - weekly Python 3.15 prerelease compatibility coverage
-- Dependabot updates for uv dependencies and SHA-pinned Actions
+- Dependabot updates for uv dependencies and SHA-pinned Actions, grouping only
+  minor and patch updates while keeping major upgrades isolated
 - native macOS runners for both target architectures: `macos-15` (arm64) and
   `macos-15-intel` (x86_64)
 - no secrets, no model calls, no network-dependent tests

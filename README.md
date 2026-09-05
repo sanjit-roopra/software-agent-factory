@@ -202,12 +202,14 @@ uv run factory --version
 
 These are the same deterministic gates used by CI. Pull requests run formatting,
 linting, strict type checking, Python 3.13/3.14 tests with a 90% branch-coverage
-floor, package validation, dependency review, and CodeQL. Scheduled workflows
+floor, package validation, locked dependency auditing, and CodeQL. Scheduled workflows
 audit the complete locked environment and test the next Python prerelease.
-Dependabot maintains both uv dependencies and pinned GitHub Actions. Because
-this private repository does not have GitHub Advanced Security, CodeQL findings
-are enforced directly from generated SARIF and the SARIF is retained as a
-workflow artifact instead of uploaded to GitHub code scanning.
+Dependabot maintains both uv dependencies and pinned GitHub Actions, grouping
+minor and patch updates while leaving major upgrades in separate pull requests.
+Because this private repository does not have GitHub Advanced Security,
+pull-request dependency review uses the same local locked-environment audit,
+and CodeQL findings are enforced directly from generated SARIF. SARIF is
+retained as a workflow artifact instead of uploaded to GitHub code scanning.
 
 GitHub secret scanning with push protection and immutable releases are
 repository settings rather than workflow files; enable them in the repository
