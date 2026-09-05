@@ -219,6 +219,17 @@ def test_release_workflow_has_immutable_publish_shape() -> None:
     assert "packaging/venvs/release-sdist-smoke" in text
 
 
+def test_release_python_distributions_do_not_require_pyinstaller() -> None:
+    _text, workflow = _load_workflow("release.yml")
+    distribution_job = workflow["jobs"]["python-distributions"]
+    build_step = next(
+        step for step in distribution_job["steps"] if step["name"] == "Build wheel and sdist"
+    )
+
+    assert "PyInstaller" not in build_step["run"]
+    assert "--pyinstaller-version" not in build_step["run"]
+
+
 def test_combine_build_info_requires_consistent_release_identity() -> None:
     module = _load_script_module("combine_build_info", "scripts/release/combine_build_info.py")
     entries = [

@@ -121,11 +121,6 @@ jobs:
           print(platform.python_version())
           PY
           )
-          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
-          import PyInstaller
-          print(PyInstaller.__version__)
-          PY
-          )
           PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "$RELEASE_TAG" \
@@ -133,7 +128,6 @@ jobs:
             --commit-sha "$(git rev-parse HEAD)" \
             --runner-image "${ImageOS:-unknown}" \
             --python-version "$PYTHON_VERSION" \
-            --pyinstaller-version "$PYINSTALLER_VERSION" \
             --target-architecture "py3-none-any"
           cp "$BUILD_INFO" packaging/build-info-py3-none-any.json
           uv build --no-sources
