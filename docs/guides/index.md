@@ -2,18 +2,16 @@
 
 Task-shaped pages. Read [Get started](../get-started/index.md) first.
 
-<dl class="saf-index" markdown>
+[Configure a repository](configure-repository.md)
+: Point the factory at your project's real install, verify and build commands.
+  Understand the deterministic gates and scope-drift checks.
 
-<dt>[Configure a repository](configure-repository.md)</dt>
-<dd>Point the factory at your project's real install, verify and build commands, and understand the deterministic gates and scope-drift checks.</dd>
+[GitHub backlog, PRs and CI](github.md)
+: Poll `agent-ready` issues, open draft pull requests, and watch then repair CI.
 
-<dt>[GitHub backlog, PRs and CI](github.md)</dt>
-<dd>The three opt-in integrations: polling `agent-ready` issues, opening draft pull requests, and watching then repairing CI.</dd>
+[Monitor and run continuously](operations.md)
+: Use `factory status`, structured logs, the read-only local dashboard, and the
+  opt-in macOS launchd service.
 
-<dt>[Monitor and run continuously](operations.md)</dt>
-<dd>`factory status`, structured logs, the read-only local dashboard and the opt-in macOS launchd service.</dd>
-
-<dt>[Troubleshooting](troubleshooting.md)</dt>
-<dd>Exit codes, refusals, escalations and the usual causes.</dd>
-
-</dl>
+[Troubleshooting](troubleshooting.md)
+: Exit codes, refusals, escalations, and the usual causes.

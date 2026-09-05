@@ -109,6 +109,7 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "uv run --no-sync twine check dist/*" in text
     assert "uv run --no-sync check-wheel-contents dist/*.whl" in text
     assert "uv run --no-sync mkdocs build --strict" in text
+    assert "python scripts/docs/check_rendered_links.py site" in text
     assert workflow["jobs"]["ci-gate"]["needs"] == ["quality", "tests", "package", "docs"]
     assert "scripts/release/prepare_frozen_bundle.py" in text
     assert "scripts/release/smoke_factory.py" in text
@@ -188,6 +189,8 @@ def test_docs_workflow_builds_strictly_and_deploys_only_from_main() -> None:
     assert "persist-credentials: false" in text
     assert "uv sync --locked --no-default-groups --group docs" in text
     assert "uv run --no-sync mkdocs build --strict" in text
+    assert "python scripts/docs/check_rendered_links.py site" in text
+    assert "scripts/docs/**" in workflow["on"]["push"]["paths"]
     assert "actions/configure-pages@" in text
     assert "actions/upload-pages-artifact@" in text
     assert workflow["jobs"]["build"]["permissions"] == {
@@ -235,6 +238,7 @@ def test_release_workflow_has_safe_publish_shape() -> None:
     assert "uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch" in text
     assert "uv run --no-sync pip-audit --skip-editable" in text
     assert "uv run --no-sync mkdocs build --strict" in text
+    assert "python scripts/docs/check_rendered_links.py site" in text
     assert "uv run --no-sync twine check dist/*" in text
     assert "uv run --no-sync check-wheel-contents dist/*.whl" in text
     assert "PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py" in text

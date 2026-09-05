@@ -1,17 +1,13 @@
 # Project
 
-<dl class="saf-index" markdown>
+[Roadmap and status](roadmap.md)
+: What is implemented, what is deferred, and what is deliberately out of scope.
 
-<dt>[Roadmap and status](roadmap.md)</dt>
-<dd>What is implemented, what is deferred, and what is deliberately never going to exist.</dd>
+[Development](development.md)
+: Set up a checkout, run local quality gates, understand CI, and contribute.
 
-<dt>[Development](development.md)</dt>
-<dd>Setting up a checkout, the local quality gates, what CI runs, and how to contribute.</dd>
-
-<dt>[Releases](releases.md)</dt>
-<dd>Versioning, the tag-driven release process, artifacts and verification.</dd>
-
-</dl>
+[Releases](releases.md)
+: Versioning, the tag-driven release process, artifacts, and verification.
 
 ## Links
 
