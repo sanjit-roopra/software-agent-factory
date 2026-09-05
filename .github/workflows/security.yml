@@ -36,9 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      actions: read
       contents: read
-      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -58,7 +56,48 @@ jobs:
           build-mode: none
 
       - name: Analyze
+        id: analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          upload: never
+
+      - name: Enforce CodeQL findings
+        env:
+          SARIF_DIR: ${{ steps.analyze.outputs.sarif-output }}
+        run: |
+          python3 - <<'PY'
+          import glob
+          import json
+          import os
+
+          sarif_paths = glob.glob(os.path.join(os.environ["SARIF_DIR"], "*.sarif"))
+          if not sarif_paths:
+              raise SystemExit("CodeQL produced no SARIF output")
+
+          findings = []
+          for sarif_path in sarif_paths:
+              with open(sarif_path, encoding="utf-8") as handle:
+                  payload = json.load(handle)
+              for run in payload.get("runs", []):
+                  for result in run.get("results", []):
+                      message = result.get("message", {}).get("text", "no message")
+                      findings.append((result.get("ruleId", "unknown-rule"), message))
+
+          if findings:
+              for rule_id, message in findings:
+                  print(f"::error title=CodeQL {rule_id}::{message}")
+              raise SystemExit(f"CodeQL found {len(findings)} issue(s)")
+          print("CodeQL found no issues")
+          PY
+
+      - name: Upload CodeQL SARIF
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-${{ matrix.language }}-sarif
+          path: ${{ steps.analyze.outputs.sarif-output }}
+          if-no-files-found: error
+          retention-days: 14
 
   dependency-audit:
     name: dependency-audit
