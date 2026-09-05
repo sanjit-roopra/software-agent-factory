@@ -27,13 +27,13 @@ dev = [
 ]
 distribution = [
   "check-wheel-contents>=0.6,<1.0",
-  "twine>=6.0,<7.0",
+  "twine>=6.0,<8.0",
 ]
 native = [
   "pyinstaller==6.22.2",
 ]
 quality = [
-  "mypy>=1.15,<2.0",
+  "mypy>=1.15,<3.0",
   "ruff>=0.6,<1.0",
   "types-pyyaml>=6.0.12,<7.0",
 ]
