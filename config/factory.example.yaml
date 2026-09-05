@@ -92,13 +92,22 @@ scope_drift:
   max_replans: 1
 
 polish:
-  # After deterministic verification first succeeds, one read-only Researcher
-  # call creates version-specific simplify and polish guidance. One bounded
-  # worker pass applies it, then the controller verifies everything again.
+  # After deterministic verification first succeeds, one bounded worker pass
+  # applies version-specific simplify and polish guidance, then the controller
+  # verifies everything again. Guidance is generated per repository and
+  # dependency fingerprint and stored under factory.data_dir, outside the
+  # target repository; later runs reuse it and make no research call. Storage
+  # is keyed by the local Git directory, so a moved or re-cloned repository
+  # starts at a new key. Optional human house rules live in a
+  # repository-skill-overlay.yaml beside it, which the factory never creates,
+  # rewrites or deletes. Use "factory skill path", "factory skill validate" and
+  # "factory skill refresh" to work with them.
   enabled: true
   # The skill researcher runs sandboxed: web_fetch only, no custom
   # instructions, no repository, shell or Git access, and it may reach only the
-  # URLs below. Both lists are granted as explicit per-URL permissions.
+  # URLs below. It sees the normalized repository profile and these lists —
+  # never changed filenames, source code, task prose or the diff. Both lists
+  # are granted as explicit per-URL permissions.
   # Official documentation is authoritative for version-specific guidance.
   # HTTPS origins only (no path, query, fragment or trailing slash), at most 25.
   official_documentation_origins:

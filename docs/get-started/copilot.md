@@ -73,20 +73,34 @@ technologies, test tools, package managers (`uv`, `pip`, `poetry`, `npm`,
 `pyproject.toml`, `requirements*.txt` and `package.json`, and two fingerprints
 — nothing more.
 
-When `polish.enabled` and the bounded polish attempt is eligible, the
-configured Researcher (`GPT-5.6 Sol` by default) generates one
-version-specific `RepositorySkill` for that run, using only the normalized
-profile and the changed file paths, with web access limited to
-`polish.official_documentation_origins` (authoritative for version claims) and
-the exact, commit-pinned `polish.practice_reference_urls` (generic heuristics
-only). It
-reaches only that attempt's Implementer, Tester and Reviewer — never before the
-initial green baseline. The skill is advisory prompt context. It does not grant
-tools, change model routing, add commands, alter workflow states or waive
-gates, and the target repository cannot provide plugins.
+Guidance for the bounded polish attempt comes from two files kept under the
+factory's data directory, in repository-scoped storage keyed by the repository
+and its `dependency_fingerprint`. Nothing is written into your repository, and
+the factory never loads guidance from it.
+
+- The **generated skill** describes the repository, not the task. The
+  configured Researcher (`GPT-5.6 Sol` by default) produces it from the
+  normalized profile and the configured source lists only — no changed
+  filenames, source code, README content, task prose or diff — with web access
+  limited to `polish.official_documentation_origins` (authoritative for version
+  claims) and the exact, commit-pinned `polish.practice_reference_urls`
+  (generic heuristics only). Later runs reuse it; a paid research call happens
+  only when the current dependency fingerprint has no generated skill yet.
+- The **overlay** is yours: a repository-level `repository-skill-overlay.yaml`
+  holding house rules as prose. The factory never creates, rewrites or deletes
+  it, and it survives dependency changes.
+
+Both reach only that attempt's Implementer, Tester and Reviewer — never before
+the initial green baseline — and both are advisory prompt context. They do not
+grant tools, change model routing, add commands, alter workflow states, spend
+retry budget or waive gates, and the target repository cannot provide plugins.
 
 If the research, its validation, or the profile check fails, the factory
 records a warning and skips polish. Your already-verified change still ships.
+
+`factory skill path`, `factory skill validate` and `factory skill refresh`
+manage this explicitly; see
+[Repository skills and overlays](../guides/repository-skills.md).
 
 ## What the agent is allowed to do
 
@@ -96,11 +110,12 @@ Each role gets a permission profile:
   `glob`, `grep`, `view`.
 - **Implementer:** `glob`, `grep`, `view`, `create`, `edit`, `bash`.
 
-The one exception is the Researcher's skill-generation call for an eligible
-polish attempt: it gets only `web_fetch`, restricted to
-`polish.official_documentation_origins` and `polish.practice_reference_urls`,
-with no `glob`/`grep`/`view`/edit access, no repository custom instructions,
-and the run directory rather than the worktree as its working directory.
+The one exception is the Researcher's skill-generation call, made only when the
+repository's current dependency fingerprint has no generated guidance: it gets
+only `web_fetch`, restricted to `polish.official_documentation_origins` and
+`polish.practice_reference_urls`, with no `glob`/`grep`/`view`/edit access, no
+repository custom instructions, and the run directory rather than the worktree
+as its working directory.
 
 The optional polish uses the same Implementer permission profile and worker
 routing. It introduces no separate role.

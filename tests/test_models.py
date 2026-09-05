@@ -25,12 +25,16 @@ from software_agent_factory.models import (
     RepositoryDependency,
     RepositoryProfile,
     RepositorySkill,
+    RepositorySkillOverlay,
+    RepositorySkillUse,
     RepositoryTechnology,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
     SkillGuidance,
+    SkillOverlayMode,
+    SkillSelectionSource,
     SkillSource,
     SkillTarget,
     Specification,
@@ -504,3 +508,78 @@ def test_required_skill_target_names_are_the_recognized_version_targets() -> Non
         "vitest",
     )
     assert GENERIC_SKILL_TARGET not in REQUIRED_SKILL_TARGET_NAMES
+
+
+def test_repository_skill_overlay_is_prose_only_and_strict() -> None:
+    overlay = RepositorySkillOverlay(simplify=_guidance("House simplify style."))
+
+    assert overlay.schema_version == 1
+    assert overlay.mode is SkillOverlayMode.EXTEND
+    assert overlay.polish is None
+    assert RepositorySkillOverlay.model_validate_json(overlay.model_dump_json()) == overlay
+
+    with pytest.raises(ValidationError, match="simplify"):
+        RepositorySkillOverlay(mode=SkillOverlayMode.REPLACE)
+
+    machine_owned = {
+        "targets": [],
+        "official_sources": [],
+        "practice_sources": [],
+        "uncertainties": [],
+        "dependency_fingerprint": "a" * 64,
+        "generator_version": 1,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "detector_version": 2,
+    }
+    for field, value in machine_owned.items():
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            RepositorySkillOverlay.model_validate(
+                {"mode": "extend", "simplify": overlay.simplify, field: value}
+            )
+
+    with pytest.raises(ValidationError, match="schema_version"):
+        RepositorySkillOverlay.model_validate({"schema_version": 2, "simplify": overlay.simplify})
+    with pytest.raises(ValidationError, match="mode"):
+        RepositorySkillOverlay.model_validate({"mode": "merge", "simplify": overlay.simplify})
+
+
+def _use(**overrides: object) -> RepositorySkillUse:
+    payload: dict[str, object] = {
+        "repository_key": "demo-0123456789abcdef",
+        "dependency_fingerprint": "a" * 64,
+        "source": SkillSelectionSource.GENERATED,
+        "generated_skill_hash": "b" * 64,
+        "effective_skill_hash": "b" * 64,
+    }
+    payload.update(overrides)
+    return RepositorySkillUse.model_validate(payload)
+
+
+def test_repository_skill_use_records_bounded_consistent_provenance() -> None:
+    use = _use()
+
+    assert use.overlay_applied is False
+    assert use.selected_at.tzinfo is not None
+    assert RepositorySkillUse.model_validate_json(use.model_dump_json()) == use
+
+    applied = _use(
+        source=SkillSelectionSource.REUSED,
+        overlay_hash="c" * 64,
+        overlay_mode=SkillOverlayMode.EXTEND,
+        overlay_applied=True,
+        effective_skill_hash="d" * 64,
+    )
+    assert applied.overlay_mode is SkillOverlayMode.EXTEND
+
+    with pytest.raises(ValidationError, match="must record its hash"):
+        _use(overlay_applied=True)
+    with pytest.raises(ValidationError, match="must record its mode"):
+        _use(overlay_hash="c" * 64)
+    with pytest.raises(ValidationError, match="must equal the generated skill"):
+        _use(effective_skill_hash="e" * 64)
+    with pytest.raises(ValidationError, match="repository_key"):
+        _use(repository_key="../escape")
+    with pytest.raises(ValidationError, match="generated_skill_hash"):
+        _use(generated_skill_hash="not-a-hash", effective_skill_hash="not-a-hash")
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        _use(guidance="prose")

@@ -38,11 +38,15 @@ from software_agent_factory.models import (
     RepositoryDependency,
     RepositoryProfile,
     RepositorySkill,
+    RepositorySkillOverlay,
+    RepositorySkillUse,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
     SkillGuidance,
+    SkillOverlayMode,
+    SkillSelectionSource,
     SkillSource,
     SkillTarget,
     TriageResult,
@@ -51,6 +55,7 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
+from software_agent_factory.repository_skills import RepositorySkillManager
 from software_agent_factory.store import ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
@@ -385,7 +390,10 @@ def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir
     polish_request = runtime.requests[5]
     assert isinstance(polish_request.repair_context, RepairContext)
     assert polish_request.repair_context.trigger is AttemptTrigger.POLISH
-    assert "researcher-generated repository skill" in polish_request.repair_context.summary
+    assert "reusable repository guidance" in polish_request.repair_context.summary
+    assert "Simplify first, then apply version-specific polish." in (
+        polish_request.repair_context.summary
+    )
     assert polish_request.repository_skill is not None
     assert store.load_artifact(run.id, RepositorySkill) == polish_request.repository_skill
     assert store.list_attempts(run.id) == [1, 2]
@@ -439,51 +447,7 @@ def test_post_green_research_exception_is_a_safe_skip(source_repo: Path, data_di
     )
 
 
-@pytest.mark.parametrize(
-    "boundary_error",
-    [OSError("read-only file system"), RuntimeError("store unavailable"), ValueError("bad path")],
-    ids=["oserror", "runtimeerror", "valueerror"],
-)
-def test_post_green_skill_persistence_failure_is_a_safe_skip(
-    source_repo: Path, data_dir: Path, boundary_error: Exception
-) -> None:
-    """A boundary failure while persisting advisory guidance never fails a green run."""
-
-    class SkillPersistenceFailingStore(FileRunStore):
-        def save_artifact(
-            self,
-            run_id: str,
-            artifact: ArtifactModel,
-            filename: str | None = None,
-            *,
-            attempt: int | None = None,
-        ) -> Path:
-            if isinstance(artifact, RepositorySkill):
-                raise boundary_error
-            return super().save_artifact(run_id, artifact, filename, attempt=attempt)
-
-    runtime = RecordingRuntime(FakeAgentRuntime())
-    controller = WorkflowController(
-        _config(data_dir, polish_enabled=True),
-        SkillPersistenceFailingStore(data_dir),
-        runtime,
-    )
-
-    run = controller.run(_work_item("WI-skill-persistence"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    reader = FileRunStore(data_dir)
-    profile = reader.load_artifact(run.id, RepositoryProfile)
-    assert any(
-        f"generated repository guidance could not be persisted: {boundary_error}" in warning
-        for warning in profile.warnings
-    )
-    with pytest.raises(FileNotFoundError):
-        reader.load_artifact(run.id, RepositorySkill)
-    assert all(request.repository_skill is None for request in runtime.requests)
-
-
-def test_refreshed_profile_persistence_failure_skips_skill_research(
+def test_refreshed_profile_persistence_failure_skips_skill_selection(
     source_repo: Path, data_dir: Path
 ) -> None:
     class RefreshedProfileFailingStore(FileRunStore):
@@ -684,7 +648,7 @@ def test_official_source_may_ground_several_detected_dependency_names(
 
     assert run.state is WorkflowState.PR_READY
     profile = store.load_artifact(run.id, RepositoryProfile)
-    assert not any("polish research skipped" in warning for warning in profile.warnings)
+    assert not any("polish skipped" in warning for warning in profile.warnings)
     accepted = store.load_artifact(run.id, RepositorySkill)
     assert accepted.official_sources[0].applies_to == ("react", "react-dom")
     polish_request = next(
@@ -1316,6 +1280,533 @@ def test_failed_post_polish_verification_uses_normal_bounded_repair(
         AttemptTrigger.POLISH,
         AttemptTrigger.VERIFICATION,
     ]
+
+
+# -- repository-scoped reuse and human overlays -------------------------------
+
+OVERLAY_YAML = """mode: extend
+
+polish:
+  summary: House rules for polish in this service.
+  guidance:
+    - Name tests after the behaviour they pin, not the function they call.
+"""
+
+EDITED_OVERLAY_YAML = """mode: extend
+
+polish:
+  summary: Revised house rules for polish in this service.
+  guidance:
+    - Keep assertions in one place per behaviour.
+"""
+
+OVERLAY_POLISH_GUIDANCE = "Name tests after the behaviour they pin, not the function they call."
+EDITED_OVERLAY_POLISH_GUIDANCE = "Keep assertions in one place per behaviour."
+
+SNAPSHOT_FILENAMES = (
+    "repository-skill.json",
+    "repository-skill-use.json",
+    "repository-skill-overlay.json",
+)
+
+
+class StateRecordingStore(FileRunStore):
+    """Records every persisted workflow state, so a test can assert that a
+    state (``RESEARCHING``) was never entered at all."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.states: list[WorkflowState] = []
+
+    def save_run(self, run: FactoryRun) -> Path:
+        self.states.append(run.state)
+        return super().save_run(run)
+
+
+def _skill_storage(data_dir: Path, source_repo: Path) -> RepositorySkillManager:
+    return RepositorySkillManager.for_repository(data_dir, source_repo)
+
+
+def _refresh_hint(source_repo: Path) -> str:
+    """The recovery command a warning about unusable stored guidance must name."""
+    return f"factory skill refresh --repo {source_repo}"
+
+
+def _write_overlay(manager: RepositorySkillManager, text: str) -> Path:
+    """Write the human-owned overlay the way a human would: by hand."""
+    manager.repository_dir.mkdir(parents=True, exist_ok=True)
+    manager.overlay_path.write_text(text, encoding="utf-8")
+    return manager.overlay_path
+
+
+def _polish_run(
+    source_repo: Path,
+    data_dir: Path,
+    work_item_id: str,
+    *,
+    profile: RepositoryProfile,
+    store: FileRunStore | None = None,
+) -> tuple[FactoryRun, FileRunStore, RecordingRuntime]:
+    runtime = RecordingRuntime(FakeAgentRuntime())
+    resolved_store = store if store is not None else FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        resolved_store,
+        runtime,
+        repository_profiler=lambda path: profile,
+    )
+    return controller.run(_work_item(work_item_id), source_repo), resolved_store, runtime
+
+
+def _guidance_consumers(runtime: RecordingRuntime) -> list[AgentRequest]:
+    """The polish implementer, tester and reviewer: every agent that may
+    receive repository guidance."""
+    polish_implementer = next(
+        request
+        for request in runtime.requests
+        if request.role is AgentRole.IMPLEMENTER
+        and isinstance(request.repair_context, RepairContext)
+        and request.repair_context.trigger is AttemptTrigger.POLISH
+    )
+    tester = next(request for request in runtime.requests if request.role is AgentRole.TESTER)
+    reviewer = next(request for request in runtime.requests if request.role is AgentRole.REVIEWER)
+    return [polish_implementer, tester, reviewer]
+
+
+def _generation_requests(runtime: RecordingRuntime) -> list[AgentRequest]:
+    return [
+        request
+        for request in runtime.requests
+        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
+    ]
+
+
+def test_generation_request_carries_no_work_item_or_change_evidence(
+    source_repo: Path, data_dir: Path
+) -> None:
+    """Generated guidance is repository-level, so it is produced without any
+    knowledge of the work item that happened to trigger generation."""
+    run, store, runtime = _polish_run(
+        source_repo, data_dir, "WI-generation-inputs", profile=_react_profile()
+    )
+
+    assert run.state is WorkflowState.PR_READY
+    request = _generation_requests(runtime)[0]
+    assert request.changed_files == []
+    assert request.diff is None
+    assert request.change_set is None
+    assert request.specification is None
+    assert request.execution_plan is None
+    assert request.research_report is None
+    assert request.verification_report is None
+    assert request.test_report is None
+    assert request.repair_context is None
+    assert request.repository_profile is not None
+    assert request.workspace_path == str(store.run_dir(run.id))
+    assert request.workspace_path != run.workspace_path
+
+
+def test_a_second_run_reuses_stored_guidance_without_researching(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profile = _react_profile()
+
+    first_run, store, first_runtime = _polish_run(
+        source_repo, data_dir, "WI-reuse-first", profile=profile
+    )
+    second_store = StateRecordingStore(data_dir)
+    second_run, _, second_runtime = _polish_run(
+        source_repo, data_dir, "WI-reuse-second", profile=profile, store=second_store
+    )
+
+    assert first_run.state is WorkflowState.PR_READY
+    assert second_run.state is WorkflowState.PR_READY
+    assert len(_generation_requests(first_runtime)) == 1
+    assert _generation_requests(second_runtime) == []
+    assert WorkflowState.RESEARCHING not in second_store.states
+    assert [attempt.triggered_by for attempt in second_run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+    ]
+
+    # One shared generated file, byte-identical guidance in both runs.
+    manager = _skill_storage(data_dir, source_repo)
+    assert manager.list_generated_fingerprints() == (profile.dependency_fingerprint,)
+    first_skill = store.load_artifact(first_run.id, RepositorySkill)
+    second_skill = store.load_artifact(second_run.id, RepositorySkill)
+    assert second_skill == first_skill
+    assert manager.load_generated(profile.dependency_fingerprint) == first_skill
+    assert all(
+        request.repository_skill == second_skill for request in _guidance_consumers(second_runtime)
+    )
+
+    assert store.load_artifact(first_run.id, RepositorySkillUse).source is (
+        SkillSelectionSource.GENERATED
+    )
+    reuse = store.load_artifact(second_run.id, RepositorySkillUse)
+    assert reuse.source is SkillSelectionSource.REUSED
+    assert reuse.repository_key == manager.repository_key
+    assert reuse.dependency_fingerprint == profile.dependency_fingerprint
+    assert reuse.overlay_hash is None
+    assert reuse.overlay_applied is False
+
+
+def test_a_valid_overlay_reaches_every_post_green_agent_across_runs(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    _write_overlay(manager, OVERLAY_YAML)
+
+    first_run, store, first_runtime = _polish_run(
+        source_repo, data_dir, "WI-overlay-first", profile=profile
+    )
+    second_run, _, second_runtime = _polish_run(
+        source_repo, data_dir, "WI-overlay-second", profile=profile
+    )
+
+    for run, runtime in ((first_run, first_runtime), (second_run, second_runtime)):
+        assert run.state is WorkflowState.PR_READY
+        effective = store.load_artifact(run.id, RepositorySkill)
+        generated = manager.load_generated(profile.dependency_fingerprint)
+        assert generated is not None
+        assert OVERLAY_POLISH_GUIDANCE in effective.polish.guidance
+        assert OVERLAY_POLISH_GUIDANCE not in generated.polish.guidance
+        # The overlay contributes prose only; provenance stays machine-owned.
+        assert effective.targets == generated.targets
+        assert effective.official_sources == generated.official_sources
+        assert effective.dependency_fingerprint == generated.dependency_fingerprint
+        assert all(
+            request.repository_skill == effective for request in _guidance_consumers(runtime)
+        )
+
+        use = store.load_artifact(run.id, RepositorySkillUse)
+        assert use.overlay_applied is True
+        assert use.overlay_mode is SkillOverlayMode.EXTEND
+        assert use.effective_skill_hash != use.generated_skill_hash
+        snapshot = store.load_artifact(run.id, RepositorySkillOverlay)
+        assert snapshot.polish is not None
+        assert snapshot.polish.guidance == (OVERLAY_POLISH_GUIDANCE,)
+
+    profile_artifact = store.load_artifact(second_run.id, RepositoryProfile)
+    assert not any("overlay" in warning for warning in profile_artifact.warnings)
+    # The factory only ever reads this file.
+    assert manager.overlay_path.read_text(encoding="utf-8") == OVERLAY_YAML
+
+
+def test_an_unusable_overlay_is_preserved_reported_and_bypassed(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    invalid_overlay = "mode: extend\npolish:\n  summary: A section with no guidance list.\n"
+    _write_overlay(manager, invalid_overlay)
+
+    run, store, runtime = _polish_run(source_repo, data_dir, "WI-overlay-invalid", profile=profile)
+
+    assert run.state is WorkflowState.PR_READY
+    # Generated polish still happened.
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+    ]
+    effective = store.load_artifact(run.id, RepositorySkill)
+    assert effective == manager.load_generated(profile.dependency_fingerprint)
+    assert all(request.repository_skill == effective for request in _guidance_consumers(runtime))
+
+    profile_artifact = store.load_artifact(run.id, RepositoryProfile)
+    overlay_warnings = [
+        warning
+        for warning in profile_artifact.warnings
+        if str(manager.overlay_path) in warning and "was not applied" in warning
+    ]
+    assert len(overlay_warnings) == 1
+    assert "guidance" in overlay_warnings[0]
+
+    use = store.load_artifact(run.id, RepositorySkillUse)
+    assert use.overlay_applied is False
+    assert use.overlay_hash is None
+    assert use.effective_skill_hash == use.generated_skill_hash
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(run.id, RepositorySkillOverlay)
+    assert manager.overlay_path.read_text(encoding="utf-8") == invalid_overlay
+
+
+def test_a_dependency_change_generates_new_guidance_while_the_overlay_survives(
+    source_repo: Path, data_dir: Path
+) -> None:
+    manager = _skill_storage(data_dir, source_repo)
+    _write_overlay(manager, OVERLAY_YAML)
+    first_profile = _react_profile("1" * 64)
+    second_profile = _react_profile("2" * 64)
+
+    first_run, store, first_runtime = _polish_run(
+        source_repo, data_dir, "WI-fingerprint-first", profile=first_profile
+    )
+    second_run, _, second_runtime = _polish_run(
+        source_repo, data_dir, "WI-fingerprint-second", profile=second_profile
+    )
+
+    assert first_run.state is WorkflowState.PR_READY
+    assert second_run.state is WorkflowState.PR_READY
+    # A new dependency state means new generated guidance, and the earlier
+    # generated file stays on disk untouched.
+    assert len(_generation_requests(first_runtime)) == 1
+    assert len(_generation_requests(second_runtime)) == 1
+    assert manager.list_generated_fingerprints() == ("1" * 64, "2" * 64)
+
+    first_use = store.load_artifact(first_run.id, RepositorySkillUse)
+    second_use = store.load_artifact(second_run.id, RepositorySkillUse)
+    assert first_use.source is SkillSelectionSource.GENERATED
+    assert second_use.source is SkillSelectionSource.GENERATED
+    assert first_use.dependency_fingerprint == "1" * 64
+    assert second_use.dependency_fingerprint == "2" * 64
+    assert first_use.generated_skill_hash != second_use.generated_skill_hash
+
+    # The overlay is repository-scoped, so it applies to both.
+    assert first_use.overlay_hash == second_use.overlay_hash
+    assert first_use.overlay_applied and second_use.overlay_applied
+    for run in (first_run, second_run):
+        effective = store.load_artifact(run.id, RepositorySkill)
+        assert OVERLAY_POLISH_GUIDANCE in effective.polish.guidance
+    assert manager.overlay_path.read_text(encoding="utf-8") == OVERLAY_YAML
+
+
+def test_run_snapshots_are_create_once_and_survive_a_later_overlay_edit(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    _write_overlay(manager, OVERLAY_YAML)
+
+    first_run, store, _ = _polish_run(source_repo, data_dir, "WI-snapshot-first", profile=profile)
+
+    first_dir = store.runs_dir / first_run.id
+    recorded = {name: (first_dir / name).read_text(encoding="utf-8") for name in SNAPSHOT_FILENAMES}
+    assert all(recorded.values())
+
+    _write_overlay(manager, EDITED_OVERLAY_YAML)
+    second_run, _, _ = _polish_run(source_repo, data_dir, "WI-snapshot-second", profile=profile)
+
+    # The earlier run's audit trail describes the earlier run only.
+    assert {
+        name: (first_dir / name).read_text(encoding="utf-8") for name in SNAPSHOT_FILENAMES
+    } == recorded
+    second_effective = store.load_artifact(second_run.id, RepositorySkill)
+    assert EDITED_OVERLAY_POLISH_GUIDANCE in second_effective.polish.guidance
+    assert OVERLAY_POLISH_GUIDANCE not in second_effective.polish.guidance
+    assert store.load_artifact(second_run.id, RepositorySkillUse).source is (
+        SkillSelectionSource.REUSED
+    )
+
+
+def test_unreadable_stored_guidance_is_never_overwritten_and_safely_skips(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    generated_path = manager.generated_path(profile.dependency_fingerprint)
+    generated_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt = "{ this is not a repository skill"
+    generated_path.write_text(corrupt, encoding="utf-8")
+
+    run, store, runtime = _polish_run(source_repo, data_dir, "WI-corrupt-guidance", profile=profile)
+
+    assert run.state is WorkflowState.PR_READY
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+    assert _generation_requests(runtime) == []
+    assert all(request.repository_skill is None for request in runtime.requests)
+    profile_artifact = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "stored repository guidance could not be read and was left unchanged" in warning
+        and str(generated_path) in warning
+        and _refresh_hint(source_repo) in warning
+        for warning in profile_artifact.warnings
+    )
+    assert generated_path.read_text(encoding="utf-8") == corrupt
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(run.id, RepositorySkill)
+
+
+def test_stored_guidance_that_no_longer_revalidates_is_left_untouched(
+    source_repo: Path, data_dir: Path
+) -> None:
+    """Configuration is authoritative on every load, not only at generation."""
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    stale = _react_skill(
+        profile,
+        official_sources=(
+            SkillSource(
+                title="Formerly trusted advice",
+                url="https://example.com/react",
+                version_scope="19.1.0",
+                applies_to=("react", "react-dom"),
+            ),
+        ),
+    )
+    generated_path = manager.generated_path(profile.dependency_fingerprint)
+    generated_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_text = f"{stale.model_dump_json(indent=2)}\n"
+    generated_path.write_text(stored_text, encoding="utf-8")
+
+    run, store, runtime = _polish_run(source_repo, data_dir, "WI-stale-guidance", profile=profile)
+
+    assert run.state is WorkflowState.PR_READY
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+    assert _generation_requests(runtime) == []
+    assert all(request.repository_skill is None for request in runtime.requests)
+    profile_artifact = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "did not revalidate and was left unchanged" in warning
+        and "outside polish.official_documentation_origins" in warning
+        and _refresh_hint(source_repo) in warning
+        for warning in profile_artifact.warnings
+    )
+    assert generated_path.read_text(encoding="utf-8") == stored_text
+
+
+def test_a_concurrent_winner_is_revalidated_before_use(source_repo: Path, data_dir: Path) -> None:
+    """The no-clobber winner -- not this run's own guidance -- is what every
+    later run reads, so it must satisfy the same rules before it is used."""
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    generated_path = manager.generated_path(profile.dependency_fingerprint)
+    winner = _react_skill(
+        profile,
+        official_sources=(
+            SkillSource(
+                title="Untrusted advice",
+                url="https://example.com/react",
+                version_scope="19.1.0",
+                applies_to=("react", "react-dom"),
+            ),
+        ),
+    )
+    winner_text = f"{winner.model_dump_json(indent=2)}\n"
+
+    def racing_researcher(request: AgentRequest) -> AgentResult:
+        # Another run publishes first, between this run's reuse check and its
+        # own create.
+        generated_path.parent.mkdir(parents=True, exist_ok=True)
+        generated_path.write_text(winner_text, encoding="utf-8")
+        assert request.repository_profile is not None
+        return AgentResult(
+            role=AgentRole.RESEARCHER,
+            success=True,
+            repository_skill=_react_skill(
+                request.repository_profile,
+                official_sources=(
+                    SkillSource(
+                        title="React documentation",
+                        url="https://react.dev/reference/react",
+                        version_scope="19.1.0",
+                        applies_to=("react", "react-dom"),
+                    ),
+                ),
+            ),
+        )
+
+    runtime = RecordingRuntime(FakeAgentRuntime(researcher=racing_researcher))
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+        repository_profiler=lambda path: profile,
+    )
+
+    run = controller.run(_work_item("WI-concurrent-winner"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+    assert generated_path.read_text(encoding="utf-8") == winner_text
+    assert all(request.repository_skill is None for request in runtime.requests)
+    profile_artifact = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "did not revalidate and was left unchanged" in warning
+        and str(generated_path) in warning
+        and _refresh_hint(source_repo) in warning
+        for warning in profile_artifact.warnings
+    )
+    # The misleading "could not be stored" phrasing must not appear: the
+    # winner is a complete file, it simply is not acceptable.
+    assert not any("could not be published" in warning for warning in profile_artifact.warnings)
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(run.id, RepositorySkill)
+
+
+@pytest.mark.parametrize(
+    "boundary_error",
+    [OSError("read-only file system"), RuntimeError("store unavailable"), ValueError("bad path")],
+    ids=["oserror", "runtimeerror", "valueerror"],
+)
+@pytest.mark.parametrize(
+    "failing_artifact",
+    [RepositorySkillUse, RepositorySkillOverlay, RepositorySkill],
+    ids=["use", "overlay", "skill"],
+)
+def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
+    source_repo: Path,
+    data_dir: Path,
+    failing_artifact: type[ArtifactModel],
+    boundary_error: Exception,
+) -> None:
+    """Every create-once snapshot is a precondition of polish.
+
+    ``repository-skill.json`` is the run's claim that its agents consumed
+    exactly this guidance, so it is written last: no partially written
+    snapshot may leave that claim on disk without the provenance record and
+    overlay that explain it.
+    """
+    profile = _react_profile()
+    manager = _skill_storage(data_dir, source_repo)
+    _write_overlay(manager, OVERLAY_YAML)
+
+    class SnapshotFailingStore(FileRunStore):
+        def save_artifact_once(
+            self,
+            run_id: str,
+            artifact: ArtifactModel,
+            filename: str | None = None,
+        ) -> Path:
+            if isinstance(artifact, failing_artifact):
+                raise boundary_error
+            return super().save_artifact_once(run_id, artifact, filename)
+
+    run, _, runtime = _polish_run(
+        source_repo,
+        data_dir,
+        "WI-snapshot-failure",
+        profile=profile,
+        store=SnapshotFailingStore(data_dir),
+    )
+
+    assert run.state is WorkflowState.PR_READY
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+    assert all(request.repository_skill is None for request in runtime.requests)
+
+    reader = FileRunStore(data_dir)
+    profile_artifact = reader.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        f"repository guidance snapshot could not be persisted: {boundary_error}" in warning
+        for warning in profile_artifact.warnings
+    )
+
+    run_dir = reader.runs_dir / run.id
+    written = {name for name in SNAPSHOT_FILENAMES if (run_dir / name).exists()}
+    assert "repository-skill.json" not in written
+    if failing_artifact is RepositorySkillUse:
+        assert written == set()
+    elif failing_artifact is RepositorySkillOverlay:
+        assert written == {"repository-skill-use.json"}
+    else:
+        assert written == {"repository-skill-use.json", "repository-skill-overlay.json"}
+    with pytest.raises(FileNotFoundError):
+        reader.load_artifact(run.id, RepositorySkill)
+
+    # The shared generated file was still published, so a later run reuses it.
+    assert manager.list_generated_fingerprints() == (profile.dependency_fingerprint,)
 
 
 # -- bounded escalation and repair -------------------------------------------

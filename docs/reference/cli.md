@@ -18,6 +18,7 @@ Commands:
   show        Show the persisted details of one run as JSON.
   doctor      Check this machine's prerequisites for the configured feature set.
   status      Report derived run metrics and operational health, read-only.
+  skill       Inspect, validate and refresh repository guidance.
   dashboard   Serve the read-only local dashboard until interrupted.
   service     Manage the opt-in per-user macOS launchd service.
 ```
@@ -180,6 +181,79 @@ factory status --json --limit 50 --offset 50
 Everything is recomputed from persisted artifacts on each call. This command
 never creates, mutates or repairs a run, a workspace, a lock or the data
 directory itself. A truncated or partially unreadable scan reports `DEGRADED`.
+
+---
+
+## factory skill
+
+Inspect, validate and refresh the repository guidance used by the optional
+post-green polish attempt. Guidance lives under the configured data directory,
+in repository-scoped storage keyed by the repository and its dependency
+fingerprint — never inside the target repository. See
+[Repository skills and overlays](../guides/repository-skills.md).
+
+### factory skill path
+
+Print the generated-skill and overlay locations discovered for a repository.
+
+```bash
+factory skill path --repo ~/projects/example
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--config <path>` | no | packaged | Config YAML. |
+| `--data-dir <path>` | no | configured | Data directory override. |
+
+Read-only. It creates nothing, including the overlay file.
+
+The repository key comes from the canonical local Git common directory, so
+linked worktrees of one checkout report the same directory, and moving or
+re-cloning a repository reports a different one. Run this before moving a
+repository if you want to move or copy its guidance to the new location.
+
+### factory skill validate
+
+Validate the current generated skill and overlay for a repository.
+
+```bash
+factory skill validate --repo ~/projects/example
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--config <path>` | no | packaged | Config YAML. |
+| `--data-dir <path>` | no | configured | Data directory override. |
+
+Reports whether the stored guidance matches the repository's current dependency
+fingerprint, whether every cited source is still inside the configured
+allowlists, and why an overlay would be ignored. Read-only: it never repairs,
+reformats, rewrites or creates a file, and an invalid overlay is left exactly
+as written.
+
+### factory skill refresh
+
+Refresh generated guidance for a repository, explicitly.
+
+```bash
+factory skill refresh --repo ~/projects/example --runtime copilot
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
+| `--config <path>` | no | packaged | Config YAML. |
+| `--data-dir <path>` | no | configured | Data directory override. |
+
+Touches generated guidance only. It never creates, rewrites or deletes your
+`repository-skill-overlay.yaml`, and it changes no run, workspace or
+configuration.
+
+This is the only command that may replace an existing generated file, and it is
+what a run's warning points to when stored guidance no longer revalidates.
 
 ---
 

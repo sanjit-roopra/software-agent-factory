@@ -275,6 +275,93 @@ class RepositorySkill(VersionedModel):
         return self
 
 
+CONTENT_HASH_PATTERN = r"^[0-9a-f]{64}$"
+"""SHA-256 hex digest of a canonically serialized artifact."""
+
+REPOSITORY_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+"""A safe, single filesystem path component identifying one source repository."""
+
+
+class SkillOverlayMode(StrEnum):
+    """How human-owned overlay guidance combines with generated guidance."""
+
+    EXTEND = "extend"
+    REPLACE = "replace"
+
+
+class RepositorySkillOverlay(VersionedModel):
+    """Human-owned, repository-scoped guidance that supplements a generated skill.
+
+    Deliberately much narrower than :class:`RepositorySkill`. The overlay
+    carries advisory prose only: it may never claim targets, sources,
+    resolved versions, a dependency fingerprint, generator provenance or a
+    generation timestamp, because those are machine-owned evidence produced
+    from the repository itself. ``extra="forbid"`` turns every such field
+    into a schema error rather than a silently ignored key, so a human who
+    tries to assert provenance gets told, not obeyed.
+
+    It is scoped to a repository, not to a dependency fingerprint: the same
+    overlay keeps applying after dependencies change and a different
+    generated skill is selected.
+
+    The factory only ever *reads* the overlay file. Nothing in the factory
+    writes, normalizes, reformats or deletes it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: SkillOverlayMode = SkillOverlayMode.EXTEND
+    simplify: SkillGuidance | None = None
+    polish: SkillGuidance | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_section(self) -> RepositorySkillOverlay:
+        if self.simplify is None and self.polish is None:
+            raise ValueError("overlay must supply simplify guidance, polish guidance, or both")
+        return self
+
+
+class SkillSelectionSource(StrEnum):
+    """Whether a run generated its repository skill or reused a stored one."""
+
+    GENERATED = "generated"
+    REUSED = "reused"
+
+
+class RepositorySkillUse(VersionedModel):
+    """Audit record of which skill (and overlay) one run actually used.
+
+    Bounded and fully typed on purpose: it records hashes and provenance,
+    never guidance text, so the audit trail stays small and comparable
+    across runs.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    repository_key: str = Field(pattern=REPOSITORY_KEY_PATTERN)
+    dependency_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_at: UtcDateTime = Field(default_factory=utc_now)
+    source: SkillSelectionSource
+    generated_skill_hash: str = Field(pattern=CONTENT_HASH_PATTERN)
+    overlay_hash: str | None = Field(default=None, pattern=CONTENT_HASH_PATTERN)
+    overlay_mode: SkillOverlayMode | None = None
+    overlay_applied: bool = False
+    effective_skill_hash: str = Field(pattern=CONTENT_HASH_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_overlay_consistency(self) -> RepositorySkillUse:
+        if self.overlay_hash is None:
+            if self.overlay_mode is not None or self.overlay_applied:
+                raise ValueError("an applied overlay must record its hash")
+        elif self.overlay_mode is None:
+            raise ValueError("a recorded overlay must record its mode")
+        if not self.overlay_applied and self.effective_skill_hash != self.generated_skill_hash:
+            raise ValueError(
+                "the effective skill must equal the generated skill when no overlay is applied"
+            )
+        return self
+
+
 class WorkItem(VersionedModel):
     id: str = Field(min_length=1)
     external_id: str | None = None

@@ -131,6 +131,7 @@ never merges and never deploys. [Read more](guides/github.md)
 | See it work without spending money | [First offline run](get-started/first-run.md) |
 | Use real models | [Real Copilot runs](get-started/copilot.md) |
 | Point it at your repository's checks | [Configure a repository](guides/configure-repository.md) |
+| Customize the guidance agents get | [Repository skills and overlays](guides/repository-skills.md) |
 | Poll issues, open PRs, watch CI | [GitHub backlog, PRs and CI](guides/github.md) |
 | Watch runs and keep it running | [Monitor and run continuously](guides/operations.md) |
 | Look up a command or config key | [CLI](reference/cli.md) · [Configuration](reference/configuration.md) |

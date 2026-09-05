@@ -10,6 +10,7 @@ factory doctor [--json]
 factory status [--json]
 factory dashboard [--port 8765] [--open-browser]
 factory service install|status|uninstall
+factory skill path|validate|refresh --repo PATH [--runtime fake|copilot]
 ```
 
 ``--runtime`` defaults to ``fake`` so no command ever makes a paid model call
@@ -22,6 +23,12 @@ the launchd service are all strictly opt-in (``pull_request.enabled``,
 ``factory service install`` command). With the packaged defaults, ``factory
 run`` performs no network access at all and finishes at ``PR_READY``.
 
+``factory skill`` is the human-facing view of repository-adaptive guidance:
+``skill path`` and ``skill validate`` are read-only, and ``skill refresh`` is
+the only command that generates guidance on request. None of them ever
+writes, normalizes or deletes the human-owned overlay file, and none of them
+creates a :class:`~software_agent_factory.models.FactoryRun` or a worktree.
+
 ``--data-dir`` overrides the configured data directory so tests and demos can
 point the CLI at an isolated temporary directory without editing a config
 file.
@@ -32,9 +39,10 @@ Three conventions hold across every command here:
   prerequisites (``git``, and ``gh``/``copilot`` only when the requested
   feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE` and one
   explicit line, never a traceback from deep inside a workspace or tracker.
-- **Read-only stays read-only.** ``runs``, ``show`` and ``status`` derive
-  everything from persisted artifacts and never create or mutate a run, a
-  workspace or configuration -- not even the data directory itself.
+- **Read-only stays read-only.** ``runs``, ``show``, ``status``, ``skill
+  path`` and ``skill validate`` derive everything from persisted artifacts
+  and never create or mutate a run, a workspace or configuration -- not even
+  the data directory itself.
 - **Structured logs where work happens.** ``run``, ``start`` and
   ``dashboard`` attach the bounded rotating JSON log under
   ``<data_dir>/logs`` once the configuration and data directory are
@@ -58,13 +66,22 @@ import typer
 import yaml
 from pydantic import ValidationError
 
-from .agents import AgentRuntime, FakeAgentRuntime
+from .agents import AgentRequest, AgentRuntime, FakeAgentRuntime
 from .cli_output import render_doctor_report, render_service_status, render_status_report
 from .config import FactoryConfig, load_config
 from .copilot_runtime import CopilotAgentRuntime
 from .dashboard import LOOPBACK_HOST, DashboardConfig, create_server
 from .doctor import missing_prerequisites, run_doctor
-from .models import ChangeSet, WorkflowState, WorkItem
+from .models import (
+    AgentPurpose,
+    AgentRole,
+    ChangeSet,
+    RepositoryProfile,
+    RepositorySkill,
+    WorkflowState,
+    WorkItem,
+    utc_now,
+)
 from .observability import (
     DEFAULT_MAX_SCANNED_RUNS,
     build_monitoring_snapshot,
@@ -72,6 +89,15 @@ from .observability import (
     build_run_detail,
     configure_factory_logging,
 )
+from .repository_profile import profile_repository
+from .repository_skills import (
+    RepositorySkillError,
+    RepositorySkillManager,
+    RepositorySkillMergeError,
+    merge_repository_skill,
+    repository_skill_validation_error,
+)
+from .routing import ModelRouter
 from .service import FactoryService
 from .service_install import (
     DEFAULT_LABEL,
@@ -93,6 +119,10 @@ service_app = typer.Typer(
     help="Manage the opt-in per-user macOS launchd service (never automatic)."
 )
 app.add_typer(service_app, name="service")
+skill_app = typer.Typer(
+    help="Inspect, validate and refresh this repository's generated skill and overlay."
+)
+app.add_typer(skill_app, name="skill")
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +145,12 @@ DEFAULT_DASHBOARD_PORT = 8765
 #: Default page size for ``factory status``. Small enough to stay readable in
 #: a terminal; ``--limit``/``--offset`` page through the rest.
 DEFAULT_STATUS_LIMIT = 20
+
+#: Neutral working directory (under the data directory) that ``factory skill
+#: refresh`` runs the skill researcher from. Repository-level guidance is
+#: produced from the normalized profile alone, so the researcher must never
+#: run inside the repository, a worktree or the operator's shell cwd.
+SKILL_GENERATION_DIRNAME = "skill-generation"
 
 
 class RuntimeChoice(StrEnum):
@@ -810,6 +846,273 @@ def service_uninstall_command(
         typer.echo(f"removed LaunchAgent {label}; runs and workspaces were left on disk")
     else:
         typer.echo(f"no LaunchAgent plist found for {label}; nothing to remove")
+
+
+# -- factory skill ---------------------------------------------------------
+
+
+def _skill_manager(config: FactoryConfig, repo: Path) -> RepositorySkillManager:
+    """Resolve the skill storage for ``repo`` without creating anything."""
+    try:
+        return RepositorySkillManager.for_repository(config.data_dir, repo.expanduser())
+    except RepositorySkillError as exc:
+        raise _fail(f"cannot resolve repository skill storage: {exc}") from None
+
+
+def _skill_profile(repo: Path) -> RepositoryProfile:
+    """Profile the repository as it is currently checked out (read-only).
+
+    ``profile_repository`` records unreadable files as profile warnings, so
+    the only failure it raises is an unusable repository root.
+    """
+    try:
+        return profile_repository(repo.expanduser())
+    except ValueError as exc:
+        raise _fail(f"cannot profile the repository at {repo}: {exc}") from None
+
+
+def _presence(path: Path) -> str:
+    return "present" if path.exists() else "absent"
+
+
+def _skill_generation_work_item() -> WorkItem:
+    """A synthetic work item, required only because :class:`AgentRequest`
+    carries one. Repository-level guidance is generated from the profile
+    alone: the skill-generation prompt is given no work item, specification,
+    plan, diff or changed files, and must not describe any single task."""
+    return WorkItem(
+        id="repository-skill-generation",
+        title="Generate repository-level guidance",
+        description=(
+            "Generate reusable simplify and polish guidance for this repository's "
+            "detected technologies and dependency versions. This is not a task to "
+            "implement."
+        ),
+    )
+
+
+@skill_app.command("path")
+def skill_path_command(
+    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Show where this repository's generated skill and overlay live.
+
+    Read-only, and deliberately so: it creates no directory (not even the
+    data directory), no generated file and no overlay. The repository is
+    identified by its Git *common* directory, so a linked worktree reports
+    the same paths as its main checkout, and the generated path shown is the
+    one selected by the repository's *current* dependency fingerprint.
+    """
+    factory_config = _load_config(config, data_dir)
+    _require_prerequisites(require_gh=False, require_copilot=False)
+
+    manager = _skill_manager(factory_config, repo)
+    profile = _skill_profile(repo)
+    generated_path = manager.generated_path(profile.dependency_fingerprint)
+
+    typer.echo(f"repository key: {manager.repository_key}")
+    typer.echo(f"git common dir: {manager.identity.git_common_dir}")
+    typer.echo(f"dependency fingerprint: {profile.dependency_fingerprint}")
+    typer.echo(f"generated skill: {generated_path} ({_presence(generated_path)})")
+    typer.echo(f"overlay: {manager.overlay_path} ({_presence(manager.overlay_path)})")
+
+
+@skill_app.command("validate")
+def skill_validate_command(
+    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Check the stored generated skill and the human overlay, read-only.
+
+    Reports each of them as ``valid``, ``missing`` or ``invalid``, and --
+    when both exist -- whether they still combine into an effective skill.
+    A missing overlay is normal and never an error; anything invalid, and a
+    generated skill that has not been produced yet, exit nonzero. Nothing is
+    created, rewritten or repaired: an unusable overlay is reported with the
+    human's bytes left exactly as written.
+    """
+    factory_config = _load_config(config, data_dir)
+    _require_prerequisites(require_gh=False, require_copilot=False)
+
+    manager = _skill_manager(factory_config, repo)
+    profile = _skill_profile(repo)
+    generated_path = manager.generated_path(profile.dependency_fingerprint)
+
+    typer.echo(f"repository key: {manager.repository_key}")
+    typer.echo(f"dependency fingerprint: {profile.dependency_fingerprint}")
+
+    failed = False
+    generated: RepositorySkill | None = None
+    try:
+        generated = manager.load_generated(profile.dependency_fingerprint)
+    except RepositorySkillError as exc:
+        typer.echo(f"generated skill: invalid ({generated_path})")
+        typer.echo(f"  {exc}")
+        failed = True
+    else:
+        if generated is None:
+            typer.echo(f"generated skill: missing ({generated_path})")
+            typer.echo("  run 'factory skill refresh' to generate guidance for this profile.")
+            failed = True
+        elif problem := repository_skill_validation_error(
+            generated,
+            profile,
+            official_documentation_origins=factory_config.polish.official_documentation_origins,
+            practice_reference_urls=factory_config.polish.practice_reference_urls,
+        ):
+            typer.echo(f"generated skill: invalid ({generated_path})")
+            typer.echo(f"  {problem}")
+            generated = None
+            failed = True
+        else:
+            typer.echo(f"generated skill: valid ({generated_path})")
+
+    read = manager.read_overlay()
+    if not read.present:
+        typer.echo(f"overlay: missing ({read.path})")
+        typer.echo("  a missing overlay is normal; the factory never creates one.")
+    elif read.error is not None:
+        typer.echo(f"overlay: invalid ({read.path})")
+        for line in read.error.problems:
+            typer.echo(f"  {line}")
+        typer.echo("  the factory only reads this file; edit it by hand or remove it.")
+        failed = True
+    else:
+        typer.echo(f"overlay: valid ({read.path})")
+        overlay = read.overlay
+        if generated is not None and overlay is not None:
+            try:
+                merge_repository_skill(generated, overlay)
+            except RepositorySkillMergeError as exc:
+                typer.echo("effective skill: invalid (the overlay cannot be combined)")
+                typer.echo(f"  {exc}")
+                failed = True
+            else:
+                typer.echo("effective skill: valid (generated guidance plus the overlay)")
+
+    if failed:
+        raise typer.Exit(code=FAILURE_EXIT_CODE)
+
+
+@skill_app.command("refresh")
+def skill_refresh_command(
+    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+    runtime: RuntimeChoice = typer.Option(
+        RuntimeChoice.FAKE,
+        "--runtime",
+        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+    ),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Regenerate this repository's stored guidance on request.
+
+    The only write path in ``factory skill``, and it happens because someone
+    typed this command: it requires ``polish.enabled``, profiles the
+    repository as currently checked out, and runs the configured researcher
+    from a neutral directory under the data directory with the profile and
+    the configured source allowlists as its entire input -- no work item, no
+    plan, no diff, no changed files, no repository file access.
+
+    No run, worktree or workspace is created. The human-owned overlay is
+    never read, written or deleted here. Guidance that fails validation is
+    refused and the previously stored file is left byte-for-byte unchanged.
+    """
+    factory_config = _load_config(config, data_dir)
+    if not factory_config.polish.enabled:
+        raise _fail(
+            "repository skill generation is disabled: set 'polish.enabled: true' in the "
+            "factory configuration before running 'factory skill refresh'."
+        )
+    _require_prerequisites(require_gh=False, require_copilot=runtime is RuntimeChoice.COPILOT)
+    _configure_logging(factory_config)
+
+    manager = _skill_manager(factory_config, repo)
+    profile = _skill_profile(repo)
+
+    neutral_dir = factory_config.data_dir / SKILL_GENERATION_DIRNAME / manager.repository_key
+    try:
+        neutral_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _fail(f"cannot create the skill generation directory {neutral_dir}: {exc}") from None
+
+    role_model = ModelRouter(factory_config).model_for_researcher()
+    request = AgentRequest(
+        role=AgentRole.RESEARCHER,
+        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        model=role_model.model,
+        reasoning=role_model.reasoning,
+        work_item=_skill_generation_work_item(),
+        repository_profile=profile,
+        official_documentation_origins=list(factory_config.polish.official_documentation_origins),
+        practice_reference_urls=list(factory_config.polish.practice_reference_urls),
+        workspace_path=str(neutral_dir),
+        timeout_seconds=factory_config.agent_timeout_seconds,
+    )
+
+    try:
+        result = _build_runtime(runtime).run(request)
+    except ValueError as exc:
+        # The runtime boundary turns an unusable executable, a timeout and
+        # unparsable output into a failed AgentResult; only a request it
+        # refuses to send at all is raised.
+        raise _fail(
+            f"repository skill generation could not run: {exc}", code=FAILURE_EXIT_CODE
+        ) from None
+
+    skill = result.repository_skill
+    if not result.success or skill is None:
+        raise _fail(
+            result.failure_reason or "the researcher produced no repository guidance",
+            code=FAILURE_EXIT_CODE,
+        )
+    if skill.dependency_fingerprint != profile.dependency_fingerprint:
+        raise _fail(
+            "the researcher returned guidance for a different dependency fingerprint: "
+            f"{skill.dependency_fingerprint} is not {profile.dependency_fingerprint}",
+            code=FAILURE_EXIT_CODE,
+        )
+    if problem := repository_skill_validation_error(
+        skill,
+        profile,
+        official_documentation_origins=factory_config.polish.official_documentation_origins,
+        practice_reference_urls=factory_config.polish.practice_reference_urls,
+    ):
+        raise _fail(
+            f"refusing to store unverified repository guidance: {problem}",
+            code=FAILURE_EXIT_CODE,
+        )
+
+    # Stamped once, here, so the stored record says when this guidance was
+    # produced rather than when the model claimed it was.
+    skill = skill.model_copy(update={"generated_at": utc_now()})
+    try:
+        record = manager.refresh_generated(skill)
+    except RepositorySkillError as exc:
+        raise _fail(
+            f"the generated repository skill could not be stored: {exc}",
+            code=FAILURE_EXIT_CODE,
+        ) from None
+
+    typer.echo(f"repository key: {manager.repository_key}")
+    typer.echo(f"dependency fingerprint: {skill.dependency_fingerprint}")
+    typer.echo(f"{'created' if record.created else 'refreshed'} generated skill: {record.path}")
+    typer.echo(f"overlay: untouched ({manager.overlay_path})")
 
 
 if __name__ == "__main__":

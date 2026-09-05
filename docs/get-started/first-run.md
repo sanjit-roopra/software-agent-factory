@@ -45,18 +45,21 @@ The run moved through:
 CREATED → prepare worktree → profile repository → TRIAGING
         → REFINING → [RESEARCHING] → PLANNING
         → IMPLEMENTING → VERIFYING
-        → RESEARCHING (repository skill) → IMPLEMENTING (POLISH) → VERIFYING
+        → [RESEARCHING (repository skill)] → IMPLEMENTING (POLISH) → VERIFYING
         → REVIEWING → PR_READY
 ```
 
 The profile and polish reuse existing states rather than adding
 `PROFILING`/`POLISHING`. The example configuration enables one bounded polish
-pass, preceded by one web-only research call that generates version-aware
-guidance for the versions this repository actually declares. Polish may make no
-edits, but it still records an attempt and reruns deterministic verification.
-If the research or its validation fails, the factory records a warning on the
-profile and skips polish; the already-verified run continues to review. A
-legacy configuration that omits `polish` defaults to disabled.
+pass, informed by version-aware guidance for the versions this repository
+actually declares. That guidance is stored under the data directory, keyed by
+the repository and its dependency fingerprint, and reused: the web-only
+research call happens only on the first run for a given set of dependencies.
+Polish may make no edits, but it still records an attempt and reruns
+deterministic verification. If the research or its validation fails, the
+factory records a warning on the profile and skips polish; the already-verified
+run continues to review. A legacy configuration that omits `polish` defaults to
+disabled.
 
 `PR_READY` is the completed endpoint when pull requests are disabled, which they
 are in `config/factory.example.yaml`. A nonzero exit code means the run did not
@@ -99,8 +102,14 @@ Nothing is hidden in a database. Everything is JSON on disk.
 ├── change-set.json       what the implementer claims it did
 ├── patch.diff            what the controller actually observed
 ├── verification.json     install / verify / build results
-├── repository-skill.json  version-aware simplify and polish guidance
-│                           (only when polish research succeeded)
+├── repository-skill.json  immutable snapshot of the effective simplify and
+│                           polish guidance this run used (generated guidance
+│                           plus any valid human overlay)
+├── repository-skill-overlay.json
+│                           the overlay exactly as it was read, when valid
+├── repository-skill-use.json
+│                           provenance: repository key, dependency fingerprint,
+│                           where the guidance came from, content hashes
 ├── test-report.json      independent tester
 ├── review.json           independent reviewer
 └── attempts/
@@ -114,6 +123,13 @@ account of it.
 
 The Git worktree stays on disk too, under `workspaces/`. Workspaces are
 preserved by default so you can inspect or reuse the change.
+
+The reusable guidance itself lives outside the run, under
+`<data_dir>/repository-skills/v1/<repository-key>/...`, together with the
+optional `repository-skill-overlay.yaml` you may write by hand. Run
+`uv run factory skill path --repo ~/projects/example` to see the exact
+locations, and read
+[Repository skills and overlays](../guides/repository-skills.md).
 
 ## 5. Check the derived metrics
 

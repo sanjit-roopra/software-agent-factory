@@ -143,6 +143,7 @@ def test_bare_invocation_shows_help_without_running_anything() -> None:
     assert result.exit_code == 0, result.output
     assert "Usage:" in result.output
     assert "dashboard" in result.output
+    assert "skill" in result.output
 
 
 # -- external prerequisites ----------------------------------------------
