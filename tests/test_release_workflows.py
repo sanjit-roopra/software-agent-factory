@@ -148,6 +148,7 @@ def test_security_workflow_has_dependency_review_codeql_and_locked_audit() -> No
         "contents": "read",
     }
     assert "upload: never" in text
+    assert "upload-database: false" in text
     assert "Enforce CodeQL findings" in text
     assert "Upload CodeQL SARIF" in text
     assert "uv run --no-sync pip-audit --skip-editable" in text
