@@ -59,6 +59,7 @@ from .governance import (
     assess_publish_gate,
 )
 from .models import (
+    GENERIC_PRACTICE_VERSION_SCOPE,
     GENERIC_SKILL_TARGET,
     REQUIRED_SKILL_TARGET_NAMES,
     AgentPurpose,
@@ -80,6 +81,7 @@ from .models import (
     TestReport,
     TriageResult,
     VerificationReport,
+    VersionedModel,
     WorkflowState,
     WorkItem,
     utc_now,
@@ -635,8 +637,29 @@ class WorkflowController:
         if validation_error is not None:
             return None, validation_error
         skill = skill.model_copy(update={"generated_at": utc_now()})
-        self._store.save_artifact(run.id, skill)
+        if persistence_error := self._save_advisory_artifact(run, skill):
+            return (
+                None,
+                f"generated repository guidance could not be persisted: {persistence_error}",
+            )
         return skill, None
+
+    def _save_advisory_artifact(self, run: FactoryRun, artifact: VersionedModel) -> str | None:
+        """Persist an advisory post-green artifact.
+
+        The polish pass is optional, so a boundary failure here degrades to a
+        recorded skip instead of failing an already-green run.
+        """
+
+        try:
+            self._store.save_artifact(run.id, artifact)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "advisory artifact persistence failed",
+                extra={"run_id": run.id, "artifact": type(artifact).__name__, "error": str(exc)},
+            )
+            return str(exc)
+        return None
 
     def _repository_skill_validation_error(
         self,
@@ -745,6 +768,11 @@ class WorkflowController:
                 return (
                     "researcher cited a practice source outside the generic repository "
                     f"scope: {source.url}"
+                )
+            if source.version_scope.casefold() != GENERIC_PRACTICE_VERSION_SCOPE:
+                return (
+                    "researcher cited a practice source carrying a version claim: "
+                    f"{source.url} scoped to {source.version_scope}"
                 )
         return None
 
@@ -1006,38 +1034,45 @@ class WorkflowController:
                 context.polish_research_attempted = True
                 try:
                     refreshed_profile = self._repository_profiler(context.workspace.path)
-                except (OSError, ValueError) as exc:
+                except (OSError, RuntimeError, ValueError) as exc:
                     context.repository_profile = _profile_with_warning(
                         context.repository_profile,
                         f"polish research skipped because repository profiling failed: {exc}",
                     )
-                    self._store.save_artifact(run.id, context.repository_profile)
+                    self._save_advisory_artifact(run, context.repository_profile)
                 else:
-                    self._store.save_artifact(run.id, refreshed_profile)
                     context.repository_profile = refreshed_profile
-                    run = self.transition(run, WorkflowState.RESEARCHING)
-                    skill, warning = self._run_repository_skill_researcher(
-                        run,
-                        context,
-                        evidence,
-                        refreshed_profile,
-                    )
-                    if skill is not None:
-                        context.repository_skill = skill
-                        repair_context = self._polish_context()
-                        run = self.transition(run, WorkflowState.IMPLEMENTING)
-                        continue
-                    assert warning is not None
-                    context.repository_profile = _profile_with_warning(
-                        refreshed_profile,
-                        f"polish research skipped: {warning}",
-                    )
-                    self._store.save_artifact(run.id, context.repository_profile)
+                    if persistence_error := self._save_advisory_artifact(run, refreshed_profile):
+                        context.repository_profile = _profile_with_warning(
+                            refreshed_profile,
+                            "polish research skipped because the refreshed repository "
+                            f"profile could not be persisted: {persistence_error}",
+                        )
+                        self._save_advisory_artifact(run, context.repository_profile)
+                    else:
+                        run = self.transition(run, WorkflowState.RESEARCHING)
+                        skill, warning = self._run_repository_skill_researcher(
+                            run,
+                            context,
+                            evidence,
+                            refreshed_profile,
+                        )
+                        if skill is not None:
+                            context.repository_skill = skill
+                            repair_context = self._polish_context()
+                            run = self.transition(run, WorkflowState.IMPLEMENTING)
+                            continue
+                        assert warning is not None
+                        context.repository_profile = _profile_with_warning(
+                            refreshed_profile,
+                            f"polish research skipped: {warning}",
+                        )
+                        self._save_advisory_artifact(run, context.repository_profile)
 
             if context.repository_skill is not None:
                 try:
                     current_profile = self._repository_profiler(context.workspace.path)
-                except (OSError, ValueError) as exc:
+                except (OSError, RuntimeError, ValueError) as exc:
                     context.repository_profile = _profile_with_warning(
                         context.repository_profile,
                         f"repository skill disabled because profile validation failed: {exc}",

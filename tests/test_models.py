@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from software_agent_factory.models import (
+    GENERIC_PRACTICE_VERSION_SCOPE,
     GENERIC_SKILL_TARGET,
     REQUIRED_SKILL_TARGET_NAMES,
     AgentRole,
@@ -465,6 +466,31 @@ def test_practice_sources_must_be_generic_and_version_neutral() -> None:
             simplify=_guidance("Simplify."),
             polish=_guidance("Polish."),
             uncertainties=("No official source was consulted.",),
+        )
+
+
+def test_practice_source_version_scope_comparison_is_case_insensitive() -> None:
+    skill = RepositorySkill(
+        dependency_fingerprint="b" * 64,
+        practice_sources=(
+            SkillSource(
+                title="Quality review heuristics",
+                url="https://example.invalid/review.md",
+                version_scope="General",
+                applies_to=(GENERIC_SKILL_TARGET,),
+            ),
+        ),
+        simplify=_guidance("Simplify."),
+        polish=_guidance("Polish."),
+        uncertainties=("No official source was consulted.",),
+    )
+
+    assert skill.practice_sources[0].version_scope.casefold() == GENERIC_PRACTICE_VERSION_SCOPE
+    assert RepositorySkill.model_validate_json(skill.model_dump_json()) == skill
+
+    with pytest.raises(ValidationError, match="version scope 'general'"):
+        RepositorySkill.model_validate_json(
+            skill.model_dump_json().replace('"General"', '"react 19"')
         )
 
 

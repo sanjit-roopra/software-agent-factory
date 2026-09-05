@@ -273,8 +273,25 @@ class FakeAgentRuntime:
                 failure_reason="repository skill generation requires a repository profile",
             )
         important_names = set(REQUIRED_SKILL_TARGET_NAMES)
+        source_candidates = {
+            "python": ("https://docs.python.org", "Official Python documentation"),
+            "pytest": ("https://docs.pytest.org", "Official pytest documentation"),
+            "react": ("https://react.dev", "Official React documentation"),
+            "react-dom": ("https://react.dev", "Official React documentation"),
+            "vite": ("https://vite.dev", "Official Vite documentation"),
+            "vitest": ("https://vitest.dev", "Official Vitest documentation"),
+        }
+        groundable_names = {
+            name
+            for name, (url, _) in source_candidates.items()
+            if url in request.official_documentation_origins
+        }
         target_dependencies = sorted(
-            profile.dependencies,
+            (
+                dependency
+                for dependency in profile.dependencies
+                if dependency.name in groundable_names
+            ),
             key=lambda dependency: (
                 dependency.name not in important_names,
                 dependency.ecosystem,
@@ -296,14 +313,6 @@ class FakeAgentRuntime:
             )
             for dependency in target_dependencies
         )
-        source_candidates = {
-            "python": ("https://docs.python.org", "Official Python documentation"),
-            "pytest": ("https://docs.pytest.org", "Official pytest documentation"),
-            "react": ("https://react.dev", "Official React documentation"),
-            "react-dom": ("https://react.dev", "Official React documentation"),
-            "vite": ("https://vite.dev", "Official Vite documentation"),
-            "vitest": ("https://vitest.dev", "Official Vitest documentation"),
-        }
         sources: list[SkillSource] = []
         grouped: dict[str, tuple[str, list[str], list[str]]] = {}
         for target in targets:

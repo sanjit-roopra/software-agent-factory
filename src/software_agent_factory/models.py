@@ -164,6 +164,9 @@ class RepositoryProfile(VersionedModel):
 GENERIC_SKILL_TARGET = "repository"
 """Applicability marker for guidance that is not tied to a detected dependency."""
 
+GENERIC_PRACTICE_VERSION_SCOPE = "general"
+"""The only version scope a curated general-practice source may claim."""
+
 REQUIRED_SKILL_TARGET_NAMES: tuple[str, ...] = (
     "python",
     "pytest",
@@ -264,8 +267,11 @@ class RepositorySkill(VersionedModel):
                 raise ValueError(
                     "practice sources must apply only to the generic repository target"
                 )
-            if source.version_scope.casefold() != "general":
-                raise ValueError("practice sources must use the version scope 'general'")
+            if source.version_scope.casefold() != GENERIC_PRACTICE_VERSION_SCOPE:
+                raise ValueError(
+                    f"practice sources must use the version scope "
+                    f"'{GENERIC_PRACTICE_VERSION_SCOPE}'"
+                )
         return self
 
 

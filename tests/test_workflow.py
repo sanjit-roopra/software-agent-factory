@@ -51,7 +51,7 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
-from software_agent_factory.store import FileRunStore
+from software_agent_factory.store import ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
@@ -435,6 +435,94 @@ def test_post_green_research_exception_is_a_safe_skip(source_repo: Path, data_di
     profile = store.load_artifact(run.id, RepositoryProfile)
     assert any(
         "repository skill research could not run: research process unavailable" in warning
+        for warning in profile.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    "boundary_error",
+    [OSError("read-only file system"), RuntimeError("store unavailable"), ValueError("bad path")],
+    ids=["oserror", "runtimeerror", "valueerror"],
+)
+def test_post_green_skill_persistence_failure_is_a_safe_skip(
+    source_repo: Path, data_dir: Path, boundary_error: Exception
+) -> None:
+    """A boundary failure while persisting advisory guidance never fails a green run."""
+
+    class SkillPersistenceFailingStore(FileRunStore):
+        def save_artifact(
+            self,
+            run_id: str,
+            artifact: ArtifactModel,
+            filename: str | None = None,
+            *,
+            attempt: int | None = None,
+        ) -> Path:
+            if isinstance(artifact, RepositorySkill):
+                raise boundary_error
+            return super().save_artifact(run_id, artifact, filename, attempt=attempt)
+
+    runtime = RecordingRuntime(FakeAgentRuntime())
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        SkillPersistenceFailingStore(data_dir),
+        runtime,
+    )
+
+    run = controller.run(_work_item("WI-skill-persistence"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    reader = FileRunStore(data_dir)
+    profile = reader.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        f"generated repository guidance could not be persisted: {boundary_error}" in warning
+        for warning in profile.warnings
+    )
+    with pytest.raises(FileNotFoundError):
+        reader.load_artifact(run.id, RepositorySkill)
+    assert all(request.repository_skill is None for request in runtime.requests)
+
+
+def test_refreshed_profile_persistence_failure_skips_skill_research(
+    source_repo: Path, data_dir: Path
+) -> None:
+    class RefreshedProfileFailingStore(FileRunStore):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.profile_writes = 0
+
+        def save_artifact(
+            self,
+            run_id: str,
+            artifact: ArtifactModel,
+            filename: str | None = None,
+            *,
+            attempt: int | None = None,
+        ) -> Path:
+            if isinstance(artifact, RepositoryProfile):
+                self.profile_writes += 1
+                if self.profile_writes == 2:
+                    raise OSError("profile storage unavailable")
+            return super().save_artifact(run_id, artifact, filename, attempt=attempt)
+
+    runtime = RecordingRuntime(FakeAgentRuntime())
+    store = RefreshedProfileFailingStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+    )
+
+    run = controller.run(_work_item("WI-profile-persistence"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert all(
+        request.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL
+        for request in runtime.requests
+    )
+    profile = FileRunStore(data_dir).load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "refreshed repository profile could not be persisted" in warning
         for warning in profile.warnings
     )
 
@@ -852,6 +940,109 @@ def test_more_recognized_versions_than_the_target_bound_safely_skip(data_dir: Pa
 
     assert error is not None
     assert "react@19.1.24" in error
+
+
+def test_fake_runtime_guidance_satisfies_controller_provenance_rules(data_dir: Path) -> None:
+    """The fake double must only target dependency names it can officially ground."""
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+    profile = RepositoryProfile(
+        manifest_fingerprint="a" * 64,
+        dependency_fingerprint="b" * 64,
+        version_files=("package.json",),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="19.1.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react-dom",
+                declared_version="19.1.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="left-pad",
+                declared_version="1.3.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+        ),
+    )
+    result = FakeAgentRuntime().run(
+        AgentRequest(
+            role=AgentRole.RESEARCHER,
+            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+            model="gpt-5.6-sol",
+            reasoning="high",
+            work_item=_work_item("WI-fake-provenance"),
+            repository_profile=profile,
+            official_documentation_origins=list(
+                _config(data_dir).polish.official_documentation_origins
+            ),
+            timeout_seconds=60,
+        )
+    )
+
+    skill = result.repository_skill
+    assert skill is not None
+    assert {target.name for target in skill.targets} == {"react", "react-dom"}
+    assert controller._repository_skill_validation_error(skill, profile) is None
+
+
+def test_practice_source_with_a_version_claim_is_rejected_at_the_controller(
+    data_dir: Path,
+) -> None:
+    """Defense in depth: curated references may not carry a framework version."""
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+    profile = RepositoryProfile(manifest_fingerprint="a" * 64, dependency_fingerprint="b" * 64)
+    skill = RepositorySkill(
+        dependency_fingerprint=profile.dependency_fingerprint,
+        practice_sources=(
+            SkillSource(
+                title="Quality review heuristics",
+                url=PRACTICE_REFERENCE_URL,
+                version_scope="General",
+                applies_to=(GENERIC_SKILL_TARGET,),
+            ),
+        ),
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Use direct code.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Use current APIs.",)),
+        uncertainties=("No official source was consulted.",),
+    )
+
+    # A case-insensitive 'general' scope stays acceptable.
+    assert controller._repository_skill_validation_error(skill, profile) is None
+
+    versioned = skill.model_copy(
+        update={
+            "practice_sources": (
+                SkillSource(
+                    title="Quality review heuristics",
+                    url=PRACTICE_REFERENCE_URL,
+                    version_scope="react 19.1.0",
+                    applies_to=(GENERIC_SKILL_TARGET,),
+                ),
+            )
+        }
+    )
+
+    error = controller._repository_skill_validation_error(versioned, profile)
+
+    assert error is not None
+    assert "practice source carrying a version claim" in error
 
 
 def test_every_version_specific_target_requires_official_grounding(data_dir: Path) -> None:
