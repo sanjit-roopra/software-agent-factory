@@ -594,7 +594,7 @@ def test_generation_request_carries_only_the_profile_and_configured_sources(
         request.repository_profile.dependency_fingerprint
         == profile_repository(skill_repo).dependency_fingerprint
     )
-    assert "https://docs.pytest.org" in request.official_documentation_origins
+    assert request.official_documentation_origins[0] == "https://docs.pytest.org"
     assert request.practice_reference_urls
 
     workspace = Path(request.workspace_path or "")
