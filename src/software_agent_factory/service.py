@@ -297,9 +297,7 @@ class FactoryService:
             )
         return records
 
-    def run_once(
-        self, drain_timeout_seconds: float = DEFAULT_DRAIN_TIMEOUT_SECONDS
-    ) -> TickReport:
+    def run_once(self, drain_timeout_seconds: float = DEFAULT_DRAIN_TIMEOUT_SECONDS) -> TickReport:
         """One bounded cycle: recover, tick once, wait for dispatched work."""
         self.recover()
         report = self.scheduler.tick()

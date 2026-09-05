@@ -332,9 +332,7 @@ def build_program_arguments(request: ServiceInstallRequest) -> list[str]:
     return args
 
 
-def build_launch_agent_plist(
-    request: ServiceInstallRequest, path_value: str
-) -> dict[str, object]:
+def build_launch_agent_plist(request: ServiceInstallRequest, path_value: str) -> dict[str, object]:
     """The full plist payload as a plain dict, ready for ``plistlib.dumps``."""
     validate_label(request.label)
     throttle = max(MIN_THROTTLE_INTERVAL_SECONDS, int(request.poll_interval_seconds))
@@ -423,9 +421,7 @@ def _require_git_worktree(repo: Path) -> None:
     ``.git`` as a directory; a linked worktree has ``.git`` as a file
     pointing at the real git dir. Either satisfies this check."""
     if not (repo / ".git").exists():
-        raise ServiceInstallError(
-            f"repo does not look like a Git checkout (no .git found): {repo}"
-        )
+        raise ServiceInstallError(f"repo does not look like a Git checkout (no .git found): {repo}")
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -529,9 +525,7 @@ def _run_launchctl(
     try:
         return run_command(argv, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        raise ServiceInstallError(
-            f"launchctl {action} timed out after {timeout}s: {exc}"
-        ) from exc
+        raise ServiceInstallError(f"launchctl {action} timed out after {timeout}s: {exc}") from exc
     except OSError as exc:
         raise ServiceInstallError(f"launchctl {action} could not be run: {exc}") from exc
 
@@ -546,9 +540,7 @@ def _write_all(fd: int, payload: bytes) -> None:
     while total < len(view):
         written = os.write(fd, view[total:])
         if written <= 0:
-            raise OSError(
-                f"os.write made no progress after writing {total}/{len(view)} bytes"
-            )
+            raise OSError(f"os.write made no progress after writing {total}/{len(view)} bytes")
         total += written
 
 
@@ -569,9 +561,7 @@ def _atomic_write_plist(payload: bytes, *, launch_agents_dir: Path, label: str) 
       ``.plist.tmp`` file behind in ``~/Library/LaunchAgents``.
     """
     target = plist_path(label, launch_agents_dir)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=launch_agents_dir, prefix=f".{label}.", suffix=".plist.tmp"
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=launch_agents_dir, prefix=f".{label}.", suffix=".plist.tmp")
     tmp_path = Path(tmp_name)
     try:
         try:
@@ -628,9 +618,7 @@ def install_service(
     payload = render_plist_bytes(request, resolved_path_value)
 
     launch_agents_dir.mkdir(parents=True, exist_ok=True)
-    target = _atomic_write_plist(
-        payload, launch_agents_dir=launch_agents_dir, label=request.label
-    )
+    target = _atomic_write_plist(payload, launch_agents_dir=launch_agents_dir, label=request.label)
 
     domain = f"gui/{resolved_uid}"
     # Idempotency: tear down any previously loaded copy first. A missing job

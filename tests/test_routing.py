@@ -126,9 +126,7 @@ def test_escalation_plateaus_at_strongest_distinct_model(
     config = FactoryConfig.model_validate(_config_dict())
     router = ModelRouter(config)
 
-    last = router.model_for_implementer(
-        starting_complexity, config.retries.max_total_attempts
-    )
+    last = router.model_for_implementer(starting_complexity, config.retries.max_total_attempts)
 
     assert last is not None
     assert last.model == strongest_model

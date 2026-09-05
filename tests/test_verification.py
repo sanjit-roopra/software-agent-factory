@@ -61,9 +61,7 @@ def test_empty_command_list_passes(tmp_path: Path) -> None:
 
 @requires_models
 def test_successful_commands_all_pass(tmp_path: Path) -> None:
-    report = DeterministicVerifier().run(
-        ["echo hello", "true"], cwd=tmp_path, timeout_seconds=5
-    )
+    report = DeterministicVerifier().run(["echo hello", "true"], cwd=tmp_path, timeout_seconds=5)
 
     assert report.passed is True
     assert len(report.deterministic_checks) == 2
@@ -98,9 +96,7 @@ def test_stops_after_first_failure(tmp_path: Path) -> None:
 @requires_models
 def test_timeout_is_recorded_as_failed_result_not_raised(tmp_path: Path) -> None:
     started = time.monotonic()
-    report = DeterministicVerifier().run(
-        ["sleep 5"], cwd=tmp_path, timeout_seconds=1
-    )
+    report = DeterministicVerifier().run(["sleep 5"], cwd=tmp_path, timeout_seconds=1)
     elapsed = time.monotonic() - started
 
     assert report.passed is False
@@ -153,8 +149,10 @@ def test_ambient_credentials_are_not_visible_to_commands(
     monkeypatch.setenv("FACTORY_UNRELATED", "leaky-value")
 
     report = DeterministicVerifier().run(
-        ["echo \"gh=${GH_TOKEN:-absent} gha=${GITHUB_TOKEN:-absent} "
-         "aws=${AWS_SECRET_ACCESS_KEY:-absent} other=${FACTORY_UNRELATED:-absent}\""],
+        [
+            'echo "gh=${GH_TOKEN:-absent} gha=${GITHUB_TOKEN:-absent} '
+            'aws=${AWS_SECRET_ACCESS_KEY:-absent} other=${FACTORY_UNRELATED:-absent}"'
+        ],
         cwd=tmp_path,
         timeout_seconds=10,
     )
@@ -175,8 +173,10 @@ def test_base_allowlist_is_provided_and_extra_names_can_be_passed_through(
     monkeypatch.setenv("FACTORY_BUILD_PROFILE", "ci")
 
     report = DeterministicVerifier().run(
-        ['echo "home=${HOME:-absent} lang=${LANG:-absent} '
-         'profile=${FACTORY_BUILD_PROFILE:-absent}"'],
+        [
+            'echo "home=${HOME:-absent} lang=${LANG:-absent} '
+            'profile=${FACTORY_BUILD_PROFILE:-absent}"'
+        ],
         cwd=tmp_path,
         timeout_seconds=10,
         env_passthrough=["FACTORY_BUILD_PROFILE"],

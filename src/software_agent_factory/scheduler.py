@@ -635,9 +635,7 @@ class Scheduler:
         # ``UtcDateTime`` always normalizes to UTC) -- convert explicitly so
         # a non-UTC-offset clock can never compute the wrong calendar day.
         today = self.clock().astimezone(timezone.utc).date()
-        created_today = sum(
-            1 for run in self.store.list_runs() if run.created_at.date() == today
-        )
+        created_today = sum(1 for run in self.store.list_runs() if run.created_at.date() == today)
         return max(0, self.max_runs_per_day - created_today)
 
     def _is_eligible(self, item: TrackerItem, persisted_active_ids: frozenset[str]) -> bool:
@@ -704,8 +702,10 @@ class Scheduler:
         attempts = self._stall_attempts.get(opaque_id, 0) + 1
         self._stall_attempts[opaque_id] = attempts
 
-        decision = self.on_stall(entry.item, attempts) if self.on_stall is not None else (
-            StallDecision.ESCALATE
+        decision = (
+            self.on_stall(entry.item, attempts)
+            if self.on_stall is not None
+            else (StallDecision.ESCALATE)
         )
         if attempts > self.max_stall_retries:
             # Bounded retries are a factory policy, not a callback opinion:

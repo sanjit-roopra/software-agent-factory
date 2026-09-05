@@ -41,9 +41,7 @@ from software_agent_factory.workspace import (  # noqa: E402
 
 
 def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result.stdout
 
@@ -143,9 +141,7 @@ def test_prepare_is_idempotent(source_repo: Path, data_dir: Path) -> None:
     assert listing.count(str(first_path.resolve())) == 1
 
 
-def test_prepare_rejects_unsafe_existing_directory(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_prepare_rejects_unsafe_existing_directory(source_repo: Path, data_dir: Path) -> None:
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-3")
     ws.path.mkdir(parents=True)
     (ws.path / "leftover.txt").write_text("do not touch\n")
@@ -158,9 +154,7 @@ def test_prepare_rejects_unsafe_existing_directory(
     assert (ws.path / "leftover.txt").read_text() == "do not touch\n"
 
 
-def test_prepare_recovers_from_stale_missing_worktree(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_prepare_recovers_from_stale_missing_worktree(source_repo: Path, data_dir: Path) -> None:
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-4")
     path = ws.prepare()
     base_commit = ws.base_commit
@@ -454,9 +448,7 @@ def test_cleanup_removes_worktree(source_repo: Path, data_dir: Path) -> None:
     assert str(path.resolve()) not in listing
 
 
-def test_cleanup_refuses_path_outside_workspace_root(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_cleanup_refuses_path_outside_workspace_root(source_repo: Path, data_dir: Path) -> None:
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-9")
     ws.prepare()
 
@@ -473,9 +465,7 @@ def test_cleanup_refuses_path_outside_workspace_root(
     assert _git(source_repo, "status", "--porcelain") == ""
 
 
-def test_workspace_and_lock_paths_are_root_contained(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_workspace_and_lock_paths_are_root_contained(source_repo: Path, data_dir: Path) -> None:
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-10")
     assert ws.path.is_relative_to((data_dir / "workspaces").resolve())
     assert ws.lock_path.is_relative_to((data_dir / "locks").resolve())

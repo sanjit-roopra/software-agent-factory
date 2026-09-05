@@ -144,9 +144,7 @@ def test_tester_and_reviewer_receive_authoritative_evidence_only(
     controller = WorkflowController(
         config,
         store,
-        FakeAgentRuntime(
-            tester=record(AgentRole.TESTER), reviewer=record(AgentRole.REVIEWER)
-        ),
+        FakeAgentRuntime(tester=record(AgentRole.TESTER), reviewer=record(AgentRole.REVIEWER)),
     )
 
     run = controller.run(work_item(), source_repo)
@@ -185,9 +183,7 @@ def test_broken_deterministic_checks_never_reach_the_tester_or_reviewer(
     controller = WorkflowController(
         config,
         store,
-        FakeAgentRuntime(
-            tester=record(AgentRole.TESTER), reviewer=record(AgentRole.REVIEWER)
-        ),
+        FakeAgentRuntime(tester=record(AgentRole.TESTER), reviewer=record(AgentRole.REVIEWER)),
     )
 
     run = controller.run(work_item(), source_repo)
@@ -327,9 +323,7 @@ def test_implementer_failure_produces_an_implementer_repair_context(
 
     config = build_config(data_dir)
     store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config, store, FakeAgentRuntime(implementer=failing_then_ok)
-    )
+    controller = WorkflowController(config, store, FakeAgentRuntime(implementer=failing_then_ok))
 
     run = controller.run(work_item(), source_repo)
 
@@ -383,9 +377,7 @@ def test_scope_drift_replan_is_bounded_and_carries_scope_findings(
     assert planner_requests[1].repair_context is not None
     assert planner_requests[1].changed_files == ["package.json"]
     scope_attempts = [
-        record
-        for record in run.attempt_records
-        if record.triggered_by is AttemptTrigger.SCOPE
+        record for record in run.attempt_records if record.triggered_by is AttemptTrigger.SCOPE
     ]
     assert len(scope_attempts) == 1
     contexts = _repair_contexts(implementer_requests)
@@ -434,9 +426,7 @@ def test_sensitive_scope_drift_at_high_risk_escalates_immediately(
 def test_recover_abandoned_run_escalates_without_resetting_the_budget(
     source_repo: Path, data_dir: Path
 ) -> None:
-    config = build_config(
-        data_dir, verify=["false"], same_model_attempts=1, max_total_attempts=1
-    )
+    config = build_config(data_dir, verify=["false"], same_model_attempts=1, max_total_attempts=1)
     store = FileRunStore(data_dir)
     controller = WorkflowController(config, store, FakeAgentRuntime())
     exhausted = controller.run(work_item("WI-budget"), source_repo)
@@ -531,13 +521,9 @@ def test_pull_request_enabled_publishes_and_reaches_done_when_ci_disabled(
     assert not any(argv[1:3] == ["pr", "merge"] for argv in runner.commands("gh"))
 
 
-def test_pr_body_contains_every_required_section(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_pr_body_contains_every_required_section(source_repo: Path, data_dir: Path) -> None:
     runner = ScriptedRunner()
-    config = build_config(
-        data_dir, verify=["echo checking"], pull_request={"enabled": True}
-    )
+    config = build_config(data_dir, verify=["echo checking"], pull_request={"enabled": True})
     store = FileRunStore(data_dir)
     controller = build_controller(config, store, FakeAgentRuntime(), runner)
 
@@ -641,9 +627,7 @@ def test_excessive_changed_files_are_refused_before_publishing(
         return AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=plan)
 
     runner = ScriptedRunner()
-    config = build_config(
-        data_dir, pull_request={"enabled": True}, max_changed_files=2
-    )
+    config = build_config(data_dir, pull_request={"enabled": True}, max_changed_files=2)
     store = FileRunStore(data_dir)
     controller = build_controller(
         config,
@@ -764,9 +748,7 @@ def test_non_repairable_ci_failure_escalates_with_evidence(
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert "not repairable" in (run.failure_reason or "")
     assert "deploy=INFRA_FAILURE" in (run.failure_reason or "")
-    assert not any(
-        record.budget is AttemptBudget.CI_REPAIR for record in run.attempt_records
-    )
+    assert not any(record.budget is AttemptBudget.CI_REPAIR for record in run.attempt_records)
     report = store.load_artifact(run.id, CIReport)
     assert report.overall == "FAIL"
     assert report.failed_checks[0].failure_category == "INFRA_FAILURE"

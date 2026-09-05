@@ -266,9 +266,7 @@ def assess_publish_gate(
     protected_matches = find_protected_matches(changed_files, protected_file_patterns)
     violations: list[str] = []
     if protected_matches:
-        violations.append(
-            "changed files match protected patterns: " + ", ".join(protected_matches)
-        )
+        violations.append("changed files match protected patterns: " + ", ".join(protected_matches))
     if len(changed_files) > max_changed_files:
         violations.append(
             f"changed {len(changed_files)} files, which exceeds "
@@ -496,25 +494,21 @@ class ScopeDriftPolicy:
                 ScopeFinding(
                     category="excessive-file-count",
                     message=(
-                        f"Changed {len(normalized_files)} files; plan expected at most "
-                        f"{max_files}."
+                        f"Changed {len(normalized_files)} files; plan expected at most {max_files}."
                     ),
                     paths=normalized_files,
                 )
             )
 
         dependency_files = tuple(
-            path
-            for path in normalized_files
-            if PurePosixPath(path).name in _DEPENDENCY_FILES
+            path for path in normalized_files if PurePosixPath(path).name in _DEPENDENCY_FILES
         )
         if dependency_files:
             findings.append(
                 ScopeFinding(
                     category="dependency-change",
                     message=(
-                        "Changed dependency manifests or lockfiles: "
-                        f"{', '.join(dependency_files)}"
+                        f"Changed dependency manifests or lockfiles: {', '.join(dependency_files)}"
                     ),
                     paths=dependency_files,
                     sensitive=True,

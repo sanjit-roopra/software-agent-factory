@@ -125,9 +125,7 @@ def _run_git(
         text=True,
     )
     if check and completed.returncode != 0:
-        raise WorkspaceError(
-            f"git {' '.join(args)} failed in {cwd}: {completed.stderr.strip()}"
-        )
+        raise WorkspaceError(f"git {' '.join(args)} failed in {cwd}: {completed.stderr.strip()}")
     return completed
 
 
@@ -186,9 +184,7 @@ class GitWorktreeWorkspace:
         self.key = sanitize_work_item_id(work_item_id)
         self.branch_name = f"{branch_prefix}{self.key}"
 
-        self.path = _ensure_strictly_within(
-            self.workspace_root / self.key, self.workspace_root
-        )
+        self.path = _ensure_strictly_within(self.workspace_root / self.key, self.workspace_root)
         self.lock_path = _ensure_strictly_within(
             self.locks_root / f"{self.key}.lock", self.locks_root
         )
@@ -412,17 +408,13 @@ class GitWorktreeWorkspace:
                 self.base_commit = recorded
                 return
 
-        base = _run_git(
-            self.source_repo, ["merge-base", "HEAD", self.branch_name]
-        ).stdout.strip()
+        base = _run_git(self.source_repo, ["merge-base", "HEAD", self.branch_name]).stdout.strip()
         if not self._commit_exists(base):
             raise WorkspaceError(
                 f"computed base commit {base!r} for {self.branch_name} does not resolve "
                 f"in {self.source_repo}"
             )
-        self._meta_path.write_text(
-            json.dumps({"base_commit": base, "branch": self.branch_name})
-        )
+        self._meta_path.write_text(json.dumps({"base_commit": base, "branch": self.branch_name}))
         self.base_commit = base
 
     def _commit_exists(self, commit: str) -> bool:

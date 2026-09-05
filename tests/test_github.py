@@ -195,8 +195,7 @@ def test_commit_and_push_does_not_duplicate_trailer_if_already_present(tmp_path:
     )
     publisher = GitPublisher(runner=runner)
     message_with_trailer = (
-        "Implement feature\n\n"
-        "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+        "Implement feature\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
     )
 
     publisher.commit_and_push(tmp_path, "factory/wi-1", message_with_trailer)
@@ -274,9 +273,7 @@ def test_commit_and_push_rejects_branch_not_starting_with_prefix(tmp_path: Path)
 
 def test_commit_and_push_rejects_branch_equal_to_base_branch(tmp_path: Path) -> None:
     runner = FakeRunner()
-    publisher = GitPublisher(
-        runner=runner, branch_prefix="factory/", base_branch="factory/main"
-    )
+    publisher = GitPublisher(runner=runner, branch_prefix="factory/", base_branch="factory/main")
 
     with pytest.raises(UnsafeBranchNameError, match="base branch"):
         publisher.commit_and_push(tmp_path, "factory/main", "Implement feature")
@@ -401,9 +398,7 @@ def test_run_git_refuses_to_mutate_remotes_or_config(tmp_path: Path) -> None:
         "ssh://git@github.com:22/acme/repo.git",
     ],
 )
-def test_commit_and_push_accepts_github_com_https_and_ssh_remotes(
-    tmp_path: Path, url: str
-) -> None:
+def test_commit_and_push_accepts_github_com_https_and_ssh_remotes(tmp_path: Path, url: str) -> None:
     runner = FakeRunner(
         [
             _remote_url_response(url),

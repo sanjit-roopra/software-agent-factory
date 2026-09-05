@@ -14,6 +14,7 @@ import logging
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import assets
@@ -26,6 +27,9 @@ from .security import (
     token_matches,
 )
 from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
+
+if TYPE_CHECKING:
+    from .server import DashboardServer
 
 _logger = logging.getLogger("software_agent_factory.dashboard")
 
@@ -61,6 +65,7 @@ _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     """Handles one dashboard request. ``self.server`` is a ``DashboardServer``."""
 
+    server: DashboardServer
     server_version = "SoftwareAgentFactoryDashboard/1"
     protocol_version = "HTTP/1.1"
 
@@ -112,8 +117,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid query"}, send_body)
             return
 
-        bound_host = self.server.server_address[0]
-        port = self.server.server_address[1]
+        bound_host, port = self.server.address
 
         if not host_header_is_valid(self.headers.get("Host"), bound_host, port):
             self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid host"}, send_body)
@@ -231,9 +235,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         raw_offset = query.get("offset", [None])[0]
         bounds = clamp_pagination(raw_limit, raw_offset)
         if bounds is None:
-            self._respond_json(
-                HTTPStatus.BAD_REQUEST, {"error": "invalid pagination"}, send_body
-            )
+            self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid pagination"}, send_body)
             return
         limit, offset = bounds
 

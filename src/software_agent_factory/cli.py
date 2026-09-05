@@ -159,9 +159,7 @@ def _load_config(config: Path | None, data_dir: Path | None) -> FactoryConfig:
     if data_dir is not None:
         loaded = loaded.model_copy(
             update={
-                "factory": loaded.factory.model_copy(
-                    update={"data_dir": data_dir.expanduser()}
-                )
+                "factory": loaded.factory.model_copy(update={"data_dir": data_dir.expanduser()})
             }
         )
     return loaded
@@ -176,9 +174,7 @@ def _require_prerequisites(*, require_gh: bool, require_copilot: bool) -> None:
     code -- the alternative is a traceback from a failed ``git`` exec several
     layers down.
     """
-    missing = missing_prerequisites(
-        require_gh=require_gh, require_copilot=require_copilot
-    )
+    missing = missing_prerequisites(require_gh=require_gh, require_copilot=require_copilot)
     if not missing:
         return
     raise _fail(
@@ -224,8 +220,10 @@ def _stale_after(config: FactoryConfig, override_seconds: int | None) -> timedel
     same thing to ``factory status``, the dashboard and the scheduler's own
     stall detection instead of being an independently drifting constant.
     """
-    seconds = override_seconds if override_seconds is not None else (
-        config.scheduler.stall_timeout_seconds
+    seconds = (
+        override_seconds
+        if override_seconds is not None
+        else (config.scheduler.stall_timeout_seconds)
     )
     return timedelta(seconds=seconds)
 
@@ -361,9 +359,7 @@ def start_command(
         )
     # Polling the backlog is a GitHub operation, so ``gh`` is required here
     # even when publishing and CI observation are both disabled.
-    _require_prerequisites(
-        require_gh=True, require_copilot=runtime is RuntimeChoice.COPILOT
-    )
+    _require_prerequisites(require_gh=True, require_copilot=runtime is RuntimeChoice.COPILOT)
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
     _configure_logging(factory_config)
@@ -681,9 +677,7 @@ def _require_macos() -> None:
 
 @service_app.command("install")
 def service_install_command(
-    repo: Path = typer.Option(
-        ..., "--repo", help="Absolute path to the target Git repository."
-    ),
+    repo: Path = typer.Option(..., "--repo", help="Absolute path to the target Git repository."),
     github_repo: str = typer.Option(
         ..., "--github-repo", help="Backlog repository in 'OWNER/NAME' format."
     ),
@@ -706,9 +700,7 @@ def service_install_command(
         help="Explicit 'factory' executable to run (default: this frozen build or the "
         "installed console script).",
     ),
-    label: str = typer.Option(
-        DEFAULT_LABEL, "--label", help="LaunchAgent label to install under."
-    ),
+    label: str = typer.Option(DEFAULT_LABEL, "--label", help="LaunchAgent label to install under."),
     allow_source_dev: bool = typer.Option(
         False,
         "--allow-source-dev",
@@ -746,9 +738,7 @@ def service_install_command(
     if not report.success:
         for line in render_doctor_report(report):
             typer.echo(line, err=True)
-        raise _fail(
-            "refusing to install a service while 'factory doctor' reports errors."
-        )
+        raise _fail("refusing to install a service while 'factory doctor' reports errors.")
 
     try:
         resolved_executable = resolve_factory_executable(executable)
@@ -780,12 +770,8 @@ def service_install_command(
 
 @service_app.command("status")
 def service_status_command(
-    label: str = typer.Option(
-        DEFAULT_LABEL, "--label", help="LaunchAgent label to inspect."
-    ),
-    json_output: bool = typer.Option(
-        False, "--json", help="Emit the service status as JSON."
-    ),
+    label: str = typer.Option(DEFAULT_LABEL, "--label", help="LaunchAgent label to inspect."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the service status as JSON."),
 ) -> None:
     """Report whether the LaunchAgent is installed and loaded (read-only)."""
     _require_macos()
@@ -803,12 +789,8 @@ def service_status_command(
 
 @service_app.command("uninstall")
 def service_uninstall_command(
-    label: str = typer.Option(
-        DEFAULT_LABEL, "--label", help="LaunchAgent label to remove."
-    ),
-    json_output: bool = typer.Option(
-        False, "--json", help="Emit the uninstall result as JSON."
-    ),
+    label: str = typer.Option(DEFAULT_LABEL, "--label", help="LaunchAgent label to remove."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the uninstall result as JSON."),
 ) -> None:
     """Unload the LaunchAgent and remove its plist.
 

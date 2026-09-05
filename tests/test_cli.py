@@ -267,9 +267,7 @@ def test_missing_config_file_fails_cleanly(source_repo: Path, tmp_path: Path) ->
     assert "config file not found" in result.output
 
 
-def test_run_happy_path_reaches_pr_ready_with_zero_exit(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_run_happy_path_reaches_pr_ready_with_zero_exit(source_repo: Path, data_dir: Path) -> None:
     result = runner.invoke(
         app,
         [
@@ -352,9 +350,7 @@ def test_run_non_pr_ready_outcome_uses_nonzero_exit_code(
     assert "reason:" in result.output
 
 
-def test_runs_and_show_commands_work_with_temp_data_dir(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_runs_and_show_commands_work_with_temp_data_dir(source_repo: Path, data_dir: Path) -> None:
     run_result = runner.invoke(
         app,
         [
@@ -412,9 +408,7 @@ def test_run_defaults_to_the_fake_runtime_and_never_builds_copilot(
             built.append("copilot")
             raise AssertionError("the default runtime must never be CopilotAgentRuntime")
 
-    monkeypatch.setattr(
-        "software_agent_factory.cli.CopilotAgentRuntime", ExplodingCopilotRuntime
-    )
+    monkeypatch.setattr("software_agent_factory.cli.CopilotAgentRuntime", ExplodingCopilotRuntime)
 
     result = runner.invoke(
         app,
@@ -503,9 +497,7 @@ def test_run_rejects_an_unknown_runtime(source_repo: Path, data_dir: Path) -> No
     assert result.exit_code != 0
 
 
-def test_explicit_work_item_id_is_used_for_deduplication(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_explicit_work_item_id_is_used_for_deduplication(source_repo: Path, data_dir: Path) -> None:
     args = [
         "run",
         "--repo",
@@ -545,9 +537,7 @@ def _scheduler_config(
 
     from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
 
-    packaged = (
-        Path(__import__("software_agent_factory").__file__).parent / DEFAULT_CONFIG_FILENAME
-    )
+    packaged = Path(__import__("software_agent_factory").__file__).parent / DEFAULT_CONFIG_FILENAME
     payload = yaml.safe_load(packaged.read_text(encoding="utf-8"))
     payload["factory"]["data_dir"] = str(data_dir)
     payload["scheduler"]["enabled"] = enabled

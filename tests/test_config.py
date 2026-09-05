@@ -241,7 +241,6 @@ def test_ci_enabled_is_accepted_with_pull_requests_enabled(tmp_path: Path) -> No
     assert config.pull_request.enabled is True
 
 
-
 def _config_with(tmp_path: Path, overrides: dict[str, object], name: str = "factory") -> Path:
     payload = yaml.safe_load(_MINIMAL_CONFIG)
     for section, values in overrides.items():
@@ -296,9 +295,7 @@ def test_max_runs_per_day_accepts_null_for_unbounded_and_a_custom_positive_value
         {"scope_drift": {"max_replans": -1}},
     ],
 )
-def test_config_rejects_invalid_phase_values(
-    tmp_path: Path, overrides: dict[str, object]
-) -> None:
+def test_config_rejects_invalid_phase_values(tmp_path: Path, overrides: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         load_config(_config_with(tmp_path, overrides))
 

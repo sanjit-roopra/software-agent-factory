@@ -19,9 +19,30 @@ factory = "software_agent_factory.__main__:main"
 
 [dependency-groups]
 dev = [
+  { include-group = "distribution" },
+  { include-group = "native" },
+  { include-group = "quality" },
+  { include-group = "security" },
+  { include-group = "test" },
+]
+distribution = [
+  "check-wheel-contents>=0.6,<1.0",
+  "twine>=6.0,<7.0",
+]
+native = [
   "pyinstaller==6.22.2",
-  "pytest>=8.3,<9.0",
+]
+quality = [
+  "mypy>=1.15,<2.0",
   "ruff>=0.6,<1.0",
+  "types-pyyaml>=6.0.12,<7.0",
+]
+security = [
+  "pip-audit>=2.9,<3.0",
+]
+test = [
+  "pytest>=9.0.3,<10.0",
+  "pytest-cov>=6.0,<8.0",
 ]
 
 [tool.setuptools]
@@ -38,6 +59,27 @@ software_agent_factory = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["software_agent_factory"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["pydantic.mypy"]
+strict = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+files = ["src/software_agent_factory", "scripts/release"]
+
+[tool.pydantic-mypy]
+warn_required_dynamic_aliases = true
 
 [tool.ruff]
 line-length = 100

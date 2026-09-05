@@ -96,9 +96,7 @@ def _request(role: AgentRole, **overrides: object) -> AgentRequest:
         (AgentRole.REVIEWER, ReviewReport),
     ],
 )
-def test_every_role_maps_to_its_artifact_model(
-    role: AgentRole, expected: type[object]
-) -> None:
+def test_every_role_maps_to_its_artifact_model(role: AgentRole, expected: type[object]) -> None:
     assert artifact_model_for_role(role) is expected
 
 
@@ -230,9 +228,7 @@ def test_triage_and_refiner_prompts_stay_minimal() -> None:
 
 def test_diff_is_bounded_in_prompts() -> None:
     huge = "x" * (MAX_DIFF_CHARS + 500)
-    prompt = build_prompt(
-        _request(AgentRole.TESTER, diff=huge, changed_files=["a.py"])
-    )
+    prompt = build_prompt(_request(AgentRole.TESTER, diff=huge, changed_files=["a.py"]))
 
     assert "truncated 500 characters" in prompt
     assert len(prompt) < len(huge) + 5000

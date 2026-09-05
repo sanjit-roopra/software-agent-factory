@@ -195,9 +195,7 @@ def test_exhaustive_transition_matrix_matches_declared_table(data_dir: Path) -> 
     all_states = list(WorkflowState)
 
     for from_state, to_state in itertools.product(all_states, all_states):
-        run = FactoryRun(
-            id=f"RUN-{from_state}-{to_state}", work_item_id="WI-X", state=from_state
-        )
+        run = FactoryRun(id=f"RUN-{from_state}-{to_state}", work_item_id="WI-X", state=from_state)
         allowed = to_state in ALLOWED_TRANSITIONS[from_state]
         if allowed:
             result = controller.transition(run, to_state)
@@ -217,9 +215,7 @@ def test_invalid_transition_from_terminal_state_is_rejected(data_dir: Path) -> N
         controller.transition(run, WorkflowState.TRIAGING)
 
 
-def test_invalid_repository_produces_persisted_failed_run(
-    tmp_path: Path, data_dir: Path
-) -> None:
+def test_invalid_repository_produces_persisted_failed_run(tmp_path: Path, data_dir: Path) -> None:
     store = FileRunStore(data_dir)
     controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
 
@@ -298,9 +294,7 @@ def test_fake_agent_lying_about_changed_files_cannot_affect_persisted_evidence(
 
     config = _config(data_dir)
     store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config, store, FakeAgentRuntime(implementer=lying_implementer)
-    )
+    controller = WorkflowController(config, store, FakeAgentRuntime(implementer=lying_implementer))
 
     run = controller.run(_work_item(), source_repo)
 
@@ -390,9 +384,7 @@ def test_reviewer_rejection_is_bounded_by_same_global_attempt_budget(
     controller = WorkflowController(
         config,
         store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L2, Risk.R1), reviewer=rejecting_reviewer
-        ),
+        FakeAgentRuntime(triage=_triage_hook(Complexity.L2, Risk.R1), reviewer=rejecting_reviewer),
     )
 
     run = controller.run(_work_item(), source_repo)
@@ -619,9 +611,7 @@ def test_transition_clears_stale_completion_and_failure_on_an_active_state(
     controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
     run = FactoryRun(
         id="RUN-stale", work_item_id="WI-X", state=WorkflowState.CI_DIAGNOSIS
-    ).model_copy(
-        update={"failure_reason": "an earlier CI failure", "completed_at": utc_now()}
-    )
+    ).model_copy(update={"failure_reason": "an earlier CI failure", "completed_at": utc_now()})
 
     moved = controller.transition(run, WorkflowState.IMPLEMENTING)
 
@@ -637,9 +627,7 @@ def test_transition_refreshes_last_activity_and_the_lease_heartbeat(
     store = FileRunStore(data_dir)
     controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
     lease = RunLease(host="localhost", pid=4242, heartbeat_at=utc_now())
-    run = FactoryRun(
-        id="RUN-lease", work_item_id="WI-X", state=WorkflowState.PLANNING, lease=lease
-    )
+    run = FactoryRun(id="RUN-lease", work_item_id="WI-X", state=WorkflowState.PLANNING, lease=lease)
 
     active = controller.transition(run, WorkflowState.IMPLEMENTING)
     assert active.lease is not None
@@ -673,13 +661,11 @@ def test_is_run_finished_distinguishes_completed_from_interrupted_pr_ready() -> 
     interrupted = FactoryRun(id="a", work_item_id="w", state=WorkflowState.PR_READY)
     completed = interrupted.model_copy(update={"completed_at": utc_now()})
 
-
     assert is_run_finished(interrupted) is False
     assert is_run_finished(completed) is True
     for state in (WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED):
-        assert is_run_finished(
-            FactoryRun(id="b", work_item_id="w", state=state)
-        ) is True
-    assert is_run_finished(
-        FactoryRun(id="c", work_item_id="w", state=WorkflowState.CI_RUNNING)
-    ) is False
+        assert is_run_finished(FactoryRun(id="b", work_item_id="w", state=state)) is True
+    assert (
+        is_run_finished(FactoryRun(id="c", work_item_id="w", state=WorkflowState.CI_RUNNING))
+        is False
+    )

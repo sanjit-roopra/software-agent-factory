@@ -67,9 +67,7 @@ def write_config(path: Path, data_dir: Path, **overrides: object) -> Path:
     exercise the same offline, all-integrations-disabled configuration a real
     installation gets, with only the named keys changed.
     """
-    packaged = (
-        Path(__import__("software_agent_factory").__file__).parent / DEFAULT_CONFIG_FILENAME
-    )
+    packaged = Path(__import__("software_agent_factory").__file__).parent / DEFAULT_CONFIG_FILENAME
     payload = yaml.safe_load(packaged.read_text(encoding="utf-8"))
     payload["factory"]["data_dir"] = str(data_dir)
     for section, values in overrides.items():
@@ -247,9 +245,7 @@ def test_status_reports_metrics_and_health_for_a_real_run(
     assert run_id in result.output
 
 
-def test_status_json_contains_snapshot_and_health(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_status_json_contains_snapshot_and_health(source_repo: Path, data_dir: Path) -> None:
     make_run(source_repo, data_dir)
 
     result = runner.invoke(app, ["status", "--json", "--data-dir", str(data_dir)])
@@ -276,27 +272,19 @@ def test_status_never_creates_the_data_directory(tmp_path: Path) -> None:
 
 def test_status_leaves_persisted_runs_untouched(source_repo: Path, data_dir: Path) -> None:
     make_run(source_repo, data_dir)
-    before = {
-        path: path.read_bytes() for path in sorted(data_dir.rglob("*")) if path.is_file()
-    }
+    before = {path: path.read_bytes() for path in sorted(data_dir.rglob("*")) if path.is_file()}
 
     assert runner.invoke(app, ["status", "--data-dir", str(data_dir)]).exit_code == 0
 
-    after = {
-        path: path.read_bytes() for path in sorted(data_dir.rglob("*")) if path.is_file()
-    }
+    after = {path: path.read_bytes() for path in sorted(data_dir.rglob("*")) if path.is_file()}
     assert after == before
 
 
-def test_status_reports_a_truncated_scan_as_degraded(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_status_reports_a_truncated_scan_as_degraded(source_repo: Path, data_dir: Path) -> None:
     make_run(source_repo, data_dir, title="First")
     make_run(source_repo, data_dir, title="Second")
 
-    result = runner.invoke(
-        app, ["status", "--data-dir", str(data_dir), "--max-scanned-runs", "1"]
-    )
+    result = runner.invoke(app, ["status", "--data-dir", str(data_dir), "--max-scanned-runs", "1"])
 
     assert result.exit_code == 0, result.output
     assert "scan truncated" in result.output
@@ -435,17 +423,13 @@ def test_dashboard_open_browser_flag_opens_the_tokenized_url(
     opened: list[str] = []
     monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url))
 
-    result = runner.invoke(
-        app, ["dashboard", "--data-dir", str(data_dir), "--open-browser"]
-    )
+    result = runner.invoke(app, ["dashboard", "--data-dir", str(data_dir), "--open-browser"])
 
     assert result.exit_code == 0, result.output
     assert opened == ["http://127.0.0.1:8765/?token=test-token"]
 
 
-def test_dashboard_handles_ctrl_c_cleanly(
-    monkeypatch: pytest.MonkeyPatch, data_dir: Path
-) -> None:
+def test_dashboard_handles_ctrl_c_cleanly(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> None:
     servers: list[FakeDashboardServer] = []
 
     def fake_create_server(config: object) -> FakeDashboardServer:
@@ -589,9 +573,7 @@ def scheduler_config(tmp_path: Path, data_dir: Path) -> Path:
     )
 
 
-def install_args(
-    source_repo: Path, config_path: Path, executable: Path, *extra: str
-) -> list[str]:
+def install_args(source_repo: Path, config_path: Path, executable: Path, *extra: str) -> list[str]:
     return [
         "service",
         "install",
@@ -790,8 +772,7 @@ def test_service_install_defaults_to_the_fake_runtime(
     monkeypatch.setattr(cli, "install_service", fake_install)
 
     assert (
-        runner.invoke(app, install_args(source_repo, scheduler_config, executable)).exit_code
-        == 0
+        runner.invoke(app, install_args(source_repo, scheduler_config, executable)).exit_code == 0
     )
 
     assert "--runtime" in build_program_arguments(captured["request"])
@@ -850,9 +831,7 @@ def test_service_program_arguments_match_the_start_command_options(
     root_command = get_command(app)
     start = root_command.commands["start"]  # type: ignore[attr-defined]
     option_names = {
-        option
-        for parameter in start.params
-        for option in getattr(parameter, "opts", ())
+        option for parameter in start.params for option in getattr(parameter, "opts", ())
     }
     for token in arguments:
         if token.startswith("--"):

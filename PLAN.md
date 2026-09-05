@@ -642,9 +642,17 @@ Run this repository's own deterministic checks in GitHub Actions on push and
 pull request.
 
 Scope:
-- Python 3.13, `uv sync --group dev`
-- `uv run ruff check .`
-- `uv run pytest`
+- Python 3.13 and 3.14, `uv sync --locked --group dev`
+- parallel fast-feedback jobs for formatting/linting/type checking, tests and
+  package verification
+- `uv run --no-sync ruff format --check .`
+- `uv run --no-sync ruff check .`
+- strict mypy with the Pydantic plugin
+- offline pytest with branch coverage and a 90% floor
+- wheel/sdist metadata, contents, clean-install and CLI smoke checks
+- dependency review, CodeQL and scheduled locked-environment auditing
+- weekly Python 3.15 prerelease compatibility coverage
+- Dependabot updates for uv dependencies and SHA-pinned Actions
 - native macOS runners for both target architectures: `macos-15` (arm64) and
   `macos-15-intel` (x86_64)
 - no secrets, no model calls, no network-dependent tests
@@ -656,14 +664,16 @@ run observes CI on a *target* repository.
 
 - a pull request that breaks lint or tests reports a failing check (marking it
   *required* is a branch-protection setting, not a workflow one)
+- a pull request that breaks formatting, typing, coverage or package integrity
+  also reports a failing check
 - the workflow completes with no repository secret configured
 - the workflow fails if any job attempts a paid model call: the suite only uses
   `FakeAgentRuntime`, and `tests/conftest.py` blocks non-loopback sockets and
   direct execution of the real `gh`/`copilot` binaries process-wide
 - both architecture jobs pass independently. To bound hosted-runner cost they
-  run on `main`, on release tags and on manual dispatch rather than on every
-  pull request, which relies on the Ubuntu job
-- a clean checkout passes with no manual step beyond `uv sync --group dev`
+  run on `main` and on manual dispatch rather than on every pull request;
+  release tags are owned by the release workflow and are not built twice
+- a clean checkout passes with no manual step beyond `uv sync --locked --group dev`
 
 ## Phase 15.1. Tag-driven release (continuous delivery)
 
@@ -671,8 +681,11 @@ Status: done. `.github/workflows/release.yml` plus `scripts/release/`. The
 acceptance criteria below are the ones only a real `v*` tag can demonstrate;
 everything that can be checked without publishing (tag/version match, archive
 shape, `INSTALL.txt` contents, offline smoke of the built executable, action
-pinning, permissions) is covered by `tests/test_release_workflows.py` and by
-the local build-and-smoke procedure.
+pinning, permissions, distribution validation and release-identity consistency)
+is covered by `tests/test_release_workflows.py` and by the local
+build-and-smoke procedure. Public-repository release artifacts receive GitHub
+build-provenance attestations; private repositories require the GitHub plan
+that supports artifact attestations.
 
 CD here means *continuous delivery of immutable artifacts*: pushing a version
 tag produces a downloadable, runnable macOS build attached to a GitHub Release.

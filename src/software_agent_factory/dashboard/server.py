@@ -61,8 +61,18 @@ class DashboardServer(ThreadingHTTPServer):
         super().__init__((bind_host, config.port), DashboardRequestHandler)
 
     @property
+    def address(self) -> tuple[str, int]:
+        address = self.server_address
+        if not isinstance(address, tuple) or len(address) < 2:
+            raise RuntimeError("dashboard server returned an invalid address")
+        host, port = address[0], address[1]
+        if not isinstance(host, str) or not isinstance(port, int):
+            raise RuntimeError("dashboard server returned an invalid address")
+        return host, port
+
+    @property
     def base_url(self) -> str:
-        host, port = self.server_address[0], self.server_address[1]
+        host, port = self.address
         return f"http://{host}:{port}"
 
     @property

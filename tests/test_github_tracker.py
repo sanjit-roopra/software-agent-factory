@@ -189,9 +189,7 @@ def test_fetch_by_ids_revalidates_each_issue_and_marks_closed_or_label_removed_u
     runner = FakeRunner(
         [
             FakeCompletedProcess(
-                stdout=json.dumps(
-                    _issue_payload(42, state="CLOSED", labels=("agent-ready", "p1"))
-                )
+                stdout=json.dumps(_issue_payload(42, state="CLOSED", labels=("agent-ready", "p1")))
             ),
             FakeCompletedProcess(stdout=json.dumps(_issue_payload(43, labels=("bug",)))),
         ]

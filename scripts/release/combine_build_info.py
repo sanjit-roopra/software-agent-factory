@@ -22,27 +22,30 @@ def _load(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _consistent_value(entries: list[dict[str, Any]], key: str) -> str:
+    values = {entry.get(key) for entry in entries}
+    if len(values) != 1:
+        rendered = sorted(repr(value) for value in values)
+        raise SystemExit(f"Expected exactly one release {key}, found: {rendered}")
+    value = values.pop()
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"Release {key} must be a non-empty string")
+    return value
+
+
 def main() -> int:
     args = parse_args()
     entries = [_load(path) for path in args.build_info]
-    versions = {entry.get("version") for entry in entries}
-    if len(versions) != 1:
-        raise SystemExit(f"Expected exactly one release version, found: {sorted(versions)}")
-
-    first = entries[0]
-    payload = {
-        "project": first.get("project", "software-agent-factory"),
-        "version": first["version"],
-        "tag": first.get("tag", ""),
-        "commit_sha": first.get("commit_sha", ""),
-        "artifacts": sorted(
-            entries,
-            key=lambda entry: (
-                str(entry.get("target_architecture", "")),
-                str(entry.get("runner_image", "")),
-            ),
-        ),
+    payload: dict[str, Any] = {
+        key: _consistent_value(entries, key) for key in ("project", "version", "tag", "commit_sha")
     }
+    payload["artifacts"] = sorted(
+        entries,
+        key=lambda entry: (
+            str(entry.get("target_architecture", "")),
+            str(entry.get("runner_image", "")),
+        ),
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0

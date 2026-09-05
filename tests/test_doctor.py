@@ -60,9 +60,7 @@ class FakeRunner:
     oserror_for: set[str] = field(default_factory=set)
     calls: list[tuple[str, ...]] = field(default_factory=list)
 
-    def __call__(
-        self, argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def __call__(self, argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         self.calls.append(tuple(argv))
         key = argv[0]
         if key in self.timeout_for:
@@ -296,9 +294,7 @@ def test_check_config_valid_is_ok(tmp_path: Path) -> None:
     config_path = tmp_path / "factory.yaml"
     import yaml
 
-    config_path.write_text(
-        yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8"
-    )
+    config_path.write_text(yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8")
     result, loaded = check_config(config_path)
     assert result.status is CheckStatus.OK
     assert loaded is not None
@@ -397,9 +393,7 @@ def test_run_doctor_offline_default_never_requires_gh_or_copilot(tmp_path: Path)
     config_path = tmp_path / "factory.yaml"
     import yaml
 
-    config_path.write_text(
-        yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8"
-    )
+    config_path.write_text(yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8")
 
     env, _ = make_env(
         available={"git": "/usr/bin/git", "launchctl": "/bin/launchctl"}
@@ -422,9 +416,7 @@ def test_run_doctor_requires_gh_when_pull_request_enabled(tmp_path: Path) -> Non
     config_path = tmp_path / "factory.yaml"
     import yaml
 
-    config_path.write_text(
-        yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8"
-    )
+    config_path.write_text(yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8")
 
     env, _ = make_env(available={"git": "/usr/bin/git"})  # gh missing
     report = run_doctor(config_path=config_path, environment=env)
@@ -451,9 +443,7 @@ def test_run_doctor_uses_config_data_dir_when_not_overridden(tmp_path: Path) -> 
     config_path = tmp_path / "factory.yaml"
     import yaml
 
-    config_path.write_text(
-        yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8"
-    )
+    config_path.write_text(yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8")
 
     env, _ = make_env(available={"git": "/usr/bin/git"})
     report = run_doctor(config_path=config_path, environment=env)
@@ -469,14 +459,10 @@ def test_run_doctor_data_dir_override_wins(tmp_path: Path) -> None:
     config_path = tmp_path / "factory.yaml"
     import yaml
 
-    config_path.write_text(
-        yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8"
-    )
+    config_path.write_text(yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8")
 
     env, _ = make_env(available={"git": "/usr/bin/git"})
-    report = run_doctor(
-        config_path=config_path, data_dir_override=override_dir, environment=env
-    )
+    report = run_doctor(config_path=config_path, data_dir_override=override_dir, environment=env)
     data_dir_check = next(c for c in report.checks if c.name == "data_dir")
     assert override_dir.exists()
     assert str(override_dir) in data_dir_check.message
@@ -522,9 +508,7 @@ def test_doctor_report_to_dict_is_json_serializable() -> None:
 
     from software_agent_factory.doctor import CheckResult
 
-    report = DoctorReport(
-        checks=(CheckResult(name="a", status=CheckStatus.OK, message="fine"),)
-    )
+    report = DoctorReport(checks=(CheckResult(name="a", status=CheckStatus.OK, message="fine"),))
     payload = report.to_dict()
     serialized = json.dumps(payload)
     assert '"status": "ok"' in serialized or '"status":"ok"' in serialized
@@ -550,9 +534,7 @@ def test_default_command_runner_bounded_by_timeout() -> None:
     import sys
 
     with pytest.raises(subprocess.TimeoutExpired):
-        default_command_runner(
-            [sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2
-        )
+        default_command_runner([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2)
 
 
 # -- gh is required by every GitHub-touching feature ---------------------------
@@ -563,9 +545,7 @@ def _write_config(tmp_path: Path, **kwargs: object) -> Path:
 
     factory_config = build_config(tmp_path / "data", **kwargs)
     config_path = tmp_path / "factory.yaml"
-    config_path.write_text(
-        yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8"
-    )
+    config_path.write_text(yaml.safe_dump(factory_config.model_dump(mode="json")), encoding="utf-8")
     return config_path
 
 
@@ -576,15 +556,11 @@ def test_requires_gh_is_true_for_every_github_touching_feature(tmp_path: Path) -
     assert requires_gh(build_config(tmp_path / "data", pull_request={"enabled": True})) is True
     assert (
         requires_gh(
-            build_config(
-                tmp_path / "data", pull_request={"enabled": True}, ci={"enabled": True}
-            )
+            build_config(tmp_path / "data", pull_request={"enabled": True}, ci={"enabled": True})
         )
         is True
     )
-    assert (
-        requires_gh(build_config(tmp_path / "data", scheduler={"enabled": True})) is True
-    )
+    assert requires_gh(build_config(tmp_path / "data", scheduler={"enabled": True})) is True
 
 
 def test_run_doctor_requires_gh_when_the_scheduler_is_enabled(tmp_path: Path) -> None:
@@ -620,9 +596,10 @@ def test_missing_prerequisites_reports_only_requested_tools() -> None:
     assert missing_prerequisites(environment=env) == []
     assert missing_prerequisites(require_gh=True, environment=env) == ["gh"]
     assert missing_prerequisites(require_copilot=True, environment=env) == ["copilot"]
-    assert missing_prerequisites(
-        require_gh=True, require_copilot=True, environment=env
-    ) == ["gh", "copilot"]
+    assert missing_prerequisites(require_gh=True, require_copilot=True, environment=env) == [
+        "gh",
+        "copilot",
+    ]
 
 
 def test_missing_prerequisites_is_empty_when_everything_is_present() -> None:
@@ -636,6 +613,4 @@ def test_missing_prerequisites_is_empty_when_everything_is_present() -> None:
         }
     )
 
-    assert (
-        missing_prerequisites(require_gh=True, require_copilot=True, environment=env) == []
-    )
+    assert missing_prerequisites(require_gh=True, require_copilot=True, environment=env) == []

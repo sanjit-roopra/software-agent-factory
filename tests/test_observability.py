@@ -393,9 +393,7 @@ def test_snapshot_is_deterministic_for_same_inputs(tmp_path: Path) -> None:
     first = build_monitoring_snapshot(store, now=T0)
     second = build_monitoring_snapshot(store, now=T0)
 
-    assert first.model_dump(exclude={"generated_at"}) == second.model_dump(
-        exclude={"generated_at"}
-    )
+    assert first.model_dump(exclude={"generated_at"}) == second.model_dump(exclude={"generated_at"})
 
 
 # ---------------------------------------------------------------------------
@@ -1064,9 +1062,7 @@ def test_finished_runs_never_appear_as_stale_run_findings(tmp_path: Path) -> Non
     store = _fake_store(tmp_path)
     old = T0 - timedelta(days=10)
     store.add_run(_run("old-done", state=WorkflowState.DONE, created_at=old, completed_at=old))
-    store.add_run(
-        _run("old-failed", state=WorkflowState.FAILED, created_at=old, completed_at=old)
-    )
+    store.add_run(_run("old-failed", state=WorkflowState.FAILED, created_at=old, completed_at=old))
     store.add_run(
         _run("old-escalated", state=WorkflowState.NEEDS_HUMAN, created_at=old, completed_at=old)
     )
@@ -1280,9 +1276,7 @@ def test_operational_health_never_writes_to_data_dir(tmp_path: Path) -> None:
     anything under data_dir -- not the runs it scans, not lock files, not
     workspace directories."""
     store = _fake_store(tmp_path)
-    store.add_run(
-        _run("run-1", workspace_path=str(tmp_path / "workspaces" / "run-1-key"))
-    )
+    store.add_run(_run("run-1", workspace_path=str(tmp_path / "workspaces" / "run-1-key")))
     (tmp_path / "workspaces" / "run-1-key").mkdir(parents=True)
     (tmp_path / "workspaces" / "orphan").mkdir(parents=True)
     locks_dir = tmp_path / "locks"

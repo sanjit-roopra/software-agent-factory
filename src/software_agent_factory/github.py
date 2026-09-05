@@ -129,9 +129,7 @@ def default_command_runner(
 ) -> subprocess.CompletedProcess[str]:
     """Run a command as an argument list; never through a shell."""
     merged_env = None if env is None else {**os.environ, **env}
-    return subprocess.run(
-        list(args), cwd=cwd, env=merged_env, capture_output=True, text=True
-    )
+    return subprocess.run(list(args), cwd=cwd, env=merged_env, capture_output=True, text=True)
 
 
 def _redact(text: str) -> str:
@@ -188,9 +186,7 @@ class GitCommandError(GitPublishError):
         self.returncode = returncode
         self.stderr = _redact(stderr)
         joined = " ".join(self.command_args)
-        super().__init__(
-            f"git {joined} failed with exit code {returncode}: {self.stderr.strip()}"
-        )
+        super().__init__(f"git {joined} failed with exit code {returncode}: {self.stderr.strip()}")
 
 
 class GitHubError(Exception):
@@ -206,9 +202,7 @@ class GitHubCommandError(GitHubError):
         self.returncode = returncode
         self.stderr = _redact(stderr)
         joined = " ".join(str(part) for part in self.command_args)
-        super().__init__(
-            f"gh {joined} failed with exit code {returncode}: {self.stderr.strip()}"
-        )
+        super().__init__(f"gh {joined} failed with exit code {returncode}: {self.stderr.strip()}")
 
 
 class CIPollTimeoutError(GitHubError):
@@ -289,8 +283,7 @@ def _validate_branch_name(branch_name: str, *, branch_prefix: str, base_branch: 
         raise UnsafeBranchNameError(f"branch name {branch_name!r} is not a safe ref name")
     if not branch_name.startswith(branch_prefix):
         raise UnsafeBranchNameError(
-            f"branch {branch_name!r} does not start with the configured "
-            f"prefix {branch_prefix!r}"
+            f"branch {branch_name!r} does not start with the configured prefix {branch_prefix!r}"
         )
     if branch_name == base_branch:
         raise UnsafeBranchNameError(
@@ -301,9 +294,7 @@ def _validate_branch_name(branch_name: str, *, branch_prefix: str, base_branch: 
 def _validate_change_scope(changed_files: Sequence[str], *, max_changed_files: int) -> None:
     protected = sorted(f for f in changed_files if _is_protected_path(f))
     if protected:
-        raise ProtectedFileError(
-            f"refusing to commit protected file(s): {', '.join(protected)}"
-        )
+        raise ProtectedFileError(f"refusing to commit protected file(s): {', '.join(protected)}")
     if len(changed_files) > max_changed_files:
         raise ExcessiveChangeScopeError(
             f"refusing to commit {len(changed_files)} changed files "
@@ -345,9 +336,7 @@ class GitPublisher:
                     f"refusing to run git {head!r}: this adapter must not mutate "
                     "repository configuration or remotes"
                 )
-            if head == "remote" and (
-                len(args) < 2 or args[1] not in _ALLOWED_REMOTE_SUBCOMMANDS
-            ):
+            if head == "remote" and (len(args) < 2 or args[1] not in _ALLOWED_REMOTE_SUBCOMMANDS):
                 raise GitPublishError(
                     "refusing to run git remote "
                     f"{' '.join(args[1:]) or '<none>'!r}: only "

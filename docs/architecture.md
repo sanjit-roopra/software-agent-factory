@@ -963,11 +963,13 @@ does not install, restart, promote or self-update anything (ADR-015).
 ```text
 version tag
     ↓
-factory CI (lint + tests, macos-15 and macos-15-intel)
+release quality gate (format + lint + types + tests + dependency audit)
     ↓
-build
+build + validate distributions and native macOS artifacts
     ↓
-GitHub Release (immutable)
+attest public-repository artifacts
+    ↓
+GitHub Release (immutable by policy and overwrite refusal)
     ↓
 human downloads and extracts
 ```

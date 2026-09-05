@@ -131,12 +131,10 @@ class GitHubIssueProvider(TrackerProvider):
     def _env(self) -> Mapping[str, str] | None:
         return {"GH_TOKEN": self.token} if self.token else None
 
-    def _run(
-        self, args: Sequence[str], *, check: bool = True
-    ) -> subprocess.CompletedProcess[str]:
+    def _run(self, args: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         result = self.runner(
             [self.gh_path, *args],
-            cwd=self.local_repository_path,
+            cwd=Path(self.local_repository_path),
             env=self._env(),
         )
         if check and result.returncode != 0:
@@ -206,11 +204,7 @@ class GitHubIssueProvider(TrackerProvider):
 
         created_at = self._parse_created_at(payload, args=args, number=number)
         opaque_id = f"{self.repository}#{number}"
-        dispatchable = (
-            state == "OPEN"
-            and self._has_required_label(labels)
-            and not is_pull_request
-        )
+        dispatchable = state == "OPEN" and self._has_required_label(labels) and not is_pull_request
 
         return TrackerItem(
             opaque_id=opaque_id,

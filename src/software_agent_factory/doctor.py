@@ -210,9 +210,7 @@ def _version_check(
     unusable_status = CheckStatus.ERROR if required else CheckStatus.WARNING
 
     try:
-        result = env.run_command(
-            [resolved, *version_args], timeout=DEFAULT_COMMAND_TIMEOUT_SECONDS
-        )
+        result = env.run_command([resolved, *version_args], timeout=DEFAULT_COMMAND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return CheckResult(
             name=name,
@@ -310,9 +308,7 @@ def check_verification_commands(
                     name=f"command:{raw_command}",
                     status=CheckStatus.ERROR,
                     message=f"could not parse configured command {raw_command!r}: {exc}",
-                    remediation=(
-                        "Fix the malformed command in repository.commands configuration."
-                    ),
+                    remediation=("Fix the malformed command in repository.commands configuration."),
                 )
             )
             continue
@@ -400,8 +396,7 @@ def check_data_dir(path: Path) -> CheckResult:
             status=CheckStatus.ERROR,
             message=f"data directory {path} is not writable: {exc}",
             remediation=(
-                "Choose a data directory the current user can write to, or fix its "
-                "permissions."
+                "Choose a data directory the current user can write to, or fix its permissions."
             ),
         )
     finally:
@@ -422,9 +417,7 @@ def check_platform(env: DoctorEnvironment) -> CheckResult:
             name="platform",
             status=CheckStatus.WARNING,
             message=f"running on {env.system}, not macOS",
-            remediation=(
-                "The packaged release and the launchd service target macOS only."
-            ),
+            remediation=("The packaged release and the launchd service target macOS only."),
         )
     if env.machine not in SUPPORTED_MACHINES:
         return CheckResult(
@@ -433,9 +426,7 @@ def check_platform(env: DoctorEnvironment) -> CheckResult:
             message=f"unrecognized architecture {env.machine!r}",
             remediation="No prebuilt archive is published for this architecture.",
         )
-    return CheckResult(
-        name="platform", status=CheckStatus.OK, message=f"macOS {env.machine}"
-    )
+    return CheckResult(name="platform", status=CheckStatus.OK, message=f"macOS {env.machine}")
 
 
 def check_executable(env: DoctorEnvironment) -> CheckResult:

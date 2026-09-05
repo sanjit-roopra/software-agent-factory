@@ -22,12 +22,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .config import FactoryConfig
 from .github import (
     CheckStatus,
     CIPollTimeoutError,
     CIStatus,
+    CommandRunner,
     GitHubClient,
     GitPublisher,
     default_command_runner,
@@ -75,14 +77,14 @@ class PullRequestPublisher:
         publisher: GitPublisher | None = None,
         client: GitHubClient | None = None,
         token: str | None = None,
-        runner=default_command_runner,  # noqa: ANN001 - CommandRunner protocol
+        runner: CommandRunner = default_command_runner,
     ) -> None:
         self._config = config
         self._runner = runner
         resolved_token = token if token is not None else resolve_github_token()
         self._publisher = publisher
-        self._client = client if client is not None else GitHubClient(
-            runner=runner, token=resolved_token
+        self._client = (
+            client if client is not None else GitHubClient(runner=runner, token=resolved_token)
         )
 
     def resolve_base_branch(self, source_repo: Path) -> str:
@@ -90,9 +92,7 @@ class PullRequestPublisher:
         configured = self._config.pull_request.base_branch
         if configured:
             return configured
-        result = self._runner(
-            ["git", "-C", str(source_repo), "rev-parse", "--abbrev-ref", "HEAD"]
-        )
+        result = self._runner(["git", "-C", str(source_repo), "rev-parse", "--abbrev-ref", "HEAD"])
         branch = (result.stdout or "").strip()
         if result.returncode != 0 or not branch or branch == "HEAD":
             return DEFAULT_BASE_BRANCH
@@ -167,13 +167,13 @@ class CIObserver:
         *,
         client: GitHubClient | None = None,
         token: str | None = None,
-        runner=default_command_runner,  # noqa: ANN001 - CommandRunner protocol
-        sleep=None,  # noqa: ANN001 - injectable for tests
+        runner: CommandRunner = default_command_runner,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._config = config
         resolved_token = token if token is not None else resolve_github_token()
-        self._client = client if client is not None else GitHubClient(
-            runner=runner, token=resolved_token
+        self._client = (
+            client if client is not None else GitHubClient(runner=runner, token=resolved_token)
         )
         self._sleep = sleep
 
@@ -191,16 +191,24 @@ class CIObserver:
     ) -> CIReport:
         """Poll until checks settle or the configured budget is spent."""
         ci = self._config.ci
-        poll_kwargs: dict[str, object] = {
-            "interval_seconds": float(ci.poll_interval_seconds),
-            "max_polls": self.max_polls,
-            "max_seconds": float(ci.max_wait_seconds),
-        }
-        if self._sleep is not None:
-            poll_kwargs["sleep"] = self._sleep
-
         try:
-            status = self._client.poll_checks(repo_path, pull_request_url, **poll_kwargs)  # type: ignore[arg-type]
+            if self._sleep is None:
+                status = self._client.poll_checks(
+                    repo_path,
+                    pull_request_url,
+                    interval_seconds=float(ci.poll_interval_seconds),
+                    max_polls=self.max_polls,
+                    max_seconds=float(ci.max_wait_seconds),
+                )
+            else:
+                status = self._client.poll_checks(
+                    repo_path,
+                    pull_request_url,
+                    interval_seconds=float(ci.poll_interval_seconds),
+                    max_polls=self.max_polls,
+                    max_seconds=float(ci.max_wait_seconds),
+                    sleep=self._sleep,
+                )
         except CIPollTimeoutError as exc:
             last = exc.last_status
             return normalize_ci_status(
@@ -227,9 +235,7 @@ def normalize_ci_status(
                 description=check.description,
                 details_url=check.details_url,
                 failure_category=(
-                    check.failure_category.value
-                    if check.failure_category is not None
-                    else None
+                    check.failure_category.value if check.failure_category is not None else None
                 ),
                 log_excerpt=check.log_excerpt,
             )

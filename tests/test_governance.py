@@ -93,9 +93,7 @@ def test_repository_verifier_runs_phases_in_order_and_persists_logs(tmp_path: Pa
     commands = _commands(
         install=[_python_command("print('install out')")],
         verify=[
-            _python_command(
-                "import sys; print('verify out'); sys.stderr.write('verify err\\n')"
-            )
+            _python_command("import sys; print('verify out'); sys.stderr.write('verify err\\n')")
         ],
         build=[_python_command("print('build out')")],
     )
@@ -134,9 +132,7 @@ def test_repository_verifier_passes_only_named_environment_variables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FACTORY_TEST_ENV", "allowed-value")
-    command = _python_command(
-        "import os; print(os.getenv('FACTORY_TEST_ENV', 'missing'))"
-    )
+    command = _python_command("import os; print(os.getenv('FACTORY_TEST_ENV', 'missing'))")
 
     blocked = RepositoryVerifier().run(
         _commands(verify=[command]),
@@ -181,9 +177,7 @@ def test_repository_verifier_stops_after_first_failure_and_reports_test_failure(
                 "import sys; sys.stderr.write('AssertionError: expected value\\n'); "
                 "raise SystemExit(1)"
             ),
-            _python_command(
-                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
-            ),
+            _python_command(f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"),
         ],
         build=[_python_command("raise SystemExit(0)")],
     )
@@ -204,9 +198,7 @@ def test_repository_verifier_stops_after_first_failure_and_reports_test_failure(
     assert result.failure_kind is VerificationFailureKind.TEST
     assert result.failed_phase is CheckPhase.VERIFY
     assert result.failed_command is result.command_logs[-1]
-    assert result.report.failures == [
-        f"verify: {commands.verify[0]!r} exited with code 1"
-    ]
+    assert result.report.failures == [f"verify: {commands.verify[0]!r} exited with code 1"]
     assert marker.exists() is False
 
 

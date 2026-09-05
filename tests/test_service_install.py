@@ -74,9 +74,7 @@ class FakeRunner:
     default_returncode: int = 0
     calls: list[tuple[str, ...]] = field(default_factory=list)
 
-    def __call__(
-        self, argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def __call__(self, argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         self.calls.append(tuple(argv))
         key = " ".join(argv[:2])
         if key in self.raises:
@@ -317,9 +315,7 @@ def test_sanitize_path_value_rejects_relative_entry() -> None:
 
 
 def test_capture_login_shell_path_success() -> None:
-    def fake_call(
-        argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_call(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
             list(argv), 0, stdout="/opt/homebrew/bin:/usr/bin\n", stderr=""
         )
@@ -332,9 +328,7 @@ def test_capture_login_shell_path_success() -> None:
 
 
 def test_capture_login_shell_path_falls_back_on_timeout() -> None:
-    def fake_call(
-        argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_call(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
 
     result = capture_login_shell_path(fake_call, fallback="/custom/bin")
@@ -342,9 +336,7 @@ def test_capture_login_shell_path_falls_back_on_timeout() -> None:
 
 
 def test_capture_login_shell_path_falls_back_on_oserror() -> None:
-    def fake_call(
-        argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_call(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         raise OSError("no such shell")
 
     result = capture_login_shell_path(fake_call, fallback="/custom/bin")
@@ -352,9 +344,7 @@ def test_capture_login_shell_path_falls_back_on_oserror() -> None:
 
 
 def test_capture_login_shell_path_falls_back_on_nonzero_exit() -> None:
-    def fake_call(
-        argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_call(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(argv), 1, stdout="", stderr="no such file")
 
     result = capture_login_shell_path(fake_call, fallback="/custom/bin")
@@ -1037,9 +1027,7 @@ def test_get_service_status_installed_and_loaded(tmp_path: Path) -> None:
 def test_get_service_status_handles_runner_failure(tmp_path: Path) -> None:
     launch_agents_dir = tmp_path / "LaunchAgents"
 
-    def failing_runner(
-        argv: Sequence[str], *, timeout: float
-    ) -> subprocess.CompletedProcess[str]:
+    def failing_runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
 
     status = get_service_status(

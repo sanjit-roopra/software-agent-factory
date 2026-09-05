@@ -108,9 +108,7 @@ def _is_opted_in(marker: object, env_var: str) -> bool:
 
 
 @pytest.fixture(autouse=True)
-def _factory_offline_guard(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _factory_offline_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Autouse: fail fast on accidental network egress or direct execution of
     the real ``gh``/``copilot`` binaries. See the module docstring for what
     stays unaffected (loopback sockets, ``git``, test doubles)."""

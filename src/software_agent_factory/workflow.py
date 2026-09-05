@@ -229,9 +229,7 @@ class WorkflowController:
         self._runtime = runtime
         self._router = router if router is not None else ModelRouter(config)
         self._verifier = (
-            repository_verifier
-            if repository_verifier is not None
-            else RepositoryVerifier(verifier)
+            repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
         )
         self._scope_policy = scope_policy if scope_policy is not None else ScopeDriftPolicy()
         # Constructed eagerly when the integration is enabled so two concurrent
@@ -420,9 +418,7 @@ class WorkflowController:
         try:
             workspace_path = str(workspace.path)
             run = self.transition(run, WorkflowState.TRIAGING)
-            triage_result = self._run_triage(
-                run, work_item, workspace_path=workspace_path
-            )
+            triage_result = self._run_triage(run, work_item, workspace_path=workspace_path)
 
             if not triage_result.factory_eligible:
                 raise self._halt(
@@ -498,9 +494,7 @@ class WorkflowController:
     def _run_triage(
         self, run: FactoryRun, work_item: WorkItem, *, workspace_path: str
     ) -> TriageResult:
-        request = self._build_request(
-            AgentRole.TRIAGE, work_item, workspace_path=workspace_path
-        )
+        request = self._build_request(AgentRole.TRIAGE, work_item, workspace_path=workspace_path)
         result = self._runtime.run(request)
         if not result.success or result.triage_result is None:
             raise self._halt(
@@ -660,7 +654,18 @@ class WorkflowController:
         work_item: WorkItem,
         *,
         role_model: RoleModelConfig | None = None,
-        **artifacts: object,
+        triage_result: TriageResult | None = None,
+        specification: Specification | None = None,
+        research_report: ResearchReport | None = None,
+        execution_plan: ExecutionPlan | None = None,
+        change_set: ChangeSet | None = None,
+        diff: str | None = None,
+        changed_files: list[str] | None = None,
+        verification_report: VerificationReport | None = None,
+        test_report: TestReport | None = None,
+        repair_context: RepairContext | str | None = None,
+        workspace_path: str | None = None,
+        attempt_number: int | None = None,
     ) -> AgentRequest:
         resolved = role_model if role_model is not None else self._router.model_for_role(role)
         return AgentRequest(
@@ -668,8 +673,19 @@ class WorkflowController:
             model=resolved.model,
             reasoning=resolved.reasoning,
             work_item=work_item,
+            triage_result=triage_result,
+            specification=specification,
+            research_report=research_report,
+            execution_plan=execution_plan,
+            change_set=change_set,
+            diff=diff,
+            changed_files=changed_files or [],
+            verification_report=verification_report,
+            test_report=test_report,
+            repair_context=repair_context,
+            workspace_path=workspace_path,
+            attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
-            **artifacts,  # type: ignore[arg-type]
         )
 
     # -- bounded implementation/repair loop ---------------------------------
@@ -685,9 +701,7 @@ class WorkflowController:
 
     def _replans_used(self, run: FactoryRun) -> int:
         return sum(
-            1
-            for attempt in run.attempt_records
-            if attempt.triggered_by is AttemptTrigger.SCOPE
+            1 for attempt in run.attempt_records if attempt.triggered_by is AttemptTrigger.SCOPE
         )
 
     def _select_worker(
@@ -706,9 +720,7 @@ class WorkflowController:
                 attempt_number,
             )
         return (
-            self._router.model_for_implementer(
-                context.triage_result.complexity, attempt_number
-            ),
+            self._router.model_for_implementer(context.triage_result.complexity, attempt_number),
             attempt_number,
         )
 
@@ -787,9 +799,7 @@ class WorkflowController:
                 continue
 
             run = self.transition(run, WorkflowState.REVIEWING)
-            test_report = self._run_tester(
-                run, context, evidence, verification.report, snapshot
-            )
+            test_report = self._run_tester(run, context, evidence, verification.report, snapshot)
             review_report = self._run_reviewer(
                 run, context, evidence, verification.report, test_report, snapshot
             )
@@ -844,9 +854,7 @@ class WorkflowController:
         run = self.transition(run, WorkflowState.IMPLEMENTING)
         return run, repair_context
 
-    def _verify(
-        self, run: FactoryRun, context: _RunContext
-    ) -> RepositoryVerificationResult:
+    def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
         """Run install -> verify -> build with per-command persisted logs."""
         return self._verifier.run(
             self._config.repository.commands,
@@ -1018,15 +1026,16 @@ class WorkflowController:
     def _ci_repair_context(self, report: CIReport) -> RepairContext:
         failed = report.failed_checks
         excerpts = [
-            check.log_excerpt or check.description for check in failed
+            check.log_excerpt or check.description
+            for check in failed
             if check.log_excerpt or check.description
         ]
         return RepairContext(
             trigger=AttemptTrigger.CI,
             summary="Continuous integration reported a failing check.",
-            failures=[
-                f"{check.name}: {check.failure_category or 'UNKNOWN'}" for check in failed
-            ][:MAX_REPAIR_FAILURES],
+            failures=[f"{check.name}: {check.failure_category or 'UNKNOWN'}" for check in failed][
+                :MAX_REPAIR_FAILURES
+            ],
             log_excerpt=_bounded("\n\n".join(excerpts)) if excerpts else None,
         )
 
@@ -1073,8 +1082,7 @@ class WorkflowController:
             raise self._halt(
                 run,
                 WorkflowState.NEEDS_HUMAN,
-                "scope drift requires human review before publishing: "
-                + _describe_scope(scope),
+                "scope drift requires human review before publishing: " + _describe_scope(scope),
             )
 
         publisher = self._resolve_publisher()
@@ -1160,8 +1168,7 @@ class WorkflowController:
                     WorkflowState.NEEDS_HUMAN,
                     "CI failure is not repairable by a code change: "
                     + ", ".join(
-                        f"{check.name}={check.failure_category or 'UNKNOWN'}"
-                        for check in failed
+                        f"{check.name}={check.failure_category or 'UNKNOWN'}" for check in failed
                     ),
                 )
 
@@ -1175,9 +1182,7 @@ class WorkflowController:
 
             repair_context = self._ci_repair_context(report)
             run = self.transition(run, WorkflowState.IMPLEMENTING)
-            run = self._drive_to_pr_ready(
-                run, context, AttemptBudget.CI_REPAIR, repair_context
-            )
+            run = self._drive_to_pr_ready(run, context, AttemptBudget.CI_REPAIR, repair_context)
             run = self._publish(run, context)
 
 

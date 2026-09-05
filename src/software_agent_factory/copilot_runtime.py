@@ -262,13 +262,17 @@ def extract_assistant_text(stdout: str) -> str:
         except JSONDecodeError:
             continue
         event_type = event.get("type")
-        if event_type in {
-            "assistant.message",
-            "assistant.message.delta",
-            "model.response",
-            "model.response.delta",
-            "response.completed",
-        } or event_type is None:
+        if (
+            event_type
+            in {
+                "assistant.message",
+                "assistant.message.delta",
+                "model.response",
+                "model.response.delta",
+                "response.completed",
+            }
+            or event_type is None
+        ):
             fragments.extend(_extract_text_fragments(event))
 
     cleaned = [fragment.strip() for fragment in fragments if fragment.strip()]
@@ -401,10 +405,10 @@ def _extract_text_fragments(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
-        fragments: list[str] = []
+        item_fragments: list[str] = []
         for item in value:
-            fragments.extend(_extract_text_fragments(item))
-        return fragments
+            item_fragments.extend(_extract_text_fragments(item))
+        return item_fragments
     if not isinstance(value, dict):
         return []
 

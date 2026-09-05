@@ -223,8 +223,7 @@ class SchedulerConfig(ConfigModel):
     def _validate_concurrency(self) -> Self:
         if self.max_concurrent_tasks > MAX_SUPPORTED_CONCURRENT_TASKS:
             raise ValueError(
-                "scheduler.max_concurrent_tasks must be 1 or "
-                f"{MAX_SUPPORTED_CONCURRENT_TASKS}"
+                f"scheduler.max_concurrent_tasks must be 1 or {MAX_SUPPORTED_CONCURRENT_TASKS}"
             )
         if self.stall_timeout_seconds < self.poll_interval_seconds:
             raise ValueError(

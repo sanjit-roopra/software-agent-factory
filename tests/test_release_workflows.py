@@ -16,14 +16,28 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PACKAGING_SPEC = ROOT / "packaging" / "pyinstaller.spec"
 ACTION_LINE = (
-    r"^\s*uses:\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-f]{40})\s+#\s+(v[^\s]+)\s*$"
+    r"^\s*uses:\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)"
+    r"@([0-9a-f]{40})\s+#\s+(v[^\s]+)\s*$"
 )
 EXPECTED_ACTIONS = {
+    "actions/attest": ("1e69f48acb82d1966a394da916b4c1698aa569d6", "v4.2.2"),
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
+    "actions/dependency-review-action": (
+        "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+        "v5.0.0",
+    ),
     "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97", "v7.0.0"),
     "astral-sh/setup-uv": ("20cfd1bf945f4377ade1205e4dbc17946fc9a30d", "v10.0.1"),
     "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
     "actions/download-artifact": ("3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "v8.0.1"),
+    "github/codeql-action/analyze": (
+        "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+        "v4.37.9",
+    ),
+    "github/codeql-action/init": (
+        "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+        "v4.37.9",
+    ),
 }
 
 
@@ -45,7 +59,8 @@ def test_all_third_party_actions_are_pinned_to_full_shas_with_release_comments()
     import re
 
     action_line = re.compile(ACTION_LINE)
-    for workflow_name in ("ci.yml", "release.yml"):
+    for workflow_path in sorted(WORKFLOWS.glob("*.yml")):
+        workflow_name = workflow_path.name
         text, _ = _load_workflow(workflow_name)
         for line in text.splitlines():
             if "uses:" not in line or "./" in line:
@@ -57,14 +72,12 @@ def test_all_third_party_actions_are_pinned_to_full_shas_with_release_comments()
             assert (sha, tag) == EXPECTED_ACTIONS[action]
 
 
-
 def test_pyinstaller_spec_resolves_repo_root_from_the_packaging_directory() -> None:
     spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
     assert "SPECPATH" in spec_text
-    assert 'project_root = Path(SPECPATH).resolve().parent' in spec_text
+    assert "project_root = Path(SPECPATH).resolve().parent" in spec_text
     assert 'package_root = project_root / "src" / "software_agent_factory"' in spec_text
     assert "exclude_binaries=True" in spec_text
-
 
 
 def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> None:
@@ -72,26 +85,38 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] == "true"
     assert workflow["on"]["push"]["branches"] == ["main"]
-    assert workflow["on"]["push"]["tags"] == ["v*"]
+    assert "tags" not in workflow["on"]["push"]
     assert "pull_request_target" not in text
     assert "persist-credentials: false" in text
-    assert "uv sync --locked --group dev" in text
-    assert "uv lock --check" in text
-    assert "uv run ruff check ." in text
-    assert "uv run pytest -q" in text
-    assert "uv build --wheel --sdist" in text
+    assert "uv sync --locked --no-default-groups --group quality" in text
+    assert "uv sync --locked --no-default-groups --group test" in text
+    assert "uv sync --locked --no-default-groups --group distribution" in text
+    assert "uv sync --locked --no-default-groups --group native --group test" in text
+    assert "uv lock --check" not in text
+    assert "uv run --no-sync ruff format --check ." in text
+    assert "uv run --no-sync ruff check --output-format=github ." in text
+    assert "uv run --no-sync mypy src/software_agent_factory scripts/release" in text
+    assert "--cov=software_agent_factory" in text
+    assert '"3.13"' in text
+    assert '"3.14"' in text
+    assert "uv build --no-sources" in text
+    assert "uv run --no-sync twine check dist/*" in text
+    assert "uv run --no-sync check-wheel-contents dist/*.whl" in text
     assert "scripts/release/prepare_frozen_bundle.py" in text
     assert "scripts/release/smoke_factory.py" in text
-    assert "--archive \"$ARCHIVE\"" in text
-    assert "--expect-architecture \"arm64\"" in text
-    assert "--expect-architecture \"x86_64\"" in text
+    assert '--archive "$ARCHIVE"' in text
+    assert '--expect-architecture "arm64"' in text
+    assert '--expect-architecture "x86_64"' in text
     assert "COPYFILE_DISABLE=1 tar" in text
-    assert "python -m venv packaging/venvs/wheel-smoke" in text
-    assert "VERSION=$(PYTHONPATH=src uv run python" in text
-    assert "VERSION=$(PYTHONPATH=src python" not in text
+    assert "packaging/venvs/wheel-smoke/bin/pip install dist/*.whl" in text
+    assert "packaging/venvs/sdist-smoke/bin/pip install dist/*.tar.gz" in text
+    assert "VERSION=$(PYTHONPATH=src uv run --no-sync python" in text
+    assert workflow["env"]["UV_VERSION"] == "0.9.17"
+    for job in workflow["jobs"].values():
+        assert "timeout-minutes" in job
 
 
-def test_ci_workflow_limits_native_macos_to_main_tags_and_manual_dispatch() -> None:
+def test_ci_workflow_limits_native_macos_to_main_and_manual_dispatch() -> None:
     _text, workflow = _load_workflow("ci.yml")
     jobs = {
         "macos-arm64": "macos-15",
@@ -103,8 +128,38 @@ def test_ci_workflow_limits_native_macos_to_main_tags_and_manual_dispatch() -> N
         condition = macos_job["if"]
         assert "workflow_dispatch" in condition
         assert "refs/heads/main" in condition
-        assert "refs/tags/" in condition
+        assert "refs/tags/" not in condition
 
+
+def test_security_workflow_has_dependency_review_codeql_and_locked_audit() -> None:
+    text, workflow = _load_workflow("security.yml")
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["on"]["pull_request"] in ("", None)
+    assert workflow["on"]["push"]["branches"] == ["main"]
+    assert workflow["on"]["schedule"]
+    assert "pull_request_target" not in text
+    assert "actions/dependency-review-action@" in text
+    assert "fail-on-severity: moderate" in text
+    assert {"python", "actions"} == set(
+        workflow["jobs"]["codeql"]["strategy"]["matrix"]["language"]
+    )
+    assert workflow["jobs"]["codeql"]["permissions"]["security-events"] == "write"
+    assert "uv run --no-sync pip-audit --skip-editable" in text
+
+
+def test_future_python_compatibility_runs_only_on_schedule_or_manual_dispatch() -> None:
+    text, workflow = _load_workflow("compatibility.yml")
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
+    assert workflow["jobs"]["python-prerelease"]["name"] == "Python 3.15 prerelease"
+    assert 'python-version: "3.15"' in text
+    assert "allow-prereleases: true" in text
+
+
+def test_dependabot_updates_uv_dependencies_and_actions() -> None:
+    config = yaml.load((ROOT / ".github" / "dependabot.yml").read_text(), Loader=yaml.BaseLoader)
+    ecosystems = {entry["package-ecosystem"] for entry in config["updates"]}
+    assert ecosystems == {"uv", "github-actions"}
 
 
 def test_release_workflow_has_immutable_publish_shape() -> None:
@@ -113,7 +168,6 @@ def test_release_workflow_has_immutable_publish_shape() -> None:
     assert workflow["on"]["push"]["tags"] == ["v*"]
     assert workflow["on"]["workflow_dispatch"]["inputs"]["tag"]["required"] == "true"
     assert "persist-credentials: false" in text
-    assert workflow["jobs"]["publish"]["permissions"] == {"contents": "write"}
     for job_name, job in workflow["jobs"].items():
         if job_name == "publish":
             continue
@@ -123,10 +177,15 @@ def test_release_workflow_has_immutable_publish_shape() -> None:
     assert "write-all" not in text
     assert "gh release create" in text
     assert "gh release view" in text
-    assert "uv run ruff check ." in text
-    assert "uv run pytest -q" in text
-    assert "PYTHONPATH=src uv run python scripts/release/generate_build_info.py" in text
-    assert "VERSION=$(PYTHONPATH=src uv run python" in text
+    assert "uv run --no-sync ruff format --check ." in text
+    assert "uv run --no-sync ruff check ." in text
+    assert "uv run --no-sync mypy src/software_agent_factory scripts/release" in text
+    assert "uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch" in text
+    assert "uv run --no-sync pip-audit --skip-editable" in text
+    assert "uv run --no-sync twine check dist/*" in text
+    assert "uv run --no-sync check-wheel-contents dist/*.whl" in text
+    assert "PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py" in text
+    assert "VERSION=$(PYTHONPATH=src uv run --no-sync python" in text
     assert "shasum -a 256 -c SHA256SUMS" in text
     assert "macos-15" in text
     assert "macos-15-intel" in text
@@ -138,11 +197,41 @@ def test_release_workflow_has_immutable_publish_shape() -> None:
     assert text.count("if-no-files-found: error") == 3
     assert "scripts/release/prepare_frozen_bundle.py" in text
     assert "scripts/release/smoke_factory.py" in text
-    assert "--archive \"$ARCHIVE\"" in text
-    assert "--expect-architecture \"arm64\"" in text
-    assert "--expect-architecture \"x86_64\"" in text
+    assert '--archive "$ARCHIVE"' in text
+    assert '--expect-architecture "arm64"' in text
+    assert '--expect-architecture "x86_64"' in text
     assert "COPYFILE_DISABLE=1 tar" in text
+    assert workflow["jobs"]["publish"]["permissions"] == {
+        "artifact-metadata": "write",
+        "attestations": "write",
+        "contents": "write",
+        "id-token": "write",
+    }
+    assert "actions/attest@" in text
+    assert "github.event.repository.visibility == 'public'" in text
+    assert "packaging/venvs/release-sdist-smoke" in text
 
+
+def test_combine_build_info_requires_consistent_release_identity() -> None:
+    module = _load_script_module("combine_build_info", "scripts/release/combine_build_info.py")
+    entries = [
+        {
+            "project": "software-agent-factory",
+            "version": "1.2.3",
+            "tag": "v1.2.3",
+            "commit_sha": "abc123",
+        },
+        {
+            "project": "software-agent-factory",
+            "version": "1.2.3",
+            "tag": "v1.2.3",
+            "commit_sha": "def456",
+        },
+    ]
+
+    assert module._consistent_value(entries, "version") == "1.2.3"
+    with pytest.raises(SystemExit, match="commit_sha"):
+        module._consistent_value(entries, "commit_sha")
 
 
 def test_prepare_frozen_bundle_writes_install_instructions_and_optional_notices(
@@ -173,7 +262,6 @@ def test_prepare_frozen_bundle_writes_install_instructions_and_optional_notices(
     assert (bundle / "LICENSE").read_text(encoding="utf-8") == "example license\n"
 
 
-
 def test_smoke_workspace_parent_rejects_protected_and_unsafe_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -197,7 +285,6 @@ def test_smoke_workspace_parent_rejects_protected_and_unsafe_paths(
         module._validate_workspace_parent(plain_parent / "ordinary-root")
 
 
-
 def test_smoke_workspace_parent_rejects_existing_non_smoke_content(tmp_path: Path) -> None:
     module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
     parent = tmp_path / "release-smoke"
@@ -206,7 +293,6 @@ def test_smoke_workspace_parent_rejects_existing_non_smoke_content(tmp_path: Pat
 
     with pytest.raises(SystemExit, match="non-marker/non-smoke"):
         module._validate_workspace_parent(parent)
-
 
 
 def test_smoke_workspace_parent_rejects_symlink_ambiguity(tmp_path: Path) -> None:
@@ -218,7 +304,6 @@ def test_smoke_workspace_parent_rejects_symlink_ambiguity(tmp_path: Path) -> Non
 
     with pytest.raises(SystemExit, match="symlinked smoke path"):
         module._validate_workspace_parent(symlink_root)
-
 
 
 def test_smoke_script_checks_archive_instructions_and_executable_mode(tmp_path: Path) -> None:
@@ -250,7 +335,6 @@ def test_smoke_script_checks_archive_instructions_and_executable_mode(tmp_path: 
         assert (extracted_bundle / prepare_module.INSTALL_FILENAME).is_file()
     finally:
         smoke_module._cleanup_workspace(workspace)
-
 
 
 def test_smoke_script_rejects_non_executable_bundle_binary(tmp_path: Path) -> None:
@@ -296,9 +380,7 @@ def test_smoke_missing_git_prerequisite_uses_a_controlled_path(tmp_path: Path) -
 
     stub = tmp_path / "factory"
     stub.write_text(
-        "#!/bin/sh\n"
-        'echo "missing required executable(s) on PATH: git" >&2\n'
-        "exit 2\n",
+        '#!/bin/sh\necho "missing required executable(s) on PATH: git" >&2\nexit 2\n',
         encoding="utf-8",
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
@@ -313,9 +395,7 @@ def test_smoke_missing_git_prerequisite_rejects_a_traceback(tmp_path: Path) -> N
 
     stub = tmp_path / "factory"
     stub.write_text(
-        "#!/bin/sh\n"
-        'echo "Traceback (most recent call last): git" >&2\n'
-        "exit 2\n",
+        '#!/bin/sh\necho "Traceback (most recent call last): git" >&2\nexit 2\n',
         encoding="utf-8",
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
@@ -335,7 +415,7 @@ def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets
     assert 'build_info_path = package_root / "build-info.json"' in spec_text
     assert 'collect_submodules("software_agent_factory")' in spec_text
     assert "dashboard/static" not in spec_text
-    assert '__main__.py' in spec_text
+    assert "__main__.py" in spec_text
 
     pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "dashboard/static" not in pyproject_text

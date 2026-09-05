@@ -188,11 +188,27 @@ exit code `2` when a tool they actually need is missing — never a traceback.
 ```bash
 git clone https://github.com/<owner>/software-agent-factory.git
 cd software-agent-factory
-uv sync --group dev          # dependencies, including dev tools
-uv run pytest                # the full offline test suite
-uv run ruff check .          # the linter
+uv sync --locked --group dev
+uv run --no-sync ruff format --check .
+uv run --no-sync ruff check .
+uv run --no-sync mypy src/software_agent_factory scripts/release
+uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
+uv run --no-sync pip-audit --skip-editable
+uv build --no-sources
+uv run --no-sync twine check dist/*
+uv run --no-sync check-wheel-contents dist/*.whl
 uv run factory --version
 ```
+
+These are the same deterministic gates used by CI. Pull requests run formatting,
+linting, strict type checking, Python 3.13/3.14 tests with a 90% branch-coverage
+floor, package validation, dependency review, and CodeQL. Scheduled workflows
+audit the complete locked environment and test the next Python prerelease.
+Dependabot maintains both uv dependencies and pinned GitHub Actions.
+
+GitHub secret scanning with push protection and immutable releases are
+repository settings rather than workflow files; enable them in the repository
+security and release settings.
 
 Every command below can be run either as `uv run factory ...` from a source
 checkout or as `factory ...` from an installed wheel or an extracted macOS

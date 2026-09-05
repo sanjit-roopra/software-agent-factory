@@ -170,9 +170,7 @@ def test_concurrency_two_dispatches_two_items_with_isolated_workspaces(
     assert git(source_repo, "status", "--porcelain") == ""
 
 
-def test_already_running_item_is_not_dispatched_twice(
-    source_repo: Path, data_dir: Path
-) -> None:
+def test_already_running_item_is_not_dispatched_twice(source_repo: Path, data_dir: Path) -> None:
     provider = LocalProvider([_item(1, source_repo)])
     service = _service(data_dir, source_repo, provider)
 
@@ -295,12 +293,8 @@ def test_run_handle_reports_activity_from_the_persisted_run(
     # No persisted run yet: falls back to the dispatch time.
     assert handle.last_activity_at() == started
 
-    controller = WorkflowController(
-        build_config(data_dir), store, FakeAgentRuntime()
-    )
-    run = controller.run(
-        build_work_item(_item(4, source_repo)), source_repo, run_id="run-x"
-    )
+    controller = WorkflowController(build_config(data_dir), store, FakeAgentRuntime())
+    run = controller.run(build_work_item(_item(4, source_repo)), source_repo, run_id="run-x")
     assert run.state is WorkflowState.PR_READY
     assert handle.last_activity_at() > started
 
@@ -378,7 +372,6 @@ def test_run_forever_does_not_hide_unexpected_poll_failures(
         service.run_forever(threading.Event())
 
 
-
 # ---------------------------------------------------------------------------
 # Once-only dispatch of an item the backlog never withdraws
 # ---------------------------------------------------------------------------
@@ -453,8 +446,7 @@ def test_already_run_filter_hides_items_from_both_provider_methods(
 
     assert [item.opaque_id for item in filtered.fetch_candidates()] == [fresh.opaque_id]
     assert [
-        item.opaque_id
-        for item in filtered.fetch_by_ids([fresh.opaque_id, done.opaque_id])
+        item.opaque_id for item in filtered.fetch_by_ids([fresh.opaque_id, done.opaque_id])
     ] == [fresh.opaque_id]
 
 
@@ -487,9 +479,7 @@ def _service_with_scheduler(
 def test_configured_daily_run_limit_reaches_the_scheduler(
     source_repo: Path, data_dir: Path
 ) -> None:
-    service = _service_with_scheduler(
-        data_dir, source_repo, LocalProvider([]), max_runs_per_day=7
-    )
+    service = _service_with_scheduler(data_dir, source_repo, LocalProvider([]), max_runs_per_day=7)
     try:
         assert service.scheduler.max_runs_per_day == 7
         assert service.scheduler.store is service.store
@@ -548,9 +538,7 @@ def test_dispatch_and_completion_are_logged_with_run_correlation(
 ) -> None:
     """``factory start`` under launchd has no console; the structured record
     is how an operator later reconstructs what ran."""
-    service = _service_with_scheduler(
-        data_dir, source_repo, LocalProvider([_item(1, source_repo)])
-    )
+    service = _service_with_scheduler(data_dir, source_repo, LocalProvider([_item(1, source_repo)]))
 
     # Attach the capture handler to the service logger directly: the package
     # logger stops propagating once structured logging is configured, so

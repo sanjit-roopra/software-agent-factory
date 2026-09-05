@@ -102,9 +102,7 @@ def test_build_command_for_read_only_role_uses_exact_read_only_tools(role: Agent
     assert "create" not in available_tools
     assert "edit" not in available_tools
 
-    denied = [
-        command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"
-    ]
+    denied = [command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"]
     assert denied == ["url"]
 
 
@@ -115,9 +113,7 @@ def test_build_command_for_implementer_denies_push_and_network() -> None:
     command = runtime._build_command(request, prompt="implement", cwd=Path("/repo/worktree"))
 
     assert command[command.index("--available-tools") + 1] == "glob,grep,view,create,edit,bash"
-    denied = [
-        command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"
-    ]
+    denied = [command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"]
     assert "url" in denied
     assert "shell(git push)" in denied
     assert "shell(gh:*)" in denied

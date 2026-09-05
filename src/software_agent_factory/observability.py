@@ -520,9 +520,7 @@ def build_monitoring_snapshot(
 
     total_readable = len(scan.readable_runs)
     page_runs = scan.readable_runs[offset : offset + limit]
-    summaries = [
-        _build_run_summary(store, run, reference_time, stale_after) for run in page_runs
-    ]
+    summaries = [_build_run_summary(store, run, reference_time, stale_after) for run in page_runs]
 
     return MonitoringSnapshot(
         generated_at=reference_time,
@@ -1127,9 +1125,7 @@ def _find_stale_locks(locks_dir: Path) -> tuple[list[StaleLockFinding], int, lis
             findings.append(StaleLockFinding(lock_name=entry.name, modified_at=modified_at))
 
     issues = (
-        [f"{failed_checks} lock file(s) could not be probed for staleness"]
-        if failed_checks
-        else []
+        [f"{failed_checks} lock file(s) could not be probed for staleness"] if failed_checks else []
     )
     return findings, checked, issues
 

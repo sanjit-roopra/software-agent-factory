@@ -108,9 +108,7 @@ def to_json_safe(value: Any) -> Any:
     raise TypeError(f"Cannot serialize snapshot value of type {type(value).__name__}")
 
 
-def clamp_pagination(
-    raw_limit: str | None, raw_offset: str | None
-) -> tuple[int, int] | None:
+def clamp_pagination(raw_limit: str | None, raw_offset: str | None) -> tuple[int, int] | None:
     """Parse and bound ``limit``/``offset`` query parameters.
 
     Returns ``(limit, offset)`` with ``limit`` silently capped to

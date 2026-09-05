@@ -144,8 +144,6 @@ def failing_health_provider() -> dict[str, Any]:
     raise RuntimeError("boom: simulated health backend failure")
 
 
-
-
 @dataclass
 class RunningServer:
     server: DashboardServer
@@ -305,9 +303,7 @@ def test_wrong_query_token_is_rejected(running_server: RunningServer) -> None:
 
 def test_correct_query_token_authenticates_index(running_server: RunningServer) -> None:
     headers = {"Host": f"127.0.0.1:{running_server.port}"}
-    response = running_server.request(
-        "GET", f"/?token={running_server.token}", headers=headers
-    )
+    response = running_server.request("GET", f"/?token={running_server.token}", headers=headers)
     assert response.status == 200
     assert b"<html" in response.read_body.lower()  # type: ignore[attr-defined]
 
@@ -347,9 +343,7 @@ def test_token_never_appears_in_dashboard_url_logging_path(
         "127.0.0.2:{port}",
     ],
 )
-def test_wrong_host_header_is_rejected(
-    running_server: RunningServer, bad_host_header: str
-) -> None:
+def test_wrong_host_header_is_rejected(running_server: RunningServer, bad_host_header: str) -> None:
     headers = {
         "Host": bad_host_header.format(port=running_server.port),
         TOKEN_HEADER: running_server.token,
@@ -530,9 +524,7 @@ def test_reasonable_query_field_count_is_accepted(running_server: RunningServer)
 
 
 def test_security_headers_present_on_success(running_server: RunningServer) -> None:
-    response = running_server.request(
-        "GET", "/healthz", headers=running_server.authed_headers()
-    )
+    response = running_server.request("GET", "/healthz", headers=running_server.authed_headers())
     headers = {name.lower(): value for name, value in response.getheaders()}
     assert "script-src 'self'" in headers["content-security-policy"]
     assert "'unsafe-inline'" not in headers["content-security-policy"]
@@ -560,9 +552,7 @@ def test_security_headers_present_on_error(running_server: RunningServer) -> Non
 
 
 def test_unknown_route_is_404(running_server: RunningServer) -> None:
-    response = running_server.request(
-        "GET", "/nope", headers=running_server.authed_headers()
-    )
+    response = running_server.request("GET", "/nope", headers=running_server.authed_headers())
     assert response.status == 404
 
 
@@ -590,9 +580,7 @@ def test_assets_are_served(running_server: RunningServer) -> None:
 
 
 def test_runs_pagination_defaults(running_server: RunningServer) -> None:
-    response = running_server.request(
-        "GET", "/api/runs", headers=running_server.authed_headers()
-    )
+    response = running_server.request("GET", "/api/runs", headers=running_server.authed_headers())
     assert response.status == 200
     payload = _body_json(response)
     assert payload["page"]["limit"] == 20
@@ -622,9 +610,7 @@ def test_runs_pagination_offset(running_server: RunningServer) -> None:
 
 
 @pytest.mark.parametrize("query", ["limit=abc", "limit=0", "limit=-1", "offset=-1", "offset=abc"])
-def test_runs_pagination_invalid_params_rejected(
-    running_server: RunningServer, query: str
-) -> None:
+def test_runs_pagination_invalid_params_rejected(running_server: RunningServer, query: str) -> None:
     response = running_server.request(
         "GET", f"/api/runs?{query}", headers=running_server.authed_headers()
     )
@@ -652,9 +638,7 @@ def test_summary_reports_null_health_when_not_configured() -> None:
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/summary", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
         assert response.status == 200
         payload = _body_json(response)
         assert payload["health"] is None
@@ -672,9 +656,7 @@ def test_summary_degrades_gracefully_when_health_provider_fails() -> None:
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/summary", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
         # A failing health check is a reportable finding, not a hard 503:
         # counts/totals are still available even when health cannot be
         # computed.
@@ -824,9 +806,7 @@ def test_adversarial_snapshot_provider_secrets_never_reach_runs_response() -> No
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/runs", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/runs", headers=running.authed_headers())
         assert response.status == 200
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
@@ -854,9 +834,7 @@ def test_adversarial_snapshot_provider_secrets_never_reach_summary_response() ->
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/summary", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
         assert response.status == 200
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
@@ -873,9 +851,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/runs/run-001", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
         assert response.status == 200
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
@@ -917,9 +893,7 @@ def test_failure_reason_is_never_returned_even_when_provider_sets_it() -> None:
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/runs/run-001", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
         assert response.status == 200
         payload = _body_json(response)
         assert "failure_reason" not in payload
@@ -941,9 +915,7 @@ def test_snapshot_provider_failure_returns_503_without_traceback() -> None:
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/summary", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
         assert response.status == 503
         body_text = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert "Traceback" not in body_text
@@ -962,9 +934,7 @@ def test_run_detail_provider_failure_returns_503_without_traceback() -> None:
     )
     running = _start(config)
     try:
-        response = running.request(
-            "GET", "/api/runs/run-001", headers=running.authed_headers()
-        )
+        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
         assert response.status == 503
         body_text = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert "Traceback" not in body_text
@@ -1117,9 +1087,7 @@ def test_wires_real_observability_and_store_end_to_end(tmp_path: Path) -> None:
     )
     running = _start(config)
     try:
-        summary_response = running.request(
-            "GET", "/api/summary", headers=running.authed_headers()
-        )
+        summary_response = running.request("GET", "/api/summary", headers=running.authed_headers())
         assert summary_response.status == 200
         summary_payload = _body_json(summary_response)
         assert summary_payload["counts"]["succeeded"] == 2

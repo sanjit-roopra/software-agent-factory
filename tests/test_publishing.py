@@ -70,9 +70,7 @@ def test_token_reaches_gh_only_through_the_child_environment(tmp_path: Path) -> 
 
 def test_configured_base_branch_wins_over_the_repository_branch(tmp_path: Path) -> None:
     runner = ScriptedRunner(base_branch="trunk")
-    config = build_config(
-        tmp_path, pull_request={"enabled": True, "base_branch": "release"}
-    )
+    config = build_config(tmp_path, pull_request={"enabled": True, "base_branch": "release"})
     publisher = PullRequestPublisher(config, runner=runner)
 
     assert publisher.resolve_base_branch(tmp_path) == "release"
@@ -181,9 +179,7 @@ def test_observe_normalizes_a_passing_status(tmp_path: Path) -> None:
             "repair_attempts": 1,
         },
     )
-    observer = CIObserver(
-        config, client=GitHubClient(runner=runner), sleep=lambda _s: None
-    )
+    observer = CIObserver(config, client=GitHubClient(runner=runner), sleep=lambda _s: None)
 
     report = observer.observe(
         repo_path=tmp_path, pull_request_url="https://github.com/acme/repo/pull/1"
@@ -206,9 +202,7 @@ def test_observe_reports_a_timeout_with_the_last_known_status(tmp_path: Path) ->
             "repair_attempts": 1,
         },
     )
-    observer = CIObserver(
-        config, client=GitHubClient(runner=runner), sleep=lambda _s: None
-    )
+    observer = CIObserver(config, client=GitHubClient(runner=runner), sleep=lambda _s: None)
 
     report = observer.observe(
         repo_path=tmp_path, pull_request_url="https://github.com/acme/repo/pull/1"
@@ -242,9 +236,7 @@ def test_every_bucket_normalizes_to_a_plain_string(tmp_path: Path, bucket: str) 
             "repair_attempts": 1,
         },
     )
-    observer = CIObserver(
-        config, client=GitHubClient(runner=runner), sleep=lambda _s: None
-    )
+    observer = CIObserver(config, client=GitHubClient(runner=runner), sleep=lambda _s: None)
 
     report = observer.observe(
         repo_path=tmp_path, pull_request_url="https://github.com/acme/repo/pull/1"

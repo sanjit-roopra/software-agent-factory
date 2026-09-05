@@ -234,9 +234,7 @@ class FakeAgentRuntime:
             implications=["Proceed with planning using the existing specification."],
             uncertainty=[],
         )
-        return AgentResult(
-            role=AgentRole.RESEARCHER, success=True, research_report=research_report
-        )
+        return AgentResult(role=AgentRole.RESEARCHER, success=True, research_report=research_report)
 
     def _default_planner(self, request: AgentRequest) -> AgentResult:
         specification = request.specification

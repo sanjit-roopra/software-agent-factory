@@ -45,9 +45,7 @@ def render_doctor_report(report: DoctorReport) -> list[str]:
     lines: list[str] = []
     width = max((len(check.name) for check in report.checks), default=0)
     for check in report.checks:
-        lines.append(
-            f"{STATUS_SYMBOLS[check.status]}  {check.name.ljust(width)}  {check.message}"
-        )
+        lines.append(f"{STATUS_SYMBOLS[check.status]}  {check.name.ljust(width)}  {check.message}")
         if check.remediation is not None and check.status is not CheckStatus.OK:
             lines.append(f"{' ' * 6}{' ' * width}  -> {check.remediation}")
 
@@ -117,9 +115,7 @@ def render_status_report(
     lines.append("health:")
     lines.append(f"  stale runs: {len(health.stale_runs)}")
     for finding in health.stale_runs:
-        lines.append(
-            f"    {finding.run_id}  {finding.state}  idle {finding.idle_seconds:.0f}s"
-        )
+        lines.append(f"    {finding.run_id}  {finding.state}  idle {finding.idle_seconds:.0f}s")
     if health.lock_check_supported:
         lines.append(
             f"  stale locks: {len(health.stale_locks)} (of {health.locks_checked} checked)"
