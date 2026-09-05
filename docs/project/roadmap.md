@@ -4,9 +4,9 @@ The implementation order is a numbered phase list. It lives in
 [`PLAN.md`](https://github.com/sanjit-roopra/software-agent-factory/blob/main/PLAN.md),
 which is the authoritative record. This page summarizes it.
 
-Phases 0–14 are implemented and integrated. Five Phase 15 sub-phases were
-explicitly requested and are implemented. Every other Phase 15 item, including
-staging and deployment, is deferred.
+Phases 0–14 and Phase 16 are implemented and integrated. Five Phase 15
+sub-phases were explicitly requested and are implemented. Every other Phase 15
+item, including staging and deployment, is deferred.
 
 ## Phases
 
@@ -40,6 +40,7 @@ staging and deployment, is deferred.
 | 15.10 | Jira and other trackers | deferred |
 | 15.11 | Read-only local dashboard | done (`factory dashboard`) |
 | 15.12 | Kubernetes workers | deferred |
+| 16 | Repository capability layer + bounded post-green polish | done |
 
 ## Known limits
 
@@ -57,6 +58,8 @@ staging and deployment, is deferred.
   fields stay unknown. They are never estimated.
 - **Trackers.** GitHub Issues is the only backlog provider.
 - **Concurrency.** `scheduler.max_concurrent_tasks` is validated to `1` or `2`.
+- **Capabilities.** Repository skills come from a fixed, versioned built-in
+  catalog. Repository-provided skills and plugins do not exist.
 - **Two release behaviours can only be proven in CI.** Publishing a real `v*`
   tag, and the native Intel (`macos-15-intel`) build. Both are implemented and
   statically tested; the first real tag exercises them end to end.

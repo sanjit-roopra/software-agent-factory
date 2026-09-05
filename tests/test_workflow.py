@@ -18,16 +18,26 @@ import pytest
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
+from software_agent_factory.governance import (
+    CheckPhase,
+    RepositoryVerificationResult,
+    VerificationFailureKind,
+)
 from software_agent_factory.models import (
     AgentRole,
+    AttemptTrigger,
     ChangeSet,
     Complexity,
     FactoryRun,
+    RepairContext,
+    RepositoryProfile,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
+    SkillId,
     TriageResult,
+    VerificationReport,
     WorkflowState,
     WorkItem,
     utc_now,
@@ -87,6 +97,7 @@ def _config(
     verify: list[str] | None = None,
     same_model_attempts: int = 2,
     max_total_attempts: int = 6,
+    polish_enabled: bool = False,
 ) -> FactoryConfig:
     return FactoryConfig.model_validate(
         {
@@ -116,6 +127,7 @@ def _config(
                 "command_timeout_seconds": 30,
                 "commands": {"install": [], "verify": verify or [], "build": []},
             },
+            "polish": {"enabled": polish_enabled},
             "risk": {
                 "R0": {"human_approval": False},
                 "R1": {"human_approval": False},
@@ -255,6 +267,7 @@ def test_happy_path_reaches_pr_ready_and_persists_all_artifacts(
     for filename in (
         "run.json",
         "work-item.json",
+        "repository-profile.json",
         "triage.json",
         "specification.json",
         "execution-plan.json",
@@ -330,6 +343,179 @@ def test_all_repository_reading_roles_receive_the_exact_workspace_path(
     ]
     assert [request.role for request in runtime.requests] == expected_roles
     assert all(request.workspace_path == run.workspace_path for request in runtime.requests)
+
+
+def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir: Path) -> None:
+    runtime = RecordingRuntime(FakeAgentRuntime())
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+    )
+
+    run = controller.run(_work_item("WI-polish"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert [request.role for request in runtime.requests] == [
+        AgentRole.TRIAGE,
+        AgentRole.REFINER,
+        AgentRole.PLANNER,
+        AgentRole.IMPLEMENTER,
+        AgentRole.IMPLEMENTER,
+        AgentRole.TESTER,
+        AgentRole.REVIEWER,
+    ]
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+    ]
+    polish_request = runtime.requests[4]
+    assert isinstance(polish_request.repair_context, RepairContext)
+    assert polish_request.repair_context.trigger is AttemptTrigger.POLISH
+    assert "factory-selected repository skills" in polish_request.repair_context.summary
+    assert store.list_attempts(run.id) == [1, 2]
+    assert store.load_artifact(run.id, VerificationReport, attempt=1).passed is True
+    assert store.load_artifact(run.id, VerificationReport, attempt=2).passed is True
+
+
+def test_post_green_polish_reserves_one_recovery_attempt(source_repo: Path, data_dir: Path) -> None:
+    runtime = RecordingRuntime(FakeAgentRuntime())
+    controller = WorkflowController(
+        _config(data_dir, max_total_attempts=2, same_model_attempts=1, polish_enabled=True),
+        FileRunStore(data_dir),
+        runtime,
+    )
+
+    run = controller.run(_work_item("WI-polish-budget"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert [request.role for request in runtime.requests].count(AgentRole.IMPLEMENTER) == 1
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+
+
+def test_repository_profiler_failure_degrades_to_generic_skills(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def failing_profiler(path: Path) -> RepositoryProfile:
+        raise OSError(f"cannot inspect {path.name}")
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(),
+        repository_profiler=failing_profiler,
+    )
+
+    run = controller.run(_work_item("WI-profile-fallback"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert [skill.id for skill in profile.selected_skills] == [
+        SkillId.PLAN_QUALITY,
+        SkillId.SIMPLIFICATION,
+    ]
+    assert profile.warnings and "profiling degraded" in profile.warnings[0]
+
+
+def test_repository_skills_are_persisted_and_injected_into_four_roles(
+    source_repo: Path, data_dir: Path
+) -> None:
+    (source_repo / "pyproject.toml").write_text(
+        """
+[project]
+name = "example"
+dependencies = ["pytest>=8"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    _git(source_repo, "add", "pyproject.toml")
+    _git(source_repo, "commit", "-m", "add Python project")
+    runtime = RecordingRuntime(FakeAgentRuntime())
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, runtime)
+
+    run = controller.run(_work_item("WI-capabilities"), source_repo)
+
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert [skill.id for skill in profile.selected_skills] == [
+        SkillId.PLAN_QUALITY,
+        SkillId.SIMPLIFICATION,
+        SkillId.PYTHON_QUALITY,
+        SkillId.TESTING_QUALITY,
+    ]
+    requests = {request.role: request for request in runtime.requests}
+    assert [skill.id for skill in requests[AgentRole.PLANNER].selected_skills] == [
+        SkillId.PLAN_QUALITY,
+        SkillId.SIMPLIFICATION,
+        SkillId.PYTHON_QUALITY,
+        SkillId.TESTING_QUALITY,
+    ]
+    assert [skill.id for skill in requests[AgentRole.IMPLEMENTER].selected_skills] == [
+        SkillId.SIMPLIFICATION,
+        SkillId.PYTHON_QUALITY,
+        SkillId.TESTING_QUALITY,
+    ]
+    assert [skill.id for skill in requests[AgentRole.TESTER].selected_skills] == [
+        SkillId.PYTHON_QUALITY,
+        SkillId.TESTING_QUALITY,
+    ]
+    assert [skill.id for skill in requests[AgentRole.REVIEWER].selected_skills] == [
+        SkillId.SIMPLIFICATION,
+        SkillId.PYTHON_QUALITY,
+        SkillId.TESTING_QUALITY,
+    ]
+    assert requests[AgentRole.TRIAGE].selected_skills == []
+    assert requests[AgentRole.REFINER].selected_skills == []
+
+
+def test_failed_post_polish_verification_uses_normal_bounded_repair(
+    source_repo: Path, data_dir: Path
+) -> None:
+    class SequenceVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, *args: object, **kwargs: object) -> RepositoryVerificationResult:
+            self.calls += 1
+            passed = self.calls != 2
+            return RepositoryVerificationResult(
+                report=VerificationReport(
+                    passed=passed,
+                    failures=[] if passed else ["post-polish verification failed"],
+                    confidence=1.0,
+                ),
+                command_logs=(),
+                failure_kind=None if passed else VerificationFailureKind.TEST,
+                failed_phase=None if passed else CheckPhase.VERIFY,
+                failed_command=None,
+            )
+
+    verifier = SequenceVerifier()
+    config = _config(
+        data_dir,
+        same_model_attempts=3,
+        max_total_attempts=3,
+        polish_enabled=True,
+    )
+    controller = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+        repository_verifier=verifier,  # type: ignore[arg-type]
+    )
+
+    run = controller.run(_work_item("WI-polish-repair"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert verifier.calls == 3
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+        AttemptTrigger.VERIFICATION,
+    ]
 
 
 # -- bounded escalation and repair -------------------------------------------

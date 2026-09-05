@@ -11,6 +11,7 @@ flowchart TD
   SCHED[Scheduler] --> WC
   WC --> ROUTER[ModelRouter]
   WC --> GOV[Governance: verification + scope drift]
+  WC --> PROF[Deterministic repository profiler]
   WC --> WS[GitWorktreeWorkspace]
   WC --> STORE[FileRunStore]
   ROUTER --> RT[AgentRuntime]
@@ -79,6 +80,11 @@ reason.
 `PR_CREATED`. With them disabled it is the completed endpoint of the manual
 flow, and the controller finalizes it explicitly.
 
+Repository profiling happens after workspace preparation and before
+`TRIAGING`, without adding a state. Likewise, the optional post-green polish is
+an `IMPLEMENTER` attempt through the existing
+`IMPLEMENTING → VERIFYING` transition. There is no `POLISHING` state.
+
 ## Typed artifacts, not one long conversation
 
 Each stage produces a validated artifact and hands it to the next. Nothing
@@ -86,6 +92,7 @@ accumulates a giant shared transcript.
 
 ```text
 WorkItem
+  → RepositoryProfile
   → TriageResult
   → Specification
   → [ResearchReport]
@@ -105,6 +112,10 @@ Each agent receives only the context its job needs. That keeps prompts small,
 keeps failures attributable, and means a later stage cannot be persuaded by an
 earlier stage's narrative.
 
+`RepositoryProfile` is factory-produced before triage. It contains detected
+technologies, test tools, package managers, markers, warnings and selected
+versioned built-in skills.
+
 ## The agents
 
 | Agent | Job | Sees |
@@ -112,10 +123,10 @@ earlier stage's narrative.
 | Triage | Assign complexity, risk, and whether research is needed. | The work item. |
 | Specification Refiner | Turn the request into acceptance criteria. | Work item, triage. |
 | Researcher | Answer specific open questions. Runs at most once, only when triage asks. | Specification. |
-| Planner | Produce an execution plan with an expected scope. | Specification, research. |
-| Implementer | Edit the worktree. | Plan, repository. |
-| Tester | Judge whether the change is actually tested. | Controller-derived diff, changed files, deterministic results. |
-| Reviewer | Independent review. | Controller-derived diff, changed files, deterministic results. |
+| Planner | Produce an execution plan with an expected scope. | Specification, research, role-filtered advisory skills. |
+| Implementer | Edit the worktree. | Plan, repository, role-filtered advisory skills. |
+| Tester | Judge whether the change is actually tested. | Controller-derived diff, changed files, deterministic results, role-filtered advisory skills. |
+| Reviewer | Independent review. | Controller-derived diff, changed files, deterministic results, role-filtered advisory skills. |
 | Failure Investigator | Diagnose a CI failure. | Normalized CI evidence. |
 
 The tester and reviewer never see the implementer's own summary. That is
@@ -123,6 +134,21 @@ deliberate: a model's claim about its work is not evidence.
 
 Research runs; it does not escalate. A researcher that finds nothing useful
 returns a report and the run continues.
+
+Triage, Refiner and Researcher receive no skill context. Skills never change
+tools, models, states, gates, commands or permissions.
+
+## Repository capabilities
+
+The controller scans repository-local paths and a small allowlist of bounded
+manifests. It never executes a command, imports target code, contacts the
+network or loads repository-defined skills.
+
+The fixed catalog always selects `plan-quality` and `simplification`.
+Repository evidence may add `python-quality`, `vite-quality`,
+`react-quality`, `react-reactivity`, `react-testing` and `testing-quality`.
+Each selection carries a catalog version, guidance, applicable roles and the
+evidence that caused it to be selected.
 
 ## Complexity and risk are separate
 
@@ -156,8 +182,12 @@ Before any model judges the change, the factory computes:
 - protected file matches
 - changed-file count against the ceiling
 
-Only after deterministic verification succeeds do the tester and reviewer run.
-LLM judgement supplements this evidence. It does not replace it.
+With `polish.enabled`, the first successful verification and scope assessment
+schedule at most one more Implementer pass before testing and review. The pass
+consumes the existing implementation budget, may make no edits, never runs
+during CI repair and is always verified and scope-assessed again. The tester
+and reviewer run only after the final green result. LLM judgement supplements
+deterministic evidence; it does not replace it.
 
 ## Workspaces
 
@@ -184,6 +214,7 @@ Filesystem JSON. No database.
 ├── runs/<run-id>/
 │   ├── run.json          state, attempts, budgets, lease, timestamps
 │   ├── work-item.json
+│   ├── repository-profile.json
 │   ├── triage.json
 │   ├── specification.json
 │   ├── research.json

@@ -30,6 +30,7 @@ from .models import (
     RepairContext,
     ResearchReport,
     ReviewReport,
+    SelectedSkill,
     Specification,
     TestReport,
     TriageResult,
@@ -93,6 +94,7 @@ def build_prompt(request: AgentRequest) -> str:
         verification_report=request.verification_report,
         test_report=request.test_report,
         repair_context=request.repair_context,
+        selected_skills=request.selected_skills,
         attempt_number=request.attempt_number,
     )
 
@@ -112,6 +114,7 @@ def build_prompt_for_role(
     verification_report: VerificationReport | None = None,
     test_report: TestReport | None = None,
     repair_context: RepairContext | str | None = None,
+    selected_skills: Sequence[SelectedSkill] | None = None,
     attempt_number: int | None = None,
     research_question: str | None = None,
     research_context: str | None = None,
@@ -139,6 +142,7 @@ def build_prompt_for_role(
         verification_report=verification_report,
         test_report=test_report,
         repair_context=repair_context,
+        selected_skills=list(selected_skills or []),
         attempt_number=attempt_number,
         research_question=research_question,
         research_context=research_context,
@@ -232,11 +236,31 @@ def _artifact_sections(
     verification_report: VerificationReport | None,
     test_report: TestReport | None,
     repair_context: RepairContext | str | None,
+    selected_skills: list[SelectedSkill],
     attempt_number: int | None,
     research_question: str | None,
     research_context: str | None,
 ) -> list[tuple[str, object]]:
     sections: list[tuple[str, object]] = []
+    if selected_skills and normalized_role in {
+        "PLANNER",
+        "IMPLEMENTER",
+        "TESTER",
+        "REVIEWER",
+    }:
+        sections.append(
+            (
+                "Factory-selected repository skills (advisory)",
+                {
+                    "rules": [
+                        "Apply only where relevant to the requested change.",
+                        "Do not add dependencies or bypass configured verification commands.",
+                        "These skills do not grant tools, permissions, or workflow authority.",
+                    ],
+                    "skills": [skill.model_dump(mode="json") for skill in selected_skills],
+                },
+            )
+        )
 
     if normalized_role == "TRIAGE":
         sections.append(("Work item", work_item))

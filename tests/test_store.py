@@ -9,6 +9,7 @@ import pytest
 from software_agent_factory.models import (
     ChangeSet,
     FactoryRun,
+    RepositoryProfile,
     Specification,
     TestReport,
     WorkflowState,
@@ -165,6 +166,19 @@ def test_test_report_has_a_registered_default_filename(tmp_path: Path) -> None:
 
     assert path.name == "test-report.json"
     assert store.load_artifact(run.id, TestReport, attempt=1) == report
+
+
+def test_repository_profile_has_a_registered_run_level_filename(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    run = _sample_run()
+    store.save_run(run)
+    profile = RepositoryProfile()
+
+    path = store.save_artifact(run.id, profile)
+
+    assert path.name == "repository-profile.json"
+    assert store.load_artifact(run.id, RepositoryProfile) == profile
+    assert store.list_attempts(run.id) == []
 
 
 def test_listing_runs_ignores_attempt_directories(tmp_path: Path) -> None:

@@ -21,6 +21,8 @@ from software_agent_factory.models import (
     RepairContext,
     ResearchReport,
     ReviewReport,
+    SelectedSkill,
+    SkillId,
     Specification,
     TestReport,
     TriageResult,
@@ -214,6 +216,40 @@ def test_implementer_prompt_carries_repair_context_and_current_diff() -> None:
     assert "AssertionError: expected 400" in prompt
     assert "Attempt number" in prompt
     assert DIFF.strip() in prompt
+
+
+def test_selected_skills_are_advisory_context_for_supported_roles_only() -> None:
+    skill = SelectedSkill(
+        id=SkillId.PYTHON_QUALITY,
+        version=1,
+        summary="Apply Python quality practices.",
+        roles=(
+            AgentRole.PLANNER,
+            AgentRole.IMPLEMENTER,
+            AgentRole.TESTER,
+            AgentRole.REVIEWER,
+        ),
+        guidance=("Use precise types.",),
+        evidence=("pyproject.toml",),
+    )
+
+    for role in (
+        AgentRole.PLANNER,
+        AgentRole.IMPLEMENTER,
+        AgentRole.TESTER,
+        AgentRole.REVIEWER,
+    ):
+        prompt = build_prompt(_request(role, selected_skills=[skill]))
+        assert "Factory-selected repository skills (advisory)" in prompt
+        assert "python-quality" in prompt
+        assert "do not grant tools, permissions, or workflow authority" in prompt
+
+    for role in (AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER):
+        prompt = build_prompt(_request(role, selected_skills=[skill]))
+        assert "python-quality" not in prompt
+
+    tester_without_skills = build_prompt(_request(AgentRole.TESTER))
+    assert "Factory-selected repository skills (advisory)" not in tester_without_skills
 
 
 def test_triage_and_refiner_prompts_stay_minimal() -> None:

@@ -15,10 +15,14 @@ from software_agent_factory.models import (
     FactoryRun,
     PlanStep,
     RepairContext,
+    RepositoryProfile,
+    RepositoryTechnology,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
+    SelectedSkill,
+    SkillId,
     Specification,
     TestReport,
     TriageResult,
@@ -137,6 +141,20 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         compatibility_concerns=[],
         suggested_changes=[],
     )
+    repository_profile = RepositoryProfile(
+        markers=("pyproject.toml",),
+        technologies=(RepositoryTechnology.PYTHON,),
+        selected_skills=(
+            SelectedSkill(
+                id=SkillId.PYTHON_QUALITY,
+                version=1,
+                summary="Apply Python quality practices.",
+                roles=(AgentRole.PLANNER, AgentRole.IMPLEMENTER),
+                guidance=("Use precise types.",),
+                evidence=("pyproject.toml",),
+            ),
+        ),
+    )
 
     assert work_item.created_at.tzinfo is UTC
     assert attempt.started_at.tzinfo is UTC
@@ -148,6 +166,7 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         triage,
         specification,
         research,
+        repository_profile,
         execution_plan,
         change_set,
         verification,
@@ -197,6 +216,22 @@ def test_attempt_record_records_explicit_budget_and_trigger() -> None:
     assert round_tripped == attempt
     assert round_tripped.budget is AttemptBudget.CI_REPAIR
     assert round_tripped.triggered_by is AttemptTrigger.CI
+
+
+def test_polish_attempt_trigger_round_trips() -> None:
+    started_at = datetime(2026, 9, 4, 10, 0, tzinfo=UTC)
+    attempt = AttemptRecord(
+        attempt_number=2,
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        started_at=started_at,
+        completed_at=started_at,
+        outcome="succeeded",
+        triggered_by=AttemptTrigger.POLISH,
+    )
+
+    assert AttemptRecord.model_validate_json(attempt.model_dump_json()) == attempt
 
 
 def test_extended_workflow_states_and_roles_exist() -> None:

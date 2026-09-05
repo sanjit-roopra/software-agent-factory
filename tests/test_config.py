@@ -183,6 +183,7 @@ def test_phase_1_config_still_loads_and_new_sections_default(tmp_path: Path) -> 
     assert config.agent_timeout_seconds == 900
     assert config.factory.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
+    assert config.polish.enabled is False
     assert config.pull_request.enabled is False
     assert config.pull_request.remote == "origin"
     assert config.pull_request.base_branch is None
@@ -210,6 +211,7 @@ def test_packaged_default_config_publishes_every_section() -> None:
 
     assert config.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
+    assert config.polish.enabled is True
     assert config.pull_request.allowed_hosts == ["github.com"]
     assert config.ci.repair_attempts == 3
     assert config.scheduler.required_label == "agent-ready"
@@ -377,6 +379,7 @@ def test_both_configs_publish_the_same_structural_keys() -> None:
         "models",
         "repository",
         "scope_drift",
+        "polish",
         "pull_request",
         "ci",
         "scheduler",

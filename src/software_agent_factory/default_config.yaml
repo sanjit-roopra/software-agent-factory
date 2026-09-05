@@ -77,6 +77,9 @@ repository:
 scope_drift:
   max_replans: 1
 
+polish:
+  enabled: true
+
 pull_request:
   enabled: false
   remote: "origin"

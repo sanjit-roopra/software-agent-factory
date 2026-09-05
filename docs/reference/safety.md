@@ -40,6 +40,10 @@ With those defaults, `factory run` performs no network access and makes no paid
 model call. The test suite runs entirely offline: it never calls a model and
 never reaches GitHub.
 
+The packaged configuration enables `polish`, but the fake runtime still makes
+no model or network call. Legacy configurations that omit the section default
+it to disabled.
+
 ## Network access
 
 Nothing in the factory contacts the network unless you turned something on.
@@ -90,6 +94,9 @@ numbers.
 
 - Every work item runs in its own Git worktree under the data directory. The
   source checkout is not modified in place.
+- After preparing the worktree, capability detection reads only
+  repository-local paths and allowlisted bounded manifests. It uses no shell,
+  network or imports and does not load repository-defined skills.
 - Workspace paths are sanitized and must stay inside the workspace root. Cleanup
   refuses a path outside it.
 - A short-lived exclusive lock prevents two processes owning the same work item.
@@ -120,6 +127,11 @@ enforces this.
 
 Broken required checks cannot reach the tester or reviewer at all.
 
+Factory-selected skills are versioned advisory prompt context only. They are
+role-filtered to Planner, Implementer, Tester and Reviewer and cannot grant
+tools, alter models, change workflow states, waive gates, add commands or widen
+permissions. There is no repository skill plugin system.
+
 ## Bounded everything
 
 There is no unlimited retry loop anywhere.
@@ -128,6 +140,7 @@ There is no unlimited retry loop anywhere.
 | --- | --- | --- |
 | `retries.same_model_attempts` | `2` | Retries before escalating to a stronger model. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
+| `polish.enabled` | `true` packaged; `false` if omitted | At most one post-green implementation attempt. |
 | `scope_drift.max_replans` | `1` | Replans after scope drift. |
 | `ci.repair_attempts` | `3` | CI repair cycles. |
 | `ci.max_wait_seconds` | `1800` | CI polling. |
@@ -138,6 +151,11 @@ There is no unlimited retry loop anywhere.
 | `--max-scanned-runs` | `1000` | Run files parsed per `status` call or dashboard request. |
 
 Budgets are persisted on the run. A restart does not reset them.
+
+Polish uses the implementation budget, runs only when one later recovery
+attempt remains, never runs during CI repair and is always followed by
+deterministic verification and scope assessment. It may make no edits. No
+`POLISHING` state or `POLISHER` role exists.
 
 ## Recovery is conservative
 

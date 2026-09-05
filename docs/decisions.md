@@ -275,3 +275,41 @@ precisely because launchd never rotates what it captures. `KeepAlive` is
 `Crashed`-only, so no exit code — including the configuration-error code 2 —
 can create a restart loop. Uninstall unloads the agent and removes the plist
 while leaving runs and workspaces untouched.
+
+## ADR-019: Repository capabilities are deterministic and factory-owned
+
+Repository awareness is a controller-owned scan, not an agent discovery step.
+After the worktree is prepared and before `TRIAGING`, the factory walks
+repository-local paths and reads a small allowlist of bounded manifests. It
+does not run a shell command, import target code, contact the network or trust
+repository-provided instructions.
+
+The resulting versioned `RepositoryProfile` is persisted as
+`repository-profile.json` and records technologies, test tools, package
+managers, markers, warnings and selected skills. Skills come only from a fixed,
+versioned built-in catalog. `plan-quality` and `simplification` are universal;
+Python, Vite, React quality/reactivity/testing and general testing are selected
+only when supported by evidence.
+
+Only Planner, Implementer, Tester and Reviewer receive the subset assigned to
+their role. The context is advisory: it changes no tools, models, workflow
+states, quality gates, commands, permissions or routing. This is deliberately
+not a plugin system.
+
+## ADR-020: Post-green polish is one bounded implementation attempt
+
+When `polish.enabled` is true, the first successful deterministic verification
+may schedule exactly one more `IMPLEMENTER` pass with
+`AttemptTrigger.POLISH`. It uses the existing worker routing and implementation
+budget, may correctly make no edits, and is always followed by the full
+deterministic verification and scope assessment again before testing or review.
+
+Polish never runs during CI repair and is scheduled only when one later
+implementation attempt remains available to recover from a regression. It
+introduces no `POLISHING` state and no `POLISHER` role; the existing
+`IMPLEMENTING → VERIFYING` loop remains authoritative and visible in persisted
+attempt records.
+
+The configuration model defaults omitted legacy `polish` sections to disabled
+for compatibility. The packaged default and example enable it, so their normal
+fake run records an initial implementation attempt and one polish attempt.

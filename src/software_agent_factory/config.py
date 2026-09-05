@@ -154,6 +154,12 @@ class ScopeDriftConfig(ConfigModel):
     max_replans: NonNegativeInt = 1
 
 
+class PolishConfig(ConfigModel):
+    """One optional post-green implementation refinement pass."""
+
+    enabled: bool = False
+
+
 class PullRequestConfig(ConfigModel):
     """Pull request creation policy (``PLAN.md`` Phase 10). Never merges."""
 
@@ -254,6 +260,7 @@ class FactoryConfig(ConfigModel):
     repository: RepositoryConfig
     risk: dict[Risk, RiskRuleConfig]
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
+    polish: PolishConfig = Field(default_factory=PolishConfig)
     pull_request: PullRequestConfig = Field(default_factory=PullRequestConfig)
     ci: CiConfig = Field(default_factory=CiConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)

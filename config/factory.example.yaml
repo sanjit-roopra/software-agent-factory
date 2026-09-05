@@ -91,6 +91,12 @@ repository:
 scope_drift:
   max_replans: 1
 
+polish:
+  # One bounded worker pass after deterministic verification first succeeds.
+  # It applies the selected simplify and technology-specific skills, then the
+  # controller runs deterministic verification again.
+  enabled: true
+
 pull_request:
   enabled: false
   remote: "origin"

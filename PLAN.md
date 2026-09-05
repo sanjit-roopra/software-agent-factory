@@ -2,7 +2,7 @@
 
 ## Status
 
-Phases 0-14 are implemented and integrated.
+Phases 0-14 and Phase 16 are implemented and integrated.
 
 Five Phase 15 sub-phases were explicitly requested and are now implemented:
 15.0 factory CI, 15.1 tag-driven release/CD, 15.2 macOS runtime packaging and
@@ -45,6 +45,7 @@ tested here; the first real tag is what exercises them end to end.
 | 15.10 | Jira and other trackers | deferred |
 | 15.11 | Read-only local dashboard | done (`factory dashboard`) |
 | 15.12 | Kubernetes workers | deferred |
+| 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -895,6 +896,50 @@ Constraints:
 
 Status: deferred.
 
+# Phase 16. Repository capability layer and bounded post-green polish
+
+Status: done. The controller profiles each prepared worktree before
+`TRIAGING`, persists `repository-profile.json`, supplies role-filtered advisory
+skills, and optionally schedules one post-green `IMPLEMENTER` pass.
+
+Repository profiling is deterministic and read-only:
+
+- scan repository-local paths and allowlisted manifests only
+- do not execute commands, import target code or contact the network
+- record technologies, test tools, package managers, markers and warnings
+- select from a fixed, versioned built-in catalog; do not load repository
+  skills or plugins
+
+The catalog always includes `plan-quality` and `simplification`. Evidence may
+also select Python quality, Vite quality, React quality/reactivity/testing and
+general testing. Only Planner, Implementer, Tester and Reviewer receive the
+skills assigned to their role. Skills are advisory and cannot change tools,
+models, states, gates, commands, permissions or routing.
+
+`polish.enabled` controls one optional pass after the first successful
+deterministic verification and initial scope assessment, but before testing and
+review. It uses the existing Implementer and worker routing, records
+`AttemptTrigger.POLISH`, consumes the implementation budget, may make no edits
+and is always followed by another deterministic verification and scope
+assessment. It never runs during CI repair, never runs more than once and runs
+only when one later recovery attempt would still remain. There is no
+`POLISHING` state or `POLISHER` role.
+
+The class fallback is `false` for legacy configurations that omit `polish`.
+The packaged default and `config/factory.example.yaml` set it to `true`, so a
+normal packaged fake run has two implementation attempts: the initial pass and
+the bounded polish pass.
+
+## Acceptance criteria
+
+- profiling happens after workspace preparation and before triage
+- `repository-profile.json` is versioned and persisted for every run
+- malformed or oversized allowlisted manifests produce warnings, not execution
+- only the four supported roles receive their filtered advisory skills
+- the post-green pass is bounded, reverified and excluded from CI repair
+- existing workflow states, tools, models, gates, commands and permissions are
+  unchanged
+
 # First useful end-to-end demo
 
 This milestone is reached. With the packaged configuration the demo runs
@@ -935,6 +980,17 @@ model: Claude Sonnet 5
 files changed: N
 
 VERIFY
+
+lint ✓
+typecheck ✓
+tests ✓
+build ✓
+
+POLISH
+
+one bounded implementer pass
+
+VERIFY AGAIN
 
 lint ✓
 typecheck ✓

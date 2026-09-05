@@ -79,6 +79,7 @@ class AttemptTrigger(StrEnum):
     """Why an attempt was started, recorded for auditability."""
 
     INITIAL = "INITIAL"
+    POLISH = "POLISH"
     IMPLEMENTER_FAILURE = "IMPLEMENTER_FAILURE"
     VERIFICATION = "VERIFICATION"
     REVIEW = "REVIEW"
@@ -92,6 +93,66 @@ class ModelBase(BaseModel):
 
 class VersionedModel(ModelBase):
     schema_version: Literal[1] = 1
+
+
+class RepositoryTechnology(StrEnum):
+    PYTHON = "python"
+    JAVASCRIPT = "javascript"
+    TYPESCRIPT = "typescript"
+    REACT = "react"
+    VITE = "vite"
+
+
+class RepositoryTestTool(StrEnum):
+    PYTEST = "pytest"
+    VITEST = "vitest"
+
+
+class RepositoryPackageManager(StrEnum):
+    UV = "uv"
+    NPM = "npm"
+    PNPM = "pnpm"
+    YARN = "yarn"
+    BUN = "bun"
+
+
+class SkillId(StrEnum):
+    PLAN_QUALITY = "plan-quality"
+    SIMPLIFICATION = "simplification"
+    PYTHON_QUALITY = "python-quality"
+    VITE_QUALITY = "vite-quality"
+    REACT_QUALITY = "react-quality"
+    REACT_REACTIVITY = "react-reactivity"
+    REACT_TESTING = "react-testing"
+    TESTING_QUALITY = "testing-quality"
+
+
+class SelectedSkill(ModelBase):
+    """One immutable, factory-owned skill selected for a repository."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: SkillId
+    version: int = Field(ge=1)
+    summary: str = Field(min_length=1)
+    roles: tuple[AgentRole, ...]
+    guidance: tuple[str, ...]
+    evidence: tuple[str, ...] = Field(default=(), max_length=5)
+
+
+class RepositoryProfile(VersionedModel):
+    """Deterministic, read-only repository facts and selected skills."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    detector_version: Literal[1] = 1
+    catalog_version: Literal[1] = 1
+    markers: tuple[str, ...] = ()
+    technologies: tuple[RepositoryTechnology, ...] = ()
+    test_tools: tuple[RepositoryTestTool, ...] = ()
+    package_managers: tuple[RepositoryPackageManager, ...] = ()
+    selected_skills: tuple[SelectedSkill, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 class WorkItem(VersionedModel):

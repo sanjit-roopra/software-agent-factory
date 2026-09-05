@@ -150,6 +150,28 @@ scope_drift:
 See [Configure a repository](../guides/configure-repository.md#scope-drift) for
 the finding categories and decisions.
 
+## polish
+
+```yaml
+polish:
+  enabled: true
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` in packaged default/example; `false` when omitted | Run at most one post-green Implementer polish attempt. |
+
+The class fallback is `false`, so legacy configurations that omit `polish`
+retain their previous one-pass behavior. The packaged default and
+`config/factory.example.yaml` explicitly enable it.
+
+Polish runs only after the first successful deterministic verification and
+scope assessment, before testing and review. It uses the existing worker
+routing, records `AttemptTrigger.POLISH`, consumes the implementation budget,
+may make no edits and is always verified and scope-assessed again. It never
+runs during CI repair and runs only when one later recovery attempt would still
+remain.
+
 ## pull_request
 
 ```yaml

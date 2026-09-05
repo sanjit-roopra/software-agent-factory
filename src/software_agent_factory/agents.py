@@ -47,6 +47,7 @@ from .models import (
     ResearchReport,
     ReviewReport,
     Risk,
+    SelectedSkill,
     Specification,
     TestReport,
     TriageResult,
@@ -87,6 +88,7 @@ class AgentRequest(ModelBase):
     verification_report: VerificationReport | None = None
     test_report: TestReport | None = None
     repair_context: RepairContext | str | None = None
+    selected_skills: list[SelectedSkill] = Field(default_factory=list)
     workspace_path: str | None = None
     attempt_number: int | None = None
     timeout_seconds: int

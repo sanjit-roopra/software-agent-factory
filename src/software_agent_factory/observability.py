@@ -368,14 +368,14 @@ class FirstPassSuccessMetric(ModelBase):
 
     A succeeded run (``_classify_run(run) == "succeeded"``: ``DONE`` or a
     finalized ``PR_READY``) counts as a first-pass success when it needed
-    exactly one ``AttemptBudget.IMPLEMENTATION`` attempt to reach
-    ``PR_READY`` -- i.e. the initial implementer attempt was never retried
+    exactly one non-polish ``AttemptBudget.IMPLEMENTATION`` attempt to reach
+    ``PR_READY`` -- i.e. the initial implementer attempt was never repaired
     for an implementer failure, a deterministic verification failure, an
     independent-reviewer rejection, or a bounded scope-drift replan. Every
     one of those repair paths in ``WorkflowController._drive_to_pr_ready``
     re-invokes the implementer under the same ``IMPLEMENTATION`` budget
-    (``workflow.py``), so ``implementation_attempts == 1`` is both necessary
-    and sufficient: no separate replan/rejection counter is needed.
+    (``workflow.py``). The optional, planned ``POLISH`` attempt is excluded
+    because it is not a recovery from first-pass failure.
 
     ``denominator`` is every succeeded run in the scanned set; ``rate`` is
     ``None`` (never ``0.0``) when the denominator is zero, since an
@@ -768,7 +768,8 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
             total_attempts += 1
             if attempt.budget is AttemptBudget.IMPLEMENTATION:
                 implementation_attempts += 1
-                run_implementation_attempts += 1
+                if attempt.triggered_by is not AttemptTrigger.POLISH:
+                    run_implementation_attempts += 1
             elif attempt.budget is AttemptBudget.CI_REPAIR:
                 ci_repair_attempts += 1
             if attempt.triggered_by is AttemptTrigger.SCOPE:

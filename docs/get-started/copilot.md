@@ -7,8 +7,10 @@ GitHub Copilot CLI.
 
     Every stage of a run is a separate Copilot invocation: triage, refiner,
     optional researcher, planner, implementer, tester and reviewer — plus one
-    more per repair attempt. A single run is several model calls. There is no
-    spend estimate and no dry-run preview of cost.
+    more per repair attempt. With the packaged configuration, the enabled
+    post-green polish adds a second Implementer invocation. A single run is
+    several model calls. There is no spend estimate and no dry-run preview of
+    cost.
 
     `--runtime fake` is the default on every command precisely so nothing can
     spend money by accident.
@@ -35,6 +37,10 @@ uv run factory run \
 
 Nothing else changes. Same states, same artifacts, same gates.
 
+Before triage, the controller profiles the prepared worktree without shell,
+network or imports and persists `repository-profile.json`. This scan itself
+does not call Copilot.
+
 ## Which model runs which stage
 
 Model choice is configuration, not code. The packaged defaults:
@@ -59,6 +65,18 @@ Configuration rejects a reviewer whose model family matches any worker's. The
 final review always comes from a different family than the code that produced
 the change. See [Configuration](../reference/configuration.md#models).
 
+## Repository skills
+
+The deterministic profile selects from a fixed, versioned built-in catalog:
+universal plan quality and simplification, plus Python, Vite, React
+quality/reactivity/testing and general testing when repository evidence
+supports them.
+
+Only Planner, Implementer, Tester and Reviewer receive their role-filtered
+selection. The skills are advisory prompt context. They do not grant tools,
+change model routing, add commands, alter workflow states or waive gates, and
+the target repository cannot provide plugins.
+
 ## What the agent is allowed to do
 
 Each role gets a permission profile:
@@ -66,6 +84,9 @@ Each role gets a permission profile:
 - **Read-only roles** (triage, refiner, researcher, planner, tester, reviewer):
   `glob`, `grep`, `view`.
 - **Implementer:** `glob`, `grep`, `view`, `create`, `edit`, `bash`.
+
+The optional polish uses the same Implementer permission profile and worker
+routing. It introduces no separate role.
 
 The `copilot` process is started with the workspace as its working directory
 and with remote features, MCP servers, auto-update, interactive prompts and

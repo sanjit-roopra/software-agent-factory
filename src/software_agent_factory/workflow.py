@@ -43,6 +43,7 @@ import os
 import socket
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from .agents import AgentRequest, AgentRuntime
@@ -66,9 +67,11 @@ from .models import (
     ExecutionPlan,
     FactoryRun,
     RepairContext,
+    RepositoryProfile,
     ResearchReport,
     ReviewReport,
     RunLease,
+    SelectedSkill,
     Specification,
     TestReport,
     TriageResult,
@@ -78,6 +81,11 @@ from .models import (
     utc_now,
 )
 from .publishing import CIObserver, PullRequestPublisher
+from .repository_profile import (
+    generic_repository_profile,
+    profile_repository,
+    skills_for_role,
+)
 from .routing import ModelRouter
 from .store import FileRunStore
 from .verification import DeterministicVerifier
@@ -223,6 +231,7 @@ class WorkflowController:
         scope_policy: ScopeDriftPolicy | None = None,
         publisher: PullRequestPublisher | None = None,
         ci_observer: CIObserver | None = None,
+        repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -232,6 +241,7 @@ class WorkflowController:
             repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
         )
         self._scope_policy = scope_policy if scope_policy is not None else ScopeDriftPolicy()
+        self._repository_profiler = repository_profiler or profile_repository
         # Constructed eagerly when the integration is enabled so two concurrent
         # runs sharing one controller cannot race on lazy initialization, and
         # so a misconfiguration surfaces before any work is done.
@@ -399,7 +409,20 @@ class WorkflowController:
                 }
             )
             self._store.save_run(run)
-            return self._execute(run, work_item, workspace, source_repo)
+            try:
+                repository_profile = self._repository_profiler(workspace_path)
+            except (OSError, ValueError) as exc:
+                repository_profile = generic_repository_profile(
+                    warning=f"repository profiling degraded: {exc}"
+                )
+            self._store.save_artifact(run.id, repository_profile)
+            return self._execute(
+                run,
+                work_item,
+                workspace,
+                source_repo,
+                repository_profile,
+            )
         finally:
             # Workspaces are preserved by default (docs/architecture.md,
             # "Workspace lifecycle"): only the lock is released here, the
@@ -414,6 +437,7 @@ class WorkflowController:
         work_item: WorkItem,
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
+        repository_profile: RepositoryProfile,
     ) -> FactoryRun:
         try:
             workspace_path = str(workspace.path)
@@ -459,6 +483,7 @@ class WorkflowController:
                 specification,
                 research_report,
                 workspace_path=workspace_path,
+                repository_profile=repository_profile,
             )
 
             context = _RunContext(
@@ -467,6 +492,7 @@ class WorkflowController:
                 specification=specification,
                 research_report=research_report,
                 execution_plan=execution_plan,
+                repository_profile=repository_profile,
                 workspace=workspace,
                 source_repo=source_repo,
             )
@@ -562,6 +588,7 @@ class WorkflowController:
         work_item: WorkItem,
         specification: Specification,
         research_report: ResearchReport | None,
+        repository_profile: RepositoryProfile,
         *,
         workspace_path: str,
         repair_context: RepairContext | None = None,
@@ -577,6 +604,7 @@ class WorkflowController:
             repair_context=repair_context,
             diff=diff,
             changed_files=changed_files or [],
+            selected_skills=list(skills_for_role(repository_profile, AgentRole.PLANNER)),
         )
         result = self._runtime.run(request)
         if not result.success or result.execution_plan is None:
@@ -606,6 +634,7 @@ class WorkflowController:
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
+            selected_skills=list(skills_for_role(context.repository_profile, AgentRole.TESTER)),
             workspace_path=str(context.workspace.path),
         )
         result = self._runtime.run(request)
@@ -636,6 +665,7 @@ class WorkflowController:
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
             test_report=test_report,
+            selected_skills=list(skills_for_role(context.repository_profile, AgentRole.REVIEWER)),
             workspace_path=str(context.workspace.path),
         )
         result = self._runtime.run(request)
@@ -664,6 +694,7 @@ class WorkflowController:
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
         repair_context: RepairContext | str | None = None,
+        selected_skills: list[SelectedSkill] | None = None,
         workspace_path: str | None = None,
         attempt_number: int | None = None,
     ) -> AgentRequest:
@@ -683,6 +714,7 @@ class WorkflowController:
             verification_report=verification_report,
             test_report=test_report,
             repair_context=repair_context,
+            selected_skills=selected_skills or [],
             workspace_path=workspace_path,
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
@@ -798,6 +830,11 @@ class WorkflowController:
                 run, repair_context = self._replan(run, context, scope, evidence)
                 continue
 
+            if self._should_polish(run, budget):
+                repair_context = self._polish_context()
+                run = self.transition(run, WorkflowState.IMPLEMENTING)
+                continue
+
             run = self.transition(run, WorkflowState.REVIEWING)
             test_report = self._run_tester(run, context, evidence, verification.report, snapshot)
             review_report = self._run_reviewer(
@@ -850,6 +887,7 @@ class WorkflowController:
             repair_context=repair_context,
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
+            repository_profile=context.repository_profile,
         )
         run = self.transition(run, WorkflowState.IMPLEMENTING)
         return run, repair_context
@@ -888,6 +926,9 @@ class WorkflowController:
             execution_plan=context.execution_plan,
             repair_context=repair_context,
             diff=current_diff if repair_context is not None else None,
+            selected_skills=list(
+                skills_for_role(context.repository_profile, AgentRole.IMPLEMENTER)
+            ),
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
@@ -972,10 +1013,42 @@ class WorkflowController:
 
     def _implementer_failure_context(self, run: FactoryRun) -> RepairContext:
         last = run.attempt_records[-1]
+        if last.triggered_by is AttemptTrigger.POLISH:
+            return RepairContext(
+                trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
+                summary=(
+                    "The optional polish attempt did not complete. Restore or preserve "
+                    "the last verified behavior and resolve any partial polish edits."
+                ),
+                failures=[last.failure_reason or "polish implementer reported failure"],
+                log_excerpt=None,
+            )
         return RepairContext(
             trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
             summary="The previous implementation attempt did not complete.",
             failures=[last.failure_reason or "implementer reported failure"],
+            log_excerpt=None,
+        )
+
+    def _should_polish(self, run: FactoryRun, budget: AttemptBudget) -> bool:
+        if budget is not AttemptBudget.IMPLEMENTATION or not self._config.polish.enabled:
+            return False
+        if any(attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records):
+            return False
+        used = self._attempts_used(run, budget)
+        return used + 1 < self._config.retries.max_total_attempts
+
+    def _polish_context(self) -> RepairContext:
+        return RepairContext(
+            trigger=AttemptTrigger.POLISH,
+            summary=(
+                "Deterministic verification passed. Apply a final bounded polish and "
+                "simplification pass using the factory-selected repository skills. "
+                "Preserve required behavior, public interfaces, scope, dependencies, "
+                "security checks, and verification policy. Make no edit when no safe "
+                "improvement exists."
+            ),
+            failures=[],
             log_excerpt=None,
         )
 
@@ -1202,6 +1275,7 @@ class _RunContext:
         specification: Specification,
         research_report: ResearchReport | None,
         execution_plan: ExecutionPlan,
+        repository_profile: RepositoryProfile,
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
     ) -> None:
@@ -1210,6 +1284,7 @@ class _RunContext:
         self.specification = specification
         self.research_report = research_report
         self.execution_plan = execution_plan
+        self.repository_profile = repository_profile
         self.workspace = workspace
         self.source_repo = source_repo
         self.latest_evidence: WorkspaceEvidence | None = None

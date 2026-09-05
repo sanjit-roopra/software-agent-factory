@@ -178,6 +178,7 @@ Example:
 ├── runs/
 │   └── RUN-ID/
 │       ├── run.json
+│       ├── repository-profile.json
 │       ├── specification.json
 │       └── ...
 └── workspaces/
@@ -328,9 +329,11 @@ Initially:
 
 # Where this project intentionally extends Symphony
 
-## Explicit SDLC roles
+## Explicit SDLC stages and roles
 
 ```text
+DETERMINISTIC REPOSITORY PROFILE
+   ↓
 TRIAGE
    ↓
 REFINE
@@ -342,6 +345,14 @@ PLAN
 IMPLEMENT
    ↓
 VERIFY
+   ↓
+SCOPE
+   ↓
+POLISH once if enabled
+   ↓
+VERIFY again
+   ↓
+SCOPE again
    ↓
 REVIEW
    ↓
@@ -389,6 +400,8 @@ investigate
 ```text
 WorkItem
    ↓
+RepositoryProfile
+   ↓
 TriageResult
    ↓
 Specification
@@ -405,6 +418,12 @@ ReviewReport
 ```
 
 Do not pass one continuous conversation between roles.
+
+`RepositoryProfile` is produced by deterministic factory code after workspace
+preparation and before triage. A fixed, versioned built-in catalog supplies
+role-filtered advisory skills only to Planner, Implementer, Tester and Reviewer.
+The profile does not grant tools or authority, and repositories cannot provide
+skill definitions.
 
 ## Risk and complexity
 
@@ -483,8 +502,10 @@ preserve workspace evidence and move the run to `NEEDS_HUMAN`.
   typed configuration (`FactoryConfig`, strict `extra="forbid"`) plus the
   role-scoped prompt builders in `prompts.py` are the intentional replacement.
   A repository cannot redefine the factory's stages, gates or budgets: those
-  are factory authority, not repository input. A repository only supplies its
-  own `install`/`verify`/`build` commands.
+  are factory authority, not repository input. Deterministic profiling may
+  select from a fixed built-in skill catalog, but it cannot load
+  repository-defined skills or plugins. A repository only supplies its own
+  `install`/`verify`/`build` commands.
 - **Durable scheduler claims.** Live reservations stay in-memory. The durable
   source of truth is the persisted `FactoryRun` plus the workspace `flock`,
   which is sufficient for a single local process and avoids introducing a
@@ -515,4 +536,6 @@ typed evidence
 risk governance
 deterministic quality
 independent verification
+deterministic repository capabilities
+bounded post-green polish
 ```

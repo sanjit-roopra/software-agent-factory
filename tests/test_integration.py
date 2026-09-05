@@ -95,6 +95,7 @@ def test_pull_requests_disabled_persists_every_artifact_including_test_report(
     for filename in (
         "run.json",
         "work-item.json",
+        "repository-profile.json",
         "triage.json",
         "specification.json",
         "execution-plan.json",

@@ -58,10 +58,16 @@ from .models import (
     FactoryRun,
     PlanStep,
     RepairContext,
+    RepositoryPackageManager,
+    RepositoryProfile,
+    RepositoryTechnology,
+    RepositoryTestTool,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
+    SelectedSkill,
+    SkillId,
     Specification,
     TestReport,
     TriageResult,
@@ -81,6 +87,7 @@ from .observability import (
     log_run_event,
 )
 from .publishing import CIObserver, PullRequestPublisher
+from .repository_profile import profile_repository, skills_for_role
 from .routing import ModelRouter
 from .scheduler import Scheduler, TrackerItem, TrackerProvider, deterministic_work_item_id
 from .service import FactoryService
@@ -148,6 +155,10 @@ __all__ = [
     "PublishGate",
     "PullRequestPublisher",
     "RepairContext",
+    "RepositoryPackageManager",
+    "RepositoryProfile",
+    "RepositoryTechnology",
+    "RepositoryTestTool",
     "RepositoryVerifier",
     "ResearchReport",
     "ReviewReport",
@@ -155,6 +166,7 @@ __all__ = [
     "RunDetail",
     "RunLease",
     "RunSummary",
+    "SelectedSkill",
     "Scheduler",
     "ScopeAssessment",
     "ScopeDecision",
@@ -164,6 +176,7 @@ __all__ = [
     "ServiceRuntime",
     "ServiceStatus",
     "Specification",
+    "SkillId",
     "TERMINAL_STATES",
     "TestReport",
     "TrackerItem",
@@ -190,9 +203,11 @@ __all__ = [
     "load_config",
     "log_run_event",
     "missing_prerequisites",
+    "profile_repository",
     "requires_gh",
     "resolve_factory_executable",
     "run_doctor",
+    "skills_for_role",
     "uninstall_service",
 ]
 

@@ -9,6 +9,12 @@ API is still `0.x`.
 
 ### Added
 
+- Deterministic repository profiling with persisted technologies, test tools,
+  package managers, markers, warnings, and versioned built-in skills.
+- Role-filtered advisory skill context for Planner, Implementer, Tester, and
+  Reviewer.
+- An optional, bounded post-green Implementer polish pass with mandatory
+  deterministic re-verification.
 - Public documentation site.
 - Open-source license and community files.
 - Documentation build and GitHub Pages deployment.

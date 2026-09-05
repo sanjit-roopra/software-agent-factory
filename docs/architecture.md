@@ -9,6 +9,10 @@ The implemented pipeline is:
 ```text
 task (manual or GitHub issue)
    ↓
+prepare worktree
+   ↓
+deterministic repository profile
+   ↓
 triage
    ↓
 refine
@@ -22,6 +26,12 @@ implement
 deterministic verification (install → verify → build)
    ↓
 scope-drift governance
+   ↓
+one bounded implementer polish pass (when enabled)
+   ↓
+deterministic verification again
+   ↓
+scope-drift governance again
    ↓
 independent tester
    ↓
@@ -53,6 +63,9 @@ Implemented (requested Phase 15 sub-phases, see `PLAN.md`):
 - 15.2 macOS runtime packaging and an opt-in user launchd service
 - 15.5 local monitoring and health (`factory doctor`, `factory status`)
 - 15.11 a read-only, loopback-only local dashboard (`factory dashboard`)
+
+Phase 16 is also implemented: deterministic repository capability profiling and
+an optional bounded post-green polish pass.
 
 None of those change what the factory is allowed to do autonomously. They make
 it installable, observable and inspectable on one MacBook.
@@ -153,8 +166,8 @@ commit_sha
 pull_request_url
 ```
 
-`attempt_records` is the durable retry budget: every implementation or repair
-attempt appends exactly one record carrying its `budget`
+`attempt_records` is the durable retry budget: every implementation, polish or
+repair attempt appends exactly one record carrying its `budget`
 (`IMPLEMENTATION`/`CI_REPAIR`) and `triggered_by` reason. Attempt numbers are
 always derived from this persisted list, never from an in-process counter, so a
 restart cannot grant a run a fresh budget.
@@ -189,6 +202,10 @@ There is deliberately no `REPAIRING`, `PLAN_READY` or `BLOCKED` state: repair is
 a bounded transition back to `IMPLEMENTING` (or, for scope drift, back to
 `PLANNING`), not a second workflow, and "blocked" is expressed as
 `NEEDS_HUMAN` with a recorded reason.
+
+There is also no `POLISHING` state or `POLISHER` role. When enabled, polish is
+one ordinary `IMPLEMENTER` attempt triggered by `POLISH`, followed by the normal
+`VERIFYING` transition.
 
 The workflow controller owns every transition. The full table is declared as
 data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
@@ -263,6 +280,33 @@ Avoid conflating:
 - whether the scheduler owns this task
 
 ## Artifacts
+
+### RepositoryProfile
+
+Produced deterministically after the worktree is prepared and before
+`TRIAGING`. It records:
+
+```text
+detector_version
+catalog_version
+markers
+technologies
+test_tools
+package_managers
+selected_skills
+warnings
+```
+
+The profiler walks repository-local paths, prunes generated/vendor directories
+and reads only an allowlist of bounded manifests. It never uses a shell,
+network, imports or repository-provided skill definitions.
+
+The fixed versioned catalog always selects `plan-quality` and
+`simplification`. Evidence may additionally select `python-quality`,
+`vite-quality`, `react-quality`, `react-reactivity`, `react-testing` and
+`testing-quality`. Only Planner, Implementer, Tester and Reviewer receive the
+subset assigned to their role. This context is advisory and cannot alter tools,
+models, workflow states, gates, commands or permissions.
 
 ### TriageResult
 
@@ -527,6 +571,8 @@ No source modifications.
 
 Output: `ExecutionPlan`
 
+Receives the role-filtered advisory skills from `RepositoryProfile`.
+
 ### Implementer
 Model selected by complexity.
 
@@ -537,6 +583,9 @@ Permissions:
 - tests
 
 Output: `ChangeSet`
+
+Receives the role-filtered advisory skills from `RepositoryProfile`, including
+on the optional post-green polish attempt.
 
 ### Tester
 Model: `Claude Sonnet 5`
@@ -549,6 +598,8 @@ Receives:
 
 The implementer's `ChangeSet` (including its summary) is never provided: the
 tester sees only controller-derived Git evidence plus deterministic results.
+
+Receives the role-filtered advisory skills from `RepositoryProfile`.
 
 Output: `TestReport`
 
@@ -563,6 +614,8 @@ Receives:
 - independent `TestReport`
 
 Never receives the implementer's `ChangeSet` summary.
+
+Receives the role-filtered advisory skills from `RepositoryProfile`.
 
 Checks:
 - correctness
@@ -648,9 +701,13 @@ Opus continues failing
 NEEDS_HUMAN
 ```
 
-Every entry into `IMPLEMENTING` appends one attempt record. Verification and
-review failures consume the same monotonic budget so alternating failures cannot
-evade the limit. Actual limits belong in configuration.
+Every entry into `IMPLEMENTING` appends one attempt record. Verification,
+review and the optional post-green polish consume the same monotonic
+implementation budget so no path can evade the limit. Polish runs at most once,
+only after the first successful deterministic verification, never during CI
+repair, and only when one later recovery attempt remains available. It may make
+no edits; deterministic verification and scope assessment always run again.
+Actual limits belong in configuration.
 
 ## Local workspace
 
@@ -668,6 +725,7 @@ Suggested layout:
 │   └── RUN-ID/
 │       ├── run.json
 │       ├── work-item.json
+│       ├── repository-profile.json
 │       ├── triage.json
 │       ├── specification.json
 │       ├── research.json
@@ -794,7 +852,11 @@ build:
 
 The factory runs deterministic checks after implementation.
 
-Only after they pass should independent AI verification/review occur.
+When `polish.enabled` is true, the first successful deterministic verification
+and scope assessment are followed by at most one `IMPLEMENTER` polish attempt.
+The full deterministic verification and scope assessment then run again before
+the tester and reviewer. The packaged default and example enable polish; a
+legacy configuration that omits the section uses the model fallback of `false`.
 
 The small command runner is part of Phase 1. Empty command lists pass, keeping
 repositories usable before they add factory-specific configuration.

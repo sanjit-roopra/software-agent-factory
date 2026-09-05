@@ -9,6 +9,10 @@ The factory takes software work through:
 ```text
 Work Item
     ↓
+Prepare worktree
+    ↓
+Profile repository
+    ↓
   Triage
     ↓
   Refine
@@ -20,6 +24,10 @@ Work Item
  Implement
     ↓
   Verify
+    ↓
+Polish once if enabled
+    ↓
+  Verify again
     ↓
   Review
     ↓
@@ -116,6 +124,8 @@ Use:
 ```text
 WorkItem
   ↓
+RepositoryProfile
+  ↓
 TriageResult
   ↓
 Specification
@@ -135,6 +145,16 @@ Persist these artifacts.
 
 Each agent receives only the context needed for its job.
 
+Repository capabilities are deterministic, factory-owned advisory context.
+After preparing the worktree and before triage, scan only repository-local
+paths and allowlisted manifests. Do not execute code, import target modules,
+open a shell, use the network or load repository-defined skills.
+
+Persist `repository-profile.json`. Only Planner, Implementer, Tester and
+Reviewer receive role-filtered skills from the fixed, versioned built-in
+catalog. Skills do not change tools, models, states, gates, commands,
+permissions or workflow authority.
+
 ### 3. A model does not approve its own work
 The implementer's success claim is not a quality gate.
 
@@ -148,6 +168,11 @@ Prefer a different model family for final review.
 Never implement an unlimited retry loop.
 
 All retries must have explicit limits and recorded reasons.
+
+The optional post-green polish is one `IMPLEMENTER` attempt with trigger
+`POLISH`, not a new state or role. It consumes the existing implementation
+budget, may make no edits, is always verified again, never runs during CI
+repair and runs only when one later recovery attempt would still remain.
 
 ### 5. Complexity and risk are separate concepts
 Complexity selects model strength.
