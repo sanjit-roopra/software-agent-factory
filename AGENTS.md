@@ -148,12 +148,47 @@ Each agent receives only the context needed for its job.
 Repository capabilities are deterministic, factory-owned advisory context.
 After preparing the worktree and before triage, scan only repository-local
 paths and allowlisted manifests. Do not execute code, import target modules,
-open a shell, use the network or load repository-defined skills.
+open a shell or use the network. Persist `repository-profile.json`, recording
+exact dependency evidence: direct declarations (ecosystem, name, declared
+version, optional exact resolved version/resolution path, manifest path,
+dependency group) parsed from `pyproject.toml` (PEP 621 tables,
+`dependency-groups`, `requires-python` and the Poetry tables),
+`requirements.txt`/`requirements-*.txt` (`pip`) and `package.json`, with exact
+versions resolved from `uv.lock`, `package-lock.json` and `pnpm-lock.yaml` when
+unambiguous. `poetry.lock`, `yarn.lock` and `bun.lock` identify their package
+manager and are fingerprinted only. Also record `version_files`, a semantic
+`dependency_fingerprint` and a `manifest_fingerprint` kept as file-content
+provenance.
 
-Persist `repository-profile.json`. Only Planner, Implementer, Tester and
-Reviewer receive role-filtered skills from the fixed, versioned built-in
-catalog. Skills do not change tools, models, states, gates, commands,
-permissions or workflow authority.
+There is no fixed built-in skill catalog. When `polish.enabled` and the
+bounded polish attempt is eligible, after the first successful deterministic
+verification and scope assessment the controller re-profiles the
+post-implementation worktree, transitions through a temporary `RESEARCHING`
+state, and invokes the configured Researcher (`GPT-5.6 Sol` by default) with
+purpose `GENERATE_REPOSITORY_SKILL`. That call runs in the neutral run
+directory, not the worktree. It receives only the normalized profile and the
+controller-derived changed file paths — never source code, README content,
+task prose or the diff — has only `web_fetch`, and may fetch only
+`polish.official_documentation_origins` (official documentation, migration
+guides and release notes, which are authoritative) and the exact curated
+`polish.practice_reference_urls` (commit-pinned exact documents, not a
+mutable branch). Curated references may contribute generic practice heuristics
+only; they never supply version claims, tools or orchestration.
+
+It returns one typed `RepositorySkill` (`repository-skill.json`) bound to the
+profile's `dependency_fingerprint`, with bounded targets backed by profiled
+dependency evidence, HTTPS source provenance, separate simplify and polish
+guidance, and uncertainties. One bounded existing Implementer attempt applies
+it — simplify first, then polish — and full deterministic verification runs
+again afterwards. The polish Tester and Reviewer see the same skill.
+
+Failure is never allowed to break an already-green run: a failed re-profile,
+failed research, rejected skill (fingerprint mismatch, unverified dependency
+target or evidence, missing required target, missing official provenance, or
+a source outside the configured allowlists) or a stale skill (dependency
+fingerprint changed after generation) records a warning on the persisted
+profile and safely skips or disables polish. Skills never change tools,
+models, states, gates, commands, permissions or workflow authority.
 
 ### 3. A model does not approve its own work
 The implementer's success claim is not a quality gate.

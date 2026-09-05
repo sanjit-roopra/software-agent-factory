@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from software_agent_factory.models import (
+    GENERIC_SKILL_TARGET,
+    REQUIRED_SKILL_TARGET_NAMES,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
@@ -10,19 +15,23 @@ from software_agent_factory.models import (
     ChangeSet,
     CommandResult,
     Complexity,
+    DependencyEcosystem,
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
     PlanStep,
     RepairContext,
+    RepositoryDependency,
     RepositoryProfile,
+    RepositorySkill,
     RepositoryTechnology,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
-    SelectedSkill,
-    SkillId,
+    SkillGuidance,
+    SkillSource,
+    SkillTarget,
     Specification,
     TestReport,
     TriageResult,
@@ -142,17 +151,47 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         suggested_changes=[],
     )
     repository_profile = RepositoryProfile(
+        manifest_fingerprint="a" * 64,
+        dependency_fingerprint="b" * 64,
         markers=("pyproject.toml",),
+        version_files=("pyproject.toml",),
         technologies=(RepositoryTechnology.PYTHON,),
-        selected_skills=(
-            SelectedSkill(
-                id=SkillId.PYTHON_QUALITY,
-                version=1,
-                summary="Apply Python quality practices.",
-                roles=(AgentRole.PLANNER, AgentRole.IMPLEMENTER),
-                guidance=("Use precise types.",),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.PYTHON,
+                name="python",
+                declared_version=">=3.13",
+                manifest_path="pyproject.toml",
+                group="runtime",
+            ),
+        ),
+    )
+    repository_skill = RepositorySkill(
+        dependency_fingerprint=repository_profile.dependency_fingerprint,
+        targets=(
+            SkillTarget(
+                ecosystem=DependencyEcosystem.PYTHON,
+                name="python",
+                declared_version=">=3.13",
+                resolved_version="3.13.7",
                 evidence=("pyproject.toml",),
             ),
+        ),
+        official_sources=(
+            SkillSource(
+                title="Python 3.13 documentation",
+                url="https://docs.python.org/3.13/",
+                version_scope="3.13",
+                applies_to=("python",),
+            ),
+        ),
+        simplify=SkillGuidance(
+            summary="Use Python 3.13 simplifications.",
+            guidance=("Prefer direct typed code.",),
+        ),
+        polish=SkillGuidance(
+            summary="Polish for Python 3.13.",
+            guidance=("Use supported Python 3.13 APIs.",),
         ),
     )
 
@@ -167,6 +206,7 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         specification,
         research,
         repository_profile,
+        repository_skill,
         execution_plan,
         change_set,
         verification,
@@ -310,3 +350,131 @@ def test_repair_context_is_small_and_typed() -> None:
 
     assert RepairContext.model_validate_json(context.model_dump_json()) == context
     assert set(context.model_dump()) == {"trigger", "summary", "failures", "log_excerpt"}
+
+
+def _guidance(summary: str) -> SkillGuidance:
+    return SkillGuidance(summary=summary, guidance=("Prefer the simplest supported form.",))
+
+
+def test_skill_source_requires_bounded_distinct_applicability() -> None:
+    with pytest.raises(ValidationError):
+        SkillSource(  # type: ignore[call-arg]
+            title="React documentation",
+            url="https://react.dev/reference/react",
+            version_scope="19.1.0",
+        )
+
+    with pytest.raises(ValidationError):
+        SkillSource(
+            title="React documentation",
+            url="https://react.dev/reference/react",
+            version_scope="19.1.0",
+            applies_to=(),
+        )
+
+    with pytest.raises(ValidationError, match="distinct"):
+        SkillSource(
+            title="React documentation",
+            url="https://react.dev/reference/react",
+            version_scope="19.1.0",
+            applies_to=("react", "react"),
+        )
+
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        SkillSource(
+            title="Quality review heuristics",
+            url="https://example.invalid/review.md",
+            version_scope="general",
+            applies_to=(GENERIC_SKILL_TARGET, "react"),
+        )
+
+    shared = SkillSource(
+        title="React documentation",
+        url="https://react.dev/reference/react",
+        version_scope="19.1.0",
+        applies_to=("react", "react-dom"),
+    )
+
+    assert shared.applies_to == ("react", "react-dom")
+    assert SkillSource.model_validate_json(shared.model_dump_json()) == shared
+
+
+def test_official_sources_may_not_claim_the_generic_repository_target() -> None:
+    with pytest.raises(ValidationError, match="official sources must name the dependencies"):
+        RepositorySkill(
+            dependency_fingerprint="b" * 64,
+            official_sources=(
+                SkillSource(
+                    title="React documentation",
+                    url="https://react.dev/reference/react",
+                    version_scope="19.1.0",
+                    applies_to=(GENERIC_SKILL_TARGET,),
+                ),
+            ),
+            simplify=_guidance("Simplify."),
+            polish=_guidance("Polish."),
+        )
+
+    skill = RepositorySkill(
+        dependency_fingerprint="b" * 64,
+        practice_sources=(
+            SkillSource(
+                title="Quality review heuristics",
+                url="https://example.invalid/review.md",
+                version_scope="general",
+                applies_to=(GENERIC_SKILL_TARGET,),
+            ),
+        ),
+        simplify=_guidance("Simplify."),
+        polish=_guidance("Polish."),
+        uncertainties=("No official source was consulted.",),
+    )
+
+    assert skill.practice_sources[0].applies_to == (GENERIC_SKILL_TARGET,)
+    assert RepositorySkill.model_validate_json(skill.model_dump_json()) == skill
+
+
+def test_practice_sources_must_be_generic_and_version_neutral() -> None:
+    with pytest.raises(ValidationError, match="generic repository target"):
+        RepositorySkill(
+            dependency_fingerprint="b" * 64,
+            practice_sources=(
+                SkillSource(
+                    title="Quality review heuristics",
+                    url="https://example.invalid/review.md",
+                    version_scope="general",
+                    applies_to=("typescript",),
+                ),
+            ),
+            simplify=_guidance("Simplify."),
+            polish=_guidance("Polish."),
+            uncertainties=("No official source was consulted.",),
+        )
+
+    with pytest.raises(ValidationError, match="version scope 'general'"):
+        RepositorySkill(
+            dependency_fingerprint="b" * 64,
+            practice_sources=(
+                SkillSource(
+                    title="Quality review heuristics",
+                    url="https://example.invalid/review.md",
+                    version_scope="TypeScript 5.9",
+                    applies_to=(GENERIC_SKILL_TARGET,),
+                ),
+            ),
+            simplify=_guidance("Simplify."),
+            polish=_guidance("Polish."),
+            uncertainties=("No official source was consulted.",),
+        )
+
+
+def test_required_skill_target_names_are_the_recognized_version_targets() -> None:
+    assert REQUIRED_SKILL_TARGET_NAMES == (
+        "python",
+        "pytest",
+        "react",
+        "react-dom",
+        "vite",
+        "vitest",
+    )
+    assert GENERIC_SKILL_TARGET not in REQUIRED_SKILL_TARGET_NAMES

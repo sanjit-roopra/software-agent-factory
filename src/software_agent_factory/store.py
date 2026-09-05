@@ -37,6 +37,7 @@ from .models import (
     ExecutionPlan,
     FactoryRun,
     RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
     Specification,
@@ -52,6 +53,7 @@ ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     WorkItem: "work-item.json",
     RepositoryProfile: "repository-profile.json",
+    RepositorySkill: "repository-skill.json",
     TriageResult: "triage.json",
     Specification: "specification.json",
     ResearchReport: "research.json",

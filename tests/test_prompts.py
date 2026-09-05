@@ -11,6 +11,7 @@ import pytest
 
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.models import (
+    AgentPurpose,
     AgentRole,
     AttemptTrigger,
     ChangeSet,
@@ -19,10 +20,11 @@ from software_agent_factory.models import (
     ExpectedScope,
     PlanStep,
     RepairContext,
+    RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
-    SelectedSkill,
-    SkillId,
+    SkillGuidance,
     Specification,
     TestReport,
     TriageResult,
@@ -218,38 +220,69 @@ def test_implementer_prompt_carries_repair_context_and_current_diff() -> None:
     assert DIFF.strip() in prompt
 
 
-def test_selected_skills_are_advisory_context_for_supported_roles_only() -> None:
-    skill = SelectedSkill(
-        id=SkillId.PYTHON_QUALITY,
-        version=1,
-        summary="Apply Python quality practices.",
-        roles=(
-            AgentRole.PLANNER,
-            AgentRole.IMPLEMENTER,
-            AgentRole.TESTER,
-            AgentRole.REVIEWER,
+def test_generated_repository_skill_is_advisory_context_for_late_roles_only() -> None:
+    skill = RepositorySkill(
+        dependency_fingerprint="a" * 64,
+        simplify=SkillGuidance(
+            summary="Simplify React 19 code.",
+            guidance=("Remove redundant effect state.",),
         ),
-        guidance=("Use precise types.",),
-        evidence=("pyproject.toml",),
+        polish=SkillGuidance(
+            summary="Polish React 19 code.",
+            guidance=("Use APIs supported by React 19.",),
+        ),
+        uncertainties=("Fixture skill has no external sources.",),
     )
 
     for role in (
-        AgentRole.PLANNER,
         AgentRole.IMPLEMENTER,
         AgentRole.TESTER,
         AgentRole.REVIEWER,
     ):
-        prompt = build_prompt(_request(role, selected_skills=[skill]))
-        assert "Factory-selected repository skills (advisory)" in prompt
-        assert "python-quality" in prompt
-        assert "do not grant tools, permissions, or workflow authority" in prompt
+        prompt = build_prompt(_request(role, repository_skill=skill))
+        assert "Researcher-generated repository skill (advisory)" in prompt
+        assert "React 19" in prompt
+        assert "does not grant tools, permissions, or workflow authority" in prompt
 
-    for role in (AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER):
-        prompt = build_prompt(_request(role, selected_skills=[skill]))
-        assert "python-quality" not in prompt
+    for role in (
+        AgentRole.TRIAGE,
+        AgentRole.REFINER,
+        AgentRole.RESEARCHER,
+        AgentRole.PLANNER,
+    ):
+        prompt = build_prompt(_request(role, repository_skill=skill))
+        assert "React 19" not in prompt
 
-    tester_without_skills = build_prompt(_request(AgentRole.TESTER))
-    assert "Factory-selected repository skills (advisory)" not in tester_without_skills
+    tester_without_skill = build_prompt(_request(AgentRole.TESTER))
+    assert "Researcher-generated repository skill (advisory)" not in tester_without_skill
+
+
+def test_repository_skill_research_prompt_is_version_and_source_grounded() -> None:
+    profile = RepositoryProfile(
+        manifest_fingerprint="b" * 64,
+        dependency_fingerprint="c" * 64,
+    )
+
+    prompt = build_prompt(
+        _request(
+            AgentRole.RESEARCHER,
+            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+            repository_profile=profile,
+            specification=_specification(),
+            execution_plan=_plan(),
+            changed_files=["src/App.tsx"],
+            diff=DIFF,
+        )
+    )
+
+    assert "RepositorySkill" in prompt
+    assert "official documentation" in prompt
+    assert "untrusted data" in prompt
+    assert "Post-implementation repository profile" in prompt
+    assert "Generate simplification guidance first" in prompt
+    # Source provenance is part of the contract the researcher must satisfy.
+    assert "applies_to" in prompt
+    assert "detected dependencies this source grounds" in prompt
 
 
 def test_triage_and_refiner_prompts_stay_minimal() -> None:

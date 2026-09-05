@@ -54,6 +54,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | `pull_request.enabled` | GitHub, through `gh`. |
 | `ci.enabled` | GitHub, through `gh`. |
 | `scheduler.enabled` | GitHub Issues, through `gh`. |
+| An eligible `polish.enabled` attempt | The configured Researcher fetches only `polish.official_documentation_origins` and the exact, commit-pinned `polish.practice_reference_urls` to generate a version-specific `RepositorySkill`. `web_fetch` is its only tool for that call, and it runs outside the worktree. |
 | Your own `repository.commands` | Whatever they contact. `uv sync` hits a package index. |
 
 There is no telemetry, no analytics, no crash reporting and no exporter. Logs
@@ -96,7 +97,8 @@ numbers.
   source checkout is not modified in place.
 - After preparing the worktree, capability detection reads only
   repository-local paths and allowlisted bounded manifests. It uses no shell,
-  network or imports and does not load repository-defined skills.
+  network or imports, and does not load repository-defined skills — there is
+  no fixed skill catalog either.
 - Workspace paths are sanitized and must stay inside the workspace root. Cleanup
   refuses a path outside it.
 - A short-lived exclusive lock prevents two processes owning the same work item.
@@ -127,10 +129,37 @@ enforces this.
 
 Broken required checks cannot reach the tester or reviewer at all.
 
-Factory-selected skills are versioned advisory prompt context only. They are
-role-filtered to Planner, Implementer, Tester and Reviewer and cannot grant
-tools, alter models, change workflow states, waive gates, add commands or widen
-permissions. There is no repository skill plugin system.
+Repository skills are advisory prompt context only. There is no fixed built-in
+catalog: a `RepositorySkill` is generated fresh by the configured Researcher
+for each eligible post-green polish attempt and reaches only that attempt's
+Implementer, Tester and Reviewer — never the initial attempt.
+
+That research call is deliberately blind and web-only. It runs in the run's own
+directory rather than the worktree, has `web_fetch` as its only tool, runs
+without repository custom instructions, and sees only the normalized profile
+and the controller-derived changed file paths — never source code, README
+content, task prose or the diff. Fetched pages are treated as untrusted data:
+instructions embedded in them are ignored, official documentation is
+authoritative for version claims, and the curated practice references — pinned
+to an immutable commit rather than a mutable branch — may contribute generic
+heuristics only — never version claims, commands, tools or
+orchestration.
+
+The controller then checks the result deterministically: the skill must carry
+the profile's `dependency_fingerprint`, every target must match a profiled
+dependency declaration and evidence path, detected `python`, `pytest`,
+`react`, `react-dom`, `vite` and `vitest` dependencies must be covered with
+official provenance, and every source must be inside
+`polish.official_documentation_origins` or be an exact
+`polish.practice_reference_urls` entry.
+
+None of this can break an already-green run. A failed re-profile, failed
+research, rejected skill or a skill that became stale (the
+`dependency_fingerprint` changed after generation) records a warning on
+`repository-profile.json` and safely skips or disables polish instead of
+failing the run or escalating. Skills cannot grant tools, alter models, change
+workflow states, waive gates, add commands or widen permissions. There is no
+repository skill plugin system and no cross-run skill cache.
 
 ## Bounded everything
 

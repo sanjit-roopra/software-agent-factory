@@ -58,8 +58,12 @@ item, including staging and deployment, is deferred.
   fields stay unknown. They are never estimated.
 - **Trackers.** GitHub Issues is the only backlog provider.
 - **Concurrency.** `scheduler.max_concurrent_tasks` is validated to `1` or `2`.
-- **Capabilities.** Repository skills come from a fixed, versioned built-in
-  catalog. Repository-provided skills and plugins do not exist.
+- **Capabilities.** Repository skills are generated fresh, per eligible
+  polish run, by the configured Researcher, with web access limited to
+  `polish.official_documentation_origins` and `polish.practice_reference_urls`.
+  There is no fixed built-in catalog, cross-run cache, or repository-provided
+  skill/plugin system, and a skill that cannot be generated or verified is
+  skipped rather than failing the run.
 - **Two release behaviours can only be proven in CI.** Publishing a real `v*`
   tag, and the native Intel (`macos-15-intel`) build. Both are implemented and
   statically tested; the first real tag exercises them end to end.

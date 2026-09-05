@@ -13,8 +13,10 @@ import itertools
 import os
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 import pytest
+from pydantic import ValidationError
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
@@ -24,18 +26,25 @@ from software_agent_factory.governance import (
     VerificationFailureKind,
 )
 from software_agent_factory.models import (
+    GENERIC_SKILL_TARGET,
+    AgentPurpose,
     AgentRole,
     AttemptTrigger,
     ChangeSet,
     Complexity,
+    DependencyEcosystem,
     FactoryRun,
     RepairContext,
+    RepositoryDependency,
     RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
-    SkillId,
+    SkillGuidance,
+    SkillSource,
+    SkillTarget,
     TriageResult,
     VerificationReport,
     WorkflowState,
@@ -362,6 +371,7 @@ def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir
         AgentRole.REFINER,
         AgentRole.PLANNER,
         AgentRole.IMPLEMENTER,
+        AgentRole.RESEARCHER,
         AgentRole.IMPLEMENTER,
         AgentRole.TESTER,
         AgentRole.REVIEWER,
@@ -370,10 +380,14 @@ def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir
         AttemptTrigger.INITIAL,
         AttemptTrigger.POLISH,
     ]
-    polish_request = runtime.requests[4]
+    skill_request = runtime.requests[4]
+    assert skill_request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
+    polish_request = runtime.requests[5]
     assert isinstance(polish_request.repair_context, RepairContext)
     assert polish_request.repair_context.trigger is AttemptTrigger.POLISH
-    assert "factory-selected repository skills" in polish_request.repair_context.summary
+    assert "researcher-generated repository skill" in polish_request.repair_context.summary
+    assert polish_request.repository_skill is not None
+    assert store.load_artifact(run.id, RepositorySkill) == polish_request.repository_skill
     assert store.list_attempts(run.id) == [1, 2]
     assert store.load_artifact(run.id, VerificationReport, attempt=1).passed is True
     assert store.load_artifact(run.id, VerificationReport, attempt=2).passed is True
@@ -391,10 +405,564 @@ def test_post_green_polish_reserves_one_recovery_attempt(source_repo: Path, data
 
     assert run.state is WorkflowState.PR_READY
     assert [request.role for request in runtime.requests].count(AgentRole.IMPLEMENTER) == 1
+    assert all(
+        request.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL
+        for request in runtime.requests
+    )
     assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
 
 
-def test_repository_profiler_failure_degrades_to_generic_skills(
+def test_post_green_research_exception_is_a_safe_skip(source_repo: Path, data_dir: Path) -> None:
+    class RaisingResearchRuntime:
+        def __init__(self) -> None:
+            self.delegate = FakeAgentRuntime()
+
+        def run(self, request: AgentRequest) -> AgentResult:
+            if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+                raise RuntimeError("research process unavailable")
+            return self.delegate.run(request)
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        RaisingResearchRuntime(),
+    )
+
+    run = controller.run(_work_item("WI-research-exception"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "repository skill research could not run: research process unavailable" in warning
+        for warning in profile.warnings
+    )
+
+
+def test_repository_skill_rejects_sources_outside_factory_allowlist(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def researcher(request: AgentRequest) -> AgentResult:
+        assert request.repository_profile is not None
+        return AgentResult(
+            role=AgentRole.RESEARCHER,
+            success=True,
+            repository_skill=RepositorySkill(
+                dependency_fingerprint=request.repository_profile.dependency_fingerprint,
+                official_sources=(
+                    SkillSource(
+                        title="Untrusted advice",
+                        url="https://example.com/react",
+                        version_scope="19",
+                        applies_to=("react",),
+                    ),
+                ),
+                simplify=SkillGuidance(
+                    summary="Simplify.",
+                    guidance=("Use direct code.",),
+                ),
+                polish=SkillGuidance(
+                    summary="Polish.",
+                    guidance=("Use current APIs.",),
+                ),
+            ),
+        )
+
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(researcher=researcher),
+    )
+
+    store = FileRunStore(data_dir)
+    run = controller.run(_work_item("WI-disallowed-source"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "outside polish.official_documentation_origins" in warning for warning in profile.warnings
+    )
+
+
+PRACTICE_REFERENCE_URL = (
+    "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
+    "52cc5efd1c445e71c55b956837c003911346d7e7/"
+    "plugins/dev-team/agents/quality-reviewer.md"
+)
+
+
+def _react_profile(fingerprint: str = "1" * 64) -> RepositoryProfile:
+    return RepositoryProfile(
+        manifest_fingerprint=fingerprint,
+        dependency_fingerprint=fingerprint,
+        version_files=("package.json",),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="19.1.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react-dom",
+                declared_version="19.1.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+        ),
+    )
+
+
+def _react_skill(
+    profile: RepositoryProfile,
+    *,
+    official_sources: tuple[SkillSource, ...],
+    practice_sources: tuple[SkillSource, ...] = (),
+) -> RepositorySkill:
+    return RepositorySkill(
+        dependency_fingerprint=profile.dependency_fingerprint,
+        targets=tuple(
+            SkillTarget(
+                ecosystem=dependency.ecosystem,
+                name=dependency.name,
+                declared_version=dependency.declared_version,
+                resolved_version=dependency.resolved_version,
+                evidence=(dependency.manifest_path,),
+            )
+            for dependency in profile.dependencies
+        ),
+        official_sources=official_sources,
+        practice_sources=practice_sources,
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Use direct code.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Use current APIs.",)),
+        uncertainties=("Fixture skill.",),
+    )
+
+
+def _skill_run(
+    source_repo: Path,
+    data_dir: Path,
+    work_item_id: str,
+    skill_factory: Callable[[RepositoryProfile], RepositorySkill],
+) -> tuple[FactoryRun, FileRunStore, RecordingRuntime]:
+    profile = _react_profile()
+
+    def researcher(request: AgentRequest) -> AgentResult:
+        assert request.repository_profile is not None
+        return AgentResult(
+            role=AgentRole.RESEARCHER,
+            success=True,
+            repository_skill=skill_factory(request.repository_profile),
+        )
+
+    runtime = RecordingRuntime(FakeAgentRuntime(researcher=researcher))
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+        repository_profiler=lambda path: profile,
+    )
+    return controller.run(_work_item(work_item_id), source_repo), store, runtime
+
+
+def test_official_source_may_ground_several_detected_dependency_names(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def skill(profile: RepositoryProfile) -> RepositorySkill:
+        return _react_skill(
+            profile,
+            official_sources=(
+                SkillSource(
+                    title="React documentation",
+                    url="https://react.dev/reference/react",
+                    version_scope="19.1.0",
+                    applies_to=("react", "react-dom"),
+                ),
+            ),
+            practice_sources=(
+                SkillSource(
+                    title="Quality review heuristics",
+                    url=PRACTICE_REFERENCE_URL,
+                    version_scope="general",
+                    applies_to=(GENERIC_SKILL_TARGET,),
+                ),
+            ),
+        )
+
+    run, store, runtime = _skill_run(source_repo, data_dir, "WI-shared-source", skill)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert not any("polish research skipped" in warning for warning in profile.warnings)
+    accepted = store.load_artifact(run.id, RepositorySkill)
+    assert accepted.official_sources[0].applies_to == ("react", "react-dom")
+    polish_request = next(
+        request
+        for request in runtime.requests
+        if request.role is AgentRole.IMPLEMENTER
+        and isinstance(request.repair_context, RepairContext)
+        and request.repair_context.trigger is AttemptTrigger.POLISH
+    )
+    assert polish_request.repository_skill == accepted
+
+
+def test_official_source_claiming_an_undetected_dependency_is_rejected(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def skill(profile: RepositoryProfile) -> RepositorySkill:
+        return _react_skill(
+            profile,
+            official_sources=(
+                SkillSource(
+                    title="React documentation",
+                    url="https://react.dev/reference/react",
+                    version_scope="19.1.0",
+                    applies_to=("react", "react-dom", "next"),
+                ),
+            ),
+        )
+
+    run, store, runtime = _skill_run(source_repo, data_dir, "WI-undetected-target", skill)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "official source for dependencies that are not in the repository profile" in warning
+        and "next" in warning
+        for warning in profile.warnings
+    )
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(run.id, RepositorySkill)
+    assert all(
+        request.repository_skill is None
+        for request in runtime.requests
+        if request.role in {AgentRole.IMPLEMENTER, AgentRole.TESTER, AgentRole.REVIEWER}
+    )
+
+
+def test_required_version_target_without_official_source_is_rejected(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def skill(profile: RepositoryProfile) -> RepositorySkill:
+        return _react_skill(
+            profile,
+            official_sources=(
+                SkillSource(
+                    title="React documentation",
+                    url="https://react.dev/reference/react",
+                    version_scope="19.1.0",
+                    applies_to=("react",),
+                ),
+            ),
+        )
+
+    run, store, _ = _skill_run(source_repo, data_dir, "WI-ungrounded-target", skill)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "without official source provenance for: react-dom" in warning
+        for warning in profile.warnings
+    )
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(run.id, RepositorySkill)
+
+
+def test_all_recognized_dependency_versions_must_be_targeted(data_dir: Path) -> None:
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+    profile = RepositoryProfile(
+        manifest_fingerprint="a" * 64,
+        dependency_fingerprint="b" * 64,
+        version_files=("package.json", "apps/legacy/package.json"),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="19.1.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="18.3.1",
+                manifest_path="apps/legacy/package.json",
+                group="dependencies",
+            ),
+        ),
+    )
+    skill = RepositorySkill(
+        dependency_fingerprint=profile.dependency_fingerprint,
+        targets=(
+            SkillTarget(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="19.1.0",
+                evidence=("package.json",),
+            ),
+        ),
+        official_sources=(
+            SkillSource(
+                title="React documentation",
+                url="https://react.dev/reference/react",
+                version_scope="19.1.0",
+                applies_to=("react",),
+            ),
+        ),
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Use direct code.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Use current APIs.",)),
+    )
+
+    error = controller._repository_skill_validation_error(skill, profile)
+
+    assert error is not None
+    assert "react@18.3.1" in error
+
+
+def test_all_recognized_dependency_versions_must_be_targeted_and_may_be_covered(
+    data_dir: Path,
+) -> None:
+    """Targeting every detected identity of a recognized name is accepted."""
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+    profile = RepositoryProfile(
+        manifest_fingerprint="a" * 64,
+        dependency_fingerprint="b" * 64,
+        version_files=("package.json", "apps/legacy/package.json"),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="19.1.0",
+                manifest_path="package.json",
+                group="dependencies",
+            ),
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="18.3.1",
+                manifest_path="apps/legacy/package.json",
+                group="dependencies",
+            ),
+        ),
+    )
+    skill = RepositorySkill(
+        dependency_fingerprint=profile.dependency_fingerprint,
+        targets=(
+            SkillTarget(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="19.1.0",
+                evidence=("package.json",),
+            ),
+            SkillTarget(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version="18.3.1",
+                evidence=("apps/legacy/package.json",),
+            ),
+        ),
+        official_sources=(
+            SkillSource(
+                title="React documentation",
+                url="https://react.dev/reference/react",
+                version_scope="18.3.1, 19.1.0",
+                applies_to=("react",),
+            ),
+        ),
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Use direct code.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Use current APIs.",)),
+    )
+
+    assert controller._repository_skill_validation_error(skill, profile) is None
+
+
+def test_more_recognized_versions_than_the_target_bound_safely_skip(data_dir: Path) -> None:
+    """The bounded target list cannot cover >24 identities, so guidance is skipped."""
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+    manifests = tuple(f"packages/app{index:02d}/package.json" for index in range(25))
+    profile = RepositoryProfile(
+        manifest_fingerprint="a" * 64,
+        dependency_fingerprint="b" * 64,
+        version_files=manifests,
+        dependencies=tuple(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="react",
+                declared_version=f"19.1.{index}",
+                manifest_path=manifest,
+                group="dependencies",
+            )
+            for index, manifest in enumerate(manifests)
+        ),
+    )
+    targets = tuple(
+        SkillTarget(
+            ecosystem=DependencyEcosystem.NPM,
+            name="react",
+            declared_version=f"19.1.{index}",
+            evidence=(manifest,),
+        )
+        for index, manifest in enumerate(manifests)
+    )
+    official_sources = (
+        SkillSource(
+            title="React documentation",
+            url="https://react.dev/reference/react",
+            version_scope="19.1.x",
+            applies_to=("react",),
+        ),
+    )
+    guidance = {
+        "simplify": SkillGuidance(summary="Simplify.", guidance=("Use direct code.",)),
+        "polish": SkillGuidance(summary="Polish.", guidance=("Use current APIs.",)),
+    }
+
+    # The typed artifact itself bounds how many versions may be targeted.
+    with pytest.raises(ValidationError):
+        RepositorySkill(
+            dependency_fingerprint=profile.dependency_fingerprint,
+            targets=targets,
+            official_sources=official_sources,
+            **guidance,
+        )
+
+    skill = RepositorySkill(
+        dependency_fingerprint=profile.dependency_fingerprint,
+        targets=targets[:24],
+        official_sources=official_sources,
+        **guidance,
+    )
+
+    error = controller._repository_skill_validation_error(skill, profile)
+
+    assert error is not None
+    assert "react@19.1.24" in error
+
+
+def test_every_version_specific_target_requires_official_grounding(data_dir: Path) -> None:
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+    profile = RepositoryProfile(
+        manifest_fingerprint="a" * 64,
+        dependency_fingerprint="b" * 64,
+        version_files=("package.json",),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.NPM,
+                name="typescript",
+                declared_version="5.9.0",
+                manifest_path="package.json",
+                group="devDependencies",
+            ),
+        ),
+    )
+    skill = RepositorySkill(
+        dependency_fingerprint=profile.dependency_fingerprint,
+        targets=(
+            SkillTarget(
+                ecosystem=DependencyEcosystem.NPM,
+                name="typescript",
+                declared_version="5.9.0",
+                evidence=("package.json",),
+            ),
+        ),
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Use direct code.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Use current APIs.",)),
+        uncertainties=("No official source was returned.",),
+    )
+
+    error = controller._repository_skill_validation_error(skill, profile)
+
+    assert error is not None
+    assert "without official source provenance for: typescript" in error
+
+
+def test_practice_source_outside_the_reference_allowlist_is_still_rejected(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def skill(profile: RepositoryProfile) -> RepositorySkill:
+        return _react_skill(
+            profile,
+            official_sources=(
+                SkillSource(
+                    title="React documentation",
+                    url="https://react.dev/reference/react",
+                    version_scope="19.1.0",
+                    applies_to=("react", "react-dom"),
+                ),
+            ),
+            practice_sources=(
+                SkillSource(
+                    title="Untrusted heuristics",
+                    url="https://example.com/review.md",
+                    version_scope="general",
+                    applies_to=(GENERIC_SKILL_TARGET,),
+                ),
+            ),
+        )
+
+    run, store, _ = _skill_run(source_repo, data_dir, "WI-practice-allowlist", skill)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any("outside polish.practice_reference_urls" in warning for warning in profile.warnings)
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(run.id, RepositorySkill)
+
+
+def test_dependency_change_during_polish_rejects_stale_skill(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profiles = iter(
+        [
+            RepositoryProfile(
+                manifest_fingerprint="1" * 64,
+                dependency_fingerprint="1" * 64,
+            ),
+            RepositoryProfile(
+                manifest_fingerprint="2" * 64,
+                dependency_fingerprint="2" * 64,
+            ),
+            RepositoryProfile(
+                manifest_fingerprint="3" * 64,
+                dependency_fingerprint="3" * 64,
+            ),
+        ]
+    )
+
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+        repository_profiler=lambda path: next(profiles),
+    )
+
+    run = controller.run(_work_item("WI-stale-polish"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    profile = FileRunStore(data_dir).load_artifact(run.id, RepositoryProfile)
+    assert any("dependency versions changed" in warning for warning in profile.warnings)
+
+
+def test_repository_profiler_failure_degrades_to_generic_profile(
     source_repo: Path, data_dir: Path
 ) -> None:
     def failing_profiler(path: Path) -> RepositoryProfile:
@@ -412,63 +980,104 @@ def test_repository_profiler_failure_degrades_to_generic_skills(
 
     assert run.state is WorkflowState.PR_READY
     profile = store.load_artifact(run.id, RepositoryProfile)
-    assert [skill.id for skill in profile.selected_skills] == [
-        SkillId.PLAN_QUALITY,
-        SkillId.SIMPLIFICATION,
-    ]
+    assert profile.dependencies == ()
     assert profile.warnings and "profiling degraded" in profile.warnings[0]
 
 
-def test_repository_skills_are_persisted_and_injected_into_four_roles(
+def test_post_green_research_uses_versions_changed_by_initial_implementation(
     source_repo: Path, data_dir: Path
 ) -> None:
-    (source_repo / "pyproject.toml").write_text(
-        """
-[project]
-name = "example"
-dependencies = ["pytest>=8"]
-""".strip()
-        + "\n",
-        encoding="utf-8",
+    profiles = iter(
+        [
+            RepositoryProfile(
+                manifest_fingerprint="1" * 64,
+                dependency_fingerprint="1" * 64,
+                dependencies=(
+                    RepositoryDependency(
+                        ecosystem=DependencyEcosystem.NPM,
+                        name="react",
+                        declared_version="18.3.0",
+                        manifest_path="package.json",
+                        group="dependencies",
+                    ),
+                ),
+            ),
+            RepositoryProfile(
+                manifest_fingerprint="2" * 64,
+                dependency_fingerprint="2" * 64,
+                dependencies=(
+                    RepositoryDependency(
+                        ecosystem=DependencyEcosystem.NPM,
+                        name="react",
+                        declared_version="19.1.0",
+                        manifest_path="package.json",
+                        group="dependencies",
+                    ),
+                ),
+            ),
+            RepositoryProfile(
+                manifest_fingerprint="2" * 64,
+                dependency_fingerprint="2" * 64,
+                dependencies=(
+                    RepositoryDependency(
+                        ecosystem=DependencyEcosystem.NPM,
+                        name="react",
+                        declared_version="19.1.0",
+                        manifest_path="package.json",
+                        group="dependencies",
+                    ),
+                ),
+            ),
+        ]
     )
-    _git(source_repo, "add", "pyproject.toml")
-    _git(source_repo, "commit", "-m", "add Python project")
+
+    def changing_profiler(path: Path) -> RepositoryProfile:
+        assert path.is_dir()
+        return next(profiles)
+
     runtime = RecordingRuntime(FakeAgentRuntime())
     store = FileRunStore(data_dir)
-    controller = WorkflowController(_config(data_dir), store, runtime)
+    controller = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+        repository_profiler=changing_profiler,
+    )
 
     run = controller.run(_work_item("WI-capabilities"), source_repo)
 
+    assert run.state is WorkflowState.PR_READY
     profile = store.load_artifact(run.id, RepositoryProfile)
-    assert [skill.id for skill in profile.selected_skills] == [
-        SkillId.PLAN_QUALITY,
-        SkillId.SIMPLIFICATION,
-        SkillId.PYTHON_QUALITY,
-        SkillId.TESTING_QUALITY,
-    ]
-    requests = {request.role: request for request in runtime.requests}
-    assert [skill.id for skill in requests[AgentRole.PLANNER].selected_skills] == [
-        SkillId.PLAN_QUALITY,
-        SkillId.SIMPLIFICATION,
-        SkillId.PYTHON_QUALITY,
-        SkillId.TESTING_QUALITY,
-    ]
-    assert [skill.id for skill in requests[AgentRole.IMPLEMENTER].selected_skills] == [
-        SkillId.SIMPLIFICATION,
-        SkillId.PYTHON_QUALITY,
-        SkillId.TESTING_QUALITY,
-    ]
-    assert [skill.id for skill in requests[AgentRole.TESTER].selected_skills] == [
-        SkillId.PYTHON_QUALITY,
-        SkillId.TESTING_QUALITY,
-    ]
-    assert [skill.id for skill in requests[AgentRole.REVIEWER].selected_skills] == [
-        SkillId.SIMPLIFICATION,
-        SkillId.PYTHON_QUALITY,
-        SkillId.TESTING_QUALITY,
-    ]
-    assert requests[AgentRole.TRIAGE].selected_skills == []
-    assert requests[AgentRole.REFINER].selected_skills == []
+    assert {item.name: item.declared_version for item in profile.dependencies} == {
+        "react": "19.1.0"
+    }
+    skill_request = next(
+        request
+        for request in runtime.requests
+        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
+    )
+    assert skill_request.repository_profile is not None
+    assert skill_request.repository_profile.dependencies[0].declared_version == "19.1.0"
+    assert skill_request.repository_profile.manifest_fingerprint == "2" * 64
+
+    generated_skill = store.load_artifact(run.id, RepositorySkill)
+    assert generated_skill.dependency_fingerprint == profile.dependency_fingerprint
+    polish_request = next(
+        request
+        for request in runtime.requests
+        if request.role is AgentRole.IMPLEMENTER
+        and isinstance(request.repair_context, RepairContext)
+        and request.repair_context.trigger is AttemptTrigger.POLISH
+    )
+    tester_request = next(
+        request for request in runtime.requests if request.role is AgentRole.TESTER
+    )
+    reviewer_request = next(
+        request for request in runtime.requests if request.role is AgentRole.REVIEWER
+    )
+    assert polish_request.repository_skill == generated_skill
+    assert tester_request.repository_skill == generated_skill
+    assert reviewer_request.repository_skill == generated_skill
 
 
 def test_failed_post_polish_verification_uses_normal_bounded_repair(

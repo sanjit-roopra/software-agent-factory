@@ -203,9 +203,14 @@ a bounded transition back to `IMPLEMENTING` (or, for scope drift, back to
 `PLANNING`), not a second workflow, and "blocked" is expressed as
 `NEEDS_HUMAN` with a recorded reason.
 
-There is also no `POLISHING` state or `POLISHER` role. When enabled, polish is
-one ordinary `IMPLEMENTER` attempt triggered by `POLISH`, followed by the normal
-`VERIFYING` transition.
+There is also no `POLISHING` state or `POLISHER` role. When enabled, an
+eligible bounded polish attempt first transitions `VERIFYING → RESEARCHING`
+to generate a version-specific `RepositorySkill`, then `RESEARCHING →
+IMPLEMENTING` for one ordinary `IMPLEMENTER` attempt triggered by `POLISH`,
+followed by the normal `VERIFYING` transition. `RESEARCHING` remains a
+temporary transition, not a new role. When the research or its validation
+fails, the run stays on its existing green path: the reason is recorded as a
+profile warning and the controller transitions straight to `REVIEWING`.
 
 The workflow controller owns every transition. The full table is declared as
 data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
@@ -214,10 +219,10 @@ data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
 CREATED      → TRIAGING
 TRIAGING     → REFINING
 REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING
+RESEARCHING  → PLANNING | IMPLEMENTING
 PLANNING     → IMPLEMENTING
 IMPLEMENTING → VERIFYING
-VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
+VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING | RESEARCHING
 REVIEWING    → PR_READY | IMPLEMENTING
 PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE
@@ -284,29 +289,136 @@ Avoid conflating:
 ### RepositoryProfile
 
 Produced deterministically after the worktree is prepared and before
-`TRIAGING`. It records:
+`TRIAGING`, and again before an eligible bounded polish attempt. It records:
 
 ```text
 detector_version
-catalog_version
+manifest_fingerprint
+dependency_fingerprint
 markers
+version_files
 technologies
 test_tools
 package_managers
-selected_skills
+dependencies
 warnings
 ```
 
 The profiler walks repository-local paths, prunes generated/vendor directories
 and reads only an allowlist of bounded manifests. It never uses a shell,
-network, imports or repository-provided skill definitions.
+network or imports.
 
-The fixed versioned catalog always selects `plan-quality` and
-`simplification`. Evidence may additionally select `python-quality`,
-`vite-quality`, `react-quality`, `react-reactivity`, `react-testing` and
-`testing-quality`. Only Planner, Implementer, Tester and Reviewer receive the
-subset assigned to their role. This context is advisory and cannot alter tools,
-models, workflow states, gates, commands or permissions.
+Each `dependencies` entry is a direct declaration with exact evidence:
+ecosystem, name, declared version, an optional exact
+`resolved_version`/`resolution_path`, manifest path and dependency group. The
+parsed manifests are:
+
+| Manifest | Ecosystem | Recorded as |
+| --- | --- | --- |
+| `pyproject.toml` (`project.dependencies`, `project.optional-dependencies.*`, `dependency-groups.*`) | Python | one declaration per requirement, grouped by table; `requires-python` becomes the `python` runtime target |
+| `pyproject.toml` (`tool.poetry.dependencies`, `tool.poetry.dev-dependencies`, `tool.poetry.group.*.dependencies`) | Python | one declaration per entry, grouped by table; also marks the `poetry` package manager |
+| `requirements.txt`, `requirements-*.txt` | Python | one declaration per requirement in group `requirements`; marks the `pip` package manager |
+| `setup.cfg`, `tox.ini` | Python | technology and pytest evidence only — no versions |
+| `package.json` (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `packageManager`) | npm | one declaration per entry, grouped by table |
+
+Exact versions are resolved from `uv.lock`, `package-lock.json` and
+`pnpm-lock.yaml` when unambiguous; an ambiguous resolution records a warning
+instead of a version. `poetry.lock`, `yarn.lock`, `bun.lock`/`bun.lockb`,
+`Pipfile.lock` and `pylock.toml` mark their package manager where applicable
+and are fingerprinted as `version_files`, but exact graph parsing is not
+claimed for them.
+
+Two SHA-256 fingerprints are recorded and they are not interchangeable:
+
+- `dependency_fingerprint` is semantic. It digests the detected technologies,
+  test tools, package managers and normalized dependency declarations. It is
+  the identity a generated skill is bound to.
+- `manifest_fingerprint` is provenance. It digests the content of every
+  `version_files` path (`package.json`, `pyproject.toml`, requirements files
+  and lockfiles). Formatting or comment-only manifest edits change it without
+  invalidating a skill.
+
+There is no fixed built-in skill catalog. See RepositorySkill below for how
+version-specific guidance is generated.
+
+### RepositorySkill
+
+Generated on demand — not selected from a catalog — only when
+`polish.enabled` and the bounded polish attempt is eligible. After the first
+successful deterministic verification and scope assessment, the controller
+re-profiles the post-implementation worktree, transitions through a
+temporary `RESEARCHING` state, and calls the configured Researcher (`GPT-5.6
+Sol` by default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per
+run.
+
+That invocation is web-only and deliberately blind to the repository. It runs
+with the run's own persistence directory as its working directory, not the
+worktree, and its only tool is `web_fetch`. Repository custom instructions are
+disabled for it. It receives the normalized `RepositoryProfile`, the
+controller-derived changed file paths, the two configured URL lists and the
+factory-owned generation rules — never source code, README content, task prose
+or the diff. It may fetch only:
+
+- `polish.official_documentation_origins`: official documentation, migration
+  guides and release notes. These are authoritative for every version claim.
+- `polish.practice_reference_urls`: exact curated general-practice references
+  (by default the reviewed `bdfinst/agentic-dev-team` notes, pinned to commit
+  `52cc5efd`, not a mutable branch). They may contribute generic quality
+  heuristics only, synthesized rather than copied, and never version claims,
+  tools, commands or orchestration.
+
+It returns one typed artifact, persisted as `repository-skill.json`:
+
+```text
+generator_version
+dependency_fingerprint
+generated_at
+targets
+official_sources
+practice_sources
+simplify
+polish
+uncertainties
+```
+
+`targets` are bounded package/runtime versions with evidence paths.
+`official_sources` and `practice_sources` are HTTPS citations from the
+respective configured lists; each names, in `applies_to`, the detected
+dependencies it grounds, and a practice source may instead use the single
+generic marker `repository`. `simplify` and `polish` are each a bounded
+`SkillGuidance` (summary, guidance, things to avoid, validation). The model
+itself refuses a skill that has neither an official source nor an explicit
+uncertainty, and refuses an official source claiming generic applicability.
+
+The controller then validates the artifact deterministically and rejects it
+when:
+
+- its `dependency_fingerprint` does not match the profile it was generated
+  from,
+- a target is not an exact profiled dependency declaration
+  (ecosystem, name, declared version, resolved version),
+- target evidence paths are not profile `version_files`, manifest paths or
+  resolution paths,
+- a detected `python`, `pytest`, `react`, `react-dom`, `vite` or `vitest`
+  dependency has no target, or is not named by the `applies_to` of at least
+  one accepted official source,
+- a source claims applicability to a dependency the profile did not detect, or
+- a cited source falls outside `polish.official_documentation_origins`
+  (compared by origin) or is not an exact `polish.practice_reference_urls`
+  entry.
+
+Rejection never fails an already-green run. The reason is appended to the
+persisted profile's `warnings`, polish is skipped, and the run continues to
+testing and review. The same applies when the re-profile itself fails. Before
+testing and review the controller re-profiles once more: if profiling fails or
+the `dependency_fingerprint` has changed since generation, the skill is
+treated as stale, disabled for the Tester and Reviewer, and the reason is
+recorded as a profile warning.
+
+The skill reaches only the polish Implementer, Tester and Reviewer, and is
+never available before the initial green baseline. It is regenerated fresh
+for every eligible run; there is no cross-run cache. It is advisory and
+cannot alter tools, models, workflow states, gates, commands or permissions.
 
 ### TriageResult
 
@@ -560,6 +672,13 @@ Permissions:
 
 Output: `ResearchReport`
 
+The same role also serves the `GENERATE_REPOSITORY_SKILL` purpose for an
+eligible polish attempt. That invocation is different: it has no repository
+read at all, runs in the run's persistence directory, has only `web_fetch`
+restricted to the configured official documentation origins and curated
+practice references, and outputs a `RepositorySkill` instead of a
+`ResearchReport`.
+
 ### Planner
 Model: `Claude Opus 5`
 
@@ -570,8 +689,6 @@ Permissions:
 No source modifications.
 
 Output: `ExecutionPlan`
-
-Receives the role-filtered advisory skills from `RepositoryProfile`.
 
 ### Implementer
 Model selected by complexity.
@@ -584,8 +701,9 @@ Permissions:
 
 Output: `ChangeSet`
 
-Receives the role-filtered advisory skills from `RepositoryProfile`, including
-on the optional post-green polish attempt.
+Receives the researcher-generated `RepositorySkill` only during the optional
+post-green polish attempt, applying simplification first and version-specific
+polish second; the initial implementation attempt receives none.
 
 ### Tester
 Model: `Claude Sonnet 5`
@@ -599,7 +717,9 @@ Receives:
 The implementer's `ChangeSet` (including its summary) is never provided: the
 tester sees only controller-derived Git evidence plus deterministic results.
 
-Receives the role-filtered advisory skills from `RepositoryProfile`.
+Receives the same post-green `RepositorySkill` as the polish Implementer,
+once one has been generated and while it is still current; none before that
+point, and none when the skill was disabled as stale.
 
 Output: `TestReport`
 
@@ -615,7 +735,9 @@ Receives:
 
 Never receives the implementer's `ChangeSet` summary.
 
-Receives the role-filtered advisory skills from `RepositoryProfile`.
+Receives the same post-green `RepositorySkill` as the polish Implementer,
+once one has been generated and while it is still current; none before that
+point, and none when the skill was disabled as stale.
 
 Checks:
 - correctness
@@ -853,10 +975,13 @@ build:
 The factory runs deterministic checks after implementation.
 
 When `polish.enabled` is true, the first successful deterministic verification
-and scope assessment are followed by at most one `IMPLEMENTER` polish attempt.
-The full deterministic verification and scope assessment then run again before
-the tester and reviewer. The packaged default and example enable polish; a
-legacy configuration that omits the section uses the model fallback of `false`.
+and scope assessment are followed by one bounded web-only research call and at
+most one `IMPLEMENTER` polish attempt. The full deterministic verification and
+scope assessment then run again before the tester and reviewer. If research or
+skill validation fails, polish is skipped with a recorded warning and the
+already-green run proceeds unchanged. The packaged default and example enable
+polish; a legacy configuration that omits the section uses the model fallback
+of `false`.
 
 The small command runner is part of Phase 1. Empty command lists pass, keeping
 repositories usable before they add factory-specific configuration.

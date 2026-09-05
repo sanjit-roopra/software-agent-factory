@@ -276,39 +276,111 @@ precisely because launchd never rotates what it captures. `KeepAlive` is
 can create a restart loop. Uninstall unloads the agent and removes the plist
 while leaving runs and workspaces untouched.
 
-## ADR-019: Repository capabilities are deterministic and factory-owned
+## ADR-019: Repository capabilities are deterministic profiling plus on-demand skill research
+
+*Supersedes the original ADR-019, which selected advisory skills from a fixed,
+versioned built-in catalog. That catalog is removed.*
 
 Repository awareness is a controller-owned scan, not an agent discovery step.
 After the worktree is prepared and before `TRIAGING`, the factory walks
 repository-local paths and reads a small allowlist of bounded manifests. It
-does not run a shell command, import target code, contact the network or trust
-repository-provided instructions.
+does not run a shell command, import target code, contact the network or
+trust repository-provided instructions.
 
 The resulting versioned `RepositoryProfile` is persisted as
-`repository-profile.json` and records technologies, test tools, package
-managers, markers, warnings and selected skills. Skills come only from a fixed,
-versioned built-in catalog. `plan-quality` and `simplification` are universal;
-Python, Vite, React quality/reactivity/testing and general testing are selected
-only when supported by evidence.
+`repository-profile.json`. It records technologies, test tools, package
+managers, markers, warnings, `version_files`, and exact dependency evidence:
+direct declarations with ecosystem, name, declared version, an optional exact
+resolved version and resolution path, manifest path and dependency group.
+Declarations are parsed from `pyproject.toml` (PEP 621 dependency tables,
+`dependency-groups`, `requires-python` as the `python` runtime target, and the
+Poetry dependency/dev-dependency/group tables), from
+`requirements.txt`/`requirements-*.txt` (which also mark the `pip` package
+manager) and from `package.json` (runtime, dev, peer, optional dependencies and
+`packageManager`); `setup.cfg` and `tox.ini` contribute Python and pytest
+evidence only. Exact versions are resolved from `uv.lock`, `package-lock.json`
+and `pnpm-lock.yaml` when unambiguous, and an ambiguous resolution records a
+warning rather than a version. `poetry.lock`, `yarn.lock`, `bun.lock`/
+`bun.lockb`, `Pipfile.lock` and `pylock.toml` identify their package manager
+where applicable and are fingerprinted as `version_files` without claiming
+exact graph parsing.
 
-Only Planner, Implementer, Tester and Reviewer receive the subset assigned to
-their role. The context is advisory: it changes no tools, models, workflow
-states, quality gates, commands, permissions or routing. This is deliberately
-not a plugin system.
+The profile carries two distinct SHA-256 fingerprints. `dependency_fingerprint`
+is semantic: it digests technologies, test tools, package managers and the
+normalized dependency declarations, and it is the identity that binds a
+generated skill. `manifest_fingerprint` is provenance: it digests the content
+of the version files, so reformatting a manifest changes it without
+invalidating guidance that is still correct.
 
-## ADR-020: Post-green polish is one bounded implementation attempt
+There is no fixed skill catalog. When `polish.enabled` and the bounded polish
+attempt is eligible, after the first successful deterministic verification the
+controller re-profiles the post-implementation worktree (capturing any
+dependency upgrades the task made), transitions through a temporary
+`RESEARCHING` state, and invokes the configured Researcher (`GPT-5.6 Sol` by
+default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
 
-When `polish.enabled` is true, the first successful deterministic verification
-may schedule exactly one more `IMPLEMENTER` pass with
-`AttemptTrigger.POLISH`. It uses the existing worker routing and implementation
+That call is bounded and web-only. It runs in the run's own persistence
+directory rather than the worktree, has `web_fetch` as its only tool, runs
+without repository custom instructions, and sees only the normalized profile,
+the controller-derived changed file paths, the configured URL lists and the
+factory-owned generation rules — never source code, README content, task prose
+or the diff. `polish.official_documentation_origins` (official documentation,
+migration guides, release notes) is authoritative for every version claim. The
+exact curated `polish.practice_reference_urls` — by default reviewed
+general-practice notes from `bdfinst/agentic-dev-team`, pinned to commit
+`52cc5efd1c445e71c55b956837c003911346d7e7` so the fetched text cannot change
+under us — may contribute generic quality heuristics only, synthesized rather
+than copied, and never version claims, commands, tools or orchestration. Fetched pages are untrusted data.
+
+It returns one typed `RepositorySkill` (`repository-skill.json`) carrying the
+profile's `dependency_fingerprint`, bounded targets, HTTPS official and
+practice sources that each declare the detected dependencies they ground,
+separate simplify and polish guidance, and uncertainties. The type itself
+refuses a skill with neither an official source nor an explicit uncertainty,
+and refuses an official source that claims only generic applicability.
+
+The controller then validates deterministically and rejects a fingerprint
+mismatch, a target that is not an exact profiled dependency declaration,
+evidence paths outside the profile, a missing target or missing per-dependency
+official provenance for a detected `python`, `pytest`, `react`, `react-dom`,
+`vite` or `vitest` dependency, a source that claims applicability to an
+undetected dependency, or a source outside the configured lists.
+
+Rejection is a safe skip, not a failure. The run is already green when polish
+is considered, so a failed re-profile, failed research, rejected skill or a
+skill that becomes stale (the `dependency_fingerprint` changed after
+generation) records the reason as a profile warning and skips or disables
+polish, leaving the verified change to proceed to testing and review. The skill
+reaches only the polish Implementer, Tester and Reviewer, never before the
+initial green baseline, and is regenerated fresh for every eligible run — there
+is no cross-run cache or plugin system. The context is advisory: it changes no
+tools, models, workflow states, quality gates, commands, permissions or
+routing.
+
+## ADR-020: Post-green polish is one bounded implementation attempt, informed by on-demand skill research
+
+When `polish.enabled` is true and the bounded polish attempt is eligible, the
+first successful deterministic verification schedules the version-specific
+skill research described in ADR-019, then exactly one more `IMPLEMENTER` pass
+with `AttemptTrigger.POLISH` that applies the returned `RepositorySkill`:
+simplify first, preserving tests, behavior, public interfaces, security and
+error handling, then version-specific polish second, both inside that single
+existing attempt. It uses the existing worker routing and implementation
 budget, may correctly make no edits, and is always followed by the full
 deterministic verification and scope assessment again before testing or review.
 
 Polish never runs during CI repair and is scheduled only when one later
 implementation attempt remains available to recover from a regression. It
-introduces no `POLISHING` state and no `POLISHER` role; the existing
-`IMPLEMENTING → VERIFYING` loop remains authoritative and visible in persisted
-attempt records.
+introduces no `POLISHING` state and no `POLISHER` role; the temporary
+`VERIFYING → RESEARCHING → IMPLEMENTING → VERIFYING` sequence remains
+authoritative and visible in persisted attempt records. The generated skill is
+provided only to that attempt's Implementer, Tester and Reviewer and is
+regenerated fresh for every eligible run.
+
+Because polish is an improvement on an already-verified change, its failure
+modes are non-fatal by design. An unverifiable or stale skill is never silently
+reused: it is discarded with a recorded warning and the run continues on its
+existing green path rather than failing or escalating.
 
 The configuration model defaults omitted legacy `polish` sections to disabled
 for compatibility. The packaged default and example enable it, so their normal

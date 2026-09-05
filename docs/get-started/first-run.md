@@ -45,15 +45,18 @@ The run moved through:
 CREATED → prepare worktree → profile repository → TRIAGING
         → REFINING → [RESEARCHING] → PLANNING
         → IMPLEMENTING → VERIFYING
-        → IMPLEMENTING (POLISH) → VERIFYING
+        → RESEARCHING (repository skill) → IMPLEMENTING (POLISH) → VERIFYING
         → REVIEWING → PR_READY
 ```
 
 The profile and polish reuse existing states rather than adding
 `PROFILING`/`POLISHING`. The example configuration enables one bounded polish
-pass. It may make no edits, but it still records an attempt and reruns
-deterministic verification. A legacy configuration that omits `polish`
-defaults to disabled.
+pass, preceded by one web-only research call that generates version-aware
+guidance for the versions this repository actually declares. Polish may make no
+edits, but it still records an attempt and reruns deterministic verification.
+If the research or its validation fails, the factory records a warning on the
+profile and skips polish; the already-verified run continues to review. A
+legacy configuration that omits `polish` defaults to disabled.
 
 `PR_READY` is the completed endpoint when pull requests are disabled, which they
 are in `config/factory.example.yaml`. A nonzero exit code means the run did not
@@ -88,13 +91,16 @@ Nothing is hidden in a database. Everything is JSON on disk.
 ├── run.json              state machine, attempts, budgets, timestamps
 ├── work-item.json
 ├── repository-profile.json
-│                           technologies, tools, markers, warnings, skills
+│                           technologies, tools, markers, fingerprints,
+│                           version files, dependency declarations, warnings
 ├── triage.json           complexity, risk, whether research is needed
 ├── specification.json    acceptance criteria
 ├── execution-plan.json
 ├── change-set.json       what the implementer claims it did
 ├── patch.diff            what the controller actually observed
 ├── verification.json     install / verify / build results
+├── repository-skill.json  version-aware simplify and polish guidance
+│                           (only when polish research succeeded)
 ├── test-report.json      independent tester
 ├── review.json           independent reviewer
 └── attempts/

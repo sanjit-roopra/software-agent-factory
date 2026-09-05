@@ -67,15 +67,26 @@ the change. See [Configuration](../reference/configuration.md#models).
 
 ## Repository skills
 
-The deterministic profile selects from a fixed, versioned built-in catalog:
-universal plan quality and simplification, plus Python, Vite, React
-quality/reactivity/testing and general testing when repository evidence
-supports them.
+There is no fixed, built-in skill catalog. The deterministic profile records
+technologies, test tools, package managers (`uv`, `pip`, `poetry`, `npm`,
+`pnpm`, `yarn`, `bun`), version files, exact dependency declarations from
+`pyproject.toml`, `requirements*.txt` and `package.json`, and two fingerprints
+— nothing more.
 
-Only Planner, Implementer, Tester and Reviewer receive their role-filtered
-selection. The skills are advisory prompt context. They do not grant tools,
-change model routing, add commands, alter workflow states or waive gates, and
-the target repository cannot provide plugins.
+When `polish.enabled` and the bounded polish attempt is eligible, the
+configured Researcher (`GPT-5.6 Sol` by default) generates one
+version-specific `RepositorySkill` for that run, using only the normalized
+profile and the changed file paths, with web access limited to
+`polish.official_documentation_origins` (authoritative for version claims) and
+the exact, commit-pinned `polish.practice_reference_urls` (generic heuristics
+only). It
+reaches only that attempt's Implementer, Tester and Reviewer — never before the
+initial green baseline. The skill is advisory prompt context. It does not grant
+tools, change model routing, add commands, alter workflow states or waive
+gates, and the target repository cannot provide plugins.
+
+If the research, its validation, or the profile check fails, the factory
+records a warning and skips polish. Your already-verified change still ships.
 
 ## What the agent is allowed to do
 
@@ -84,6 +95,12 @@ Each role gets a permission profile:
 - **Read-only roles** (triage, refiner, researcher, planner, tester, reviewer):
   `glob`, `grep`, `view`.
 - **Implementer:** `glob`, `grep`, `view`, `create`, `edit`, `bash`.
+
+The one exception is the Researcher's skill-generation call for an eligible
+polish attempt: it gets only `web_fetch`, restricted to
+`polish.official_documentation_origins` and `polish.practice_reference_urls`,
+with no `glob`/`grep`/`view`/edit access, no repository custom instructions,
+and the run directory rather than the worktree as its working directory.
 
 The optional polish uses the same Implementer permission profile and worker
 routing. It introduces no separate role.

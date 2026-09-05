@@ -62,6 +62,13 @@ class AgentRole(StrEnum):
     REVIEWER = "REVIEWER"
 
 
+class AgentPurpose(StrEnum):
+    """The typed output contract for an agent invocation."""
+
+    STANDARD = "STANDARD"
+    GENERATE_REPOSITORY_SKILL = "GENERATE_REPOSITORY_SKILL"
+
+
 class AttemptBudget(StrEnum):
     """Which bounded retry budget an attempt consumes.
 
@@ -110,49 +117,156 @@ class RepositoryTestTool(StrEnum):
 
 class RepositoryPackageManager(StrEnum):
     UV = "uv"
+    PIP = "pip"
+    POETRY = "poetry"
     NPM = "npm"
     PNPM = "pnpm"
     YARN = "yarn"
     BUN = "bun"
 
 
-class SkillId(StrEnum):
-    PLAN_QUALITY = "plan-quality"
-    SIMPLIFICATION = "simplification"
-    PYTHON_QUALITY = "python-quality"
-    VITE_QUALITY = "vite-quality"
-    REACT_QUALITY = "react-quality"
-    REACT_REACTIVITY = "react-reactivity"
-    REACT_TESTING = "react-testing"
-    TESTING_QUALITY = "testing-quality"
+class DependencyEcosystem(StrEnum):
+    PYTHON = "python"
+    NPM = "npm"
 
 
-class SelectedSkill(ModelBase):
-    """One immutable, factory-owned skill selected for a repository."""
+class RepositoryDependency(ModelBase):
+    """One direct dependency declaration retained with its version evidence."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: SkillId
-    version: int = Field(ge=1)
-    summary: str = Field(min_length=1)
-    roles: tuple[AgentRole, ...]
-    guidance: tuple[str, ...]
-    evidence: tuple[str, ...] = Field(default=(), max_length=5)
+    ecosystem: DependencyEcosystem
+    name: str = Field(min_length=1, max_length=200)
+    declared_version: str = Field(min_length=1, max_length=500)
+    resolved_version: str | None = Field(default=None, max_length=200)
+    manifest_path: str = Field(min_length=1, max_length=1000)
+    resolution_path: str | None = Field(default=None, max_length=1000)
+    group: str = Field(min_length=1, max_length=100)
 
 
 class RepositoryProfile(VersionedModel):
-    """Deterministic, read-only repository facts and selected skills."""
+    """Deterministic, read-only repository facts used for skill research."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    detector_version: Literal[1] = 1
-    catalog_version: Literal[1] = 1
+    detector_version: Literal[2] = 2
+    manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dependency_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     markers: tuple[str, ...] = ()
+    version_files: tuple[str, ...] = ()
     technologies: tuple[RepositoryTechnology, ...] = ()
     test_tools: tuple[RepositoryTestTool, ...] = ()
     package_managers: tuple[RepositoryPackageManager, ...] = ()
-    selected_skills: tuple[SelectedSkill, ...] = ()
+    dependencies: tuple[RepositoryDependency, ...] = Field(default=(), max_length=200)
     warnings: tuple[str, ...] = ()
+
+
+GENERIC_SKILL_TARGET = "repository"
+"""Applicability marker for guidance that is not tied to a detected dependency."""
+
+REQUIRED_SKILL_TARGET_NAMES: tuple[str, ...] = (
+    "python",
+    "pytest",
+    "react",
+    "react-dom",
+    "vite",
+    "vitest",
+)
+"""Recognized dependency names that must be targeted and officially grounded."""
+
+
+class SkillTarget(ModelBase):
+    """A package/runtime version to which generated guidance applies."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ecosystem: DependencyEcosystem
+    name: str = Field(min_length=1, max_length=200)
+    declared_version: str = Field(min_length=1, max_length=500)
+    resolved_version: str | None = Field(default=None, max_length=200)
+    evidence: tuple[str, ...] = Field(min_length=1, max_length=3)
+
+
+class SkillSource(ModelBase):
+    """Official documentation or release material consulted by the researcher."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=300)
+    url: str = Field(min_length=9, max_length=1000, pattern=r"^https://")
+    version_scope: str = Field(min_length=1, max_length=200)
+    applies_to: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] = Field(
+        min_length=1,
+        max_length=24,
+        description=(
+            "Names of the detected dependencies this source grounds. General-practice "
+            f"sources may instead use the single value '{GENERIC_SKILL_TARGET}'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_distinct_applicability(self) -> SkillSource:
+        if len(set(self.applies_to)) != len(self.applies_to):
+            raise ValueError("skill source applicability names must be distinct")
+        if GENERIC_SKILL_TARGET in self.applies_to and len(self.applies_to) > 1:
+            raise ValueError(
+                f"'{GENERIC_SKILL_TARGET}' applicability cannot be combined with dependency names"
+            )
+        return self
+
+
+class SkillGuidance(ModelBase):
+    """One bounded advisory section generated for the current repository."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    summary: str = Field(min_length=1, max_length=300)
+    guidance: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+        min_length=1, max_length=12
+    )
+    avoid: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+        default=(), max_length=8
+    )
+    validation: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+        default=(), max_length=8
+    )
+
+
+class RepositorySkill(VersionedModel):
+    """Researcher-generated simplify and polish guidance for one profile."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    generator_version: Literal[1] = 1
+    dependency_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generated_at: UtcDateTime = Field(default_factory=utc_now)
+    targets: tuple[SkillTarget, ...] = Field(default=(), max_length=24)
+    official_sources: tuple[SkillSource, ...] = Field(default=(), max_length=20)
+    practice_sources: tuple[SkillSource, ...] = Field(default=(), max_length=20)
+    simplify: SkillGuidance
+    polish: SkillGuidance
+    uncertainties: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+        default=(), max_length=10
+    )
+
+    @model_validator(mode="after")
+    def _require_grounding_or_uncertainty(self) -> RepositorySkill:
+        if not self.official_sources and not self.uncertainties:
+            raise ValueError("repository skill requires official sources or explicit uncertainty")
+        for source in self.official_sources:
+            if GENERIC_SKILL_TARGET in source.applies_to:
+                raise ValueError(
+                    "official sources must name the dependencies they ground, not "
+                    f"'{GENERIC_SKILL_TARGET}'"
+                )
+        for source in self.practice_sources:
+            if source.applies_to != (GENERIC_SKILL_TARGET,):
+                raise ValueError(
+                    "practice sources must apply only to the generic repository target"
+                )
+            if source.version_scope.casefold() != "general":
+                raise ValueError("practice sources must use the version scope 'general'")
+        return self
 
 
 class WorkItem(VersionedModel):

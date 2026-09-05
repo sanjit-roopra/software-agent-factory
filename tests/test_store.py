@@ -10,6 +10,8 @@ from software_agent_factory.models import (
     ChangeSet,
     FactoryRun,
     RepositoryProfile,
+    RepositorySkill,
+    SkillGuidance,
     Specification,
     TestReport,
     WorkflowState,
@@ -172,13 +174,33 @@ def test_repository_profile_has_a_registered_run_level_filename(tmp_path: Path) 
     store = FileRunStore(tmp_path / "data")
     run = _sample_run()
     store.save_run(run)
-    profile = RepositoryProfile()
+    profile = RepositoryProfile(
+        manifest_fingerprint="0" * 64,
+        dependency_fingerprint="1" * 64,
+    )
 
     path = store.save_artifact(run.id, profile)
 
     assert path.name == "repository-profile.json"
     assert store.load_artifact(run.id, RepositoryProfile) == profile
     assert store.list_attempts(run.id) == []
+
+
+def test_repository_skill_has_a_registered_run_level_filename(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    run = _sample_run()
+    store.save_run(run)
+    skill = RepositorySkill(
+        dependency_fingerprint="a" * 64,
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Keep behavior.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Use exact versions.",)),
+        uncertainties=("No external research in this fixture.",),
+    )
+
+    path = store.save_artifact(run.id, skill)
+
+    assert path.name == "repository-skill.json"
+    assert store.load_artifact(run.id, RepositorySkill) == skill
 
 
 def test_listing_runs_ignores_attempt_directories(tmp_path: Path) -> None:

@@ -155,22 +155,77 @@ the finding categories and decisions.
 ```yaml
 polish:
   enabled: true
+  official_documentation_origins:
+    - "https://docs.pytest.org"
+    - "https://docs.python.org"
+    - "https://nodejs.org"
+    - "https://packaging.python.org"
+    - "https://react.dev"
+    - "https://testing-library.com"
+    - "https://vite.dev"
+    - "https://vitest.dev"
+    - "https://www.typescriptlang.org"
+  practice_reference_urls:
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/a11y-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/component-architecture-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/js-fp-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/quality-reviewer.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/react-reactivity-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/refactor-opportunity-review.md"
 ```
 
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `enabled` | bool | `true` in packaged default/example; `false` when omitted | Run at most one post-green Implementer polish attempt. |
+| `enabled` | bool | `true` in packaged default/example; `false` when omitted | Run at most one post-green Implementer polish attempt, informed by a version-specific `RepositorySkill`. |
+| `official_documentation_origins` | list of HTTPS origins | the nine official documentation origins shown above | Authoritative sources for version-specific claims. Non-empty, unique, at most 25 entries. Each must be an HTTPS origin with no path, credentials, whitespace, query, fragment or trailing slash. |
+| `practice_reference_urls` | list of exact HTTPS URLs | the six curated `bdfinst/agentic-dev-team` review references shown above, pinned to commit `52cc5efd` | Optional curated general-practice references. May be empty; unique, at most 12 entries. Each must be an exact HTTPS document URL (a real path, no trailing slash) with no credentials, whitespace, query or fragment. |
 
-The class fallback is `false`, so legacy configurations that omit `polish`
-retain their previous one-pass behavior. The packaged default and
-`config/factory.example.yaml` explicitly enable it.
+Both lists are the complete fetch allowlist for the skill-generation
+Researcher. The curated practice references are pinned to an immutable commit
+(`52cc5efd1c445e71c55b956837c003911346d7e7`) rather than a mutable branch, so
+the exact reviewed text is what gets fetched; re-pin deliberately after
+reviewing a newer revision. Official documentation, migration guides and release notes are
+authoritative. Curated practice references may only contribute generic quality
+heuristics, synthesized rather than copied; they never supply version claims,
+commands, tools or orchestration, and the controller validates them by exact
+URL rather than by origin.
+
+The class fallback for `enabled` is `false`, so legacy configurations that omit
+`polish` retain their previous one-pass behavior. The packaged default and
+`config/factory.example.yaml` explicitly enable it. Omitting only the URL lists
+keeps the defaults above.
 
 Polish runs only after the first successful deterministic verification and
-scope assessment, before testing and review. It uses the existing worker
-routing, records `AttemptTrigger.POLISH`, consumes the implementation budget,
-may make no edits and is always verified and scope-assessed again. It never
-runs during CI repair and runs only when one later recovery attempt would still
-remain.
+scope assessment, before testing and review. When eligible, the controller
+re-profiles the post-implementation worktree — capturing any dependency change
+the task made — and transitions through a temporary `RESEARCHING` state to
+call the configured Researcher (`GPT-5.6 Sol` by default) with purpose
+`GENERATE_REPOSITORY_SKILL`, at most once per run. That call runs in the run's
+own directory rather than the worktree, receives only the normalized
+`RepositoryProfile` and the controller-derived changed file paths — never source
+code, README content, task prose or the diff — has `web_fetch` as its only
+tool, and runs without repository custom instructions.
+
+The researcher returns one `RepositorySkill` bound to the profile's
+`dependency_fingerprint`, with bounded targets, HTTPS source provenance and
+separate simplify and polish guidance. The controller rejects it when the
+fingerprint does not match, a target or its evidence path is not in the
+profile, a detected `python`/`pytest`/`react`/`react-dom`/`vite`/`vitest`
+dependency is missing a target or is not named by an accepted official source,
+a source claims applicability to an undetected dependency, or a source falls
+outside the two configured lists.
+
+Nothing here can fail an already-green run. A failed re-profile, failed
+research, rejected skill, or a skill that became stale (the
+`dependency_fingerprint` changed after generation) records a warning on the
+persisted `repository-profile.json` and safely skips or disables polish.
+
+When the skill is accepted it is applied — simplify first, then
+version-specific polish — by one existing bounded worker attempt, which records
+`AttemptTrigger.POLISH`, consumes the implementation budget, may make no edits
+and is always fully verified and scope-assessed again. Polish never runs during
+CI repair and runs only when one later recovery attempt would still remain. The
+skill is generated fresh for every eligible run; there is no cross-run cache.
 
 ## pull_request
 

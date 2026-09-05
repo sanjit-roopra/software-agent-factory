@@ -45,7 +45,7 @@ tested here; the first real tag is what exercises them end to end.
 | 15.10 | Jira and other trackers | deferred |
 | 15.11 | Read-only local dashboard | done (`factory dashboard`) |
 | 15.12 | Kubernetes workers | deferred |
-| 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`) |
+| 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`, `GENERATE_REPOSITORY_SKILL`) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -899,31 +899,105 @@ Status: deferred.
 # Phase 16. Repository capability layer and bounded post-green polish
 
 Status: done. The controller profiles each prepared worktree before
-`TRIAGING`, persists `repository-profile.json`, supplies role-filtered advisory
-skills, and optionally schedules one post-green `IMPLEMENTER` pass.
+`TRIAGING`, persists `repository-profile.json`, and optionally schedules one
+research-grounded post-green `IMPLEMENTER` pass. There is no fixed built-in
+skill catalog: repository skills are generated on demand, per eligible run,
+by the configured Researcher.
 
 Repository profiling is deterministic and read-only:
 
 - scan repository-local paths and allowlisted manifests only
 - do not execute commands, import target code or contact the network
-- record technologies, test tools, package managers, markers and warnings
-- select from a fixed, versioned built-in catalog; do not load repository
-  skills or plugins
+- record technologies, test tools, package managers, markers, warnings,
+  `version_files`, and exact dependency evidence: direct declarations with
+  ecosystem, name, declared version, optional exact resolved
+  version/resolution path, manifest path and dependency group
+- parse declarations from `pyproject.toml` (PEP 621 `project.dependencies`,
+  `project.optional-dependencies.*`, `dependency-groups.*` and
+  `requires-python` as the `python` runtime target, plus the Poetry dependency,
+  dev-dependency and group tables), `requirements.txt`/`requirements-*.txt`
+  (marking the `pip` package manager) and `package.json`
+  (`dependencies`, `devDependencies`, `peerDependencies`,
+  `optionalDependencies`, `packageManager`); read `setup.cfg`/`tox.ini` for
+  Python and pytest evidence only
+- resolve exact versions from `uv.lock`, `package-lock.json` and
+  `pnpm-lock.yaml` when unambiguous and warn instead of guessing when they are
+  not; detect the package manager from `poetry.lock`, `yarn.lock` and
+  `bun.lock`/`bun.lockb` and fingerprint those (plus `Pipfile.lock` and
+  `pylock.toml`) as version files without claiming exact graph parsing
+- record two distinct SHA-256 fingerprints: the semantic
+  `dependency_fingerprint` over technologies, test tools, package managers and
+  normalized dependency declarations, which binds generated guidance, and the
+  `manifest_fingerprint` over version-file content, which is provenance only
 
-The catalog always includes `plan-quality` and `simplification`. Evidence may
-also select Python quality, Vite quality, React quality/reactivity/testing and
-general testing. Only Planner, Implementer, Tester and Reviewer receive the
-skills assigned to their role. Skills are advisory and cannot change tools,
-models, states, gates, commands, permissions or routing.
+When `polish.enabled` and the bounded polish attempt is eligible, after the
+first successful deterministic verification and scope assessment the
+controller re-profiles the post-implementation worktree (capturing any
+dependency upgrades the task made), transitions through a temporary
+`RESEARCHING` state, and invokes the configured Researcher (`GPT-5.6 Sol` by
+default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
 
-`polish.enabled` controls one optional pass after the first successful
-deterministic verification and initial scope assessment, but before testing and
-review. It uses the existing Implementer and worker routing, records
+That call is bounded and web-only:
+
+- it runs in the neutral run directory, not the worktree
+- `web_fetch` is its only tool, and repository custom instructions are disabled
+- it sees the normalized profile, the controller-derived changed file paths, the
+  configured URL lists and the factory-owned generation rules — never source
+  code, README content, task prose or the diff
+- `polish.official_documentation_origins` (defaults: official pytest, Python,
+  Node.js, Python Packaging Authority, React, Testing Library, Vite, Vitest and
+  TypeScript documentation) is authoritative. Official documentation, migration
+  guides and release notes decide every version claim, and operators may extend
+  the list with other official origins.
+- `polish.practice_reference_urls` holds exact curated general-practice
+  references (by default reviewed `bdfinst/agentic-dev-team` notes, pinned to
+  commit `52cc5efd1c445e71c55b956837c003911346d7e7` rather than a mutable
+  branch). They may contribute generic heuristics only, synthesized rather than
+  copied, and never version claims, commands, tools or orchestration.
+
+It returns one typed `RepositorySkill`, persisted as `repository-skill.json`,
+bound to the profile's `dependency_fingerprint` and containing bounded targets
+with evidence paths, official and practice sources that each declare which
+detected dependencies they ground (`applies_to`, with the generic marker
+`repository` reserved for practice sources), separate `simplify` and `polish`
+guidance, and uncertainties. The type refuses a skill with neither an official
+source nor an explicit uncertainty, and refuses a generic official source.
+
+The controller validates the artifact deterministically and rejects a
+fingerprint mismatch, a target that is not an exact profiled dependency
+declaration, evidence paths outside the profile, a missing target or missing
+per-dependency official provenance for a detected `python`, `pytest`, `react`,
+`react-dom`, `vite` or `vitest` dependency, a source claiming applicability to
+an undetected dependency, or a source outside the two configured lists.
+
+Because polish only ever runs on an already-green change, none of this can fail
+the run. A failed re-profile, failed research, rejected skill, or a skill that
+became stale (the `dependency_fingerprint` changed after generation) appends the
+reason to the persisted profile's `warnings` and safely skips polish or
+disables the skill for the Tester and Reviewer. The verified change proceeds.
+
+Simplify is applied first and must preserve tests, behavior, public
+interfaces, security and error handling; polish is applied second with
+version-specific practices. Both execute within the same existing single
+`POLISH` Implementer attempt, then full deterministic verification and scope
+assessment run again. The generated skill reaches only the polish
+Implementer, Tester and Reviewer, and is never available before the initial
+green baseline. Every eligible run generates a fresh skill; there is no
+cross-run cache or plugin system, so a dependency version change necessarily
+causes new research. The fake runtime generates deterministic offline
+guidance for this step and tests make no paid calls.
+
+`polish.enabled` still controls one optional pass after the first successful
+deterministic verification and initial scope assessment, but before testing
+and review. It uses the existing Implementer and worker routing, records
 `AttemptTrigger.POLISH`, consumes the implementation budget, may make no edits
 and is always followed by another deterministic verification and scope
 assessment. It never runs during CI repair, never runs more than once and runs
 only when one later recovery attempt would still remain. There is no
-`POLISHING` state or `POLISHER` role.
+`POLISHING` state or `POLISHER` role, and no new role was added for research;
+`RESEARCHING` is a temporary transition that resolves to either `PLANNING`
+(initial triage-driven research) or `IMPLEMENTING` (skill research before
+polish).
 
 The class fallback is `false` for legacy configurations that omit `polish`.
 The packaged default and `config/factory.example.yaml` set it to `true`, so a
@@ -932,13 +1006,30 @@ the bounded polish pass.
 
 ## Acceptance criteria
 
-- profiling happens after workspace preparation and before triage
-- `repository-profile.json` is versioned and persisted for every run
-- malformed or oversized allowlisted manifests produce warnings, not execution
-- only the four supported roles receive their filtered advisory skills
-- the post-green pass is bounded, reverified and excluded from CI repair
+- profiling happens after workspace preparation and before triage, and again
+  before an eligible bounded polish attempt
+- `repository-profile.json` is versioned, persisted for every run, and
+  includes both fingerprints, version files and exact dependency declarations
+- malformed or oversized allowlisted manifests/lockfiles produce warnings,
+  not execution
+- the polish research call receives only normalized profile data and changed
+  filenames, never source code, README content, task prose or the diff, runs
+  in the neutral run directory, and has no filesystem/shell/edit tools — only
+  `web_fetch` restricted to `polish.official_documentation_origins` and
+  `polish.practice_reference_urls`
+- the controller rejects a `dependency_fingerprint` mismatch, unverified
+  dependency targets/evidence, missing required targets or provenance, and
+  sources outside the configured lists
+- research, profiling, validation and staleness failures record a warning on
+  `repository-profile.json` and skip or disable polish; they never fail or
+  escalate an already-green run
+- the generated `RepositorySkill` reaches only the polish Implementer, Tester
+  and Reviewer, never the initial (pre-polish) attempt, and is regenerated
+  fresh for every eligible run
+- the single polish attempt simplifies first and polishes second, and the post-
+  green pass is bounded, fully reverified and excluded from CI repair
 - existing workflow states, tools, models, gates, commands and permissions are
-  unchanged
+  unchanged apart from the temporary `RESEARCHING → IMPLEMENTING` transition
 
 # First useful end-to-end demo
 

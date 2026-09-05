@@ -44,6 +44,7 @@ import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .agents import AgentRequest, AgentRuntime
@@ -58,6 +59,9 @@ from .governance import (
     assess_publish_gate,
 )
 from .models import (
+    GENERIC_SKILL_TARGET,
+    REQUIRED_SKILL_TARGET_NAMES,
+    AgentPurpose,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
@@ -68,10 +72,10 @@ from .models import (
     FactoryRun,
     RepairContext,
     RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
     RunLease,
-    SelectedSkill,
     Specification,
     TestReport,
     TriageResult,
@@ -84,7 +88,6 @@ from .publishing import CIObserver, PullRequestPublisher
 from .repository_profile import (
     generic_repository_profile,
     profile_repository,
-    skills_for_role,
 )
 from .routing import ModelRouter
 from .store import FileRunStore
@@ -131,7 +134,13 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
         }
     ),
     WorkflowState.RESEARCHING: frozenset(
-        {WorkflowState.PLANNING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {
+            WorkflowState.PLANNING,
+            WorkflowState.IMPLEMENTING,
+            WorkflowState.REVIEWING,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.FAILED,
+        }
     ),
     WorkflowState.PLANNING: frozenset(
         {WorkflowState.IMPLEMENTING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
@@ -144,6 +153,7 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
             WorkflowState.REVIEWING,
             WorkflowState.IMPLEMENTING,
             WorkflowState.PLANNING,
+            WorkflowState.RESEARCHING,
             WorkflowState.NEEDS_HUMAN,
             WorkflowState.FAILED,
         }
@@ -483,7 +493,6 @@ class WorkflowController:
                 specification,
                 research_report,
                 workspace_path=workspace_path,
-                repository_profile=repository_profile,
             )
 
             context = _RunContext(
@@ -582,13 +591,169 @@ class WorkflowController:
         self._store.save_artifact(run.id, result.research_report)
         return result.research_report
 
+    def _run_repository_skill_researcher(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        evidence: WorkspaceEvidence,
+        repository_profile: RepositoryProfile,
+    ) -> tuple[RepositorySkill | None, str | None]:
+        """Generate version-specific simplify and polish guidance once."""
+
+        try:
+            request = self._build_request(
+                AgentRole.RESEARCHER,
+                context.work_item,
+                purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+                changed_files=list(evidence.changed_files),
+                repository_profile=repository_profile,
+                official_documentation_origins=list(
+                    self._config.polish.official_documentation_origins
+                ),
+                practice_reference_urls=list(self._config.polish.practice_reference_urls),
+                workspace_path=str(self._store.run_dir(run.id)),
+            )
+            result = self._runtime.run(request)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return None, f"repository skill research could not run: {exc}"
+        skill = result.repository_skill
+        if not result.success or skill is None:
+            return (
+                None,
+                result.failure_reason
+                or "researcher failed to produce version-specific repository guidance",
+            )
+        if skill.dependency_fingerprint != repository_profile.dependency_fingerprint:
+            return (
+                None,
+                "researcher returned repository guidance for a different dependency fingerprint",
+            )
+        validation_error = self._repository_skill_validation_error(
+            skill,
+            repository_profile,
+        )
+        if validation_error is not None:
+            return None, validation_error
+        skill = skill.model_copy(update={"generated_at": utc_now()})
+        self._store.save_artifact(run.id, skill)
+        return skill, None
+
+    def _repository_skill_validation_error(
+        self,
+        skill: RepositorySkill,
+        repository_profile: RepositoryProfile,
+    ) -> str | None:
+        dependencies = {
+            (
+                dependency.ecosystem,
+                dependency.name,
+                dependency.declared_version,
+                dependency.resolved_version,
+            )
+            for dependency in repository_profile.dependencies
+        }
+        evidence_paths = set(repository_profile.version_files)
+        evidence_paths.update(
+            dependency.manifest_path for dependency in repository_profile.dependencies
+        )
+        evidence_paths.update(
+            dependency.resolution_path
+            for dependency in repository_profile.dependencies
+            if dependency.resolution_path is not None
+        )
+        for target in skill.targets:
+            identity = (
+                target.ecosystem,
+                target.name,
+                target.declared_version,
+                target.resolved_version,
+            )
+            if identity not in dependencies:
+                return (
+                    "researcher returned repository guidance for an unverified dependency "
+                    f"version: {target.ecosystem}:{target.name}"
+                )
+            if not set(target.evidence).issubset(evidence_paths):
+                return (
+                    "researcher returned repository guidance with unverified version evidence "
+                    f"for {target.ecosystem}:{target.name}"
+                )
+
+        required_dependencies = {
+            (
+                dependency.ecosystem,
+                dependency.name,
+                dependency.declared_version,
+                dependency.resolved_version,
+            )
+            for dependency in repository_profile.dependencies
+            if dependency.name in REQUIRED_SKILL_TARGET_NAMES
+        }
+        target_identities = {
+            (
+                target.ecosystem,
+                target.name,
+                target.declared_version,
+                target.resolved_version,
+            )
+            for target in skill.targets
+        }
+        if missing_targets := sorted(
+            required_dependencies - target_identities,
+            key=lambda item: (str(item[0]), item[1], item[2], item[3] or ""),
+        ):
+            return (
+                "researcher omitted version targets required by the repository profile: "
+                + ", ".join(
+                    f"{ecosystem}:{name}@{resolved or declared}"
+                    for ecosystem, name, declared, resolved in missing_targets
+                )
+            )
+
+        detected_names = {dependency.name for dependency in repository_profile.dependencies}
+        target_names = {target.name for target in skill.targets}
+        allowed_origins = {
+            _url_origin(url) for url in self._config.polish.official_documentation_origins
+        }
+        grounded_names: set[str] = set()
+        for source in skill.official_sources:
+            if _url_origin(source.url) not in allowed_origins:
+                return (
+                    "researcher cited a source outside "
+                    f"polish.official_documentation_origins: {source.url}"
+                )
+            if unverified := sorted(set(source.applies_to) - detected_names):
+                return (
+                    "researcher cited an official source for dependencies that are not in "
+                    f"the repository profile: {source.url} covers " + ", ".join(unverified)
+                )
+            grounded_names.update(source.applies_to)
+        if ungrounded_names := sorted(target_names - grounded_names):
+            return (
+                "researcher returned version-specific guidance without official source "
+                "provenance for: " + ", ".join(ungrounded_names)
+            )
+
+        allowed_references = set(self._config.polish.practice_reference_urls)
+        for source in skill.practice_sources:
+            if source.url not in allowed_references:
+                return (
+                    "researcher cited a source outside polish.practice_reference_urls: "
+                    f"{source.url}"
+                )
+            if source.applies_to != (GENERIC_SKILL_TARGET,):
+                return (
+                    "researcher cited a practice source outside the generic repository "
+                    f"scope: {source.url}"
+                )
+        return None
+
     def _run_planner(
         self,
         run: FactoryRun,
         work_item: WorkItem,
         specification: Specification,
         research_report: ResearchReport | None,
-        repository_profile: RepositoryProfile,
         *,
         workspace_path: str,
         repair_context: RepairContext | None = None,
@@ -604,7 +769,6 @@ class WorkflowController:
             repair_context=repair_context,
             diff=diff,
             changed_files=changed_files or [],
-            selected_skills=list(skills_for_role(repository_profile, AgentRole.PLANNER)),
         )
         result = self._runtime.run(request)
         if not result.success or result.execution_plan is None:
@@ -634,7 +798,7 @@ class WorkflowController:
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
-            selected_skills=list(skills_for_role(context.repository_profile, AgentRole.TESTER)),
+            repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
         )
         result = self._runtime.run(request)
@@ -665,7 +829,7 @@ class WorkflowController:
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
             test_report=test_report,
-            selected_skills=list(skills_for_role(context.repository_profile, AgentRole.REVIEWER)),
+            repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
         )
         result = self._runtime.run(request)
@@ -683,6 +847,7 @@ class WorkflowController:
         role: AgentRole,
         work_item: WorkItem,
         *,
+        purpose: AgentPurpose = AgentPurpose.STANDARD,
         role_model: RoleModelConfig | None = None,
         triage_result: TriageResult | None = None,
         specification: Specification | None = None,
@@ -694,13 +859,17 @@ class WorkflowController:
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
         repair_context: RepairContext | str | None = None,
-        selected_skills: list[SelectedSkill] | None = None,
+        repository_profile: RepositoryProfile | None = None,
+        repository_skill: RepositorySkill | None = None,
+        official_documentation_origins: list[str] | None = None,
+        practice_reference_urls: list[str] | None = None,
         workspace_path: str | None = None,
         attempt_number: int | None = None,
     ) -> AgentRequest:
         resolved = role_model if role_model is not None else self._router.model_for_role(role)
         return AgentRequest(
             role=role,
+            purpose=purpose,
             model=resolved.model,
             reasoning=resolved.reasoning,
             work_item=work_item,
@@ -714,7 +883,10 @@ class WorkflowController:
             verification_report=verification_report,
             test_report=test_report,
             repair_context=repair_context,
-            selected_skills=selected_skills or [],
+            repository_profile=repository_profile,
+            repository_skill=repository_skill,
+            official_documentation_origins=official_documentation_origins or [],
+            practice_reference_urls=practice_reference_urls or [],
             workspace_path=workspace_path,
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
@@ -830,10 +1002,60 @@ class WorkflowController:
                 run, repair_context = self._replan(run, context, scope, evidence)
                 continue
 
-            if self._should_polish(run, budget):
-                repair_context = self._polish_context()
-                run = self.transition(run, WorkflowState.IMPLEMENTING)
-                continue
+            if self._should_polish(run, budget, context):
+                context.polish_research_attempted = True
+                try:
+                    refreshed_profile = self._repository_profiler(context.workspace.path)
+                except (OSError, ValueError) as exc:
+                    context.repository_profile = _profile_with_warning(
+                        context.repository_profile,
+                        f"polish research skipped because repository profiling failed: {exc}",
+                    )
+                    self._store.save_artifact(run.id, context.repository_profile)
+                else:
+                    self._store.save_artifact(run.id, refreshed_profile)
+                    context.repository_profile = refreshed_profile
+                    run = self.transition(run, WorkflowState.RESEARCHING)
+                    skill, warning = self._run_repository_skill_researcher(
+                        run,
+                        context,
+                        evidence,
+                        refreshed_profile,
+                    )
+                    if skill is not None:
+                        context.repository_skill = skill
+                        repair_context = self._polish_context()
+                        run = self.transition(run, WorkflowState.IMPLEMENTING)
+                        continue
+                    assert warning is not None
+                    context.repository_profile = _profile_with_warning(
+                        refreshed_profile,
+                        f"polish research skipped: {warning}",
+                    )
+                    self._store.save_artifact(run.id, context.repository_profile)
+
+            if context.repository_skill is not None:
+                try:
+                    current_profile = self._repository_profiler(context.workspace.path)
+                except (OSError, ValueError) as exc:
+                    context.repository_profile = _profile_with_warning(
+                        context.repository_profile,
+                        f"repository skill disabled because profile validation failed: {exc}",
+                    )
+                    context.repository_skill = None
+                else:
+                    if (
+                        current_profile.dependency_fingerprint
+                        != context.repository_skill.dependency_fingerprint
+                    ):
+                        current_profile = _profile_with_warning(
+                            current_profile,
+                            "repository skill disabled because dependency versions changed "
+                            "after generation",
+                        )
+                        context.repository_skill = None
+                    context.repository_profile = current_profile
+                self._store.save_artifact(run.id, context.repository_profile)
 
             run = self.transition(run, WorkflowState.REVIEWING)
             test_report = self._run_tester(run, context, evidence, verification.report, snapshot)
@@ -887,7 +1109,6 @@ class WorkflowController:
             repair_context=repair_context,
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
-            repository_profile=context.repository_profile,
         )
         run = self.transition(run, WorkflowState.IMPLEMENTING)
         return run, repair_context
@@ -926,9 +1147,7 @@ class WorkflowController:
             execution_plan=context.execution_plan,
             repair_context=repair_context,
             diff=current_diff if repair_context is not None else None,
-            selected_skills=list(
-                skills_for_role(context.repository_profile, AgentRole.IMPLEMENTER)
-            ),
+            repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
@@ -1030,8 +1249,15 @@ class WorkflowController:
             log_excerpt=None,
         )
 
-    def _should_polish(self, run: FactoryRun, budget: AttemptBudget) -> bool:
+    def _should_polish(
+        self,
+        run: FactoryRun,
+        budget: AttemptBudget,
+        context: _RunContext,
+    ) -> bool:
         if budget is not AttemptBudget.IMPLEMENTATION or not self._config.polish.enabled:
+            return False
+        if context.polish_research_attempted:
             return False
         if any(attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records):
             return False
@@ -1043,7 +1269,8 @@ class WorkflowController:
             trigger=AttemptTrigger.POLISH,
             summary=(
                 "Deterministic verification passed. Apply a final bounded polish and "
-                "simplification pass using the factory-selected repository skills. "
+                "simplification pass using the researcher-generated repository skill. "
+                "Apply simplification first, then version-specific polish. "
                 "Preserve required behavior, public interfaces, scope, dependencies, "
                 "security checks, and verification policy. Make no edit when no safe "
                 "improvement exists."
@@ -1285,6 +1512,8 @@ class _RunContext:
         self.research_report = research_report
         self.execution_plan = execution_plan
         self.repository_profile = repository_profile
+        self.repository_skill: RepositorySkill | None = None
+        self.polish_research_attempted = False
         self.workspace = workspace
         self.source_repo = source_repo
         self.latest_evidence: WorkspaceEvidence | None = None
@@ -1305,6 +1534,15 @@ def _bounded(text: str, limit: int = MAX_REPAIR_EXCERPT_CHARS) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+def _url_origin(url: str) -> str:
+    parsed = urlsplit(url)
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _profile_with_warning(profile: RepositoryProfile, warning: str) -> RepositoryProfile:
+    return profile.model_copy(update={"warnings": (*profile.warnings, warning)})
 
 
 def _commit_message(context: _RunContext, run_id: str) -> str:

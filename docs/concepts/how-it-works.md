@@ -81,9 +81,11 @@ reason.
 flow, and the controller finalizes it explicitly.
 
 Repository profiling happens after workspace preparation and before
-`TRIAGING`, without adding a state. Likewise, the optional post-green polish is
-an `IMPLEMENTER` attempt through the existing
-`IMPLEMENTING → VERIFYING` transition. There is no `POLISHING` state.
+`TRIAGING`, without adding a state. The optional post-green polish first
+re-profiles the worktree and generates a version-specific `RepositorySkill`
+through a temporary `RESEARCHING` transition, then applies it in an
+`IMPLEMENTER` attempt through the existing `IMPLEMENTING → VERIFYING`
+transition. There is no `POLISHING` state and no fixed skill catalog.
 
 ## Typed artifacts, not one long conversation
 
@@ -112,9 +114,12 @@ Each agent receives only the context its job needs. That keeps prompts small,
 keeps failures attributable, and means a later stage cannot be persuaded by an
 earlier stage's narrative.
 
-`RepositoryProfile` is factory-produced before triage. It contains detected
-technologies, test tools, package managers, markers, warnings and selected
-versioned built-in skills.
+`RepositoryProfile` is factory-produced before triage, and again before an
+eligible bounded polish attempt. It contains detected technologies, test
+tools, package managers, markers, warnings, version files and exact dependency
+declarations, plus two fingerprints: a semantic `dependency_fingerprint` that
+guidance is bound to, and a `manifest_fingerprint` kept as file-content
+provenance. There is no built-in skill catalog.
 
 ## The agents
 
@@ -122,11 +127,11 @@ versioned built-in skills.
 | --- | --- | --- |
 | Triage | Assign complexity, risk, and whether research is needed. | The work item. |
 | Specification Refiner | Turn the request into acceptance criteria. | Work item, triage. |
-| Researcher | Answer specific open questions. Runs at most once, only when triage asks. | Specification. |
-| Planner | Produce an execution plan with an expected scope. | Specification, research, role-filtered advisory skills. |
-| Implementer | Edit the worktree. | Plan, repository, role-filtered advisory skills. |
-| Tester | Judge whether the change is actually tested. | Controller-derived diff, changed files, deterministic results, role-filtered advisory skills. |
-| Reviewer | Independent review. | Controller-derived diff, changed files, deterministic results, role-filtered advisory skills. |
+| Researcher | Answer specific open questions, or (once, for an eligible polish attempt) generate a version-specific `RepositorySkill`. | Specification; or, for skill generation, only the normalized repository profile and the changed file paths — no repository access at all. |
+| Planner | Produce an execution plan with an expected scope. | Specification, research. |
+| Implementer | Edit the worktree. | Plan, repository; the post-green `RepositorySkill`, only during the bounded polish attempt. |
+| Tester | Judge whether the change is actually tested. | Controller-derived diff, changed files, deterministic results; the same post-green `RepositorySkill` as the polish Implementer, while it is still current. |
+| Reviewer | Independent review. | Controller-derived diff, changed files, deterministic results; the same post-green `RepositorySkill` as the polish Implementer, while it is still current. |
 | Failure Investigator | Diagnose a CI failure. | Normalized CI evidence. |
 
 The tester and reviewer never see the implementer's own summary. That is
@@ -135,20 +140,68 @@ deliberate: a model's claim about its work is not evidence.
 Research runs; it does not escalate. A researcher that finds nothing useful
 returns a report and the run continues.
 
-Triage, Refiner and Researcher receive no skill context. Skills never change
-tools, models, states, gates, commands or permissions.
+Triage, Refiner and the initial Researcher call receive no skill context.
+Skills never change tools, models, states, gates, commands or permissions.
 
 ## Repository capabilities
 
 The controller scans repository-local paths and a small allowlist of bounded
-manifests. It never executes a command, imports target code, contacts the
-network or loads repository-defined skills.
+manifests. It never executes a command, imports target code or contacts the
+network. What it captures is exact dependency evidence: which packages are
+declared, at which versions, in which manifest, and — when a lockfile resolves
+them unambiguously — the exact resolved version.
 
-The fixed catalog always selects `plan-quality` and `simplification`.
-Repository evidence may add `python-quality`, `vite-quality`,
-`react-quality`, `react-reactivity`, `react-testing` and `testing-quality`.
-Each selection carries a catalog version, guidance, applicable roles and the
-evidence that caused it to be selected.
+On the Python side that means `pyproject.toml` (PEP 621 dependency tables,
+`dependency-groups`, `requires-python`, and the Poetry dependency, dev and
+group tables), `requirements.txt`/`requirements-*.txt` for pip projects, and
+`setup.cfg`/`tox.ini` for pytest evidence. On the JavaScript side it means
+`package.json` runtime, dev, peer and optional dependencies plus
+`packageManager`. Exact versions come from `uv.lock`, `package-lock.json` and
+`pnpm-lock.yaml`; `poetry.lock`, `yarn.lock` and `bun.lock` identify the
+package manager and are fingerprinted, but are not parsed for exact versions.
+
+There is no fixed skill catalog. When `polish.enabled` and the bounded polish
+attempt is eligible, after the first successful deterministic verification the
+controller re-profiles the post-implementation worktree, transitions through a
+temporary `RESEARCHING` state, and asks the configured Researcher (`GPT-5.6
+Sol` by default) to generate one fresh, version-aware `RepositorySkill`.
+
+That call is deliberately blind. It runs in the run's own directory instead of
+the worktree, its only tool is `web_fetch`, and it sees only the normalized
+profile and the controller-derived changed file paths — never source code,
+README content, task prose or the diff. It may fetch:
+
+- `polish.official_documentation_origins` — official documentation, migration
+  guides and release notes (pytest, Python, Node.js, the Python Packaging
+  Authority, React, Testing Library, Vite, Vitest and TypeScript by default).
+  These are authoritative for anything version-specific, and you can extend the
+  list with other official origins.
+- `polish.practice_reference_urls` — a short list of exact, curated
+  general-practice references (by default reviewed `bdfinst/agentic-dev-team`
+  notes, pinned to an immutable commit rather than a mutable branch). They may
+  inform generic quality heuristics only. They never supply version claims,
+  commands, tools or orchestration.
+
+The returned skill is bound to the profile's `dependency_fingerprint` and
+carries bounded targets, HTTPS source provenance, separate `simplify` and
+`polish` guidance, and uncertainties. The controller checks all of that
+deterministically: fingerprint, every target against a real dependency
+declaration and evidence path, coverage and provenance for detected Python,
+pytest, React, Vite and Vitest versions, and every cited URL against the two
+configured lists.
+
+If anything in that chain fails — profiling, research, validation, or a
+dependency version that changed after generation — the factory records a
+warning on `repository-profile.json` and skips or disables polish. It does not
+fail the run. Polish is an optional improvement on a change that already
+passed every deterministic check, so the safe outcome is to ship the verified
+change without it.
+
+The accepted skill is applied by one bounded existing Implementer attempt,
+simplification first and version-specific polish second, and then the full
+deterministic verification runs again. It reaches only the polish Implementer,
+Tester and Reviewer, is never available before the initial green baseline, and
+is generated fresh for every eligible run — there is no cross-run cache.
 
 ## Complexity and risk are separate
 

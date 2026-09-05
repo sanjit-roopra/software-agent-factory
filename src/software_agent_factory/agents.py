@@ -33,9 +33,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Protocol
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .models import (
+    REQUIRED_SKILL_TARGET_NAMES,
+    AgentPurpose,
     AgentRole,
     ChangeSet,
     Complexity,
@@ -44,10 +46,14 @@ from .models import (
     ModelBase,
     PlanStep,
     RepairContext,
+    RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
     Risk,
-    SelectedSkill,
+    SkillGuidance,
+    SkillSource,
+    SkillTarget,
     Specification,
     TestReport,
     TriageResult,
@@ -75,6 +81,7 @@ class AgentRequest(ModelBase):
     """
 
     role: AgentRole
+    purpose: AgentPurpose = AgentPurpose.STANDARD
     model: str
     reasoning: str
     work_item: WorkItem
@@ -88,10 +95,26 @@ class AgentRequest(ModelBase):
     verification_report: VerificationReport | None = None
     test_report: TestReport | None = None
     repair_context: RepairContext | str | None = None
-    selected_skills: list[SelectedSkill] = Field(default_factory=list)
+    repository_profile: RepositoryProfile | None = None
+    repository_skill: RepositorySkill | None = None
+    official_documentation_origins: list[str] = Field(default_factory=list)
+    practice_reference_urls: list[str] = Field(default_factory=list)
     workspace_path: str | None = None
     attempt_number: int | None = None
     timeout_seconds: int
+
+    @model_validator(mode="after")
+    def _validate_purpose(self) -> AgentRequest:
+        if self.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+            if self.role is not AgentRole.RESEARCHER:
+                raise ValueError("repository skill generation requires the RESEARCHER role")
+            if self.repository_profile is None:
+                raise ValueError("repository skill generation requires repository_profile")
+        elif self.official_documentation_origins or self.practice_reference_urls:
+            raise ValueError(
+                "research URL configuration is only valid for repository skill generation"
+            )
+        return self
 
 
 class AgentResult(ModelBase):
@@ -108,6 +131,7 @@ class AgentResult(ModelBase):
     triage_result: TriageResult | None = None
     specification: Specification | None = None
     research_report: ResearchReport | None = None
+    repository_skill: RepositorySkill | None = None
     execution_plan: ExecutionPlan | None = None
     change_set: ChangeSet | None = None
     verification_report: VerificationReport | None = None
@@ -180,6 +204,8 @@ class FakeAgentRuntime:
         return self._default(request)
 
     def _default(self, request: AgentRequest) -> AgentResult:
+        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+            return self._default_repository_skill(request)
         if request.role is AgentRole.TRIAGE:
             return self._default_triage(request)
         if request.role is AgentRole.REFINER:
@@ -237,6 +263,100 @@ class FakeAgentRuntime:
             uncertainty=[],
         )
         return AgentResult(role=AgentRole.RESEARCHER, success=True, research_report=research_report)
+
+    def _default_repository_skill(self, request: AgentRequest) -> AgentResult:
+        profile = request.repository_profile
+        if profile is None:
+            return AgentResult(
+                role=AgentRole.RESEARCHER,
+                success=False,
+                failure_reason="repository skill generation requires a repository profile",
+            )
+        important_names = set(REQUIRED_SKILL_TARGET_NAMES)
+        target_dependencies = sorted(
+            profile.dependencies,
+            key=lambda dependency: (
+                dependency.name not in important_names,
+                dependency.ecosystem,
+                dependency.name,
+                dependency.manifest_path,
+            ),
+        )[:24]
+        targets = tuple(
+            SkillTarget(
+                ecosystem=dependency.ecosystem,
+                name=dependency.name,
+                declared_version=dependency.declared_version,
+                resolved_version=dependency.resolved_version,
+                evidence=tuple(
+                    path
+                    for path in (dependency.manifest_path, dependency.resolution_path)
+                    if path is not None
+                ),
+            )
+            for dependency in target_dependencies
+        )
+        source_candidates = {
+            "python": ("https://docs.python.org", "Official Python documentation"),
+            "pytest": ("https://docs.pytest.org", "Official pytest documentation"),
+            "react": ("https://react.dev", "Official React documentation"),
+            "react-dom": ("https://react.dev", "Official React documentation"),
+            "vite": ("https://vite.dev", "Official Vite documentation"),
+            "vitest": ("https://vitest.dev", "Official Vitest documentation"),
+        }
+        sources: list[SkillSource] = []
+        grouped: dict[str, tuple[str, list[str], list[str]]] = {}
+        for target in targets:
+            candidate = source_candidates.get(target.name)
+            if candidate is None:
+                continue
+            url, title = candidate
+            if url not in request.official_documentation_origins:
+                continue
+            _, names, scopes = grouped.setdefault(url, (title, [], []))
+            if target.name not in names:
+                names.append(target.name)
+            scope = target.resolved_version or target.declared_version
+            if scope not in scopes:
+                scopes.append(scope)
+        for url, (title, names, scopes) in grouped.items():
+            sources.append(
+                SkillSource(
+                    title=title,
+                    url=url,
+                    version_scope=", ".join(scopes)[:200],
+                    applies_to=tuple(names),
+                )
+            )
+        repository_skill = RepositorySkill(
+            dependency_fingerprint=profile.dependency_fingerprint,
+            targets=targets,
+            official_sources=tuple(sources),
+            simplify=SkillGuidance(
+                summary="Simplify the changed code while preserving behavior.",
+                guidance=(
+                    "Prefer direct control flow and existing repository abstractions.",
+                    "Remove only complexity that is unnecessary for the requested behavior.",
+                ),
+                avoid=("Do not change tests, public interfaces, dependencies, or behavior.",),
+                validation=("Use the repository's configured deterministic checks.",),
+            ),
+            polish=SkillGuidance(
+                summary="Polish the changed code for the detected dependency versions.",
+                guidance=(
+                    "Apply only practices compatible with the detected dependency declarations.",
+                    "Prefer a no-op over an unsupported version-specific assumption.",
+                ),
+                avoid=("Do not add dependencies or expand the requested scope.",),
+                validation=("Use the repository's configured deterministic checks.",),
+            ),
+            uncertainties=("The fake runtime uses deterministic official-source fixtures.",),
+        )
+        return AgentResult(
+            role=AgentRole.RESEARCHER,
+            success=True,
+            repository_skill=repository_skill,
+        )
 
     def _default_planner(self, request: AgentRequest) -> AgentResult:
         specification = request.specification
