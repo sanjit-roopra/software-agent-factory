@@ -191,7 +191,9 @@ def test_phase_1_config_still_loads_and_new_sections_default(tmp_path: Path) -> 
     assert config.factory.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
     assert config.polish.enabled is False
-    assert "https://react.dev" in config.polish.official_documentation_origins
+    assert any(
+        origin == "https://react.dev" for origin in config.polish.official_documentation_origins
+    )
     assert any(
         url.endswith("/react-reactivity-review.md") for url in config.polish.practice_reference_urls
     )
@@ -223,7 +225,9 @@ def test_packaged_default_config_publishes_every_section() -> None:
     assert config.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
     assert config.polish.enabled is True
-    assert "https://vite.dev" in config.polish.official_documentation_origins
+    assert any(
+        origin == "https://vite.dev" for origin in config.polish.official_documentation_origins
+    )
     assert any(
         url.endswith("/refactor-opportunity-review.md")
         for url in config.polish.practice_reference_urls
