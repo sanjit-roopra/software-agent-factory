@@ -59,6 +59,7 @@ jobs:
           uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
           uv run --no-sync pip-audit --skip-editable
           uv run --no-sync mkdocs build --strict
+          uv run --no-sync python scripts/docs/check_rendered_links.py site
 
       - name: Validate the tag matches the packaged version
         run: |

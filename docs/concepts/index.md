@@ -1,20 +1,18 @@
 # Concepts
 
-<dl class="saf-index" markdown>
+[How it works](how-it-works.md)
+: The workflow states, typed artifacts, agents, routing, workspaces, and
+  persistence. Start here.
 
-<dt>[How it works](how-it-works.md)</dt>
-<dd>The workflow states, the typed artifacts, the agents, routing, workspaces and persistence. Start here.</dd>
+[Architecture](../architecture.md)
+: The full architecture: domain concepts, artifact fields, complexity and risk,
+  agent roles, retries, observability, and packaging.
 
-<dt>[Architecture](../architecture.md)</dt>
-<dd>The full architecture document: domain concepts, every artifact's fields, complexity and risk models, agent responsibilities, retry policy, observability, packaging.</dd>
+[Symphony alignment](../symphony-alignment.md)
+: Which OpenAI Symphony ideas this project reuses, extends, or does not adopt.
 
-<dt>[Symphony alignment](../symphony-alignment.md)</dt>
-<dd>Which OpenAI Symphony orchestration concepts this project reuses, which it extends, and which it deliberately did not adopt.</dd>
-
-<dt>[Decisions](../decisions.md)</dt>
-<dd>Numbered architecture decision records, ADR-001 onward, with the reasoning and the consequences.</dd>
-
-</dl>
+[Decisions](../decisions.md)
+: Architecture decision records, ADR-001 onward, with reasons and consequences.
 
 Two more documents live in the repository rather than on this site, because they
 are instructions for contributors and agents working on the code:

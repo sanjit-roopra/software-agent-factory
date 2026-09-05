@@ -9,6 +9,7 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "pyproject.toml"
+      - "scripts/docs/**"
       - "uv.lock"
   workflow_dispatch:
 
@@ -52,6 +53,7 @@ jobs:
         run: |
           uv sync --locked --no-default-groups --group docs
           uv run --no-sync mkdocs build --strict
+          uv run --no-sync python scripts/docs/check_rendered_links.py site
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
