@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://sanjit-roopra.github.io/software-agent-factory/
+    about: Read installation, usage, configuration, and troubleshooting guides.
+  - name: Security report
+    url: https://github.com/sanjit-roopra/software-agent-factory/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.

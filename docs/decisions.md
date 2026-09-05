@@ -162,12 +162,23 @@ The selection is operational, not architectural: it makes the existing factory
 installable, observable and inspectable on one MacBook. It does not widen what
 the factory is allowed to do autonomously.
 
-## ADR-015: CD means delivering immutable artifacts, never deploying
+## ADR-015: CD means publishing release artifacts, never deploying
 
-"Continuous delivery" in this project stops at a published, immutable GitHub
-Release. A version tag builds artifacts and attaches them. Nothing installs,
-restarts, promotes or self-updates, and there is no mutable pointer a client
-follows automatically. Autonomous deployment stays banned by `AGENTS.md`.
+"Continuous delivery" in this project stops at a published GitHub Release. A
+version tag builds artifacts and attaches them. Nothing installs, restarts,
+promotes or self-updates, and there is no mutable pointer a client follows
+automatically. Autonomous deployment stays banned by `AGENTS.md`.
+
+Releases are intended to be treated as write-once, but that is a workflow
+convention, not a platform guarantee. The release workflow checks whether the
+tag's release already exists and refuses to replace its artifacts. It does not
+stop someone editing or deleting a release through the GitHub UI or API.
+
+GitHub's own release immutability is a repository setting and is off by default;
+the current releases report `immutable=false`. Enable immutable releases in the
+repository settings before relying on platform enforcement. Until then,
+`SHA256SUMS` and `build-info.json` are what let a consumer detect a swapped
+artifact.
 
 Two native macOS builds are produced — arm64 on `macos-15` and x86_64 on
 `macos-15-intel` — as separate PyInstaller `onedir` archives. `universal2` is

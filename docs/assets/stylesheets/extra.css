@@ -1,0 +1,149 @@
+/* Palette. One accent colour, used sparingly. */
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1f6f5c;
+  --md-primary-fg-color--light: #2c8b74;
+  --md-primary-fg-color--dark: #14503f;
+  --md-accent-fg-color: #0f766e;
+  --saf-surface: #f6f8f7;
+  --saf-border: rgba(0, 0, 0, 0.12);
+  --saf-muted: rgba(0, 0, 0, 0.62);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #7fd6bd;
+  --md-primary-fg-color--light: #9be2cd;
+  --md-primary-fg-color--dark: #1f6f5c;
+  --md-accent-fg-color: #7fd6bd;
+  --saf-surface: rgba(255, 255, 255, 0.04);
+  --saf-border: rgba(255, 255, 255, 0.14);
+  --saf-muted: rgba(255, 255, 255, 0.68);
+}
+
+/* Keep the top bar neutral so the accent colour stays meaningful. */
+.md-header,
+.md-tabs {
+  background-color: #15201d;
+  color: #ffffff;
+}
+
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: #10171a;
+}
+
+.md-header__title {
+  font-weight: 600;
+}
+
+/* Landing page hero. */
+.saf-hero {
+  padding: 2.4rem 0 1.2rem;
+  border-bottom: 1px solid var(--saf-border);
+  margin-bottom: 1.6rem;
+}
+
+.saf-hero h1 {
+  font-size: 2.1rem;
+  line-height: 1.15;
+  font-weight: 700;
+  margin: 0 0 0.6rem;
+  letter-spacing: -0.02em;
+}
+
+.saf-hero p {
+  font-size: 0.92rem;
+  color: var(--saf-muted);
+  max-width: 42rem;
+  margin: 0 0 0.9rem;
+}
+
+.saf-eyebrow {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--md-primary-fg-color);
+  border: 1px solid var(--saf-border);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.saf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.saf-actions .md-button {
+  margin: 0;
+}
+
+/* Feature cards. */
+.saf-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.9rem;
+  margin: 1.4rem 0 2rem;
+}
+
+.saf-card {
+  border: 1px solid var(--saf-border);
+  border-radius: 0.35rem;
+  background: var(--saf-surface);
+  padding: 0.9rem 1rem;
+}
+
+.saf-card h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.saf-card p {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--saf-muted);
+}
+
+.saf-card a {
+  font-weight: 600;
+}
+
+/* Section index lists. */
+.saf-index {
+  border-top: 1px solid var(--saf-border);
+  margin-top: 1.2rem;
+  padding-top: 0.4rem;
+}
+
+.saf-index dt {
+  font-weight: 600;
+  margin-top: 0.9rem;
+}
+
+.saf-index dd {
+  margin: 0.2rem 0 0 0;
+  color: var(--saf-muted);
+  font-size: 0.74rem;
+}
+
+/* Tables read better a little tighter. */
+.md-typeset table:not([class]) th {
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+}
+
+.md-typeset table:not([class]) td {
+  font-size: 0.72rem;
+  vertical-align: top;
+}
+
+.md-typeset .mermaid {
+  margin: 1.2rem 0;
+}

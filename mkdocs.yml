@@ -1,0 +1,142 @@
+site_name: Software Agent Factory
+site_description: >-
+  A local-first autonomous software engineering factory. Deterministic
+  orchestration on your machine, LLM intelligence through GitHub Copilot.
+site_url: https://sanjit-roopra.github.io/software-agent-factory/
+site_author: Software Agent Factory maintainers
+copyright: Apache-2.0 licensed.
+
+repo_url: https://github.com/sanjit-roopra/software-agent-factory
+repo_name: sanjit-roopra/software-agent-factory
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+strict: true
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  icon:
+    repo: fontawesome/brands/github
+  font: false
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/sanjit-roopra/software-agent-factory
+      name: Source on GitHub
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Get started:
+      - get-started/index.md
+      - Install: get-started/install.md
+      - First offline run: get-started/first-run.md
+      - Real Copilot runs: get-started/copilot.md
+  - Guides:
+      - guides/index.md
+      - Configure a repository: guides/configure-repository.md
+      - GitHub backlog, PRs and CI: guides/github.md
+      - Monitor and run continuously: guides/operations.md
+      - Troubleshooting: guides/troubleshooting.md
+  - Reference:
+      - reference/index.md
+      - CLI: reference/cli.md
+      - Configuration file: reference/configuration.md
+      - Safety and trust boundaries: reference/safety.md
+  - Concepts:
+      - concepts/index.md
+      - How it works: concepts/how-it-works.md
+      - Architecture: architecture.md
+      - Symphony alignment: symphony-alignment.md
+      - Decisions: decisions.md
+  - Project:
+      - project/index.md
+      - Roadmap and status: project/roadmap.md
+      - Development: project/development.md
+      - Releases: project/releases.md
+
+watch:
+  - config

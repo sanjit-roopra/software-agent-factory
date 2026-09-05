@@ -1,0 +1,60 @@
+# Software Agent Factory
+
+> A local-first autonomous software engineering factory. It takes one work item
+> from triage to a reviewed change through specialized agents (triage, refiner,
+> researcher, planner, implementer, tester, reviewer), each with its own model.
+> Orchestration, Git worktrees, tests, builds and persistence run locally;
+> models run remotely through GitHub Copilot. The core principle is that LLMs
+> provide intelligence and deterministic Python code provides authority: agents
+> return typed artifacts and never control workflow state, retry budgets, model
+> routing, quality gates or merging.
+
+Key facts an assistant should know before answering questions about this project:
+
+- The CLI is `factory`. From a source checkout, prefix commands with `uv run`.
+- The default agent runtime is `fake`: deterministic, offline, free. `--runtime
+  copilot` makes real, paid model calls and is never the default.
+- `pull_request.enabled`, `ci.enabled` and `scheduler.enabled` are all `false`
+  in the packaged configuration. With the defaults there is no network access.
+- The factory never force-pushes, never merges and never deploys.
+- State is filesystem JSON under `~/.software-factory` by default. There is no
+  database.
+- The supported platform is macOS (native arm64 and x86_64, no `universal2`).
+  A source checkout needs Python 3.13+. Other platforms are not tested or
+  supported.
+- Release archives are unsigned or ad-hoc signed; macOS Gatekeeper quarantine
+  must be cleared with `xattr -dr com.apple.quarantine`.
+- Releases are write-once by workflow convention only: the release workflow
+  refuses to replace an existing release, but GitHub's release immutability
+  setting is not enabled and releases report `immutable=false`. Verify
+  `SHA256SUMS`.
+- Token usage and cost are reported only if a runtime returns them. No runtime
+  does today, so those values are unknown, never estimated.
+- Every retry is bounded. There is no unlimited retry loop anywhere.
+- The reviewer's model family must differ from every worker's; configuration
+  rejects it otherwise.
+
+## Docs
+
+- [Home](https://sanjit-roopra.github.io/software-agent-factory/): overview, the pipeline diagram, design principles and current status.
+- [Install](https://sanjit-roopra.github.io/software-agent-factory/get-started/install/): source, macOS archive and wheel installs; the `git`/`gh`/`copilot` prerequisites and when each is required; the data directory layout.
+- [First offline run](https://sanjit-roopra.github.io/software-agent-factory/get-started/first-run/): a complete five-minute walkthrough with the fake runtime, the persisted artifacts it produces, and what it does not do.
+- [Real Copilot runs](https://sanjit-roopra.github.io/software-agent-factory/get-started/copilot/): `--runtime copilot`, per-role model defaults, agent tool permissions, environment scrubbing, the typed-artifact contract and cost behaviour.
+- [Configure a repository](https://sanjit-roopra.github.io/software-agent-factory/guides/configure-repository/): `repository.commands` (no shell, environment allowlist, bounded output), protected files, changed-file limits, scope drift, risk and retry budgets.
+- [GitHub backlog, PRs and CI](https://sanjit-roopra.github.io/software-agent-factory/guides/github/): the three opt-in integrations, publish guards, CI failure categories and which ones may trigger repair, scheduler bounds and recovery.
+- [Monitor and run continuously](https://sanjit-roopra.github.io/software-agent-factory/guides/operations/): `factory status`, structured logs, the loopback token-protected read-only dashboard, and the opt-in macOS launchd service.
+- [Troubleshooting](https://sanjit-roopra.github.io/software-agent-factory/guides/troubleshooting/): exit codes, refusals, `NEEDS_HUMAN` versus `FAILED`, verification failures and service problems.
+- [CLI reference](https://sanjit-roopra.github.io/software-agent-factory/reference/cli/): every command, option, default and exit code.
+- [Configuration reference](https://sanjit-roopra.github.io/software-agent-factory/reference/configuration/): every YAML key with its type, default, effect and cross-field validation rules.
+- [Safety and trust boundaries](https://sanjit-roopra.github.io/software-agent-factory/reference/safety/): what agents may and may not do, network access, cost, credential handling, quality gates and the full table of bounds.
+- [How it works](https://sanjit-roopra.github.io/software-agent-factory/concepts/how-it-works/): workflow states and transitions, typed artifacts, the agents, complexity versus risk, model routing, workspaces, persistence and scheduling.
+
+## Optional
+
+- [Architecture](https://sanjit-roopra.github.io/software-agent-factory/architecture/): the full architecture document, including every artifact's fields, the complexity and risk models, agent responsibilities, retry policy, observability and packaging.
+- [Symphony alignment](https://sanjit-roopra.github.io/software-agent-factory/symphony-alignment/): which OpenAI Symphony orchestration concepts are reused, extended or deliberately rejected.
+- [Decisions](https://sanjit-roopra.github.io/software-agent-factory/decisions/): numbered architecture decision records with reasoning and consequences.
+- [Roadmap and status](https://sanjit-roopra.github.io/software-agent-factory/project/roadmap/): the phase table, known limits, and the list of things deliberately never planned.
+- [Development](https://sanjit-roopra.github.io/software-agent-factory/project/development/): checkout setup, local quality gates, dependency groups, testing rules and what CI runs.
+- [Releases](https://sanjit-roopra.github.io/software-agent-factory/project/releases/): the tag-driven release process, artifact list, checksum verification and Gatekeeper.
+- [Source repository](https://github.com/sanjit-roopra/software-agent-factory): issues, `AGENTS.md`, `PLAN.md`, `CONTRIBUTING.md` and the changelog.

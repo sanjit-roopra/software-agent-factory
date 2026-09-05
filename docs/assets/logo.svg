@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Software Agent Factory">
+  <g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 27V13l7 4.5V13l7 4.5V13l7 4.5V27Z"/>
+    <path d="M4 27h24"/>
+    <path d="M25 13V5"/>
+  </g>
+  <circle cx="25" cy="5" r="2.6" fill="currentColor"/>
+</svg>

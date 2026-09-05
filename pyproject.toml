@@ -1,29 +1,66 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "software-agent-factory"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local-first autonomous software engineering factory foundations."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Software Agent Factory contributors" },
+]
+maintainers = [
+  { name = "Sanjit Roopra" },
+]
+keywords = [
+  "ai-agents",
+  "automation",
+  "developer-tools",
+  "github",
+  "orchestration",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development",
+]
 dependencies = [
   "pydantic>=2.9,<3.0",
   "pyyaml>=6.0",
   "typer>=0.12,<1.0",
 ]
 
+[project.urls]
+Documentation = "https://sanjit-roopra.github.io/software-agent-factory/"
+Repository = "https://github.com/sanjit-roopra/software-agent-factory"
+Issues = "https://github.com/sanjit-roopra/software-agent-factory/issues"
+Changelog = "https://github.com/sanjit-roopra/software-agent-factory/blob/main/CHANGELOG.md"
+Security = "https://github.com/sanjit-roopra/software-agent-factory/security/policy"
+Releases = "https://github.com/sanjit-roopra/software-agent-factory/releases"
+
 [project.scripts]
 factory = "software_agent_factory.__main__:main"
 
 [dependency-groups]
 dev = [
+  { include-group = "docs" },
   { include-group = "distribution" },
   { include-group = "native" },
   { include-group = "quality" },
   { include-group = "security" },
   { include-group = "test" },
+]
+docs = [
+  "mkdocs-material>=9.7,<10.0",
 ]
 distribution = [
   "check-wheel-contents>=0.6,<1.0",

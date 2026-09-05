@@ -690,7 +690,7 @@ build-and-smoke procedure. Public-repository release artifacts receive GitHub
 build-provenance attestations; private repositories require the GitHub plan
 that supports artifact attestations.
 
-CD here means *continuous delivery of immutable artifacts*: pushing a version
+CD here means *continuous delivery of versioned artifacts*: pushing a version
 tag produces a downloadable, runnable macOS build attached to a GitHub Release.
 It never deploys, installs, restarts or updates anything.
 

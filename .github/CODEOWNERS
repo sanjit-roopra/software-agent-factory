@@ -1,0 +1,10 @@
+* @sanjit-roopra
+
+/.github/ @sanjit-roopra
+/pyproject.toml @sanjit-roopra
+/uv.lock @sanjit-roopra
+/scripts/release/ @sanjit-roopra
+/src/software_agent_factory/config.py @sanjit-roopra
+/src/software_agent_factory/governance.py @sanjit-roopra
+/src/software_agent_factory/publishing.py @sanjit-roopra
+/src/software_agent_factory/workflow.py @sanjit-roopra

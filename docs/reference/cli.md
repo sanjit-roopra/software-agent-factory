@@ -1,0 +1,270 @@
+# CLI reference
+
+The executable is `factory`. From a source checkout, prefix every command with
+`uv run`.
+
+```text
+factory [OPTIONS] COMMAND [ARGS]...
+
+  Local-first autonomous software engineering factory.
+
+Options:
+  --version, -V   Show the factory version and exit.
+
+Commands:
+  run         Run one work item synchronously through the factory workflow.
+  start       Poll a GitHub Issues backlog and dispatch eligible work.
+  runs        List persisted runs, most recently created last.
+  show        Show the persisted details of one run as JSON.
+  doctor      Check this machine's prerequisites for the configured feature set.
+  status      Report derived run metrics and operational health, read-only.
+  dashboard   Serve the read-only local dashboard until interrupted.
+  service     Manage the opt-in per-user macOS launchd service.
+```
+
+## Common options
+
+Most commands accept these.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--config <path>` | packaged config | Factory config YAML to load. |
+| `--data-dir <path>` | `factory.data_dir` | Override the configured data directory. |
+
+`--data-dir` is how you keep an experiment out of `~/.software-factory`. The
+test suite uses it for exactly that.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success. |
+| `1` | The command failed, or a run ended in `NEEDS_HUMAN` or `FAILED`. |
+| `2` | Configuration error or missing prerequisite; nothing was started. |
+
+---
+
+## factory run
+
+Run one work item synchronously through the whole workflow.
+
+```bash
+factory run \
+  --repo ~/projects/example \
+  --title "Reject empty customer names" \
+  --description "Return HTTP 400 for empty or whitespace-only names."
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--title <str>` | yes | — | Short title for the work item. |
+| `--description <str>` | yes | — | Description of the work to perform. |
+| `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
+| `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
+| `--config <path>` | no | packaged | Config YAML. |
+| `--data-dir <path>` | no | configured | Data directory override. |
+
+Prints the run id, final state, workspace path and the controller-derived
+changed files. Creates an isolated Git worktree under the data directory.
+
+Refuses with exit code `2` if a prerequisite for the enabled feature set is
+missing.
+
+---
+
+## factory start
+
+Poll a GitHub Issues backlog and dispatch eligible work.
+
+```bash
+factory start --repo ~/projects/example --github-repo acme/example --config ~/my-factory.yaml
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--github-repo <str>` | yes | — | Backlog repository as `OWNER/NAME`. |
+| `--runtime <fake\|copilot>` | no | `fake` | Agent runtime. |
+| `--once` | no | off | Run one bounded tick instead of polling forever. |
+| `--config <path>` | no | packaged | Config YAML. |
+| `--data-dir <path>` | no | configured | Data directory override. |
+
+Refuses to run, and never touches GitHub, unless `scheduler.enabled` is true in
+the configuration. Blocks in the foreground; Ctrl-C stops it after the current
+tick.
+
+See [GitHub backlog, PRs and CI](../guides/github.md).
+
+---
+
+## factory runs
+
+List persisted runs, most recently created last.
+
+```bash
+factory runs
+```
+
+Tab-separated: run id, state, work item id, creation timestamp.
+
+Options: `--config`, `--data-dir`.
+
+---
+
+## factory show
+
+Show the persisted details of one run as JSON.
+
+```bash
+factory show run-9bb36bbbdf114f53bd9599a103122976
+```
+
+| Argument | Required | Effect |
+| --- | --- | --- |
+| `run_id` | yes | The run id to display. |
+
+Options: `--config`, `--data-dir`.
+
+Prints the work item text, so redact before sharing.
+
+---
+
+## factory doctor
+
+Check this machine's prerequisites for the configured feature set.
+
+```bash
+factory doctor
+factory doctor --json --config ~/my-factory.yaml
+```
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--runtime <fake\|copilot>` | `fake` | Check prerequisites for this runtime. `copilot` additionally requires the `copilot` executable. |
+| `--json` | off | Emit the report as JSON. |
+| `--config <path>` | packaged | Config YAML. |
+| `--data-dir <path>` | configured | Data directory override. |
+
+Checks the platform, whether this is a frozen or source build, `launchctl`,
+`git`, configuration validity, the executables behind configured repository
+commands, and data directory writability. `gh` is checked only when
+configuration enables pull requests, CI observation or the scheduler.
+
+Never makes a paid model call. The only `copilot` interaction is a bounded
+`copilot --version` probe.
+
+Exits nonzero if any check errored. Warnings alone do not fail it.
+
+---
+
+## factory status
+
+Report derived run metrics and operational health. Read-only.
+
+```bash
+factory status
+factory status --json --limit 50 --offset 50
+```
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--limit <int>` | `20` | How many runs to list. Minimum `1`. |
+| `--offset <int>` | `0` | Where to start the listing. |
+| `--stale-after-seconds <int>` | `scheduler.stall_timeout_seconds` | Idle time before a non-terminal run counts as stale. |
+| `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per call. |
+| `--json` | off | Emit snapshot and health as JSON. |
+| `--config <path>` | packaged | Config YAML. |
+| `--data-dir <path>` | configured | Data directory override. |
+
+Everything is recomputed from persisted artifacts on each call. This command
+never creates, mutates or repairs a run, a workspace, a lock or the data
+directory itself. A truncated or partially unreadable scan reports `DEGRADED`.
+
+---
+
+## factory dashboard
+
+Serve the read-only local dashboard until interrupted.
+
+```bash
+factory dashboard
+factory dashboard --port 0 --open-browser
+```
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--port <int>` | `8765` | Loopback port. `0` asks the OS for a free port. |
+| `--open-browser` | off | Open the tokenized URL in the default browser. |
+| `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per request. |
+| `--config <path>` | packaged | Config YAML. |
+| `--data-dir <path>` | configured | Data directory override. |
+
+Blocks in the foreground. Binds `127.0.0.1` and nothing else, answers `GET`
+only, and requires a token generated for that process. The tokenized URL is
+printed to stdout once and never written to the log. Ctrl-C stops it and closes
+the socket.
+
+This is the only command that opens a socket.
+
+---
+
+## factory service
+
+Manage the opt-in per-user macOS launchd service. macOS only.
+
+### factory service install
+
+```bash
+factory service install \
+  --repo ~/projects/example \
+  --github-repo acme/example \
+  --config ~/my-factory.yaml
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Absolute path to the target Git repository. |
+| `--github-repo <str>` | yes | — | Backlog repository as `OWNER/NAME`. |
+| `--config <path>` | no | packaged | Config the service loads. Must enable `scheduler.enabled`. |
+| `--data-dir <path>` | no | configured | Data directory for the service. |
+| `--runtime <fake\|copilot>` | no | `fake` | Runtime the service runs with. |
+| `--executable <path>` | no | this build | Explicit `factory` executable to run. |
+| `--label <str>` | no | `com.github.software-agent-factory` | LaunchAgent label. |
+| `--allow-source-dev` | no | off | Permit an executable in an otherwise-refused location, such as a source checkout. |
+| `--json` | no | off | Emit the resulting status as JSON. |
+
+Writes one plist under `~/Library/LaunchAgents`. Refuses unless the target
+configuration enables the scheduler, and refuses if `factory doctor` reports any
+error. Defaults to `--runtime fake` so an installed-but-forgotten agent cannot
+spend money.
+
+Nothing installs a service as a side effect of extracting an archive, running
+the factory or upgrading it.
+
+### factory service status
+
+```bash
+factory service status --json
+```
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--label <str>` | `com.github.software-agent-factory` | LaunchAgent label to inspect. |
+| `--json` | off | Emit as JSON. |
+
+Read-only.
+
+### factory service uninstall
+
+```bash
+factory service uninstall
+```
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--label <str>` | `com.github.software-agent-factory` | LaunchAgent label to remove. |
+| `--json` | off | Emit the result as JSON. |
+
+Unloads the agent and removes the plist. Leaves every run, artifact and
+workspace on disk.

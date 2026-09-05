@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible problem
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Remove secrets, repository code, and private logs.
+  - type: input
+    id: version
+    attributes:
+      label: Factory version
+      description: Run `factory --version`.
+      placeholder: factory 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and architecture
+      placeholder: macOS 15.6, arm64
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation
+      options:
+        - Source checkout with uv
+        - macOS release archive
+        - Python wheel
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest set of commands that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `factory doctor` output after removing private paths or data.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed secrets and private repository content.
+          required: true
+        - label: This is not a security report.
+          required: true

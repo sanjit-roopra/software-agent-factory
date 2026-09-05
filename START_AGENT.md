@@ -3,9 +3,13 @@
 This file records the original Phase 0/1 bootstrap brief. It is kept for
 context only.
 
-Phases 0-14 of `PLAN.md` are now implemented; Phase 15 remains optional and
-deliberately unimplemented. Read `README.md` and `PLAN.md` for current status
-before starting new work.
+Phases 0-14 of `PLAN.md` are now implemented. Phase 15 is opened selectively:
+15.0 (factory CI), 15.1 (tag-driven release), 15.2 (macOS packaging and the
+launchd service), 15.5 (local monitoring and health) and 15.11 (the read-only
+local dashboard) are implemented. Every other Phase 15 item, including staging
+(15.3) and deployment (15.4), stays deferred. Read `PLAN.md` and the
+[documentation site](https://sanjit-roopra.github.io/software-agent-factory/)
+for current status before starting new work.
 
 Read:
 

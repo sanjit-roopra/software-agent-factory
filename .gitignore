@@ -17,3 +17,6 @@ build/
 packaging/*
 !packaging/pyinstaller.spec
 src/software_agent_factory/build-info.json
+
+# Documentation site output (mkdocs build).
+site/

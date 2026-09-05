@@ -51,12 +51,14 @@ jobs:
       - name: Run the release quality gate
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups --group quality --group security --group test
+          uv sync --locked --no-default-groups \
+            --group docs --group quality --group security --group test
           uv run --no-sync ruff format --check .
           uv run --no-sync ruff check .
           uv run --no-sync mypy src/software_agent_factory scripts/release
           uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
           uv run --no-sync pip-audit --skip-editable
+          uv run --no-sync mkdocs build --strict
 
       - name: Validate the tag matches the packaged version
         run: |
@@ -371,7 +373,7 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; refusing to replace immutable artifacts." >&2
+            echo "Release $RELEASE_TAG already exists; refusing to replace its artifacts." >&2
             exit 1
           fi
 
@@ -385,7 +387,7 @@ jobs:
             packaging/release-assets/SHA256SUMS
             packaging/release-assets/build-info.json
 
-      - name: Publish immutable GitHub Release
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -398,4 +400,6 @@ jobs:
             packaging/release-assets/SHA256SUMS \
             packaging/release-assets/build-info.json \
             --title "$RELEASE_TAG" \
-            --notes-file packaging/release-notes.txt
+            --notes "$(cat packaging/release-notes.txt)" \
+            --generate-notes \
+            --verify-tag

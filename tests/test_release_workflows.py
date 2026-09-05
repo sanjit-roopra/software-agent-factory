@@ -26,6 +26,16 @@ EXPECTED_ACTIONS = {
     "astral-sh/setup-uv": ("20cfd1bf945f4377ade1205e4dbc17946fc9a30d", "v10.0.1"),
     "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
     "actions/download-artifact": ("3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "v8.0.1"),
+    "actions/configure-pages": ("983d7736d9b0ae728b81ab479565c72886d7745b", "v5.0.0"),
+    "actions/dependency-review-action": (
+        "2031cfc080254a8a887f58cffee85186f0e49e48",
+        "v4.9.0",
+    ),
+    "actions/deploy-pages": ("d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e", "v4.0.5"),
+    "actions/upload-pages-artifact": (
+        "7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
+        "v4",
+    ),
     "github/codeql-action/analyze": (
         "cdf488f595d80d6e07e03d4674febd5ab45fa938",
         "v4.37.9",
@@ -98,6 +108,8 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "uv build --no-sources" in text
     assert "uv run --no-sync twine check dist/*" in text
     assert "uv run --no-sync check-wheel-contents dist/*.whl" in text
+    assert "uv run --no-sync mkdocs build --strict" in text
+    assert workflow["jobs"]["ci-gate"]["needs"] == ["quality", "tests", "package", "docs"]
     assert "scripts/release/prepare_frozen_bundle.py" in text
     assert "scripts/release/smoke_factory.py" in text
     assert '--archive "$ARCHIVE"' in text
@@ -134,7 +146,8 @@ def test_security_workflow_has_pull_request_audit_codeql_and_locked_audit() -> N
     assert workflow["on"]["push"]["branches"] == ["main"]
     assert workflow["on"]["schedule"]
     assert "pull_request_target" not in text
-    assert "actions/dependency-review-action@" not in text
+    assert "actions/dependency-review-action@" in text
+    assert "github.event.repository.visibility == 'public'" in text
     dependency_review = workflow["jobs"]["dependency-review"]
     assert dependency_review["if"] == "github.event_name == 'pull_request'"
     assert "uv sync --locked --no-default-groups --group security" in str(dependency_review)
@@ -145,8 +158,9 @@ def test_security_workflow_has_pull_request_audit_codeql_and_locked_audit() -> N
     assert workflow["jobs"]["codeql"]["permissions"] == {
         "actions": "read",
         "contents": "read",
+        "security-events": "write",
     }
-    assert "upload: never" in text
+    assert "github.event.repository.visibility == 'public' && 'always' || 'never'" in text
     assert "upload-database: false" in text
     assert "Enforce CodeQL findings" in text
     assert "Upload CodeQL SARIF" in text
@@ -162,6 +176,32 @@ def test_future_python_compatibility_runs_only_on_schedule_or_manual_dispatch() 
     assert "allow-prereleases: true" in text
 
 
+def test_docs_workflow_builds_strictly_and_deploys_only_from_main() -> None:
+    text, workflow = _load_workflow("docs.yml")
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["on"]["push"]["branches"] == ["main"]
+    assert workflow["concurrency"] == {
+        "group": "pages",
+        "cancel-in-progress": "false",
+    }
+    assert "pull_request_target" not in text
+    assert "persist-credentials: false" in text
+    assert "uv sync --locked --no-default-groups --group docs" in text
+    assert "uv run --no-sync mkdocs build --strict" in text
+    assert "actions/configure-pages@" in text
+    assert "actions/upload-pages-artifact@" in text
+    assert workflow["jobs"]["build"]["permissions"] == {
+        "contents": "read",
+        "pages": "read",
+    }
+    assert workflow["jobs"]["deploy"]["if"] == "github.ref == 'refs/heads/main'"
+    assert workflow["jobs"]["deploy"]["permissions"] == {
+        "id-token": "write",
+        "pages": "write",
+    }
+    assert "actions/deploy-pages@" in text
+
+
 def test_dependabot_updates_uv_dependencies_and_actions() -> None:
     config = yaml.load((ROOT / ".github" / "dependabot.yml").read_text(), Loader=yaml.BaseLoader)
     ecosystems = {entry["package-ecosystem"] for entry in config["updates"]}
@@ -172,7 +212,7 @@ def test_dependabot_updates_uv_dependencies_and_actions() -> None:
         assert group["update-types"] == ["minor", "patch"]
 
 
-def test_release_workflow_has_immutable_publish_shape() -> None:
+def test_release_workflow_has_safe_publish_shape() -> None:
     text, workflow = _load_workflow("release.yml")
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["on"]["push"]["tags"] == ["v*"]
@@ -186,12 +226,15 @@ def test_release_workflow_has_immutable_publish_shape() -> None:
     assert "pull_request_target" not in text
     assert "write-all" not in text
     assert "gh release create" in text
+    assert "--generate-notes" in text
+    assert "--verify-tag" in text
     assert "gh release view" in text
     assert "uv run --no-sync ruff format --check ." in text
     assert "uv run --no-sync ruff check ." in text
     assert "uv run --no-sync mypy src/software_agent_factory scripts/release" in text
     assert "uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch" in text
     assert "uv run --no-sync pip-audit --skip-editable" in text
+    assert "uv run --no-sync mkdocs build --strict" in text
     assert "uv run --no-sync twine check dist/*" in text
     assert "uv run --no-sync check-wheel-contents dist/*.whl" in text
     assert "PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py" in text

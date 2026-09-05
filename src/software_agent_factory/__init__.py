@@ -199,4 +199,4 @@ __all__ = [
 #: Kept in sync with ``pyproject.toml``; ``version.get_version()`` is the
 #: authoritative resolver (it also understands installed metadata and a
 #: frozen build's bundled ``build-info.json``).
-__version__ = "0.1.1"
+__version__ = "0.2.0"
