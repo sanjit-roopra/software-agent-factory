@@ -7,7 +7,11 @@ Build a local autonomous software engineering factory that can eventually proces
 The implemented pipeline is:
 
 ```text
-task (manual or GitHub issue)
+project brief (optional)
+   ↓
+typed smallest-sufficient task DAG
+   ↓
+task (generated, manual or GitHub issue)
    ↓
 prepare worktree
    ↓
@@ -69,6 +73,14 @@ an optional bounded post-green polish pass.
 
 None of those change what the factory is allowed to do autonomously. They make
 it installable, observable and inspectable on one MacBook.
+
+The project path is also implemented. `factory project` invokes the configured
+Planner once with purpose `DECOMPOSE_PROJECT`, validates a flat task DAG of at
+most 12 items, optionally mirrors those items to GitHub Issues, and executes
+dependency-ready tasks through the existing `WorkflowController`. It does not
+add a second SDLC state machine: project state is limited to planning,
+execution and aggregate outcome, while every child remains an ordinary
+`FactoryRun`.
 
 ## High-level architecture
 
@@ -175,6 +187,27 @@ restart cannot grant a run a fresh budget.
 `lease` records the host/pid currently executing the run, and
 `last_activity_at` is refreshed on every transition so the scheduler can detect
 a stalled run without inspecting lock files.
+
+### ProjectBrief and ProjectPlan
+
+`ProjectBrief` is the optional high-level intake above `WorkItem`.
+`ProjectPlan` is one immutable, typed decomposition containing a flat list of
+`ProjectTask` objects. Task ids are contiguous positive integers and
+dependencies may reference earlier ids only, which guarantees an acyclic graph
+without a graph framework.
+
+The project planner must choose the fastest sufficient delivery approach:
+prefer one coherent task, reuse existing repository mechanisms, and split only
+for independently verifiable outcomes, hard prerequisites, safe parallel work,
+or a scope boundary. Tests, documentation, setup and cleanup stay with their
+functional outcome rather than becoming process-only issues.
+
+`ProjectExecution` is mutable coordination evidence stored separately from the
+immutable brief and plan. The factory derives its outcome from child
+`FactoryRun` states, integration results, and one final deterministic
+verification of the fully composed integration branch; an agent cannot declare
+the project complete. A later invocation reconciles an abandoned `PLANNING` or
+`RUNNING` execution to `NEEDS_HUMAN` rather than leaving active state stranded.
 
 ## Workflow states
 
@@ -938,6 +971,12 @@ Suggested layout:
 
 ```text
 ~/.software-factory/
+├── projects/
+│   └── PROJECT-ID/
+│       ├── project-brief.json
+│       ├── project-plan.json
+│       ├── execution.json
+│       └── logs/
 ├── runs/
 │   └── RUN-ID/
 │       ├── run.json

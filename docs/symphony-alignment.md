@@ -545,6 +545,8 @@ concurrency
 Build our differentiation in:
 
 ```text
+typed project-brief decomposition
+bounded dependency-aware project execution
 SDLC decomposition
 model specialization
 typed evidence
@@ -554,3 +556,34 @@ independent verification
 deterministic repository capabilities
 bounded post-green polish
 ```
+
+## Project-level extension beyond Symphony
+
+Symphony schedules work already represented as tracker issues; it does not
+define a project brief, backlog-generation artifact, portable task DAG, or
+aggregate project-completion predicate. The factory therefore adds one narrow
+layer above the Symphony-aligned scheduler:
+
+```text
+ProjectBrief
+   ↓ Planner proposes
+ProjectPlan
+   ↓ deterministic validation
+dependency-ready WorkItems
+   ↓ existing WorkflowController
+FactoryRuns
+   ↓ deterministic integration and aggregation
+ProjectExecution
+```
+
+The extension preserves Symphony's ownership rules. The Planner proposes only
+typed tasks and dependencies. Factory code validates the graph, bounds it to 12
+tasks, creates optional GitHub issues, selects ready tasks, and composes commits
+on one local integration branch. Every child run retains the normal bounded
+retry, verification, review and risk gates. Factory code then runs the
+configured deterministic repository commands against the fully composed branch
+before deriving aggregate completion.
+
+No portfolio service, database, workflow DSL, recursive task tree or autonomous
+agent swarm is introduced. Bounded parallelism remains `1` or `2`, and a merge
+conflict or failed dependency stops for human attention.

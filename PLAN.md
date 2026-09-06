@@ -2,7 +2,7 @@
 
 ## Status
 
-Phases 0-14 and Phase 16 are implemented and integrated.
+Phases 0-14 and Phases 16-17 are implemented and integrated.
 
 Five Phase 15 sub-phases were explicitly requested and are now implemented:
 15.0 factory CI, 15.1 tag-driven release/CD, 15.2 macOS runtime packaging and
@@ -46,6 +46,7 @@ tested here; the first real tag is what exercises them end to end.
 | 15.11 | Read-only local dashboard | done (`factory dashboard`) |
 | 15.12 | Kubernetes workers | deferred |
 | 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`, `GENERATE_REPOSITORY_SKILL`) |
+| 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -1123,6 +1124,62 @@ the bounded polish pass.
 - existing workflow states, tools, models, gates, commands, retry budgets,
   permissions, dependencies and scope are unchanged apart from the temporary
   `RESEARCHING → IMPLEMENTING` transition
+
+# Phase 17. Project brief decomposition and bounded execution
+
+Status: done.
+
+`factory project` accepts a high-level project description, optional acceptance
+criteria and constraints, and invokes the configured Planner once with purpose
+`DECOMPOSE_PROJECT`. The result is a typed `ProjectPlan` with one to twelve
+tasks. Task ids are contiguous and dependencies may reference earlier ids only,
+which provides a deterministic DAG without a workflow framework.
+
+The planner is instructed to choose the fastest sufficient solution:
+
+- default to one coherent work item
+- split only for independently verifiable outcomes, hard prerequisites, safe
+  parallel execution, or an existing scope limit
+- reuse existing mechanisms
+- avoid speculative abstractions, dependencies, services, infrastructure,
+  cleanup and future-proofing
+- keep implementation, tests and directly related documentation in the same
+  task
+
+Project artifacts are persisted under
+`<data_dir>/projects/<project-id>/`. Dependency-ready tasks execute in bounded
+waves using `scheduler.max_concurrent_tasks` (`1` or `2`) and each task runs
+through the existing `WorkflowController`. A project integration worktree
+composes successful child commits before downstream tasks start. Conflicts,
+failed child runs and approval gates stop with a persisted failure rather than
+creating more work. After all commits are composed, the configured repository
+commands run once more against the integration branch before the project can be
+`DONE`. A later invocation reconciles abandoned `PLANNING` or `RUNNING`
+executions to `NEEDS_HUMAN`.
+
+`--github-repo OWNER/NAME` optionally creates one issue per validated task and
+closes it after successful integration. Generated issues deliberately omit the
+scheduler's `agent-ready` label so the local project runner remains the sole
+execution owner and duplicate dispatch is impossible.
+
+No new model role, dependency, database, generic DAG engine, recursive task
+tree, unbounded replanning loop, autonomous merge or deployment path is added.
+Project execution currently requires child PR and CI publication to be disabled
+and produces one completed local integration branch.
+
+## Acceptance criteria
+
+- a broad brief produces a persisted typed project plan
+- one task is valid and is the fake runtime default
+- invalid ids, forward dependencies and duplicate task titles are rejected
+- dependency-ready work runs with bounded concurrency
+- successful child commits compose onto one integration branch
+- the fully composed integration branch passes deterministic verification
+- failed or human-blocked work stops descendants
+- abandoned active executions are reconciled to a terminal state
+- GitHub issue creation is explicit and optional
+- generated issues are not automatically eligible for the backlog daemon
+- all normal tests remain offline and deterministic
 
 # First useful end-to-end demo
 

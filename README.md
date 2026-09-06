@@ -93,11 +93,34 @@ default.
 Full walkthrough:
 [First offline run](https://sanjit-roopra.github.io/software-agent-factory/get-started/first-run/).
 
+For a broader product or feature description, let the factory derive and
+execute the smallest sufficient work breakdown:
+
+```bash
+uv run factory project \
+  --repo ~/projects/example \
+  --title "Build customer onboarding" \
+  --description "Add signup, email verification, and the first-login flow." \
+  --acceptance-criterion "A new customer can complete onboarding." \
+  --runtime copilot
+```
+
+The project planner defaults to one work item and decomposes only for real
+delivery, dependency, parallelism, or scope boundaries. It persists the typed
+plan under `factory.data_dir/projects`, runs dependency-ready tasks with bounded
+concurrency, and composes successful task commits onto one local integration
+branch. It reruns deterministic repository verification against the fully
+composed branch before declaring the project complete. Add
+`--github-repo OWNER/NAME` to create one GitHub issue per validated task; those
+issues are intentionally not labelled `agent-ready`, preventing the backlog
+daemon from dispatching the same work a second time.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `factory run` | Run one work item through the workflow. |
+| `factory project` | Derive the smallest sufficient task graph and execute it. |
 | `factory start` | Poll a GitHub Issues backlog and dispatch work (opt-in). |
 | `factory runs` / `show` | List and inspect persisted runs. |
 | `factory doctor` | Check prerequisites for your configuration. |
@@ -119,7 +142,7 @@ release process are real.
   tested or supported.
 - **External tools:** `git` always; `gh` only for the GitHub integrations;
   `copilot` only for `--runtime copilot`.
-- **Implemented:** phases 0–14, plus 15.0, 15.1, 15.2, 15.5 and 15.11.
+- **Implemented:** phases 0–14, plus 15.0, 15.1, 15.2, 15.5, 15.11, 16 and 17.
 - **Deferred:** staging, deployment, Docker and Kubernetes sandboxes, remote
   workers, Postgres, Temporal, non-GitHub trackers.
 
