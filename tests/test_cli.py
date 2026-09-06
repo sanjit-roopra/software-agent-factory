@@ -206,6 +206,37 @@ def test_default_fake_run_requires_only_git(
     assert "missing required executable" not in result.output
 
 
+def test_project_command_plans_and_executes_one_smallest_sufficient_task(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Build customer validation",
+            "--description",
+            "Reject blank customer names.",
+            "--acceptance-criterion",
+            "Blank names return HTTP 400.",
+            "--project-id",
+            "project-validation",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "project id: project-validation" in result.output
+    assert "state: DONE" in result.output
+    assert "tasks: 1" in result.output
+    assert "task 1: DONE" in result.output
+    assert (data_dir / "projects" / "project-validation" / "project-plan.json").is_file()
+
+
 def test_run_with_copilot_runtime_requires_copilot(
     source_repo: Path, data_dir: Path, path_without
 ) -> None:

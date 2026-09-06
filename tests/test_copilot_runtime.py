@@ -18,6 +18,8 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
+    ProjectBrief,
+    ProjectPlan,
     RepositoryProfile,
     RepositorySkill,
     ResearchReport,
@@ -136,6 +138,62 @@ def _skill_request(**overrides: object) -> AgentRequest:
     }
     defaults.update(overrides)
     return _request(AgentRole.RESEARCHER, **defaults)
+
+
+def _project_request(**overrides: object) -> AgentRequest:
+    defaults: dict[str, object] = {
+        "purpose": AgentPurpose.DECOMPOSE_PROJECT,
+        "project_brief": ProjectBrief(
+            id="project-1",
+            title="Build validation",
+            description="Reject blank names.",
+            repository_path="/repo",
+        ),
+        "workspace_path": "/repo",
+    }
+    defaults.update(overrides)
+    return _request(AgentRole.PLANNER, **defaults)
+
+
+def test_project_decomposition_parses_project_plan() -> None:
+    stdout = """
+    {
+      "schema_version": 1,
+      "project_id": "project-1",
+      "summary": "Implement validation.",
+      "delivery_approach": "Use one coherent task.",
+      "tasks": [{
+        "id": 1,
+        "title": "Reject blank names",
+        "description": "Add validation and tests.",
+        "acceptance_criteria": ["Blank names are rejected."],
+        "constraints": [],
+        "dependencies": [],
+        "priority": null,
+        "labels": []
+      }],
+      "created_at": "2026-09-06T08:00:00Z"
+    }
+    """
+
+    artifact = parse_copilot_artifact(
+        AgentRole.PLANNER,
+        purpose=AgentPurpose.DECOMPOSE_PROJECT,
+        stdout=stdout,
+    )
+
+    assert isinstance(artifact, ProjectPlan)
+    assert artifact.tasks[0].id == 1
+
+
+def test_project_decomposition_uses_read_only_repository_tools() -> None:
+    runtime = CopilotAgentRuntime()
+    request = _project_request()
+
+    command = runtime._build_command(request, prompt="plan", cwd=Path("/repo"))
+
+    assert command[command.index("--available-tools") + 1] == "glob,grep,view"
+    assert "--no-custom-instructions" not in command
 
 
 def test_build_command_for_skill_researcher_allows_read_only_web_access() -> None:

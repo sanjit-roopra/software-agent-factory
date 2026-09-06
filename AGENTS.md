@@ -7,6 +7,10 @@ This repository implements a local-first autonomous software engineering factory
 The factory takes software work through:
 
 ```text
+Project brief (optional)
+    ↓
+Smallest sufficient work breakdown
+    ↓
 Work Item
     ↓
 Prepare worktree
@@ -74,6 +78,25 @@ Agents do NOT control:
 - whether their own output is accepted
 
 Those decisions belong to deterministic factory code.
+
+## Delivery principle
+
+**Choose the fastest sufficient solution.**
+
+For both project decomposition and individual task planning:
+
+- prefer one coherent work item when it can safely deliver the requested outcome
+- split work only for independently verifiable outcomes, hard prerequisites,
+  safe parallel execution or an existing scope limit
+- reuse existing code and boundaries before adding abstractions, dependencies,
+  services, configuration or infrastructure
+- do not create separate work items for tests, documentation, setup or cleanup
+  when they belong to the same functional outcome
+- stop when the acceptance criteria and configured quality gates pass
+
+Agents explain the selected approach. Deterministic factory code validates
+task bounds and dependencies, owns execution order, and rejects malformed
+plans.
 
 ## Architectural baseline
 

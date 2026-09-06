@@ -4,7 +4,7 @@ The implementation order is a numbered phase list. It lives in
 [`PLAN.md`](https://github.com/sanjit-roopra/software-agent-factory/blob/main/PLAN.md),
 which is the authoritative record. This page summarizes it.
 
-Phases 0–14 and Phase 16 are implemented and integrated. Five Phase 15
+Phases 0–14 and Phases 16–17 are implemented and integrated. Five Phase 15
 sub-phases were explicitly requested and are implemented. Every other Phase 15
 item, including staging and deployment, is deferred.
 
@@ -41,6 +41,7 @@ item, including staging and deployment, is deferred.
 | 15.11 | Read-only local dashboard | done (`factory dashboard`) |
 | 15.12 | Kubernetes workers | deferred |
 | 16 | Repository capability layer + bounded post-green polish | done |
+| 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 
 ## Known limits
 
@@ -57,6 +58,9 @@ item, including staging and deployment, is deferred.
 - **Cost reporting.** No runtime reports token usage or cost today, so those
   fields stay unknown. They are never estimated.
 - **Trackers.** GitHub Issues is the only backlog provider.
+- **Projects.** Project plans are flat DAGs capped at 12 tasks. The local
+  integration branch is authoritative; optional GitHub issues mirror tasks but
+  are not labelled for daemon dispatch.
 - **Concurrency.** `scheduler.max_concurrent_tasks` is validated to `1` or `2`.
 - **Capabilities.** Repository guidance is generated per repository and
   dependency fingerprint by the configured Researcher, with web access limited

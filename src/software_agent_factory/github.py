@@ -608,6 +608,57 @@ class GitHubClient:
 
     # -- PR creation ---------------------------------------------------
 
+    def create_issue(
+        self,
+        repo_path: Path,
+        *,
+        repository: str,
+        title: str,
+        body: str,
+        labels: Sequence[str] = (),
+    ) -> str:
+        """Create one GitHub issue and return its URL.
+
+        Project-created issues are intentionally not given the scheduler's
+        ``agent-ready`` label automatically; the local project plan remains
+        the authoritative source so one task cannot be dispatched twice.
+        """
+        if not title.strip():
+            raise ValueError("issue title must not be empty")
+        if not repository.strip():
+            raise ValueError("GitHub repository must not be empty")
+        args = [
+            "issue",
+            "create",
+            "--repo",
+            repository,
+            "--title",
+            title,
+            "--body",
+            body,
+        ]
+        for label in labels:
+            args.extend(["--label", label])
+        result = self._run(args, repo_path)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        url = lines[-1] if lines else ""
+        if not url.startswith("http"):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                f"could not parse an issue URL from gh output: {result.stdout!r}",
+            )
+        return url
+
+    def close_issue(self, repo_path: Path, *, repository: str, issue: str) -> None:
+        """Close a project-created issue after its task is integrated."""
+        if not issue.strip():
+            raise ValueError("issue identifier must not be empty")
+        self._run(
+            ["issue", "close", issue, "--repo", repository, "--reason", "completed"],
+            repo_path,
+        )
+
     def create_pr(
         self,
         repo_path: Path,

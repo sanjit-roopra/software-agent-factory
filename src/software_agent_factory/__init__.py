@@ -59,6 +59,13 @@ from .models import (
     ExpectedScope,
     FactoryRun,
     PlanStep,
+    ProjectBrief,
+    ProjectExecution,
+    ProjectPlan,
+    ProjectState,
+    ProjectTask,
+    ProjectTaskExecution,
+    ProjectTaskState,
     RepairContext,
     RepositoryDependency,
     RepositoryPackageManager,
@@ -91,6 +98,7 @@ from .observability import (
     configure_factory_logging,
     log_run_event,
 )
+from .projects import FileProjectStore, ProjectError, ProjectRunner
 from .publishing import CIObserver, PullRequestPublisher
 from .repository_profile import profile_repository
 from .routing import ModelRouter
@@ -150,6 +158,7 @@ __all__ = [
     "FailureCategory",
     "FakeAgentRuntime",
     "FileRunStore",
+    "FileProjectStore",
     "GitHubClient",
     "GitHubIssueProvider",
     "GitPublisher",
@@ -159,6 +168,15 @@ __all__ = [
     "MonitoringSnapshot",
     "OperationalHealthReport",
     "PlanStep",
+    "ProjectBrief",
+    "ProjectError",
+    "ProjectExecution",
+    "ProjectPlan",
+    "ProjectRunner",
+    "ProjectState",
+    "ProjectTask",
+    "ProjectTaskExecution",
+    "ProjectTaskState",
     "PublishGate",
     "PullRequestPublisher",
     "RepairContext",

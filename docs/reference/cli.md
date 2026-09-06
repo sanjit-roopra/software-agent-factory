@@ -13,6 +13,7 @@ Options:
 
 Commands:
   run         Run one work item synchronously through the factory workflow.
+  project     Derive and execute a bounded project work breakdown.
   start       Poll a GitHub Issues backlog and dispatch eligible work.
   runs        List persisted runs, most recently created last.
   show        Show the persisted details of one run as JSON.
@@ -71,6 +72,65 @@ changed files. Creates an isolated Git worktree under the data directory.
 
 Refuses with exit code `2` if a prerequisite for the enabled feature set is
 missing.
+
+---
+
+## factory project
+
+Turn a high-level project description into the smallest sufficient set of
+work items, then execute them through the existing workflow.
+
+```bash
+factory project \
+  --repo ~/projects/example \
+  --title "Build customer onboarding" \
+  --description "Add signup, email verification, and the first-login flow." \
+  --acceptance-criterion "A new customer can complete onboarding." \
+  --runtime copilot
+```
+
+| Option | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--title <str>` | yes | — | Short project title. |
+| `--description <str>` | yes | — | High-level product or feature description. |
+| `--acceptance-criterion <str>` | no | none | Required outcome; repeat as needed. |
+| `--constraint <str>` | no | none | Project constraint; repeat as needed. |
+| `--project-id <str>` | no | random | Stable project identifier. |
+| `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after local integration. |
+| `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task; `copilot` derives the real plan. |
+| `--config <path>` | no | packaged | Config YAML. |
+| `--data-dir <path>` | no | configured | Data directory override. |
+
+The planner is read-only and returns a typed `ProjectPlan`. Task ids are
+contiguous, dependencies may point only to earlier tasks, and at most 12 tasks
+are accepted. One task is preferred whenever one coherent change is
+sufficient.
+
+Dependency-ready tasks run in waves using
+`scheduler.max_concurrent_tasks` (`1` or `2`). Each task still uses the full
+triage, refine, plan, implement, verify, test, and review pipeline. Successful
+task commits are cherry-picked onto one persistent project integration branch,
+so downstream tasks see predecessor changes. The configured repository commands
+run once more against the complete integration branch before the project is
+`DONE`. A conflict, failed child run, final verification failure, or
+human-approval gate stops the project instead of guessing.
+
+Project execution currently requires `pull_request.enabled: false` and
+`ci.enabled: false`; it produces a completed local integration branch rather
+than independent child PRs. GitHub issue publication is optional and does not
+apply the scheduler's `agent-ready` label, so the project command remains the
+single execution owner.
+
+Artifacts are stored under:
+
+```text
+<data_dir>/projects/<project-id>/
+├── project-brief.json
+├── project-plan.json
+├── execution.json
+└── logs/
+```
 
 ---
 

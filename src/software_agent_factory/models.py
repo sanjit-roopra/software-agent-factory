@@ -66,6 +66,7 @@ class AgentPurpose(StrEnum):
     """The typed output contract for an agent invocation."""
 
     STANDARD = "STANDARD"
+    DECOMPOSE_PROJECT = "DECOMPOSE_PROJECT"
     GENERATE_REPOSITORY_SKILL = "GENERATE_REPOSITORY_SKILL"
 
 
@@ -374,7 +375,125 @@ class WorkItem(VersionedModel):
     priority: str | None = None
     complexity: Complexity | None = None
     risk: Risk | None = None
+    project_id: str | None = None
+    project_task_id: int | None = Field(default=None, ge=1)
+    depends_on: list[int] = Field(default_factory=list)
     created_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def _validate_project_linkage(self) -> WorkItem:
+        if self.project_task_id is not None and self.project_id is None:
+            raise ValueError("project_task_id requires project_id")
+        if self.depends_on and self.project_task_id is None:
+            raise ValueError("depends_on requires project_task_id")
+        if self.project_task_id is not None and any(
+            dependency >= self.project_task_id for dependency in self.depends_on
+        ):
+            raise ValueError("work item dependencies must reference earlier project task ids")
+        return self
+
+
+PROJECT_ID_PATTERN = r"^[A-Za-z0-9._-]{1,80}$"
+MAX_PROJECT_TASKS = 12
+
+
+class ProjectState(StrEnum):
+    PLANNING = "PLANNING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+    FAILED = "FAILED"
+
+
+class ProjectTaskState(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+    FAILED = "FAILED"
+
+
+class ProjectBrief(VersionedModel):
+    id: str = Field(pattern=PROJECT_ID_PATTERN)
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(min_length=1, max_length=20000)
+    repository_path: str = Field(min_length=1, max_length=2000)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=50)
+    constraints: list[str] = Field(default_factory=list, max_length=50)
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+
+
+class ProjectTask(ModelBase):
+    id: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(min_length=1, max_length=10000)
+    acceptance_criteria: tuple[str, ...] = Field(min_length=1, max_length=30)
+    constraints: tuple[str, ...] = Field(default=(), max_length=30)
+    dependencies: tuple[int, ...] = Field(default=(), max_length=8)
+    priority: str | None = Field(default=None, max_length=20)
+    labels: tuple[str, ...] = Field(default=(), max_length=20)
+
+    @model_validator(mode="after")
+    def _validate_dependencies(self) -> ProjectTask:
+        if len(set(self.dependencies)) != len(self.dependencies):
+            raise ValueError("project task dependencies must be unique")
+        if any(dependency >= self.id for dependency in self.dependencies):
+            raise ValueError("project task dependencies must reference earlier task ids")
+        return self
+
+
+class ProjectPlan(VersionedModel):
+    project_id: str = Field(pattern=PROJECT_ID_PATTERN)
+    summary: str = Field(min_length=1, max_length=2000)
+    delivery_approach: str = Field(min_length=1, max_length=2000)
+    tasks: tuple[ProjectTask, ...] = Field(min_length=1, max_length=MAX_PROJECT_TASKS)
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def _validate_tasks(self) -> ProjectPlan:
+        expected_ids = list(range(1, len(self.tasks) + 1))
+        task_ids = [task.id for task in self.tasks]
+        if task_ids != expected_ids:
+            raise ValueError("project task ids must be contiguous and ordered from 1")
+        normalized_titles = [task.title.strip().casefold() for task in self.tasks]
+        if len(set(normalized_titles)) != len(normalized_titles):
+            raise ValueError("project task titles must be unique")
+        return self
+
+
+class ProjectTaskExecution(ModelBase):
+    task_id: int = Field(ge=1)
+    work_item_id: str = Field(min_length=1)
+    state: ProjectTaskState = ProjectTaskState.PENDING
+    issue_url: str | None = None
+    run_id: str | None = None
+    commit_sha: str | None = None
+    failure_reason: str | None = None
+
+
+class ProjectExecution(VersionedModel):
+    project_id: str = Field(pattern=PROJECT_ID_PATTERN)
+    state: ProjectState
+    tasks: tuple[ProjectTaskExecution, ...] = ()
+    integration_workspace: str | None = None
+    integration_branch: str | None = None
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+    updated_at: UtcDateTime = Field(default_factory=utc_now)
+    completed_at: UtcDateTime | None = None
+    failure_reason: str | None = None
+    warnings: tuple[str, ...] = ()
+    verification_report: VerificationReport | None = None
+
+    @model_validator(mode="after")
+    def _validate_execution(self) -> ProjectExecution:
+        task_ids = [task.task_id for task in self.tasks]
+        if len(set(task_ids)) != len(task_ids):
+            raise ValueError("project execution task ids must be unique")
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at must be greater than or equal to created_at")
+        if self.completed_at is not None and self.completed_at < self.created_at:
+            raise ValueError("completed_at must be greater than or equal to created_at")
+        return self
 
 
 class AttemptRecord(ModelBase):

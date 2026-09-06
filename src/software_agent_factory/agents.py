@@ -45,6 +45,9 @@ from .models import (
     ExpectedScope,
     ModelBase,
     PlanStep,
+    ProjectBrief,
+    ProjectPlan,
+    ProjectTask,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -102,15 +105,24 @@ class AgentRequest(ModelBase):
     workspace_path: str | None = None
     attempt_number: int | None = None
     timeout_seconds: int
+    project_brief: ProjectBrief | None = None
 
     @model_validator(mode="after")
     def _validate_purpose(self) -> AgentRequest:
-        if self.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+        if self.purpose is AgentPurpose.DECOMPOSE_PROJECT:
+            if self.role is not AgentRole.PLANNER:
+                raise ValueError("project decomposition requires the PLANNER role")
+            if self.project_brief is None:
+                raise ValueError("project decomposition requires project_brief")
+        elif self.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
             if self.role is not AgentRole.RESEARCHER:
                 raise ValueError("repository skill generation requires the RESEARCHER role")
             if self.repository_profile is None:
                 raise ValueError("repository skill generation requires repository_profile")
-        elif self.official_documentation_origins or self.practice_reference_urls:
+        if (
+            self.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL
+            and (self.official_documentation_origins or self.practice_reference_urls)
+        ):
             raise ValueError(
                 "research URL configuration is only valid for repository skill generation"
             )
@@ -132,6 +144,7 @@ class AgentResult(ModelBase):
     specification: Specification | None = None
     research_report: ResearchReport | None = None
     repository_skill: RepositorySkill | None = None
+    project_plan: ProjectPlan | None = None
     execution_plan: ExecutionPlan | None = None
     change_set: ChangeSet | None = None
     verification_report: VerificationReport | None = None
@@ -204,6 +217,8 @@ class FakeAgentRuntime:
         return self._default(request)
 
     def _default(self, request: AgentRequest) -> AgentResult:
+        if request.purpose is AgentPurpose.DECOMPOSE_PROJECT:
+            return self._default_project_plan(request)
         if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
             return self._default_repository_skill(request)
         if request.role is AgentRole.TRIAGE:
@@ -221,6 +236,34 @@ class FakeAgentRuntime:
         return self._default_reviewer(request)
 
     # -- defaults ----------------------------------------------------
+
+    def _default_project_plan(self, request: AgentRequest) -> AgentResult:
+        brief = request.project_brief
+        if brief is None:  # pragma: no cover - guarded by AgentRequest
+            raise ValueError("project decomposition requires project_brief")
+        project_plan = ProjectPlan(
+            project_id=brief.id,
+            summary=f"Deliver: {brief.title}",
+            delivery_approach=(
+                "Use one coherent work item because the fake runtime has no evidence that "
+                "separate delivery or dependency boundaries are required."
+            ),
+            tasks=(
+                ProjectTask(
+                    id=1,
+                    title=brief.title,
+                    description=brief.description,
+                    acceptance_criteria=tuple(brief.acceptance_criteria)
+                    or ("The project description is fully implemented.",),
+                    constraints=tuple(brief.constraints),
+                ),
+            ),
+        )
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            project_plan=project_plan,
+        )
 
     def _default_triage(self, request: AgentRequest) -> AgentResult:
         triage_result = TriageResult(

@@ -19,6 +19,7 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
+    ProjectBrief,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -121,6 +122,36 @@ def test_unsupported_role_is_rejected() -> None:
         artifact_model_for_role("DEPLOYER")
     with pytest.raises(ValueError, match="must not be empty"):
         normalize_role("   ")
+
+
+def test_project_decomposition_prompt_prefers_one_smallest_sufficient_task() -> None:
+    brief = ProjectBrief(
+        id="project-1",
+        title="Build customer validation",
+        description="Reject blank customer names.",
+        repository_path="/repo",
+    )
+    prompt = build_prompt(
+        _request(
+            AgentRole.PLANNER,
+            purpose=AgentPurpose.DECOMPOSE_PROJECT,
+            project_brief=brief,
+        )
+    )
+
+    assert "ProjectPlan" in prompt
+    assert "fewest independently executable work items" in prompt
+    assert "Prefer one task" in prompt
+    assert "delivery_approach" in prompt
+    assert "Project brief" in prompt
+    assert "ExecutionPlan" not in prompt
+
+
+def test_standard_planner_prompt_requires_smallest_implementation() -> None:
+    prompt = build_prompt(_request(AgentRole.PLANNER, specification=_specification()))
+
+    assert "smallest implementation" in prompt
+    assert "speculative" in prompt
 
 
 # ---------------------------------------------------------------------------
