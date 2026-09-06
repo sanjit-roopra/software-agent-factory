@@ -21,6 +21,9 @@ from software_agent_factory.models import (
     ExpectedScope,
     FactoryRun,
     PlanStep,
+    ProjectBrief,
+    ProjectPlan,
+    ProjectTask,
     RepairContext,
     RepositoryDependency,
     RepositoryProfile,
@@ -44,6 +47,98 @@ from software_agent_factory.models import (
     WorkflowState,
     WorkItem,
 )
+
+
+def test_project_plan_accepts_one_smallest_sufficient_task() -> None:
+    brief = ProjectBrief(
+        id="project-1",
+        title="Add customer validation",
+        description="Reject blank customer names.",
+        repository_path="/repo",
+    )
+    plan = ProjectPlan(
+        project_id=brief.id,
+        summary="One coherent validation change.",
+        delivery_approach="Use one task because implementation and tests form one outcome.",
+        tasks=(
+            ProjectTask(
+                id=1,
+                title="Reject blank customer names",
+                description="Add validation and focused tests.",
+                acceptance_criteria=("Blank names return HTTP 400.",),
+            ),
+        ),
+    )
+
+    assert plan.tasks[0].id == 1
+
+
+@pytest.mark.parametrize(
+    "project_fields",
+    [
+        {"project_task_id": 1},
+        {"depends_on": [1]},
+        {"project_id": "project-1", "project_task_id": 2, "depends_on": [2]},
+        {"project_id": "project-1", "project_task_id": 2, "depends_on": [3]},
+    ],
+)
+def test_work_item_rejects_invalid_project_linkage(
+    project_fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        WorkItem(
+            id="WI-project",
+            title="Invalid project linkage",
+            description="Reject invalid project metadata.",
+            **project_fields,
+        )
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    [
+        (
+            ProjectTask(
+                id=2,
+                title="Second",
+                description="Out of order.",
+                acceptance_criteria=("It works.",),
+            ),
+        ),
+        (
+            {
+                "id": 1,
+                "title": "First",
+                "description": "Invalid dependency.",
+                "acceptance_criteria": ["It works."],
+                "dependencies": [1],
+            },
+        ),
+        (
+            ProjectTask(
+                id=1,
+                title="Duplicate",
+                description="First.",
+                acceptance_criteria=("First works.",),
+            ),
+            ProjectTask(
+                id=2,
+                title="duplicate",
+                description="Second.",
+                acceptance_criteria=("Second works.",),
+                dependencies=(1,),
+            ),
+        ),
+    ],
+)
+def test_project_plan_rejects_invalid_task_graph(tasks: tuple[object, ...]) -> None:
+    with pytest.raises(ValidationError):
+        ProjectPlan(
+            project_id="project-1",
+            summary="Invalid plan.",
+            delivery_approach="This should be rejected.",
+            tasks=tasks,
+        )
 
 
 def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:

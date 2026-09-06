@@ -28,6 +28,8 @@ from .models import (
     ChangeSet,
     ExecutionPlan,
     ModelBase,
+    ProjectBrief,
+    ProjectPlan,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -88,6 +90,7 @@ def build_prompt(request: AgentRequest) -> str:
         model=request.model,
         reasoning=request.reasoning,
         work_item=request.work_item,
+        project_brief=request.project_brief,
         triage_result=request.triage_result,
         specification=request.specification,
         research_report=request.research_report,
@@ -112,6 +115,7 @@ def build_prompt_for_role(
     model: str,
     reasoning: str,
     work_item: WorkItem,
+    project_brief: ProjectBrief | None = None,
     triage_result: TriageResult | None = None,
     specification: Specification | None = None,
     research_report: ResearchReport | None = None,
@@ -132,11 +136,13 @@ def build_prompt_for_role(
     """Build a concise role-specific prompt from only the required artifacts."""
 
     normalized_role = normalize_role(role)
-    model_class = (
-        RepositorySkill
-        if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
-        else artifact_model_for_role(normalized_role)
-    )
+    model_class: type[ModelBase]
+    if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+        model_class = RepositorySkill
+    elif purpose is AgentPurpose.DECOMPOSE_PROJECT:
+        model_class = ProjectPlan
+    else:
+        model_class = artifact_model_for_role(normalized_role)
 
     sections = [
         _opening(normalized_role, model, reasoning),
@@ -147,6 +153,7 @@ def build_prompt_for_role(
     for title, value in _artifact_sections(
         normalized_role=normalized_role,
         work_item=work_item,
+        project_brief=project_brief,
         triage_result=triage_result,
         specification=specification,
         research_report=research_report,
@@ -179,6 +186,19 @@ def _opening(role: str, model: str, reasoning: str) -> str:
 
 
 def _role_instructions(role: str, purpose: AgentPurpose) -> str:
+    if purpose is AgentPurpose.DECOMPOSE_PROJECT:
+        return (
+            "Turn the project brief into the fewest independently executable work items "
+            "needed to finish it. Prefer one task when one coherent change is sufficient. "
+            "Split only for independently verifiable outcomes, hard prerequisite boundaries, "
+            "safe parallel work, or a scope limit that makes one work item unsafe. Different "
+            "files, layers, tests, documentation, or agent roles alone do not justify separate "
+            "tasks. Reuse existing repository capabilities and reject speculative abstractions, "
+            "dependencies, services, cleanup, and future-proofing. Task ids must be contiguous "
+            "from 1, and dependencies may reference earlier task ids only. Every task must "
+            "include acceptance criteria. Explain the smallest sufficient approach in "
+            "delivery_approach. Do not edit the repository."
+        )
     if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
         return (
             "Create bounded, repository-level simplify and polish guidance for the exact "
@@ -207,7 +227,8 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
     if role == "REFINER":
         return (
             "Rewrite the task as an explicit specification. Distinguish assumptions from "
-            "facts, keep unknowns explicit, and do not invent hidden requirements."
+            "facts, keep unknowns explicit, and do not invent hidden requirements, future "
+            "features, unrelated refactors, or generic hardening."
         )
     if role == "RESEARCHER":
         return (
@@ -217,15 +238,21 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
         )
     if role == "PLANNER":
         return (
-            "Produce a concrete execution plan with bounded scope, likely files, "
-            "validation steps, risks, and a practical test strategy."
+            "Choose the smallest implementation that fully satisfies the specification. "
+            "Prefer existing code and extension points over speculative abstractions, new "
+            "dependencies, services, configuration, or generalized infrastructure. Produce "
+            "a concrete execution plan with bounded scope, likely files, necessary validation "
+            "steps, risks, and a practical test strategy."
         )
     if role == "IMPLEMENTER":
         return (
             "Make the required repository changes only inside the current working "
             "directory. You may inspect files, edit files, and run local commands. Do "
             "not git commit, git push, open PRs, change workflow state, or work outside "
-            "the current working directory. Return ChangeSet metadata only."
+            "the current working directory. Make the narrowest change that satisfies the "
+            "acceptance criteria, reuse existing mechanisms, avoid unrelated cleanup, and "
+            "stop when the required behavior and configured checks pass. Return ChangeSet "
+            "metadata only."
         )
     if role == "TESTER":
         return (
@@ -233,7 +260,8 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "specification and plan. Judge only the controller-derived diff, the "
             "changed files, the deterministic verification results below and the "
             "repository itself. No implementer self-assessment is provided; do not ask "
-            "for one."
+            "for one. Do not require a broader redesign when the requested behavior and "
+            "relevant regressions are covered."
         )
     if role == "REVIEWER":
         return (
@@ -241,7 +269,8 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "compatibility, and unnecessary scope. Judge only the controller-derived "
             "diff, the deterministic verification results and the independent tester's "
             "report below. No implementer self-assessment is provided; do not ask for "
-            "one."
+            "one. Treat unnecessary dependencies, speculative abstractions, generalized "
+            "infrastructure, unrelated cleanup, and unrequested features as findings."
         )
     raise ValueError(f"unsupported agent role: {role!r}")
 
@@ -258,9 +287,9 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
             f"{contract} Use exact enum values only: complexity must be one of "
             "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3."
         )
-    if model_class is RepositorySkill:
+    if model_class in {RepositorySkill, ProjectPlan}:
         contract = (
-            f"{contract}\nRepositorySkill JSON Schema:\n"
+            f"{contract}\n{model_class.__name__} JSON Schema:\n"
             f"{json.dumps(model_class.model_json_schema(), sort_keys=True)}"
         )
     return contract
@@ -271,6 +300,7 @@ def _artifact_sections(
     normalized_role: str,
     purpose: AgentPurpose,
     work_item: WorkItem,
+    project_brief: ProjectBrief | None,
     triage_result: TriageResult | None,
     specification: Specification | None,
     research_report: ResearchReport | None,
@@ -289,6 +319,12 @@ def _artifact_sections(
     research_context: str | None,
 ) -> list[tuple[str, object]]:
     sections: list[tuple[str, object]] = []
+    if purpose is AgentPurpose.DECOMPOSE_PROJECT:
+        if project_brief is not None:
+            sections.append(("Project brief", project_brief))
+        if repository_profile is not None:
+            sections.append(("Repository profile", repository_profile))
+        return sections
     if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
         if repository_profile is not None:
             sections.append(("Post-implementation repository profile", repository_profile))

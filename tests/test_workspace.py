@@ -356,6 +356,17 @@ def test_prune_is_serialized_per_source_repository(
     assert observed == [True]
 
 
+def test_prune_lock_is_shared_by_main_checkout_and_linked_worktree(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    project = GitWorktreeWorkspace(data_dir, source_repo, "PROJECT-LOCK")
+    project_path = project.prepare()
+    child = GitWorktreeWorkspace(data_dir, project_path, "CHILD-LOCK")
+
+    assert project.prune_lock_path == child.prune_lock_path
+
+
 def test_prune_lock_waits_for_a_slow_holder_instead_of_failing(
     source_repo: Path, data_dir: Path
 ) -> None:

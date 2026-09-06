@@ -190,15 +190,30 @@ class GitWorktreeWorkspace:
         )
         self._meta_path = self.workspace_root / f"{self.key}.meta.json"
 
-        source_digest = hashlib.sha256(str(self.source_repo).encode("utf-8")).hexdigest()[
-            :_HASH_LEN
-        ]
+        common_dir = self._git_common_dir()
+        source_digest = hashlib.sha256(str(common_dir).encode("utf-8")).hexdigest()[:_HASH_LEN]
         self.prune_lock_path = _ensure_strictly_within(
             self.locks_root / f"prune-{source_digest}.lock", self.locks_root
         )
 
         self._lock_fd: int | None = None
         self.base_commit: str | None = None
+
+    def _git_common_dir(self) -> Path:
+        completed = subprocess.run(
+            ["git", "-C", str(self.source_repo), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise WorkspaceError(
+                f"could not resolve Git common directory for {self.source_repo}: "
+                f"{completed.stderr.strip()}"
+            )
+        common_dir = Path(completed.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = self.source_repo / common_dir
+        return common_dir.resolve()
 
     @staticmethod
     def _validate_source_repo(source_repo: Path) -> Path:

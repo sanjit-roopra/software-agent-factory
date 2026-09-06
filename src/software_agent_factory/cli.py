@@ -3,6 +3,7 @@
 ```bash
 factory --version
 factory run --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
+factory project --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
 factory runs
 factory show RUN_ID
 factory start --repo PATH --github-repo OWNER/NAME [--once]
@@ -76,6 +77,8 @@ from .models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
+    ProjectBrief,
+    ProjectState,
     RepositoryProfile,
     RepositorySkill,
     WorkflowState,
@@ -89,6 +92,7 @@ from .observability import (
     build_run_detail,
     configure_factory_logging,
 )
+from .projects import FileProjectStore, ProjectError, ProjectRunner
 from .repository_profile import profile_repository
 from .repository_skills import (
     RepositorySkillError,
@@ -358,6 +362,113 @@ def run_command(
         typer.echo(f"changed files: {', '.join(change_set.changed_files) or '(none)'}")
 
     if run.state not in SUCCESS_STATES:
+        raise typer.Exit(code=FAILURE_EXIT_CODE)
+
+
+@app.command("project")
+def project_command(
+    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+    title: str = typer.Option(..., "--title", help="Short title for the project."),
+    description: str = typer.Option(
+        ..., "--description", help="High-level description of what to build."
+    ),
+    acceptance_criteria: list[str] | None = typer.Option(
+        None,
+        "--acceptance-criterion",
+        help="Required project outcome. Repeat for multiple criteria.",
+    ),
+    constraints: list[str] | None = typer.Option(
+        None,
+        "--constraint",
+        help="Project constraint. Repeat for multiple constraints.",
+    ),
+    project_id: str = typer.Option(
+        None,
+        "--project-id",
+        help="Stable project id. Defaults to a generated id.",
+    ),
+    github_repo: str = typer.Option(
+        None,
+        "--github-repo",
+        help=(
+            "Optional GitHub repository in OWNER/NAME form. Creates one issue per validated "
+            "task and closes it after successful local integration."
+        ),
+    ),
+    runtime: RuntimeChoice = typer.Option(
+        RuntimeChoice.FAKE,
+        "--runtime",
+        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+    ),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Derive the smallest sufficient work plan and execute it to completion."""
+    factory_config = _load_config(config, data_dir)
+    _require_prerequisites(
+        require_gh=(
+            github_repo is not None
+            or factory_config.pull_request.enabled
+            or factory_config.ci.enabled
+        ),
+        require_copilot=runtime is RuntimeChoice.COPILOT,
+    )
+    _configure_logging(factory_config)
+
+    resolved_project_id = project_id or f"project-{uuid4().hex[:12]}"
+    brief = ProjectBrief(
+        id=resolved_project_id,
+        title=title,
+        description=description,
+        repository_path=str(repo.expanduser().resolve()),
+        acceptance_criteria=acceptance_criteria or [],
+        constraints=constraints or [],
+    )
+    run_store = FileRunStore(factory_config.data_dir)
+    try:
+        project_runner = ProjectRunner(
+            factory_config,
+            run_store,
+            _build_runtime(runtime),
+        )
+        execution = project_runner.run(
+            brief,
+            repo,
+            github_repository=github_repo,
+        )
+    except (OSError, ProjectError, ValueError) as exc:
+        raise _fail(str(exc)) from None
+
+    project_store = FileProjectStore(factory_config.data_dir)
+    typer.echo(f"project id: {execution.project_id}")
+    typer.echo(f"state: {execution.state}")
+    try:
+        plan = project_store.load_plan(execution.project_id)
+    except FileNotFoundError:
+        plan = None
+    if plan is not None:
+        typer.echo(f"approach: {plan.delivery_approach}")
+        typer.echo(f"tasks: {len(plan.tasks)}")
+    if execution.integration_workspace is not None:
+        typer.echo(f"workspace: {execution.integration_workspace}")
+    if execution.integration_branch is not None:
+        typer.echo(f"branch: {execution.integration_branch}")
+    for task in execution.tasks:
+        details = [f"task {task.task_id}: {task.state}"]
+        if task.issue_url is not None:
+            details.append(task.issue_url)
+        if task.run_id is not None:
+            details.append(f"run {task.run_id}")
+        typer.echo(" | ".join(details))
+    if execution.failure_reason is not None:
+        typer.echo(f"reason: {execution.failure_reason}")
+    typer.echo(f"artifacts: {project_store.project_dir(execution.project_id)}")
+
+    if execution.state is not ProjectState.DONE:
         raise typer.Exit(code=FAILURE_EXIT_CODE)
 
 

@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from .agents import AgentRequest, AgentResult, AgentRuntime
-from .models import AgentPurpose, AgentRole, ModelBase, RepositorySkill
+from .models import AgentPurpose, AgentRole, ModelBase, ProjectPlan, RepositorySkill
 from .prompts import (
     RoleName,
     artifact_model_for_role,
@@ -40,6 +40,7 @@ ResultField: TypeAlias = Literal[
     "test_report",
     "review_report",
     "repository_skill",
+    "project_plan",
 ]
 
 READ_ONLY_TOOLS = ("glob", "grep", "view")
@@ -326,6 +327,13 @@ def _artifact_spec(
     role: RoleName,
     purpose: AgentPurpose = AgentPurpose.STANDARD,
 ) -> _ArtifactSpec:
+    if purpose is AgentPurpose.DECOMPOSE_PROJECT:
+        if normalize_role(role) != AgentRole.PLANNER.value:
+            raise ValueError("project decomposition requires the PLANNER role")
+        return _ArtifactSpec(
+            model_class=ProjectPlan,
+            result_field="project_plan",
+        )
     if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
         if normalize_role(role) != AgentRole.RESEARCHER.value:
             raise ValueError("repository skill generation requires the RESEARCHER role")

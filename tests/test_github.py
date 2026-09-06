@@ -529,6 +529,60 @@ def test_commit_and_push_leaves_source_git_config_untouched(tmp_path: Path) -> N
 # --------------------------------------------------------------------------
 
 
+def test_create_issue_builds_expected_args_and_returns_url(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [FakeCompletedProcess(returncode=0, stdout="https://github.com/acme/repo/issues/7\n")]
+    )
+    client = GitHubClient(runner=runner)
+
+    url = client.create_issue(
+        tmp_path,
+        repository="acme/repo",
+        title="Implement validation",
+        body="body text",
+        labels=("project",),
+    )
+
+    assert url == "https://github.com/acme/repo/issues/7"
+    args, cwd, _env = runner.calls[0]
+    assert args == [
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        "acme/repo",
+        "--title",
+        "Implement validation",
+        "--body",
+        "body text",
+        "--label",
+        "project",
+    ]
+    assert cwd == tmp_path
+
+
+def test_close_issue_marks_it_completed(tmp_path: Path) -> None:
+    runner = FakeRunner([FakeCompletedProcess(returncode=0)])
+    client = GitHubClient(runner=runner)
+
+    client.close_issue(
+        tmp_path,
+        repository="acme/repo",
+        issue="https://github.com/acme/repo/issues/7",
+    )
+
+    assert runner.calls[0][0] == [
+        "gh",
+        "issue",
+        "close",
+        "https://github.com/acme/repo/issues/7",
+        "--repo",
+        "acme/repo",
+        "--reason",
+        "completed",
+    ]
+
+
 def test_create_pr_builds_expected_args_and_returns_url(tmp_path: Path) -> None:
     runner = FakeRunner(
         [FakeCompletedProcess(returncode=0, stdout="https://github.com/acme/repo/pull/42\n")]
