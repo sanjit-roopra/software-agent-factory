@@ -7,8 +7,10 @@ GitHub Copilot CLI.
 
     Every stage of a run is a separate Copilot invocation: triage, refiner,
     optional researcher, planner, implementer, tester and reviewer — plus one
-    more per repair attempt. A single run is several model calls. There is no
-    spend estimate and no dry-run preview of cost.
+    more per repair attempt. With the packaged configuration, the enabled
+    post-green polish adds a second Implementer invocation. A single run is
+    several model calls. There is no spend estimate and no dry-run preview of
+    cost.
 
     `--runtime fake` is the default on every command precisely so nothing can
     spend money by accident.
@@ -35,6 +37,10 @@ uv run factory run \
 
 Nothing else changes. Same states, same artifacts, same gates.
 
+Before triage, the controller profiles the prepared worktree without shell,
+network or imports and persists `repository-profile.json`. This scan itself
+does not call Copilot.
+
 ## Which model runs which stage
 
 Model choice is configuration, not code. The packaged defaults:
@@ -59,6 +65,43 @@ Configuration rejects a reviewer whose model family matches any worker's. The
 final review always comes from a different family than the code that produced
 the change. See [Configuration](../reference/configuration.md#models).
 
+## Repository skills
+
+There is no fixed, built-in skill catalog. The deterministic profile records
+technologies, test tools, package managers (`uv`, `pip`, `poetry`, `npm`,
+`pnpm`, `yarn`, `bun`), version files, exact dependency declarations from
+`pyproject.toml`, `requirements*.txt` and `package.json`, and two fingerprints
+— nothing more.
+
+Guidance for the bounded polish attempt comes from two files kept under the
+factory's data directory, in repository-scoped storage keyed by the repository
+and its `dependency_fingerprint`. Nothing is written into your repository, and
+the factory never loads guidance from it.
+
+- The **generated skill** describes the repository, not the task. The
+  configured Researcher (`GPT-5.6 Sol` by default) produces it from the
+  normalized profile and the configured source lists only — no changed
+  filenames, source code, README content, task prose or diff — with web access
+  limited to `polish.official_documentation_origins` (authoritative for version
+  claims) and the exact, commit-pinned `polish.practice_reference_urls`
+  (generic heuristics only). Later runs reuse it; a paid research call happens
+  only when the current dependency fingerprint has no generated skill yet.
+- The **overlay** is yours: a repository-level `repository-skill-overlay.yaml`
+  holding house rules as prose. The factory never creates, rewrites or deletes
+  it, and it survives dependency changes.
+
+Both reach only that attempt's Implementer, Tester and Reviewer — never before
+the initial green baseline — and both are advisory prompt context. They do not
+grant tools, change model routing, add commands, alter workflow states, spend
+retry budget or waive gates, and the target repository cannot provide plugins.
+
+If the research, its validation, or the profile check fails, the factory
+records a warning and skips polish. Your already-verified change still ships.
+
+`factory skill path`, `factory skill validate` and `factory skill refresh`
+manage this explicitly; see
+[Repository skills and overlays](../guides/repository-skills.md).
+
 ## What the agent is allowed to do
 
 Each role gets a permission profile:
@@ -66,6 +109,16 @@ Each role gets a permission profile:
 - **Read-only roles** (triage, refiner, researcher, planner, tester, reviewer):
   `glob`, `grep`, `view`.
 - **Implementer:** `glob`, `grep`, `view`, `create`, `edit`, `bash`.
+
+The one exception is the Researcher's skill-generation call, made only when the
+repository's current dependency fingerprint has no generated guidance: it gets
+only `web_fetch`, restricted to `polish.official_documentation_origins` and
+`polish.practice_reference_urls`, with no `glob`/`grep`/`view`/edit access, no
+repository custom instructions, and the run directory rather than the worktree
+as its working directory.
+
+The optional polish uses the same Implementer permission profile and worker
+routing. It introduces no separate role.
 
 The `copilot` process is started with the workspace as its working directory
 and with remote features, MCP servers, auto-update, interactive prompts and

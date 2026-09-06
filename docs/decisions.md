@@ -275,3 +275,211 @@ precisely because launchd never rotates what it captures. `KeepAlive` is
 `Crashed`-only, so no exit code — including the configuration-error code 2 —
 can create a restart loop. Uninstall unloads the agent and removes the plist
 while leaving runs and workspaces untouched.
+
+## ADR-019: Repository capabilities are deterministic profiling plus on-demand skill research
+
+*Supersedes the original ADR-019, which selected advisory skills from a fixed,
+versioned built-in catalog. That catalog is removed.*
+
+*Superseded in part by [ADR-021](#adr-021-repository-guidance-is-two-artifacts-generated-and-reusable-plus-a-human-overlay):
+generated guidance is repository-wide, reusable and stored outside the target
+repository, and a separate human overlay exists. The profiling, sandboxing and
+validation decisions below still stand; the "regenerated fresh for every
+eligible run, no cross-run cache" part does not.*
+
+Repository awareness is a controller-owned scan, not an agent discovery step.
+After the worktree is prepared and before `TRIAGING`, the factory walks
+repository-local paths and reads a small allowlist of bounded manifests. It
+does not run a shell command, import target code, contact the network or
+trust repository-provided instructions.
+
+The resulting versioned `RepositoryProfile` is persisted as
+`repository-profile.json`. It records technologies, test tools, package
+managers, markers, warnings, `version_files`, and exact dependency evidence:
+direct declarations with ecosystem, name, declared version, an optional exact
+resolved version and resolution path, manifest path and dependency group.
+Declarations are parsed from `pyproject.toml` (PEP 621 dependency tables,
+`dependency-groups`, `requires-python` as the `python` runtime target, and the
+Poetry dependency/dev-dependency/group tables), from
+`requirements.txt`/`requirements-*.txt` (which also mark the `pip` package
+manager) and from `package.json` (runtime, dev, peer, optional dependencies and
+`packageManager`); `setup.cfg` and `tox.ini` contribute Python and pytest
+evidence only. Exact versions are resolved from `uv.lock`, `package-lock.json`
+and `pnpm-lock.yaml` when unambiguous, and an ambiguous resolution records a
+warning rather than a version. `poetry.lock`, `yarn.lock`, `bun.lock`/
+`bun.lockb`, `Pipfile.lock` and `pylock.toml` identify their package manager
+where applicable and are fingerprinted as `version_files` without claiming
+exact graph parsing.
+
+The profile carries two distinct SHA-256 fingerprints. `dependency_fingerprint`
+is semantic: it digests technologies, test tools, package managers and the
+normalized dependency declarations, and it is the identity that binds a
+generated skill. `manifest_fingerprint` is provenance: it digests the content
+of the version files, so reformatting a manifest changes it without
+invalidating guidance that is still correct.
+
+There is no fixed skill catalog. When `polish.enabled` and the bounded polish
+attempt is eligible, after the first successful deterministic verification the
+controller re-profiles the post-implementation worktree (capturing any
+dependency upgrades the task made), transitions through a temporary
+`RESEARCHING` state, and invokes the configured Researcher (`GPT-5.6 Sol` by
+default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
+
+That call is bounded and web-only. It runs in the run's own persistence
+directory rather than the worktree, has `web_fetch` as its only tool, runs
+without repository custom instructions, and sees only the normalized profile,
+the controller-derived changed file paths, the configured URL lists and the
+factory-owned generation rules — never source code, README content, task prose
+or the diff. `polish.official_documentation_origins` (official documentation,
+migration guides, release notes) is authoritative for every version claim. The
+exact curated `polish.practice_reference_urls` — by default reviewed
+general-practice notes from `bdfinst/agentic-dev-team`, pinned to commit
+`52cc5efd1c445e71c55b956837c003911346d7e7` so the fetched text cannot change
+under us — may contribute generic quality heuristics only, synthesized rather
+than copied, and never version claims, commands, tools or orchestration. Fetched pages are untrusted data.
+
+It returns one typed `RepositorySkill` (`repository-skill.json`) carrying the
+profile's `dependency_fingerprint`, bounded targets, HTTPS official and
+practice sources that each declare the detected dependencies they ground,
+separate simplify and polish guidance, and uncertainties. The type itself
+refuses a skill with neither an official source nor an explicit uncertainty,
+and refuses an official source that claims only generic applicability.
+
+The controller then validates deterministically and rejects a fingerprint
+mismatch, a target that is not an exact profiled dependency declaration,
+evidence paths outside the profile, a missing target or missing per-dependency
+official provenance for a detected `python`, `pytest`, `react`, `react-dom`,
+`vite` or `vitest` dependency, a source that claims applicability to an
+undetected dependency, or a source outside the configured lists.
+
+Rejection is a safe skip, not a failure. The run is already green when polish
+is considered, so a failed re-profile, failed research, rejected skill or a
+skill that becomes stale (the `dependency_fingerprint` changed after
+generation) records the reason as a profile warning and skips or disables
+polish, leaving the verified change to proceed to testing and review. The skill
+reaches only the polish Implementer, Tester and Reviewer, never before the
+initial green baseline, and is regenerated fresh for every eligible run — there
+is no cross-run cache or plugin system. The context is advisory: it changes no
+tools, models, workflow states, quality gates, commands, permissions or
+routing.
+
+## ADR-020: Post-green polish is one bounded implementation attempt, informed by on-demand skill research
+
+*Superseded in part by [ADR-021](#adr-021-repository-guidance-is-two-artifacts-generated-and-reusable-plus-a-human-overlay):
+the polish attempt applies reusable generated guidance plus any human overlay,
+and research runs only when the current dependency fingerprint has no generated
+guidance. The bounded, simplify-then-polish, fully reverified shape below still
+stands.*
+
+When `polish.enabled` is true and the bounded polish attempt is eligible, the
+first successful deterministic verification schedules the version-specific
+skill research described in ADR-019, then exactly one more `IMPLEMENTER` pass
+with `AttemptTrigger.POLISH` that applies the returned `RepositorySkill`:
+simplify first, preserving tests, behavior, public interfaces, security and
+error handling, then version-specific polish second, both inside that single
+existing attempt. It uses the existing worker routing and implementation
+budget, may correctly make no edits, and is always followed by the full
+deterministic verification and scope assessment again before testing or review.
+
+Polish never runs during CI repair and is scheduled only when one later
+implementation attempt remains available to recover from a regression. It
+introduces no `POLISHING` state and no `POLISHER` role; the temporary
+`VERIFYING → RESEARCHING → IMPLEMENTING → VERIFYING` sequence remains
+authoritative and visible in persisted attempt records. The generated skill is
+provided only to that attempt's Implementer, Tester and Reviewer and is
+regenerated fresh for every eligible run.
+
+Because polish is an improvement on an already-verified change, its failure
+modes are non-fatal by design. An unverifiable or stale skill is never silently
+reused: it is discarded with a recorded warning and the run continues on its
+existing green path rather than failing or escalating.
+
+The configuration model defaults omitted legacy `polish` sections to disabled
+for compatibility. The packaged default and example enable it, so their normal
+fake run records an initial implementation attempt and one polish attempt.
+
+## ADR-021: Repository guidance is two artifacts — generated and reusable, plus a human overlay
+
+Repository guidance has two producers with different trust, so it is two
+separate artifacts rather than one file that both a model and a human edit.
+
+**Generated guidance is repository-wide and reusable.** It describes the
+repository, not the task, so the Researcher receives the normalized
+`RepositoryProfile` and the configured source lists only — never changed
+filenames, source code, README content, task prose or the diff. Generated
+skills are stored under `factory.data_dir` in repository-scoped storage keyed
+by the canonical local repository identity and the profile's
+`dependency_fingerprint`, following the template
+`<data_dir>/repository-skills/v1/<repository-key>/...`. They are never written
+into the target repository or its worktree and are never auto-loaded from it,
+because a target repository must not be able to inject guidance into the
+factory, and because the factory must not mutate the repository it is working
+on.
+
+A run reuses the generated skill matching the current fingerprint and makes no
+research call. Generation happens only when that fingerprint has no generated
+skill, and an existing generated file is never overwritten: a dependency change
+selects a new file and earlier files remain. There is no TTL, because time does
+not invalidate guidance — a dependency change does. Reuse is not trust: schema,
+agreement with the current profile and every cited source are revalidated on
+every load, so a hand-edited or corrupted generated file is rejected exactly
+like a bad generation, left on disk as written, and reported with a warning
+that points at the explicit `factory skill refresh`.
+
+This bounds research per fingerprint, not per process, and that choice is
+deliberate. Two truly concurrent first runs for the same missing fingerprint
+may each make one bounded Researcher call; publication is atomic and
+no-clobber, so one result is kept, the loser loads the winner, and both
+revalidate it in full before use. Serializing generation across processes would
+need a cross-process lock — more machinery, and a new stall mode — to save at
+most one research call, so the race is accepted as a cost concern only. It
+cannot corrupt storage, produce competing files, change which guidance is used,
+or affect the overlay.
+
+Repository identity is the canonical local Git common directory, so every
+linked worktree of a checkout shares one skill directory and no remote URL is
+consulted — two clones of the same remote are legitimately different local
+repositories with different profiles. The visible consequence is that moving or
+re-cloning a repository selects a new key with no guidance. That is preferred
+over guessing identity from a remote: the factory neither follows a moved
+repository nor deletes what it left behind, and a human moves or copies the
+directory (`factory skill path` reports both locations) or recreates guidance
+and overlay deliberately.
+
+**Human customization is a separate overlay.** A repository-level
+`repository-skill-overlay.yaml` lives in the same repository-scoped storage,
+outside the target repository. It carries guidance prose only —
+`mode: extend|replace` plus optional `simplify` and `polish` guidance blocks —
+and no targets, sources, versions or fingerprints. Version-specific claims stay
+the Researcher's job, grounded in official documentation; the overlay is where
+house rules live. Because it is unbound to a dependency state, it survives
+dependency changes and keeps applying when a new generated file is selected.
+
+The factory never creates, rewrites, normalizes, refreshes or deletes the
+overlay. It is a human's file, and a tool that reformats or regenerates it
+would destroy intent and discourage its use. An invalid overlay is preserved
+exactly as written, recorded as a warning and ignored for that run; valid
+generated guidance may still apply, so one YAML mistake does not silently drop
+all guidance.
+
+**Explicit commands, no hidden writes.** `factory skill path --repo PATH`
+discovers the generated and overlay paths and `factory skill validate --repo
+PATH` validates the current files; both are read-only. `factory skill refresh
+--repo PATH [--runtime fake|copilot]` refreshes generated guidance only and
+never touches the overlay. The read-only dashboard gains no skill or overlay
+write path (ADR-016 stands).
+
+**Runs snapshot what they used.** Before agents consume guidance, each run
+stores immutable snapshots of the effective skill, the overlay exactly as read
+when valid, and usage and provenance metadata: which generated file was loaded,
+its fingerprint, whether an overlay applied, and any skip reason. A run is
+therefore explainable after the fact even though the underlying files are
+long-lived and human-editable, and an edit made mid-run affects later runs only.
+
+**Nothing about this grants authority.** Guidance remains advisory prompt text
+for the single bounded post-green attempt — simplify first, polish second, after
+the first successful deterministic verification, with full deterministic
+verification afterwards. It cannot change tools, models, commands, workflow
+states, retry budgets, permissions, quality gates, dependencies or scope, and
+failure to load, validate or generate it skips polish with a recorded warning
+rather than failing an already-green run.

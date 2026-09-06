@@ -25,6 +25,17 @@ When pull requests are disabled it is the completed endpoint of the manual
 flow, and the controller finalizes it explicitly
 (:meth:`WorkflowController.finalize_pr_ready`) by stamping ``completed_at``.
 
+Repository guidance for the optional post-green polish attempt is a shared,
+repository-scoped asset rather than a per-run one. The controller reuses the
+generated :class:`~software_agent_factory.models.RepositorySkill` stored for
+the current ``dependency_fingerprint``, revalidating it in full against the
+current profile and the configured source allowlists before use, and only
+enters ``RESEARCHING`` when no generated file exists yet. The human-owned
+overlay is read (never written) through
+:class:`~software_agent_factory.repository_skills.RepositorySkillManager`, and
+what the run actually used is snapshotted create-once into the run directory
+before any agent sees it.
+
 Budgets are derived from persisted state, never from a local counter, so a
 restarted process can never grant a run a fresh retry budget (``ADR-003``):
 
@@ -43,6 +54,7 @@ import os
 import socket
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from .agents import AgentRequest, AgentRuntime
@@ -57,6 +69,7 @@ from .governance import (
     assess_publish_gate,
 )
 from .models import (
+    AgentPurpose,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
@@ -66,18 +79,32 @@ from .models import (
     ExecutionPlan,
     FactoryRun,
     RepairContext,
+    RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
     RunLease,
+    SkillSelectionSource,
     Specification,
     TestReport,
     TriageResult,
     VerificationReport,
+    VersionedModel,
     WorkflowState,
     WorkItem,
     utc_now,
 )
 from .publishing import CIObserver, PullRequestPublisher
+from .repository_profile import (
+    generic_repository_profile,
+    profile_repository,
+)
+from .repository_skills import (
+    RepositorySkillError,
+    RepositorySkillManager,
+    RepositorySkillSelection,
+    repository_skill_validation_error,
+)
 from .routing import ModelRouter
 from .store import FileRunStore
 from .verification import DeterministicVerifier
@@ -123,7 +150,13 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
         }
     ),
     WorkflowState.RESEARCHING: frozenset(
-        {WorkflowState.PLANNING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {
+            WorkflowState.PLANNING,
+            WorkflowState.IMPLEMENTING,
+            WorkflowState.REVIEWING,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.FAILED,
+        }
     ),
     WorkflowState.PLANNING: frozenset(
         {WorkflowState.IMPLEMENTING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
@@ -136,6 +169,7 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
             WorkflowState.REVIEWING,
             WorkflowState.IMPLEMENTING,
             WorkflowState.PLANNING,
+            WorkflowState.RESEARCHING,
             WorkflowState.NEEDS_HUMAN,
             WorkflowState.FAILED,
         }
@@ -223,6 +257,7 @@ class WorkflowController:
         scope_policy: ScopeDriftPolicy | None = None,
         publisher: PullRequestPublisher | None = None,
         ci_observer: CIObserver | None = None,
+        repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -232,6 +267,7 @@ class WorkflowController:
             repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
         )
         self._scope_policy = scope_policy if scope_policy is not None else ScopeDriftPolicy()
+        self._repository_profiler = repository_profiler or profile_repository
         # Constructed eagerly when the integration is enabled so two concurrent
         # runs sharing one controller cannot race on lazy initialization, and
         # so a misconfiguration surfaces before any work is done.
@@ -399,7 +435,20 @@ class WorkflowController:
                 }
             )
             self._store.save_run(run)
-            return self._execute(run, work_item, workspace, source_repo)
+            try:
+                repository_profile = self._repository_profiler(workspace_path)
+            except (OSError, ValueError) as exc:
+                repository_profile = generic_repository_profile(
+                    warning=f"repository profiling degraded: {exc}"
+                )
+            self._store.save_artifact(run.id, repository_profile)
+            return self._execute(
+                run,
+                work_item,
+                workspace,
+                source_repo,
+                repository_profile,
+            )
         finally:
             # Workspaces are preserved by default (docs/architecture.md,
             # "Workspace lifecycle"): only the lock is released here, the
@@ -414,6 +463,7 @@ class WorkflowController:
         work_item: WorkItem,
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
+        repository_profile: RepositoryProfile,
     ) -> FactoryRun:
         try:
             workspace_path = str(workspace.path)
@@ -467,6 +517,7 @@ class WorkflowController:
                 specification=specification,
                 research_report=research_report,
                 execution_plan=execution_plan,
+                repository_profile=repository_profile,
                 workspace=workspace,
                 source_repo=source_repo,
             )
@@ -556,6 +607,214 @@ class WorkflowController:
         self._store.save_artifact(run.id, result.research_report)
         return result.research_report
 
+    def _run_repository_skill_researcher(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        repository_profile: RepositoryProfile,
+    ) -> tuple[RepositorySkill | None, str | None]:
+        """Generate reusable repository guidance for one dependency state.
+
+        The request deliberately carries no work item evidence -- no changed
+        files, diff, specification or plan -- because the result is stored
+        once per ``dependency_fingerprint`` and reused by every later run of
+        this repository. ``generated_at`` is stamped exactly here, on the
+        guidance the controller accepts, and never restamped afterwards.
+        """
+
+        try:
+            request = self._build_request(
+                AgentRole.RESEARCHER,
+                context.work_item,
+                purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+                repository_profile=repository_profile,
+                official_documentation_origins=list(
+                    self._config.polish.official_documentation_origins
+                ),
+                practice_reference_urls=list(self._config.polish.practice_reference_urls),
+                workspace_path=str(self._store.run_dir(run.id)),
+            )
+            result = self._runtime.run(request)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return None, f"repository skill research could not run: {exc}"
+        skill = result.repository_skill
+        if not result.success or skill is None:
+            return (
+                None,
+                result.failure_reason
+                or "researcher failed to produce version-specific repository guidance",
+            )
+        validation_error = self._repository_skill_validation_error(skill, repository_profile)
+        if validation_error is not None:
+            return None, validation_error
+        return skill.model_copy(update={"generated_at": utc_now()}), None
+
+    # -- repository-scoped skill reuse and overlay ---------------------------
+
+    def _select_repository_skill(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        repository_profile: RepositoryProfile,
+    ) -> tuple[FactoryRun, RepositorySkillSelection | None, tuple[str, ...]]:
+        """Reuse, or generate exactly once, this repository's guidance.
+
+        Reuse is attempted first and is a pure read, so a run whose
+        fingerprint already has stored guidance never enters ``RESEARCHING``
+        and never spends a research call. Stored guidance is revalidated in
+        full against the current profile and the configured allowlists before
+        it is used; guidance that does not revalidate is left on disk exactly
+        as written and polish is skipped with an actionable warning.
+
+        Returns the (possibly transitioned) run, the selection to use (or
+        ``None`` when polish must be skipped), and warnings to record on the
+        persisted profile.
+        """
+
+        fingerprint = repository_profile.dependency_fingerprint
+        hint = _skill_refresh_hint(context.source_repo)
+        try:
+            manager = RepositorySkillManager.for_repository(
+                self._config.data_dir, context.source_repo
+            )
+        except (RepositorySkillError, OSError) as exc:
+            return run, None, (f"repository skill storage is unavailable: {exc}. {hint}",)
+
+        try:
+            selection = manager.reuse(fingerprint)
+        except (RepositorySkillError, OSError) as exc:
+            return (
+                run,
+                None,
+                (
+                    "stored repository guidance could not be read and was left unchanged: "
+                    f"{exc}. {hint}",
+                ),
+            )
+
+        if selection is not None:
+            if error := self._stored_guidance_error(selection, repository_profile, hint):
+                return run, None, (error,)
+            return run, selection, _overlay_warnings(manager, selection)
+
+        # Nothing is stored for this dependency state yet: this is the only
+        # path that may spend a research call.
+        run = self.transition(run, WorkflowState.RESEARCHING)
+        skill, warning = self._run_repository_skill_researcher(run, context, repository_profile)
+        if skill is None:
+            assert warning is not None
+            return run, None, (warning,)
+
+        try:
+            selection = manager.select(skill)
+        except (RepositorySkillError, OSError) as exc:
+            # Publication is no-clobber, so this covers both "could not be
+            # written" and "another run's file is there but unreadable".
+            # Either way nothing on disk was changed.
+            return (
+                run,
+                None,
+                (
+                    "newly generated repository guidance could not be published, and the "
+                    f"stored guidance for this dependency state was left unchanged: {exc}. "
+                    f"{hint}",
+                ),
+            )
+        if selection.use.source is SkillSelectionSource.REUSED:
+            # Another run published guidance for this fingerprint first. That
+            # winner is what was kept, so it must satisfy the same rules.
+            if error := self._stored_guidance_error(selection, repository_profile, hint):
+                return run, None, (error,)
+        return run, selection, _overlay_warnings(manager, selection)
+
+    def _stored_guidance_error(
+        self,
+        selection: RepositorySkillSelection,
+        repository_profile: RepositoryProfile,
+        hint: str,
+    ) -> str | None:
+        error = self._repository_skill_validation_error(
+            selection.generated_skill, repository_profile
+        )
+        if error is None:
+            return None
+        return (
+            f"stored repository guidance at {selection.generated_path} did not revalidate "
+            f"and was left unchanged: {error}. {hint}"
+        )
+
+    def _snapshot_repository_skill(
+        self, run: FactoryRun, selection: RepositorySkillSelection
+    ) -> str | None:
+        """Record create-once what this run is about to give its agents.
+
+        Written before any agent sees the guidance, so the run's audit trail
+        describes what it actually used. Later human edits to the shared
+        overlay therefore affect later runs only.
+
+        ``repository-skill.json`` is written **last**, because it is the
+        run's claim that this exact guidance was consumed. Writing it after
+        the provenance record and the overlay means a partially written
+        snapshot can never assert a consumption that the audit trail cannot
+        explain -- and polish is skipped on any failure, so the claim is
+        never made at all.
+        """
+
+        artifacts: tuple[VersionedModel, ...] = tuple(
+            artifact
+            for artifact in (selection.use, selection.overlay, selection.effective_skill)
+            if artifact is not None
+        )
+        for artifact in artifacts:
+            try:
+                self._store.save_artifact_once(run.id, artifact)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning(
+                    "repository guidance snapshot failed",
+                    extra={
+                        "run_id": run.id,
+                        "artifact": type(artifact).__name__,
+                        "error": str(exc),
+                    },
+                )
+                return f"repository guidance snapshot could not be persisted: {exc}"
+        return None
+
+    def _save_advisory_artifact(self, run: FactoryRun, artifact: VersionedModel) -> str | None:
+        """Persist an advisory post-green artifact.
+
+        The polish pass is optional, so a boundary failure here degrades to a
+        recorded skip instead of failing an already-green run.
+        """
+
+        try:
+            self._store.save_artifact(run.id, artifact)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "advisory artifact persistence failed",
+                extra={"run_id": run.id, "artifact": type(artifact).__name__, "error": str(exc)},
+            )
+            return str(exc)
+        return None
+
+    def _repository_skill_validation_error(
+        self,
+        skill: RepositorySkill,
+        repository_profile: RepositoryProfile,
+    ) -> str | None:
+        """Apply the shared provenance rules with this factory's allowlists.
+
+        The same check runs on freshly generated guidance and on every later
+        load, so stored guidance can never outlive the configuration that
+        made it acceptable.
+        """
+        return repository_skill_validation_error(
+            skill,
+            repository_profile,
+            official_documentation_origins=self._config.polish.official_documentation_origins,
+            practice_reference_urls=self._config.polish.practice_reference_urls,
+        )
+
     def _run_planner(
         self,
         run: FactoryRun,
@@ -606,6 +865,7 @@ class WorkflowController:
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
+            repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
         )
         result = self._runtime.run(request)
@@ -636,6 +896,7 @@ class WorkflowController:
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
             test_report=test_report,
+            repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
         )
         result = self._runtime.run(request)
@@ -653,6 +914,7 @@ class WorkflowController:
         role: AgentRole,
         work_item: WorkItem,
         *,
+        purpose: AgentPurpose = AgentPurpose.STANDARD,
         role_model: RoleModelConfig | None = None,
         triage_result: TriageResult | None = None,
         specification: Specification | None = None,
@@ -664,12 +926,17 @@ class WorkflowController:
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
         repair_context: RepairContext | str | None = None,
+        repository_profile: RepositoryProfile | None = None,
+        repository_skill: RepositorySkill | None = None,
+        official_documentation_origins: list[str] | None = None,
+        practice_reference_urls: list[str] | None = None,
         workspace_path: str | None = None,
         attempt_number: int | None = None,
     ) -> AgentRequest:
         resolved = role_model if role_model is not None else self._router.model_for_role(role)
         return AgentRequest(
             role=role,
+            purpose=purpose,
             model=resolved.model,
             reasoning=resolved.reasoning,
             work_item=work_item,
@@ -683,6 +950,10 @@ class WorkflowController:
             verification_report=verification_report,
             test_report=test_report,
             repair_context=repair_context,
+            repository_profile=repository_profile,
+            repository_skill=repository_skill,
+            official_documentation_origins=official_documentation_origins or [],
+            practice_reference_urls=practice_reference_urls or [],
             workspace_path=workspace_path,
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
@@ -798,6 +1069,38 @@ class WorkflowController:
                 run, repair_context = self._replan(run, context, scope, evidence)
                 continue
 
+            if self._should_polish(run, budget, context):
+                context.polish_attempted = True
+                run = self._prepare_polish(run, context)
+                if context.repository_skill is not None:
+                    repair_context = self._polish_context()
+                    run = self.transition(run, WorkflowState.IMPLEMENTING)
+                    continue
+
+            if context.repository_skill is not None:
+                try:
+                    current_profile = self._repository_profiler(context.workspace.path)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    context.repository_skill = None
+                    self._publish_profile(
+                        run,
+                        context,
+                        context.repository_profile,
+                        f"repository skill disabled because profile validation failed: {exc}",
+                    )
+                else:
+                    staleness: tuple[str, ...] = ()
+                    if (
+                        current_profile.dependency_fingerprint
+                        != context.repository_skill.dependency_fingerprint
+                    ):
+                        context.repository_skill = None
+                        staleness = (
+                            "repository skill disabled because dependency versions changed "
+                            "after the guidance was selected",
+                        )
+                    self._publish_profile(run, context, current_profile, *staleness)
+
             run = self.transition(run, WorkflowState.REVIEWING)
             test_report = self._run_tester(run, context, evidence, verification.report, snapshot)
             review_report = self._run_reviewer(
@@ -814,6 +1117,69 @@ class WorkflowController:
             context.latest_test_report = test_report
             context.latest_review = review_report
             return self.transition(run, WorkflowState.PR_READY)
+
+    def _prepare_polish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
+        """Resolve the guidance for one optional polish attempt.
+
+        Sets ``context.repository_skill`` when polish may proceed and leaves
+        it ``None`` when polish must be skipped. Every skip is recorded as an
+        actionable warning on the persisted profile and never fails the
+        already-green run.
+        """
+        try:
+            refreshed_profile = self._repository_profiler(context.workspace.path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._publish_profile(
+                run,
+                context,
+                context.repository_profile,
+                f"polish skipped because repository profiling failed: {exc}",
+            )
+            return run
+
+        context.repository_profile = refreshed_profile
+        if persistence_error := self._save_advisory_artifact(run, refreshed_profile):
+            self._publish_profile(
+                run,
+                context,
+                refreshed_profile,
+                "polish skipped because the refreshed repository profile could not be "
+                f"persisted: {persistence_error}",
+            )
+            return run
+
+        run, selection, warnings = self._select_repository_skill(run, context, refreshed_profile)
+        if selection is not None:
+            # The snapshot is the run's record of what its agents were given,
+            # so it is taken before any agent receives the guidance.
+            if snapshot_error := self._snapshot_repository_skill(run, selection):
+                warnings = (*warnings, f"polish skipped: {snapshot_error}")
+                selection = None
+        if warnings:
+            self._publish_profile(run, context, refreshed_profile, *warnings)
+        if selection is not None:
+            # Held in memory for the rest of the run: a human editing the
+            # shared overlay mid-run affects later runs only.
+            context.repository_skill = selection.effective_skill
+        return run
+
+    def _publish_profile(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        profile: RepositoryProfile,
+        *warnings: str,
+    ) -> None:
+        """Persist ``profile`` carrying every advisory warning this run raised.
+
+        The profile is re-derived from the workspace several times after the
+        first green verification, so warnings are accumulated on the context
+        rather than on any one profile object; otherwise a later re-profile
+        would silently drop an earlier explanation.
+        """
+        context.profile_warnings = tuple(dict.fromkeys((*context.profile_warnings, *warnings)))
+        context.repository_profile = _profile_with_warnings(profile, context.profile_warnings)
+        self._save_advisory_artifact(run, context.repository_profile)
 
     def _replan(
         self,
@@ -888,6 +1254,7 @@ class WorkflowController:
             execution_plan=context.execution_plan,
             repair_context=repair_context,
             diff=current_diff if repair_context is not None else None,
+            repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
@@ -972,10 +1339,50 @@ class WorkflowController:
 
     def _implementer_failure_context(self, run: FactoryRun) -> RepairContext:
         last = run.attempt_records[-1]
+        if last.triggered_by is AttemptTrigger.POLISH:
+            return RepairContext(
+                trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
+                summary=(
+                    "The optional polish attempt did not complete. Restore or preserve "
+                    "the last verified behavior and resolve any partial polish edits."
+                ),
+                failures=[last.failure_reason or "polish implementer reported failure"],
+                log_excerpt=None,
+            )
         return RepairContext(
             trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
             summary="The previous implementation attempt did not complete.",
             failures=[last.failure_reason or "implementer reported failure"],
+            log_excerpt=None,
+        )
+
+    def _should_polish(
+        self,
+        run: FactoryRun,
+        budget: AttemptBudget,
+        context: _RunContext,
+    ) -> bool:
+        if budget is not AttemptBudget.IMPLEMENTATION or not self._config.polish.enabled:
+            return False
+        if context.polish_attempted:
+            return False
+        if any(attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records):
+            return False
+        used = self._attempts_used(run, budget)
+        return used + 1 < self._config.retries.max_total_attempts
+
+    def _polish_context(self) -> RepairContext:
+        return RepairContext(
+            trigger=AttemptTrigger.POLISH,
+            summary=(
+                "Deterministic verification passed. Apply a final bounded polish and "
+                "simplification pass using the reusable repository guidance supplied "
+                "with this request. Simplify first, then apply version-specific polish. "
+                "Preserve required behavior, public interfaces, scope, dependencies, "
+                "security checks, and verification policy. Make no edit when no safe "
+                "improvement exists."
+            ),
+            failures=[],
             log_excerpt=None,
         )
 
@@ -1202,6 +1609,7 @@ class _RunContext:
         specification: Specification,
         research_report: ResearchReport | None,
         execution_plan: ExecutionPlan,
+        repository_profile: RepositoryProfile,
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
     ) -> None:
@@ -1210,6 +1618,10 @@ class _RunContext:
         self.specification = specification
         self.research_report = research_report
         self.execution_plan = execution_plan
+        self.repository_profile = repository_profile
+        self.profile_warnings: tuple[str, ...] = ()
+        self.repository_skill: RepositorySkill | None = None
+        self.polish_attempted = False
         self.workspace = workspace
         self.source_repo = source_repo
         self.latest_evidence: WorkspaceEvidence | None = None
@@ -1230,6 +1642,45 @@ def _bounded(text: str, limit: int = MAX_REPAIR_EXCERPT_CHARS) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+def _profile_with_warnings(
+    profile: RepositoryProfile, warnings: tuple[str, ...]
+) -> RepositoryProfile:
+    """Append ``warnings`` the profile does not already carry, in order."""
+    existing = set(profile.warnings)
+    added = tuple(warning for warning in warnings if warning not in existing)
+    if not added:
+        return profile
+    return profile.model_copy(update={"warnings": (*profile.warnings, *added)})
+
+
+def _skill_refresh_hint(source_repo: Path) -> str:
+    """Name the one command that may deliberately replace stored guidance.
+
+    A normal run never overwrites a shared generated file, so a warning about
+    unusable stored guidance is only actionable when it says how to replace
+    it.
+    """
+    return f"Replace it deliberately with: factory skill refresh --repo {source_repo}"
+
+
+def _overlay_warnings(
+    manager: RepositorySkillManager, selection: RepositorySkillSelection
+) -> tuple[str, ...]:
+    """Report an overlay the run could not honour, naming the exact file.
+
+    A human's overlay never blocks or fails a run: the file is left exactly
+    as written, generated guidance still applies, and the reason is recorded
+    where an operator will see it.
+    """
+    if selection.overlay_error is None:
+        return ()
+    return (
+        f"repository skill overlay at {manager.overlay_path} was not applied and was left "
+        f"unchanged; the run used generated repository guidance only: "
+        f"{selection.overlay_error}",
+    )
 
 
 def _commit_message(context: _RunContext, run_id: str) -> str:

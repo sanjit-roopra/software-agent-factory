@@ -36,6 +36,10 @@ from .models import (
     CIReport,
     ExecutionPlan,
     FactoryRun,
+    RepositoryProfile,
+    RepositorySkill,
+    RepositorySkillOverlay,
+    RepositorySkillUse,
     ResearchReport,
     ReviewReport,
     Specification,
@@ -50,6 +54,10 @@ ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 
 ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     WorkItem: "work-item.json",
+    RepositoryProfile: "repository-profile.json",
+    RepositorySkill: "repository-skill.json",
+    RepositorySkillOverlay: "repository-skill-overlay.json",
+    RepositorySkillUse: "repository-skill-use.json",
     TriageResult: "triage.json",
     Specification: "specification.json",
     ResearchReport: "research.json",
@@ -77,6 +85,17 @@ class InvalidRunIdError(ValueError):
     """Raised when a run_id fails safety validation before any filesystem
     access, so a hostile or malformed run_id (e.g. from an HTTP path
     parameter) can never reach ``Path`` construction."""
+
+
+class ImmutableArtifactConflictError(ValueError):
+    """Raised when a create-once artifact snapshot would be changed.
+
+    ``save_artifact_once`` exists for audit artifacts (for example
+    ``repository-skill-use.json``) whose whole value is that they record what
+    a run actually did. Rewriting one with different content would rewrite
+    history, so it fails loudly; an identical retry (a resumed or re-executed
+    step producing byte-identical content) is idempotent and succeeds.
+    """
 
 
 def validate_run_id(run_id: str) -> str:
@@ -181,6 +200,32 @@ class FileRunStore:
             self._write_model(
                 self.attempt_dir(run_id, attempt) / destination.name,
                 artifact,
+            )
+        return destination
+
+    def save_artifact_once(
+        self,
+        run_id: str,
+        artifact: ArtifactModel,
+        filename: str | None = None,
+    ) -> Path:
+        """Persist ``artifact`` as an immutable, create-once snapshot.
+
+        The first write wins and is published atomically. A later write of
+        byte-identical content is a no-op (so retrying an interrupted step is
+        safe), while a later write of *different* content raises
+        :class:`ImmutableArtifactConflictError` rather than overwriting the
+        recorded history.
+        """
+        destination = self._artifact_path(run_id, type(artifact), filename, create=True)
+        content = self._model_text(artifact)
+        if self._write_text_create_only(destination, content):
+            return destination
+        existing = destination.read_text(encoding="utf-8")
+        if existing != content:
+            raise ImmutableArtifactConflictError(
+                f"{destination.name} is a create-once snapshot and already holds different "
+                f"content for run {run_id}"
             )
         return destination
 
@@ -337,7 +382,11 @@ class FileRunStore:
         return filename
 
     def _write_model(self, destination: Path, model: VersionedModel) -> None:
-        self._write_text_atomic(destination, f"{model.model_dump_json(indent=2)}\n")
+        self._write_text_atomic(destination, self._model_text(model))
+
+    @staticmethod
+    def _model_text(model: VersionedModel) -> str:
+        return f"{model.model_dump_json(indent=2)}\n"
 
     def _write_text_atomic(self, destination: Path, content: str) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -349,3 +398,23 @@ class FileRunStore:
             if temp_path.exists():
                 temp_path.unlink()
             raise
+
+    def _write_text_create_only(self, destination: Path, content: str) -> bool:
+        """Publish ``content`` at ``destination`` only if it does not exist.
+
+        Returns ``True`` when this call created the file. Uses the same
+        write-temp-then-publish shape as :meth:`_write_text_atomic`, but
+        publishes with ``os.link`` (which fails instead of clobbering), so a
+        reader never observes a partially written snapshot and two concurrent
+        creators agree on a single winner.
+        """
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+        temp_path.write_text(content, encoding="utf-8")
+        try:
+            os.link(temp_path, destination)
+            return True
+        except FileExistsError:
+            return False
+        finally:
+            temp_path.unlink(missing_ok=True)

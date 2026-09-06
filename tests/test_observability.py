@@ -541,6 +541,32 @@ def test_first_pass_success_counts_single_implementation_attempt_succeeded_runs(
     assert first_pass.rate == pytest.approx(0.5)
 
 
+def test_first_pass_success_ignores_planned_polish_attempt(tmp_path: Path) -> None:
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run(
+            "polished",
+            state=WorkflowState.DONE,
+            completed_at=T0,
+            attempt_records=[
+                _attempt(1, budget=AttemptBudget.IMPLEMENTATION),
+                _attempt(
+                    2,
+                    budget=AttemptBudget.IMPLEMENTATION,
+                    trigger=AttemptTrigger.POLISH,
+                ),
+            ],
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert snapshot.metrics.implementation_attempts == 2
+    assert snapshot.metrics.total_attempts == 2
+    assert snapshot.metrics.first_pass_success.numerator == 1
+    assert snapshot.metrics.first_pass_success.denominator == 1
+
+
 def test_first_pass_success_rate_is_none_when_no_succeeded_runs(tmp_path: Path) -> None:
     store = _fake_store(tmp_path)
     store.add_run(_run("failed", state=WorkflowState.FAILED, completed_at=T0))

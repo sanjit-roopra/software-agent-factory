@@ -18,11 +18,12 @@ from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Literal, TypeAlias
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
 from .agents import AgentRequest, AgentResult, AgentRuntime
-from .models import AgentRole, ModelBase
+from .models import AgentPurpose, AgentRole, ModelBase, RepositorySkill
 from .prompts import (
     RoleName,
     artifact_model_for_role,
@@ -38,9 +39,16 @@ ResultField: TypeAlias = Literal[
     "change_set",
     "test_report",
     "review_report",
+    "repository_skill",
 ]
 
 READ_ONLY_TOOLS = ("glob", "grep", "view")
+#: The skill researcher reads public documentation only: no repository
+#: filesystem access, no shell, no edits and therefore no Git.
+SKILL_RESEARCH_TOOLS = ("web_fetch",)
+#: Defence in depth on top of ``--available-tools``: even if the tool surface
+#: were widened, shell (and therefore Git) and filesystem writes stay denied.
+SKILL_RESEARCH_DENIED_PERMISSIONS = ("shell", "write")
 IMPLEMENTER_TOOLS = ("glob", "grep", "view", "create", "edit", "bash")
 GITHUB_CREDENTIAL_ENV_VARS = frozenset(
     {
@@ -124,16 +132,29 @@ class CopilotAgentRuntime(AgentRuntime):
         command = self._build_command(request, prompt=prompt, cwd=cwd)
         child_env, scrubbed_values = _build_child_env()
 
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=child_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            # A missing or unusable copilot executable is an agent failure the
+            # controller can record and bound, not a factory crash.
+            reason = _format_failure_reason(
+                role=request.role,
+                message=f"copilot could not be started ({type(exc).__name__})",
+                stdout="",
+                stderr=str(exc),
+                scrubbed_values=scrubbed_values,
+                limit=self._max_error_chars,
+            )
+            return AgentResult(role=request.role, success=False, failure_reason=reason)
         try:
             stdout, stderr = process.communicate(timeout=request.timeout_seconds)
         except subprocess.TimeoutExpired as exc:
@@ -163,7 +184,11 @@ class CopilotAgentRuntime(AgentRuntime):
             return AgentResult(role=request.role, success=False, failure_reason=reason)
 
         try:
-            artifact = parse_copilot_artifact(request.role, stdout=stdout)
+            artifact = parse_copilot_artifact(
+                request.role,
+                purpose=request.purpose,
+                stdout=stdout,
+            )
         except ValueError as exc:
             reason = _format_failure_reason(
                 role=request.role,
@@ -175,15 +200,22 @@ class CopilotAgentRuntime(AgentRuntime):
             )
             return AgentResult(role=request.role, success=False, failure_reason=reason)
 
-        result_field = _artifact_spec(request.role).result_field
+        result_field = _artifact_spec(request.role, request.purpose).result_field
         return AgentResult(role=request.role, success=True, **{result_field: artifact})
 
     def _cwd_for(self, request: AgentRequest) -> Path:
-        base = request.workspace_path if request.workspace_path is not None else os.getcwd()
-        return Path(base).expanduser().resolve()
+        if request.workspace_path:
+            return Path(request.workspace_path).expanduser().resolve()
+        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+            # The skill researcher must run in the neutral run directory the
+            # workflow passes, never in the operator's or repository's cwd.
+            raise ValueError(
+                "repository skill generation requires workspace_path (the neutral run directory)"
+            )
+        return Path(os.getcwd()).expanduser().resolve()
 
     def _build_command(self, request: AgentRequest, *, prompt: str, cwd: Path) -> list[str]:
-        profile = _permission_profile(request.role)
+        profile = _permission_profile(request)
         command = [
             self._executable,
             "-C",
@@ -206,16 +238,25 @@ class CopilotAgentRuntime(AgentRuntime):
             "--available-tools",
             ",".join(profile.available_tools),
         ]
+        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+            command.append("--no-custom-instructions")
+            for url in _skill_research_urls(request):
+                command.extend(["--allow-url", url])
         for denied_permission in profile.denied_permissions:
             command.extend(["--deny-tool", denied_permission])
         command.extend(["-p", prompt])
         return command
 
 
-def parse_copilot_artifact(role: RoleName, *, stdout: str) -> ModelBase:
+def parse_copilot_artifact(
+    role: RoleName,
+    *,
+    stdout: str,
+    purpose: AgentPurpose = AgentPurpose.STANDARD,
+) -> ModelBase:
     """Extract and validate a single typed artifact from Copilot output."""
 
-    spec = _artifact_spec(role)
+    spec = _artifact_spec(role, purpose)
     candidates = _assistant_response_candidates(stdout)
     if not candidates:
         assistant_text = extract_assistant_text(stdout)
@@ -281,7 +322,17 @@ def extract_assistant_text(stdout: str) -> str:
     return stdout.strip()
 
 
-def _artifact_spec(role: RoleName) -> _ArtifactSpec:
+def _artifact_spec(
+    role: RoleName,
+    purpose: AgentPurpose = AgentPurpose.STANDARD,
+) -> _ArtifactSpec:
+    if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+        if normalize_role(role) != AgentRole.RESEARCHER.value:
+            raise ValueError("repository skill generation requires the RESEARCHER role")
+        return _ArtifactSpec(
+            model_class=RepositorySkill,
+            result_field="repository_skill",
+        )
     normalized_role = normalize_role(role)
     try:
         return ARTIFACT_SPECS[normalized_role]
@@ -289,8 +340,13 @@ def _artifact_spec(role: RoleName) -> _ArtifactSpec:
         raise ValueError(f"unsupported agent role: {role!r}") from exc
 
 
-def _permission_profile(role: AgentRole) -> _PermissionProfile:
-    if role is AgentRole.IMPLEMENTER:
+def _permission_profile(request: AgentRequest) -> _PermissionProfile:
+    if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+        return _PermissionProfile(
+            available_tools=SKILL_RESEARCH_TOOLS,
+            denied_permissions=SKILL_RESEARCH_DENIED_PERMISSIONS,
+        )
+    if request.role is AgentRole.IMPLEMENTER:
         return _PermissionProfile(
             available_tools=IMPLEMENTER_TOOLS,
             denied_permissions=("url", "shell(git push)", "shell(gh:*)"),
@@ -299,6 +355,46 @@ def _permission_profile(role: AgentRole) -> _PermissionProfile:
         available_tools=READ_ONLY_TOOLS,
         denied_permissions=("url",),
     )
+
+
+def _skill_research_urls(request: AgentRequest) -> tuple[str, ...]:
+    """Combine both configured URL lists into one deduplicated allowlist.
+
+    The result is the complete set of ``--allow-url`` grants for a skill
+    request. Non-HTTPS or credential-bearing entries are rejected here as well
+    as in configuration, so a hand-built request cannot widen the sandbox.
+    """
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for url in (
+        *request.official_documentation_origins,
+        *request.practice_reference_urls,
+    ):
+        _validate_skill_research_url(url)
+        if url in seen:
+            continue
+        seen.add(url)
+        ordered.append(url)
+
+    if not ordered:
+        raise ValueError("repository skill generation requires at least one allowed URL")
+    return tuple(ordered)
+
+
+def _validate_skill_research_url(url: str) -> None:
+    if url != url.strip() or any(character.isspace() for character in url):
+        raise ValueError(f"repository skill research URL must not contain whitespace: {url!r}")
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"repository skill research URL is not parseable: {url!r}") from exc
+    if parsed.scheme != "https" or not hostname:
+        raise ValueError(f"repository skill research URLs must be HTTPS URLs: {url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"repository skill research URLs must not carry credentials: {url!r}")
 
 
 def _build_child_env() -> tuple[dict[str, str], set[str]]:

@@ -9,6 +9,10 @@ The implemented pipeline is:
 ```text
 task (manual or GitHub issue)
    ↓
+prepare worktree
+   ↓
+deterministic repository profile
+   ↓
 triage
    ↓
 refine
@@ -22,6 +26,12 @@ implement
 deterministic verification (install → verify → build)
    ↓
 scope-drift governance
+   ↓
+one bounded implementer polish pass (when enabled)
+   ↓
+deterministic verification again
+   ↓
+scope-drift governance again
    ↓
 independent tester
    ↓
@@ -53,6 +63,9 @@ Implemented (requested Phase 15 sub-phases, see `PLAN.md`):
 - 15.2 macOS runtime packaging and an opt-in user launchd service
 - 15.5 local monitoring and health (`factory doctor`, `factory status`)
 - 15.11 a read-only, loopback-only local dashboard (`factory dashboard`)
+
+Phase 16 is also implemented: deterministic repository capability profiling and
+an optional bounded post-green polish pass.
 
 None of those change what the factory is allowed to do autonomously. They make
 it installable, observable and inspectable on one MacBook.
@@ -153,8 +166,8 @@ commit_sha
 pull_request_url
 ```
 
-`attempt_records` is the durable retry budget: every implementation or repair
-attempt appends exactly one record carrying its `budget`
+`attempt_records` is the durable retry budget: every implementation, polish or
+repair attempt appends exactly one record carrying its `budget`
 (`IMPLEMENTATION`/`CI_REPAIR`) and `triggered_by` reason. Attempt numbers are
 always derived from this persisted list, never from an in-process counter, so a
 restart cannot grant a run a fresh budget.
@@ -190,6 +203,16 @@ a bounded transition back to `IMPLEMENTING` (or, for scope drift, back to
 `PLANNING`), not a second workflow, and "blocked" is expressed as
 `NEEDS_HUMAN` with a recorded reason.
 
+There is also no `POLISHING` state or `POLISHER` role. When enabled, an
+eligible bounded polish attempt transitions `VERIFYING → RESEARCHING` when the
+current dependency fingerprint has no generated `RepositorySkill` yet, then
+`RESEARCHING → IMPLEMENTING` for one ordinary `IMPLEMENTER` attempt triggered
+by `POLISH`, followed by the normal `VERIFYING` transition. When reusable
+guidance already exists, no research call is made. `RESEARCHING` remains a
+temporary transition, not a new role. When the research or its validation
+fails, the run stays on its existing green path: the reason is recorded as a
+profile warning and the controller transitions straight to `REVIEWING`.
+
 The workflow controller owns every transition. The full table is declared as
 data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
 
@@ -197,10 +220,10 @@ data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
 CREATED      → TRIAGING
 TRIAGING     → REFINING
 REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING
+RESEARCHING  → PLANNING | IMPLEMENTING
 PLANNING     → IMPLEMENTING
 IMPLEMENTING → VERIFYING
-VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
+VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING | RESEARCHING
 REVIEWING    → PR_READY | IMPLEMENTING
 PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE
@@ -263,6 +286,232 @@ Avoid conflating:
 - whether the scheduler owns this task
 
 ## Artifacts
+
+### RepositoryProfile
+
+Produced deterministically after the worktree is prepared and before
+`TRIAGING`, and again before an eligible bounded polish attempt. It records:
+
+```text
+detector_version
+manifest_fingerprint
+dependency_fingerprint
+markers
+version_files
+technologies
+test_tools
+package_managers
+dependencies
+warnings
+```
+
+The profiler walks repository-local paths, prunes generated/vendor directories
+and reads only an allowlist of bounded manifests. It never uses a shell,
+network or imports.
+
+Each `dependencies` entry is a direct declaration with exact evidence:
+ecosystem, name, declared version, an optional exact
+`resolved_version`/`resolution_path`, manifest path and dependency group. The
+parsed manifests are:
+
+| Manifest | Ecosystem | Recorded as |
+| --- | --- | --- |
+| `pyproject.toml` (`project.dependencies`, `project.optional-dependencies.*`, `dependency-groups.*`) | Python | one declaration per requirement, grouped by table; `requires-python` becomes the `python` runtime target |
+| `pyproject.toml` (`tool.poetry.dependencies`, `tool.poetry.dev-dependencies`, `tool.poetry.group.*.dependencies`) | Python | one declaration per entry, grouped by table; also marks the `poetry` package manager |
+| `requirements.txt`, `requirements-*.txt` | Python | one declaration per requirement in group `requirements`; marks the `pip` package manager |
+| `setup.cfg`, `tox.ini` | Python | technology and pytest evidence only — no versions |
+| `package.json` (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `packageManager`) | npm | one declaration per entry, grouped by table |
+
+Exact versions are resolved from `uv.lock`, `package-lock.json` and
+`pnpm-lock.yaml` when unambiguous; an ambiguous resolution records a warning
+instead of a version. `poetry.lock`, `yarn.lock`, `bun.lock`/`bun.lockb`,
+`Pipfile.lock` and `pylock.toml` mark their package manager where applicable
+and are fingerprinted as `version_files`, but exact graph parsing is not
+claimed for them.
+
+Two SHA-256 fingerprints are recorded and they are not interchangeable:
+
+- `dependency_fingerprint` is semantic. It digests the detected technologies,
+  test tools, package managers and normalized dependency declarations. It is
+  the identity a generated skill is stored and reused under.
+- `manifest_fingerprint` is provenance. It digests the content of every
+  `version_files` path (`package.json`, `pyproject.toml`, requirements files
+  and lockfiles). Formatting or comment-only manifest edits change it without
+  invalidating a skill.
+
+There is no fixed built-in skill catalog and no repository-provided plugin
+system. See RepositorySkill below for how version-specific guidance is
+generated, reused and customized.
+
+### RepositorySkill
+
+Generated for the repository as a whole — not selected from a catalog, and not
+scoped to one task's changed files. Guidance is used only when `polish.enabled`
+and the bounded polish attempt is eligible.
+
+#### Storage and reuse
+
+Generated skills are stored under `factory.data_dir` in repository-scoped
+storage, keyed by the canonical local repository identity and the profile's
+`dependency_fingerprint`, following the template:
+
+```text
+<data_dir>/repository-skills/v1/<repository-key>/...
+```
+
+They are never written into the target repository or its worktree, and the
+factory never auto-loads a skill from the target repository. Use
+`factory skill path --repo PATH` to discover the real paths.
+
+The repository key is derived from the canonical local Git common directory, so
+every linked worktree of one checkout shares a single skill directory and no
+remote URL is consulted. It follows that moving or re-cloning a repository
+selects a new key with no generated skills and no overlay: guidance at the old
+path is neither followed nor deleted, and a human moves or copies the directory
+(or recreates guidance and overlay at the new path) deliberately.
+
+A normal run reuses guidance instead of researching it:
+
+- a generated skill matching the current `dependency_fingerprint` is loaded and
+  reused
+- generation runs only when the current fingerprint has no generated skill
+- an existing generated file is never overwritten
+- every load is validated in full — schema, agreement with the current profile,
+  and every cited source against the configured allowlists — not only at
+  generation time
+- a changed `dependency_fingerprint` selects a new generated file; earlier
+  files remain on disk
+- there is no TTL and no time-based expiry
+
+Reuse bounds research per fingerprint, not per process. Two truly concurrent
+first runs for the same missing fingerprint may each make one bounded
+Researcher call. Publication is atomic and no-clobber, so one result wins, the
+other run loads the winner, and both revalidate the winner in full before using
+it. The cost is at most one extra research call; correctness, stored state and
+the overlay are unaffected.
+
+#### Generation
+
+When generation is required, after the first successful deterministic
+verification and scope assessment the controller re-profiles the
+post-implementation worktree, transitions through a temporary `RESEARCHING`
+state, and calls the configured Researcher (`GPT-5.6 Sol` by default) with
+purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
+
+That invocation is web-only and deliberately blind to the repository. It runs
+with the run's own persistence directory as its working directory, not the
+worktree, and its only tool is `web_fetch`. Repository custom instructions are
+disabled for it. It receives the normalized `RepositoryProfile`, the two
+configured URL lists and the factory-owned generation rules — never changed
+filenames, source code, README content, task prose or the diff. It may fetch
+only:
+
+- `polish.official_documentation_origins`: official documentation, migration
+  guides and release notes. These are authoritative for every version claim.
+- `polish.practice_reference_urls`: exact curated general-practice references
+  (by default the reviewed `bdfinst/agentic-dev-team` notes, pinned to commit
+  `52cc5efd`, not a mutable branch). They may contribute generic quality
+  heuristics only, synthesized rather than copied, and never version claims,
+  tools, commands or orchestration.
+
+It returns one typed artifact, persisted as `repository-skill.json` in the
+generated storage and snapshotted into the run:
+
+```text
+generator_version
+dependency_fingerprint
+generated_at
+targets
+official_sources
+practice_sources
+simplify
+polish
+uncertainties
+```
+
+`targets` are bounded package/runtime versions with evidence paths.
+`official_sources` and `practice_sources` are HTTPS citations from the
+respective configured lists; each names, in `applies_to`, the detected
+dependencies it grounds, and a practice source may instead use the single
+generic marker `repository`. `simplify` and `polish` are each a bounded
+`SkillGuidance` (summary, guidance, things to avoid, validation). The model
+itself refuses a skill that has neither an official source nor an explicit
+uncertainty, and refuses an official source claiming generic applicability.
+
+The controller then validates the artifact deterministically — on generation
+and on every later load — and rejects it when:
+
+- its `dependency_fingerprint` does not match the profile it was generated
+  from,
+- a target is not an exact profiled dependency declaration
+  (ecosystem, name, declared version, resolved version),
+- target evidence paths are not profile `version_files`, manifest paths or
+  resolution paths,
+- a detected `python`, `pytest`, `react`, `react-dom`, `vite` or `vitest`
+  dependency has no target, or is not named by the `applies_to` of at least
+  one accepted official source,
+- a source claims applicability to a dependency the profile did not detect, or
+- a cited source falls outside `polish.official_documentation_origins`
+  (compared by origin) or is not an exact `polish.practice_reference_urls`
+  entry.
+
+Rejection never fails an already-green run. The reason is appended to the
+persisted profile's `warnings`, polish is skipped, and the run continues to
+testing and review. When a *stored* generated skill fails revalidation, the
+warning names the file, the file is left exactly as written, and the remedy is
+the explicit `factory skill refresh` — the only command that may replace
+generated guidance. The same applies when the re-profile itself fails. Before
+testing and review the controller re-profiles once more: if profiling fails or
+the `dependency_fingerprint` has changed since the guidance was loaded, the
+skill is treated as stale, disabled for the Tester and Reviewer, and the reason
+is recorded as a profile warning.
+
+#### Human overlay
+
+Human customization is a separate repository-level
+`repository-skill-overlay.yaml`, kept in the same repository-scoped storage
+outside the target repository. It is guidance prose only:
+
+```text
+mode: extend | replace
+simplify: optional SkillGuidance block
+polish:   optional SkillGuidance block
+```
+
+It declares no targets, sources, versions or fingerprints, so it is not bound
+to a dependency state and survives dependency changes. `extend` adds the
+overlay's guidance to the generated guidance; `replace` makes the overlay's
+blocks the guidance for the sections it provides. The factory never creates,
+rewrites, normalizes, refreshes or deletes this file. An invalid overlay is
+preserved exactly as written, recorded as a warning and ignored for that run,
+while valid generated guidance may still apply.
+
+Three read-mostly commands support it: `factory skill path --repo PATH`
+discovers the generated and overlay paths, `factory skill validate --repo PATH`
+validates the current files, and `factory skill refresh --repo PATH
+[--runtime fake|copilot]` explicitly refreshes generated guidance only. The
+read-only dashboard has no skill or overlay write path.
+
+#### Per-run snapshots
+
+Before any agent consumes guidance, the run stores create-once snapshots:
+
+```text
+repository-skill.json          the effective guidance actually used
+repository-skill-overlay.json  the overlay exactly as read, when valid
+repository-skill-use.json      provenance: repository key, dependency
+                               fingerprint, selection source, overlay mode and
+                               whether it applied, and content hashes
+```
+
+The provenance record carries hashes and selection facts rather than guidance
+text, so the audit trail stays small and comparable across runs. Human edits
+made while a run is in flight therefore affect later runs only.
+
+The effective guidance reaches only the polish Implementer, Tester and
+Reviewer, and is never available before the initial green baseline. It is
+advisory and cannot alter tools, models, workflow states, retry budgets, quality
+gates, commands, permissions, dependencies or scope.
 
 ### TriageResult
 
@@ -516,6 +765,14 @@ Permissions:
 
 Output: `ResearchReport`
 
+The same role also serves the `GENERATE_REPOSITORY_SKILL` purpose when an
+eligible polish attempt finds no reusable generated skill for the current
+dependency fingerprint. That invocation is different: it has no repository
+read at all, runs in the run's persistence directory, has only `web_fetch`
+restricted to the configured official documentation origins and curated
+practice references, sees only the normalized profile and those source lists,
+and outputs a `RepositorySkill` instead of a `ResearchReport`.
+
 ### Planner
 Model: `Claude Opus 5`
 
@@ -538,6 +795,11 @@ Permissions:
 
 Output: `ChangeSet`
 
+Receives the effective repository guidance — the reused or newly generated
+`RepositorySkill` plus any valid human overlay — only during the optional
+post-green polish attempt, applying simplification first and version-specific
+polish second; the initial implementation attempt receives none.
+
 ### Tester
 Model: `Claude Sonnet 5`
 
@@ -549,6 +811,10 @@ Receives:
 
 The implementer's `ChangeSet` (including its summary) is never provided: the
 tester sees only controller-derived Git evidence plus deterministic results.
+
+Receives the same post-green repository guidance as the polish Implementer,
+once it has been loaded or generated and while it is still current; none before
+that point, and none when the guidance was disabled as stale.
 
 Output: `TestReport`
 
@@ -563,6 +829,10 @@ Receives:
 - independent `TestReport`
 
 Never receives the implementer's `ChangeSet` summary.
+
+Receives the same post-green repository guidance as the polish Implementer,
+once it has been loaded or generated and while it is still current; none before
+that point, and none when the guidance was disabled as stale.
 
 Checks:
 - correctness
@@ -648,9 +918,13 @@ Opus continues failing
 NEEDS_HUMAN
 ```
 
-Every entry into `IMPLEMENTING` appends one attempt record. Verification and
-review failures consume the same monotonic budget so alternating failures cannot
-evade the limit. Actual limits belong in configuration.
+Every entry into `IMPLEMENTING` appends one attempt record. Verification,
+review and the optional post-green polish consume the same monotonic
+implementation budget so no path can evade the limit. Polish runs at most once,
+only after the first successful deterministic verification, never during CI
+repair, and only when one later recovery attempt remains available. It may make
+no edits; deterministic verification and scope assessment always run again.
+Actual limits belong in configuration.
 
 ## Local workspace
 
@@ -668,6 +942,7 @@ Suggested layout:
 │   └── RUN-ID/
 │       ├── run.json
 │       ├── work-item.json
+│       ├── repository-profile.json
 │       ├── triage.json
 │       ├── specification.json
 │       ├── research.json
@@ -794,7 +1069,16 @@ build:
 
 The factory runs deterministic checks after implementation.
 
-Only after they pass should independent AI verification/review occur.
+When `polish.enabled` is true, the first successful deterministic verification
+and scope assessment are followed by at most one `IMPLEMENTER` polish attempt,
+informed by the reusable repository guidance for the current dependency
+fingerprint plus any human overlay. A bounded web-only research call happens
+only when that fingerprint has no generated guidance yet. The full
+deterministic verification and scope assessment then run again before the
+tester and reviewer. If research or guidance validation fails, polish is
+skipped with a recorded warning and the already-green run proceeds unchanged. The packaged default and example enable
+polish; a legacy configuration that omits the section uses the model fallback
+of `false`.
 
 The small command runner is part of Phase 1. Empty command lists pass, keeping
 repositories usable before they add factory-specific configuration.

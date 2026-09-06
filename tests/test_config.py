@@ -7,7 +7,14 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from software_agent_factory.config import load_config
+from software_agent_factory.config import PolishConfig, load_config
+
+#: The curated bdfinst references must stay pinned to this reviewed commit so
+#: the sandboxed skill researcher can never fetch mutated guidance.
+_PINNED_BDFINST_PREFIX = (
+    "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
+    "52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/"
+)
 
 
 def _write_config(tmp_path: Path, content: str) -> Path:
@@ -183,6 +190,13 @@ def test_phase_1_config_still_loads_and_new_sections_default(tmp_path: Path) -> 
     assert config.agent_timeout_seconds == 900
     assert config.factory.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
+    assert config.polish.enabled is False
+    assert any(
+        origin == "https://react.dev" for origin in config.polish.official_documentation_origins
+    )
+    assert any(
+        url.endswith("/react-reactivity-review.md") for url in config.polish.practice_reference_urls
+    )
     assert config.pull_request.enabled is False
     assert config.pull_request.remote == "origin"
     assert config.pull_request.base_branch is None
@@ -210,6 +224,14 @@ def test_packaged_default_config_publishes_every_section() -> None:
 
     assert config.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
+    assert config.polish.enabled is True
+    assert any(
+        origin == "https://vite.dev" for origin in config.polish.official_documentation_origins
+    )
+    assert any(
+        url.endswith("/refactor-opportunity-review.md")
+        for url in config.polish.practice_reference_urls
+    )
     assert config.pull_request.allowed_hosts == ["github.com"]
     assert config.ci.repair_attempts == 3
     assert config.scheduler.required_label == "agent-ready"
@@ -227,6 +249,157 @@ def test_ci_requires_pull_request_enabled(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError, match="ci.enabled requires pull_request.enabled"):
         load_config(config_path)
+
+
+def test_polish_official_documentation_urls_must_be_https_origins(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        _MINIMAL_CONFIG + "\npolish:\n  enabled: true\n  official_documentation_origins:\n"
+        "    - http://react.dev/\n",
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="must be HTTPS origins without a trailing slash",
+    ):
+        load_config(config_path)
+
+
+def test_polish_practice_references_must_be_exact_https_urls(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        _MINIMAL_CONFIG + "\npolish:\n  enabled: true\n  practice_reference_urls:\n"
+        "    - https://example.com/review.md?mutable=true\n",
+    )
+
+    with pytest.raises(ValidationError, match="must be exact HTTPS URLs"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://react.dev",
+        "https://react.dev/",
+        "https://react.dev/reference",
+        "https://user:token@react.dev",
+        "https://react.dev#frag",
+        "https:// react.dev",
+        "https://",
+        "react.dev",
+    ],
+)
+def test_polish_official_documentation_origins_reject_unsafe_entries(
+    tmp_path: Path, origin: str
+) -> None:
+    config_path = _config_with(tmp_path, {"polish": {"official_documentation_origins": [origin]}})
+
+    with pytest.raises(ValidationError, match="must be HTTPS origins without a trailing slash"):
+        load_config(config_path)
+
+
+def test_polish_official_documentation_origins_must_not_be_empty(tmp_path: Path) -> None:
+    config_path = _config_with(tmp_path, {"polish": {"official_documentation_origins": []}})
+
+    with pytest.raises(ValidationError, match="must not be empty"):
+        load_config(config_path)
+
+
+def test_polish_official_documentation_origins_reject_duplicates(tmp_path: Path) -> None:
+    config_path = _config_with(
+        tmp_path,
+        {"polish": {"official_documentation_origins": ["https://react.dev", "https://React.dev"]}},
+    )
+
+    with pytest.raises(ValidationError, match="official_documentation_origins entries must be"):
+        load_config(config_path)
+
+
+def test_polish_official_documentation_origins_are_bounded(tmp_path: Path) -> None:
+    too_many = [f"https://docs{index}.example.com" for index in range(26)]
+    config_path = _config_with(tmp_path, {"polish": {"official_documentation_origins": too_many}})
+
+    with pytest.raises(ValidationError, match="must contain at most 25 entries"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com/review.md",
+        "https://example.com",
+        "https://example.com/",
+        "https://example.com/agents/",
+        "https://example.com/review.md#section",
+        "https://user:token@example.com/review.md",
+        "https://example.com/review file.md",
+    ],
+)
+def test_polish_practice_reference_urls_reject_unsafe_entries(tmp_path: Path, url: str) -> None:
+    config_path = _config_with(tmp_path, {"polish": {"practice_reference_urls": [url]}})
+
+    with pytest.raises(ValidationError, match="must be exact HTTPS URLs"):
+        load_config(config_path)
+
+
+def test_polish_practice_reference_urls_reject_duplicates(tmp_path: Path) -> None:
+    config_path = _config_with(
+        tmp_path,
+        {
+            "polish": {
+                "practice_reference_urls": [
+                    "https://example.com/review.md",
+                    "https://example.com/review.md",
+                ]
+            }
+        },
+    )
+
+    with pytest.raises(ValidationError, match="practice_reference_urls entries must be unique"):
+        load_config(config_path)
+
+
+def test_polish_practice_reference_urls_are_tightly_bounded(tmp_path: Path) -> None:
+    too_many = [f"https://example.com/review-{index}.md" for index in range(13)]
+    config_path = _config_with(tmp_path, {"polish": {"practice_reference_urls": too_many}})
+
+    with pytest.raises(ValidationError, match="must contain at most 12 entries"):
+        load_config(config_path)
+
+
+def test_polish_practice_reference_urls_may_be_empty(tmp_path: Path) -> None:
+    config_path = _config_with(tmp_path, {"polish": {"practice_reference_urls": []}})
+
+    config = load_config(config_path)
+
+    assert config.polish.practice_reference_urls == []
+    assert config.polish.official_documentation_origins
+
+
+def test_packaged_default_practice_references_stay_within_bounds() -> None:
+    config = load_config()
+
+    assert len(config.polish.official_documentation_origins) <= 25
+    assert len(config.polish.practice_reference_urls) <= 12
+    assert all(
+        url.startswith(_PINNED_BDFINST_PREFIX) for url in config.polish.practice_reference_urls
+    )
+
+
+def test_curated_practice_references_are_pinned_to_a_reviewed_commit() -> None:
+    packaged = load_config().polish.practice_reference_urls
+    field_defaults = PolishConfig().practice_reference_urls
+
+    assert packaged == field_defaults
+    for url in (*packaged, *field_defaults):
+        assert url.startswith(_PINNED_BDFINST_PREFIX)
+        assert "/agentic-dev-team/main/" not in url
+
+
+def test_example_config_practice_references_are_pinned_to_a_reviewed_commit() -> None:
+    config = load_config(Path(__file__).resolve().parents[1] / "config" / "factory.example.yaml")
+
+    assert config.polish.practice_reference_urls == PolishConfig().practice_reference_urls
 
 
 def test_ci_enabled_is_accepted_with_pull_requests_enabled(tmp_path: Path) -> None:
@@ -377,6 +550,7 @@ def test_both_configs_publish_the_same_structural_keys() -> None:
         "models",
         "repository",
         "scope_drift",
+        "polish",
         "pull_request",
         "ci",
         "scheduler",

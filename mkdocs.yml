@@ -118,6 +118,7 @@ nav:
   - Guides:
       - guides/index.md
       - Configure a repository: guides/configure-repository.md
+      - Repository skills and overlays: guides/repository-skills.md
       - GitHub backlog, PRs and CI: guides/github.md
       - Monitor and run continuously: guides/operations.md
       - Troubleshooting: guides/troubleshooting.md

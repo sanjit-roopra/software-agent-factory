@@ -13,12 +13,18 @@ import pytest
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.models import (
+    GENERIC_SKILL_TARGET,
+    AgentPurpose,
     AgentRole,
     AttemptTrigger,
     ChangeSet,
     Complexity,
+    DependencyEcosystem,
     ExecutionPlan,
     RepairContext,
+    RepositoryDependency,
+    RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
     Risk,
@@ -201,6 +207,160 @@ def test_default_researcher_returns_research_report() -> None:
     assert result.success is True
     assert isinstance(result.research_report, ResearchReport)
     assert result.research_report.question == "How does validation work?"
+
+
+def test_default_skill_researcher_returns_offline_typed_guidance() -> None:
+    runtime = FakeAgentRuntime()
+    request = AgentRequest(
+        role=AgentRole.RESEARCHER,
+        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        model="gpt-5.6-sol",
+        reasoning="high",
+        work_item=_work_item(),
+        repository_profile=RepositoryProfile(
+            manifest_fingerprint="a" * 64,
+            dependency_fingerprint="b" * 64,
+        ),
+        official_documentation_origins=["https://react.dev"],
+        timeout_seconds=60,
+    )
+
+    result = runtime.run(request)
+
+    assert result.success is True
+    assert isinstance(result.repository_skill, RepositorySkill)
+    assert result.repository_skill.dependency_fingerprint == "b" * 64
+    assert result.repository_skill.uncertainties
+    assert result.repository_skill.official_sources == ()
+
+
+def test_default_skill_researcher_aggregates_target_names_per_official_source() -> None:
+    runtime = FakeAgentRuntime()
+    request = AgentRequest(
+        role=AgentRole.RESEARCHER,
+        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        model="gpt-5.6-sol",
+        reasoning="high",
+        work_item=_work_item(),
+        repository_profile=RepositoryProfile(
+            manifest_fingerprint="a" * 64,
+            dependency_fingerprint="b" * 64,
+            dependencies=(
+                RepositoryDependency(
+                    ecosystem=DependencyEcosystem.NPM,
+                    name="react",
+                    declared_version="^19.1.0",
+                    resolved_version="19.1.0",
+                    manifest_path="package.json",
+                    resolution_path="package-lock.json",
+                    group="dependencies",
+                ),
+                RepositoryDependency(
+                    ecosystem=DependencyEcosystem.NPM,
+                    name="react-dom",
+                    declared_version="^19.1.0",
+                    resolved_version="19.1.0",
+                    manifest_path="package.json",
+                    resolution_path="package-lock.json",
+                    group="dependencies",
+                ),
+                RepositoryDependency(
+                    ecosystem=DependencyEcosystem.PYTHON,
+                    name="pytest",
+                    declared_version=">=9.1",
+                    resolved_version="9.1.1",
+                    manifest_path="pyproject.toml",
+                    group="dev",
+                ),
+                RepositoryDependency(
+                    ecosystem=DependencyEcosystem.NPM,
+                    name="left-pad",
+                    declared_version="^1.3.0",
+                    manifest_path="package.json",
+                    group="dependencies",
+                ),
+            ),
+        ),
+        official_documentation_origins=["https://react.dev", "https://docs.pytest.org"],
+        timeout_seconds=60,
+    )
+
+    result = runtime.run(request)
+
+    skill = result.repository_skill
+    assert isinstance(skill, RepositorySkill)
+    sources = {source.url: source for source in skill.official_sources}
+    assert set(sources) == {"https://react.dev", "https://docs.pytest.org"}
+    # React and React DOM share one official documentation source.
+    assert sources["https://react.dev"].applies_to == ("react", "react-dom")
+    assert sources["https://react.dev"].version_scope == "19.1.0"
+    assert sources["https://docs.pytest.org"].applies_to == ("pytest",)
+    # Only detected dependency names are ever claimed, never the generic marker.
+    claimed = {name for source in skill.official_sources for name in source.applies_to}
+    assert claimed == {"react", "react-dom", "pytest"}
+    assert GENERIC_SKILL_TARGET not in claimed
+    assert "left-pad" not in claimed
+
+
+def test_default_skill_researcher_omits_sources_outside_allowed_origins() -> None:
+    runtime = FakeAgentRuntime()
+    request = AgentRequest(
+        role=AgentRole.RESEARCHER,
+        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        model="gpt-5.6-sol",
+        reasoning="high",
+        work_item=_work_item(),
+        repository_profile=RepositoryProfile(
+            manifest_fingerprint="a" * 64,
+            dependency_fingerprint="b" * 64,
+            dependencies=(
+                RepositoryDependency(
+                    ecosystem=DependencyEcosystem.NPM,
+                    name="react",
+                    declared_version="^19.1.0",
+                    manifest_path="package.json",
+                    group="dependencies",
+                ),
+            ),
+        ),
+        official_documentation_origins=["https://docs.python.org"],
+        timeout_seconds=60,
+    )
+
+    result = runtime.run(request)
+
+    skill = result.repository_skill
+    assert isinstance(skill, RepositorySkill)
+    assert skill.official_sources == ()
+    assert skill.uncertainties
+
+
+def test_skill_generation_request_requires_researcher_and_profile() -> None:
+    with pytest.raises(ValueError, match="requires the RESEARCHER role"):
+        AgentRequest(
+            role=AgentRole.IMPLEMENTER,
+            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+            model="claude-sonnet-5",
+            reasoning="high",
+            work_item=_work_item(),
+            repository_profile=RepositoryProfile(
+                manifest_fingerprint="a" * 64,
+                dependency_fingerprint="b" * 64,
+            ),
+            official_documentation_origins=["https://react.dev"],
+            timeout_seconds=60,
+        )
+
+    with pytest.raises(ValueError, match="requires repository_profile"):
+        AgentRequest(
+            role=AgentRole.RESEARCHER,
+            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+            model="gpt-5.6-sol",
+            reasoning="high",
+            work_item=_work_item(),
+            official_documentation_origins=["https://react.dev"],
+            timeout_seconds=60,
+        )
 
 
 def test_researcher_hook_overrides_default() -> None:

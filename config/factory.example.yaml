@@ -91,6 +91,48 @@ repository:
 scope_drift:
   max_replans: 1
 
+polish:
+  # After deterministic verification first succeeds, one bounded worker pass
+  # applies version-specific simplify and polish guidance, then the controller
+  # verifies everything again. Guidance is generated per repository and
+  # dependency fingerprint and stored under factory.data_dir, outside the
+  # target repository; later runs reuse it and make no research call. Storage
+  # is keyed by the local Git directory, so a moved or re-cloned repository
+  # starts at a new key. Optional human house rules live in a
+  # repository-skill-overlay.yaml beside it, which the factory never creates,
+  # rewrites or deletes. Use "factory skill path", "factory skill validate" and
+  # "factory skill refresh" to work with them.
+  enabled: true
+  # The skill researcher runs sandboxed: web_fetch only, no custom
+  # instructions, no repository, shell or Git access, and it may reach only the
+  # URLs below. It sees the normalized repository profile and these lists —
+  # never changed filenames, source code, task prose or the diff. Both lists
+  # are granted as explicit per-URL permissions.
+  # Official documentation is authoritative for version-specific guidance.
+  # HTTPS origins only (no path, query, fragment or trailing slash), at most 25.
+  official_documentation_origins:
+    - "https://docs.pytest.org"
+    - "https://docs.python.org"
+    - "https://nodejs.org"
+    - "https://packaging.python.org"
+    - "https://react.dev"
+    - "https://testing-library.com"
+    - "https://vite.dev"
+    - "https://vitest.dev"
+    - "https://www.typescriptlang.org"
+  # Exact, reviewed public references may supply general quality heuristics.
+  # They never override official versioned documentation. Exact HTTPS document
+  # URLs only (no query or fragment), at most 12; keep this list short. The
+  # curated bdfinst references are pinned to a reviewed commit, never a mutable
+  # branch such as "main", so the fetched content cannot change underneath us.
+  practice_reference_urls:
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/a11y-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/component-architecture-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/js-fp-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/quality-reviewer.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/react-reactivity-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/refactor-opportunity-review.md"
+
 pull_request:
   enabled: false
   remote: "origin"

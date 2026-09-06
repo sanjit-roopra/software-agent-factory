@@ -25,7 +25,7 @@ factory:
 
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `data_dir` | path | `~/.software-factory` | Where runs, workspaces, locks and logs live. `~` is expanded. |
+| `data_dir` | path | `~/.software-factory` | Where runs, workspaces, locks, logs and reusable repository guidance live. `~` is expanded. |
 | `agent_timeout_seconds` | int > 0 | `900` | Per-agent-invocation timeout. |
 | `retries.same_model_attempts` | int > 0 | `2` | Attempts with the same model before escalating to a stronger one. |
 | `retries.max_total_attempts` | int > 0 | `6` | Hard ceiling on implementation attempts per run. Must be at least `same_model_attempts`. |
@@ -149,6 +149,114 @@ scope_drift:
 
 See [Configure a repository](../guides/configure-repository.md#scope-drift) for
 the finding categories and decisions.
+
+## polish
+
+```yaml
+polish:
+  enabled: true
+  official_documentation_origins:
+    - "https://docs.pytest.org"
+    - "https://docs.python.org"
+    - "https://nodejs.org"
+    - "https://packaging.python.org"
+    - "https://react.dev"
+    - "https://testing-library.com"
+    - "https://vite.dev"
+    - "https://vitest.dev"
+    - "https://www.typescriptlang.org"
+  practice_reference_urls:
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/a11y-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/component-architecture-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/js-fp-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/quality-reviewer.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/react-reactivity-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/refactor-opportunity-review.md"
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` in packaged default/example; `false` when omitted | Run at most one post-green Implementer polish attempt, informed by the repository's `RepositorySkill` and any human overlay. |
+| `official_documentation_origins` | list of HTTPS origins | the nine official documentation origins shown above | Authoritative sources for version-specific claims. Non-empty, unique, at most 25 entries. Each must be an HTTPS origin with no path, credentials, whitespace, query, fragment or trailing slash. |
+| `practice_reference_urls` | list of exact HTTPS URLs | the six curated `bdfinst/agentic-dev-team` review references shown above, pinned to commit `52cc5efd` | Optional curated general-practice references. May be empty; unique, at most 12 entries. Each must be an exact HTTPS document URL (a real path, no trailing slash) with no credentials, whitespace, query or fragment. |
+
+Both lists are the complete fetch allowlist for the skill-generation
+Researcher. The curated practice references are pinned to an immutable commit
+(`52cc5efd1c445e71c55b956837c003911346d7e7`) rather than a mutable branch, so
+the exact reviewed text is what gets fetched; re-pin deliberately after
+reviewing a newer revision. Official documentation, migration guides and release notes are
+authoritative. Curated practice references may only contribute generic quality
+heuristics, synthesized rather than copied; they never supply version claims,
+commands, tools or orchestration, and the controller validates them by exact
+URL rather than by origin.
+
+The class fallback for `enabled` is `false`, so legacy configurations that omit
+`polish` retain their previous one-pass behavior. The packaged default and
+`config/factory.example.yaml` explicitly enable it. Omitting only the URL lists
+keeps the defaults above.
+
+Polish runs only after the first successful deterministic verification and
+scope assessment, before testing and review. When eligible, the controller
+re-profiles the post-implementation worktree — capturing any dependency change
+the task made — and loads the generated `RepositorySkill` stored for that
+repository and `dependency_fingerprint` under `factory.data_dir`, following the
+template `<data_dir>/repository-skills/v1/<repository-key>/...`. Guidance is
+never stored in, or loaded from, the target repository or its worktree.
+
+Only when the current fingerprint has no generated skill does the controller
+transition through a temporary `RESEARCHING` state and call the configured
+Researcher (`GPT-5.6 Sol` by default) with purpose
+`GENERATE_REPOSITORY_SKILL`, at most once per run. That call runs in the run's
+own directory rather than the worktree, receives only the normalized
+`RepositoryProfile` and the two configured URL lists — never changed filenames,
+source code, README content, task prose or the diff — has `web_fetch` as its
+only tool, and runs without repository custom instructions. An existing
+generated file is never overwritten; a dependency change selects a new file and
+earlier files remain. There is no TTL. Two truly concurrent first runs for the
+same missing fingerprint may each make one bounded call; publication is atomic
+and no-clobber, so one winner is kept and revalidated by both, costing at most
+one extra call.
+
+The repository key derives from the canonical local Git common directory, so
+linked worktrees share one directory and a moved or re-cloned repository gets a
+new key with no guidance. Use `factory skill path` before moving a repository
+if you want to carry its guidance across.
+
+The `RepositorySkill` is bound to the profile's `dependency_fingerprint` and
+carries bounded targets, HTTPS source provenance and separate simplify and
+polish guidance. On every load — not only at generation — the controller
+rejects it when the fingerprint does not match, a target or its evidence path
+is not in the profile, a detected
+`python`/`pytest`/`react`/`react-dom`/`vite`/`vitest` dependency is missing a
+target or is not named by an accepted official source, a source claims
+applicability to an undetected dependency, or a source falls outside the two
+configured lists.
+
+Your own house rules go in a repository-level `repository-skill-overlay.yaml`
+in the same storage, outside the target repository. It holds guidance prose
+only (`mode: extend|replace` plus optional `simplify` and `polish` blocks), has
+no targets, sources, versions or fingerprints, and survives dependency changes.
+The factory never creates, rewrites, normalizes, refreshes or deletes it; an
+invalid overlay is preserved, warned about and ignored while valid generated
+guidance still applies. `factory skill path`, `factory skill validate` and
+`factory skill refresh` operate on these files explicitly — see
+[Repository skills and overlays](../guides/repository-skills.md).
+
+Nothing here can fail an already-green run. A failed re-profile, failed
+research, rejected skill, an unreadable or invalid overlay, or guidance that
+became stale (the `dependency_fingerprint` changed after it was loaded) records
+a warning on the persisted `repository-profile.json` and safely skips or
+disables polish. Stored guidance that fails revalidation is left on disk
+untouched and its warning points at `factory skill refresh`.
+
+When guidance is accepted it is applied — simplify first, then
+version-specific polish — by one existing bounded worker attempt, which records
+`AttemptTrigger.POLISH`, consumes the implementation budget, may make no edits
+and is always fully verified and scope-assessed again. Polish never runs during
+CI repair and runs only when one later recovery attempt would still remain.
+Each run snapshots the effective skill, the overlay as read when valid, and the
+guidance provenance before agents see it, so mid-run edits affect later runs
+only.
 
 ## pull_request
 

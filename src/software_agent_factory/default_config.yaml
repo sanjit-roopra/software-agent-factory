@@ -77,6 +77,26 @@ repository:
 scope_drift:
   max_replans: 1
 
+polish:
+  enabled: true
+  official_documentation_origins:
+    - "https://docs.pytest.org"
+    - "https://docs.python.org"
+    - "https://nodejs.org"
+    - "https://packaging.python.org"
+    - "https://react.dev"
+    - "https://testing-library.com"
+    - "https://vite.dev"
+    - "https://vitest.dev"
+    - "https://www.typescriptlang.org"
+  practice_reference_urls:
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/a11y-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/component-architecture-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/js-fp-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/quality-reviewer.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/react-reactivity-review.md"
+    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/refactor-opportunity-review.md"
+
 pull_request:
   enabled: false
   remote: "origin"

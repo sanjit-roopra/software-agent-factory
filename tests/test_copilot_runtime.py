@@ -12,13 +12,17 @@ from software_agent_factory.copilot_runtime import (
     parse_copilot_artifact,
 )
 from software_agent_factory.models import (
+    AgentPurpose,
     AgentRole,
     ChangeSet,
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
+    RepositoryProfile,
+    RepositorySkill,
     ResearchReport,
     ReviewReport,
+    SkillGuidance,
     Specification,
     TestReport,
     TriageResult,
@@ -117,6 +121,171 @@ def test_build_command_for_implementer_denies_push_and_network() -> None:
     assert "url" in denied
     assert "shell(git push)" in denied
     assert "shell(gh:*)" in denied
+
+
+def _skill_request(**overrides: object) -> AgentRequest:
+    defaults: dict[str, object] = {
+        "purpose": AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        "repository_profile": RepositoryProfile(
+            manifest_fingerprint="a" * 64,
+            dependency_fingerprint="b" * 64,
+        ),
+        "official_documentation_origins": ["https://react.dev", "https://vite.dev"],
+        "practice_reference_urls": ["https://example.com/review.md"],
+        "workspace_path": "/runs/RUN-1",
+    }
+    defaults.update(overrides)
+    return _request(AgentRole.RESEARCHER, **defaults)
+
+
+def test_build_command_for_skill_researcher_allows_read_only_web_access() -> None:
+    runtime = CopilotAgentRuntime()
+    request = _skill_request()
+
+    command = runtime._build_command(request, prompt="research", cwd=Path("/runs/RUN-1"))
+
+    assert command[command.index("--available-tools") + 1] == "web_fetch"
+    assert "--no-custom-instructions" in command
+    assert [command[index + 1] for index, item in enumerate(command) if item == "--allow-url"] == [
+        "https://react.dev",
+        "https://vite.dev",
+        "https://example.com/review.md",
+    ]
+    assert "--allow-all-urls" not in command
+    assert "--allow-all-paths" not in command
+    assert "--add-dir" not in command
+    available_tools = command[command.index("--available-tools") + 1]
+    for repository_tool in ("bash", "view", "glob", "grep", "create", "edit"):
+        assert repository_tool not in available_tools
+
+    denied = [command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"]
+    assert denied == ["shell", "write"]
+    assert "url" not in denied
+
+
+def test_build_command_for_skill_researcher_deduplicates_allowed_urls() -> None:
+    runtime = CopilotAgentRuntime()
+    request = _skill_request(
+        official_documentation_origins=["https://react.dev", "https://react.dev"],
+        practice_reference_urls=["https://react.dev", "https://example.com/review.md"],
+    )
+
+    command = runtime._build_command(request, prompt="research", cwd=Path("/runs/RUN-1"))
+
+    assert [command[index + 1] for index, item in enumerate(command) if item == "--allow-url"] == [
+        "https://react.dev",
+        "https://example.com/review.md",
+    ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://react.dev",
+        "file:///etc/passwd",
+        "https://user:token@react.dev/doc.md",
+        "https://react.dev/doc .md",
+    ],
+)
+def test_build_command_rejects_unsafe_skill_research_urls(url: str) -> None:
+    runtime = CopilotAgentRuntime()
+    request = _skill_request(practice_reference_urls=[url])
+
+    with pytest.raises(ValueError, match="repository skill research URL"):
+        runtime._build_command(request, prompt="research", cwd=Path("/runs/RUN-1"))
+
+
+def test_build_command_requires_at_least_one_allowed_skill_research_url() -> None:
+    runtime = CopilotAgentRuntime()
+    request = _skill_request(official_documentation_origins=[], practice_reference_urls=[])
+
+    with pytest.raises(ValueError, match="at least one allowed URL"):
+        runtime._build_command(request, prompt="research", cwd=Path("/runs/RUN-1"))
+
+
+def test_cwd_for_skill_request_uses_neutral_run_directory_not_operator_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "runs" / "RUN-1"
+    run_dir.mkdir(parents=True)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    monkeypatch.chdir(repository)
+
+    runtime = CopilotAgentRuntime()
+    cwd = runtime._cwd_for(_skill_request(workspace_path=str(run_dir)))
+
+    assert cwd == run_dir.resolve()
+    assert cwd != repository.resolve()
+
+
+def test_cwd_for_skill_request_refuses_to_fall_back_to_process_cwd() -> None:
+    runtime = CopilotAgentRuntime()
+
+    with pytest.raises(ValueError, match="neutral run directory"):
+        runtime._cwd_for(_skill_request(workspace_path=None))
+
+
+def test_cwd_for_read_only_role_still_falls_back_to_process_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    runtime = CopilotAgentRuntime()
+
+    assert runtime._cwd_for(_request(AgentRole.TRIAGE)) == tmp_path.resolve()
+
+
+def test_run_for_skill_request_uses_run_directory_and_neutral_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "runs" / "RUN-1"
+    run_dir.mkdir(parents=True)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    monkeypatch.chdir(repository)
+    captured: dict[str, object] = {}
+
+    stdout = RepositorySkill(
+        dependency_fingerprint="b" * 64,
+        simplify=SkillGuidance(summary="Simplify.", guidance=("Delete dead code.",)),
+        polish=SkillGuidance(summary="Polish.", guidance=("Follow the docs.",)),
+        uncertainties=("Fixture skill cites no external sources.",),
+    ).model_dump_json()
+
+    def fake_popen(command: list[str], **kwargs: object) -> _FakePopen:
+        captured["command"] = command
+        captured["cwd"] = kwargs["cwd"]
+        return _FakePopen(stdout=stdout)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    runtime = CopilotAgentRuntime()
+    result = runtime.run(_skill_request(workspace_path=str(run_dir)))
+
+    assert result.success is True
+    assert result.repository_skill is not None
+    assert captured["cwd"] == run_dir.resolve()
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[command.index("-C") + 1] == str(run_dir.resolve())
+    assert command[command.index("--available-tools") + 1] == "web_fetch"
+    assert "--no-custom-instructions" in command
+
+
+def test_run_for_skill_request_without_run_directory_fails_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_popen(command: list[str], **kwargs: object) -> _FakePopen:  # pragma: no cover
+        raise AssertionError("copilot must not be launched without a run directory")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_popen)
+    runtime = CopilotAgentRuntime()
+
+    with pytest.raises(ValueError, match="neutral run directory"):
+        runtime.run(_skill_request(workspace_path=None))
 
 
 def test_run_uses_workspace_cwd_and_scrubs_github_credentials(
@@ -279,6 +448,29 @@ def test_parse_copilot_artifact_handles_fenced_json_plain_text_fallback() -> Non
     )
 
 
+def test_parse_repository_skill_artifact_for_research_purpose() -> None:
+    stdout = RepositorySkill(
+        dependency_fingerprint="a" * 64,
+        simplify=SkillGuidance(
+            summary="Simplify first.",
+            guidance=("Remove unnecessary indirection.",),
+        ),
+        polish=SkillGuidance(
+            summary="Polish second.",
+            guidance=("Use the detected framework version.",),
+        ),
+        uncertainties=("Fixture skill has no external sources.",),
+    ).model_dump_json()
+
+    artifact = parse_copilot_artifact(
+        AgentRole.RESEARCHER,
+        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        stdout=stdout,
+    )
+
+    assert isinstance(artifact, RepositorySkill)
+
+
 def test_parse_copilot_artifact_reads_actual_assistant_message_data_shape() -> None:
     artifact = parse_copilot_artifact(
         AgentRole.REVIEWER,
@@ -381,6 +573,46 @@ def test_nonzero_exit_returns_failure_and_redacts_output(
     assert result.success is False
     assert result.failure_reason is not None
     assert "code 23" in result.failure_reason
+    assert secret not in result.failure_reason
+    assert "[REDACTED]" in result.failure_reason
+
+
+def test_missing_executable_returns_failure_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(*args: object, **kwargs: object) -> _FakePopen:
+        raise FileNotFoundError(2, "No such file or directory: 'copilot'")
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+
+    runtime = CopilotAgentRuntime()
+    result = runtime.run(_request(AgentRole.TRIAGE))
+
+    assert result.success is False
+    assert result.triage_result is None
+    assert result.failure_reason is not None
+    assert result.failure_reason.startswith("TRIAGE: copilot could not be started")
+    assert "FileNotFoundError" in result.failure_reason
+    assert "No such file or directory" in result.failure_reason
+
+
+def test_launch_oserror_failure_reason_redacts_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "ghp_secret_token_value"
+
+    def fake_popen(*args: object, **kwargs: object) -> _FakePopen:
+        raise PermissionError(13, f"Permission denied while using {secret}")
+
+    monkeypatch.setenv("GITHUB_TOKEN", secret)
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+
+    runtime = CopilotAgentRuntime()
+    result = runtime.run(_request(AgentRole.REVIEWER))
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "copilot could not be started (PermissionError)" in result.failure_reason
     assert secret not in result.failure_reason
     assert "[REDACTED]" in result.failure_reason
 

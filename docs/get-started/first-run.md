@@ -42,9 +42,24 @@ changed files: FACTORY_NOTES.md
 The run moved through:
 
 ```text
-CREATED → TRIAGING → REFINING → [RESEARCHING] → PLANNING
-        → IMPLEMENTING → VERIFYING → REVIEWING → PR_READY
+CREATED → prepare worktree → profile repository → TRIAGING
+        → REFINING → [RESEARCHING] → PLANNING
+        → IMPLEMENTING → VERIFYING
+        → [RESEARCHING (repository skill)] → IMPLEMENTING (POLISH) → VERIFYING
+        → REVIEWING → PR_READY
 ```
+
+The profile and polish reuse existing states rather than adding
+`PROFILING`/`POLISHING`. The example configuration enables one bounded polish
+pass, informed by version-aware guidance for the versions this repository
+actually declares. That guidance is stored under the data directory, keyed by
+the repository and its dependency fingerprint, and reused: the web-only
+research call happens only on the first run for a given set of dependencies.
+Polish may make no edits, but it still records an attempt and reruns
+deterministic verification. If the research or its validation fails, the
+factory records a warning on the profile and skips polish; the already-verified
+run continues to review. A legacy configuration that omits `polish` defaults to
+disabled.
 
 `PR_READY` is the completed endpoint when pull requests are disabled, which they
 are in `config/factory.example.yaml`. A nonzero exit code means the run did not
@@ -78,15 +93,28 @@ Nothing is hidden in a database. Everything is JSON on disk.
 .factory-demo/runs/run-9bb.../
 ├── run.json              state machine, attempts, budgets, timestamps
 ├── work-item.json
+├── repository-profile.json
+│                           technologies, tools, markers, fingerprints,
+│                           version files, dependency declarations, warnings
 ├── triage.json           complexity, risk, whether research is needed
 ├── specification.json    acceptance criteria
 ├── execution-plan.json
 ├── change-set.json       what the implementer claims it did
 ├── patch.diff            what the controller actually observed
 ├── verification.json     install / verify / build results
+├── repository-skill.json  immutable snapshot of the effective simplify and
+│                           polish guidance this run used (generated guidance
+│                           plus any valid human overlay)
+├── repository-skill-overlay.json
+│                           the overlay exactly as it was read, when valid
+├── repository-skill-use.json
+│                           provenance: repository key, dependency fingerprint,
+│                           where the guidance came from, content hashes
 ├── test-report.json      independent tester
 ├── review.json           independent reviewer
-└── attempts/01/          a snapshot of the above, per attempt
+└── attempts/
+    ├── 01/               initial implementation snapshot
+    └── 02/               bounded polish snapshot
 ```
 
 The distinction between `change-set.json` and `patch.diff` matters: the tester
@@ -95,6 +123,13 @@ account of it.
 
 The Git worktree stays on disk too, under `workspaces/`. Workspaces are
 preserved by default so you can inspect or reuse the change.
+
+The reusable guidance itself lives outside the run, under
+`<data_dir>/repository-skills/v1/<repository-key>/...`, together with the
+optional `repository-skill-overlay.yaml` you may write by hand. Run
+`uv run factory skill path --repo ~/projects/example` to see the exact
+locations, and read
+[Repository skills and overlays](../guides/repository-skills.md).
 
 ## 5. Check the derived metrics
 
@@ -105,7 +140,7 @@ uv run factory status --data-dir ./.factory-demo
 ```text
 runs: 1 total, 1 scanned
 states: 1 succeeded, 0 escalated, 0 failed, 0 active (0 stale)
-attempts: 1 total, 1 implementation, 0 CI repair, 0 scope replan(s)
+attempts: 2 total, 2 implementation, 0 CI repair, 0 scope replan(s)
 first-pass success: 100% (1/1)
 
 health:
@@ -119,12 +154,17 @@ status: complete
 `status` is read-only. It recomputes everything from the persisted artifacts on
 each call and will not even create the data directory.
 
+The first-pass metric ignores the planned polish attempt. It measures whether
+the initial implementation needed repair for an implementer, verification,
+scope or review failure.
+
 ## What this run did and did not do
 
 Did:
 
 - created a Git worktree for the work item
 - ran the pipeline through the workflow controller
+- profiled repository capabilities without shell, network or imports
 - persisted typed artifacts and a per-attempt snapshot
 - wrote a structured JSON log to `<data-dir>/logs/factory.log`
 
