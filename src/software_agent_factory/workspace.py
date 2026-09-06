@@ -191,9 +191,7 @@ class GitWorktreeWorkspace:
         self._meta_path = self.workspace_root / f"{self.key}.meta.json"
 
         common_dir = self._git_common_dir()
-        source_digest = hashlib.sha256(str(common_dir).encode("utf-8")).hexdigest()[
-            :_HASH_LEN
-        ]
+        source_digest = hashlib.sha256(str(common_dir).encode("utf-8")).hexdigest()[:_HASH_LEN]
         self.prune_lock_path = _ensure_strictly_within(
             self.locks_root / f"prune-{source_digest}.lock", self.locks_root
         )

@@ -193,9 +193,7 @@ class ProjectRunner:
                     }
                 )
                 self._project_store.save_execution(existing)
-            raise ProjectError(
-                f"project {brief.id!r} already exists; choose a new --project-id"
-            )
+            raise ProjectError(f"project {brief.id!r} already exists; choose a new --project-id")
         self._project_store.save_brief_once(brief)
         execution = ProjectExecution(project_id=brief.id, state=ProjectState.PLANNING)
         self._project_store.save_execution(execution)
@@ -333,9 +331,7 @@ class ProjectRunner:
                 body=body,
             )
             issue_urls[task.id] = issue_url
-            records[task.id - 1] = records[task.id - 1].model_copy(
-                update={"issue_url": issue_url}
-            )
+            records[task.id - 1] = records[task.id - 1].model_copy(update={"issue_url": issue_url})
             execution = execution.model_copy(
                 update={"tasks": tuple(records), "updated_at": utc_now()}
             )

@@ -119,9 +119,8 @@ class AgentRequest(ModelBase):
                 raise ValueError("repository skill generation requires the RESEARCHER role")
             if self.repository_profile is None:
                 raise ValueError("repository skill generation requires repository_profile")
-        if (
-            self.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL
-            and (self.official_documentation_origins or self.practice_reference_urls)
+        if self.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL and (
+            self.official_documentation_origins or self.practice_reference_urls
         ):
             raise ValueError(
                 "research URL configuration is only valid for repository skill generation"
