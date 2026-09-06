@@ -43,7 +43,7 @@ is no `universal2` build), a wheel, an sdist, `SHA256SUMS` and
 shasum -a 256 -c SHA256SUMS --ignore-missing
 
 # 2. extract and move it somewhere permanent
-tar -xzf software-agent-factory-0.2.0-macos-arm64.tar.gz
+tar -xzf software-agent-factory-0.3.0-macos-arm64.tar.gz
 mkdir -p ~/.local/opt
 mv software-agent-factory ~/.local/opt/software-agent-factory
 
@@ -74,7 +74,7 @@ if you want one.
 With Python 3.13 already available:
 
 ```bash
-pip install software_agent_factory-0.2.0-py3-none-any.whl
+pip install software_agent_factory-0.3.0-py3-none-any.whl
 factory --version
 ```
 

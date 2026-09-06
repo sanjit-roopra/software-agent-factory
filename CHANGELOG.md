@@ -7,8 +7,16 @@ API is still `0.x`.
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-06
+
 ### Added
 
+- `factory project` accepts a broad product or feature brief, asks the
+  configured Planner for the smallest sufficient bounded task DAG, and executes
+  dependency-ready work through the existing full SDLC controller.
+- Persistent project artifacts, a local integration branch, optional GitHub
+  issue creation and closure, deterministic final verification of the composed
+  tree, and abandoned-project reconciliation.
 - Reusable repository guidance. A generated `RepositorySkill` is now stored
   under `factory.data_dir` in repository-scoped storage, keyed by the canonical
   local repository identity and the profile's `dependency_fingerprint`

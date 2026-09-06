@@ -40,13 +40,13 @@ changed.
 
 ## What a release contains
 
-Six files. For 0.2.0:
+Six files. For 0.3.0:
 
 ```text
-software-agent-factory-0.2.0-macos-arm64.tar.gz     PyInstaller onedir
-software-agent-factory-0.2.0-macos-x86_64.tar.gz    PyInstaller onedir
-software_agent_factory-0.2.0-py3-none-any.whl
-software_agent_factory-0.2.0.tar.gz
+software-agent-factory-0.3.0-macos-arm64.tar.gz     PyInstaller onedir
+software-agent-factory-0.3.0-macos-x86_64.tar.gz    PyInstaller onedir
+software_agent_factory-0.3.0-py3-none-any.whl
+software_agent_factory-0.3.0.tar.gz
 SHA256SUMS
 build-info.json
 ```
@@ -88,7 +88,7 @@ you ran `factory service install`.
 
 ## Versioning
 
-Semantic versioning. The launch release is 0.2.0. Pre-1.0, expect breaking
+Semantic versioning. The current release is 0.3.0. Pre-1.0, expect breaking
 changes to configuration keys and CLI flags in minor releases; they are called
 out in the changelog.
 
