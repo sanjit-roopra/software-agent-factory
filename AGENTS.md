@@ -98,6 +98,12 @@ Agents explain the selected approach. Deterministic factory code validates
 task bounds and dependencies, owns execution order, and rejects malformed
 plans.
 
+## Repository delivery workflow
+
+After completing and verifying repository changes, commit and push the current
+branch unless the user explicitly asks to leave the changes uncommitted or
+local-only.
+
 ## Architectural baseline
 
 OpenAI Symphony is the primary orchestration reference for this project.
