@@ -101,8 +101,9 @@ plans.
 ## Repository delivery workflow
 
 After completing and verifying repository changes, commit and push the current
-branch unless the user explicitly asks to leave the changes uncommitted or
-local-only.
+branch, then create or update a pull request so the changes are reviewable,
+unless the user explicitly asks to leave the changes uncommitted, local-only,
+or without a pull request.
 
 ## Architectural baseline
 
