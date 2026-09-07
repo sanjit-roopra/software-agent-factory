@@ -26,7 +26,7 @@ EXPECTED_ACTIONS = {
     "astral-sh/setup-uv": ("20cfd1bf945f4377ade1205e4dbc17946fc9a30d", "v10.0.1"),
     "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
     "actions/download-artifact": ("3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "v8.0.1"),
-    "actions/configure-pages": ("983d7736d9b0ae728b81ab479565c72886d7745b", "v5.0.0"),
+    "actions/configure-pages": ("45bfe0192ca1faeb007ade9deae92b16b8254a0d", "v6.0.0"),
     "actions/dependency-review-action": (
         "2031cfc080254a8a887f58cffee85186f0e49e48",
         "v4.9.0",
