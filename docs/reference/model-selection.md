@@ -26,8 +26,8 @@ There is no single best model across every factory role.
 | Hard planning and novel reasoning | `gpt-6-astra`, `claude-opus-5` | Strongest current reasoning and agentic evidence, but expensive. |
 | Web research and synthesis | `claude-opus-5`, then `gpt-5.6-sol` | Best available exact-model BrowseComp and synthesis evidence, with major harness caveats. |
 | Cost-effective testing experiment | `gemini-3.8-flash`, `gpt-5.6-terra` | Attractive economics and coding evidence, but weaker Terminal-Bench 4 results than the frontier models; validate locally before adopting. |
-| High-value final review | `gpt-6-astra`, `gpt-5.6-sol` | Strong reasoning and analysis while remaining independent from Claude/MAI worker families. |
-| Security-focused testing | `gpt-5.6-sol`, `claude-opus-5` | Strongest exact offensive-security and vulnerability-research evidence. |
+| High-value final review | `gpt-5.6-sol` | Best independent audit-and-correct-patch evidence among the generally available exact models reviewed. |
+| Security-focused testing | `claude-opus-5`, then `gpt-6-astra` | Opus has stronger disclosed prompt-injection resistance; Astra is an excellent optional offensive second pass for high-risk changes. |
 | Untrusted-repository review | `claude-opus-5` has the strongest published prompt-injection result | This conflicts with the factory's reviewer-family rule when any Claude worker is configured; use it as a separate specialist or change the worker families. |
 
 The strongest public autonomous-coding cluster is currently **GPT-6 Astra,
@@ -36,32 +36,48 @@ scores overlap statistically, so the ranking does not establish one universal
 winner. Price differs by more than an order of magnitude, which makes a local
 bakeoff more valuable than selecting the top headline score.
 
-For the current factory, a sensible evidence-based experiment is below. Paste
-this `models` block into a complete copy of `config/factory.example.yaml`;
-custom configuration files are not merged with the packaged defaults.
+The packaged `default` profile is:
 
 ```yaml
 models:
-  triage:     { model: "gpt-5.6-terra",        reasoning: "medium" }
-  refiner:    { model: "gpt-5.5",              reasoning: "high" }
-  researcher: { model: "claude-opus-5",        reasoning: "high" }
-  planner:    { model: "claude-opus-5",        reasoning: "high" }
+  triage:     { model: "gpt-5.6-terra",        reasoning: "medium", context_tier: "default" }
+  refiner:    { model: "gpt-5.5",              reasoning: "high",   context_tier: "default" }
+  researcher: { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
+  planner:    { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
   workers:
-    L0:       { model: "mai-code-1.1-flash",   reasoning: "medium" }
-    L1:       { model: "gemini-3.8-flash",     reasoning: "high" }
-    L2:       { model: "claude-sonnet-5",      reasoning: "high" }
-    L3:       { model: "claude-opus-5",        reasoning: "high" }
-  tester:     { model: "gemini-3.8-flash",     reasoning: "high" }
-  reviewer:   { model: "gpt-5.6-sol",          reasoning: "high" }
+    L0:       { model: "mai-code-1.1-flash",   reasoning: "medium", context_tier: "default" }
+    L1:       { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
+    L2:       { model: "claude-sonnet-5",      reasoning: "high",   context_tier: "default" }
+    L3:       { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
+  tester:     { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
+  reviewer:   { model: "gpt-5.6-sol",          reasoning: "high",   context_tier: "default" }
 ```
 
-This is a **candidate for measurement**, not a new packaged default. It keeps a
-cheap L0, tests Gemini 3.8's price/performance at L1, retains Claude for complex
-implementation, and preserves a different-family final reviewer. A
-quality-first trial could replace the planner and reviewer with GPT-6 Astra,
-but its uncached list-price illustrative call is 2.5 times Sol and about 4.7
-times Terra. Real agent-loop cost can rank models differently because cached
-input, reasoning output, step count and retry behavior dominate.
+It keeps cheap models on L0/L1 and testing, retains Claude for research and
+complex implementation, and uses Sol for an independent final review.
+
+The packaged `economy` profile reduces frontier-model use while retaining Sol
+for the final security-sensitive gate:
+
+```yaml
+model_profiles:
+  economy:
+    triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
+    refiner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
+    researcher: { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
+    planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
+    workers:
+      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
+      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+      L2:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+      L3:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+    tester:     { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
+```
+
+Select it with `--model-profile economy` on `run`, `project`, `start`,
+`doctor`, `skill refresh` or `service install`. Profiles are complete routing
+tables, not partial overlays.
 
 This candidate requires Copilot Pro+ or another plan that includes Opus 5,
 GPT-5.5 and GPT-5.6 Sol. On Copilot Pro, use only rows marked `Yes` in the
@@ -83,9 +99,11 @@ Premium-request multipliers now apply only to eligible legacy annual Pro and
 Pro+ subscriptions that remained on request-based billing. They are not the
 right basis for normal current cost comparisons.
 
-The factory does not currently receive or reconstruct token usage, so its
-status and dashboard cannot report actual model cost. The figures below are
-planning inputs, not runtime accounting.
+The Copilot runtime requests the CLI's usage-output file and persists only
+values the CLI reports: input/output/reasoning/cache tokens, nano-AIU and
+premium-request cost where available. These are shown by `factory status` and
+the local dashboard. The factory does not convert them to AI Credits or USD;
+the figures below remain planning inputs rather than reconstructed billing.
 
 Official sources:
 
@@ -197,11 +215,11 @@ Official references:
 - [Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
 - [Copilot CLI context management](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/context-management)
 
-The factory currently exposes `model` and `reasoning`, but **not**
-`context_tier`. `CopilotAgentRuntime` therefore does not pass `--context`, and
-factory calls use the CLI's default context tier even when a model supports 1M.
-Adding 1M support would require a typed configuration field, validation,
-propagation through `AgentRequest`, and the runtime argument.
+Each role exposes `context_tier: default|long_context`.
+`CopilotAgentRuntime` passes `--context` explicitly, so a factory run does not
+inherit a mutable interactive CLI setting. The packaged profiles use `default`;
+enable `long_context` only for roles whose model supports it and whose task
+actually needs the larger window.
 
 Do not treat nominal context as effective repository understanding:
 
@@ -437,12 +455,33 @@ Security is not one capability:
 - defensive analysis,
 - resistance to instructions hidden in untrusted content.
 
-The strongest exact public evidence is available for Claude Opus 5 and
-GPT-5.6 Sol. Opus 5 shows stronger results than Sonnet 5 on vulnerability and
-exploit research and had the best external indirect-prompt-injection result in
-the reviewed exact-model data. Sol has extensive CTF and multi-stage
-vulnerability-research evidence, but its prompt-injection results vary sharply
-between OpenAI's and Anthropic's harnesses.
+The strongest directly relevant public review evidence is CWE-Bench, a blind
+repository audit where a result passes only when the exploit is blocked and
+the existing regression suite still passes:
+
+| Model/system | CWE-Bench pass@1 |
+| --- | ---: |
+| Gemini 3.8 Flash Cyber | 47.2% |
+| GPT-5.6 Sol | 44.2% |
+| Grok 4.6 | 38.2% |
+
+Gemini 3.8 Flash Cyber is a distinct restricted model; its result must not be
+assigned to ordinary Gemini 3.8 Flash. Among the generally available exact
+models in this guide, Sol therefore has the best independent audit-and-patch
+evidence.
+
+GPT-6 Astra has exceptional offensive evidence — including 85.4% on OpenAI's
+SEC-Bench Pro evaluation and large gains over Sol on exploit and
+reverse-engineering tasks — but no directly comparable public CWE-Bench result,
+false-positive measurement or regression-preserving patch score. It is a
+strong candidate for an optional second security pass on high-risk changes,
+not yet the best-supported sole reviewer.
+
+Claude Opus 5 remains valuable as a complementary security tester because it
+has the strongest disclosed prompt-injection resistance in the reviewed
+comparisons. Grok 4.6 has credible review evidence, including a slight lead over
+Sol on xAI's private SecureCodeReview evaluation, but trails Sol on the
+independent CWE-Bench result and has weaker disclosed safeguard evidence.
 
 MAI-Code-1.1-Flash's model card says CyberBench, CyberSecEval and SecRepo were
 used, but publishes no versions, scores or task breakdown. Keep it on low-risk,
@@ -457,6 +496,9 @@ Sources:
 - [Claude Opus 5 system card](https://www.anthropic.com/claude-opus-5-system-card)
 - [Claude Sonnet 5 system card](https://www.anthropic.com/claude-sonnet-5-system-card)
 - [GPT-5.6 system card](https://deploymentsafety.openai.com/gpt-5-6/gpt-5-6.pdf)
+- [GPT-6 Astra system card](https://deploymentsafety.openai.com/gpt-6-astra)
+- [Grok 4.6 model card](https://media.x.ai/v1/website/card-4p6-4cd2dc57.pdf)
+- [CWE-Bench](https://cwe-bench.com/#leaderboard)
 - [CyberSecEval](https://github.com/meta-llama/PurpleLlama/tree/main/CybersecurityBenchmarks)
 - [SecCodePLT](https://github.com/SecCodePLT/SecCodePLT)
 - [AutoPatchBench](https://engineering.fb.com/2025/04/29/ai-research/autopatchbench-benchmark-ai-powered-security-fixes/)
@@ -542,21 +584,22 @@ by role instead of optimizing one blended score.
 
 ## Current factory limitations that affect selection
 
-1. Model and reasoning are configurable, but context tier is not.
-2. The factory does not query the live Copilot model catalog before a run.
+1. The factory does not query the live Copilot model catalog before a run.
    Unsupported model or reasoning combinations fail only when the CLI executes.
-3. Reasoning is validated only as a non-empty string, not against each model's
+2. Reasoning is validated only as a non-empty string, not against each model's
    supported levels.
-4. One reviewer is configured for all risk levels; the router cannot use Astra
+3. One reviewer is configured for all risk levels; the router cannot use Astra
    only for high-risk review.
-5. The reviewer-family check uses the string before the first hyphen as the
+4. The reviewer-family check uses the string before the first hyphen as the
    family. It is a useful guard, not a provider ontology.
-6. There is no implemented Failure Investigator role despite its appearance in
+5. There is no implemented Failure Investigator role despite its appearance in
    architecture documentation.
-7. Actual token usage and cost are not persisted because the runtime does not
-   currently report them.
-8. A custom YAML is not deep-merged with the packaged defaults. Copy the full
-   example before changing the `models` block.
+6. Runtime telemetry is best effort because Copilot's usage-output schema is
+   experimental. Missing or malformed fields remain unknown.
+7. Reported premium-request cost and nano-AIU are preserved as distinct raw
+   units; the factory does not calculate AI Credits or USD.
+8. Named profiles are complete `models` blocks. Other custom YAML sections are
+   still not deep-merged with packaged defaults.
 
 These limitations mean model evaluation and model routing should remain
 separate tasks: first establish a measured role-specific policy, then change

@@ -99,12 +99,9 @@ execution and aggregate outcome, while every child remains an ordinary
                 ▼
             Agent Runtime
                 │
-     ┌──────────┼────────────┐
-     ▼          ▼            ▼
-   Opus       Sonnet         MAI
-     │
-     ▼
-  GPT-5.6 Sol
+     ┌──────────┼────────────┬────────────┐
+     ▼          ▼            ▼            ▼
+   Claude      Gemini        GPT          MAI
 
                 │
                 ▼
@@ -428,7 +425,7 @@ the overlay are unaffected.
 When generation is required, after the first successful deterministic
 verification and scope assessment the controller re-profiles the
 post-implementation worktree, transitions through a temporary `RESEARCHING`
-state, and calls the configured Researcher (`GPT-5.6 Sol` by default) with
+state, and calls the configured Researcher (`Claude Opus 5` by default) with
 purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
 
 That invocation is web-only and deliberately blind to the repository. It runs
@@ -714,7 +711,7 @@ Default worker: `MAI-Code-1.1-Flash`
 ### L1
 Normal isolated task.
 
-Default: `Claude Sonnet 5`
+Default: `Gemini 3.8 Flash`
 
 ### L2
 Examples:
@@ -723,7 +720,7 @@ Examples:
 - significant new functionality
 - complicated integration behavior
 
-Default: `Claude Opus 5`
+Default: `Claude Sonnet 5`
 
 ### L3
 Examples:
@@ -772,7 +769,7 @@ It does not directly select the worker model.
 ## Initial agents
 
 ### Triage
-Model: `Claude Sonnet 5`
+Model: `GPT-5.6 Terra`
 
 Permissions:
 - repository read
@@ -780,7 +777,7 @@ Permissions:
 Output: `TriageResult`
 
 ### Specification Refiner
-Model: `Claude Opus 5`
+Model: `GPT-5.5`
 
 Permissions:
 - repository read
@@ -788,7 +785,7 @@ Permissions:
 Output: `Specification`
 
 ### Researcher
-Model: `GPT-5.6 Sol`
+Model: `Claude Opus 5`
 
 Invoke only when required.
 
@@ -834,7 +831,7 @@ post-green polish attempt, applying simplification first and version-specific
 polish second; the initial implementation attempt receives none.
 
 ### Tester
-Model: `Claude Sonnet 5`
+Model: `Gemini 3.8 Flash`
 
 Receives:
 - Specification
@@ -900,7 +897,7 @@ complexity = L2
 but the controller maps:
 
 ```text
-L2 → Claude Opus 5
+L2 → Claude Sonnet 5
 ```
 
 Do not let arbitrary agent output choose arbitrary models.
@@ -1212,6 +1209,7 @@ Record every agent invocation:
 - role
 - model
 - reasoning
+- context tier
 - started_at
 - completed_at
 - duration
@@ -1233,9 +1231,12 @@ bounded in size, inside the configured data directory, with the same credential
 redaction already applied to captured command output. Nothing is exported: no
 telemetry backend, no exporter, no network egress.
 
-Token usage and cost are recorded only when the runtime actually reports them.
-An unreported value stays unknown; it is never defaulted to zero and never
-reconstructed from a price table (ADR-017).
+The Copilot runtime requests its usage-output file and persists the reported
+input, output, reasoning and cache token counts, nano-AIU, premium-request
+cost and timing fields. An unreported value stays unknown; it is never
+defaulted to zero, converted to USD or reconstructed from a price table
+(ADR-017). These invocation records are separate from implementer
+`AttemptRecord`s, so telemetry cannot alter retry budgets.
 
 ## Health and metrics
 

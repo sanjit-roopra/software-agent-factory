@@ -16,10 +16,13 @@ from software_agent_factory.models import (
     ChangeSet,
     CommandResult,
     Complexity,
+    ContextTier,
     DependencyEcosystem,
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    InvocationRecord,
+    ModelUsage,
     PlanStep,
     ProjectBrief,
     ProjectPlan,
@@ -43,6 +46,7 @@ from software_agent_factory.models import (
     Specification,
     TestReport,
     TriageResult,
+    UsageMetrics,
     VerificationReport,
     WorkflowState,
     WorkItem,
@@ -166,11 +170,34 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         outcome="failed",
         failure_reason="pytest failed",
     )
+    invocation = InvocationRecord(
+        invocation_number=1,
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        context_tier=ContextTier.LONG_CONTEXT,
+        started_at=started_at,
+        completed_at=completed_at,
+        success=True,
+        attempt_number=1,
+        usage=UsageMetrics(
+            total_nano_aiu=123,
+            model_usage=(
+                ModelUsage(
+                    model="claude-sonnet-5",
+                    input_tokens=100,
+                    output_tokens=20,
+                    reasoning_tokens=5,
+                ),
+            ),
+        ),
+    )
     factory_run = FactoryRun(
         id="RUN-123",
         work_item_id=work_item.id,
         state=WorkflowState.IMPLEMENTING,
         attempt_records=[attempt],
+        invocation_records=[invocation],
         workspace_path="/workspace/TASK-123",
         branch_name="factory/task-123",
         created_at=started_at,
@@ -319,6 +346,8 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
     factory_run_dump = factory_run.model_dump(mode="json")
     assert factory_run_dump["state"] == WorkflowState.IMPLEMENTING.value
     assert factory_run_dump["attempt_records"][0]["role"] == AgentRole.IMPLEMENTER.value
+    assert factory_run_dump["invocation_records"][0]["context_tier"] == "long_context"
+    assert factory_run_dump["invocation_records"][0]["usage"]["total_nano_aiu"] == 123
     assert factory_run_dump["created_at"].endswith("Z")
 
 
@@ -334,6 +363,8 @@ def test_attempt_record_defaults_keep_existing_json_valid() -> None:
 
     assert attempt.budget is AttemptBudget.IMPLEMENTATION
     assert attempt.triggered_by is AttemptTrigger.INITIAL
+    assert attempt.context_tier is ContextTier.DEFAULT
+    assert attempt.invocation_number is None
 
 
 def test_attempt_record_records_explicit_budget_and_trigger() -> None:
@@ -398,7 +429,32 @@ def test_factory_run_additive_fields_default_to_none_for_schema_version_1() -> N
     assert run.last_activity_at is None
     assert run.lease is None
     assert run.commit_sha is None
+    assert run.invocation_records == []
     assert run.schema_version == 1
+
+
+def test_invocation_record_requires_valid_timestamps_and_failure_reason() -> None:
+    with pytest.raises(ValidationError, match="completed_at"):
+        InvocationRecord(
+            invocation_number=1,
+            role=AgentRole.TRIAGE,
+            model="gpt-5.6-terra",
+            reasoning="medium",
+            started_at=datetime(2026, 9, 4, 10, 5, tzinfo=UTC),
+            completed_at=datetime(2026, 9, 4, 10, 0, tzinfo=UTC),
+            success=True,
+        )
+
+    with pytest.raises(ValidationError, match="failure_reason"):
+        InvocationRecord(
+            invocation_number=1,
+            role=AgentRole.TRIAGE,
+            model="gpt-5.6-terra",
+            reasoning="medium",
+            started_at=datetime(2026, 9, 4, 10, 0, tzinfo=UTC),
+            completed_at=datetime(2026, 9, 4, 10, 1, tzinfo=UTC),
+            success=False,
+        )
 
 
 def test_factory_run_lease_and_activity_round_trip() -> None:

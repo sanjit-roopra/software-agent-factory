@@ -32,6 +32,7 @@ Most commands accept these.
 | --- | --- | --- |
 | `--config <path>` | packaged config | Factory config YAML to load. |
 | `--data-dir <path>` | `factory.data_dir` | Override the configured data directory. |
+| `--model-profile <name>` | `default` | Select the top-level `models` routing or a complete named entry from `model_profiles`. Available on agent-invoking commands, `doctor`, and `service install`. |
 
 `--data-dir` is how you keep an experiment out of `~/.software-factory`. The
 test suite uses it for exactly that.
@@ -64,6 +65,7 @@ factory run \
 | `--description <str>` | yes | — | Description of the work to perform. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
+| `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -99,6 +101,7 @@ factory project \
 | `--project-id <str>` | no | random | Stable project identifier. |
 | `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after local integration. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task; `copilot` derives the real plan. |
+| `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -128,7 +131,7 @@ Artifacts are stored under:
 <data_dir>/projects/<project-id>/
 ├── project-brief.json
 ├── project-plan.json
-├── execution.json
+├── execution.json       # includes planner invocation usage when reported
 └── logs/
 ```
 
@@ -147,6 +150,7 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 | `--repo <path>` | yes | — | Path to the target Git repository. |
 | `--github-repo <str>` | yes | — | Backlog repository as `OWNER/NAME`. |
 | `--runtime <fake\|copilot>` | no | `fake` | Agent runtime. |
+| `--model-profile <name>` | no | `default` | Select a configured model profile for every dispatched run. |
 | `--once` | no | off | Run one bounded tick instead of polling forever. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
@@ -203,6 +207,7 @@ factory doctor --json --config ~/my-factory.yaml
 | Option | Default | Effect |
 | --- | --- | --- |
 | `--runtime <fake\|copilot>` | `fake` | Check prerequisites for this runtime. `copilot` additionally requires the `copilot` executable. |
+| `--model-profile <name>` | `default` | Validate this configured model profile. |
 | `--json` | off | Emit the report as JSON. |
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
@@ -241,6 +246,9 @@ factory status --json --limit 50 --offset 50
 Everything is recomputed from persisted artifacts on each call. This command
 never creates, mutates or repairs a run, a workspace, a lock or the data
 directory itself. A truncated or partially unreadable scan reports `DEGRADED`.
+For normal workflow runs, the human and JSON views include totals derived from
+persisted invocation records. Missing runtime-reported fields remain unknown,
+and premium-request cost and nano-AIU are raw Copilot units, not USD.
 
 ---
 
@@ -305,6 +313,7 @@ factory skill refresh --repo ~/projects/example --runtime copilot
 | --- | --- | --- | --- |
 | `--repo <path>` | yes | — | Path to the target Git repository. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
+| `--model-profile <name>` | no | `default` | Select the Researcher configuration used for generation. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -314,6 +323,9 @@ configuration.
 
 This is the only command that may replace an existing generated file, and it is
 what a run's warning points to when stored guidance no longer revalidates.
+The standalone generation invocation is persisted as `last-invocation.json` in
+the neutral generation directory. Each refresh replaces that command-specific
+record; normal run telemetry remains in the run artifact.
 
 ---
 
@@ -363,6 +375,7 @@ factory service install \
 | `--config <path>` | no | packaged | Config the service loads. Must enable `scheduler.enabled`. |
 | `--data-dir <path>` | no | configured | Data directory for the service. |
 | `--runtime <fake\|copilot>` | no | `fake` | Runtime the service runs with. |
+| `--model-profile <name>` | no | `default` | Profile retained in the installed `factory start` arguments. |
 | `--executable <path>` | no | this build | Explicit `factory` executable to run. |
 | `--label <str>` | no | `com.github.software-agent-factory` | LaunchAgent label. |
 | `--allow-source-dev` | no | off | Permit an executable in an otherwise-refused location, such as a source checkout. |

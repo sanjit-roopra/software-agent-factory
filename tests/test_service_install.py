@@ -161,9 +161,20 @@ def test_build_program_arguments_without_config(tmp_path: Path) -> None:
         "owner/name",
         "--data-dir",
         str(request.data_dir),
+        "--model-profile",
+        "default",
         "--runtime",
         "fake",
     ]
+
+
+def test_build_program_arguments_preserves_model_profile(tmp_path: Path) -> None:
+    request = make_request(tmp_path)
+    request = ServiceInstallRequest(**{**request.__dict__, "model_profile": "economy"})
+
+    args = build_program_arguments(request)
+
+    assert args[args.index("--model-profile") + 1] == "economy"
 
 
 def test_build_program_arguments_with_config(tmp_path: Path) -> None:

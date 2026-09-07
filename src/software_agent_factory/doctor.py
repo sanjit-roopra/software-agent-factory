@@ -330,13 +330,17 @@ def check_verification_commands(
     return results
 
 
-def check_config(config_path: Path | None) -> tuple[CheckResult, FactoryConfig | None]:
+def check_config(
+    config_path: Path | None,
+    *,
+    model_profile: str | None = None,
+) -> tuple[CheckResult, FactoryConfig | None]:
     """Load and validate configuration, if a path was given (or the packaged
     default otherwise). Never raises: every expected failure mode of
     ``load_config`` becomes an ``ERROR`` check result."""
     label = str(config_path) if config_path is not None else "(packaged default)"
     try:
-        config = load_config(config_path)
+        config = load_config(config_path, model_profile=model_profile)
     except FileNotFoundError as exc:
         return (
             CheckResult(
@@ -473,6 +477,7 @@ def run_doctor(
     *,
     config_path: Path | None = None,
     data_dir_override: Path | None = None,
+    model_profile: str | None = None,
     requested_runtime_copilot: bool = False,
     environment: DoctorEnvironment | None = None,
 ) -> DoctorReport:
@@ -494,7 +499,7 @@ def run_doctor(
         check_git(env),
     ]
 
-    config_check, config = check_config(config_path)
+    config_check, config = check_config(config_path, model_profile=model_profile)
     checks.append(config_check)
 
     gh_required = False

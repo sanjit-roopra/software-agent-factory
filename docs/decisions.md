@@ -242,9 +242,11 @@ worktree or transition a run — they report those as findings for an operator.
 Cost is deliberately not fabricated. Token usage and cost appear only when the
 runtime actually reported them; otherwise the value is unknown, never zero and
 never inferred from a hard-coded price table. A confidently wrong spend number
-is worse than no number. In practice no runtime reports usage today and
-`AttemptRecord` persists none, so no usage or cost figure is reported at all;
-reporting one starts by adding a typed field to `AttemptRecord`.
+is worse than no number. Copilot invocations request the CLI's experimental
+usage-output file and persist typed `InvocationRecord` telemetry. Raw
+premium-request cost and nano-AIU remain separate units; neither is presented
+as AI Credits or USD. `AttemptRecord` remains the implementer retry ledger and
+links to its invocation rather than being overloaded with every agent call.
 
 Monitoring stays local: structured JSON logs bounded in size inside the data
 directory, with the same credential redaction already applied to command
@@ -322,15 +324,15 @@ There is no fixed skill catalog. When `polish.enabled` and the bounded polish
 attempt is eligible, after the first successful deterministic verification the
 controller re-profiles the post-implementation worktree (capturing any
 dependency upgrades the task made), transitions through a temporary
-`RESEARCHING` state, and invokes the configured Researcher (`GPT-5.6 Sol` by
+`RESEARCHING` state, and invokes the configured Researcher (`Claude Opus 5` by
 default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
 
 That call is bounded and web-only. It runs in the run's own persistence
 directory rather than the worktree, has `web_fetch` as its only tool, runs
 without repository custom instructions, and sees only the normalized profile,
-the controller-derived changed file paths, the configured URL lists and the
-factory-owned generation rules — never source code, README content, task prose
-or the diff. `polish.official_documentation_origins` (official documentation,
+the configured URL lists and the factory-owned generation rules — never
+changed filenames, source code, README content, task prose or the diff.
+`polish.official_documentation_origins` (official documentation,
 migration guides, release notes) is authoritative for every version claim. The
 exact curated `polish.practice_reference_urls` — by default reviewed
 general-practice notes from `bdfinst/agentic-dev-team`, pinned to commit

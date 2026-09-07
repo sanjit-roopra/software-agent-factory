@@ -60,13 +60,14 @@ class ModelRouter:
     def _distinct_worker_models(self, starting_complexity: Complexity) -> list[RoleModelConfig]:
         start_index = COMPLEXITY_ORDER.index(starting_complexity)
         ordered_configs = []
-        seen_models: set[str] = set()
+        seen_configs: set[tuple[str, str, str]] = set()
 
         for complexity in COMPLEXITY_ORDER[start_index:]:
             config = self._config.models.workers[complexity]
-            if config.model in seen_models:
+            key = (config.model, config.reasoning, str(config.context_tier))
+            if key in seen_configs:
                 continue
-            seen_models.add(config.model)
+            seen_configs.add(key)
             ordered_configs.append(config)
 
         return ordered_configs

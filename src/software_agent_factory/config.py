@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from importlib import resources
 from pathlib import Path
 from typing import Self
@@ -16,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from .models import Complexity, Risk
+from .models import Complexity, ContextTier, Risk
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
 
@@ -112,6 +113,7 @@ class RetryConfig(ConfigModel):
 class RoleModelConfig(ConfigModel):
     model: str = Field(min_length=1)
     reasoning: str = Field(min_length=1)
+    context_tier: ContextTier = ContextTier.DEFAULT
 
     @property
     def model_family(self) -> str:
@@ -373,6 +375,7 @@ class FactorySettings(ConfigModel):
 class FactoryConfig(ConfigModel):
     factory: FactorySettings
     models: ModelsConfig
+    model_profiles: dict[str, ModelsConfig] = Field(default_factory=dict)
     repository: RepositoryConfig
     risk: dict[Risk, RiskRuleConfig]
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
@@ -393,6 +396,19 @@ class FactoryConfig(ConfigModel):
             raise ValueError("ci.enabled requires pull_request.enabled")
         return self
 
+    @model_validator(mode="after")
+    def _validate_model_profiles(self) -> Self:
+        for name in self.model_profiles:
+            if name == "default":
+                raise ValueError(
+                    "model profile name 'default' is reserved for the top-level models block"
+                )
+            if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", name) is None:
+                raise ValueError(
+                    "model profile names must be 1-32 lowercase letters, digits, '_' or '-'"
+                )
+        return self
+
     @property
     def data_dir(self) -> Path:
         return self.factory.data_dir
@@ -406,7 +422,11 @@ class FactoryConfig(ConfigModel):
         return self.factory.agent_timeout_seconds
 
 
-def load_config(path: str | Path | None = None) -> FactoryConfig:
+def load_config(
+    path: str | Path | None = None,
+    *,
+    model_profile: str | None = None,
+) -> FactoryConfig:
     if path is None:
         raw_text = (
             resources.files("software_agent_factory")
@@ -420,4 +440,15 @@ def load_config(path: str | Path | None = None) -> FactoryConfig:
     if not isinstance(payload, dict):
         raise ValueError("Configuration must be a YAML mapping")
 
-    return FactoryConfig.model_validate(payload)
+    config = FactoryConfig.model_validate(payload)
+    selected_profile = "default" if model_profile is None else model_profile
+    if selected_profile == "default":
+        return config
+    try:
+        models = config.model_profiles[selected_profile]
+    except KeyError:
+        available = ", ".join(["default", *sorted(config.model_profiles)])
+        raise ValueError(
+            f"unknown model profile {selected_profile!r}; available profiles: {available}"
+        ) from None
+    return config.model_copy(update={"models": models})

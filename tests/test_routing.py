@@ -147,3 +147,25 @@ def test_model_router_returns_none_only_past_total_attempt_budget() -> None:
     assert router.model_for_implementer(Complexity.L0, 4) is None
     assert router.model_for_implementer(Complexity.L2, 3).model == "claude-opus-5"
     assert router.model_for_implementer(Complexity.L2, 4) is None
+
+
+def test_routing_distinguishes_same_model_with_different_runtime_settings() -> None:
+    payload = _config_dict(max_total_attempts=4)
+    workers = payload["models"]["workers"]  # type: ignore[index]
+    workers["L1"] = {  # type: ignore[index]
+        "model": "claude-sonnet-5",
+        "reasoning": "high",
+        "context_tier": "long_context",
+    }
+    workers["L2"] = {  # type: ignore[index]
+        "model": "claude-sonnet-5",
+        "reasoning": "high",
+        "context_tier": "default",
+    }
+    router = ModelRouter(FactoryConfig.model_validate(payload))
+
+    first = router.model_for_implementer(Complexity.L1, 1)
+    third = router.model_for_implementer(Complexity.L1, 3)
+
+    assert first is not None and first.context_tier.value == "long_context"
+    assert third is not None and third.context_tier.value == "default"

@@ -37,22 +37,53 @@ a run a fresh budget.
 
 ```yaml
 models:
-  triage:     { model: "claude-sonnet-5",     reasoning: "medium" }
-  refiner:    { model: "claude-opus-5",       reasoning: "high" }
-  researcher: { model: "gpt-5.6-sol",         reasoning: "high" }
-  planner:    { model: "claude-opus-5",       reasoning: "high" }
+  triage:     { model: "gpt-5.6-terra",        reasoning: "medium", context_tier: "default" }
+  refiner:    { model: "gpt-5.5",              reasoning: "high",   context_tier: "default" }
+  researcher: { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
+  planner:    { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
   workers:
-    L0:       { model: "mai-code-1.1-flash",  reasoning: "medium" }
-    L1:       { model: "claude-sonnet-5",     reasoning: "medium" }
-    L2:       { model: "claude-opus-5",       reasoning: "high" }
-    L3:       { model: "claude-opus-5",       reasoning: "high" }
-  tester:     { model: "claude-sonnet-5",     reasoning: "high" }
-  reviewer:   { model: "gpt-5.6-sol",         reasoning: "high" }
+    L0:       { model: "mai-code-1.1-flash",   reasoning: "medium", context_tier: "default" }
+    L1:       { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
+    L2:       { model: "claude-sonnet-5",      reasoning: "high",   context_tier: "default" }
+    L3:       { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
+  tester:     { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
+  reviewer:   { model: "gpt-5.6-sol",          reasoning: "high",   context_tier: "default" }
+
+model_profiles:
+  economy:
+    triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
+    refiner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
+    researcher: { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
+    planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
+    workers:
+      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
+      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+      L2:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+      L3:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+    tester:     { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
 ```
 
-Every role takes a `model` name and a `reasoning` level. Both are non-empty
-strings passed through to the Copilot CLI; the factory does not maintain a
-whitelist of model names.
+Every role takes a `model`, `reasoning` level and `context_tier`. The context
+tier is `default` or `long_context`; the runtime always passes it explicitly
+to Copilot, so a persisted interactive CLI setting cannot change a factory
+run. Model names and reasoning levels are passed through without a catalog
+whitelist, so unsupported combinations fail when Copilot executes.
+
+The top-level `models` block is the `default` profile. Additional complete
+profiles live under `model_profiles`; select one on any agent-invoking command:
+
+```bash
+factory run ... --model-profile economy
+factory project ... --model-profile economy
+factory start ... --model-profile economy
+factory skill refresh ... --model-profile economy
+```
+
+`factory doctor` validates the selected profile, and `factory service install`
+stores the selected name in the LaunchAgent arguments. An unknown profile
+fails with exit code `2` before a workspace or paid call is created. Profiles
+are complete `models` blocks, not partial overlays.
 
 `workers` must define exactly `L0`, `L1`, `L2` and `L3`. Triage assigns the
 complexity level and that selects the worker.
@@ -68,9 +99,7 @@ source.
 
 See [Model selection, cost and benchmarks](model-selection.md) for the current
 Copilot catalog, prices, context and reasoning capabilities, benchmark
-evidence, and role-specific tradeoffs. The factory currently configures model
-and reasoning only; it does not yet expose Copilot CLI's selectable
-long-context tier.
+evidence, and role-specific tradeoffs.
 
 ## repository
 
@@ -211,7 +240,7 @@ never stored in, or loaded from, the target repository or its worktree.
 
 Only when the current fingerprint has no generated skill does the controller
 transition through a temporary `RESEARCHING` state and call the configured
-Researcher (`GPT-5.6 Sol` by default) with purpose
+Researcher (`Claude Opus 5` in the default profile) with purpose
 `GENERATE_REPOSITORY_SKILL`, at most once per run. That call runs in the run's
 own directory rather than the worktree, receives only the normalized
 `RepositoryProfile` and the two configured URL lists — never changed filenames,

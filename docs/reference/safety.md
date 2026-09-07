@@ -57,8 +57,11 @@ Nothing in the factory contacts the network unless you turned something on.
 | An eligible `polish.enabled` attempt with no stored guidance for the repository's current dependency fingerprint, or `factory skill refresh --runtime copilot` | The configured Researcher fetches only `polish.official_documentation_origins` and the exact, commit-pinned `polish.practice_reference_urls` to generate a `RepositorySkill`. `web_fetch` is its only tool for that call, and it runs outside the worktree. A run that reuses stored guidance fetches nothing. |
 | Your own `repository.commands` | Whatever they contact. `uv sync` hits a package index. |
 
-There is no telemetry, no analytics, no crash reporting and no exporter. Logs
-stay in the data directory.
+There is no external analytics, crash reporting or telemetry exporter. When
+Copilot reports invocation usage, the factory persists a bounded typed record
+locally with the run, project plan or standalone skill refresh. Raw prompts,
+tool output and usage files are not retained; logs and telemetry stay in the
+data directory.
 
 ## Money
 

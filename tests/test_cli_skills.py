@@ -33,6 +33,7 @@ from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
+    InvocationRecord,
     RepositorySkill,
     SkillGuidance,
     SkillSource,
@@ -160,6 +161,11 @@ def _generated_path(repo: Path, data_dir: Path) -> Path:
 def _overlay_path(repo: Path, data_dir: Path) -> Path:
     key = _line(_skill_path(repo, data_dir).output, "repository key: ").split(": ", 1)[1]
     return data_dir / "repository-skills" / "v1" / key / "repository-skill-overlay.yaml"
+
+
+def _last_invocation_path(repo: Path, data_dir: Path) -> Path:
+    key = _line(_skill_path(repo, data_dir).output, "repository key: ").split(": ", 1)[1]
+    return data_dir / "skill-generation" / key / "last-invocation.json"
 
 
 # -- factory skill path ----------------------------------------------------
@@ -445,6 +451,27 @@ def test_refresh_preserves_the_stored_skill_when_the_researcher_fails(
     assert generated_path.read_bytes() == original
 
 
+def test_refresh_persists_failed_invocation_when_runtime_rejects_request(
+    skill_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+
+    def rejecting(request: AgentRequest) -> AgentResult:
+        raise ValueError("unsupported model context")
+
+    _install_runtime(monkeypatch, FakeAgentRuntime(researcher=rejecting))
+
+    result = _refresh(skill_repo, data_dir)
+
+    assert result.exit_code == 1
+    assert "unsupported model context" in result.output
+    invocation = InvocationRecord.model_validate_json(
+        _last_invocation_path(skill_repo, data_dir).read_text(encoding="utf-8")
+    )
+    assert invocation.success is False
+    assert invocation.failure_reason == "ValueError: unsupported model context"
+
+
 def test_refresh_refuses_unverified_guidance_and_preserves_the_stored_skill(
     skill_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,7 +606,8 @@ def test_generation_request_carries_only_the_profile_and_configured_sources(
     request = captured[0]
     assert request.role is AgentRole.RESEARCHER
     assert request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
-    assert request.model == "gpt-5.6-sol"
+    assert request.model == "claude-opus-5"
+    assert request.context_tier.value == "default"
     assert request.changed_files == []
     assert request.diff is None
     assert request.specification is None
@@ -601,6 +629,11 @@ def test_generation_request_carries_only_the_profile_and_configured_sources(
     assert workspace.is_dir()
     assert workspace.is_relative_to(data_dir / "skill-generation")
     assert not workspace.is_relative_to(skill_repo)
+    invocation = InvocationRecord.model_validate_json(
+        (workspace / "last-invocation.json").read_text(encoding="utf-8")
+    )
+    assert invocation.role is AgentRole.RESEARCHER
+    assert invocation.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
 
 
 def test_refresh_honours_an_explicit_config_file(

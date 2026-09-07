@@ -8,6 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from software_agent_factory.config import PolishConfig, load_config
+from software_agent_factory.models import ContextTier
 
 #: The curated bdfinst references must stay pinned to this reviewed commit so
 #: the sandboxed skill researcher can never fetch mutated guidance.
@@ -70,9 +71,58 @@ def test_load_config_uses_packaged_defaults() -> None:
     config = load_config()
 
     assert config.data_dir == Path.home() / ".software-factory"
+    assert config.models.triage.model == "gpt-5.6-terra"
+    assert config.models.refiner.model == "gpt-5.5"
+    assert config.models.researcher.model == "claude-opus-5"
+    assert config.models.workers["L1"].model == "gemini-3.8-flash"
     assert config.models.reviewer.model == "gpt-5.6-sol"
+    assert config.models.reviewer.context_tier is ContextTier.DEFAULT
     assert config.repository.branch_prefix == "factory/"
     assert config.risk["R2"].human_approval is True
+
+
+def test_load_config_selects_named_model_profile() -> None:
+    config = load_config(model_profile="economy")
+
+    assert config.models.triage.model == "gpt-5.6-luna"
+    assert config.models.planner.model == "gpt-5.6-terra"
+    assert config.models.workers["L3"].model == "gemini-3.8-flash"
+    assert config.models.reviewer.model == "gpt-5.6-sol"
+
+
+def test_load_config_rejects_unknown_model_profile() -> None:
+    with pytest.raises(ValueError, match="unknown model profile 'missing'"):
+        load_config(model_profile="missing")
+
+
+def test_context_tier_defaults_for_older_configs(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path, _MINIMAL_CONFIG))
+
+    assert config.models.triage.context_tier is ContextTier.DEFAULT
+
+
+def test_config_rejects_invalid_context_tier(tmp_path: Path) -> None:
+    payload = yaml.safe_load(_MINIMAL_CONFIG)
+    payload["models"]["triage"]["context_tier"] = "1m"
+    path = tmp_path / "invalid-context.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="context_tier"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("name", ["default", "Economy", "-bad", "prod.v1"])
+def test_config_rejects_reserved_or_invalid_model_profile_names(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    payload = yaml.safe_load(_MINIMAL_CONFIG)
+    payload["model_profiles"] = {name: payload["models"]}
+    path = tmp_path / "invalid-profile.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="model profile"):
+        load_config(path)
 
 
 def test_config_rejects_non_positive_limits(tmp_path: Path) -> None:

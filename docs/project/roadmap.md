@@ -55,8 +55,9 @@ item, including staging and deployment, is deferred.
   release, but GitHub's own release immutability is a repository setting that is
   not enabled; releases currently report `immutable=false`. Verify
   `SHA256SUMS`.
-- **Cost reporting.** No runtime reports token usage or cost today, so those
-  fields stay unknown. They are never estimated.
+- **Billing conversion.** Copilot runtime usage is persisted when reported,
+  but raw premium-request cost and nano-AIU are not converted to AI Credits or
+  USD. Missing fields remain unknown.
 - **Trackers.** GitHub Issues is the only backlog provider.
 - **Projects.** Project plans are flat DAGs capped at 12 tasks. The local
   integration branch is authoritative; optional GitHub issues mirror tasks but
