@@ -166,6 +166,29 @@ def test_ambient_credentials_are_not_visible_to_commands(
 
 
 @requires_models
+def test_shell_profiles_cannot_reintroduce_filtered_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".profile").write_text(
+        "export FACTORY_PROFILE_INJECTED=present\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("FACTORY_PROFILE_INJECTED", raising=False)
+
+    report = DeterministicVerifier().run(
+        ['printf "%s" "${FACTORY_PROFILE_INJECTED:-absent}"'],
+        cwd=tmp_path,
+        timeout_seconds=10,
+    )
+
+    assert report.passed is True
+    assert report.deterministic_checks[0].stdout == "absent"
+
+
+@requires_models
 def test_base_allowlist_is_provided_and_extra_names_can_be_passed_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

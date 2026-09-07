@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
@@ -48,6 +49,20 @@ from .workspace import GitWorktreeWorkspace, WorkspaceError
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _SUCCESS_STATES = frozenset({WorkflowState.PR_READY, WorkflowState.DONE})
+_FACTORY_GIT_NAME = "Software Agent Factory"
+_FACTORY_GIT_EMAIL = "software-agent-factory@example.invalid"
+_FACTORY_GIT_IDENTITY = (
+    "-c",
+    f"user.name={_FACTORY_GIT_NAME}",
+    "-c",
+    f"user.email={_FACTORY_GIT_EMAIL}",
+)
+_FACTORY_GIT_ENV = {
+    "GIT_AUTHOR_NAME": _FACTORY_GIT_NAME,
+    "GIT_AUTHOR_EMAIL": _FACTORY_GIT_EMAIL,
+    "GIT_COMMITTER_NAME": _FACTORY_GIT_NAME,
+    "GIT_COMMITTER_EMAIL": _FACTORY_GIT_EMAIL,
+}
 
 
 class ProjectError(RuntimeError):
@@ -708,11 +723,13 @@ class ProjectRunner:
             raise ProjectError("; ".join(gate.violations))
         _run_git(
             workspace,
+            *_FACTORY_GIT_IDENTITY,
             "-c",
             "commit.gpgsign=false",
             "commit",
             "-m",
             f"Implement project task {task.id}: {task.title}",
+            env_overrides=_FACTORY_GIT_ENV,
         )
         return _run_git(workspace, "rev-parse", "HEAD").stdout.strip()
 
@@ -720,11 +737,13 @@ class ProjectRunner:
     def _cherry_pick(integration_path: Path, commit_sha: str) -> str | None:
         result = _run_git(
             integration_path,
+            *_FACTORY_GIT_IDENTITY,
             "-c",
             "commit.gpgsign=false",
             "cherry-pick",
             commit_sha,
             check=False,
+            env_overrides=_FACTORY_GIT_ENV,
         )
         if result.returncode == 0:
             return _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
@@ -751,11 +770,16 @@ def _run_git(
     cwd: Path,
     *args: str,
     check: bool = True,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = None
+    if env_overrides is not None:
+        env = {**os.environ, **env_overrides}
     result = subprocess.run(
         ["git", "-C", str(cwd), *args],
         capture_output=True,
         text=True,
+        env=env,
     )
     if check and result.returncode != 0:
         raise ProjectError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")

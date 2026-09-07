@@ -335,6 +335,12 @@ def test_run_happy_path_reaches_pr_ready_with_zero_exit(source_repo: Path, data_
             "Test task",
             "--description",
             "A demonstration task",
+            "--acceptance-criterion",
+            "The demonstration outcome is present.",
+            "--acceptance-criterion",
+            "The source checkout remains unchanged.",
+            "--constraint",
+            "Do not add dependencies.",
             "--data-dir",
             str(data_dir),
         ],
@@ -343,6 +349,14 @@ def test_run_happy_path_reaches_pr_ready_with_zero_exit(source_repo: Path, data_
     assert result.exit_code == 0, result.output
     assert "state: PR_READY" in result.output
     assert "changed files: FACTORY_NOTES.md" in result.output
+    run_dirs = list((data_dir / "runs").iterdir())
+    assert len(run_dirs) == 1
+    work_item = json.loads((run_dirs[0] / "work-item.json").read_text())
+    assert work_item["acceptance_criteria"] == [
+        "The demonstration outcome is present.",
+        "The source checkout remains unchanged.",
+    ]
+    assert work_item["constraints"] == ["Do not add dependencies."]
 
 
 def test_run_non_pr_ready_outcome_uses_nonzero_exit_code(

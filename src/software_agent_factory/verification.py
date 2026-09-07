@@ -174,7 +174,7 @@ class DeterministicVerifier:
             started = time.monotonic()
             timed_out = False
             process = subprocess.Popen(
-                ["/bin/sh", "-lc", command],
+                ["/bin/sh", "-c", command],
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

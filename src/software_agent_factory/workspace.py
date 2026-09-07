@@ -12,18 +12,20 @@ docs/symphony-alignment.md "Deterministic per-task workspaces" /
 - Workspaces are preserved by default; ``cleanup()`` is explicit and is not
   called by the default workflow.
 - An advisory ``fcntl.flock`` held on an open descriptor under
-  ``data_dir/locks`` prevents two runs from operating on the same work item
-  concurrently. Because the kernel drops the lock when the owning process
-  dies, a crashed run never leaves an un-acquirable workspace; acquirers
-  validate the inode they locked so a clean release can also unlink the
-  file.
+  ``data_dir/locks`` prevents two runs in that factory data directory from
+  operating on the same work item concurrently. Because the kernel drops the
+  lock when the owning process dies, a crashed run never leaves an
+  un-acquirable workspace; acquirers validate the inode they locked so a clean
+  release can also unlink the file.
 - ``git worktree add``/``prune`` rewrite administrative metadata shared by
   every worktree of a repository, so the whole ``prepare()`` sequence is
-  serialized under a per-source-repo flock. That flock is acquired with a
-  blocking (not polling) ``fcntl.flock`` call and has no timeout: a slow
-  checkout by another run is a normal, bounded wait, not a failure, and a
-  blocking flock wakes immediately (no busy-waiting) the instant the kernel
-  drops the lock, including when the holder crashes.
+  serialized under a flock stored in the repository's common Git directory.
+  This remains shared even when concurrent factory processes use different
+  data directories. The flock is acquired with a blocking (not polling)
+  ``fcntl.flock`` call and has no timeout: a slow checkout by another run is a
+  normal, bounded wait, not a failure, and a blocking flock wakes immediately
+  (no busy-waiting) the instant the kernel drops the lock, including when the
+  holder crashes.
 - ``prepare()`` is idempotent: re-running it against an already registered,
   present worktree is a no-op that returns the same path and base commit.
 - The controller (not this module) is responsible for turning collected
@@ -191,9 +193,9 @@ class GitWorktreeWorkspace:
         self._meta_path = self.workspace_root / f"{self.key}.meta.json"
 
         common_dir = self._git_common_dir()
-        source_digest = hashlib.sha256(str(common_dir).encode("utf-8")).hexdigest()[:_HASH_LEN]
         self.prune_lock_path = _ensure_strictly_within(
-            self.locks_root / f"prune-{source_digest}.lock", self.locks_root
+            common_dir / "software-agent-factory-worktree.lock",
+            common_dir,
         )
 
         self._lock_fd: int | None = None

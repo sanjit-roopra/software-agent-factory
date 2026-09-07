@@ -367,6 +367,20 @@ def test_prune_lock_is_shared_by_main_checkout_and_linked_worktree(
     assert project.prune_lock_path == child.prune_lock_path
 
 
+def test_prune_lock_is_shared_across_factory_data_directories(
+    source_repo: Path,
+    tmp_path: Path,
+) -> None:
+    first = GitWorktreeWorkspace(tmp_path / "first-data", source_repo, "FIRST")
+    second = GitWorktreeWorkspace(tmp_path / "second-data", source_repo, "SECOND")
+
+    assert first.prune_lock_path == second.prune_lock_path
+    common_dir = Path(_git(source_repo, "rev-parse", "--git-common-dir").strip())
+    if not common_dir.is_absolute():
+        common_dir = source_repo / common_dir
+    assert first.prune_lock_path.is_relative_to(common_dir.resolve())
+
+
 def test_prune_lock_waits_for_a_slow_holder_instead_of_failing(
     source_repo: Path, data_dir: Path
 ) -> None:

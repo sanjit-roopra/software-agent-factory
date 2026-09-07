@@ -55,7 +55,8 @@ Run one work item synchronously through the whole workflow.
 factory run \
   --repo ~/projects/example \
   --title "Reject empty customer names" \
-  --description "Return HTTP 400 for empty or whitespace-only names."
+  --description "Return HTTP 400 for empty or whitespace-only names." \
+  --acceptance-criterion "Empty or whitespace-only names return HTTP 400."
 ```
 
 | Option | Required | Default | Effect |
@@ -63,6 +64,8 @@ factory run \
 | `--repo <path>` | yes | — | Path to the target Git repository. |
 | `--title <str>` | yes | — | Short title for the work item. |
 | `--description <str>` | yes | — | Description of the work to perform. |
+| `--acceptance-criterion <str>` | no | none | Required outcome; repeat as needed. |
+| `--constraint <str>` | no | none | Work item constraint; repeat as needed. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
