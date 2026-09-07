@@ -28,8 +28,8 @@ EXPECTED_ACTIONS = {
     "actions/download-artifact": ("3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "v8.0.1"),
     "actions/configure-pages": ("45bfe0192ca1faeb007ade9deae92b16b8254a0d", "v6.0.0"),
     "actions/dependency-review-action": (
-        "2031cfc080254a8a887f58cffee85186f0e49e48",
-        "v4.9.0",
+        "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+        "v5.0.0",
     ),
     "actions/deploy-pages": ("368f82528645a54fb793d4d04e342629a3f51346", "v5.0.1"),
     "actions/upload-pages-artifact": (
