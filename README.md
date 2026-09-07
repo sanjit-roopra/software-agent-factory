@@ -64,6 +64,7 @@ uv run factory run \
   --repo ~/projects/example \
   --title "Reject empty customer names" \
   --description "Return HTTP 400 for empty or whitespace-only names." \
+  --acceptance-criterion "Empty or whitespace-only names return HTTP 400." \
   --config config/factory.example.yaml \
   --data-dir ./.factory-demo
 ```

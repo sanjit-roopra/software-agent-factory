@@ -121,8 +121,10 @@ never mutates run state.
 `git worktree add` and `git worktree prune` both rewrite repository-global
 administrative metadata. With `scheduler.max_concurrent_tasks = 2` two runs can
 prepare workspaces against the same repository simultaneously, so the whole
-`prepare()` sequence is held under a per-source-repo `flock`. Per-work-item
-workspace locks remain separate and are what prevent duplicate active work.
+`prepare()` sequence is held under a per-source-repo `flock` in the repository's
+common Git directory. The lock is therefore shared even when factory processes
+use different data directories. Per-work-item workspace locks remain separate
+and are what prevent duplicate active work within one factory data directory.
 
 ## ADR-013: Tracked work is dispatched at most once
 

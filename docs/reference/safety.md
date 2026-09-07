@@ -97,7 +97,9 @@ numbers.
   subprocess environment — never as a command-line argument, where it would land
   in the process list.
 - Repository commands run with an environment allowlist: `PATH`, `HOME`, `LANG`,
-  `TERM` and whatever you named in `env_passthrough`. Nothing else is inherited.
+  `TERM` and whatever you named in `env_passthrough`. Nothing else is inherited,
+  and commands use a non-login shell so profile files cannot reintroduce filtered
+  variables.
 - Captured command output and structured logs are redacted for token-shaped
   strings before they are written.
 

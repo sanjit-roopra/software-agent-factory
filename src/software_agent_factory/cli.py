@@ -310,6 +310,16 @@ def run_command(
     description: str = typer.Option(
         ..., "--description", help="Description of the work to perform."
     ),
+    acceptance_criteria: list[str] | None = typer.Option(
+        None,
+        "--acceptance-criterion",
+        help="Required work item outcome. Repeat for multiple criteria.",
+    ),
+    constraints: list[str] | None = typer.Option(
+        None,
+        "--constraint",
+        help="Work item constraint. Repeat for multiple constraints.",
+    ),
     work_item_id: str = typer.Option(
         None,
         "--work-item-id",
@@ -354,6 +364,8 @@ def run_command(
         id=work_item_id or f"WI-{uuid4().hex[:12]}",
         title=title,
         description=description,
+        acceptance_criteria=acceptance_criteria or [],
+        constraints=constraints or [],
     )
 
     run = controller.run(work_item, repo)

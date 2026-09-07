@@ -569,3 +569,45 @@ def test_project_commit_rejects_protected_files_and_empty_changes(
     (factory_source_repo / ".env").write_text("SECRET=value\n", encoding="utf-8")
     with pytest.raises(ProjectError, match="protected patterns"):
         runner._commit_child(run, task)
+
+
+def test_project_commits_use_factory_identity_without_ambient_git_identity(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Ambient Author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "ambient-author@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Ambient Committer")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "ambient-committer@example.com")
+    git(factory_source_repo, "config", "--unset-all", "user.name")
+    git(factory_source_repo, "config", "--unset-all", "user.email")
+    git(factory_source_repo, "config", "user.useConfigOnly", "true")
+
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(),
+    )
+    brief = ProjectBrief(
+        id="project-factory-identity",
+        title="Create a deterministic commit",
+        description="Do not depend on the operator's Git identity.",
+        repository_path=str(factory_source_repo),
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert execution.integration_workspace is not None
+    identity = git(
+        Path(execution.integration_workspace),
+        "show",
+        "-s",
+        "--format=%an <%ae>|%cn <%ce>",
+        "HEAD",
+    ).strip()
+    assert identity == (
+        "Software Agent Factory <software-agent-factory@example.invalid>|"
+        "Software Agent Factory <software-agent-factory@example.invalid>"
+    )

@@ -144,9 +144,8 @@ repository:
 | `max_changed_files` | int > 0 | `100` | Hard ceiling on changed files in one change. |
 | `protected_file_patterns` | list of globs | see below | Paths a change may never touch. |
 
-Commands are argument lists executed directly. There is no shell, so `&&`,
-pipes, globs and shell profile lookups do not work. Split each step onto its own
-line.
+Commands are strings executed by a non-login `/bin/sh`. Shell operators such as
+`&&`, pipes, redirects and globs work, but login profiles are not loaded.
 
 Commands never inherit your environment. They get `PATH`, `HOME`, `LANG` and
 `TERM`, plus the names in `env_passthrough`. Credentials such as `GH_TOKEN` and
