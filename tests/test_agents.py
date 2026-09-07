@@ -11,7 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
+from software_agent_factory.agents import (
+    RUNTIME_FAILURE_REASON_LIMIT,
+    AgentRequest,
+    AgentResult,
+    FakeAgentRuntime,
+    runtime_exception_failure_reason,
+)
 from software_agent_factory.models import (
     GENERIC_SKILL_TARGET,
     AgentPurpose,
@@ -44,6 +50,13 @@ def _work_item(**overrides: object) -> WorkItem:
     }
     defaults.update(overrides)
     return WorkItem(**defaults)  # type: ignore[arg-type]
+
+
+def test_runtime_exception_failure_reason_is_bounded() -> None:
+    reason = runtime_exception_failure_reason(RuntimeError("x" * 5000))
+
+    assert reason.startswith("RuntimeError: ")
+    assert len(reason) == RUNTIME_FAILURE_REASON_LIMIT
 
 
 def test_agent_result_requires_failure_reason_when_not_success() -> None:

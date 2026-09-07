@@ -56,8 +56,10 @@ rules applied to captured command output. Nothing is exported anywhere: no
 telemetry backend, no exporter, no network egress.
 
 Every agent invocation is recorded with run id, role, model, reasoning level,
-timings, attempt number and result. Token usage and cost are recorded only if
-the runtime reports them, which none does today.
+context tier, timings, attempt number and result. The Copilot runtime also
+persists token, timing, nano-AIU and premium-request-cost fields when its
+usage-output file reports them. Missing fields remain unknown; no USD estimate
+is synthesized.
 
 ## Read-only dashboard
 
@@ -114,6 +116,12 @@ the factory or upgrading it. It happens only because you typed this command.
 
 It defaults to `--runtime fake`, so an installed-and-forgotten agent cannot
 spend money. Use `--runtime copilot` to opt in deliberately.
+
+Use `--model-profile economy` to persist the packaged lower-cost routing
+selection in the LaunchAgent's arguments.
+
+Use `--model-profile security` when the higher-cost Astra Tester plus Sol
+Reviewer route is appropriate for a security-sensitive backlog.
 
 Useful flags:
 

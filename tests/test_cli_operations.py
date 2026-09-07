@@ -182,6 +182,7 @@ def test_doctor_passes_config_data_dir_and_runtime_through(
     assert captured == {
         "config_path": config_path,
         "data_dir_override": data_dir,
+        "model_profile": "default",
         "requested_runtime_copilot": True,
     }
 
@@ -777,6 +778,8 @@ def test_service_install_defaults_to_the_fake_runtime(
 
     assert "--runtime" in build_program_arguments(captured["request"])
     assert build_program_arguments(captured["request"])[-1] == "fake"
+    args = build_program_arguments(captured["request"])
+    assert args[args.index("--model-profile") + 1] == "default"
 
 
 def test_service_install_refuses_a_relative_repo_path(

@@ -289,6 +289,31 @@ def test_invalid_config_fails_with_one_line_and_no_traceback(
     assert "Traceback" not in result.output
 
 
+def test_unknown_model_profile_fails_before_creating_a_run(
+    source_repo: Path, data_dir: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "T",
+            "--description",
+            "D",
+            "--model-profile",
+            "missing",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "unknown model profile 'missing'" in result.output
+    assert not (data_dir / "runs").exists()
+
+
 def test_missing_config_file_fails_cleanly(source_repo: Path, tmp_path: Path) -> None:
     result = runner.invoke(
         app,

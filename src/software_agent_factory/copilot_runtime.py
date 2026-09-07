@@ -10,10 +10,13 @@ response.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import re
 import signal
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
@@ -23,7 +26,15 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from .agents import AgentRequest, AgentResult, AgentRuntime
-from .models import AgentPurpose, AgentRole, ModelBase, ProjectPlan, RepositorySkill
+from .models import (
+    AgentPurpose,
+    AgentRole,
+    ModelBase,
+    ModelUsage,
+    ProjectPlan,
+    RepositorySkill,
+    UsageMetrics,
+)
 from .prompts import (
     RoleName,
     artifact_model_for_role,
@@ -42,6 +53,8 @@ ResultField: TypeAlias = Literal[
     "repository_skill",
     "project_plan",
 ]
+
+logger = logging.getLogger(__name__)
 
 READ_ONLY_TOOLS = ("glob", "grep", "view")
 #: The skill researcher reads public documentation only: no repository
@@ -130,79 +143,113 @@ class CopilotAgentRuntime(AgentRuntime):
 
         cwd = self._cwd_for(request)
         prompt = build_prompt(request)
-        command = self._build_command(request, prompt=prompt, cwd=cwd)
         child_env, scrubbed_values = _build_child_env()
 
-        try:
-            process = subprocess.Popen(
-                command,
+        with tempfile.TemporaryDirectory(
+            prefix="software-agent-factory-usage-",
+            ignore_cleanup_errors=True,
+        ) as temp_dir:
+            usage_path = Path(temp_dir) / "usage.json"
+            command = self._build_command(
+                request,
+                prompt=prompt,
                 cwd=cwd,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
+                usage_output_path=usage_path,
             )
-        except OSError as exc:
-            # A missing or unusable copilot executable is an agent failure the
-            # controller can record and bound, not a factory crash.
-            reason = _format_failure_reason(
-                role=request.role,
-                message=f"copilot could not be started ({type(exc).__name__})",
-                stdout="",
-                stderr=str(exc),
-                scrubbed_values=scrubbed_values,
-                limit=self._max_error_chars,
-            )
-            return AgentResult(role=request.role, success=False, failure_reason=reason)
-        try:
-            stdout, stderr = process.communicate(timeout=request.timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = process.communicate()
-            stdout = stdout or _decode_timeout_text(exc.stdout)
-            stderr = stderr or _decode_timeout_text(exc.stderr)
-            reason = _format_failure_reason(
-                role=request.role,
-                message=f"copilot timed out after {request.timeout_seconds}s",
-                stdout=stdout,
-                stderr=stderr,
-                scrubbed_values=scrubbed_values,
-                limit=self._max_error_chars,
-            )
-            return AgentResult(role=request.role, success=False, failure_reason=reason)
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=child_env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                # A missing or unusable copilot executable is an agent failure the
+                # controller can record and bound, not a factory crash.
+                reason = _format_failure_reason(
+                    role=request.role,
+                    message=f"copilot could not be started ({type(exc).__name__})",
+                    stdout="",
+                    stderr=str(exc),
+                    scrubbed_values=scrubbed_values,
+                    limit=self._max_error_chars,
+                )
+                return AgentResult(role=request.role, success=False, failure_reason=reason)
+            try:
+                stdout, stderr = process.communicate(timeout=request.timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+                stdout = stdout or _decode_timeout_text(exc.stdout)
+                stderr = stderr or _decode_timeout_text(exc.stderr)
+                usage = _load_usage_metrics(usage_path, stdout=stdout)
+                reason = _format_failure_reason(
+                    role=request.role,
+                    message=f"copilot timed out after {request.timeout_seconds}s",
+                    stdout=stdout,
+                    stderr=stderr,
+                    scrubbed_values=scrubbed_values,
+                    limit=self._max_error_chars,
+                )
+                return AgentResult(
+                    role=request.role,
+                    success=False,
+                    failure_reason=reason,
+                    usage=usage,
+                )
 
-        if process.returncode != 0:
-            reason = _format_failure_reason(
-                role=request.role,
-                message=f"copilot exited with code {process.returncode}",
-                stdout=stdout,
-                stderr=stderr,
-                scrubbed_values=scrubbed_values,
-                limit=self._max_error_chars,
-            )
-            return AgentResult(role=request.role, success=False, failure_reason=reason)
+            usage = _load_usage_metrics(usage_path, stdout=stdout)
+            if process.returncode != 0:
+                reason = _format_failure_reason(
+                    role=request.role,
+                    message=f"copilot exited with code {process.returncode}",
+                    stdout=stdout,
+                    stderr=stderr,
+                    scrubbed_values=scrubbed_values,
+                    limit=self._max_error_chars,
+                )
+                return AgentResult(
+                    role=request.role,
+                    success=False,
+                    failure_reason=reason,
+                    usage=usage,
+                )
 
-        try:
-            artifact = parse_copilot_artifact(
-                request.role,
-                purpose=request.purpose,
-                stdout=stdout,
-            )
-        except ValueError as exc:
-            reason = _format_failure_reason(
-                role=request.role,
-                message=str(exc),
-                stdout=stdout,
-                stderr=stderr,
-                scrubbed_values=scrubbed_values,
-                limit=self._max_error_chars,
-            )
-            return AgentResult(role=request.role, success=False, failure_reason=reason)
+            try:
+                artifact = parse_copilot_artifact(
+                    request.role,
+                    purpose=request.purpose,
+                    stdout=stdout,
+                )
+            except ValueError as exc:
+                reason = _format_failure_reason(
+                    role=request.role,
+                    message=str(exc),
+                    stdout=stdout,
+                    stderr=stderr,
+                    scrubbed_values=scrubbed_values,
+                    limit=self._max_error_chars,
+                )
+                return AgentResult(
+                    role=request.role,
+                    success=False,
+                    failure_reason=reason,
+                    usage=usage,
+                )
 
-        result_field = _artifact_spec(request.role, request.purpose).result_field
-        return AgentResult(role=request.role, success=True, **{result_field: artifact})
+            result_field = _artifact_spec(request.role, request.purpose).result_field
+            return AgentResult.model_validate(
+                {
+                    "role": request.role,
+                    "success": True,
+                    "usage": usage,
+                    result_field: artifact,
+                }
+            )
 
     def _cwd_for(self, request: AgentRequest) -> Path:
         if request.workspace_path:
@@ -215,7 +262,14 @@ class CopilotAgentRuntime(AgentRuntime):
             )
         return Path(os.getcwd()).expanduser().resolve()
 
-    def _build_command(self, request: AgentRequest, *, prompt: str, cwd: Path) -> list[str]:
+    def _build_command(
+        self,
+        request: AgentRequest,
+        *,
+        prompt: str,
+        cwd: Path,
+        usage_output_path: Path | None = None,
+    ) -> list[str]:
         profile = _permission_profile(request)
         command = [
             self._executable,
@@ -225,6 +279,8 @@ class CopilotAgentRuntime(AgentRuntime):
             request.model,
             "--reasoning-effort",
             request.reasoning,
+            "--context",
+            str(request.context_tier),
             "--output-format",
             "json",
             "--stream",
@@ -239,6 +295,8 @@ class CopilotAgentRuntime(AgentRuntime):
             "--available-tools",
             ",".join(profile.available_tools),
         ]
+        if usage_output_path is not None:
+            command.extend(["--usage-output-file", str(usage_output_path)])
         if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
             command.append("--no-custom-instructions")
             for url in _skill_research_urls(request):
@@ -247,6 +305,212 @@ class CopilotAgentRuntime(AgentRuntime):
             command.extend(["--deny-tool", denied_permission])
         command.extend(["-p", prompt])
         return command
+
+
+def _load_usage_metrics(path: Path, *, stdout: str) -> UsageMetrics | None:
+    file_metrics: UsageMetrics | None = None
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("could not read Copilot usage output at %s: %s", path, exc)
+    else:
+        try:
+            file_metrics = parse_copilot_usage(json.loads(raw))
+        except (JSONDecodeError, ValueError) as exc:
+            logger.warning("ignored malformed Copilot usage output at %s: %s", path, exc)
+
+    result_metrics = _parse_stream_usage(stdout)
+    if file_metrics is None:
+        return result_metrics
+    if result_metrics is None:
+        return file_metrics
+    updates: dict[str, object] = {}
+    if result_metrics.premium_requests is not None:
+        updates["premium_requests"] = result_metrics.premium_requests
+    if result_metrics.total_nano_aiu is not None and file_metrics.total_nano_aiu is None:
+        updates["total_nano_aiu"] = result_metrics.total_nano_aiu
+    if result_metrics.total_api_duration_ms is not None:
+        updates["total_api_duration_ms"] = (
+            file_metrics.total_api_duration_ms
+            if file_metrics.total_api_duration_ms is not None
+            else result_metrics.total_api_duration_ms
+        )
+    if result_metrics.session_duration_ms is not None:
+        updates["session_duration_ms"] = result_metrics.session_duration_ms
+    return file_metrics.model_copy(update=updates)
+
+
+def parse_copilot_usage(payload: object) -> UsageMetrics | None:
+    """Parse the experimental aggregate usage file conservatively."""
+
+    if not isinstance(payload, dict):
+        return None
+
+    model_usage: list[ModelUsage] = []
+    raw_model_metrics = payload.get("modelMetrics")
+    if isinstance(raw_model_metrics, dict):
+        for model, raw_metrics in raw_model_metrics.items():
+            if not isinstance(model, str) or not model.strip() or not isinstance(raw_metrics, dict):
+                continue
+            requests = raw_metrics.get("requests")
+            usage = raw_metrics.get("usage")
+            requests = requests if isinstance(requests, dict) else {}
+            usage = usage if isinstance(usage, dict) else {}
+            parsed = ModelUsage(
+                model=model.strip(),
+                requests=_non_negative_int(requests.get("count")),
+                premium_request_cost=_non_negative_float(requests.get("cost")),
+                input_tokens=_non_negative_int(usage.get("inputTokens")),
+                output_tokens=_non_negative_int(usage.get("outputTokens")),
+                reasoning_tokens=_non_negative_int(usage.get("reasoningTokens")),
+                cache_read_tokens=_non_negative_int(usage.get("cacheReadTokens")),
+                cache_write_tokens=_non_negative_int(usage.get("cacheWriteTokens")),
+                total_nano_aiu=_non_negative_int(raw_metrics.get("totalNanoAiu")),
+            )
+            if any(value is not None for name, value in parsed if name != "model"):
+                model_usage.append(parsed)
+
+    current_model = payload.get("currentModel")
+    token_details = payload.get("tokenDetails")
+    token_details = token_details if isinstance(token_details, dict) else {}
+    metrics = UsageMetrics(
+        current_model=(
+            current_model.strip()
+            if isinstance(current_model, str) and current_model.strip()
+            else None
+        ),
+        total_premium_request_cost=_non_negative_float(payload.get("totalPremiumRequestCost")),
+        total_user_requests=_non_negative_int(payload.get("totalUserRequests")),
+        total_nano_aiu=_non_negative_int(payload.get("totalNanoAiu")),
+        total_api_duration_ms=_non_negative_int(payload.get("totalApiDurationMs")),
+        input_tokens=_token_detail_count(token_details.get("input")),
+        output_tokens=_token_detail_count(token_details.get("output")),
+        reasoning_tokens=_token_detail_count(token_details.get("reasoning")),
+        cache_read_tokens=_token_detail_count(token_details.get("cache_read")),
+        cache_write_tokens=_token_detail_count(token_details.get("cache_write")),
+        last_call_input_tokens=_non_negative_int(payload.get("lastCallInputTokens")),
+        last_call_output_tokens=_non_negative_int(payload.get("lastCallOutputTokens")),
+        model_usage=tuple(model_usage),
+    )
+    return metrics if _has_reported_usage(metrics) else None
+
+
+def _parse_result_usage(stdout: str) -> UsageMetrics | None:
+    latest: dict[str, object] | None = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "result":
+            continue
+        usage = event.get("usage")
+        data = event.get("data")
+        if isinstance(usage, dict):
+            latest = usage
+        elif isinstance(data, dict):
+            latest = data
+        else:
+            latest = event
+    if latest is None:
+        return None
+    metrics = UsageMetrics(
+        premium_requests=_non_negative_float(latest.get("premiumRequests")),
+        total_api_duration_ms=_non_negative_int(latest.get("totalApiDurationMs")),
+        session_duration_ms=_non_negative_int(latest.get("sessionDurationMs")),
+    )
+    return metrics if _has_reported_usage(metrics) else None
+
+
+def _parse_usage_checkpoint(stdout: str) -> UsageMetrics | None:
+    latest: dict[str, object] | None = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "session.usage_checkpoint":
+            continue
+        data = event.get("data")
+        if isinstance(data, dict):
+            latest = data
+    if latest is None:
+        return None
+    metrics = UsageMetrics(
+        premium_requests=_non_negative_float(latest.get("totalPremiumRequests")),
+        total_nano_aiu=_non_negative_int(latest.get("totalNanoAiu")),
+        total_api_duration_ms=_non_negative_int(latest.get("totalApiDurationMs")),
+        session_duration_ms=_non_negative_int(latest.get("sessionDurationMs")),
+    )
+    return metrics if _has_reported_usage(metrics) else None
+
+
+def _parse_stream_usage(stdout: str) -> UsageMetrics | None:
+    checkpoint = _parse_usage_checkpoint(stdout)
+    result = _parse_result_usage(stdout)
+    if checkpoint is None:
+        return result
+    if result is None:
+        return checkpoint
+    return checkpoint.model_copy(
+        update={
+            name: value
+            for name in (
+                "premium_requests",
+                "total_api_duration_ms",
+                "session_duration_ms",
+            )
+            if (value := getattr(result, name)) is not None
+        }
+    )
+
+
+def _has_reported_usage(metrics: UsageMetrics) -> bool:
+    numeric_fields = (
+        metrics.premium_requests,
+        metrics.total_premium_request_cost,
+        metrics.total_user_requests,
+        metrics.total_nano_aiu,
+        metrics.total_api_duration_ms,
+        metrics.session_duration_ms,
+        metrics.input_tokens,
+        metrics.output_tokens,
+        metrics.reasoning_tokens,
+        metrics.cache_read_tokens,
+        metrics.cache_write_tokens,
+        metrics.last_call_input_tokens,
+        metrics.last_call_output_tokens,
+    )
+    return any(value is not None for value in numeric_fields) or bool(metrics.model_usage)
+
+
+def _non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+        return int(value)
+    return None
+
+
+def _non_negative_float(value: object) -> float | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        return None
+    return float(value)
+
+
+def _token_detail_count(value: object) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    return _non_negative_int(value.get("tokenCount"))
 
 
 def parse_copilot_artifact(

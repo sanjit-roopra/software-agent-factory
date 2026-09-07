@@ -174,7 +174,7 @@ so it is reused. After the first successful deterministic verification the
 controller re-profiles the post-implementation worktree and loads the generated
 skill for that fingerprint. Only when no generated skill exists for it does the
 run transition through a temporary `RESEARCHING` state and ask the configured
-Researcher (`GPT-5.6 Sol` by default) to generate one. An existing generated
+Researcher (`Claude Opus 5` by default) to generate one. An existing generated
 file is never overwritten, a dependency change simply selects a new one, and
 nothing expires on a timer.
 

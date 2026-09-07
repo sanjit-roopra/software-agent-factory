@@ -203,7 +203,7 @@ Generation is repository-wide, not task-scoped. When `polish.enabled` and the
 bounded polish attempt is eligible, the controller re-profiles the
 post-implementation worktree and reuses the generated skill that matches the
 current `dependency_fingerprint`. It transitions through a temporary
-`RESEARCHING` state and invokes the configured Researcher (`GPT-5.6 Sol` by
+`RESEARCHING` state and invokes the configured Researcher (`Claude Opus 5` by
 default) with purpose `GENERATE_REPOSITORY_SKILL` only when the current
 fingerprint has no generated skill yet. Never overwrite an existing generated
 file: a changed fingerprint selects a new file and earlier ones remain. There
@@ -389,13 +389,13 @@ Initial desired routing:
 
 ```text
 Triage
-  Claude Sonnet 5
+  GPT-5.6 Terra
 
 Specification Refiner
-  Claude Opus 5
+  GPT-5.5
 
 Researcher
-  GPT-5.6 Sol
+  Claude Opus 5
 
 Planner
   Claude Opus 5
@@ -404,16 +404,16 @@ L0 Worker
   MAI-Code-1.1-Flash
 
 L1 Worker
-  Claude Sonnet 5
+  Gemini 3.8 Flash
 
 L2 Worker
-  Claude Opus 5
+  Claude Sonnet 5
 
 L3 Worker
   Claude Opus 5
 
 Tester
-  Claude Sonnet 5
+  Gemini 3.8 Flash
 
 Reviewer
   GPT-5.6 Sol

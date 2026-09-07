@@ -37,6 +37,15 @@ uv run factory run \
 
 Nothing else changes. Same states, same artifacts, same gates.
 
+Use `--model-profile economy` to select the packaged lower-cost routing table.
+The option is also available on `project`, `start`, `doctor`, `skill refresh`
+and `service install`.
+
+Use `--model-profile security` for an expensive security-focused route:
+GPT-6 Astra performs the independent Tester pass and GPT-5.6 Sol remains the
+final Reviewer. Keeping Astra out of the worker map preserves the rule that a
+reviewer model family may not review its own worker family.
+
 Before triage, the controller profiles the prepared worktree without shell,
 network or imports and persists `repository-profile.json`. This scan itself
 does not call Copilot.
@@ -45,18 +54,18 @@ does not call Copilot.
 
 Model choice is configuration, not code. The packaged defaults:
 
-| Role | Model | Reasoning |
-| --- | --- | --- |
-| Triage | `claude-sonnet-5` | medium |
-| Refiner | `claude-opus-5` | high |
-| Researcher | `gpt-5.6-sol` | high |
-| Planner | `claude-opus-5` | high |
-| Worker L0 | `mai-code-1.1-flash` | medium |
-| Worker L1 | `claude-sonnet-5` | medium |
-| Worker L2 | `claude-opus-5` | high |
-| Worker L3 | `claude-opus-5` | high |
-| Tester | `claude-sonnet-5` | high |
-| Reviewer | `gpt-5.6-sol` | high |
+| Role | Model | Reasoning | Context |
+| --- | --- | --- | --- |
+| Triage | `gpt-5.6-terra` | medium | default |
+| Refiner | `gpt-5.5` | high | default |
+| Researcher | `claude-opus-5` | high | default |
+| Planner | `claude-opus-5` | high | default |
+| Worker L0 | `mai-code-1.1-flash` | medium | default |
+| Worker L1 | `gemini-3.8-flash` | high | default |
+| Worker L2 | `claude-sonnet-5` | high | default |
+| Worker L3 | `claude-opus-5` | high | default |
+| Tester | `gemini-3.8-flash` | high | default |
+| Reviewer | `gpt-5.6-sol` | high | default |
 
 Triage assigns a complexity level, `L0` to `L3`, and that selects the worker
 model. Cheap mechanical work gets a cheap model.
@@ -64,6 +73,10 @@ model. Cheap mechanical work gets a cheap model.
 Configuration rejects a reviewer whose model family matches any worker's. The
 final review always comes from a different family than the code that produced
 the change. See [Configuration](../reference/configuration.md#models).
+
+For current model prices, context and reasoning capabilities, benchmark
+evidence, and role-specific tradeoffs, see
+[Model selection, cost and benchmarks](../reference/model-selection.md).
 
 ## Repository skills
 
@@ -79,7 +92,7 @@ and its `dependency_fingerprint`. Nothing is written into your repository, and
 the factory never loads guidance from it.
 
 - The **generated skill** describes the repository, not the task. The
-  configured Researcher (`GPT-5.6 Sol` by default) produces it from the
+  configured Researcher (`Claude Opus 5` in the default profile) produces it from the
   normalized profile and the configured source lists only — no changed
   filenames, source code, README content, task prose or diff — with web access
   limited to `polish.official_documentation_origins` (authoritative for version
@@ -141,12 +154,14 @@ run's bounded retry budget like any other failure.
 
 ## Cost and usage reporting
 
-Token usage and cost are recorded only when the runtime actually reports them.
-No runtime reports them today, so those fields stay unknown. They are never
-defaulted to zero and never reconstructed from a price table.
+The runtime passes `--context` and `--usage-output-file` explicitly to Copilot.
+Run and project artifacts persist reported input, output, reasoning and cache
+tokens, timing, nano-AIU and premium-request cost. `factory status` and the
+local dashboard derive summaries from those records.
 
-If you need spend numbers, get them from your GitHub Copilot billing, not from
-`factory status`.
+Missing or malformed usage stays unknown. The factory does not convert raw
+premium-request cost or nano-AIU to AI Credits or USD, so GitHub billing
+remains authoritative for spend.
 
 ## Sensible practice
 

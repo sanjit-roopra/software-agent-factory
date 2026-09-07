@@ -70,6 +70,11 @@ class AgentPurpose(StrEnum):
     GENERATE_REPOSITORY_SKILL = "GENERATE_REPOSITORY_SKILL"
 
 
+class ContextTier(StrEnum):
+    DEFAULT = "default"
+    LONG_CONTEXT = "long_context"
+
+
 class AttemptBudget(StrEnum):
     """Which bounded retry budget an attempt consumes.
 
@@ -475,6 +480,7 @@ class ProjectExecution(VersionedModel):
     project_id: str = Field(pattern=PROJECT_ID_PATTERN)
     state: ProjectState
     tasks: tuple[ProjectTaskExecution, ...] = ()
+    invocation_records: list[InvocationRecord] = Field(default_factory=list)
     integration_workspace: str | None = None
     integration_branch: str | None = None
     created_at: UtcDateTime = Field(default_factory=utc_now)
@@ -496,11 +502,78 @@ class ProjectExecution(VersionedModel):
         return self
 
 
+class ModelUsage(ModelBase):
+    """Runtime-reported usage for one model within an invocation."""
+
+    model: str = Field(min_length=1)
+    requests: int | None = Field(default=None, ge=0)
+    premium_request_cost: float | None = Field(default=None, ge=0.0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    total_nano_aiu: int | None = Field(default=None, ge=0)
+
+
+class UsageMetrics(ModelBase):
+    """Optional aggregate usage reported by the Copilot runtime.
+
+    Values are persisted exactly as reported. They are not converted to AI
+    Credits or USD, and missing values remain unknown rather than becoming
+    zero.
+    """
+
+    current_model: str | None = None
+    premium_requests: float | None = Field(default=None, ge=0.0)
+    total_premium_request_cost: float | None = Field(default=None, ge=0.0)
+    total_user_requests: int | None = Field(default=None, ge=0)
+    total_nano_aiu: int | None = Field(default=None, ge=0)
+    total_api_duration_ms: int | None = Field(default=None, ge=0)
+    session_duration_ms: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    last_call_input_tokens: int | None = Field(default=None, ge=0)
+    last_call_output_tokens: int | None = Field(default=None, ge=0)
+    model_usage: tuple[ModelUsage, ...] = ()
+
+
+class InvocationRecord(ModelBase):
+    """One persisted agent invocation, independent of retry-budget attempts."""
+
+    invocation_number: int = Field(ge=1)
+    role: AgentRole
+    purpose: AgentPurpose = AgentPurpose.STANDARD
+    model: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+    context_tier: ContextTier = ContextTier.DEFAULT
+    started_at: UtcDateTime
+    completed_at: UtcDateTime
+    success: bool
+    failure_reason: str | None = None
+    attempt_number: int | None = Field(default=None, ge=1)
+    budget: AttemptBudget | None = None
+    usage: UsageMetrics | None = None
+
+    @model_validator(mode="after")
+    def _validate_invocation(self) -> InvocationRecord:
+        if self.completed_at < self.started_at:
+            raise ValueError("completed_at must be greater than or equal to started_at")
+        if not self.success and not self.failure_reason:
+            raise ValueError("failure_reason is required when success is False")
+        return self
+
+
 class AttemptRecord(ModelBase):
     attempt_number: int = Field(ge=1)
     role: AgentRole
     model: str = Field(min_length=1)
     reasoning: str = Field(min_length=1)
+    context_tier: ContextTier = ContextTier.DEFAULT
+    invocation_number: int | None = Field(default=None, ge=1)
     started_at: UtcDateTime
     completed_at: UtcDateTime
     outcome: str = Field(min_length=1)
@@ -532,6 +605,7 @@ class FactoryRun(VersionedModel):
     work_item_id: str = Field(min_length=1)
     state: WorkflowState
     attempt_records: list[AttemptRecord] = Field(default_factory=list)
+    invocation_records: list[InvocationRecord] = Field(default_factory=list)
     workspace_path: str | None = None
     branch_name: str | None = None
     created_at: UtcDateTime = Field(default_factory=utc_now)

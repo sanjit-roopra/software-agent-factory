@@ -10,11 +10,13 @@ from software_agent_factory.agents import AgentRequest
 from software_agent_factory.copilot_runtime import (
     CopilotAgentRuntime,
     parse_copilot_artifact,
+    parse_copilot_usage,
 )
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
+    ContextTier,
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
@@ -97,6 +99,7 @@ def test_build_command_for_read_only_role_uses_exact_read_only_tools(role: Agent
     assert "--output-format" in command
     assert command[command.index("--output-format") + 1] == "json"
     assert command[command.index("--stream") + 1] == "off"
+    assert command[command.index("--context") + 1] == "default"
     assert "--disable-builtin-mcps" in command
     assert "--no-remote-export" in command
     assert "--no-auto-update" in command
@@ -110,6 +113,87 @@ def test_build_command_for_read_only_role_uses_exact_read_only_tools(role: Agent
 
     denied = [command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"]
     assert denied == ["url"]
+
+
+def test_build_command_passes_context_tier_and_usage_output_path(tmp_path: Path) -> None:
+    runtime = CopilotAgentRuntime()
+    request = _request(AgentRole.TRIAGE, context_tier=ContextTier.LONG_CONTEXT)
+    usage_path = tmp_path / "usage.json"
+
+    command = runtime._build_command(
+        request,
+        prompt="triage",
+        cwd=Path("/repo"),
+        usage_output_path=usage_path,
+    )
+
+    assert command[command.index("--context") + 1] == "long_context"
+    assert command[command.index("--usage-output-file") + 1] == str(usage_path)
+
+
+def test_parse_copilot_usage_preserves_only_reported_values() -> None:
+    usage = parse_copilot_usage(
+        {
+            "totalPremiumRequestCost": 1.0,
+            "totalUserRequests": 1,
+            "totalNanoAiu": 292470077500,
+            "totalApiDurationMs": 890,
+            "currentModel": "gpt-5.6-sol",
+            "lastCallInputTokens": 1195,
+            "lastCallOutputTokens": 59,
+            "tokenDetails": {
+                "input": {"tokenCount": 1195},
+                "output": {"tokenCount": 59},
+                "cache_read": {"tokenCount": 47104},
+                "cache_write": {"tokenCount": 0},
+            },
+            "unknown": {"secret": "ignored"},
+            "modelMetrics": {
+                "gpt-5.6-sol": {
+                    "requests": {"count": 1, "cost": 1.0},
+                    "usage": {
+                        "inputTokens": 1195,
+                        "outputTokens": 59,
+                        "cacheReadTokens": 47104,
+                        "cacheWriteTokens": 0,
+                        "reasoningTokens": 18,
+                    },
+                    "totalNanoAiu": 292470077500,
+                }
+            },
+        }
+    )
+
+    assert usage is not None
+    assert usage.total_premium_request_cost == 1.0
+    assert usage.total_nano_aiu == 292470077500
+    assert usage.input_tokens == 1195
+    assert usage.cache_write_tokens == 0
+    assert usage.model_usage[0].input_tokens == 1195
+    assert usage.model_usage[0].reasoning_tokens == 18
+    assert not hasattr(usage, "unknown")
+
+
+@pytest.mark.parametrize("payload", [None, [], {"totalNanoAiu": -1}, {"totalUserRequests": True}])
+def test_parse_copilot_usage_returns_none_without_valid_reported_values(payload: object) -> None:
+    assert parse_copilot_usage(payload) is None
+
+
+def test_parse_copilot_usage_accepts_whole_float_counters_and_rejects_non_finite_costs() -> None:
+    usage = parse_copilot_usage(
+        {
+            "totalNanoAiu": 1e9,
+            "totalUserRequests": 2.0,
+            "totalPremiumRequestCost": float("nan"),
+            "tokenDetails": {"input": {"tokenCount": 1e4}},
+        }
+    )
+
+    assert usage is not None
+    assert usage.total_nano_aiu == 1_000_000_000
+    assert usage.total_user_requests == 2
+    assert usage.input_tokens == 10_000
+    assert usage.total_premium_request_cost is None
 
 
 def test_build_command_for_implementer_denies_push_and_network() -> None:
@@ -385,6 +469,83 @@ def test_run_uses_workspace_cwd_and_scrubs_github_credentials(
     assert "GITHUB_TOKEN" not in env
     assert "GH_TOKEN" not in env
     assert "GIT_ASKPASS" not in env
+
+
+def test_run_returns_usage_from_temporary_usage_output_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured_usage_path: list[Path] = []
+
+    def fake_popen(command: list[str], **_kwargs: object) -> _FakePopen:
+        usage_path = Path(command[command.index("--usage-output-file") + 1])
+        captured_usage_path.append(usage_path)
+        usage_path.write_text(
+            (
+                '{"totalPremiumRequestCost":1,"totalNanoAiu":123,'
+                '"modelMetrics":{"claude-sonnet-5":{"usage":'
+                '{"inputTokens":100,"outputTokens":20,"reasoningTokens":5}}}}'
+            ),
+            encoding="utf-8",
+        )
+        return _FakePopen(
+            stdout=(
+                '{"summary":"Applied fix","changed_files":["app.py"],'
+                '"tests_added":[],"commands_run":["pytest"]}'
+            )
+        )
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+
+    result = CopilotAgentRuntime().run(
+        _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+    )
+
+    assert result.success is True
+    assert result.usage is not None
+    assert result.usage.total_premium_request_cost == 1.0
+    assert result.usage.model_usage[0].input_tokens == 100
+    assert captured_usage_path and not captured_usage_path[0].exists()
+
+
+def test_run_falls_back_to_result_stream_when_usage_file_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fake_popen(command: list[str], **_kwargs: object) -> _FakePopen:
+        usage_path = Path(command[command.index("--usage-output-file") + 1])
+        usage_path.write_text("{not-json", encoding="utf-8")
+        return _FakePopen(
+            stdout="\n".join(
+                [
+                    (
+                        '{"summary":"Applied fix","changed_files":["app.py"],'
+                        '"tests_added":[],"commands_run":["pytest"]}'
+                    ),
+                    (
+                        '{"type":"result","usage":{"premiumRequests":1.5,'
+                        '"totalApiDurationMs":250,"sessionDurationMs":1200}}'
+                    ),
+                ]
+            )
+        )
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+
+    result = CopilotAgentRuntime().run(
+        _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+    )
+
+    assert result.success is True
+    assert result.usage is not None
+    assert result.usage.premium_requests == 1.5
+    assert result.usage.total_api_duration_ms == 250
+    assert result.usage.session_duration_ms == 1200
 
 
 @pytest.mark.parametrize(
@@ -682,7 +843,11 @@ def test_timeout_kills_process_group_and_returns_failure(
     timeout = subprocess.TimeoutExpired(
         cmd=["copilot"],
         timeout=5,
-        output="partial stdout",
+        output=(
+            '{"type":"session.usage_checkpoint","data":'
+            '{"totalNanoAiu":22456000,"totalPremiumRequests":1}}\n'
+            "partial stdout"
+        ),
         stderr="partial stderr",
     )
 
@@ -702,6 +867,9 @@ def test_timeout_kills_process_group_and_returns_failure(
     assert result.success is False
     assert result.failure_reason is not None
     assert "timed out after 5s" in result.failure_reason
+    assert result.usage is not None
+    assert result.usage.premium_requests == 1.0
+    assert result.usage.total_nano_aiu == 22456000
     assert killed == {"pid": 43210, "sig": signal.SIGKILL}
 
 

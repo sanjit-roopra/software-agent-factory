@@ -168,6 +168,7 @@ class ServiceInstallRequest:
     config_path: Path | None = None
     poll_interval_seconds: int = 30
     runtime: ServiceRuntime = ServiceRuntime.FAKE
+    model_profile: str = "default"
     label: str = DEFAULT_LABEL
     allow_source_dev: bool = False
 
@@ -328,6 +329,7 @@ def build_program_arguments(request: ServiceInstallRequest) -> list[str]:
     if request.config_path is not None:
         args += ["--config", str(request.config_path)]
     args += ["--data-dir", str(request.data_dir)]
+    args += ["--model-profile", request.model_profile]
     args += ["--runtime", request.runtime.value]
     return args
 

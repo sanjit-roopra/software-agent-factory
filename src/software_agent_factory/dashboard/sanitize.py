@@ -55,6 +55,8 @@ RUN_DETAIL_FIELDS: frozenset[str] = RUN_SUMMARY_FIELDS | frozenset(
         "completed_at",
         "commit_sha",
         "pull_request_url",
+        "invocation_count",
+        "usage",
     }
 )
 
@@ -72,6 +74,33 @@ ATTEMPT_FIELDS: frozenset[str] = frozenset(
         "outcome",
         "started_at",
         "completed_at",
+    }
+)
+
+INVOCATION_FIELDS: frozenset[str] = frozenset(
+    {
+        "invocation_number",
+        "role",
+        "model",
+        "context_tier",
+        "success",
+        "usage",
+    }
+)
+
+USAGE_FIELDS: frozenset[str] = frozenset(
+    {
+        "total_premium_request_cost",
+        "total_nano_aiu",
+        "total_api_duration_ms",
+        "session_duration_ms",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reported_invocations",
+        "premium_request_cost",
     }
 )
 
@@ -96,6 +125,27 @@ def sanitize_attempt(raw: Any) -> dict[str, Any]:
     return _allowlist(data, ATTEMPT_FIELDS)
 
 
+def sanitize_usage(raw: Any) -> dict[str, Any]:
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key, value in _allowlist(data, USAGE_FIELDS).items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            sanitized[key] = value
+    return sanitized
+
+
+def sanitize_invocation(raw: Any) -> dict[str, Any]:
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        return {}
+    sanitized = _allowlist(data, INVOCATION_FIELDS)
+    if "usage" in sanitized:
+        sanitized["usage"] = sanitize_usage(sanitized["usage"])
+    return sanitized
+
+
 def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     """Reduce one provider-supplied run detail to only safe, known fields.
 
@@ -108,7 +158,12 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("run detail must serialize to a JSON object")
     sanitized = _allowlist(data, RUN_DETAIL_FIELDS)
+    if "usage" in sanitized:
+        sanitized["usage"] = sanitize_usage(sanitized["usage"])
     attempts = data.get("attempts")
     if isinstance(attempts, list):
         sanitized["attempts"] = [sanitize_attempt(item) for item in attempts]
+    invocations = data.get("invocations")
+    if isinstance(invocations, list):
+        sanitized["invocations"] = [sanitize_invocation(item) for item in invocations]
     return sanitized

@@ -33,9 +33,12 @@ from software_agent_factory.models import (
     AttemptTrigger,
     Complexity,
     FactoryRun,
+    InvocationRecord,
+    ModelUsage,
     Risk,
     RunLease,
     TriageResult,
+    UsageMetrics,
     WorkflowState,
     WorkItem,
 )
@@ -622,17 +625,74 @@ def test_completed_run_durations_is_none_when_no_finished_runs(tmp_path: Path) -
     assert durations.average_seconds is None
 
 
-def test_no_run_ever_reports_a_cost_field(tmp_path: Path) -> None:
-    """AttemptRecord persists no token/cost data; the snapshot must not
-    fabricate one (ADR-017: unknown stays unknown, never zero)."""
+def test_missing_runtime_usage_remains_unknown(tmp_path: Path) -> None:
     store = _fake_store(tmp_path)
     store.add_run(_run("run-1", attempt_records=[_attempt(1)]))
 
     snapshot = build_monitoring_snapshot(store, now=T0)
 
-    dumped = json.dumps(snapshot.model_dump(mode="json"))
-    assert "cost" not in dumped
-    assert "token" not in dumped
+    assert snapshot.metrics.usage.invocation_count == 0
+    assert snapshot.metrics.usage.reported_invocations == 0
+    assert snapshot.metrics.usage.input_tokens is None
+    assert snapshot.metrics.usage.premium_request_cost is None
+
+
+def test_runtime_reported_usage_is_summed_without_estimating_missing_values(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = _fake_store(tmp_path)
+    invocation = InvocationRecord(
+        invocation_number=1,
+        role=AgentRole.REVIEWER,
+        model="gpt-5.6-sol",
+        reasoning="high",
+        started_at=T0,
+        completed_at=T0 + timedelta(seconds=1),
+        success=True,
+        usage=UsageMetrics(
+            total_premium_request_cost=1.0,
+            total_nano_aiu=123,
+            model_usage=(
+                ModelUsage(
+                    model="gpt-5.6-sol",
+                    input_tokens=100,
+                    output_tokens=20,
+                    reasoning_tokens=5,
+                    cache_read_tokens=40,
+                ),
+            ),
+        ),
+    )
+    store.add_run(
+        FactoryRun(
+            id="run-1",
+            work_item_id="WI-run-1",
+            state=WorkflowState.CREATED,
+            created_at=T0,
+            updated_at=T0,
+            invocation_records=[invocation],
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+    usage = snapshot.metrics.usage
+
+    assert usage.invocation_count == 1
+    assert usage.reported_invocations == 1
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 20
+    assert usage.reasoning_tokens == 5
+    assert usage.cache_read_tokens == 40
+    assert usage.cache_write_tokens is None
+    assert usage.premium_request_cost == 1.0
+    assert usage.total_nano_aiu == 123
+    assert snapshot.runs[0].usage == usage
+    detail = build_run_detail(store, "run-1", now=T0)
+    assert detail is not None
+    assert detail.invocations[0].usage is not None
+    assert detail.invocations[0].usage.model_usage[0].output_tokens == 20
 
 
 # ---------------------------------------------------------------------------
@@ -1373,6 +1433,8 @@ def test_build_run_detail_returns_summary_fields_plus_attempts(tmp_path: Path) -
     assert detail.state is WorkflowState.PR_READY
     assert detail.completed_at == T0 + timedelta(minutes=5)
     assert detail.attempt_count == 2
+    assert detail.invocation_count == 0
+    assert detail.usage.reported_invocations == 0
     assert detail.implementation_attempts == 1
     assert detail.ci_repair_attempts == 1
     assert [attempt.attempt_number for attempt in detail.attempts] == [1, 2]

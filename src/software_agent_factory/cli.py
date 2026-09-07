@@ -67,7 +67,12 @@ import typer
 import yaml
 from pydantic import ValidationError
 
-from .agents import AgentRequest, AgentRuntime, FakeAgentRuntime
+from .agents import (
+    AgentRequest,
+    AgentRuntime,
+    FakeAgentRuntime,
+    runtime_exception_failure_reason,
+)
 from .cli_output import render_doctor_report, render_service_status, render_status_report
 from .config import FactoryConfig, load_config
 from .copilot_runtime import CopilotAgentRuntime
@@ -77,6 +82,7 @@ from .models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
+    InvocationRecord,
     ProjectBrief,
     ProjectState,
     RepositoryProfile,
@@ -177,7 +183,11 @@ def _fail(message: str, *, code: int = CONFIG_ERROR_EXIT_CODE) -> typer.Exit:
     return typer.Exit(code=code)
 
 
-def _load_config(config: Path | None, data_dir: Path | None) -> FactoryConfig:
+def _load_config(
+    config: Path | None,
+    data_dir: Path | None,
+    model_profile: str | None = None,
+) -> FactoryConfig:
     """Load configuration, applying an optional ``--data-dir`` override.
 
     Every expected failure mode -- a missing file, an unreadable file,
@@ -186,7 +196,7 @@ def _load_config(config: Path | None, data_dir: Path | None) -> FactoryConfig:
     """
     label = str(config) if config is not None else "(packaged default)"
     try:
-        loaded = load_config(config)
+        loaded = load_config(config, model_profile=model_profile)
     except FileNotFoundError:
         raise _fail(f"config file not found: {label}") from None
     except OSError as exc:
@@ -314,6 +324,11 @@ def run_command(
         "--runtime",
         help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
     ),
+    model_profile: str = typer.Option(
+        "default",
+        "--model-profile",
+        help="Configured model profile to use (default: top-level models block).",
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -322,7 +337,7 @@ def run_command(
     ),
 ) -> None:
     """Run one work item synchronously through the factory workflow."""
-    factory_config = _load_config(config, data_dir)
+    factory_config = _load_config(config, data_dir, model_profile)
     # A manual run needs ``gh`` only for the publishing/CI features it would
     # actually reach; the scheduler is irrelevant here, so an offline default
     # run requires nothing but ``git``.
@@ -400,6 +415,11 @@ def project_command(
         "--runtime",
         help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
     ),
+    model_profile: str = typer.Option(
+        "default",
+        "--model-profile",
+        help="Configured model profile to use (default: top-level models block).",
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -408,7 +428,7 @@ def project_command(
     ),
 ) -> None:
     """Derive the smallest sufficient work plan and execute it to completion."""
-    factory_config = _load_config(config, data_dir)
+    factory_config = _load_config(config, data_dir, model_profile)
     _require_prerequisites(
         require_gh=(
             github_repo is not None
@@ -483,6 +503,11 @@ def start_command(
         "--runtime",
         help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
     ),
+    model_profile: str = typer.Option(
+        "default",
+        "--model-profile",
+        help="Configured model profile to use (default: top-level models block).",
+    ),
     once: bool = typer.Option(
         False, "--once", help="Run one bounded scheduler tick instead of polling forever."
     ),
@@ -498,7 +523,7 @@ def start_command(
     Refuses to run (and never touches GitHub) unless ``scheduler.enabled`` is
     set in configuration.
     """
-    factory_config = _load_config(config, data_dir)
+    factory_config = _load_config(config, data_dir, model_profile)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "scheduler is disabled: set 'scheduler.enabled: true' in the factory "
@@ -621,6 +646,11 @@ def doctor_command(
         "--runtime",
         help="Check prerequisites for this runtime ('copilot' additionally requires copilot).",
     ),
+    model_profile: str = typer.Option(
+        "default",
+        "--model-profile",
+        help="Configured model profile to validate (default: top-level models block).",
+    ),
     json_output: bool = typer.Option(
         False, "--json", help="Emit the report as JSON instead of human-readable text."
     ),
@@ -636,6 +666,7 @@ def doctor_command(
     report = run_doctor(
         config_path=config,
         data_dir_override=data_dir,
+        model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
     )
 
@@ -841,6 +872,11 @@ def service_install_command(
         "--runtime",
         help="Runtime the service runs with. Defaults to 'fake' so it cannot spend money.",
     ),
+    model_profile: str = typer.Option(
+        "default",
+        "--model-profile",
+        help="Configured model profile the service will use.",
+    ),
     executable: Path = typer.Option(
         None,
         "--executable",
@@ -868,7 +904,7 @@ def service_install_command(
     """
     _require_macos()
 
-    factory_config = _load_config(config, data_dir)
+    factory_config = _load_config(config, data_dir, model_profile)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "refusing to install a service for a disabled scheduler: set "
@@ -880,6 +916,7 @@ def service_install_command(
     report = run_doctor(
         config_path=config,
         data_dir_override=data_dir,
+        model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
     )
     if not report.success:
@@ -897,6 +934,7 @@ def service_install_command(
             config_path=config.expanduser().resolve() if config is not None else None,
             poll_interval_seconds=factory_config.scheduler.poll_interval_seconds,
             runtime=ServiceRuntime(runtime.value),
+            model_profile=model_profile,
             label=label,
             allow_source_dev=allow_source_dev,
         )
@@ -1000,6 +1038,17 @@ def _skill_generation_work_item() -> WorkItem:
             "implement."
         ),
     )
+
+
+def _save_standalone_invocation(path: Path, record: InvocationRecord) -> None:
+    """Atomically persist the latest non-run invocation for operator audit."""
+
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temp.write_text(record.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 @skill_app.command("path")
@@ -1124,6 +1173,11 @@ def skill_refresh_command(
         "--runtime",
         help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
     ),
+    model_profile: str = typer.Option(
+        "default",
+        "--model-profile",
+        help="Configured model profile to use (default: top-level models block).",
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -1144,7 +1198,7 @@ def skill_refresh_command(
     never read, written or deleted here. Guidance that fails validation is
     refused and the previously stored file is left byte-for-byte unchanged.
     """
-    factory_config = _load_config(config, data_dir)
+    factory_config = _load_config(config, data_dir, model_profile)
     if not factory_config.polish.enabled:
         raise _fail(
             "repository skill generation is disabled: set 'polish.enabled: true' in the "
@@ -1168,6 +1222,7 @@ def skill_refresh_command(
         purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
         model=role_model.model,
         reasoning=role_model.reasoning,
+        context_tier=role_model.context_tier,
         work_item=_skill_generation_work_item(),
         repository_profile=profile,
         official_documentation_origins=list(factory_config.polish.official_documentation_origins),
@@ -1176,14 +1231,56 @@ def skill_refresh_command(
         timeout_seconds=factory_config.agent_timeout_seconds,
     )
 
+    started_at = utc_now()
     try:
         result = _build_runtime(runtime).run(request)
     except ValueError as exc:
+        completed_at = utc_now()
+        invocation = InvocationRecord(
+            invocation_number=1,
+            role=request.role,
+            purpose=request.purpose,
+            model=request.model,
+            reasoning=request.reasoning,
+            context_tier=request.context_tier,
+            started_at=started_at,
+            completed_at=completed_at,
+            success=False,
+            failure_reason=runtime_exception_failure_reason(exc),
+        )
+        try:
+            _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
+        except OSError as persist_exc:
+            raise _fail(
+                f"repository skill invocation telemetry could not be persisted: {persist_exc}",
+                code=FAILURE_EXIT_CODE,
+            ) from None
         # The runtime boundary turns an unusable executable, a timeout and
         # unparsable output into a failed AgentResult; only a request it
         # refuses to send at all is raised.
         raise _fail(
             f"repository skill generation could not run: {exc}", code=FAILURE_EXIT_CODE
+        ) from None
+    completed_at = utc_now()
+    invocation = InvocationRecord(
+        invocation_number=1,
+        role=request.role,
+        purpose=request.purpose,
+        model=request.model,
+        reasoning=request.reasoning,
+        context_tier=request.context_tier,
+        started_at=started_at,
+        completed_at=completed_at,
+        success=result.success,
+        failure_reason=result.failure_reason,
+        usage=result.usage,
+    )
+    try:
+        _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
+    except OSError as exc:
+        raise _fail(
+            f"repository skill invocation telemetry could not be persisted: {exc}",
+            code=FAILURE_EXIT_CODE,
         ) from None
 
     skill = result.repository_skill

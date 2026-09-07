@@ -134,6 +134,10 @@ def test_project_runner_composes_dependent_tasks_on_one_branch(
     assert "project-validation-task-2" in (integration / "FACTORY_NOTES.md").read_text()
     assert len(store.list_runs()) == 2
     assert FileProjectStore(factory_data_dir).load_plan(brief.id).tasks[1].dependencies == (1,)
+    persisted_execution = FileProjectStore(factory_data_dir).load_execution(brief.id)
+    assert len(persisted_execution.invocation_records) == 1
+    assert persisted_execution.invocation_records[0].role is AgentRole.PLANNER
+    assert persisted_execution.invocation_records[0].purpose is AgentPurpose.DECOMPOSE_PROJECT
     assert len(git(integration, "log", "--oneline").splitlines()) == 3
 
 
@@ -203,6 +207,37 @@ def test_project_normalizes_planner_project_id(
 
     assert execution.state is ProjectState.DONE
     assert FileProjectStore(factory_data_dir).load_plan(brief.id).project_id == brief.id
+
+
+def test_project_persists_failed_planner_invocation_when_runtime_raises(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    def unavailable_planner(request: AgentRequest) -> AgentResult:
+        raise RuntimeError("planner runtime unavailable")
+
+    brief = ProjectBrief(
+        id="planner-runtime-failure",
+        title="Record planner failures",
+        description="Persist the failed invocation.",
+        repository_path=str(factory_source_repo),
+    )
+    store = FileProjectStore(factory_data_dir)
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=unavailable_planner),
+        project_store=store,
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.FAILED
+    assert len(execution.invocation_records) == 1
+    invocation = execution.invocation_records[0]
+    assert invocation.success is False
+    assert invocation.failure_reason == "RuntimeError: planner runtime unavailable"
+    assert store.load_execution(brief.id) == execution
 
 
 def test_project_stops_when_a_required_task_needs_human(
