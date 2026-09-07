@@ -33,8 +33,8 @@ EXPECTED_ACTIONS = {
     ),
     "actions/deploy-pages": ("368f82528645a54fb793d4d04e342629a3f51346", "v5.0.1"),
     "actions/upload-pages-artifact": (
-        "7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
-        "v4",
+        "fc324d3547104276b827a68afc52ff2a11cc49c9",
+        "v5.0.0",
     ),
     "github/codeql-action/analyze": (
         "cdf488f595d80d6e07e03d4674febd5ab45fa938",
