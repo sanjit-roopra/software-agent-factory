@@ -7,6 +7,40 @@ API is still `0.x`.
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-07
+
+### Added
+
+- Complete selectable `default`, `economy` and `security` model profiles.
+  `--model-profile` is available on every agent-invoking command, `doctor` and
+  `service install`; unknown profiles fail before workspace creation or a paid
+  call.
+- Per-role Copilot context tiers. Every invocation now passes
+  `--context default|long_context` explicitly instead of inheriting interactive
+  CLI state.
+- Typed per-invocation telemetry for runtime-reported token usage, timing,
+  nano-AIU and premium-request cost. Workflow runs, project planning and
+  standalone repository-skill refreshes persist their records, while status and
+  the local dashboard expose bounded minimized summaries.
+- A model-selection guide covering the current Copilot catalog, pricing,
+  context and reasoning controls, coding, research, instruction-following,
+  long-context and security evidence.
+
+### Changed
+
+- The default routing now uses GPT-5.6 Terra for triage, GPT-5.5 for
+  refinement, Claude Opus 5 for research and planning, MAI-Code-1.1-Flash
+  through Claude Opus 5 for complexity-routed implementation, Gemini 3.8 Flash
+  for testing and GPT-5.6 Sol for final review.
+- The economy profile uses GPT-5.6 Luna and Terra for low-cost analysis,
+  Gemini 3.8 Flash at medium effort for research, MAI/Gemini workers and
+  testing, and GPT-5.6 Sol for final review.
+- The security profile uses GPT-6 Astra for adversarial testing followed by an
+  independent GPT-5.6 Sol review.
+- Usage values remain raw runtime-reported units. Missing values stay unknown,
+  and the factory does not convert premium requests or nano-AIU into AI Credits
+  or USD.
+
 ## 0.3.0 - 2026-09-06
 
 ### Added

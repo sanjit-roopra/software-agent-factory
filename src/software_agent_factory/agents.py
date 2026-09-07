@@ -41,6 +41,7 @@ from .models import (
     AgentRole,
     ChangeSet,
     Complexity,
+    ContextTier,
     ExecutionPlan,
     ExpectedScope,
     ModelBase,
@@ -60,9 +61,17 @@ from .models import (
     Specification,
     TestReport,
     TriageResult,
+    UsageMetrics,
     VerificationReport,
     WorkItem,
 )
+
+RUNTIME_FAILURE_REASON_LIMIT = 4000
+
+
+def runtime_exception_failure_reason(exc: Exception) -> str:
+    """Return a bounded diagnostic for a runtime boundary exception."""
+    return f"{type(exc).__name__}: {exc}"[:RUNTIME_FAILURE_REASON_LIMIT]
 
 
 class AgentRequest(ModelBase):
@@ -87,6 +96,7 @@ class AgentRequest(ModelBase):
     purpose: AgentPurpose = AgentPurpose.STANDARD
     model: str
     reasoning: str
+    context_tier: ContextTier = ContextTier.DEFAULT
     work_item: WorkItem
     triage_result: TriageResult | None = None
     specification: Specification | None = None
@@ -149,6 +159,7 @@ class AgentResult(ModelBase):
     verification_report: VerificationReport | None = None
     test_report: TestReport | None = None
     review_report: ReviewReport | None = None
+    usage: UsageMetrics | None = None
 
     def model_post_init(self, __context: object) -> None:
         if not self.success and not self.failure_reason:

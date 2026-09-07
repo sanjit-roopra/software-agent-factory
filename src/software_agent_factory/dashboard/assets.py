@@ -85,6 +85,24 @@ def render_index_html(*, token: str) -> str:
       </thead>
       <tbody id="attempts-body"></tbody>
     </table>
+    <h3>Agent invocations</h3>
+    <table id="invocations-table">
+      <thead>
+        <tr>
+          <th scope="col">#</th>
+          <th scope="col">Role</th>
+          <th scope="col">Model</th>
+          <th scope="col">Context</th>
+          <th scope="col">Success</th>
+          <th scope="col">Input tokens</th>
+          <th scope="col">Output tokens</th>
+          <th scope="col">API duration (ms)</th>
+          <th scope="col">Session duration (ms)</th>
+          <th scope="col">Premium-request cost</th>
+        </tr>
+      </thead>
+      <tbody id="invocations-body"></tbody>
+    </table>
   </section>
 
   <p id="error-banner" role="alert" hidden></p>
@@ -343,6 +361,14 @@ APP_JS = """\
       ["Created", detail.created_at],
       ["Updated", detail.updated_at],
       ["Completed", detail.completed_at],
+      ["Invocations", detail.invocation_count],
+      ["Usage reported", detail.usage ? detail.usage.reported_invocations : null],
+      ["Input tokens", detail.usage ? detail.usage.input_tokens : null],
+      ["Output tokens", detail.usage ? detail.usage.output_tokens : null],
+      ["Reasoning tokens", detail.usage ? detail.usage.reasoning_tokens : null],
+      ["Cache read tokens", detail.usage ? detail.usage.cache_read_tokens : null],
+      ["Premium-request cost", detail.usage ? detail.usage.premium_request_cost : null],
+      ["Nano AIU", detail.usage ? detail.usage.total_nano_aiu : null],
       ["Failure reason", detail.failure_reason],
       ["Commit", detail.commit_sha],
       ["Pull request", detail.pull_request_url]
@@ -368,6 +394,25 @@ APP_JS = """\
       textCell(row, attempt.started_at);
       textCell(row, attempt.completed_at);
       attemptsBody.appendChild(row);
+    });
+
+    var invocationsBody = document.getElementById("invocations-body");
+    clearChildren(invocationsBody);
+    var invocations = Array.isArray(detail.invocations) ? detail.invocations : [];
+    invocations.forEach(function (invocation) {
+      var usage = invocation.usage || {};
+      var row = document.createElement("tr");
+      textCell(row, invocation.invocation_number);
+      textCell(row, invocation.role);
+      textCell(row, invocation.model);
+      textCell(row, invocation.context_tier);
+      textCell(row, invocation.success);
+      textCell(row, usage.input_tokens);
+      textCell(row, usage.output_tokens);
+      textCell(row, usage.total_api_duration_ms);
+      textCell(row, usage.session_duration_ms);
+      textCell(row, usage.total_premium_request_cost);
+      invocationsBody.appendChild(row);
     });
 
     section.hidden = false;

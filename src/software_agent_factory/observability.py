@@ -57,12 +57,9 @@ back to directory modification time) are preferred, and the snapshot says so
 honestly via ``scanned_runs``/``scan_truncated``/``degraded_reasons`` rather
 than silently reporting store-wide counts that quietly exclude older runs.
 
-Token usage and cost are intentionally never reported: ``AttemptRecord``
-(``models.py``) does not persist either today, and ADR-017 forbids
-defaulting an unreported value to zero or reconstructing it from a price
-table. A future runtime that starts reporting usage should add typed fields
-to ``AttemptRecord`` first; this module must not invent figures to fill the
-gap in the meantime.
+Runtime-reported usage is summarized only from persisted
+``InvocationRecord`` values. Missing fields stay unknown, and no value is
+reconstructed from a price table or converted to USD.
 """
 
 from __future__ import annotations
@@ -74,7 +71,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 
 from pydantic import Field, ValidationError
 
@@ -83,10 +80,13 @@ from .models import (
     AttemptBudget,
     AttemptTrigger,
     Complexity,
+    ContextTier,
     FactoryRun,
+    InvocationRecord,
     ModelBase,
     Risk,
     TriageResult,
+    UsageMetrics,
     UtcDateTime,
     VersionedModel,
     WorkflowState,
@@ -118,6 +118,8 @@ __all__ = [
     "AggregateMetrics",
     "MonitoringSnapshot",
     "RunAttemptSummary",
+    "RunInvocationSummary",
+    "UsageSummary",
     "RunDetail",
     "StaleRunFinding",
     "StaleLockFinding",
@@ -304,8 +306,10 @@ class RunSummary(ModelBase):
     age_seconds: float = Field(ge=0.0)
     idle_seconds: float = Field(ge=0.0)
     attempt_count: int = Field(ge=0)
+    invocation_count: int = Field(ge=0)
     implementation_attempts: int = Field(ge=0)
     ci_repair_attempts: int = Field(ge=0)
+    usage: UsageSummary
     is_finished: bool
     is_stale: bool
 
@@ -331,6 +335,36 @@ class RunAttemptSummary(ModelBase):
     completed_at: UtcDateTime
 
 
+class UsageSummary(ModelBase):
+    """Safe totals of explicitly reported invocation usage."""
+
+    invocation_count: int = Field(ge=0)
+    reported_invocations: int = Field(ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    premium_requests: float | None = Field(default=None, ge=0.0)
+    premium_request_cost: float | None = Field(default=None, ge=0.0)
+    total_nano_aiu: int | None = Field(default=None, ge=0)
+
+
+class RunInvocationSummary(ModelBase):
+    """One dashboard-safe invocation with typed runtime-reported usage."""
+
+    invocation_number: int = Field(ge=1)
+    role: AgentRole
+    purpose: str
+    model: str
+    context_tier: ContextTier
+    success: bool
+    started_at: UtcDateTime
+    completed_at: UtcDateTime
+    attempt_number: int | None = Field(default=None, ge=1)
+    usage: UsageMetrics | None = None
+
+
 class RunDetail(ModelBase):
     """One run's read-only detail view: a :class:`RunSummary` plus completion
     facts and the attempt history.
@@ -354,13 +388,16 @@ class RunDetail(ModelBase):
     age_seconds: float = Field(ge=0.0)
     idle_seconds: float = Field(ge=0.0)
     attempt_count: int = Field(ge=0)
+    invocation_count: int = Field(ge=0)
     implementation_attempts: int = Field(ge=0)
     ci_repair_attempts: int = Field(ge=0)
+    usage: UsageSummary
     is_finished: bool
     is_stale: bool
     commit_sha: str | None = None
     pull_request_url: str | None = None
     attempts: list[RunAttemptSummary] = Field(default_factory=list)
+    invocations: list[RunInvocationSummary] = Field(default_factory=list)
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -401,10 +438,9 @@ class DurationSummary(ModelBase):
 
 class AggregateMetrics(ModelBase):
     """Store-wide (scanned-subset) aggregate metrics: pure functions of
-    persisted ``FactoryRun``/``AttemptRecord`` data only. No cost or token
-    figures appear here or anywhere in this module: ``AttemptRecord`` does
-    not persist either today, and an unreported value must never be
-    defaulted to zero or reconstructed from a price table (ADR-017).
+    persisted ``FactoryRun``/``AttemptRecord``/``InvocationRecord`` data.
+    Usage totals include only explicitly reported values; missing telemetry
+    remains unknown and is never reconstructed from a price table (ADR-017).
 
     ``completed_run_durations`` covers every *finished* run in the scanned
     set (``DONE``, ``NEEDS_HUMAN``, ``FAILED``, or a finalized ``PR_READY``
@@ -420,6 +456,7 @@ class AggregateMetrics(ModelBase):
     scope_replans: int = Field(ge=0)
     first_pass_success: FirstPassSuccessMetric
     completed_run_durations: DurationSummary
+    usage: UsageSummary
 
 
 class MonitoringSnapshot(VersionedModel):
@@ -804,6 +841,92 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
         scope_replans=scope_replans,
         first_pass_success=first_pass_success,
         completed_run_durations=completed_run_durations,
+        usage=_usage_summary(invocation for run in runs for invocation in run.invocation_records),
+    )
+
+
+def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
+    records = list(invocations)
+    reported = [record for record in records if record.usage is not None]
+
+    input_tokens: list[int] = []
+    output_tokens: list[int] = []
+    reasoning_tokens: list[int] = []
+    cache_read_tokens: list[int] = []
+    cache_write_tokens: list[int] = []
+    premium_requests: list[float] = []
+    premium_request_costs: list[float] = []
+    total_nano_aiu: list[int] = []
+
+    for record in reported:
+        usage = record.usage
+        assert usage is not None
+        if usage.premium_requests is not None:
+            premium_requests.append(usage.premium_requests)
+        if usage.total_premium_request_cost is not None:
+            premium_request_costs.append(usage.total_premium_request_cost)
+        if usage.total_nano_aiu is not None:
+            total_nano_aiu.append(usage.total_nano_aiu)
+        elif model_nano := [
+            item.total_nano_aiu for item in usage.model_usage if item.total_nano_aiu is not None
+        ]:
+            total_nano_aiu.append(sum(model_nano))
+
+        model_input = [
+            item.input_tokens for item in usage.model_usage if item.input_tokens is not None
+        ]
+        model_output = [
+            item.output_tokens for item in usage.model_usage if item.output_tokens is not None
+        ]
+        model_reasoning = [
+            item.reasoning_tokens for item in usage.model_usage if item.reasoning_tokens is not None
+        ]
+        model_cache_read = [
+            item.cache_read_tokens
+            for item in usage.model_usage
+            if item.cache_read_tokens is not None
+        ]
+        model_cache_write = [
+            item.cache_write_tokens
+            for item in usage.model_usage
+            if item.cache_write_tokens is not None
+        ]
+        if usage.input_tokens is not None:
+            input_tokens.append(usage.input_tokens)
+        elif model_input:
+            input_tokens.append(sum(model_input))
+        if usage.output_tokens is not None:
+            output_tokens.append(usage.output_tokens)
+        elif model_output:
+            output_tokens.append(sum(model_output))
+        if usage.reasoning_tokens is not None:
+            reasoning_tokens.append(usage.reasoning_tokens)
+        elif model_reasoning:
+            reasoning_tokens.append(sum(model_reasoning))
+        if usage.cache_read_tokens is not None:
+            cache_read_tokens.append(usage.cache_read_tokens)
+        elif model_cache_read:
+            cache_read_tokens.append(sum(model_cache_read))
+        if usage.cache_write_tokens is not None:
+            cache_write_tokens.append(usage.cache_write_tokens)
+        elif model_cache_write:
+            cache_write_tokens.append(sum(model_cache_write))
+
+        for item in usage.model_usage:
+            if usage.total_premium_request_cost is None and item.premium_request_cost is not None:
+                premium_request_costs.append(item.premium_request_cost)
+
+    return UsageSummary(
+        invocation_count=len(records),
+        reported_invocations=len(reported),
+        input_tokens=sum(input_tokens) if input_tokens else None,
+        output_tokens=sum(output_tokens) if output_tokens else None,
+        reasoning_tokens=sum(reasoning_tokens) if reasoning_tokens else None,
+        cache_read_tokens=sum(cache_read_tokens) if cache_read_tokens else None,
+        cache_write_tokens=sum(cache_write_tokens) if cache_write_tokens else None,
+        premium_requests=sum(premium_requests) if premium_requests else None,
+        premium_request_cost=(sum(premium_request_costs) if premium_request_costs else None),
+        total_nano_aiu=sum(total_nano_aiu) if total_nano_aiu else None,
     )
 
 
@@ -856,8 +979,10 @@ def _build_run_summary(
         age_seconds=max((now - run.created_at).total_seconds(), 0.0),
         idle_seconds=max((now - signal).total_seconds(), 0.0),
         attempt_count=len(run.attempt_records),
+        invocation_count=len(run.invocation_records),
         implementation_attempts=implementation_attempts,
         ci_repair_attempts=ci_repair_attempts,
+        usage=_usage_summary(run.invocation_records),
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
     )
@@ -909,6 +1034,21 @@ def build_run_detail(
                 completed_at=attempt.completed_at,
             )
             for attempt in run.attempt_records
+        ],
+        invocations=[
+            RunInvocationSummary(
+                invocation_number=invocation.invocation_number,
+                role=invocation.role,
+                purpose=str(invocation.purpose),
+                model=invocation.model,
+                context_tier=invocation.context_tier,
+                success=invocation.success,
+                started_at=invocation.started_at,
+                completed_at=invocation.completed_at,
+                attempt_number=invocation.attempt_number,
+                usage=invocation.usage,
+            )
+            for invocation in run.invocation_records
         ],
     )
 

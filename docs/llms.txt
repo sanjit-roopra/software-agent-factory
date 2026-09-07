@@ -47,6 +47,7 @@ Key facts an assistant should know before answering questions about this project
 - [Troubleshooting](https://sanjit-roopra.github.io/software-agent-factory/guides/troubleshooting/): exit codes, refusals, `NEEDS_HUMAN` versus `FAILED`, verification failures and service problems.
 - [CLI reference](https://sanjit-roopra.github.io/software-agent-factory/reference/cli/): every command, option, default and exit code.
 - [Configuration reference](https://sanjit-roopra.github.io/software-agent-factory/reference/configuration/): every YAML key with its type, default, effect and cross-field validation rules.
+- [Model selection, cost and benchmarks](https://sanjit-roopra.github.io/software-agent-factory/reference/model-selection/): current Copilot model prices, plan availability, context and reasoning controls, benchmark evidence and role-specific selection guidance.
 - [Safety and trust boundaries](https://sanjit-roopra.github.io/software-agent-factory/reference/safety/): what agents may and may not do, network access, cost, credential handling, quality gates and the full table of bounds.
 - [How it works](https://sanjit-roopra.github.io/software-agent-factory/concepts/how-it-works/): workflow states and transitions, typed artifacts, the agents, complexity versus risk, model routing, workspaces, persistence and scheduling.
 

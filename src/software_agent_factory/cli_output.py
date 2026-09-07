@@ -65,6 +65,10 @@ def _format_seconds(value: float | None) -> str:
     return "unknown" if value is None else f"{value:.0f}s"
 
 
+def _format_optional_number(value: int | float | None) -> str:
+    return "unknown" if value is None else str(value)
+
+
 def render_status_report(
     snapshot: MonitoringSnapshot, health: OperationalHealthReport
 ) -> list[str]:
@@ -104,6 +108,16 @@ def render_status_report(
             f"completed run duration: {metrics.completed_run_durations.count} run(s), "
             f"avg {_format_seconds(metrics.completed_run_durations.average_seconds)}, "
             f"max {_format_seconds(metrics.completed_run_durations.max_seconds)}"
+        ),
+        (
+            "reported usage: "
+            f"{metrics.usage.reported_invocations}/{metrics.usage.invocation_count} invocation(s), "
+            f"{_format_optional_number(metrics.usage.input_tokens)} "
+            "input tokens, "
+            f"{_format_optional_number(metrics.usage.output_tokens)} "
+            "output tokens, "
+            f"{_format_optional_number(metrics.usage.premium_request_cost)} "
+            "premium-request cost"
         ),
         f"stale threshold: {snapshot.stale_after_seconds:.0f}s",
     ]

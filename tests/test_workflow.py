@@ -29,9 +29,11 @@ from software_agent_factory.models import (
     GENERIC_SKILL_TARGET,
     AgentPurpose,
     AgentRole,
+    AttemptBudget,
     AttemptTrigger,
     ChangeSet,
     Complexity,
+    ContextTier,
     DependencyEcosystem,
     FactoryRun,
     RepairContext,
@@ -357,6 +359,54 @@ def test_all_repository_reading_roles_receive_the_exact_workspace_path(
     ]
     assert [request.role for request in runtime.requests] == expected_roles
     assert all(request.workspace_path == run.workspace_path for request in runtime.requests)
+    assert [record.role for record in run.invocation_records] == expected_roles
+    assert [record.invocation_number for record in run.invocation_records] == list(
+        range(1, len(expected_roles) + 1)
+    )
+    assert all(record.context_tier.value == "default" for record in run.invocation_records)
+    assert run.invocation_records[4].budget is AttemptBudget.IMPLEMENTATION
+    assert run.invocation_records[5].attempt_number == 1
+    assert run.invocation_records[6].attempt_number == 1
+    assert run.attempt_records[0].invocation_number == 5
+    assert store.load_run(run.id).invocation_records == run.invocation_records
+
+
+def test_non_default_context_tier_reaches_requests_and_persisted_records(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    config = _config(data_dir)
+    models = config.models.model_copy(
+        update={
+            "triage": config.models.triage.model_copy(
+                update={"context_tier": ContextTier.LONG_CONTEXT}
+            ),
+            "workers": {
+                **config.models.workers,
+                Complexity.L1: config.models.workers[Complexity.L1].model_copy(
+                    update={"context_tier": ContextTier.LONG_CONTEXT}
+                ),
+            },
+        }
+    )
+    config = config.model_copy(update={"models": models})
+    runtime = RecordingRuntime(FakeAgentRuntime())
+
+    run = WorkflowController(config, FileRunStore(data_dir), runtime).run(
+        _work_item("WI-long-context"),
+        source_repo,
+    )
+
+    triage_request = next(
+        request for request in runtime.requests if request.role is AgentRole.TRIAGE
+    )
+    implementer_request = next(
+        request for request in runtime.requests if request.role is AgentRole.IMPLEMENTER
+    )
+    assert triage_request.context_tier is ContextTier.LONG_CONTEXT
+    assert implementer_request.context_tier is ContextTier.LONG_CONTEXT
+    assert run.invocation_records[0].context_tier is ContextTier.LONG_CONTEXT
+    assert run.attempt_records[0].context_tier is ContextTier.LONG_CONTEXT
 
 
 def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir: Path) -> None:
@@ -2023,8 +2073,37 @@ def test_refiner_agent_failure_produces_persisted_failed_run(
     assert run.state is WorkflowState.FAILED
     assert run.failure_reason == "refiner crashed"
     assert run.completed_at is not None
+    assert [record.role for record in run.invocation_records] == [
+        AgentRole.TRIAGE,
+        AgentRole.REFINER,
+    ]
+    assert run.invocation_records[-1].success is False
+    assert run.invocation_records[-1].failure_reason == "refiner crashed"
     persisted = store.load_run(run.id)
     assert persisted == run
+
+
+def test_runtime_exception_produces_persisted_failed_invocation(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def unavailable_refiner(request: AgentRequest) -> AgentResult:
+        raise RuntimeError("runtime unavailable")
+
+    config = _config(data_dir)
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(config, store, FakeAgentRuntime(refiner=unavailable_refiner))
+
+    run = controller.run(_work_item(), source_repo)
+
+    assert run.state is WorkflowState.FAILED
+    assert [record.role for record in run.invocation_records] == [
+        AgentRole.TRIAGE,
+        AgentRole.REFINER,
+    ]
+    invocation = run.invocation_records[-1]
+    assert invocation.success is False
+    assert invocation.failure_reason == "RuntimeError: runtime unavailable"
+    assert store.load_run(run.id) == run
 
 
 # -- workspace locking --------------------------------------------------------

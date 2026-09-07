@@ -57,7 +57,7 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-from .agents import AgentRequest, AgentRuntime
+from .agents import AgentRequest, AgentResult, AgentRuntime, runtime_exception_failure_reason
 from .config import FactoryConfig, RoleModelConfig
 from .github import GitHubError, GitPublishError, build_pr_body
 from .governance import (
@@ -78,6 +78,7 @@ from .models import (
     CIReport,
     ExecutionPlan,
     FactoryRun,
+    InvocationRecord,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -546,7 +547,7 @@ class WorkflowController:
         self, run: FactoryRun, work_item: WorkItem, *, workspace_path: str
     ) -> TriageResult:
         request = self._build_request(AgentRole.TRIAGE, work_item, workspace_path=workspace_path)
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request)
         if not result.success or result.triage_result is None:
             raise self._halt(
                 run,
@@ -570,7 +571,7 @@ class WorkflowController:
             triage_result=triage_result,
             workspace_path=workspace_path,
         )
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request)
         if not result.success or result.specification is None:
             raise self._halt(
                 run,
@@ -597,7 +598,7 @@ class WorkflowController:
             specification=specification,
             workspace_path=workspace_path,
         )
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request)
         if not result.success or result.research_report is None:
             raise self._halt(
                 run,
@@ -634,7 +635,7 @@ class WorkflowController:
                 practice_reference_urls=list(self._config.polish.practice_reference_urls),
                 workspace_path=str(self._store.run_dir(run.id)),
             )
-            result = self._runtime.run(request)
+            result = self._invoke_agent(run, request, reraise_runtime_errors=True)
         except (OSError, RuntimeError, ValueError) as exc:
             return None, f"repository skill research could not run: {exc}"
         skill = result.repository_skill
@@ -837,7 +838,7 @@ class WorkflowController:
             diff=diff,
             changed_files=changed_files or [],
         )
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request)
         if not result.success or result.execution_plan is None:
             raise self._halt(
                 run,
@@ -867,8 +868,9 @@ class WorkflowController:
             verification_report=verification_report,
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
+            attempt_number=snapshot,
         )
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request)
         if not result.success or result.test_report is None:
             raise self._halt(
                 run,
@@ -898,8 +900,9 @@ class WorkflowController:
             test_report=test_report,
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
+            attempt_number=snapshot,
         )
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request)
         if not result.success or result.review_report is None:
             raise self._halt(
                 run,
@@ -939,6 +942,7 @@ class WorkflowController:
             purpose=purpose,
             model=resolved.model,
             reasoning=resolved.reasoning,
+            context_tier=resolved.context_tier,
             work_item=work_item,
             triage_result=triage_result,
             specification=specification,
@@ -958,6 +962,71 @@ class WorkflowController:
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
         )
+
+    def _invoke_agent(
+        self,
+        run: FactoryRun,
+        request: AgentRequest,
+        *,
+        budget: AttemptBudget | None = None,
+        reraise_runtime_errors: bool = False,
+    ) -> AgentResult:
+        """Run one agent and persist its routing and reported usage."""
+
+        started_at = utc_now()
+        try:
+            result = self._runtime.run(request)
+        except (OSError, RuntimeError, ValueError) as exc:
+            completed_at = utc_now()
+            failure_reason = runtime_exception_failure_reason(exc)
+            run.invocation_records.append(
+                InvocationRecord(
+                    invocation_number=len(run.invocation_records) + 1,
+                    role=request.role,
+                    purpose=request.purpose,
+                    model=request.model,
+                    reasoning=request.reasoning,
+                    context_tier=request.context_tier,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    success=False,
+                    failure_reason=failure_reason,
+                    attempt_number=request.attempt_number,
+                    budget=budget,
+                )
+            )
+            run.updated_at = completed_at
+            run.last_activity_at = completed_at
+            self._store.save_run(run)
+            if reraise_runtime_errors:
+                raise
+            return AgentResult(
+                role=request.role,
+                success=False,
+                failure_reason=failure_reason,
+            )
+        completed_at = utc_now()
+        run.invocation_records.append(
+            InvocationRecord(
+                invocation_number=len(run.invocation_records) + 1,
+                role=request.role,
+                purpose=request.purpose,
+                model=request.model,
+                reasoning=request.reasoning,
+                context_tier=request.context_tier,
+                started_at=started_at,
+                completed_at=completed_at,
+                success=result.success,
+                failure_reason=result.failure_reason,
+                attempt_number=request.attempt_number,
+                budget=budget,
+                usage=result.usage,
+            )
+        )
+        run.updated_at = completed_at
+        run.last_activity_at = completed_at
+        self._store.save_run(run)
+        return result
 
     # -- bounded implementation/repair loop ---------------------------------
 
@@ -1248,6 +1317,7 @@ class WorkflowController:
             role=AgentRole.IMPLEMENTER,
             model=role_model.model,
             reasoning=role_model.reasoning,
+            context_tier=role_model.context_tier,
             work_item=context.work_item,
             specification=context.specification,
             research_report=context.research_report,
@@ -1259,7 +1329,7 @@ class WorkflowController:
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
         )
-        result = self._runtime.run(request)
+        result = self._invoke_agent(run, request, budget=budget)
         completed_at = utc_now()
 
         if not result.success:
@@ -1317,6 +1387,10 @@ class WorkflowController:
             role=AgentRole.IMPLEMENTER,
             model=role_model.model,
             reasoning=role_model.reasoning,
+            context_tier=role_model.context_tier,
+            invocation_number=(
+                run.invocation_records[-1].invocation_number if run.invocation_records else None
+            ),
             started_at=started_at,
             completed_at=completed_at,
             outcome=outcome,

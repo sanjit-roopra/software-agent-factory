@@ -32,8 +32,10 @@ from software_agent_factory.dashboard import (
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.sanitize import (
     ATTEMPT_FIELDS,
+    INVOCATION_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    sanitize_usage,
 )
 from software_agent_factory.dashboard.security import TOKEN_HEADER, validate_bind_host
 from software_agent_factory.dashboard.snapshot import (
@@ -55,8 +57,16 @@ FIXTURE_RUNS: list[dict[str, Any]] = [
         "age_seconds": 3600.0,
         "idle_seconds": 60.0,
         "attempt_count": 1,
+        "invocation_count": 1,
         "implementation_attempts": 1,
         "ci_repair_attempts": 0,
+        "usage": {
+            "invocation_count": 1,
+            "reported_invocations": 1,
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "premium_request_cost": 1.0,
+        },
         "is_finished": True,
         "is_stale": index == 3,
     }
@@ -78,6 +88,24 @@ FIXTURE_DETAILS: dict[str, dict[str, Any]] = {
                 "outcome": "SUCCESS",
                 "started_at": "2024-01-01T00:00:00+00:00",
                 "completed_at": "2024-01-01T00:05:00+00:00",
+            }
+        ],
+        "invocations": [
+            {
+                "invocation_number": 1,
+                "role": "IMPLEMENTER",
+                "purpose": "STANDARD",
+                "model": "fake-model",
+                "context_tier": "default",
+                "success": True,
+                "started_at": "2024-01-01T00:00:00+00:00",
+                "completed_at": "2024-01-01T00:05:00+00:00",
+                "attempt_number": 1,
+                "usage": {
+                    "last_call_input_tokens": 100,
+                    "last_call_output_tokens": 20,
+                    "total_premium_request_cost": 1.0,
+                },
             }
         ],
     }
@@ -763,6 +791,7 @@ def adversarial_snapshot_provider(*, limit: int, offset: int) -> dict[str, Any]:
             "reasoning": f"chain of thought: {SECRET_MARKER}",
             "failure_reason": f"traceback containing {SECRET_MARKER}",
             "token_usage": {"api_key": SECRET_MARKER},
+            "usage": {**run["usage"], "api_key": SECRET_MARKER},
             "raw_artifact": SECRET_MARKER,
         }
         for run in base["runs"]
@@ -783,6 +812,7 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
         "reasoning": f"chain of thought: {SECRET_MARKER}",
         "failure_reason": f"traceback containing {SECRET_MARKER}",
         "token_usage": {"api_key": SECRET_MARKER},
+        "usage": {**detail["usage"], "api_key": SECRET_MARKER},
         "raw_artifact": SECRET_MARKER,
         "attempts": [
             {
@@ -793,6 +823,24 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
                 "raw_command_log": SECRET_MARKER,
             }
             for attempt in detail["attempts"]
+        ],
+        "invocations": [
+            {
+                **invocation,
+                "failure_reason": SECRET_MARKER,
+                "usage": {
+                    **invocation["usage"],
+                    "api_key": SECRET_MARKER,
+                    "model_usage": [
+                        {
+                            "model": "fake-model",
+                            "input_tokens": 100,
+                            "api_key": SECRET_MARKER,
+                        }
+                    ],
+                },
+            }
+            for invocation in detail["invocations"]
         ],
     }
 
@@ -813,6 +861,8 @@ def test_adversarial_snapshot_provider_secrets_never_reach_runs_response() -> No
         payload = json.loads(raw_body)
         for run in payload["runs"]:
             assert set(run) <= RUN_SUMMARY_FIELDS
+            assert "usage" not in run
+            assert "invocation_count" not in run
             assert "logs" not in run
             assert "diff" not in run
             assert "prompt" not in run
@@ -856,7 +906,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
         payload = json.loads(raw_body)
-        assert set(payload) <= RUN_DETAIL_FIELDS | {"attempts"}
+        assert set(payload) <= RUN_DETAIL_FIELDS | {"attempts", "invocations"}
         assert "logs" not in payload
         assert "diff" not in payload
         assert "prompt" not in payload
@@ -871,6 +921,10 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             assert "failure_reason" not in attempt
             assert "tool_output" not in attempt
             assert "raw_command_log" not in attempt
+        for invocation in payload["invocations"]:
+            assert set(invocation) <= INVOCATION_FIELDS
+            assert "failure_reason" not in invocation
+            assert SECRET_MARKER not in json.dumps(invocation)
     finally:
         _stop(running)
 
@@ -1006,6 +1060,30 @@ def test_to_json_safe_rejects_unsupported_type() -> None:
 
     with pytest.raises(TypeError):
         to_json_safe(Unsupported())
+
+
+def test_usage_sanitizer_keeps_only_non_negative_numeric_fields() -> None:
+    sanitized = sanitize_usage(
+        {
+            "current_model": 123,
+            "input_tokens": True,
+            "output_tokens": -1,
+            "reasoning_tokens": 5,
+            "api_key": SECRET_MARKER,
+            "model_usage": [
+                {
+                    "model": "gpt-5.6-sol",
+                    "input_tokens": 100,
+                    "output_tokens": False,
+                    "api_key": SECRET_MARKER,
+                }
+            ],
+        }
+    )
+
+    assert sanitized == {
+        "reasoning_tokens": 5,
+    }
 
 
 # --------------------------------------------------------------------------

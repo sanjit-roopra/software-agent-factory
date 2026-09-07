@@ -108,6 +108,9 @@ markdown_extensions:
 plugins:
   - search
 
+hooks:
+  - scripts/docs/version_tokens.py
+
 nav:
   - Home: index.md
   - Get started:
@@ -127,6 +130,7 @@ nav:
       - reference/index.md
       - CLI: reference/cli.md
       - Configuration file: reference/configuration.md
+      - Model selection, cost and benchmarks: reference/model-selection.md
       - Safety and trust boundaries: reference/safety.md
   - Concepts:
       - concepts/index.md

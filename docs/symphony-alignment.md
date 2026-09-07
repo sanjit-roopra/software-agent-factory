@@ -365,13 +365,13 @@ CI
 
 ```text
 triage
-  Sonnet 5
+  GPT-5.6 Terra
 
 refine
-  Opus 5
+  GPT-5.5
 
 research
-  GPT-5.6 Sol
+  Claude Opus 5
 
 plan
   Opus 5
@@ -380,13 +380,16 @@ implement L0
   MAI-Code-1.1-Flash
 
 implement L1
-  Sonnet 5
+  Gemini 3.8 Flash
 
-implement L2/L3
+implement L2
+  Claude Sonnet 5
+
+implement L3
   Opus 5
 
 test
-  Sonnet 5
+  Gemini 3.8 Flash
 
 review
   GPT-5.6 Sol
