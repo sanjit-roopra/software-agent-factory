@@ -75,6 +75,7 @@ def test_load_config_uses_packaged_defaults() -> None:
     assert config.models.refiner.model == "gpt-5.5"
     assert config.models.researcher.model == "claude-opus-5"
     assert config.models.workers["L1"].model == "gemini-3.8-flash"
+    assert config.models.workers["L3"].model == "claude-opus-5"
     assert config.models.reviewer.model == "gpt-5.6-sol"
     assert config.models.reviewer.context_tier is ContextTier.DEFAULT
     assert config.repository.branch_prefix == "factory/"
@@ -86,7 +87,17 @@ def test_load_config_selects_named_model_profile() -> None:
 
     assert config.models.triage.model == "gpt-5.6-luna"
     assert config.models.planner.model == "gpt-5.6-terra"
+    assert config.models.researcher.model == "gemini-3.8-flash"
+    assert config.models.researcher.reasoning == "medium"
     assert config.models.workers["L3"].model == "gemini-3.8-flash"
+    assert config.models.reviewer.model == "gpt-5.6-sol"
+
+
+def test_load_config_selects_security_model_profile() -> None:
+    config = load_config(model_profile="security")
+
+    assert config.models.workers["L3"].model == "claude-opus-5"
+    assert config.models.tester.model == "gpt-6-astra"
     assert config.models.reviewer.model == "gpt-5.6-sol"
 
 

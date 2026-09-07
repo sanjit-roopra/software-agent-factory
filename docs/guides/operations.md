@@ -120,6 +120,9 @@ spend money. Use `--runtime copilot` to opt in deliberately.
 Use `--model-profile economy` to persist the packaged lower-cost routing
 selection in the LaunchAgent's arguments.
 
+Use `--model-profile security` when the higher-cost Astra Tester plus Sol
+Reviewer route is appropriate for a security-sensitive backlog.
+
 Useful flags:
 
 - `--executable` points at a specific `factory` build.

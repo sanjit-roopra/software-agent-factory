@@ -22,7 +22,7 @@ There is no single best model across every factory role.
 | --- | --- | --- |
 | Lowest-cost mechanical work | `mai-code-1.1-flash`, `gpt-5.6-luna` | Both cost about $0.016 for the illustrative small call below. MAI is coding-specialized; Luna has broader reasoning evidence. |
 | Cost-effective implementation | `gemini-3.8-flash`, `gpt-5.6-terra` | Gemini 3.8 has unusually strong DeepSWE results for its measured task cost. Terra offers broader reasoning evidence and selectable long context. |
-| Hard implementation | `claude-opus-5`, `gpt-5.6-sol` | Strong repository, terminal, research and security evidence. |
+| Hard implementation | `gpt-6-astra`, `claude-opus-5` | Astra leads the current DeepSWE comparison; Opus remains a strong lower-cost frontier alternative. |
 | Hard planning and novel reasoning | `gpt-6-astra`, `claude-opus-5` | Strongest current reasoning and agentic evidence, but expensive. |
 | Web research and synthesis | `claude-opus-5`, then `gpt-5.6-sol` | Best available exact-model BrowseComp and synthesis evidence, with major harness caveats. |
 | Cost-effective testing experiment | `gemini-3.8-flash`, `gpt-5.6-terra` | Attractive economics and coding evidence, but weaker Terminal-Bench 4 results than the frontier models; validate locally before adopting. |
@@ -64,7 +64,7 @@ model_profiles:
   economy:
     triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
     refiner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
-    researcher: { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
+    researcher: { model: "gemini-3.8-flash",   reasoning: "medium", context_tier: "default" }
     planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
     workers:
       L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
@@ -78,6 +78,42 @@ model_profiles:
 Select it with `--model-profile economy` on `run`, `project`, `start`,
 `doctor`, `skill refresh` or `service install`. Profiles are complete routing
 tables, not partial overlays.
+
+Gemini 3.8 Flash is intentional here. In the illustrative pricing comparison,
+its call costs 5.63 credits versus 15.00 for Sonnet 5 and 16.00 for Terra.
+Sonnet has stronger directly reported research evidence, but that evidence used
+a much richer research harness than the factory's allowlisted `web_fetch`-only
+skill-generation call. Gemini at medium effort provides a materially cheaper
+economy choice with stronger general and long-document proxies than the minimum-cost
+Luna or GPT-5 mini alternatives. Re-evaluate after Gemini's promotional pricing
+ends.
+
+The packaged `security` profile keeps the default route but replaces the
+Tester with GPT-6 Astra:
+
+```yaml
+model_profiles:
+  security:
+    triage:     { model: "gpt-5.6-terra",      reasoning: "medium", context_tier: "default" }
+    refiner:    { model: "gpt-5.5",            reasoning: "high",   context_tier: "default" }
+    researcher: { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
+    planner:    { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
+    workers:
+      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
+      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+      L2:       { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
+      L3:       { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
+    tester:     { model: "gpt-6-astra",        reasoning: "high",   context_tier: "default" }
+    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
+```
+
+This is a complete routing table. Astra is placed on adversarial testing
+because its strongest differentiated evidence is offensive-security
+and difficult agentic problem solving; Sol then independently performs the
+final audit-and-correct-patch review. Astra is deliberately absent from
+`economy`: the illustrative call costs 75 credits, twice Opus 5 and over 13
+times Gemini 3.8 Flash. Select the route with
+`--model-profile security`.
 
 This candidate requires Copilot Pro+ or another plan that includes Opus 5,
 GPT-5.5 and GPT-5.6 Sol. On Copilot Pro, use only rows marked `Yes` in the
@@ -428,7 +464,11 @@ research product rather than the bare model.
 - Claude Opus 5 has the strongest directly reported single-agent BrowseComp
   result among the candidates with available evidence.
 - GPT-5.6 Sol is close and remains a strong current Researcher.
-- Claude Sonnet 5 is the best-supported lower-cost research alternative.
+- Claude Sonnet 5 is the best-supported lower-cost research alternative when
+  research quality is preferred over the economy profile's larger savings.
+- Gemini 3.8 Flash is the economy Researcher: weaker direct research evidence,
+  but 62.5% cheaper than Sonnet in the illustrative call and well matched to
+  the factory's bounded, allowlisted documentation-synthesis task.
 - GPT-6 Astra has strong factuality and analytical proxies, but no exact
   directly comparable BrowseComp result was found in this review.
 

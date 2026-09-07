@@ -41,6 +41,11 @@ Use `--model-profile economy` to select the packaged lower-cost routing table.
 The option is also available on `project`, `start`, `doctor`, `skill refresh`
 and `service install`.
 
+Use `--model-profile security` for an expensive security-focused route:
+GPT-6 Astra performs the independent Tester pass and GPT-5.6 Sol remains the
+final Reviewer. Keeping Astra out of the worker map preserves the rule that a
+reviewer model family may not review its own worker family.
+
 Before triage, the controller profiles the prepared worktree without shell,
 network or imports and persists `repository-profile.json`. This scan itself
 does not call Copilot.

@@ -53,7 +53,7 @@ model_profiles:
   economy:
     triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
     refiner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
-    researcher: { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
+    researcher: { model: "gemini-3.8-flash",   reasoning: "medium", context_tier: "default" }
     planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
     workers:
       L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
@@ -61,6 +61,18 @@ model_profiles:
       L2:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
       L3:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
     tester:     { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
+  security:
+    triage:     { model: "gpt-5.6-terra",      reasoning: "medium", context_tier: "default" }
+    refiner:    { model: "gpt-5.5",            reasoning: "high",   context_tier: "default" }
+    researcher: { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
+    planner:    { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
+    workers:
+      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
+      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
+      L2:       { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
+      L3:       { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
+    tester:     { model: "gpt-6-astra",        reasoning: "high",   context_tier: "default" }
     reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
 ```
 
@@ -78,12 +90,15 @@ factory run ... --model-profile economy
 factory project ... --model-profile economy
 factory start ... --model-profile economy
 factory skill refresh ... --model-profile economy
+factory run ... --model-profile security
 ```
 
 `factory doctor` validates the selected profile, and `factory service install`
 stores the selected name in the LaunchAgent arguments. An unknown profile
 fails with exit code `2` before a workspace or paid call is created. Profiles
-are complete `models` blocks, not partial overlays.
+are complete `models` blocks, not partial overlays. The `security` profile
+uses Astra for adversarial testing and Sol for an independent final review;
+it is intentionally much more expensive than `economy`.
 
 `workers` must define exactly `L0`, `L1`, `L2` and `L3`. Triage assigns the
 complexity level and that selects the worker.
