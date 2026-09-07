@@ -66,6 +66,12 @@ complexity level and that selects the worker.
 Model names appear only in configuration. They are not scattered through the
 source.
 
+See [Model selection, cost and benchmarks](model-selection.md) for the current
+Copilot catalog, prices, context and reasoning capabilities, benchmark
+evidence, and role-specific tradeoffs. The factory currently configures model
+and reasoning only; it does not yet expose Copilot CLI's selectable
+long-context tier.
+
 ## repository
 
 ```yaml

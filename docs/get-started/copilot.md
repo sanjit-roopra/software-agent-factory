@@ -65,6 +65,10 @@ Configuration rejects a reviewer whose model family matches any worker's. The
 final review always comes from a different family than the code that produced
 the change. See [Configuration](../reference/configuration.md#models).
 
+For current model prices, context and reasoning capabilities, benchmark
+evidence, and role-specific tradeoffs, see
+[Model selection, cost and benchmarks](../reference/model-selection.md).
+
 ## Repository skills
 
 There is no fixed, built-in skill catalog. The deterministic profile records
