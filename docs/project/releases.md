@@ -40,13 +40,13 @@ changed.
 
 ## What a release contains
 
-Six files. For 0.3.0:
+Six files. For {{ factory_version }}:
 
 ```text
-software-agent-factory-0.3.0-macos-arm64.tar.gz     PyInstaller onedir
-software-agent-factory-0.3.0-macos-x86_64.tar.gz    PyInstaller onedir
-software_agent_factory-0.3.0-py3-none-any.whl
-software_agent_factory-0.3.0.tar.gz
+software-agent-factory-{{ factory_version }}-macos-arm64.tar.gz     PyInstaller onedir
+software-agent-factory-{{ factory_version }}-macos-x86_64.tar.gz    PyInstaller onedir
+software_agent_factory-{{ factory_version }}-py3-none-any.whl
+software_agent_factory-{{ factory_version }}.tar.gz
 SHA256SUMS
 build-info.json
 ```
@@ -88,9 +88,14 @@ you ran `factory service install`.
 
 ## Versioning
 
-Semantic versioning. The current release is 0.3.0. Pre-1.0, expect breaking
-changes to configuration keys and CLI flags in minor releases; they are called
-out in the changelog.
+Semantic versioning. The current documented release is
+{{ factory_version }}. Pre-1.0, expect breaking changes to configuration keys
+and CLI flags in minor releases; they are called out in the changelog.
+
+The documentation build reads this value from `project.version` in
+`pyproject.toml`. Release preparation updates that one authoritative value, and
+the next GitHub Pages build renders the matching tag and artifact names without
+separate documentation edits.
 
 Check what you are running:
 

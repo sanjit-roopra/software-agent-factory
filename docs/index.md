@@ -9,7 +9,7 @@ hide:
 
 <div class="saf-hero" markdown>
 
-<span class="saf-eyebrow">v0.3.0 · macOS · early</span>
+<span class="saf-eyebrow">{{ factory_release_tag }} · macOS · early</span>
 
 # Software engineering agents with a deterministic controller
 

@@ -13,7 +13,7 @@ body:
     attributes:
       label: Factory version
       description: Run `factory --version`.
-      placeholder: factory 0.3.0
+      placeholder: factory x.y.z
     validations:
       required: true
   - type: input
