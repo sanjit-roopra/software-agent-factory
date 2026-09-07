@@ -7,6 +7,24 @@ API is still `0.x`.
 
 ## Unreleased
 
+## 0.4.1 - 2026-09-07
+
+### Added
+
+- `factory run` now accepts repeatable `--acceptance-criterion` and
+  `--constraint` options and persists them on the manual `WorkItem`.
+
+### Fixed
+
+- Worktree administration is now serialized through the repository's common
+  Git directory, preventing concurrent factories with different data
+  directories from racing on shared worktree metadata.
+- Repository verification uses a non-login shell, preventing shell profiles
+  from reintroducing credentials and other filtered environment variables.
+- Project-generated commits now use the deterministic Software Agent Factory
+  author and committer identity even when the host environment sets Git
+  identity variables.
+
 ## 0.4.0 - 2026-09-07
 
 ### Added
