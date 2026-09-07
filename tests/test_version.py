@@ -28,7 +28,7 @@ def test_get_version_falls_back_to_pyproject_when_metadata_is_missing(monkeypatc
 
     monkeypatch.setattr(version, "distribution_version", missing_distribution)
 
-    assert version.get_version() == "0.4.0"
+    assert version.get_version() == "0.4.1"
     assert version.get_version_source() == "pyproject"
 
 
