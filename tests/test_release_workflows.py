@@ -31,7 +31,7 @@ EXPECTED_ACTIONS = {
         "2031cfc080254a8a887f58cffee85186f0e49e48",
         "v4.9.0",
     ),
-    "actions/deploy-pages": ("d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e", "v4.0.5"),
+    "actions/deploy-pages": ("368f82528645a54fb793d4d04e342629a3f51346", "v5.0.1"),
     "actions/upload-pages-artifact": (
         "7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
         "v4",
