@@ -108,6 +108,9 @@ markdown_extensions:
 plugins:
   - search
 
+hooks:
+  - scripts/docs/version_tokens.py
+
 nav:
   - Home: index.md
   - Get started:

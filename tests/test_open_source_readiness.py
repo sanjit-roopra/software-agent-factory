@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import tomllib
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import yaml
@@ -20,6 +20,16 @@ def _load_pyproject() -> dict[str, Any]:
 def _load_docs_link_checker() -> ModuleType:
     path = ROOT / "scripts" / "docs" / "check_rendered_links.py"
     spec = importlib.util.spec_from_file_location("check_rendered_links", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_docs_version_hook() -> ModuleType:
+    path = ROOT / "scripts" / "docs" / "version_tokens.py"
+    spec = importlib.util.spec_from_file_location("version_tokens", path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -79,6 +89,7 @@ def test_documentation_configuration_uses_material_and_strict_validation() -> No
     assert config["theme"]["name"] == "material"
     assert config["theme"]["font"] == "false"
     assert config["plugins"] == ["search"]
+    assert config["hooks"] == ["scripts/docs/version_tokens.py"]
 
 
 def test_documentation_dependencies_are_isolated() -> None:
@@ -118,3 +129,21 @@ def test_rendered_link_checker_finds_visible_markdown_links(tmp_path: Path) -> N
     assert module.find_literal_markdown_links(tmp_path) == [
         "get-started/index.html: [Install](install.md)"
     ]
+
+
+def test_documentation_version_tokens_use_pyproject_version(tmp_path: Path) -> None:
+    module = _load_docs_version_hook()
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "example"\nversion = "1.2.3"\n',
+        encoding="utf-8",
+    )
+    config = SimpleNamespace(config_file_path=str(tmp_path / "mkdocs.yml"))
+
+    rendered = module.on_page_markdown(
+        "Version {{ factory_version }} / {{ factory_release_tag }}",
+        None,
+        config,
+        None,
+    )
+
+    assert rendered == "Version 1.2.3 / v1.2.3"
