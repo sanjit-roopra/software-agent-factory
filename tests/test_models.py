@@ -78,6 +78,34 @@ def test_project_plan_accepts_one_smallest_sufficient_task() -> None:
 
 
 @pytest.mark.parametrize(
+    "modules",
+    [
+        ["application source"],
+        ["*.py"],
+        [" src"],
+        ["src", "src"],
+    ],
+)
+def test_expected_scope_rejects_invalid_top_level_paths(modules: list[str]) -> None:
+    with pytest.raises(ValueError, match="expected_scope.modules"):
+        ExpectedScope(
+            modules=modules,
+            estimated_files_min=1,
+            estimated_files_max=2,
+        )
+
+
+def test_expected_scope_accepts_nested_repository_path_prefix() -> None:
+    scope = ExpectedScope(
+        modules=["src/software_agent_factory"],
+        estimated_files_min=1,
+        estimated_files_max=2,
+    )
+
+    assert scope.modules == ["src/software_agent_factory"]
+
+
+@pytest.mark.parametrize(
     "project_fields",
     [
         {"project_task_id": 1},
@@ -494,6 +522,16 @@ def test_test_report_is_distinct_from_deterministic_verification_report() -> Non
     # A TestReport carries no deterministic evidence fields.
     assert "deterministic_checks" not in test_report.model_dump()
     assert "deterministic_checks" in VerificationReport(passed=True, confidence=1.0).model_dump()
+
+
+def test_expected_scope_requires_at_least_one_path_prefix() -> None:
+    with pytest.raises(ValidationError, match="modules"):
+        ExpectedScope.model_validate(
+            {
+                "estimated_files_min": 1,
+                "estimated_files_max": 3,
+            }
+        )
 
 
 def test_repair_context_is_small_and_typed() -> None:

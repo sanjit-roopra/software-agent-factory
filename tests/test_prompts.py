@@ -58,7 +58,7 @@ def _plan() -> ExecutionPlan:
     return ExecutionPlan(
         summary="Add a guard clause.",
         steps=[PlanStep(id="s1", goal="Validate the name")],
-        expected_scope=ExpectedScope(estimated_files_min=1, estimated_files_max=2),
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
     )
 
 
@@ -124,7 +124,7 @@ def test_unsupported_role_is_rejected() -> None:
         normalize_role("   ")
 
 
-def test_project_decomposition_prompt_prefers_one_smallest_sufficient_task() -> None:
+def test_project_decomposition_prompt_requires_reviewable_dependency_dag() -> None:
     brief = ProjectBrief(
         id="project-1",
         title="Build customer validation",
@@ -140,11 +140,34 @@ def test_project_decomposition_prompt_prefers_one_smallest_sufficient_task() -> 
     )
 
     assert "ProjectPlan" in prompt
-    assert "fewest independently executable work items" in prompt
-    assert "Prefer one task" in prompt
+    assert "smallest sufficient DAG of reviewable work items" in prompt
+    assert "Use one task only" in prompt
+    assert "merged to the target branch" in prompt
+    assert "safe to run concurrently in isolated worktrees" in prompt
     assert "delivery_approach" in prompt
     assert "Project brief" in prompt
     assert "ExecutionPlan" not in prompt
+
+
+def test_project_decomposition_prompt_includes_previous_rejection() -> None:
+    brief = ProjectBrief(
+        id="project-1",
+        title="Build customer validation",
+        description="Reject blank customer names.",
+        repository_path="/repo",
+    )
+
+    prompt = build_prompt(
+        _request(
+            AgentRole.PLANNER,
+            purpose=AgentPurpose.DECOMPOSE_PROJECT,
+            project_brief=brief,
+            repair_context="The first plan packed too many outcomes into one task.",
+        )
+    )
+
+    assert "Previous decomposition rejection" in prompt
+    assert "packed too many outcomes" in prompt
 
 
 def test_standard_planner_prompt_requires_smallest_implementation() -> None:

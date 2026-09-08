@@ -482,19 +482,28 @@ class ScopeDriftPolicy:
         planned_files = self._planned_step_files(execution_plan)
         findings: list[ScopeFinding] = []
 
-        expected_modules = self._expected_top_level_modules(execution_plan)
+        expected_modules = self._expected_path_prefixes(execution_plan)
         if expected_modules:
+            expected_files = tuple(
+                path
+                for path in normalized_files
+                if any(
+                    path == prefix or path.startswith(f"{prefix}/") for prefix in expected_modules
+                )
+            )
             unexpected_files = tuple(
                 path
                 for path in normalized_files
-                if self._top_level_name(path) not in expected_modules
+                if not any(
+                    path == prefix or path.startswith(f"{prefix}/") for prefix in expected_modules
+                )
             )
-            if unexpected_files:
+            if unexpected_files and not expected_files:
                 findings.append(
                     ScopeFinding(
                         category="unexpected-module",
                         message=(
-                            "Changed files outside expected top-level scope: "
+                            "Changed files outside expected path scope: "
                             f"{', '.join(unexpected_files)}"
                         ),
                         paths=unexpected_files,
@@ -592,20 +601,25 @@ class ScopeDriftPolicy:
         )
 
     def _planned_step_files(self, execution_plan: ExecutionPlan) -> set[str]:
-        return {path for step in execution_plan.steps for path in step.likely_files}
+        return {
+            normalized
+            for step in execution_plan.steps
+            for path in step.likely_files
+            if (normalized := self._normalize_path(path))
+        }
 
-    def _expected_top_level_modules(self, execution_plan: ExecutionPlan) -> set[str]:
+    def _expected_path_prefixes(self, execution_plan: ExecutionPlan) -> set[str]:
         expected: set[str] = set()
         for module in execution_plan.expected_scope.modules:
             normalized = self._normalize_path(module)
             if normalized:
-                expected.add(self._top_level_name(normalized))
+                expected.add(normalized)
         return expected
 
     def _decide(self, findings: Sequence[ScopeFinding], risk: Risk) -> ScopeDecision:
         if not findings:
             return ScopeDecision.CONTINUE
-        if any(finding.sensitive for finding in findings) and risk in {Risk.R2, Risk.R3}:
+        if any(finding.sensitive for finding in findings):
             return ScopeDecision.NEEDS_HUMAN
         return ScopeDecision.REPLAN
 

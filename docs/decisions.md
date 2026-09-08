@@ -125,18 +125,22 @@ from an earlier cycle.
 
 ## ADR-007: Two separate, persisted retry budgets
 
-`AttemptBudget.IMPLEMENTATION` covers the whole pre-PR loop: implementer
-failures, deterministic verification failures, reviewer rejections and
-scope-drift replans all consume `retries.max_total_attempts`.
+`AttemptBudget.IMPLEMENTATION` covers worktree-editing attempts: implementer
+failures, deterministic verification failures and reviewer rejections consume
+`retries.max_total_attempts`.
 
 `AttemptBudget.CI_REPAIR` is a separate budget bounded by `ci.repair_attempts`.
 It also hard-caps how many times a PR may be updated, so a CI loop cannot push
 forever.
 
-Both attempt numbers are derived from persisted `FactoryRun.attempt_records`,
-never from a local counter. A restarted process therefore cannot widen a budget.
-Scope replans are bounded independently by `scope_drift.max_replans`, counted
-from persisted records whose `triggered_by` is `SCOPE`.
+Both implementation attempt numbers are derived from persisted
+`FactoryRun.attempt_records`, never from a local counter. A restarted process
+therefore cannot widen a budget. A scope replan after successful deterministic
+verification updates only the `ExecutionPlan`, re-assesses the existing green
+diff, and proceeds without rerunning the Implementer. These metadata-only
+replans are bounded independently by `scope_drift.max_replans` and persisted in
+`FactoryRun.scope_replans`; legacy scope-triggered attempt records remain
+counted during recovery.
 
 ## ADR-008: Lock contention is not a persisted failure
 

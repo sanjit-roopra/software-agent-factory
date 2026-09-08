@@ -1131,16 +1131,24 @@ the bounded polish pass.
 Status: done.
 
 `factory project` accepts a high-level project description, optional acceptance
-criteria and constraints, and invokes the configured Planner once with purpose
+criteria and constraints, and invokes the configured Planner with purpose
 `DECOMPOSE_PROJECT`. The result is a typed `ProjectPlan` with one to twelve
-tasks. Task ids are contiguous and dependencies may reference earlier ids only,
-which provides a deterministic DAG without a workflow framework.
+reviewable tasks. Task ids are contiguous and dependencies may reference
+earlier ids only, which provides a deterministic DAG without a workflow
+framework. If deterministic task-size validation rejects the first
+decomposition, the Planner receives the rejection reason for one bounded
+correction attempt before the project fails.
 
 The planner is instructed to choose the fastest sufficient solution:
 
-- default to one coherent work item
+- use one work item only for one bounded change that can be implemented,
+  verified, reviewed and merged as one pull request
 - split only for independently verifiable outcomes, hard prerequisites, safe
   parallel execution, or an existing scope limit
+- treat dependencies as integration/merge-before-start gates and leave safe
+  parallel work dependency-free
+- propagate sibling task outcomes as hard child-work-item boundaries so a
+  planner, replan or implementer cannot intentionally absorb later tasks
 - reuse existing mechanisms
 - avoid speculative abstractions, dependencies, services, infrastructure,
   cleanup and future-proofing
@@ -1170,8 +1178,14 @@ delivery explicitly under ADR-022.
 
 ## Acceptance criteria
 
-- a broad brief produces a persisted typed project plan
+- a broad brief produces a persisted typed project plan of reviewable tasks
 - one task is valid and is the fake runtime default
+- an overpacked single task is rejected and receives one bounded correction
+- execution-plan scope modules are concrete top-level repository paths rather
+  than prose labels, so deterministic scope checks cannot reject every changed
+  file or be bypassed by a semantic description
+- a green implementation with inaccurate scope metadata is replanned and
+  re-assessed without another Implementer attempt
 - invalid ids, forward dependencies and duplicate task titles are rejected
 - dependency-ready work runs with bounded concurrency
 - successful child commits compose onto one integration branch

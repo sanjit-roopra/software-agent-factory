@@ -97,6 +97,7 @@ _FACTORY_GIT_ENV = {
 #: holds at most 12 tasks, so this comfortably covers every commit the factory
 #: itself could have added to one integration branch.
 _INTEGRATION_SEARCH_DEPTH = 40
+_MAX_DECOMPOSITION_ATTEMPTS = 2
 
 
 class ProjectError(RuntimeError):
@@ -585,9 +586,21 @@ class ProjectRunner:
         except FileNotFoundError:
             pass
         now = utc_now()
+        tasks = tuple(
+            record.model_copy(
+                update={
+                    "state": ProjectTaskState.FAILED,
+                    "failure_reason": str(exc),
+                }
+            )
+            if record.state is ProjectTaskState.RUNNING
+            else record
+            for record in execution.tasks
+        )
         execution = execution.model_copy(
             update={
                 "state": ProjectState.FAILED,
+                "tasks": tasks,
                 "failure_reason": str(exc),
                 "updated_at": now,
                 "completed_at": now,
@@ -612,22 +625,43 @@ class ProjectRunner:
             constraints=list(brief.constraints),
             project_id=brief.id,
         )
-        request = AgentRequest(
-            role=AgentRole.PLANNER,
-            purpose=AgentPurpose.DECOMPOSE_PROJECT,
-            model=model.model,
-            reasoning=model.reasoning,
-            context_tier=model.context_tier,
-            work_item=synthetic_work_item,
-            project_brief=brief,
-            repository_profile=profile,
-            workspace_path=str(source_repo),
-            timeout_seconds=self._config.agent_timeout_seconds,
-        )
-        started_at = utc_now()
-        try:
-            result = self._runtime.run(request)
-        except (OSError, RuntimeError, ValueError) as exc:
+        rejection: str | None = None
+        for _attempt in range(1, _MAX_DECOMPOSITION_ATTEMPTS + 1):
+            request = AgentRequest(
+                role=AgentRole.PLANNER,
+                purpose=AgentPurpose.DECOMPOSE_PROJECT,
+                model=model.model,
+                reasoning=model.reasoning,
+                context_tier=model.context_tier,
+                work_item=synthetic_work_item,
+                project_brief=brief,
+                repository_profile=profile,
+                repair_context=rejection,
+                workspace_path=str(source_repo),
+                timeout_seconds=self._config.agent_timeout_seconds,
+            )
+            started_at = utc_now()
+            try:
+                result = self._runtime.run(request)
+            except (OSError, RuntimeError, ValueError) as exc:
+                completed_at = utc_now()
+                execution.invocation_records.append(
+                    InvocationRecord(
+                        invocation_number=len(execution.invocation_records) + 1,
+                        role=request.role,
+                        purpose=request.purpose,
+                        model=request.model,
+                        reasoning=request.reasoning,
+                        context_tier=request.context_tier,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        success=False,
+                        failure_reason=runtime_exception_failure_reason(exc),
+                    )
+                )
+                execution.updated_at = completed_at
+                self._project_store.save_execution(execution)
+                raise
             completed_at = utc_now()
             execution.invocation_records.append(
                 InvocationRecord(
@@ -639,36 +673,17 @@ class ProjectRunner:
                     context_tier=request.context_tier,
                     started_at=started_at,
                     completed_at=completed_at,
-                    success=False,
-                    failure_reason=runtime_exception_failure_reason(exc),
+                    success=result.success,
+                    failure_reason=result.failure_reason,
+                    usage=result.usage,
                 )
             )
             execution.updated_at = completed_at
             self._project_store.save_execution(execution)
-            raise
-        completed_at = utc_now()
-        execution.invocation_records.append(
-            InvocationRecord(
-                invocation_number=len(execution.invocation_records) + 1,
-                role=request.role,
-                purpose=request.purpose,
-                model=request.model,
-                reasoning=request.reasoning,
-                context_tier=request.context_tier,
-                started_at=started_at,
-                completed_at=completed_at,
-                success=result.success,
-                failure_reason=result.failure_reason,
-                usage=result.usage,
-            )
-        )
-        execution.updated_at = completed_at
-        self._project_store.save_execution(execution)
-        if not result.success or result.project_plan is None:
-            raise ProjectError(
-                result.failure_reason or "project planner failed to produce a ProjectPlan"
-            )
-        return result.project_plan.model_copy(update={"project_id": brief.id})
+            if result.success and result.project_plan is not None:
+                return result.project_plan.model_copy(update={"project_id": brief.id})
+            rejection = result.failure_reason or "project planner failed to produce a ProjectPlan"
+        raise ProjectError(rejection or "project planner failed to produce a ProjectPlan")
 
     def _publish_issues(
         self,
@@ -734,6 +749,7 @@ class ProjectRunner:
             execution = self._assign_run_ids(execution, brief, wave)
             results, errors = self._run_wave(
                 brief,
+                plan,
                 wave,
                 execution,
                 integration_path,
@@ -860,6 +876,7 @@ class ProjectRunner:
     def _run_wave(
         self,
         brief: ProjectBrief,
+        plan: ProjectPlan,
         tasks: list[ProjectTask],
         execution: ProjectExecution,
         integration_path: Path,
@@ -898,6 +915,7 @@ class ProjectRunner:
                 work_item = self._to_work_item(
                     brief,
                     task,
+                    project_tasks=plan.tasks,
                     issue_url=record.issue_url,
                 )
                 futures[task.id] = executor.submit(
@@ -1225,17 +1243,61 @@ class ProjectRunner:
         brief: ProjectBrief,
         task: ProjectTask,
         *,
+        project_tasks: tuple[ProjectTask, ...],
         issue_url: str | None,
     ) -> WorkItem:
         # Project-wide constraints are applied deterministically rather than
         # trusting the planner to copy them into every task.
-        constraints = list(dict.fromkeys((*brief.constraints, *task.constraints)))
+        predecessors = "; ".join(
+            f"task {candidate.id}: {candidate.title}"
+            for candidate in project_tasks
+            if candidate.id in task.dependencies
+        )
+        sibling_boundaries = "; ".join(
+            f"task {candidate.id}: {candidate.title}"
+            for candidate in project_tasks
+            if candidate.id != task.id and candidate.id not in task.dependencies
+        )
+        predecessor_context = (
+            (
+                (
+                    "Integrated project predecessors are already available in this branch and may "
+                    f"be reused or extended where this task requires it: {predecessors}"
+                ),
+            )
+            if predecessors
+            else ()
+        )
+        future_boundaries = (
+            (
+                (
+                    "Project task boundary: implement only this task. These outcomes are assigned "
+                    f"to separate project tasks and must not be implemented here: "
+                    f"{sibling_boundaries}"
+                ),
+            )
+            if sibling_boundaries
+            else ()
+        )
+        constraints = list(
+            dict.fromkeys(
+                (
+                    *brief.constraints,
+                    *task.constraints,
+                    *predecessor_context,
+                    *future_boundaries,
+                )
+            )
+        )
         return WorkItem(
             id=self._work_item_id(brief.id, task.id),
             external_id=issue_url,
             source="MANUAL",
             title=task.title,
-            description=task.description,
+            description=(
+                f"Project context: {brief.title}\n\n{brief.description}\n\n"
+                f"Current task: {task.description}"
+            ),
             acceptance_criteria=list(task.acceptance_criteria),
             constraints=constraints,
             labels=list(task.labels),

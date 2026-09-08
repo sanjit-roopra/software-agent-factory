@@ -688,7 +688,7 @@ def test_build_pr_body_includes_all_supplied_sections() -> None:
     plan = ExecutionPlan(
         summary="Add validation to the customer creation endpoint.",
         steps=[PlanStep(id="s1", goal="Add input validation")],
-        expected_scope=ExpectedScope(estimated_files_min=1, estimated_files_max=2),
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
     )
     verification = VerificationReport(passed=True, confidence=1.0, test_findings=["all green"])
     review = ReviewReport(approved=True, findings=["looks good"])

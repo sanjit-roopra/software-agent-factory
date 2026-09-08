@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -400,6 +401,9 @@ class WorkItem(VersionedModel):
 
 PROJECT_ID_PATTERN = r"^[A-Za-z0-9._-]{1,80}$"
 MAX_PROJECT_TASKS = 12
+MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA = 8
+MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA = 6
+MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS = 2000
 
 
 class ProjectState(StrEnum):
@@ -432,7 +436,10 @@ class ProjectTask(ModelBase):
     id: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(min_length=1, max_length=10000)
-    acceptance_criteria: tuple[str, ...] = Field(min_length=1, max_length=30)
+    acceptance_criteria: tuple[str, ...] = Field(
+        min_length=1,
+        max_length=MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA,
+    )
     constraints: tuple[str, ...] = Field(default=(), max_length=30)
     dependencies: tuple[int, ...] = Field(default=(), max_length=8)
     priority: str | None = Field(default=None, max_length=20)
@@ -442,8 +449,8 @@ class ProjectTask(ModelBase):
     def _validate_dependencies(self) -> ProjectTask:
         if len(set(self.dependencies)) != len(self.dependencies):
             raise ValueError("project task dependencies must be unique")
-        if any(dependency >= self.id for dependency in self.dependencies):
-            raise ValueError("project task dependencies must reference earlier task ids")
+        if any(dependency < 1 or dependency >= self.id for dependency in self.dependencies):
+            raise ValueError("project task dependencies must reference valid earlier task ids")
         return self
 
 
@@ -463,6 +470,20 @@ class ProjectPlan(VersionedModel):
         normalized_titles = [task.title.strip().casefold() for task in self.tasks]
         if len(set(normalized_titles)) != len(normalized_titles):
             raise ValueError("project task titles must be unique")
+        if len(self.tasks) == 1:
+            task = self.tasks[0]
+            if len(task.acceptance_criteria) > MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA:
+                raise ValueError(
+                    "a single project task may have at most "
+                    f"{MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA} acceptance criteria; "
+                    "split independently verifiable or prerequisite outcomes into a task DAG"
+                )
+            if len(task.description) > MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS:
+                raise ValueError(
+                    "a single project task description may have at most "
+                    f"{MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS} characters; split the "
+                    "project into reviewable, independently verifiable task outcomes"
+                )
         return self
 
 
@@ -628,6 +649,7 @@ class FactoryRun(VersionedModel):
     state: WorkflowState
     attempt_records: list[AttemptRecord] = Field(default_factory=list)
     invocation_records: list[InvocationRecord] = Field(default_factory=list)
+    scope_replans: int = Field(default=0, ge=0)
     workspace_path: str | None = None
     branch_name: str | None = None
     created_at: UtcDateTime = Field(default_factory=utc_now)
@@ -696,11 +718,72 @@ class PlanStep(ModelBase):
     likely_files: list[str] = Field(default_factory=list)
     validation: list[str] = Field(default_factory=list)
 
+    @field_validator("likely_files")
+    @classmethod
+    def _validate_likely_files(cls, paths: list[str]) -> list[str]:
+        normalized_paths: list[str] = []
+        for path in paths:
+            if (
+                not path
+                or path != path.strip()
+                or "\\" in path
+                or any(character in path for character in "*?[]{}")
+                or path.startswith("/")
+                or path.startswith("./")
+                or ":" in path
+            ):
+                raise ValueError("likely_files entries must be repository-relative paths")
+            parts = PurePosixPath(path).parts
+            if not parts or any(part in {".", ".."} for part in parts):
+                raise ValueError(
+                    "likely_files entries must be repository-relative paths without traversal"
+                )
+            normalized_paths.append("/".join(parts))
+        if len(set(normalized_paths)) != len(normalized_paths):
+            raise ValueError("likely_files entries must be unique")
+        return normalized_paths
+
 
 class ExpectedScope(ModelBase):
-    modules: list[str] = Field(default_factory=list)
+    modules: list[str] = Field(
+        min_length=1,
+        description=(
+            "Repository-relative path prefixes such as 'src', "
+            "'src/software_agent_factory', 'tests', or 'pyproject.toml'; "
+            "never conceptual labels."
+        ),
+    )
     estimated_files_min: int = Field(ge=0)
     estimated_files_max: int = Field(ge=0)
+
+    @field_validator("modules")
+    @classmethod
+    def _validate_modules(cls, modules: list[str]) -> list[str]:
+        normalized_modules: list[str] = []
+        for module in modules:
+            if (
+                not module
+                or module != module.strip()
+                or "\\" in module
+                or any(character.isspace() for character in module)
+                or any(character in module for character in "*?[]{}")
+                or module.startswith("/")
+                or ":" in module
+            ):
+                raise ValueError(
+                    "expected_scope.modules entries must be repository-relative "
+                    "path prefixes such as 'src', 'tests', or 'pyproject.toml'"
+                )
+            parts = PurePosixPath(module).parts
+            if not parts or any(part in {".", ".."} for part in parts):
+                raise ValueError(
+                    "expected_scope.modules entries must be repository-relative "
+                    "path prefixes without traversal"
+                )
+            normalized_modules.append("/".join(parts))
+        if len(set(normalized_modules)) != len(normalized_modules):
+            raise ValueError("expected_scope.modules entries must be unique")
+        return normalized_modules
 
     @model_validator(mode="after")
     def _validate_file_bounds(self) -> ExpectedScope:

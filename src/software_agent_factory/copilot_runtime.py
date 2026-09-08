@@ -182,10 +182,9 @@ class CopilotAgentRuntime(AgentRuntime):
             try:
                 stdout, stderr = process.communicate(timeout=request.timeout_seconds)
             except subprocess.TimeoutExpired as exc:
-                os.killpg(process.pid, signal.SIGKILL)
-                stdout, stderr = process.communicate()
-                stdout = stdout or _decode_timeout_text(exc.stdout)
-                stderr = stderr or _decode_timeout_text(exc.stderr)
+                stdout, stderr = _kill_process_group(process)
+                stdout = _merge_timeout_output(exc.stdout, stdout)
+                stderr = _merge_timeout_output(exc.stderr, stderr)
                 usage = _load_usage_metrics(usage_path, stdout=stdout)
                 reason = _format_failure_reason(
                     role=request.role,
@@ -201,6 +200,9 @@ class CopilotAgentRuntime(AgentRuntime):
                     failure_reason=reason,
                     usage=usage,
                 )
+            except BaseException:
+                _kill_process_group(process)
+                raise
 
             usage = _load_usage_metrics(usage_path, stdout=stdout)
             if process.returncode != 0:
@@ -686,6 +688,21 @@ def _decode_timeout_text(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _merge_timeout_output(previous: object, final: str) -> str:
+    prefix = _decode_timeout_text(previous)
+    if not prefix or final.startswith(prefix):
+        return final
+    return f"{prefix}{final}"
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return process.communicate()
 
 
 def _candidate_texts(assistant_text: str, stdout: str) -> list[str]:

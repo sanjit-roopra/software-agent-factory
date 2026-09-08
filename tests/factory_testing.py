@@ -50,6 +50,7 @@ def build_config(
     scheduler: dict[str, object] | None = None,
     max_changed_files: int = 100,
     polish_enabled: bool = False,
+    approved_sensitive_files: list[str] | None = None,
 ) -> FactoryConfig:
     payload: dict[str, object] = {
         "factory": {
@@ -83,7 +84,10 @@ def build_config(
             },
             "max_changed_files": max_changed_files,
         },
-        "scope_drift": {"max_replans": max_replans},
+        "scope_drift": {
+            "max_replans": max_replans,
+            "approved_sensitive_files": approved_sensitive_files or [],
+        },
         "polish": {"enabled": polish_enabled},
         "risk": {
             "R0": {"human_approval": False},
