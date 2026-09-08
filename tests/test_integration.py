@@ -9,6 +9,7 @@ is only used against throwaway repositories created under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -505,7 +506,9 @@ def test_pull_request_enabled_publishes_and_reaches_done_when_ci_disabled(
 
     assert run.state is WorkflowState.DONE
     assert run.completed_at is not None
-    assert run.commit_sha == runner.commit_sha
+    # Publication now creates a real commit object bound to the reviewed tree
+    # and the approved parent, so the SHA comes from git, not the fake runner.
+    assert re.fullmatch(r"[0-9a-f]{40}", run.commit_sha or "")
     assert run.pull_request_url == runner.pr_url
 
     pushes = [argv for argv in runner.commands("git") if "push" in argv]

@@ -146,6 +146,27 @@ class FakeCompleted:
     stderr: str = ""
 
 
+#: Local, non-network ``git`` commands that a fake runner must execute for
+#: real: publication binds tree, parent and ref identity, which only git can
+#: compute honestly. ``push``/``ls-remote``/``remote`` stay faked.
+_LOCAL_GIT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "write-tree",
+        "rev-parse",
+        "symbolic-ref",
+        "commit-tree",
+        "rev-list",
+        "update-ref",
+        "diff",
+        "cat-file",
+        "show",
+        "log",
+        "status",
+        "add",
+    }
+)
+
+
 @dataclass
 class ScriptedRunner:
     """Fake ``CommandRunner`` for every remote-touching ``git``/``gh`` call.
@@ -183,21 +204,27 @@ class ScriptedRunner:
 
     def _git(self, argv: list[str]) -> FakeCompleted:
         tail = argv[3:] if argv[1:2] == ["-C"] else argv[1:]
-        if tail == ["write-tree"] or (
-            tail[:1] == ["rev-parse"] and any(arg.endswith("^{tree}") for arg in tail)
-        ):
-            # Controller integration tests use real worktrees but fake remote
-            # publication. Its simulated commit preserves the staged tree.
-            repo = Path(argv[2]) if argv[1:2] == ["-C"] else None
-            if repo is not None and (repo / ".git").exists():
-                return FakeCompleted(stdout=git(repo, "write-tree"))
-            return FakeCompleted(stdout=f"{self.commit_sha}\n")
+        repo = Path(argv[2]) if argv[1:2] == ["-C"] else None
+        real_repo = repo is not None and (repo / ".git").exists()
         if tail[:2] == ["remote", "get-url"]:
             if self.remote_missing:
                 return FakeCompleted(returncode=128, stderr="error: No such remote 'origin'")
             return FakeCompleted(stdout=f"{self.remote_url}\n")
         if tail[:1] == ["rev-parse"] and "--abbrev-ref" in tail:
             return FakeCompleted(stdout=f"{self.base_branch}\n")
+        if real_repo and tail[:1] and tail[0] in _LOCAL_GIT_COMMANDS:
+            # Only the network is faked. Commit identity (tree, parent, ref
+            # advancement) is produced by real git so a publication cannot
+            # appear valid against a mock while being wrong against git.
+            assert repo is not None
+            result = subprocess.run(["git", "-C", str(repo), *tail], capture_output=True, text=True)
+            return FakeCompleted(
+                returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
+            )
+        if tail == ["write-tree"] or (
+            tail[:1] == ["rev-parse"] and any(arg.endswith("^{tree}") for arg in tail)
+        ):
+            return FakeCompleted(stdout=f"{self.commit_sha}\n")
         if tail[:1] == ["rev-parse"]:
             return FakeCompleted(stdout=f"{self.commit_sha}\n")
         if tail[:3] == ["diff", "--cached", "--name-only"]:

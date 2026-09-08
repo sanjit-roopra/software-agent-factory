@@ -418,6 +418,11 @@ class PullRequestMerger:
             )
         if state.review_decision == "CHANGES_REQUESTED":
             raise MergeNotAllowedError("a reviewer requested changes on this pull request")
+        if state.review_decision == "REVIEW_REQUIRED":
+            raise MergeNotAllowedError(
+                "this pull request still requires a review that has not been given; the "
+                "factory never merges around an outstanding human approval"
+            )
         if state.mergeable != "MERGEABLE":
             raise MergeNotAllowedError(
                 f"GitHub reports mergeable={state.mergeable or 'UNKNOWN'!r} "

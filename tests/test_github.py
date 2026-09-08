@@ -1540,7 +1540,10 @@ def test_branch_policy_falls_back_to_classic_protection(tmp_path: Path) -> None:
     protection = {
         "enforce_admins": {"enabled": True},
         "required_status_checks": {"strict": True, "contexts": ["quality"]},
-        "required_pull_request_reviews": {"required_approving_review_count": 1},
+        "required_pull_request_reviews": {
+            "required_approving_review_count": 1,
+            "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
+        },
     }
     runner = FakeRunner(
         [
@@ -1600,7 +1603,9 @@ def test_classic_protection_cannot_exempt_administrators(
     protection = {
         "enforce_admins": {"enabled": enforced},
         "required_status_checks": {"strict": True, "contexts": ["quality"]},
-        "required_pull_request_reviews": {},
+        "required_pull_request_reviews": {
+            "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
+        },
     }
     runner = FakeRunner(
         [
@@ -1618,7 +1623,9 @@ def test_branch_policy_pins_host_and_encodes_branch(tmp_path: Path) -> None:
     protection = {
         "enforce_admins": {"enabled": True},
         "required_status_checks": {"strict": True, "contexts": ["quality"]},
-        "required_pull_request_reviews": {},
+        "required_pull_request_reviews": {
+            "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
+        },
     }
     runner = FakeRunner(
         [
@@ -1950,3 +1957,63 @@ def test_ensure_pushed_verifies_the_committed_tree(tmp_path: Path) -> None:
         publisher.ensure_pushed(tmp_path, "factory/wi-1", expected_tree_sha=reviewed)
 
     assert not any("push" in call[0] for call in runner.calls)
+
+
+# --------------------------------------------------------------------------
+# Classic protection cannot authorize a merge if anyone may bypass review
+# --------------------------------------------------------------------------
+
+
+def _classic_protection(allowances: object) -> dict:
+    reviews: dict = {"required_approving_review_count": 1}
+    if allowances is not None:
+        reviews["bypass_pull_request_allowances"] = allowances
+    return {
+        "enforce_admins": {"enabled": True},
+        "required_status_checks": {"strict": True, "contexts": ["quality"]},
+        "required_pull_request_reviews": reviews,
+    }
+
+
+@pytest.mark.parametrize(
+    "allowances",
+    [
+        None,
+        {"users": [{"login": "someone"}], "teams": [], "apps": []},
+        {"users": [], "teams": [{"slug": "ops"}], "apps": []},
+        {"users": [], "teams": [], "apps": [{"slug": "bot"}]},
+        {"users": [], "teams": []},
+        {},
+    ],
+)
+def test_classic_protection_with_a_review_bypass_cannot_authorize(
+    tmp_path: Path, allowances: object
+) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=1, stderr="Not Found"),
+            FakeCompletedProcess(returncode=0, stdout=json.dumps(_classic_protection(allowances))),
+        ]
+    )
+
+    with pytest.raises(GitHubError):
+        GitHubClient(runner=runner).get_branch_policy(
+            tmp_path, repository="acme/repo", branch="main"
+        )
+
+
+def test_classic_protection_with_explicitly_empty_allowances_authorizes(tmp_path: Path) -> None:
+    protection = _classic_protection({"users": [], "teams": [], "apps": []})
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=1, stderr="Not Found"),
+            FakeCompletedProcess(returncode=0, stdout=json.dumps(protection)),
+        ]
+    )
+
+    policy = GitHubClient(runner=runner).get_branch_policy(
+        tmp_path, repository="acme/repo", branch="main"
+    )
+
+    assert policy.sources == ("branch-protection",)
+    assert policy.requires_pull_request is True

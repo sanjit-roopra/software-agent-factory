@@ -204,6 +204,17 @@ class ExcessiveChangeScopeError(GitPublishError):
     created rather than silently publishing an oversized diff."""
 
 
+class UnauthorizedHistoryError(GitPublishError):
+    """Raised when the branch to be published carries history the controller
+    never recorded: an extra agent commit, a rewritten parent, or a ``HEAD``
+    that is neither the approved parent nor the recorded publication commit.
+
+    A tree comparison alone cannot catch this. An agent can add a secret in one
+    commit and remove it in the next, or commit an empty change, and still end
+    up with exactly the reviewed tree, so the *parent* and the recorded commit
+    identity are bound as well."""
+
+
 class UnreviewedContentError(GitPublishError):
     """Raised when the workspace content about to be published is not the exact
     tree the independent Reviewer approved. Nothing is committed or pushed."""
@@ -554,7 +565,7 @@ class GitPublisher:
     allowed_hosts: frozenset[str] = field(default_factory=lambda: DEFAULT_ALLOWED_HOSTS)
 
     def _run_git(
-        self, workspace_path: Path, args: Sequence[str]
+        self, workspace_path: Path, args: Sequence[str], *, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
         if args:
             head = args[0]
@@ -574,7 +585,7 @@ class GitPublisher:
             result = self.runner(full_args)
         except subprocess.TimeoutExpired as exc:
             raise GitTimeoutError(full_args, exc.timeout) from None
-        if result.returncode != 0:
+        if check and result.returncode != 0:
             raise GitCommandError(full_args, result.returncode, result.stderr)
         return result
 
@@ -748,6 +759,147 @@ class GitPublisher:
             workspace_path, ["push", "--", destination, f"{head}:refs/heads/{branch_name}"]
         )
         return head
+
+    def publish_bound_commit(
+        self,
+        workspace_path: Path,
+        branch_name: str,
+        message: str,
+        *,
+        expected_tree_sha: str,
+        expected_parent_sha: str,
+        record_commit: Callable[[str], None],
+        prepared_commit_sha: str | None = None,
+        expected_repository: str | None = None,
+        expected_host: str | None = None,
+    ) -> str:
+        """Publish exactly the approved tree on exactly the approved parent.
+
+        The commit object is built with ``git commit-tree`` from the immutable
+        reviewed tree and the approved parent, so its identity never depends on
+        the mutable index or on whatever ``HEAD`` happens to be. The resulting
+        SHA is handed to ``record_commit`` -- which persists it -- *before* the
+        branch is advanced and before anything is pushed, so a crash can always
+        be resolved to one commit rather than guessed from the worktree.
+
+        The branch is advanced with a compare-and-swap ``git update-ref`` from
+        the approved parent, and only that exact commit is pushed. Any commit
+        the controller did not create (including one with an identical tree)
+        leaves ``HEAD`` off the approved parent and blocks publication.
+
+        ``prepared_commit_sha`` resumes a publication whose receipt was already
+        persisted: the recorded commit is re-verified against the same tree and
+        parent, and ``HEAD`` may only be the approved parent (crash before the
+        ref moved) or the recorded commit itself (crash after).
+        """
+        _validate_branch_name(
+            branch_name, branch_prefix=self.branch_prefix, base_branch=self.base_branch
+        )
+        full_message = _build_commit_message(message, self.co_author_trailer)
+        tree = self._require_object_name(expected_tree_sha, "reviewed tree")
+        parent = self._require_object_name(expected_parent_sha, "expected parent commit")
+        prepared = (
+            self._require_object_name(prepared_commit_sha, "recorded publication commit")
+            if prepared_commit_sha is not None
+            else None
+        )
+
+        destination = self._push_destination(
+            workspace_path,
+            expected_repository=expected_repository,
+            expected_host=expected_host,
+        )
+
+        branch = self._run_git(
+            workspace_path, ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False
+        ).stdout.strip()
+        if branch != branch_name:
+            raise UnauthorizedHistoryError(
+                f"workspace is on {branch or 'a detached HEAD'!r}, not the publication branch "
+                f"{branch_name!r}"
+            )
+        head = self._run_git(workspace_path, ["rev-parse", "HEAD"]).stdout.strip()
+
+        if prepared is None:
+            if head != parent:
+                raise UnauthorizedHistoryError(
+                    f"HEAD is {head or 'unknown'!r}, not the approved parent commit {parent!r}: "
+                    "the branch carries a commit the controller did not record"
+                )
+            changed_files = [
+                line
+                for line in self._run_git(
+                    workspace_path, ["diff", "--name-only", parent, tree]
+                ).stdout.splitlines()
+                if line
+            ]
+            if not changed_files:
+                raise UnauthorizedHistoryError(
+                    f"the reviewed tree {tree!r} is identical to the approved parent {parent!r}: "
+                    "there is nothing to publish"
+                )
+            # The same protected-path and change-scope rules as an ordinary
+            # publication, applied to the reviewed tree itself.
+            _validate_change_scope(changed_files, max_changed_files=self.max_changed_files)
+            commit = self._run_git(
+                workspace_path, ["commit-tree", tree, "-p", parent, "-m", full_message]
+            ).stdout.strip()
+            commit = self._require_object_name(commit, "new publication commit")
+            self._verify_commit_shape(workspace_path, commit, tree=tree, parent=parent)
+            # Durable receipt first: after this returns, the controller knows
+            # exactly which commit may be published, even if the next call
+            # never happens.
+            record_commit(commit)
+        else:
+            commit = prepared
+            self._verify_commit_shape(workspace_path, commit, tree=tree, parent=parent)
+            if head not in {parent, commit}:
+                raise UnauthorizedHistoryError(
+                    f"HEAD is {head or 'unknown'!r}, which is neither the approved parent "
+                    f"{parent!r} nor the recorded publication commit {commit!r}"
+                )
+
+        if head != commit:
+            self._run_git(
+                workspace_path,
+                ["update-ref", f"refs/heads/{branch_name}", commit, parent],
+            )
+
+        if self.remote_branch_sha(workspace_path, branch_name, destination=destination) != commit:
+            self._run_git(
+                workspace_path,
+                ["push", "--", destination, f"{commit}:refs/heads/{branch_name}"],
+            )
+        return commit
+
+    @staticmethod
+    def _require_object_name(value: str | None, label: str) -> str:
+        name = (value or "").strip().lower()
+        if _SHA_PATTERN.fullmatch(name) is None:
+            raise GitPublishError(f"{label} {value!r} is not a full 40-character object name")
+        return name
+
+    def _verify_commit_shape(
+        self, workspace_path: Path, commit: str, *, tree: str, parent: str
+    ) -> None:
+        """Confirm a commit object really is the approved tree on the approved
+        parent, with no second parent (no merge, no grafted history)."""
+        actual_tree = self._run_git(
+            workspace_path, ["rev-parse", "--verify", f"{commit}^{{tree}}"]
+        ).stdout.strip()
+        if actual_tree != tree:
+            raise UnreviewedContentError(
+                f"commit {commit!r} carries tree {actual_tree or 'unknown'!r}, not the reviewed "
+                f"tree {tree!r}"
+            )
+        lineage = self._run_git(
+            workspace_path, ["rev-list", "--parents", "-n", "1", commit]
+        ).stdout.split()
+        if lineage[:1] != [commit] or lineage[1:] != [parent]:
+            raise UnauthorizedHistoryError(
+                f"commit {commit!r} does not have exactly one parent {parent!r} "
+                f"(got {' '.join(lineage[1:]) or 'none'})"
+            )
 
     def _push_destination(
         self,
@@ -1229,6 +1381,35 @@ class BranchPolicy:
     sources: tuple[str, ...]
 
 
+def _classic_protection_authorizes(protection: Mapping[str, object]) -> bool:
+    """Whether classic branch protection can authorize an unattended merge.
+
+    ``enforce_admins`` alone is not enough: ``required_pull_request_reviews``
+    may carry ``bypass_pull_request_allowances``, which lets listed users,
+    teams or apps merge without the approvals the policy appears to require.
+    Since the factory merges with its own credentials, a non-empty (or absent,
+    and therefore unknown) allowance means the policy cannot prove that human
+    approval was actually enforced. All three allowance arrays must be present
+    and explicitly empty.
+    """
+    admins = protection.get("enforce_admins")
+    if not isinstance(admins, Mapping) or admins.get("enabled") is not True:
+        return False
+    reviews = protection.get("required_pull_request_reviews")
+    if not isinstance(reviews, Mapping):
+        return False
+    allowances = reviews.get("bypass_pull_request_allowances")
+    if not isinstance(allowances, Mapping):
+        # Absent means "not reported", which cannot be read as "nobody may
+        # bypass": GitHub omits the key for some token scopes.
+        return False
+    for key in ("users", "teams", "apps"):
+        actors = allowances.get(key)
+        if not isinstance(actors, list) or actors:
+            return False
+    return True
+
+
 def _validate_repository_name(repository: str) -> str:
     reference = _repository_path_parts(repository)
     return f"{reference[0]}/{reference[1]}"
@@ -1677,12 +1858,7 @@ class GitHubClient:
         except GitHubCommandError as exc:
             protection = None
             errors.append(f"branch protection: {exc}")
-        admins = protection.get("enforce_admins") if isinstance(protection, dict) else None
-        if (
-            isinstance(protection, dict)
-            and isinstance(admins, dict)
-            and admins.get("enabled") is True
-        ):
+        if isinstance(protection, dict) and _classic_protection_authorizes(protection):
             sources.append("branch-protection")
             checks = protection.get("required_status_checks")
             if isinstance(checks, dict):
@@ -1695,6 +1871,11 @@ class GitHubClient:
                         contexts.add(check["context"])
             if isinstance(protection.get("required_pull_request_reviews"), dict):
                 requires_pull_request = True
+        elif isinstance(protection, dict):
+            errors.append(
+                "branch protection: enforce_admins is disabled or a pull request review bypass "
+                "allowance exists, so it cannot authorize an unattended merge"
+            )
 
         if not sources:
             raise GitHubError(

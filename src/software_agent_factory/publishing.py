@@ -39,6 +39,7 @@ from .github import (
     CommandRunner,
     GitHubClient,
     GitPublisher,
+    GitPublishError,
     GitTimeoutError,
     NoChangesToCommitError,
     PullRequestState,
@@ -154,6 +155,9 @@ class PullRequestPublisher:
         expected_tree_sha: str | None = None,
         expected_repository: str | None = None,
         expected_host: str | None = None,
+        expected_parent_sha: str | None = None,
+        prepared_commit_sha: str | None = None,
+        record_commit: Callable[[str], None] | None = None,
     ) -> PublishResult:
         """Commit + push ``branch_name``; open a PR unless one already exists.
 
@@ -165,6 +169,16 @@ class PullRequestPublisher:
         independent Reviewer approved, and ``expected_repository``/
         ``expected_host`` bind it to the repository the run was authorized
         against; a mismatch aborts before anything is committed or pushed.
+
+        The controller additionally supplies ``expected_parent_sha`` and
+        ``record_commit`` (and, when resuming, ``prepared_commit_sha``). That
+        turns publication into a bound operation: the approved tree is
+        committed onto exactly the approved parent, the resulting commit is
+        persisted through ``record_commit`` *before* the branch moves or
+        anything is pushed, and only that commit is pushed. A commit the
+        controller never recorded -- including one whose tree is identical,
+        such as an empty commit or an add-secret/remove-secret pair -- blocks
+        publication instead of riding along.
 
         Both halves are idempotent, so a crash between pushing and persisting
         the result never duplicates or discards work:
@@ -196,6 +210,38 @@ class PullRequestPublisher:
                     "persisted pull request belongs to another repository"
                 )
         publisher = self._git_publisher(base_branch)
+        bound = (
+            expected_parent_sha is not None
+            or prepared_commit_sha is not None
+            or record_commit is not None
+        )
+        if bound:
+            if expected_tree_sha is None or expected_parent_sha is None or record_commit is None:
+                raise GitPublishError(
+                    "a bound publication requires the reviewed tree, the approved parent commit "
+                    "and a commit receipt callback"
+                )
+            commit_sha = publisher.publish_bound_commit(
+                workspace_path,
+                branch_name,
+                commit_message,
+                expected_tree_sha=expected_tree_sha,
+                expected_parent_sha=expected_parent_sha,
+                record_commit=record_commit,
+                prepared_commit_sha=prepared_commit_sha,
+                expected_repository=expected_repository,
+                expected_host=expected_host,
+            )
+            return self._attach_pull_request(
+                workspace_path,
+                commit_sha=commit_sha,
+                branch_name=branch_name,
+                base_branch=base_branch,
+                title=title,
+                body=body,
+                existing_pull_request_url=existing_pull_request_url,
+                api_repository=api_repository,
+            )
         try:
             commit_sha = publisher.commit_and_push(
                 workspace_path,
@@ -214,6 +260,31 @@ class PullRequestPublisher:
                 expected_host=expected_host,
             )
 
+        return self._attach_pull_request(
+            workspace_path,
+            commit_sha=commit_sha,
+            branch_name=branch_name,
+            base_branch=base_branch,
+            title=title,
+            body=body,
+            existing_pull_request_url=existing_pull_request_url,
+            api_repository=api_repository,
+        )
+
+    def _attach_pull_request(
+        self,
+        workspace_path: Path,
+        *,
+        commit_sha: str,
+        branch_name: str,
+        base_branch: str,
+        title: str,
+        body: str,
+        existing_pull_request_url: str | None,
+        api_repository: str | None,
+    ) -> PublishResult:
+        """Reuse, refresh or create the pull request for an already-published
+        commit. Never creates a second pull request for the same head/base."""
         if existing_pull_request_url is not None:
             self._refresh_pull_request(
                 workspace_path,

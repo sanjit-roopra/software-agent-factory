@@ -63,7 +63,7 @@ from uuid import uuid4
 from .agents import AgentRequest, AgentResult, AgentRuntime, runtime_exception_failure_reason
 from .config import FactoryConfig, RoleModelConfig
 from .delivery import DeliveryTarget, fetch_delivery_target
-from .github import GitHubError, GitPublishError, build_pr_body
+from .github import SHA_PATTERN, GitHubError, GitPublishError, build_pr_body
 from .governance import (
     RepositoryVerificationResult,
     RepositoryVerifier,
@@ -489,6 +489,7 @@ class WorkflowController:
                 update={
                     "workspace_path": str(workspace_path),
                     "branch_name": workspace.branch_name,
+                    "base_commit_sha": workspace.base_commit,
                     "updated_at": utc_now(),
                     "last_activity_at": utc_now(),
                     "lease": RunLease(
@@ -623,6 +624,8 @@ class WorkflowController:
             raise ValueError("workspace changes do not match the reviewed delivery checkpoint")
         if not run.reviewed_tree_sha or context.latest_evidence.tree_sha != run.reviewed_tree_sha:
             raise ValueError("workspace tree does not match the independent Reviewer's approval")
+        if run.base_commit_sha != workspace.base_commit:
+            raise ValueError("workspace base does not match the recorded delivery base")
         context.latest_verification = self._store.load_artifact(run.id, VerificationReport)
         context.latest_test_report = self._store.load_artifact(run.id, TestReport)
         context.latest_review = self._store.load_artifact(run.id, ReviewReport)
@@ -1802,6 +1805,30 @@ class WorkflowController:
         publisher = self._resolve_publisher()
         branch_name = run.branch_name
         assert branch_name is not None
+        parent_sha = run.commit_sha or run.base_commit_sha
+        if not parent_sha:
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "publication is missing its authorized parent commit",
+            )
+
+        def record_commit(commit_sha: str) -> None:
+            nonlocal run
+            if SHA_PATTERN.fullmatch(commit_sha) is None:
+                raise GitHubError("publication receipt must contain an exact commit SHA")
+            if run.pending_commit_sha is not None and run.pending_commit_sha != commit_sha:
+                raise GitHubError("a different publication commit is already recorded")
+            now = utc_now()
+            run = run.model_copy(
+                update={
+                    "pending_commit_sha": commit_sha,
+                    "updated_at": now,
+                    "last_activity_at": now,
+                }
+            )
+            self._store.save_run(run)
+
         try:
             if self._config.merge.enabled:
                 assert self._merger is not None
@@ -1826,8 +1853,15 @@ class WorkflowController:
                 expected_tree_sha=run.reviewed_tree_sha,
                 expected_repository=run.delivery_repository,
                 expected_host=run.delivery_host,
+                expected_parent_sha=parent_sha,
+                prepared_commit_sha=run.pending_commit_sha,
+                record_commit=record_commit,
             )
-        except (GitPublishError, GitHubError) as exc:
+            if result.commit_sha != run.pending_commit_sha:
+                raise GitHubError(
+                    "published commit does not match the persisted publication receipt"
+                )
+        except (GitPublishError, GitHubError, OSError) as exc:
             raise self._halt(
                 run,
                 WorkflowState.NEEDS_HUMAN,
@@ -1838,6 +1872,7 @@ class WorkflowController:
             update={
                 "commit_sha": result.commit_sha,
                 "reviewed_commit_sha": result.commit_sha,
+                "pending_commit_sha": None,
                 "pull_request_url": result.pull_request_url,
                 "updated_at": utc_now(),
             }

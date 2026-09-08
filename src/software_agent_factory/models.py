@@ -631,6 +631,8 @@ class FactoryRun(VersionedModel):
     delivery_repository: str | None = None
     delivery_host: str | None = None
     reviewed_tree_sha: str | None = None
+    base_commit_sha: str | None = None
+    pending_commit_sha: str | None = None
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:

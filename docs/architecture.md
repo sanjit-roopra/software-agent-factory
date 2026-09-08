@@ -197,6 +197,14 @@ restart cannot grant a run a fresh budget.
 `last_activity_at` is refreshed on every transition so the scheduler can detect
 a stalled run without inspecting lock files.
 
+Delivery records `base_commit_sha`, `reviewed_tree_sha` and
+`reviewed_commit_sha`. Before pushing, the controller persists
+`pending_commit_sha`: the exact commit it created from the approved tree and
+authorized parent. Recovery uses that receipt, including a crash before the
+branch ref was advanced, rather than inferring approval from arbitrary local
+history. The receipt is cleared only after successful publication records the
+published commit.
+
 ### ProjectBrief and ProjectPlan
 
 `ProjectBrief` is the optional high-level intake above `WorkItem`.

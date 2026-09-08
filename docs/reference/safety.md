@@ -131,6 +131,9 @@ numbers.
 - The changed-file count must be within `repository.max_changed_files`.
 - No changed file may match `repository.protected_file_patterns`.
 - Scope drift is re-checked at the pull request boundary.
+- Publication binds both the immutable reviewed tree and the exact allowed
+  parent. The controller records its commit before push; resume uses that
+  receipt rather than accepting arbitrary commit history with the same tree.
 - Pull requests are drafts by default.
 - The factory never force-pushes. Automatic merging requires explicit policy,
   named green checks on the reviewed head, a matching repository and target,

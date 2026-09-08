@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
-from factory_testing import FakeCompleted, ScriptedRunner, build_config, check_payload
+from factory_testing import FakeCompleted, ScriptedRunner, build_config, check_payload, git
 
 from software_agent_factory.github import (
     CheckStatus,
@@ -18,6 +18,9 @@ from software_agent_factory.github import (
     GitHubClient,
     GitHubCommandError,
     GitPublisher,
+    GitPublishError,
+    ProtectedFileError,
+    UnauthorizedHistoryError,
     UnexpectedRepositoryError,
     UnreviewedContentError,
 )
@@ -648,3 +651,383 @@ def test_an_existing_pull_request_is_refreshed_against_the_authorized_repository
     edits = [argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "edit"]]
     assert edits
     assert edits[0][edits[0].index("--repo") + 1] == "acme/repo"
+
+
+# ---------------------------------------------------------------------------
+# Bound publication: exact parent, durable receipt, no unrecorded history
+#
+# These use a real local Git repository (so commit, tree and parent identity
+# are computed by git itself) with only the network faked.
+# ---------------------------------------------------------------------------
+
+REVIEWED_MESSAGE = "Implement the work item"
+
+
+class LocalGitRunner(ScriptedRunner):
+    """Runs every local ``git`` command for real; fakes only the network."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.pushed: list[str] = []
+        self.remote_branch: str = ""
+
+    def _git(self, argv):  # noqa: ANN001 - test double
+        tail = argv[3:] if argv[1:2] == ["-C"] else argv[1:]
+        if tail[:2] == ["remote", "get-url"]:
+            return FakeCompleted(stdout=f"{self.remote_url}\n")
+        if tail[:1] == ["ls-remote"]:
+            if not self.remote_branch:
+                return FakeCompleted(stdout="")
+            return FakeCompleted(stdout=f"{self.remote_branch}\trefs/heads/factory/WI-1\n")
+        if tail[:1] == ["push"]:
+            self.pushed.append(tail[-1].split(":")[0])
+            self.remote_branch = tail[-1].split(":")[0]
+            return FakeCompleted()
+        return super()._git(argv)
+
+
+def _repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "factory@example.invalid")
+    git(repo, "config", "user.name", "Factory")
+    (repo / "README.md").write_text("base\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "base")
+    git(repo, "checkout", "-b", "factory/WI-1")
+    return repo, git(repo, "rev-parse", "HEAD").strip()
+
+
+def _stage(repo: Path, name: str = "feature.py", content: str = "print('hi')\n") -> str:
+    (repo / name).write_text(content)
+    git(repo, "add", "-A")
+    return git(repo, "write-tree").strip()
+
+
+def _bound_publish(publisher: PullRequestPublisher, repo: Path, **overrides):
+    receipts: list[str] = []
+    kwargs = {
+        "workspace_path": repo,
+        "branch_name": "factory/WI-1",
+        "base_branch": "main",
+        "commit_message": REVIEWED_MESSAGE,
+        "title": "Do the thing",
+        "body": BODY,
+        "expected_repository": "acme/repo",
+        "expected_host": "github.com",
+        "record_commit": receipts.append,
+    }
+    kwargs.update(overrides)
+    return publisher.publish(**kwargs), receipts
+
+
+def test_a_bound_publication_commits_the_reviewed_tree_onto_the_approved_parent(
+    tmp_path: Path,
+) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    runner = LocalGitRunner()
+
+    result, receipts = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+    )
+
+    assert receipts == [result.commit_sha]
+    assert git(repo, "rev-parse", "factory/WI-1").strip() == result.commit_sha
+    assert git(repo, "rev-parse", f"{result.commit_sha}^{{tree}}").strip() == tree
+    assert git(repo, "rev-list", "--parents", "-n", "1", result.commit_sha).split()[1:] == [parent]
+    assert runner.pushed == [result.commit_sha]
+
+
+def test_the_receipt_is_recorded_before_the_branch_moves_or_anything_is_pushed(
+    tmp_path: Path,
+) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    runner = LocalGitRunner()
+    observed: list[tuple[str, str, list[str]]] = []
+
+    def record(sha: str) -> None:
+        observed.append((sha, git(repo, "rev-parse", "factory/WI-1").strip(), list(runner.pushed)))
+
+    result, _ = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+        record_commit=record,
+    )
+
+    assert len(observed) == 1
+    recorded_sha, branch_at_record, pushes_at_record = observed[0]
+    assert recorded_sha == result.commit_sha
+    assert branch_at_record == parent  # branch had not advanced yet
+    assert pushes_at_record == []  # nothing pushed yet
+
+
+def test_an_unrecorded_agent_commit_blocks_publication_even_with_the_reviewed_tree(
+    tmp_path: Path,
+) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    git(repo, "commit", "-m", "agent commit nobody approved")
+    runner = LocalGitRunner()
+
+    with pytest.raises(UnauthorizedHistoryError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+        )
+
+    assert runner.pushed == []
+
+
+def test_an_empty_agent_commit_with_an_identical_tree_still_blocks(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    git(repo, "commit", "-m", "approved work")
+    approved = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "commit", "--allow-empty", "-m", "sneaky empty commit")
+    runner = LocalGitRunner()
+
+    with pytest.raises(UnauthorizedHistoryError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=approved,
+        )
+
+    assert runner.pushed == []
+
+
+def test_an_add_then_remove_secret_history_cannot_ride_along(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    reviewed_tree = _stage(repo)
+    git(repo, "commit", "-m", "approved work")
+    approved = git(repo, "rev-parse", "HEAD").strip()
+    (repo / "leak.env").write_text("TOKEN=secret\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "add secret")
+    (repo / "leak.env").unlink()
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "remove secret")
+    # The final tree is identical to the approved one ...
+    assert git(repo, "rev-parse", "HEAD^{tree}").strip() == reviewed_tree
+    runner = LocalGitRunner()
+
+    # ... and it is still refused, because the history was never recorded.
+    with pytest.raises(UnauthorizedHistoryError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=reviewed_tree,
+            expected_parent_sha=approved,
+        )
+
+    assert runner.pushed == []
+
+
+def test_a_wrong_parent_is_refused(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    runner = LocalGitRunner()
+
+    with pytest.raises(UnauthorizedHistoryError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha="0" * 40,
+        )
+
+    assert runner.pushed == []
+
+
+def test_publishing_from_another_branch_or_a_detached_head_is_refused(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    git(repo, "checkout", "--detach")
+    runner = LocalGitRunner()
+
+    with pytest.raises(UnauthorizedHistoryError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+        )
+
+    assert runner.pushed == []
+
+
+def test_recovery_after_a_crash_before_the_ref_moved_uses_the_recorded_commit(
+    tmp_path: Path,
+) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    prepared = git(repo, "commit-tree", tree, "-p", parent, "-m", "recorded").strip()
+    runner = LocalGitRunner()
+
+    result, receipts = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+        prepared_commit_sha=prepared,
+    )
+
+    assert result.commit_sha == prepared
+    assert receipts == []  # already recorded; never recorded twice
+    assert git(repo, "rev-parse", "factory/WI-1").strip() == prepared
+    assert runner.pushed == [prepared]
+
+
+def test_recovery_after_a_crash_before_the_push_does_not_commit_again(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    prepared = git(repo, "commit-tree", tree, "-p", parent, "-m", "recorded").strip()
+    git(repo, "update-ref", "refs/heads/factory/WI-1", prepared, parent)
+    runner = LocalGitRunner()
+
+    result, _ = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+        prepared_commit_sha=prepared,
+    )
+
+    assert result.commit_sha == prepared
+    assert runner.pushed == [prepared]
+
+
+def test_recovery_after_a_completed_push_publishes_nothing_new(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    prepared = git(repo, "commit-tree", tree, "-p", parent, "-m", "recorded").strip()
+    git(repo, "update-ref", "refs/heads/factory/WI-1", prepared, parent)
+    runner = LocalGitRunner()
+    runner.remote_branch = prepared
+
+    result, _ = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+        prepared_commit_sha=prepared,
+    )
+
+    assert result.commit_sha == prepared
+    assert runner.pushed == []  # already on the remote; no duplicate publication
+
+
+def test_a_recorded_commit_with_the_wrong_tree_or_parent_is_refused(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    other_tree = git(repo, "rev-parse", "HEAD^{tree}").strip()
+    wrong_tree_commit = git(repo, "commit-tree", other_tree, "-p", parent, "-m", "wrong").strip()
+    runner = LocalGitRunner()
+
+    with pytest.raises(UnreviewedContentError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+            prepared_commit_sha=wrong_tree_commit,
+        )
+
+    assert runner.pushed == []
+
+
+def test_a_recovery_head_that_is_neither_parent_nor_receipt_is_refused(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    prepared = git(repo, "commit-tree", tree, "-p", parent, "-m", "recorded").strip()
+    git(repo, "commit", "-m", "unrecorded work")
+    runner = LocalGitRunner()
+
+    with pytest.raises(UnauthorizedHistoryError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+            prepared_commit_sha=prepared,
+        )
+
+    assert runner.pushed == []
+
+
+def test_a_ci_repair_chains_onto_the_previously_published_commit(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    runner = LocalGitRunner()
+    publisher = _publisher(tmp_path, runner)
+
+    first, _ = _bound_publish(publisher, repo, expected_tree_sha=tree, expected_parent_sha=parent)
+    repaired_tree = _stage(repo, name="fix.py", content="fixed = True\n")
+    second, _ = _bound_publish(
+        publisher,
+        repo,
+        expected_tree_sha=repaired_tree,
+        expected_parent_sha=first.commit_sha,
+        existing_pull_request_url="https://github.com/acme/repo/pull/42",
+    )
+
+    assert git(repo, "rev-list", "--parents", "-n", "1", second.commit_sha).split()[1:] == [
+        first.commit_sha
+    ]
+    assert runner.pushed == [first.commit_sha, second.commit_sha]
+    assert second.created_pull_request is False
+
+
+def test_a_bound_publication_requires_the_tree_parent_and_receipt_callback(
+    tmp_path: Path,
+) -> None:
+    repo, parent = _repo(tmp_path)
+    tree = _stage(repo)
+    runner = LocalGitRunner()
+
+    with pytest.raises(GitPublishError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=None,
+            expected_parent_sha=parent,
+        )
+    with pytest.raises(GitPublishError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+            record_commit=None,
+        )
+
+    assert runner.pushed == []
+
+
+def test_a_protected_path_in_the_reviewed_tree_is_still_refused(tmp_path: Path) -> None:
+    repo, parent = _repo(tmp_path)
+    (repo / ".env").write_text("TOKEN=secret\n")
+    git(repo, "add", "-Af")
+    tree = git(repo, "write-tree").strip()
+    runner = LocalGitRunner()
+
+    with pytest.raises(ProtectedFileError):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+        )
+
+    assert runner.pushed == []

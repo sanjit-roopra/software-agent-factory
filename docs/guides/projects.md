@@ -112,6 +112,10 @@ controller binds approval to the published commit; green CI alone is not
 permission to merge. The latest review outcome is included in the PR body.
 This does not replace any additional GitHub approvals required by branch rules.
 
+Publication also binds the exact parent and records the controller-created
+commit before pushing. An agent-created commit, including an empty commit or
+history that adds and then removes a file, is not adopted as reviewed work.
+
 Copy `config/factory.example.yaml` to an operator-owned configuration outside
 the target repository, then edit these sections. This is a fragment, not a
 standalone configuration: custom YAML does not merge with packaged defaults.
@@ -213,6 +217,10 @@ Delivery policy and repository identity must still match. Confirmed completed
 tasks are not implemented again, and PR delivery checkpoints reuse existing
 artifacts, reviews and retry budgets. No fresh planner call or duplicate PR is
 needed for a safe delivery checkpoint.
+
+If publishing was interrupted, the saved commit receipt identifies the only
+commit that may be pushed. Recovery never infers approval from a matching tree
+at an arbitrary `HEAD`.
 
 An interrupted implementation before a safe checkpoint remains ambiguous and
 stops at `NEEDS_HUMAN`; resume does not spend a fresh retry or reopen an

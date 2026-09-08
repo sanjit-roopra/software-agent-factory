@@ -161,6 +161,9 @@ class LocalRemotePublisher:
         if git(workspace, "diff", "--cached", "--name-only").strip():
             git(workspace, "commit", "-m", str(kwargs["commit_message"]))
         head = git(workspace, "rev-parse", "HEAD").strip()
+        record_commit = kwargs["record_commit"]
+        assert callable(record_commit)
+        record_commit(head)
         git(workspace, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}")
         self.published.append(head)
         existing = kwargs.get("existing_pull_request_url")

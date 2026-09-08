@@ -942,3 +942,13 @@ def test_every_pull_request_read_names_the_repository_explicitly(tmp_path: Path)
     for argv in views:
         assert "--repo" in argv
         assert argv[argv.index("--repo") + 1] == "github.com/acme/repo"
+
+
+def test_a_pull_request_still_awaiting_review_is_never_merged(tmp_path: Path) -> None:
+    runner = FakeGitHub(views=[pr_payload(review_decision="REVIEW_REQUIRED")])
+    merger = build_merger(tmp_path, runner)
+
+    with pytest.raises(MergeNotAllowedError, match="requires a review"):
+        do_merge(merger, tmp_path)
+
+    assert runner.merge_commands() == []

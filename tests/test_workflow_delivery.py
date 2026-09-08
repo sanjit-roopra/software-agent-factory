@@ -31,6 +31,8 @@ class LocalPublisher:
     def __init__(self, *, crash: bool = False) -> None:
         self.calls = 0
         self.crash = crash
+        self.parents: list[str] = []
+        self.commits: list[str] = []
 
     def resolve_base_branch(self, source_repo: Path) -> str:
         return "main"
@@ -41,11 +43,15 @@ class LocalPublisher:
             self.crash = False
             raise KeyboardInterrupt
         path = kwargs["workspace_path"]
+        self.parents.append(kwargs["expected_parent_sha"])
         git(path, "add", "-A")
         if git(path, "diff", "--cached", "--name-only").strip():
             git(path, "commit", "-m", kwargs["commit_message"])
+        head = git(path, "rev-parse", "HEAD").strip()
+        self.commits.append(head)
+        kwargs["record_commit"](head)
         return PublishResult(
-            commit_sha=git(path, "rev-parse", "HEAD").strip(),
+            commit_sha=head,
             base_branch="main",
             pull_request_url="https://github.com/acme/repo/pull/42",
             created_pull_request=kwargs["existing_pull_request_url"] is None,
@@ -246,6 +252,7 @@ def test_ci_repair_reverifies_reviews_and_merges_latest_head(
     run = controller.run(work_item(), source_repo)
     assert run.state is WorkflowState.DONE
     assert publisher.calls == 2
+    assert publisher.parents == [run.base_commit_sha, publisher.commits[0]]
     assert len(merger.calls) == 1
     assert merger.calls[0]["expected_head_sha"] == run.commit_sha
     assert [record.budget for record in run.attempt_records] == [
@@ -423,3 +430,77 @@ def test_existing_run_id_cannot_overwrite_evidence(tmp_path: Path, source_repo: 
     with pytest.raises(ValueError, match="already exists"):
         controller.run(work_item(), source_repo, run_id=run.id)
     assert store.load_run(run.id) == run
+
+
+def test_commit_receipt_survives_crash_before_branch_advance(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    class ReceiptPublisher(LocalPublisher):
+        def publish(self, **kwargs) -> PublishResult:
+            path = kwargs["workspace_path"]
+            parent = kwargs["expected_parent_sha"]
+            prepared = kwargs["prepared_commit_sha"]
+            if prepared is None:
+                assert git(path, "rev-parse", "HEAD").strip() == parent
+                prepared = git(
+                    path,
+                    "commit-tree",
+                    kwargs["expected_tree_sha"],
+                    "-p",
+                    parent,
+                    "-m",
+                    kwargs["commit_message"],
+                ).strip()
+                kwargs["record_commit"](prepared)
+                raise KeyboardInterrupt
+            git(path, "update-ref", f"refs/heads/{kwargs['branch_name']}", prepared, parent)
+            return PublishResult(
+                commit_sha=prepared,
+                base_branch="main",
+                pull_request_url="https://github.com/acme/repo/pull/42",
+                created_pull_request=True,
+            )
+
+    runtime = RecordingRuntime()
+    publisher = ReceiptPublisher()
+    controller, store = _controller(_config(tmp_path), publisher=publisher, runtime=runtime)
+    with pytest.raises(KeyboardInterrupt):
+        controller.run(work_item(), source_repo, run_id="receipt-recovery")
+    checkpoint = store.load_run("receipt-recovery")
+    assert checkpoint.pending_commit_sha is not None
+    assert checkpoint.commit_sha is None
+    assert checkpoint.state is WorkflowState.PR_READY
+    path = Path(checkpoint.workspace_path)
+    assert git(path, "rev-parse", "HEAD").strip() == checkpoint.base_commit_sha
+    assert git(path, "show", "-s", "--format=%P", checkpoint.pending_commit_sha).strip() == (
+        checkpoint.base_commit_sha
+    )
+    invocation_count = len(runtime.requests)
+    recovered = controller.resume(checkpoint.id, source_repo)
+    assert recovered.state is WorkflowState.DONE
+    assert recovered.commit_sha == checkpoint.pending_commit_sha
+    assert recovered.pending_commit_sha is None
+    assert recovered.attempt_records == checkpoint.attempt_records
+    assert len(runtime.requests) == invocation_count
+
+
+def test_publication_result_must_match_durable_receipt(tmp_path: Path, source_repo: Path) -> None:
+    class IncorrectPublisher(LocalPublisher):
+        def publish(self, **kwargs) -> PublishResult:
+            result = super().publish(**kwargs)
+            return PublishResult(
+                commit_sha="f" * 40,
+                base_branch=result.base_branch,
+                pull_request_url=result.pull_request_url,
+                created_pull_request=result.created_pull_request,
+            )
+
+    merger = Merger()
+    controller, store = _controller(
+        _config(tmp_path), publisher=IncorrectPublisher(), merger=merger
+    )
+    run = controller.run(work_item(), source_repo)
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert "publication receipt" in run.failure_reason
+    assert store.load_run(run.id).pending_commit_sha is not None
+    assert merger.calls == []

@@ -42,11 +42,22 @@ the staged tree and the committed tree before pushing. Delivery starts from
 the exact fetched target, not an ahead local checkout, and the original
 repository/host identity remains fixed throughout the run.
 
+Tree approval alone does not authorize intermediate history. The controller
+creates a commit from the approved tree and its exact allowed parent (the
+fetched base, or the previous published revision), persists the commit receipt,
+then advances its branch with compare-and-swap and pushes that SHA. Recovery
+can publish only the recorded commit, never an arbitrary current `HEAD`.
+Implementers are also denied direct `git commit` access as defense in depth.
+
 Configured required checks must also be enforced server-side by the target's
 active protection policy, so a rerun cannot race the final merge. The merge
 adapter uses a synchronous expected-head merge API, not a CLI operation that
 can silently enable auto-merge or enqueue work. Unsupported queues and
 unenforceable policies fail closed before mutation.
+
+Classic PR bypass allowances for users, teams and apps must all be explicitly
+empty. A PR still reporting `REVIEW_REQUIRED` cannot merge, even when the
+factory credential could otherwise exercise a repository bypass.
 
 All new capabilities are disabled by default. Merging implementation code
 does not authorize running a migration, accessing production credentials or

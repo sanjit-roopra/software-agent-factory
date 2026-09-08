@@ -387,6 +387,8 @@ rerun racing a merge. The policy must require PRs and up-to-date branches.
 Classic protection must enforce administrators; supported active repository
 or organization rulesets must have no bypass actors. Missing or unreadable
 enforcement metadata is not treated as approval.
+Classic PR bypass allowances for users, teams and apps must be explicitly
+empty, and outstanding GitHub-required reviews still block the merge.
 Conflicting, outdated or otherwise ineligible PRs stop with an
 explicit reason. A run is `DONE` only after the actual merge is confirmed.
 
