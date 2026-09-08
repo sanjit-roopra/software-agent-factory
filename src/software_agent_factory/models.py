@@ -473,6 +473,8 @@ class ProjectTaskExecution(ModelBase):
     issue_url: str | None = None
     run_id: str | None = None
     commit_sha: str | None = None
+    pull_request_url: str | None = None
+    merge_commit_sha: str | None = None
     failure_reason: str | None = None
 
 
@@ -483,6 +485,12 @@ class ProjectExecution(VersionedModel):
     invocation_records: list[InvocationRecord] = Field(default_factory=list)
     integration_workspace: str | None = None
     integration_branch: str | None = None
+    delivery_mode: Literal["local", "merge"] = "local"
+    github_repository: str | None = None
+    delivery_base_branch: str | None = None
+    delivery_repository: str | None = None
+    delivery_host: str | None = None
+    delivery_policy_fingerprint: str | None = None
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
     completed_at: UtcDateTime | None = None
@@ -616,6 +624,13 @@ class FactoryRun(VersionedModel):
     failure_reason: str | None = None
     commit_sha: str | None = None
     pull_request_url: str | None = None
+    merge_commit_sha: str | None = None
+    delivery_base_branch: str | None = None
+    delivery_policy_fingerprint: str | None = None
+    reviewed_commit_sha: str | None = None
+    delivery_repository: str | None = None
+    delivery_host: str | None = None
+    reviewed_tree_sha: str | None = None
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:

@@ -47,6 +47,7 @@ tested here; the first real tag is what exercises them end to end.
 | 15.12 | Kubernetes workers | deferred |
 | 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`, `GENERATE_REPOSITORY_SKILL`) |
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
+| 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -1162,10 +1163,10 @@ closes it after successful integration. Generated issues deliberately omit the
 scheduler's `agent-ready` label so the local project runner remains the sole
 execution owner and duplicate dispatch is impossible.
 
-No new model role, dependency, database, generic DAG engine, recursive task
-tree, unbounded replanning loop, autonomous merge or deployment path is added.
-Project execution currently requires child PR and CI publication to be disabled
-and produces one completed local integration branch.
+Phase 17 adds no new model role, dependency, database, generic DAG engine,
+recursive task tree, unbounded replanning loop, autonomous merge or deployment
+path. Its local-only project mode remains the default. Phase 18 extends
+delivery explicitly under ADR-022.
 
 ## Acceptance criteria
 
@@ -1180,6 +1181,27 @@ and produces one completed local integration branch.
 - GitHub issue creation is explicit and optional
 - generated issues are not automatically eligible for the backlog daemon
 - all normal tests remain offline and deterministic
+
+# Phase 18. Opt-in autonomous project delivery
+
+Status: implemented under the explicitly requested ADR-022.
+
+- Keep the local-only project path and disabled integration defaults.
+- Add a separate merge policy with explicit repository, target and required
+  check authorization; require non-draft PRs and deterministic verification.
+- Reuse child workflow PR publication, independent review and bounded CI
+  repair; confirm the actual merge before task completion.
+- Deliver remote project tasks serially from the refreshed target branch.
+- Persist child run ids before dispatch, PR URLs, merged commits and policy
+  identity; explicitly resume safe delivery checkpoints without duplicate
+  work, new plans or reset budgets.
+- Authorize only exact human-configured dependency/CI files also named in the
+  plan. Keep all other governance and production-execution boundaries.
+- Cover delivery, repair, merge refusal, checkpoint recovery and safe defaults
+  with offline deterministic tests.
+
+No agent receives merge authority. There is no branch-protection bypass,
+autonomous deployment, generic merge queue or unbounded conflict-repair loop.
 
 # First useful end-to-end demo
 

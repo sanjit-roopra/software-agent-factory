@@ -116,9 +116,10 @@ artifacts and per-attempt snapshots are plain JSON on disk.
 </div>
 
 <div class="saf-card" markdown>
-### Nothing merges itself
-The factory can open a draft pull request and watch CI. It never force-pushes,
-never merges and never deploys. [Read more](guides/github.md)
+### Delivery stays under policy
+The factory can open PRs, repair CI and, when explicitly enabled, merge reviewed
+changes to an allowlisted target. It never bypasses branch protection,
+force-pushes or deploys. [Read more](guides/github.md)
 </div>
 
 </div>

@@ -99,7 +99,7 @@ from .observability import (
     log_run_event,
 )
 from .projects import FileProjectStore, ProjectError, ProjectRunner
-from .publishing import CIObserver, PullRequestPublisher
+from .publishing import CIObserver, MergeResult, PullRequestMerger, PullRequestPublisher
 from .repository_profile import profile_repository
 from .routing import ModelRouter
 from .scheduler import Scheduler, TrackerItem, TrackerProvider, deterministic_work_item_id
@@ -127,6 +127,8 @@ from .workflow import (
 from .workspace import GitWorktreeWorkspace
 
 __all__ = [
+    "MergeResult",
+    "PullRequestMerger",
     "ALLOWED_TRANSITIONS",
     "AgentRequest",
     "AgentResult",

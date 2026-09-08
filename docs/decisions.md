@@ -1,5 +1,57 @@
 # Architecture Decisions
 
+## ADR-022: Opt-in autonomous project delivery
+
+The explicitly requested delivery boundary is reviewed, CI-green code merged
+into the configured target branch, not a local integration branch or an open
+PR. This supersedes the original blanket deferral of autonomous merging only
+for the opt-in controller-owned delivery path.
+
+The existing `WorkflowController` still owns every child run, local quality
+gate, independent review, PR publication and bounded CI repair. A separate
+controller-side merge adapter verifies the repository and target allowlists,
+the exact reviewed head revision, explicitly required checks and GitHub merge
+eligibility before requesting a normal merge. It never bypasses branch
+protection, uses administrator privileges, force-pushes or deploys. Completion
+requires persisted evidence that the PR actually merged.
+
+Every PR revision, including each CI repair, must pass the configured
+independent Reviewer. The controller binds approval to the published commit
+SHA and refuses to merge a different head. The PR displays the latest reviewer
+outcome. This model review does not impersonate a GitHub user review or bypass
+repository rules requiring additional human approvals.
+
+Remote project delivery executes tasks serially against the freshly fetched
+target branch. This is the smallest sufficient way to ensure every task
+includes its merged predecessors and avoids inventing a merge-queue scheduler.
+Local-only project execution retains its existing bounded wave concurrency.
+
+Project recovery reconciles immutable plans, persisted child run identifiers,
+Git worktrees and GitHub delivery evidence before dispatch. It reuses delivery
+checkpoints and retry budgets rather than creating duplicate PRs or resetting
+attempts. Ambiguous in-flight implementation or conflicting workspace state
+stops with a recorded reason instead of guessing or discarding changes.
+
+Human configuration may authorize exact repository-relative dependency and CI
+files, but only when those same files are explicitly named in the task plan.
+Protected files, risk approval, scope limits, verification and independent
+review remain authoritative. No agent can grant itself an exemption.
+
+Review approval is bound to an immutable Git tree; publication verifies both
+the staged tree and the committed tree before pushing. Delivery starts from
+the exact fetched target, not an ahead local checkout, and the original
+repository/host identity remains fixed throughout the run.
+
+Configured required checks must also be enforced server-side by the target's
+active protection policy, so a rerun cannot race the final merge. The merge
+adapter uses a synchronous expected-head merge API, not a CLI operation that
+can silently enable auto-merge or enqueue work. Unsupported queues and
+unenforceable policies fail closed before mutation.
+
+All new capabilities are disabled by default. Merging implementation code
+does not authorize running a migration, accessing production credentials or
+deploying software.
+
 ## ADR-001: Build one small executable vertical slice
 
 Phase 1 combines the original fake-workflow and Git-worktree milestones.

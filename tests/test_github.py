@@ -25,6 +25,8 @@ Coverage:
 
 from __future__ import annotations
 
+import inspect
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -32,6 +34,8 @@ from pathlib import Path
 import pytest
 
 from software_agent_factory.github import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    PULL_REQUEST_VIEW_FIELDS,
     CheckResult,
     CheckStatus,
     CIPollTimeoutError,
@@ -41,15 +45,25 @@ from software_agent_factory.github import (
     GitCommandError,
     GitHubClient,
     GitHubCommandError,
+    GitHubError,
+    GitHubTimeoutError,
     GitPublisher,
     GitPublishError,
+    GitTimeoutError,
     NoChangesToCommitError,
     ProtectedFileError,
+    UnexpectedRepositoryError,
+    UnknownMergeOutcomeError,
+    UnreviewedContentError,
     UnsafeBranchNameError,
     UnsafeRemoteError,
     build_pr_body,
     classify_failure,
     default_command_runner,
+    is_safe_ref_name,
+    normalize_status_check_rollup,
+    parse_pull_request_url,
+    parse_remote_repository,
 )
 from software_agent_factory.models import (
     ExecutionPlan,
@@ -225,7 +239,7 @@ def test_commit_and_push_never_forces_and_pushes_explicit_branch_refspec(
     push_call = next(call for call in runner.calls if "push" in call[0])
     assert "--force" not in push_call[0]
     assert "-f" not in push_call[0]
-    assert push_call[0][-2:] == ["origin", "HEAD:refs/heads/factory/wi-1"]
+    assert push_call[0][-3:] == ["--", "origin", "abc123:refs/heads/factory/wi-1"]
     # Never merges anything, and never mutates remotes beyond the one
     # permitted read-only "remote get-url" lookup.
     assert not any("merge" in call[0] for call in runner.calls)
@@ -1027,3 +1041,912 @@ def test_ci_status_is_a_plain_typed_model() -> None:
     status = CIStatus(overall=CheckStatus.PASS, checks=[])
     assert status.overall == CheckStatus.PASS
     assert status.checks == []
+
+
+# --------------------------------------------------------------------------
+# Repository identity parsing (ADR-022 merge boundary)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/acme/repo.git",
+        "https://github.com/acme/repo",
+        "git@github.com:acme/repo.git",
+        "ssh://git@github.com/acme/repo.git",
+        "https://github.com:443/acme/repo.git",
+    ],
+)
+def test_parse_remote_repository_extracts_exact_identity(url: str) -> None:
+    reference = parse_remote_repository(url)
+
+    assert reference.host == "github.com"
+    assert reference.full_name == "acme/repo"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "https://github.com/acme", "https://github.com/", "git@github.com:acme", "acme/repo"],
+)
+def test_parse_remote_repository_rejects_ambiguous_urls(url: str) -> None:
+    with pytest.raises(ValueError):
+        parse_remote_repository(url)
+
+
+def test_parse_remote_repository_is_case_insensitive_on_identity() -> None:
+    first = parse_remote_repository("https://GitHub.com/Acme/Repo.git")
+    second = parse_remote_repository("git@github.com:acme/repo.git")
+
+    assert first.same_repository(second)
+
+
+def test_parse_pull_request_url_returns_repository_and_number() -> None:
+    reference, number = parse_pull_request_url("https://github.com/acme/repo/pull/42")
+
+    assert reference.full_name == "acme/repo"
+    assert reference.host == "github.com"
+    assert number == 42
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/acme/repo/pull/42",
+        "https://github.com/acme/repo/pulls/42",
+        "https://github.com/acme/repo/pull/0",
+        "https://github.com/acme/repo/pull/abc",
+        "https://github.com/acme/repo/pull/42/files",
+        "gh://acme/repo/pull/42",
+    ],
+)
+def test_parse_pull_request_url_rejects_anything_else(url: str) -> None:
+    with pytest.raises(ValueError):
+        parse_pull_request_url(url)
+
+
+def test_resolve_remote_repository_enforces_the_host_allowlist(tmp_path: Path) -> None:
+    publisher = GitPublisher(runner=FakeRunner([_remote_url_response()]))
+
+    assert publisher.resolve_remote_repository(tmp_path).full_name == "acme/repo"
+
+    hostile = GitPublisher(
+        runner=FakeRunner([_remote_url_response("https://evil.example/acme/repo.git")])
+    )
+    with pytest.raises(UnsafeRemoteError):
+        hostile.resolve_remote_repository(tmp_path)
+
+
+def test_resolve_remote_repository_rejects_a_non_repository_remote(tmp_path: Path) -> None:
+    publisher = GitPublisher(runner=FakeRunner([_remote_url_response("https://github.com/acme")]))
+
+    with pytest.raises(UnsafeRemoteError):
+        publisher.resolve_remote_repository(tmp_path)
+
+
+# --------------------------------------------------------------------------
+# GitPublisher.ensure_pushed (crash recovery, no new commit)
+# --------------------------------------------------------------------------
+
+
+def test_ensure_pushed_is_a_no_op_when_the_remote_already_has_head(tmp_path: Path) -> None:
+    sha = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),  # remote get-url
+            FakeCompletedProcess(stdout=f"{sha}\n"),  # rev-parse HEAD
+            FakeCompletedProcess(stdout=f"{sha}\trefs/heads/factory/wi-1\n"),  # ls-remote
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
+    assert not any("push" in call[0] for call in runner.calls)
+    assert not any("commit" in call[0] for call in runner.calls)
+
+
+def test_ensure_pushed_pushes_an_existing_commit_without_creating_one(tmp_path: Path) -> None:
+    sha = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(stdout=f"{sha}\n"),
+            FakeCompletedProcess(stdout=""),  # branch missing on the remote
+            FakeCompletedProcess(),  # push
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
+    push = [call[0] for call in runner.calls if "push" in call[0]][0]
+    assert push[-3:] == ["--", "origin", f"{sha}:refs/heads/factory/wi-1"]
+    assert "--force" not in push and "-f" not in push
+    assert not any("commit" in call[0] for call in runner.calls)
+
+
+def test_ensure_pushed_enforces_the_branch_prefix(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(UnsafeBranchNameError):
+        publisher.ensure_pushed(tmp_path, "main")
+
+    assert runner.calls == []
+
+
+# --------------------------------------------------------------------------
+# Status check rollup normalization
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("conclusion", "expected"),
+    [
+        ("SUCCESS", CheckStatus.PASS),
+        ("FAILURE", CheckStatus.FAIL),
+        ("TIMED_OUT", CheckStatus.FAIL),
+        ("ACTION_REQUIRED", CheckStatus.FAIL),
+        ("STALE", CheckStatus.FAIL),
+        ("CANCELLED", CheckStatus.CANCELLED),
+        ("SKIPPED", CheckStatus.SKIPPED),
+        ("NEUTRAL", CheckStatus.SKIPPED),
+        ("SOMETHING_NEW", CheckStatus.PENDING),
+    ],
+)
+def test_rollup_conclusions_normalize_conservatively(
+    conclusion: str, expected: CheckStatus
+) -> None:
+    [check] = normalize_status_check_rollup(
+        [
+            {
+                "__typename": "CheckRun",
+                "name": "quality",
+                "status": "COMPLETED",
+                "conclusion": conclusion,
+            }
+        ]
+    )
+
+    assert check.status is expected
+
+
+def test_an_incomplete_check_run_is_pending_regardless_of_its_conclusion() -> None:
+    [check] = normalize_status_check_rollup(
+        [
+            {
+                "__typename": "CheckRun",
+                "name": "quality",
+                "status": "IN_PROGRESS",
+                "conclusion": "SUCCESS",
+            }
+        ]
+    )
+
+    assert check.status is CheckStatus.PENDING
+
+
+def test_commit_status_contexts_are_normalized_by_state() -> None:
+    checks = normalize_status_check_rollup(
+        [
+            {"__typename": "StatusContext", "context": "legacy", "state": "SUCCESS"},
+            {"__typename": "StatusContext", "context": "other", "state": "ERROR"},
+        ]
+    )
+
+    assert [(check.name, check.status) for check in checks] == [
+        ("legacy", CheckStatus.PASS),
+        ("other", CheckStatus.FAIL),
+    ]
+
+
+# --------------------------------------------------------------------------
+# GitHubClient pull request state and merging
+# --------------------------------------------------------------------------
+
+
+def _pr_view_payload() -> str:
+    return json.dumps(
+        {
+            "number": 42,
+            "url": "https://github.com/acme/repo/pull/42",
+            "state": "OPEN",
+            "isDraft": False,
+            "isCrossRepository": False,
+            "headRefName": "factory/WI-1",
+            "headRefOid": "A" * 40,
+            "baseRefName": "main",
+            "headRepository": {"name": "repo"},
+            "headRepositoryOwner": {"login": "acme"},
+            "mergeable": "mergeable",
+            "mergeStateStatus": "clean",
+            "reviewDecision": "approved",
+            "mergeCommit": None,
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "quality",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                }
+            ],
+            "body": "Run ID: `run-1`",
+        }
+    )
+
+
+def test_get_pull_request_normalizes_the_documented_fields(tmp_path: Path) -> None:
+    runner = FakeRunner([FakeCompletedProcess(stdout=_pr_view_payload())])
+    client = GitHubClient(runner=runner)
+
+    state = client.get_pull_request(tmp_path, "https://github.com/acme/repo/pull/42")
+
+    assert state.number == 42
+    assert state.state == "OPEN"
+    assert state.head_ref_oid == "a" * 40
+    assert state.head_repository == "acme/repo"
+    assert state.mergeable == "MERGEABLE"
+    assert state.merge_state_status == "CLEAN"
+    assert state.review_decision == "APPROVED"
+    assert state.merged is False
+    assert [check.name for check in state.checks] == ["quality"]
+
+    args = runner.calls[0][0]
+    assert args[:4] == ["gh", "pr", "view", "https://github.com/acme/repo/pull/42"]
+    requested = args[args.index("--json") + 1].split(",")
+    assert set(requested) == set(PULL_REQUEST_VIEW_FIELDS)
+
+
+def test_get_pull_request_raises_on_unusable_output(tmp_path: Path) -> None:
+    client = GitHubClient(runner=FakeRunner([FakeCompletedProcess(stdout="not json")]))
+
+    with pytest.raises(GitHubCommandError):
+        client.get_pull_request(tmp_path, "https://github.com/acme/repo/pull/42")
+
+
+def test_merged_pull_request_exposes_its_merge_commit(tmp_path: Path) -> None:
+    payload = json.loads(_pr_view_payload())
+    payload["state"] = "MERGED"
+    payload["mergeCommit"] = {"oid": "B" * 40}
+    client = GitHubClient(runner=FakeRunner([FakeCompletedProcess(stdout=json.dumps(payload))]))
+
+    state = client.get_pull_request(tmp_path, "https://github.com/acme/repo/pull/42")
+
+    assert state.merged is True
+    assert state.merge_commit_sha == "b" * 40
+
+
+def test_find_pull_requests_queries_an_exact_head_and_base(tmp_path: Path) -> None:
+    payload = json.dumps([json.loads(_pr_view_payload())])
+    runner = FakeRunner([FakeCompletedProcess(stdout=payload)])
+    client = GitHubClient(runner=runner)
+
+    [found] = client.find_pull_requests(tmp_path, head="factory/WI-1", base="main")
+
+    assert found.url == "https://github.com/acme/repo/pull/42"
+    args = runner.calls[0][0]
+    assert args[:3] == ["gh", "pr", "list"]
+    assert args[args.index("--head") + 1] == "factory/WI-1"
+    assert args[args.index("--base") + 1] == "main"
+    assert args[args.index("--state") + 1] == "open"
+
+
+def test_find_pull_requests_returns_nothing_when_gh_prints_nothing(tmp_path: Path) -> None:
+    client = GitHubClient(runner=FakeRunner([FakeCompletedProcess(stdout="")]))
+
+    assert client.find_pull_requests(tmp_path, head="factory/WI-1", base="main") == []
+
+
+def test_merge_pull_request_uses_a_synchronous_rest_merge_bound_to_the_head(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(
+                returncode=0,
+                stdout=json.dumps({"merged": True, "sha": "b" * 40, "message": "merged"}),
+            )
+        ]
+    )
+    client = GitHubClient(runner=runner, token="ghp_supersecrettoken1234")  # noqa: S106
+
+    outcome = client.merge_pull_request(
+        tmp_path,
+        repository="acme/repo",
+        number=42,
+        method="squash",
+        expected_head_sha="a" * 40,
+    )
+
+    args, _cwd, env = runner.calls[0]
+    assert args == [
+        "gh",
+        "api",
+        "--hostname",
+        "github.com",
+        "--method",
+        "PUT",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "repos/acme/repo/pulls/42/merge",
+        "-f",
+        f"sha={'a' * 40}",
+        "-f",
+        "merge_method=squash",
+    ]
+    assert outcome.merged is True
+    assert outcome.commit_sha == "b" * 40
+    assert env == {"GH_TOKEN": "ghp_supersecrettoken1234"}
+
+
+def test_merge_pull_request_never_uses_gh_pr_merge_which_could_enqueue(tmp_path: Path) -> None:
+    runner = FakeRunner([FakeCompletedProcess(returncode=0, stdout="{}")])
+    client = GitHubClient(runner=runner)
+
+    client.merge_pull_request(
+        tmp_path, repository="acme/repo", number=1, method="merge", expected_head_sha="a" * 40
+    )
+
+    for args, _cwd, _env in runner.calls:
+        assert args[1:3] != ["pr", "merge"]
+        assert "--auto" not in args
+        assert "--admin" not in args
+
+
+def test_gh_pr_merge_and_auto_merge_are_refused_outright(tmp_path: Path) -> None:
+    client = GitHubClient(runner=FakeRunner())
+
+    with pytest.raises(GitHubError):
+        client._run(["pr", "merge", "42", "--squash"], tmp_path)
+    with pytest.raises(GitHubError):
+        client._run(["pr", "edit", "42", "--auto"], tmp_path)
+
+
+def test_merge_pull_request_reports_a_refusal_instead_of_raising(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(
+                returncode=1,
+                stdout=json.dumps({"message": "Pull Request is not mergeable"}),
+                stderr="gh: HTTP 405",
+            )
+        ]
+    )
+    client = GitHubClient(runner=runner)
+
+    outcome = client.merge_pull_request(
+        tmp_path, repository="acme/repo", number=42, method="merge", expected_head_sha="a" * 40
+    )
+
+    assert outcome.merged is False
+    assert outcome.returncode == 1
+    assert "not mergeable" in outcome.message
+    assert outcome.queue_requested is False
+
+
+def test_a_merge_queue_response_is_recognized(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(
+                returncode=1,
+                stdout=json.dumps(
+                    {"message": "Changes must be made through a merge queue"},
+                ),
+            )
+        ]
+    )
+    client = GitHubClient(runner=runner)
+
+    outcome = client.merge_pull_request(
+        tmp_path, repository="acme/repo", number=42, method="squash", expected_head_sha="a" * 40
+    )
+
+    assert outcome.merged is False
+    assert outcome.queue_requested is True
+
+
+def test_a_merged_response_without_a_commit_is_an_unknown_outcome(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [FakeCompletedProcess(returncode=0, stdout=json.dumps({"merged": True, "sha": ""}))]
+    )
+    client = GitHubClient(runner=runner)
+
+    with pytest.raises(UnknownMergeOutcomeError):
+        client.merge_pull_request(
+            tmp_path, repository="acme/repo", number=42, method="squash", expected_head_sha="a" * 40
+        )
+
+
+@pytest.mark.parametrize(
+    ("method", "sha", "number", "repository"),
+    [
+        ("admin", "a" * 40, 42, "acme/repo"),
+        ("squash", "abc", 42, "acme/repo"),
+        ("squash", "", 42, "acme/repo"),
+        ("", "a" * 40, 42, "acme/repo"),
+        ("squash", "a" * 40, 0, "acme/repo"),
+        ("squash", "a" * 40, 42, "repo"),
+    ],
+)
+def test_merge_pull_request_rejects_unsupported_arguments(
+    tmp_path: Path, method: str, sha: str, number: int, repository: str
+) -> None:
+    runner = FakeRunner()
+    client = GitHubClient(runner=runner)
+
+    with pytest.raises(ValueError):
+        client.merge_pull_request(
+            tmp_path,
+            repository=repository,
+            number=number,
+            method=method,
+            expected_head_sha=sha,
+        )
+
+    assert runner.calls == []
+
+
+# --------------------------------------------------------------------------
+# Server-enforced branch policy
+# --------------------------------------------------------------------------
+
+
+def _ruleset_response(*, contexts: list[str], strict: bool = True, pr_rule: bool = True) -> str:
+    rules: list[dict] = [
+        {
+            "ruleset_id": 1,
+            "type": "required_status_checks",
+            "parameters": {
+                "required_status_checks": [{"context": name} for name in contexts],
+                "strict_required_status_checks_policy": strict,
+            },
+        }
+    ]
+    if pr_rule:
+        rules.append({"ruleset_id": 1, "type": "pull_request", "parameters": {}})
+    return json.dumps(rules)
+
+
+def test_branch_policy_is_read_from_rulesets(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=0, stdout=_ruleset_response(contexts=["quality"])),
+            FakeCompletedProcess(
+                returncode=0,
+                stdout=json.dumps({"enforcement": "active", "bypass_actors": []}),
+            ),
+            FakeCompletedProcess(returncode=1, stderr="Not Found"),
+        ]
+    )
+    client = GitHubClient(runner=runner)
+
+    policy = client.get_branch_policy(tmp_path, repository="acme/repo", branch="main")
+
+    assert policy.required_contexts == frozenset({"quality"})
+    assert policy.strict is True
+    assert policy.requires_pull_request is True
+    assert policy.sources == ("ruleset",)
+    assert runner.calls[0][0] == [
+        "gh",
+        "api",
+        "--hostname",
+        "github.com",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "repos/acme/repo/rules/branches/main",
+    ]
+
+
+def test_branch_policy_falls_back_to_classic_protection(tmp_path: Path) -> None:
+    protection = {
+        "enforce_admins": {"enabled": True},
+        "required_status_checks": {"strict": True, "contexts": ["quality"]},
+        "required_pull_request_reviews": {"required_approving_review_count": 1},
+    }
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=1, stderr="Not Found"),
+            FakeCompletedProcess(returncode=0, stdout=json.dumps(protection)),
+        ]
+    )
+    client = GitHubClient(runner=runner)
+
+    policy = client.get_branch_policy(tmp_path, repository="acme/repo", branch="main")
+
+    assert policy.required_contexts == frozenset({"quality"})
+    assert policy.strict is True
+    assert policy.requires_pull_request is True
+    assert policy.sources == ("branch-protection",)
+
+
+def test_an_unreadable_branch_policy_is_an_error_not_an_empty_policy(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=1, stderr="HTTP 403"),
+            FakeCompletedProcess(returncode=1, stderr="HTTP 403"),
+        ]
+    )
+    client = GitHubClient(runner=runner)
+
+    with pytest.raises(GitHubError):
+        client.get_branch_policy(tmp_path, repository="acme/repo", branch="main")
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"enforcement": "evaluate", "bypass_actors": []},
+        {"enforcement": "active", "bypass_actors": [{"actor_id": 1, "bypass_mode": "always"}]},
+        {"enforcement": "active"},
+    ],
+)
+def test_ruleset_must_be_active_without_bypass(tmp_path: Path, metadata: dict) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(stdout=_ruleset_response(contexts=["quality"])),
+            FakeCompletedProcess(stdout=json.dumps(metadata)),
+            FakeCompletedProcess(returncode=1, stderr="HTTP 404"),
+        ]
+    )
+    with pytest.raises(GitHubError):
+        GitHubClient(runner=runner).get_branch_policy(
+            tmp_path, repository="acme/repo", branch="main"
+        )
+
+
+@pytest.mark.parametrize("enforced", [False, None])
+def test_classic_protection_cannot_exempt_administrators(
+    tmp_path: Path, enforced: bool | None
+) -> None:
+    protection = {
+        "enforce_admins": {"enabled": enforced},
+        "required_status_checks": {"strict": True, "contexts": ["quality"]},
+        "required_pull_request_reviews": {},
+    }
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=1, stderr="HTTP 404"),
+            FakeCompletedProcess(stdout=json.dumps(protection)),
+        ]
+    )
+    with pytest.raises(GitHubError):
+        GitHubClient(runner=runner).get_branch_policy(
+            tmp_path, repository="acme/repo", branch="main"
+        )
+
+
+def test_branch_policy_pins_host_and_encodes_branch(tmp_path: Path) -> None:
+    protection = {
+        "enforce_admins": {"enabled": True},
+        "required_status_checks": {"strict": True, "contexts": ["quality"]},
+        "required_pull_request_reviews": {},
+    }
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(returncode=1, stderr="HTTP 404"),
+            FakeCompletedProcess(stdout=json.dumps(protection)),
+        ]
+    )
+    GitHubClient(runner=runner).get_branch_policy(
+        tmp_path, repository="acme/repo", branch="release/next", hostname="git.example.com"
+    )
+    for args, *_ in runner.calls:
+        assert args[args.index("--hostname") + 1] == "git.example.com"
+        assert "release%2Fnext" in args[-1]
+
+
+def test_branch_policy_rejects_an_unsafe_branch_or_repository(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    client = GitHubClient(runner=runner)
+
+    with pytest.raises(ValueError):
+        client.get_branch_policy(tmp_path, repository="acme/repo", branch="../evil")
+    with pytest.raises(ValueError):
+        client.get_branch_policy(tmp_path, repository="evil", branch="main")
+
+    assert runner.calls == []
+
+
+# --------------------------------------------------------------------------
+# Reviewer evidence: update, never impersonate
+# --------------------------------------------------------------------------
+
+
+def test_update_pr_edits_only_the_description(tmp_path: Path) -> None:
+    runner = FakeRunner([FakeCompletedProcess(returncode=0)])
+    client = GitHubClient(runner=runner)
+
+    client.update_pr(
+        tmp_path, "https://github.com/acme/repo/pull/42", body="new body", title="new title"
+    )
+
+    args, _cwd, _env = runner.calls[0]
+    assert args == [
+        "gh",
+        "pr",
+        "edit",
+        "https://github.com/acme/repo/pull/42",
+        "--body",
+        "new body",
+        "--title",
+        "new title",
+    ]
+
+
+def test_update_pr_can_refresh_the_body_alone(tmp_path: Path) -> None:
+    runner = FakeRunner([FakeCompletedProcess(returncode=0)])
+    client = GitHubClient(runner=runner)
+
+    client.update_pr(tmp_path, "https://github.com/acme/repo/pull/42", body="new body")
+
+    assert "--title" not in runner.calls[0][0]
+
+
+def test_update_pr_rejects_empty_content(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    client = GitHubClient(runner=runner)
+
+    with pytest.raises(ValueError):
+        client.update_pr(tmp_path, "https://github.com/acme/repo/pull/42", body="  ")
+    with pytest.raises(ValueError):
+        client.update_pr(tmp_path, "https://github.com/acme/repo/pull/42", body="b", title=" ")
+
+    assert runner.calls == []
+
+
+def test_update_pr_failure_is_surfaced_not_swallowed(tmp_path: Path) -> None:
+    client = GitHubClient(runner=FakeRunner([FakeCompletedProcess(returncode=1, stderr="nope")]))
+
+    with pytest.raises(GitHubCommandError):
+        client.update_pr(tmp_path, "https://github.com/acme/repo/pull/42", body="body")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["pr", "review", "https://github.com/acme/repo/pull/42", "--approve"],
+        ["pr", "ready", "https://github.com/acme/repo/pull/42"],
+        ["api", "graphql", "-f", "query=..."],
+        ["pr", "merge", "42", "--squash", "--admin"],
+    ],
+)
+def test_client_refuses_to_review_or_bypass_protection(tmp_path: Path, args: list[str]) -> None:
+    runner = FakeRunner()
+    client = GitHubClient(runner=runner)
+
+    with pytest.raises(GitHubError):
+        client._run(args, tmp_path)
+
+    assert runner.calls == []
+
+
+# --------------------------------------------------------------------------
+# Bounded commands: no remote call may hang forever
+# --------------------------------------------------------------------------
+
+
+def test_default_command_runner_bounds_a_hanging_command(tmp_path: Path) -> None:
+    with pytest.raises(subprocess.TimeoutExpired):
+        default_command_runner(["sleep", "5"], tmp_path, None, 0.2)
+
+
+def test_default_command_runner_has_a_bounded_default_timeout() -> None:
+    signature = inspect.signature(default_command_runner)
+    assert signature.parameters["timeout"].default == DEFAULT_COMMAND_TIMEOUT_SECONDS
+    assert 0 < DEFAULT_COMMAND_TIMEOUT_SECONDS <= 600
+
+
+class TimingOutRunner:
+    """Runner whose every invocation exceeds its wall-clock budget."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, cwd=None, env=None):  # noqa: ANN001 - test double
+        self.calls.append(list(args))
+        raise subprocess.TimeoutExpired(
+            cmd=list(args), timeout=1.0, output="ghp_supersecrettoken1234"
+        )
+
+
+def test_git_timeouts_become_typed_redacted_errors(tmp_path: Path) -> None:
+    publisher = GitPublisher(runner=TimingOutRunner())
+
+    with pytest.raises(GitTimeoutError) as caught:
+        publisher.commit_and_push(tmp_path, "factory/wi-1", "Implement feature")
+
+    assert isinstance(caught.value, GitPublishError)
+    assert "timed out" in str(caught.value)
+    assert "ghp_supersecrettoken1234" not in str(caught.value)
+
+
+def test_gh_timeouts_become_typed_redacted_errors(tmp_path: Path) -> None:
+    client = GitHubClient(runner=TimingOutRunner(), token="ghp_supersecrettoken1234")  # noqa: S106
+
+    with pytest.raises(GitHubTimeoutError) as caught:
+        client.get_pull_request(tmp_path, "https://github.com/acme/repo/pull/42")
+
+    assert isinstance(caught.value, GitHubError)
+    assert "ghp_supersecrettoken1234" not in str(caught.value)
+
+    with pytest.raises(GitHubTimeoutError):
+        client.merge_pull_request(
+            tmp_path,
+            repository="acme/repo",
+            number=42,
+            method="squash",
+            expected_head_sha="a" * 40,
+        )
+
+    with pytest.raises(GitHubTimeoutError):
+        client.get_branch_policy(tmp_path, repository="acme/repo", branch="main")
+
+
+def test_poll_checks_surfaces_a_timeout_instead_of_looping(tmp_path: Path) -> None:
+    client = GitHubClient(runner=TimingOutRunner())
+
+    with pytest.raises(GitHubTimeoutError):
+        client.poll_checks(
+            tmp_path,
+            "https://github.com/acme/repo/pull/42",
+            interval_seconds=0.01,
+            max_polls=3,
+            sleep=lambda _seconds: None,
+        )
+
+
+# --------------------------------------------------------------------------
+# Ref name safety
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["main", "factory/WI-1", "release-2.0", "a_b.c"])
+def test_plain_branch_names_are_accepted(name: str) -> None:
+    assert is_safe_ref_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        " main",
+        "main ",
+        "-force",
+        "refs/heads/main",
+        "main..other",
+        "main@{upstream}",
+        "main:evil",
+        "main~1",
+        "main^",
+        "main?",
+        "main*",
+        "main[1]",
+        "main\\evil",
+        "main.lock",
+        "a//b",
+        "/main",
+        "main/",
+        "@",
+        "main\nother",
+    ],
+)
+def test_unsafe_or_injected_ref_names_are_rejected(name: str) -> None:
+    assert is_safe_ref_name(name) is False
+
+
+def test_commit_and_push_rejects_an_unsafe_branch_name_before_any_command(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner()
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(UnsafeBranchNameError):
+        publisher.commit_and_push(tmp_path, "factory/wi-1..evil", "Implement feature")
+
+    assert runner.calls == []
+
+
+# --------------------------------------------------------------------------
+# Reviewed-tree and authorized-identity binding
+# --------------------------------------------------------------------------
+
+
+def test_commit_and_push_verifies_the_staged_tree_before_committing(tmp_path: Path) -> None:
+    reviewed = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(returncode=0),  # add -A
+            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=f"{reviewed}\n"),  # write-tree
+            FakeCompletedProcess(returncode=0),  # commit
+            FakeCompletedProcess(returncode=0, stdout="abc123\n"),  # rev-parse HEAD
+            FakeCompletedProcess(returncode=0, stdout=f"{reviewed}\n"),  # commit tree
+            FakeCompletedProcess(returncode=0),  # push
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    sha = publisher.commit_and_push(
+        tmp_path, "factory/wi-1", "Implement feature", expected_tree_sha=reviewed
+    )
+
+    assert sha == "abc123"
+    assert ["git", "-C", str(tmp_path), "write-tree"] in [call[0] for call in runner.calls]
+
+
+def test_commit_and_push_refuses_a_tree_the_reviewer_did_not_approve(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(returncode=0),
+            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=f"{'b' * 40}\n"),
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(UnreviewedContentError):
+        publisher.commit_and_push(
+            tmp_path, "factory/wi-1", "Implement feature", expected_tree_sha="a" * 40
+        )
+
+    commands = [call[0] for call in runner.calls]
+    assert not any("commit" in argv for argv in commands)
+    assert not any("push" in argv for argv in commands)
+
+
+def test_commit_and_push_refuses_a_repository_other_than_the_authorized_one(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner([_remote_url_response("https://github.com/acme/other.git")])
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(UnexpectedRepositoryError):
+        publisher.commit_and_push(
+            tmp_path,
+            "factory/wi-1",
+            "Implement feature",
+            expected_repository="acme/repo",
+        )
+
+    assert len(runner.calls) == 1
+
+
+def test_verify_identity_is_case_insensitive_and_read_only(tmp_path: Path) -> None:
+    runner = FakeRunner([_remote_url_response("https://github.com/Acme/Repo.git")])
+    publisher = GitPublisher(runner=runner)
+
+    target = publisher.verify_identity(
+        tmp_path, expected_repository="acme/repo", expected_host="GitHub.com"
+    )
+
+    assert target.reference.full_name.casefold() == "acme/repo"
+    assert target.url == "https://github.com/Acme/Repo.git"
+    assert [call[0][3:5] for call in runner.calls] == [["remote", "get-url"]]
+
+
+def test_verify_identity_rejects_an_unexpected_host(tmp_path: Path) -> None:
+    runner = FakeRunner([_remote_url_response("https://github.com/acme/repo.git")])
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(UnexpectedRepositoryError):
+        publisher.verify_identity(
+            tmp_path, expected_repository="acme/repo", expected_host="ghe.example.com"
+        )
+
+
+def test_ensure_pushed_verifies_the_committed_tree(tmp_path: Path) -> None:
+    reviewed = "c" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(returncode=0, stdout=f"{'0' * 40}\n"),  # rev-parse HEAD
+            FakeCompletedProcess(returncode=0, stdout=f"{'d' * 40}\n"),  # rev-parse HEAD^{tree}
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(UnreviewedContentError):
+        publisher.ensure_pushed(tmp_path, "factory/wi-1", expected_tree_sha=reviewed)
+
+    assert not any("push" in call[0] for call in runner.calls)

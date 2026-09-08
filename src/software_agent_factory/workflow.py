@@ -49,9 +49,12 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import socket
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -59,6 +62,7 @@ from uuid import uuid4
 
 from .agents import AgentRequest, AgentResult, AgentRuntime, runtime_exception_failure_reason
 from .config import FactoryConfig, RoleModelConfig
+from .delivery import DeliveryTarget, fetch_delivery_target
 from .github import GitHubError, GitPublishError, build_pr_body
 from .governance import (
     RepositoryVerificationResult,
@@ -82,6 +86,7 @@ from .models import (
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
+    RepositorySkillUse,
     ResearchReport,
     ReviewReport,
     RunLease,
@@ -95,7 +100,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
-from .publishing import CIObserver, PullRequestPublisher
+from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
 from .repository_profile import (
     generic_repository_profile,
     profile_repository,
@@ -234,6 +239,17 @@ class WorkItemAlreadyActiveError(Exception):
     workspace. Surfaced as a non-persisted outcome, never as a junk run."""
 
 
+def delivery_policy_fingerprint(config: FactoryConfig) -> str:
+    """Bind recovery to the human policy under which the run was started."""
+    payload = config.model_dump(
+        mode="json",
+        include={"repository", "pull_request", "ci", "merge", "risk", "scope_drift"},
+    )
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class _Halt(Exception):
     """Internal control-flow signal: the run has already reached a terminal
     state and been persisted; unwind to the caller of ``run()``."""
@@ -258,6 +274,8 @@ class WorkflowController:
         scope_policy: ScopeDriftPolicy | None = None,
         publisher: PullRequestPublisher | None = None,
         ci_observer: CIObserver | None = None,
+        merger: PullRequestMerger | None = None,
+        delivery_base_resolver: Callable[[Path, str], DeliveryTarget] | None = None,
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
     ) -> None:
         self._config = config
@@ -267,7 +285,13 @@ class WorkflowController:
         self._verifier = (
             repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
         )
-        self._scope_policy = scope_policy if scope_policy is not None else ScopeDriftPolicy()
+        self._scope_policy = (
+            scope_policy
+            if scope_policy is not None
+            else ScopeDriftPolicy(
+                approved_sensitive_files=config.scope_drift.approved_sensitive_files
+            )
+        )
         self._repository_profiler = repository_profiler or profile_repository
         # Constructed eagerly when the integration is enabled so two concurrent
         # runs sharing one controller cannot race on lazy initialization, and
@@ -278,6 +302,12 @@ class WorkflowController:
         self._ci_observer = ci_observer
         if self._ci_observer is None and config.ci.enabled:
             self._ci_observer = CIObserver(config)
+        self._merger = merger
+        if self._merger is None and config.merge.enabled:
+            self._merger = PullRequestMerger(config)
+        self._delivery_base_resolver = delivery_base_resolver or (
+            lambda repo, expected: fetch_delivery_target(config, repo, expected)
+        )
 
     # -- public transition API -----------------------------------------
 
@@ -376,10 +406,17 @@ class WorkflowController:
         """Synchronously drive ``work_item`` from ``CREATED`` to completion,
         persisting the run and every artifact along the way."""
         resolved_run_id = run_id or f"run-{uuid4().hex}"
+        try:
+            self._store.load_run(resolved_run_id)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(f"run {resolved_run_id!r} already exists; resume it instead")
         run = FactoryRun(
             id=resolved_run_id,
             work_item_id=work_item.id,
             state=WorkflowState.CREATED,
+            delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
         )
 
         try:
@@ -417,8 +454,34 @@ class WorkflowController:
         self._store.save_artifact(run.id, work_item)
 
         try:
+            delivery_base: str | None = None
+            if self._config.merge.enabled:
+                assert self._merger is not None
+                try:
+                    repository = self._merger.validate_repository(source_repo)
+                    target = self._delivery_base_resolver(source_repo, repository)
+                    if target.repository != repository:
+                        raise GitHubError("delivery base resolved from a different repository")
+                    delivery_base = target.commit_sha
+                except (GitHubError, GitPublishError, OSError) as exc:
+                    return self.transition(
+                        run,
+                        WorkflowState.NEEDS_HUMAN,
+                        failure_reason=f"delivery repository is not authorized: {exc}",
+                    )
+                run = run.model_copy(
+                    update={
+                        "delivery_repository": repository,
+                        "delivery_host": target.host,
+                    }
+                )
+                self._store.save_run(run)
             try:
-                workspace_path = workspace.prepare()
+                workspace_path = (
+                    workspace.prepare(base_ref=delivery_base)
+                    if delivery_base is not None
+                    else workspace.prepare()
+                )
             except WorkspaceError as exc:
                 return self._end_failed(run, f"could not prepare workspace: {exc}")
 
@@ -455,6 +518,151 @@ class WorkflowController:
             # "Workspace lifecycle"): only the lock is released here, the
             # worktree itself is left in place for inspection/reuse.
             workspace.release_lock()
+
+    def resume(self, run_id: str, source_repo: Path) -> FactoryRun:
+        """Reconcile a delivery checkpoint without resetting any attempt budget.
+
+        Earlier interrupted agent work is deliberately not replayed: its outcome
+        is ambiguous. A preserved terminal outcome is never reopened.
+        """
+        run = self._store.load_run(run_id)
+        if is_run_finished(run):
+            return run
+        if run.delivery_policy_fingerprint != delivery_policy_fingerprint(self._config):
+            raise ValueError("delivery policy changed since this run started; refusing to resume")
+        workspace = GitWorktreeWorkspace(
+            self._config.data_dir,
+            source_repo,
+            run.work_item_id,
+            branch_prefix=self._config.repository.branch_prefix,
+        )
+        workspace.acquire_lock()
+        try:
+            run = self._store.load_run(run_id)
+            if is_run_finished(run):
+                return run
+            if run.state not in {
+                WorkflowState.PR_READY,
+                WorkflowState.PR_CREATED,
+                WorkflowState.CI_RUNNING,
+            }:
+                return self.recover_abandoned_run(
+                    run,
+                    "interrupted before a safe delivery checkpoint; "
+                    "workspace and attempt budgets were preserved",
+                )
+            if self._config.merge.enabled:
+                assert self._merger is not None
+                repository = self._merger.validate_repository(source_repo)
+                if repository != run.delivery_repository:
+                    raise ValueError("delivery repository changed since this run started")
+            if (
+                not workspace.path.is_dir()
+                or run.workspace_path != str(workspace.path)
+                or run.branch_name != workspace.branch_name
+            ):
+                return self.recover_abandoned_run(
+                    run, "delivery workspace identity changed or the workspace is missing"
+                )
+            try:
+                workspace.prepare()
+                self._check_delivery_workspace(run, workspace.path)
+                context = self._restore_delivery_context(run, workspace, source_repo)
+                now = utc_now()
+                run = run.model_copy(
+                    update={
+                        "lease": RunLease(
+                            host=socket.gethostname(), pid=os.getpid(), heartbeat_at=now
+                        ),
+                        "last_activity_at": now,
+                        "updated_at": now,
+                    }
+                )
+                self._store.save_run(run)
+                if run.state is WorkflowState.PR_READY:
+                    if not self._config.pull_request.enabled:
+                        return self.finalize_pr_ready(run)
+                    return self._publish_and_observe(run, context)
+                if not self._config.pull_request.enabled:
+                    raise ValueError("cannot resume published work with pull requests disabled")
+                if not self._config.ci.enabled:
+                    return self.transition(run, WorkflowState.DONE)
+                return self._ci_loop(run, context)
+            except _Halt as halt:
+                return halt.run
+            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
+                return self.recover_abandoned_run(
+                    self._store.load_run(run_id), f"could not reconcile delivery checkpoint: {exc}"
+                )
+        finally:
+            workspace.release_lock()
+
+    def _restore_delivery_context(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
+    ) -> _RunContext:
+        work_item = self._store.load_artifact(run.id, WorkItem)
+        if work_item.id != run.work_item_id:
+            raise ValueError("persisted work item does not match run")
+        triage = self._store.load_artifact(run.id, TriageResult)
+        if not triage.factory_eligible or self._router.requires_human_approval(triage.risk):
+            raise ValueError("persisted triage does not authorize delivery")
+        context = _RunContext(
+            work_item=work_item,
+            triage_result=triage,
+            specification=self._store.load_artifact(run.id, Specification),
+            research_report=(
+                self._store.load_artifact(run.id, ResearchReport) if triage.needs_research else None
+            ),
+            execution_plan=self._store.load_artifact(run.id, ExecutionPlan),
+            repository_profile=self._store.load_artifact(run.id, RepositoryProfile),
+            workspace=workspace,
+            source_repo=source_repo,
+        )
+        context.latest_evidence = workspace.collect_evidence()
+        if context.latest_evidence.diff != self._store.load_patch(run.id):
+            raise ValueError("workspace changes do not match the reviewed delivery checkpoint")
+        if not run.reviewed_tree_sha or context.latest_evidence.tree_sha != run.reviewed_tree_sha:
+            raise ValueError("workspace tree does not match the independent Reviewer's approval")
+        context.latest_verification = self._store.load_artifact(run.id, VerificationReport)
+        context.latest_test_report = self._store.load_artifact(run.id, TestReport)
+        context.latest_review = self._store.load_artifact(run.id, ReviewReport)
+        if not context.latest_verification.passed or not context.latest_review.approved:
+            raise ValueError(
+                "delivery checkpoint has not passed verification and independent review"
+            )
+        context.polish_attempted = any(
+            attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records
+        )
+        try:
+            self._store.load_artifact(run.id, RepositorySkillUse)
+        except FileNotFoundError:
+            pass
+        else:
+            context.repository_skill = self._store.load_artifact(run.id, RepositorySkill)
+        return context
+
+    @staticmethod
+    def _check_delivery_workspace(run: FactoryRun, path: Path) -> None:
+        def git_output(*args: str) -> str:
+            result = subprocess.run(
+                ["git", "-C", str(path), *args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                raise WorkspaceError(
+                    f"could not inspect delivery workspace: {result.stderr.strip()}"
+                )
+            return result.stdout.strip()
+
+        if git_output("branch", "--show-current") != run.branch_name:
+            raise WorkspaceError("delivery workspace is on a different branch")
+        if run.state in {WorkflowState.PR_CREATED, WorkflowState.CI_RUNNING}:
+            if not run.commit_sha or git_output("rev-parse", "HEAD") != run.commit_sha:
+                raise WorkspaceError("published head no longer matches the delivery workspace")
+            if git_output("status", "--porcelain"):
+                raise WorkspaceError("published delivery workspace has unreviewed changes")
 
     # -- internal orchestration --------------------------------------------
 
@@ -1185,6 +1393,14 @@ class WorkflowController:
             context.latest_verification = verification.report
             context.latest_test_report = test_report
             context.latest_review = review_report
+            if not evidence.tree_sha:
+                raise self._halt(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    "review evidence is missing its immutable Git tree",
+                )
+            run = run.model_copy(update={"reviewed_tree_sha": evidence.tree_sha})
+            self._store.save_run(run)
             return self.transition(run, WorkflowState.PR_READY)
 
     def _prepare_polish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
@@ -1542,6 +1758,23 @@ class WorkflowController:
         """PR boundary: re-run the deterministic gates, then commit/push/open."""
         evidence = context.latest_evidence
         assert evidence is not None
+        if context.latest_review is None or not context.latest_review.approved:
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "independent Reviewer approval is required for every PR",
+            )
+        current_evidence = context.workspace.collect_evidence()
+        if (
+            current_evidence.diff != evidence.diff
+            or not run.reviewed_tree_sha
+            or current_evidence.tree_sha != run.reviewed_tree_sha
+        ):
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "repository changed after independent review; refusing to publish unreviewed work",
+            )
         changed_files = list(evidence.changed_files)
 
         gate = assess_publish_gate(
@@ -1567,17 +1800,32 @@ class WorkflowController:
             )
 
         publisher = self._resolve_publisher()
-        assert run.branch_name is not None
+        branch_name = run.branch_name
+        assert branch_name is not None
         try:
+            if self._config.merge.enabled:
+                assert self._merger is not None
+                if (
+                    self._merger.validate_repository(context.workspace.path)
+                    != run.delivery_repository
+                ):
+                    raise GitHubError("delivery repository changed before publication")
             base_branch = publisher.resolve_base_branch(context.source_repo)
+            if run.delivery_base_branch is not None and run.delivery_base_branch != base_branch:
+                raise GitHubError("refusing to publish to a different delivery base branch")
+            run = run.model_copy(update={"delivery_base_branch": base_branch})
+            self._store.save_run(run)
             result = publisher.publish(
                 workspace_path=context.workspace.path,
-                branch_name=run.branch_name,
+                branch_name=branch_name,
                 base_branch=base_branch,
                 commit_message=_commit_message(context, run.id),
                 title=context.work_item.title,
                 body=self._build_pr_body(run, context, changed_files),
                 existing_pull_request_url=run.pull_request_url,
+                expected_tree_sha=run.reviewed_tree_sha,
+                expected_repository=run.delivery_repository,
+                expected_host=run.delivery_host,
             )
         except (GitPublishError, GitHubError) as exc:
             raise self._halt(
@@ -1589,6 +1837,7 @@ class WorkflowController:
         run = run.model_copy(
             update={
                 "commit_sha": result.commit_sha,
+                "reviewed_commit_sha": result.commit_sha,
                 "pull_request_url": result.pull_request_url,
                 "updated_at": utc_now(),
             }
@@ -1599,7 +1848,7 @@ class WorkflowController:
     def _build_pr_body(
         self, run: FactoryRun, context: _RunContext, changed_files: list[str]
     ) -> str:
-        return build_pr_body(
+        body = build_pr_body(
             work_item=context.work_item,
             specification=context.specification,
             plan=context.execution_plan,
@@ -1609,19 +1858,28 @@ class WorkflowController:
             review=context.latest_review,
             run_id=run.id,
         )
+        if run.reviewed_tree_sha is not None:
+            body += f"\nReviewer-approved Git tree: `{run.reviewed_tree_sha}`\n"
+        return body
 
     def _ci_loop(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
         """Poll CI, and repair (bounded by ``ci.repair_attempts``) when the
         failure is genuinely a code/test failure."""
         observer = self._resolve_ci_observer()
         while True:
-            run = self.transition(run, WorkflowState.CI_RUNNING)
+            if run.state is not WorkflowState.CI_RUNNING:
+                run = self.transition(run, WorkflowState.CI_RUNNING)
             assert run.pull_request_url is not None
-            report = observer.observe(
-                repo_path=context.workspace.path,
-                pull_request_url=run.pull_request_url,
-                repair_attempts_used=self._attempts_used(run, AttemptBudget.CI_REPAIR),
-            )
+            try:
+                report = observer.observe(
+                    repo_path=context.workspace.path,
+                    pull_request_url=run.pull_request_url,
+                    repair_attempts_used=self._attempts_used(run, AttemptBudget.CI_REPAIR),
+                )
+            except (GitHubError, OSError) as exc:
+                raise self._halt(
+                    run, WorkflowState.NEEDS_HUMAN, f"could not observe CI: {exc}"
+                ) from exc
             self._store.save_artifact(run.id, report)
 
             if report.timed_out:
@@ -1631,7 +1889,7 @@ class WorkflowController:
                     "CI checks were still pending after the configured wait budget",
                 )
             if report.overall == "PASS":
-                return self.transition(run, WorkflowState.DONE)
+                return self._merge_and_finish(run, context)
 
             run = self.transition(run, WorkflowState.CI_DIAGNOSIS)
             failed = report.failed_checks
@@ -1665,6 +1923,49 @@ class WorkflowController:
             run = self.transition(run, WorkflowState.IMPLEMENTING)
             run = self._drive_to_pr_ready(run, context, AttemptBudget.CI_REPAIR, repair_context)
             run = self._publish(run, context)
+
+    def _merge_and_finish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
+        if self._config.merge.enabled:
+            assert self._merger is not None
+            if (
+                not run.commit_sha
+                or not run.pull_request_url
+                or not run.delivery_base_branch
+                or run.reviewed_commit_sha != run.commit_sha
+                or not run.delivery_repository
+                or not run.delivery_host
+            ):
+                raise self._halt(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    "missing delivery evidence or independent Reviewer approval "
+                    "for the current head",
+                )
+            try:
+                self._check_delivery_workspace(run, context.workspace.path)
+                result = self._merger.merge(
+                    repo_path=context.workspace.path,
+                    pull_request_url=run.pull_request_url,
+                    expected_head_sha=run.commit_sha,
+                    base_branch=run.delivery_base_branch,
+                    expected_repository=run.delivery_repository,
+                    expected_host=run.delivery_host,
+                )
+            except (
+                GitHubError,
+                GitPublishError,
+                OSError,
+                WorkspaceError,
+                subprocess.TimeoutExpired,
+            ) as exc:
+                raise self._halt(
+                    run, WorkflowState.NEEDS_HUMAN, f"could not merge the pull request: {exc}"
+                ) from exc
+            run = run.model_copy(
+                update={"merge_commit_sha": result.commit_sha, "updated_at": utc_now()}
+            )
+            self._store.save_run(run)
+        return self.transition(run, WorkflowState.DONE)
 
 
 class _RunContext:

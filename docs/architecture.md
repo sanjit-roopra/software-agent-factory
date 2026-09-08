@@ -49,6 +49,8 @@ CI observation      (opt-in: ci.enabled)
    ↓
 bounded CI repair
    ↓
+confirmed merge     (opt-in: merge.enabled)
+   ↓
 done
 ```
 
@@ -71,8 +73,11 @@ Implemented (requested Phase 15 sub-phases, see `PLAN.md`):
 Phase 16 is also implemented: deterministic repository capability profiling and
 an optional bounded post-green polish pass.
 
-None of those change what the factory is allowed to do autonomously. They make
-it installable, observable and inspectable on one MacBook.
+Those phases make the factory installable, observable and inspectable on one
+MacBook. Phase 18 explicitly adds opt-in autonomous delivery under ADR-022:
+only the controller may merge an allowlisted, independently reviewed PR after
+the required checks pass for its exact head. Production execution and
+deployment remain out of scope.
 
 The project path is also implemented. `factory project` invokes the configured
 Planner once with purpose `DECOMPOSE_PROJECT`, validates a flat task DAG of at
@@ -81,6 +86,13 @@ dependency-ready tasks through the existing `WorkflowController`. It does not
 add a second SDLC state machine: project state is limited to planning,
 execution and aggregate outcome, while every child remains an ordinary
 `FactoryRun`.
+
+With `merge.enabled`, project tasks execute serially through PR publication,
+bounded CI repair and confirmed merging. The project fetches and
+fast-forwards its own integration worktree to the target branch before each
+task, so dependent tasks start from merged predecessors. It never advances
+the user's source checkout. The default local-only mode retains wave
+concurrency and cherry-pick integration.
 
 ## High-level architecture
 
@@ -203,8 +215,11 @@ functional outcome rather than becoming process-only issues.
 immutable brief and plan. The factory derives its outcome from child
 `FactoryRun` states, integration results, and one final deterministic
 verification of the fully composed integration branch; an agent cannot declare
-the project complete. A later invocation reconciles an abandoned `PLANNING` or
-`RUNNING` execution to `NEEDS_HUMAN` rather than leaving active state stranded.
+the project complete. In merge mode every child must also have confirmed merge
+evidence in the fetched target history. Explicit `factory project --resume`
+reconciles persisted child identifiers and delivery checkpoints without
+replanning, recreating PRs or resetting budgets. Ambiguous interrupted agent
+work stops at `NEEDS_HUMAN`.
 
 ## Workflow states
 
@@ -1168,6 +1183,13 @@ configuration or remotes (only `git remote get-url` is permitted), and refuses
 remotes whose host is outside `pull_request.allowed_hosts`. A CI repair pushes
 an additional normal commit to the same branch, updating the existing PR rather
 than creating a new one.
+
+`PullRequestMerger` is a separate, opt-in controller boundary. It requires an
+explicit target branch, repository allowlist, named required checks and local
+verification commands. It checks the PR identity, current head, current checks
+and merge eligibility, uses an expected-head merge guard, and confirms the
+merged commit before `DONE`. It never overrides branch protection or turns a
+pending merge request into a success claim.
 
 GitHub credentials are read from the controller's own environment and handed to
 `gh` through the child environment only. `CopilotAgentRuntime` independently

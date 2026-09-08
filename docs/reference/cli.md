@@ -97,12 +97,13 @@ factory project \
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
 | `--repo <path>` | yes | — | Path to the target Git repository. |
-| `--title <str>` | yes | — | Short project title. |
-| `--description <str>` | yes | — | High-level product or feature description. |
+| `--title <str>` | unless resuming | — | Short project title. |
+| `--description <str>` | unless resuming | — | High-level product or feature description. |
 | `--acceptance-criterion <str>` | no | none | Required outcome; repeat as needed. |
 | `--constraint <str>` | no | none | Project constraint; repeat as needed. |
 | `--project-id <str>` | no | random | Stable project identifier. |
-| `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after local integration. |
+| `--resume` | no | `false` | Reconcile the stored project; requires `--project-id` and reuses its brief and plan. |
+| `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after integration or confirmed merge. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task; `copilot` derives the real plan. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
 | `--config <path>` | no | packaged | Config YAML. |
@@ -122,11 +123,19 @@ run once more against the complete integration branch before the project is
 `DONE`. A conflict, failed child run, final verification failure, or
 human-approval gate stops the project instead of guessing.
 
-Project execution currently requires `pull_request.enabled: false` and
-`ci.enabled: false`; it produces a completed local integration branch rather
-than independent child PRs. GitHub issue publication is optional and does not
+With PR/CI/merge disabled, project execution produces a local integration
+branch. With all three enabled, tasks run serially through PR creation, bounded
+CI repair and guarded automatic merge to the configured target. Each task
+starts from the refreshed target including its merged predecessors. Final
+verification and confirmed child merges determine project completion.
+GitHub issue publication is optional and does not
 apply the scheduler's `agent-ready` label, so the project command remains the
 single execution owner.
+
+`--resume` uses the stored brief and immutable plan, reconciles persisted
+child delivery checkpoints, and never resets attempt budgets. It refuses
+policy/repository drift and does not replay ambiguous interrupted agent work.
+See [Autonomous project delivery](../guides/projects.md#autonomous-delivery).
 
 Artifacts are stored under:
 

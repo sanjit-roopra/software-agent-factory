@@ -190,11 +190,18 @@ key replaces the default list, so include the defaults you still want.
 ```yaml
 scope_drift:
   max_replans: 1
+  approved_sensitive_files: []
 ```
 
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `max_replans` | int >= 0 | `1` | How many times scope drift may send a run back to planning. |
+| `approved_sensitive_files` | list of exact paths | `[]` | Human authorization for named dependency/CI files, effective only when the same exact files appear in the task plan's steps. No globs, absolute paths or traversal. |
+
+For example, authorize `pyproject.toml`, `uv.lock`, and
+`.github/workflows/ci.yml` to bootstrap a Python repository. This does not waive
+risk approval, protected-file policy, file-count/module bounds or independent
+review. Migration and infrastructure findings are never exempted by this list.
 
 See [Configure a repository](../guides/configure-repository.md#scope-drift) for
 the finding categories and decisions.
@@ -327,7 +334,7 @@ pull_request:
 | `draft` | bool | `true` | Open the PR as a draft. |
 | `allowed_hosts` | list of hosts | `["github.com"]` | The remote's host must be in this list. |
 
-Requires `gh` on `PATH`. Never force-pushes. Never merges.
+Requires `gh` on `PATH`. Never force-pushes. Merging is controlled separately.
 
 ## ci
 
@@ -348,6 +355,44 @@ ci:
 
 `ci.enabled: true` requires `pull_request.enabled: true`. The combination is
 rejected otherwise. Requires `gh`.
+
+`ci.enabled: false` disables factory observation/repair, not GitHub Actions
+workflow triggers.
+
+## merge
+
+```yaml
+merge:
+  enabled: false
+  method: "squash"
+  allowed_repositories: []
+  required_checks: []
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Merge after deterministic verification, independent review and CI pass. |
+| `method` | `squash`, `merge`, `rebase` | `squash` | Normal GitHub merge method; never administrator override. |
+| `allowed_repositories` | list of `OWNER/REPO` | `[]` | Exact repositories authorized for automatic merging; no wildcards. |
+| `required_checks` | list of check names | `[]` | Every named check must be present and successful on the current PR head. Missing, skipped and pending required checks cannot authorize merging. |
+
+Enabling merging requires PR and CI enabled, `pull_request.draft: false`, an
+explicit `pull_request.base_branch`, nonempty repository/check allowlists and
+nonempty `repository.commands.verify`. GitHub branch rules must permit the
+configured merge method and unattended delivery. Required human reviews are
+not bypassed. The configured required checks must also be enforced by the
+target's active GitHub protection policy, without a bypass that would defeat
+the server-side gate. A client-side check list alone cannot prevent a check
+rerun racing a merge. The policy must require PRs and up-to-date branches.
+Classic protection must enforce administrators; supported active repository
+or organization rulesets must have no bypass actors. Missing or unreadable
+enforcement metadata is not treated as approval.
+Conflicting, outdated or otherwise ineligible PRs stop with an
+explicit reason. A run is `DONE` only after the actual merge is confirmed.
+
+Project delivery requires either all three integrations disabled (local
+integration) or all three enabled (serial PR-to-target delivery). See
+[Projects](../guides/projects.md#autonomous-delivery).
 
 ## scheduler
 

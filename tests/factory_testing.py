@@ -183,6 +183,15 @@ class ScriptedRunner:
 
     def _git(self, argv: list[str]) -> FakeCompleted:
         tail = argv[3:] if argv[1:2] == ["-C"] else argv[1:]
+        if tail == ["write-tree"] or (
+            tail[:1] == ["rev-parse"] and any(arg.endswith("^{tree}") for arg in tail)
+        ):
+            # Controller integration tests use real worktrees but fake remote
+            # publication. Its simulated commit preserves the staged tree.
+            repo = Path(argv[2]) if argv[1:2] == ["-C"] else None
+            if repo is not None and (repo / ".git").exists():
+                return FakeCompleted(stdout=git(repo, "write-tree"))
+            return FakeCompleted(stdout=f"{self.commit_sha}\n")
         if tail[:2] == ["remote", "get-url"]:
             if self.remote_missing:
                 return FakeCompleted(returncode=128, stderr="error: No such remote 'origin'")

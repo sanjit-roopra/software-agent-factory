@@ -49,14 +49,18 @@ def _plan(
     *,
     modules: list[str],
     estimated_files_max: int,
+    likely_files: list[str] | None = None,
+    steps: list[PlanStep] | None = None,
 ) -> ExecutionPlan:
     return ExecutionPlan(
         summary="Implement scoped change",
-        steps=[
+        steps=steps
+        if steps is not None
+        else [
             PlanStep(
                 id="step-1",
                 goal="Make the planned change",
-                likely_files=[],
+                likely_files=likely_files or [],
                 validation=[],
             )
         ],
@@ -373,6 +377,290 @@ def test_scope_drift_policy_requires_human_for_sensitive_high_risk_drift(
     assert assessment.decision is ScopeDecision.NEEDS_HUMAN
     assert category in {finding.category for finding in assessment.findings}
     assert assessment.has_sensitive_findings is True
+
+
+# -- scope drift authorization (approved sensitive files) -------------------
+
+
+def test_scope_drift_empty_approval_preserves_default_behavior() -> None:
+    policy = ScopeDriftPolicy()
+    assert policy.approved_sensitive_files == ()
+
+    assessment = policy.assess(
+        _plan(modules=["pyproject.toml"], estimated_files_max=2, likely_files=["pyproject.toml"]),
+        changed_files=["pyproject.toml"],
+        risk=Risk.R2,
+    )
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in assessment.findings] == ["dependency-change"]
+    assert assessment.approved_sensitive_files == ()
+
+
+@pytest.mark.parametrize("risk", [Risk.R0, Risk.R1, Risk.R2, Risk.R3])
+def test_scope_drift_planned_and_approved_dependency_succeeds(risk: Risk) -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+    assert policy.approved_sensitive_files == ("pyproject.toml",)
+
+    assessment = policy.assess(
+        _plan(
+            modules=["src", "pyproject.toml"],
+            estimated_files_max=3,
+            likely_files=["src/app.py", "pyproject.toml"],
+        ),
+        changed_files=["src/app.py", "pyproject.toml"],
+        risk=risk,
+    )
+
+    assert assessment.decision is ScopeDecision.CONTINUE
+    assert assessment.findings == ()
+    assert assessment.changed_file_count == 2
+    assert assessment.approved_sensitive_files == ("pyproject.toml",)
+    assert assessment.has_sensitive_findings is False
+
+
+def test_scope_drift_planned_and_approved_ci_workflow_succeeds() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=[".github/workflows/ci.yml"])
+
+    assessment = policy.assess(
+        _plan(
+            modules=[".github"],
+            estimated_files_max=2,
+            likely_files=[".github/workflows/ci.yml"],
+        ),
+        changed_files=[".github/workflows/ci.yml"],
+        risk=Risk.R3,
+    )
+
+    assert assessment.decision is ScopeDecision.CONTINUE
+    assert assessment.findings == ()
+    assert assessment.approved_sensitive_files == (".github/workflows/ci.yml",)
+    assert assessment.has_sensitive_findings is False
+
+
+@pytest.mark.parametrize("path", ["/pyproject.toml", "./pyproject.toml", "../pyproject.toml"])
+def test_scope_authorization_requires_exact_relative_path_in_plan(path: str) -> None:
+    plan = _plan(modules=["pyproject.toml"], estimated_files_max=2, likely_files=[path])
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+    assessment = policy.assess(plan, changed_files=["pyproject.toml"], risk=Risk.R2)
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert assessment.approved_sensitive_files == ()
+
+
+def test_scope_drift_approved_but_unplanned_fails() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+
+    assessment = policy.assess(
+        _plan(
+            modules=["pyproject.toml"],
+            estimated_files_max=2,
+            likely_files=["src/app.py"],  # Not planned in any step
+        ),
+        changed_files=["pyproject.toml"],
+        risk=Risk.R2,
+    )
+
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in assessment.findings] == ["dependency-change"]
+    assert assessment.approved_sensitive_files == ()
+
+
+def test_scope_drift_planned_but_not_approved_fails() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=[])
+
+    assessment = policy.assess(
+        _plan(
+            modules=["pyproject.toml"],
+            estimated_files_max=2,
+            likely_files=["pyproject.toml"],  # Planned, but human didn't approve
+        ),
+        changed_files=["pyproject.toml"],
+        risk=Risk.R2,
+    )
+
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in assessment.findings] == ["dependency-change"]
+    assert assessment.approved_sensitive_files == ()
+
+
+def test_scope_drift_similar_basename_cannot_bypass() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+
+    assessment = policy.assess(
+        _plan(
+            modules=["packages"],
+            estimated_files_max=2,
+            likely_files=["packages/sub/pyproject.toml"],
+        ),
+        changed_files=["packages/sub/pyproject.toml"],
+        risk=Risk.R2,
+    )
+
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in assessment.findings] == ["dependency-change"]
+    assert assessment.findings[0].paths == ("packages/sub/pyproject.toml",)
+    assert assessment.approved_sensitive_files == ()
+
+
+def test_scope_drift_path_variants_and_traversal_cannot_bypass() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+
+    assessment = policy.assess(
+        _plan(
+            modules=["pyproject.toml", "src"],
+            estimated_files_max=2,
+            likely_files=["pyproject.toml"],
+        ),
+        changed_files=["src/../pyproject.toml"],
+        risk=Risk.R2,
+    )
+
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    categories = {f.category for f in assessment.findings}
+    assert "dependency-change" in categories
+    assert assessment.approved_sensitive_files == ()
+
+
+def test_scope_drift_wildcard_cannot_bypass() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+
+    # Agent attempts broad wildcard self-approval in plan
+    assessment = policy.assess(
+        _plan(
+            modules=["pyproject.toml"],
+            estimated_files_max=2,
+            likely_files=["*.toml"],
+        ),
+        changed_files=["pyproject.toml"],
+        risk=Risk.R2,
+    )
+
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in assessment.findings] == ["dependency-change"]
+    assert assessment.approved_sensitive_files == ()
+
+
+@pytest.mark.parametrize(
+    "invalid_path",
+    [
+        "../pyproject.toml",
+        "foo/../pyproject.toml",
+        "/pyproject.toml",
+        "*.toml",
+        "pyproject.toml?",
+        "foo[bar]",
+        "foo//bar",
+        "foo/./bar",
+        "",
+        "   ",
+        "pyproject.toml\\sub",
+        "foo:bar",
+        ".git/config",
+    ],
+)
+def test_scope_drift_policy_rejects_invalid_approved_files(invalid_path: str) -> None:
+    with pytest.raises(ValueError, match="approved_sensitive_files"):
+        ScopeDriftPolicy(approved_sensitive_files=[invalid_path])
+
+
+def test_scope_drift_policy_rejects_duplicate_approved_files() -> None:
+    with pytest.raises(ValueError, match="must be unique"):
+        ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml", "pyproject.toml"])
+
+
+def test_scope_drift_migration_and_infrastructure_still_block_even_if_approved() -> None:
+    # Attempt to approve migration and infrastructure files
+    policy = ScopeDriftPolicy(
+        approved_sensitive_files=[
+            "pyproject.toml",
+            "migrations/0002_add_field.py",
+            "infra/main.tf",
+        ]
+    )
+
+    # Even if planned, migrations still block
+    migration_assessment = policy.assess(
+        _plan(
+            modules=["migrations"],
+            estimated_files_max=2,
+            likely_files=["migrations/0002_add_field.py"],
+        ),
+        changed_files=["migrations/0002_add_field.py"],
+        risk=Risk.R2,
+    )
+    assert migration_assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in migration_assessment.findings] == ["migration-change"]
+    assert migration_assessment.approved_sensitive_files == ()
+
+    # Even if planned, infrastructure still blocks
+    infra_assessment = policy.assess(
+        _plan(
+            modules=["infra"],
+            estimated_files_max=2,
+            likely_files=["infra/main.tf"],
+        ),
+        changed_files=["infra/main.tf"],
+        risk=Risk.R2,
+    )
+    assert infra_assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in infra_assessment.findings] == ["infrastructure-change"]
+    assert infra_assessment.approved_sensitive_files == ()
+
+
+def test_scope_drift_exemptions_do_not_suppress_other_findings() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+
+    # pyproject.toml is exempt from dependency-change, but migration-change still flags
+    assessment = policy.assess(
+        _plan(
+            modules=["pyproject.toml", "migrations"],
+            estimated_files_max=3,
+            likely_files=["pyproject.toml", "migrations/0002_add_field.py"],
+        ),
+        changed_files=["pyproject.toml", "migrations/0002_add_field.py"],
+        risk=Risk.R2,
+    )
+
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert [f.category for f in assessment.findings] == ["migration-change"]
+    assert assessment.approved_sensitive_files == ("pyproject.toml",)
+
+
+def test_scope_drift_max_counts_still_work_with_approved_files() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml", "uv.lock"])
+
+    assessment = policy.assess(
+        _plan(
+            modules=["pyproject.toml", "uv.lock"],
+            estimated_files_max=1,  # Max is 1, but 2 files changed
+            likely_files=["pyproject.toml", "uv.lock"],
+        ),
+        changed_files=["pyproject.toml", "uv.lock"],
+        risk=Risk.R1,
+    )
+
+    assert assessment.decision is ScopeDecision.REPLAN
+    assert [f.category for f in assessment.findings] == ["excessive-file-count"]
+    assert assessment.approved_sensitive_files == ("pyproject.toml", "uv.lock")
+
+
+def test_scope_drift_module_checks_still_work_with_approved_files() -> None:
+    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
+
+    # Plan only expects "src" module, but pyproject.toml changed
+    assessment = policy.assess(
+        _plan(
+            modules=["src"],
+            estimated_files_max=3,
+            likely_files=["pyproject.toml", "src/app.py"],
+        ),
+        changed_files=["src/app.py", "pyproject.toml"],
+        risk=Risk.R1,
+    )
+
+    assert assessment.decision is ScopeDecision.REPLAN
+    assert [f.category for f in assessment.findings] == ["unexpected-module"]
+    assert assessment.findings[0].paths == ("pyproject.toml",)
+    assert assessment.approved_sensitive_files == ("pyproject.toml",)
 
 
 # -- publish gate ------------------------------------------------------------

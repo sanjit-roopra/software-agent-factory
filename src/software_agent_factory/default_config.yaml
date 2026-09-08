@@ -172,6 +172,8 @@ repository:
 
 scope_drift:
   max_replans: 1
+  # Exact files must also appear in the execution plan; no glob exemptions.
+  approved_sensitive_files: []
 
 polish:
   enabled: true
@@ -206,6 +208,12 @@ ci:
   poll_interval_seconds: 30
   max_wait_seconds: 1800
   repair_attempts: 3
+
+merge:
+  enabled: false
+  method: "squash"
+  allowed_repositories: []
+  required_checks: []
 
 scheduler:
   enabled: false

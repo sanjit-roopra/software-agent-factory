@@ -32,6 +32,7 @@ because a prompt is not what enforces it.
 | Agent runtime | `fake` — no model calls, no cost |
 | `pull_request.enabled` | `false` |
 | `ci.enabled` | `false` |
+| `merge.enabled` | `false` |
 | `scheduler.enabled` | `false` |
 | Dashboard | not running |
 | launchd service | not installed |
@@ -53,6 +54,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | `--runtime copilot` | GitHub Copilot, through the `copilot` CLI. Paid. |
 | `pull_request.enabled` | GitHub, through `gh`. |
 | `ci.enabled` | GitHub, through `gh`. |
+| `merge.enabled` | GitHub, through `gh`, with a separate repository and check allowlist. |
 | `scheduler.enabled` | GitHub Issues, through `gh`. |
 | An eligible `polish.enabled` attempt with no stored guidance for the repository's current dependency fingerprint, or `factory skill refresh --runtime copilot` | The configured Researcher fetches only `polish.official_documentation_origins` and the exact, commit-pinned `polish.practice_reference_urls` to generate a `RepositorySkill`. `web_fetch` is its only tool for that call, and it runs outside the worktree. A run that reuses stored guidance fetches nothing. |
 | Your own `repository.commands` | Whatever they contact. `uv sync` hits a package index. |
@@ -130,7 +132,12 @@ numbers.
 - No changed file may match `repository.protected_file_patterns`.
 - Scope drift is re-checked at the pull request boundary.
 - Pull requests are drafts by default.
-- The factory never force-pushes and never merges.
+- The factory never force-pushes. Automatic merging requires explicit policy,
+  named green checks on the reviewed head, a matching repository and target,
+  and confirmed merge evidence. It never bypasses branch protection.
+- Exact, human-authorized dependency/CI files may pass sensitive-scope checks
+  only when also explicitly named in the plan. This never exempts protected
+  files, migration/infrastructure changes, risk approval or ordinary scope limits.
 
 ## Quality gates
 
@@ -239,6 +246,11 @@ A persisted, non-terminal run left behind by a dead process is transitioned to
 `NEEDS_HUMAN` through the controller. It is never auto-resumed. No paid retry is
 spent, the budget is untouched, and the workspace and artifacts stay on disk.
 
+The explicit project `--resume` path is a narrow exception: it reconciles
+persisted task identities and safe PR delivery checkpoints under the original
+policy. It does not replay ambiguous in-flight implementation, reopen an
+exhausted terminal run or reset retry budgets.
+
 `factory status` reports stale locks, orphaned worktrees and abandoned runs as
 findings. Repairing one is an explicit operator action.
 
@@ -295,6 +307,6 @@ See [Releases](../project/releases.md).
 ## What does not exist
 
 Not implemented, not designed, and nothing in the codebase requires them:
-autonomous merge, autonomous deployment, staging promotion, remote workers,
+unrestricted autonomous merge, autonomous deployment, staging promotion, remote workers,
 Docker or Kubernetes sandboxes, a hosted service, a multi-user application, a
 control plane, telemetry, and long-term semantic memory.

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 from importlib import resources
-from pathlib import Path
-from typing import Self
+from pathlib import Path, PurePosixPath
+from typing import Literal, Self
 from urllib.parse import SplitResult, urlsplit
 
 import yaml
@@ -193,6 +193,30 @@ class ScopeDriftConfig(ConfigModel):
     """
 
     max_replans: NonNegativeInt = 1
+    approved_sensitive_files: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("approved_sensitive_files")
+    @classmethod
+    def _validate_approved_files(cls, value: list[str]) -> list[str]:
+        for path in value:
+            parts = PurePosixPath(path).parts
+            if (
+                not path
+                or path != path.strip()
+                or path.startswith("/")
+                or any(character in path for character in "\\*?[]:\x00")
+                or any(ord(character) < 32 for character in path)
+                or any(part in {".", "..", ".git"} for part in path.split("/"))
+                or not parts
+                or str(PurePosixPath(path)) != path
+            ):
+                raise ValueError(
+                    "approved_sensitive_files entries must be exact canonical "
+                    "repository-relative paths, without globs or traversal"
+                )
+        if len(value) != len(set(value)):
+            raise ValueError("approved_sensitive_files entries must be unique")
+        return value
 
 
 class PolishConfig(ConfigModel):
@@ -279,7 +303,7 @@ class PolishConfig(ConfigModel):
 
 
 class PullRequestConfig(ConfigModel):
-    """Pull request creation policy (``PLAN.md`` Phase 10). Never merges."""
+    """Pull request creation policy; merging has its own opt-in policy."""
 
     enabled: bool = False
     remote: str = Field(default="origin", min_length=1)
@@ -320,6 +344,41 @@ class CiConfig(ConfigModel):
                 "ci.max_wait_seconds must be greater than or equal to ci.poll_interval_seconds"
             )
         return self
+
+
+class MergeConfig(ConfigModel):
+    """Controller-owned, fail-closed merging of verified pull requests."""
+
+    enabled: bool = False
+    method: Literal["squash", "merge", "rebase"] = "squash"
+    allowed_repositories: list[str] = Field(default_factory=list, max_length=100)
+    required_checks: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("allowed_repositories")
+    @classmethod
+    def _validate_repositories(cls, value: list[str]) -> list[str]:
+        for repository in value:
+            if (
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", repository) is None
+                or repository.split("/")[1] in {".", ".."}
+                or repository.endswith(".git")
+            ):
+                raise ValueError(
+                    "merge.allowed_repositories entries must be exact OWNER/REPO names"
+                )
+        if len(value) != len({repository.casefold() for repository in value}):
+            raise ValueError("merge.allowed_repositories entries must be unique")
+        return value
+
+    @field_validator("required_checks")
+    @classmethod
+    def _validate_checks(cls, value: list[str]) -> list[str]:
+        for name in value:
+            if not name or name != name.strip() or any(ord(character) < 32 for character in name):
+                raise ValueError("merge.required_checks entries must be non-empty check names")
+        if len(value) != len(set(value)):
+            raise ValueError("merge.required_checks entries must be unique")
+        return value
 
 
 #: Conservative default dispatch-rate ceiling for the local backlog daemon
@@ -382,6 +441,7 @@ class FactoryConfig(ConfigModel):
     polish: PolishConfig = Field(default_factory=PolishConfig)
     pull_request: PullRequestConfig = Field(default_factory=PullRequestConfig)
     ci: CiConfig = Field(default_factory=CiConfig)
+    merge: MergeConfig = Field(default_factory=MergeConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     @model_validator(mode="after")
@@ -394,6 +454,23 @@ class FactoryConfig(ConfigModel):
     def _validate_ci_requires_pull_request(self) -> Self:
         if self.ci.enabled and not self.pull_request.enabled:
             raise ValueError("ci.enabled requires pull_request.enabled")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_merge_policy(self) -> Self:
+        if self.merge.enabled:
+            if not self.pull_request.enabled or not self.ci.enabled:
+                raise ValueError("merge.enabled requires pull_request.enabled and ci.enabled")
+            if self.pull_request.draft:
+                raise ValueError("merge.enabled requires pull_request.draft=false")
+            if self.pull_request.base_branch is None:
+                raise ValueError("merge.enabled requires an explicit pull_request.base_branch")
+            if not self.merge.allowed_repositories:
+                raise ValueError("merge.enabled requires merge.allowed_repositories")
+            if not self.merge.required_checks:
+                raise ValueError("merge.enabled requires merge.required_checks")
+            if not self.repository.commands.verify:
+                raise ValueError("merge.enabled requires deterministic repository.commands.verify")
         return self
 
     @model_validator(mode="after")
