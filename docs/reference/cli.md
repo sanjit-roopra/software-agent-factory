@@ -359,7 +359,10 @@ factory dashboard --port 0 --open-browser
 | `--data-dir <path>` | configured | Data directory override. |
 
 The dashboard shows active and completed projects, their task/PR/merge progress,
-individual workflow runs, attempts, usage totals and operational health.
+models used by project and task invocations, individual workflow runs,
+attempts, usage totals and operational health. Input/output token counts and
+Copilot premium-request units are separate runtime-reported metrics; the
+dashboard never multiplies them or converts them to currency.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, answers `GET`
 only, and requires a token generated for that process. The tokenized URL is

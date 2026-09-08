@@ -411,6 +411,12 @@ APP_JS = """\
       var modelsHeading = document.createElement("h4");
       modelsHeading.textContent = "Models used";
       card.appendChild(modelsHeading);
+      var modelsHelp = document.createElement("p");
+      modelsHelp.className = "project-meta";
+      modelsHelp.textContent =
+        "Token counts and Copilot premium-request units are separate reported metrics; " +
+        "they are not multiplied.";
+      card.appendChild(modelsHelp);
       var models = Array.isArray(project.models) ? project.models : [];
       if (models.length === 0) {
         var emptyModels = document.createElement("p");
@@ -426,9 +432,9 @@ APP_JS = """\
           "Model",
           "Purpose",
           "Success",
-          "Input tokens",
-          "Output tokens",
-          "Premium cost"
+          "Reported input tokens",
+          "Reported output tokens",
+          "Premium-request units"
         ].forEach(function (label) {
           var th = document.createElement("th");
           th.scope = "col";
