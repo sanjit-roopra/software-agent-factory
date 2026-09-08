@@ -2082,7 +2082,7 @@ class WorkflowController:
                     pull_request_url=run.pull_request_url,
                     repair_attempts_used=self._attempts_used(run, AttemptBudget.CI_REPAIR),
                 )
-            except (GitHubError, OSError) as exc:
+            except (GitPublishError, GitHubError, OSError) as exc:
                 raise self._halt(
                     run, WorkflowState.NEEDS_HUMAN, f"could not observe CI: {exc}"
                 ) from exc

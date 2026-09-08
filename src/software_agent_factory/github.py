@@ -449,6 +449,24 @@ def parse_remote_repository(url: str) -> RepositoryRef:
     return RepositoryRef(host=host, owner=owner, name=name)
 
 
+def parse_remote_repository_for_api(url: str) -> RepositoryRef:
+    """Parse remote identity for an explicit ``gh --repo OWNER/REPO`` value.
+
+    Unlike :func:`parse_remote_repository`, this may read an HTTPS URL carrying
+    credentials because it returns only validated host/owner/name metadata and
+    never returns or logs the credential-bearing URL.
+    """
+    candidate = url.strip()
+    parsed = urlparse(candidate)
+    if parsed.query or parsed.fragment:
+        raise ValueError("remote URL must not carry query parameters or fragments")
+    host = _extract_remote_host(candidate)
+    scp_match = _SCP_LIKE_HOST_PATTERN.match(candidate)
+    path = candidate[scp_match.end() :] if scp_match else parsed.path
+    owner, name = _repository_path_parts(path)
+    return RepositoryRef(host=host, owner=owner, name=name)
+
+
 def parse_pull_request_url(url: str) -> tuple[RepositoryRef, int]:
     """Parse ``https://<host>/<owner>/<name>/pull/<number>`` into its exact
     repository identity and PR number. Raises ``ValueError`` otherwise."""
@@ -627,18 +645,35 @@ class GitPublisher:
             raise UnsafeRemoteError(f"refusing an option-like remote URL {url!r}")
         try:
             reference = parse_remote_repository(url)
+            destination = url
         except ValueError as exc:
-            raise UnsafeRemoteError(
-                f"could not determine an exact repository for remote {self.remote!r} "
-                f"({url!r}): {exc}"
-            ) from exc
+            parsed = urlparse(url)
+            if (
+                parsed.scheme.lower() != "https"
+                or (parsed.username is None and parsed.password is None)
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise UnsafeRemoteError(
+                    f"could not determine an exact repository for remote {self.remote!r}: {exc}"
+                ) from exc
+            try:
+                reference = parse_remote_repository_for_api(url)
+                port = f":{parsed.port}" if parsed.port is not None else ""
+            except (ValueError, TypeError) as credential_error:
+                raise UnsafeRemoteError(
+                    f"could not determine an exact repository for remote {self.remote!r}"
+                ) from credential_error
+            destination = (
+                f"https://{reference.host}{port}/{reference.owner}/{reference.name}.git"
+            )
         allowed = {allowed_host.lower() for allowed_host in self.allowed_hosts}
         if reference.host not in allowed:
             raise UnsafeRemoteError(
                 f"remote {self.remote!r} host {reference.host!r} is not in the allowed hosts "
                 f"{sorted(allowed)}"
             )
-        return RemoteTarget(url=url, reference=reference)
+        return RemoteTarget(url=destination, reference=reference)
 
     def resolve_remote_repository(self, workspace_path: Path) -> RepositoryRef:
         """Read-only, strict ``host`` + ``owner/name`` identity of
@@ -649,6 +684,32 @@ class GitPublisher:
         which must know exactly which repository it is about to merge into.
         """
         return self.resolve_remote_target(workspace_path).reference
+
+    def resolve_remote_repository_for_api(self, workspace_path: Path) -> RepositoryRef:
+        """Resolve host and ``OWNER/REPO`` for explicit GitHub CLI targeting.
+
+        This keeps credentials out of the returned value while allowing common
+        credential-bearing HTTPS remotes in pull-request-only mode.
+        """
+        result = self._run_git(workspace_path, ["remote", "get-url", self.remote])
+        url = result.stdout.strip()
+        if not url:
+            raise UnsafeRemoteError(f"remote {self.remote!r} has no URL configured")
+        if url.startswith("-"):
+            raise UnsafeRemoteError(f"refusing an option-like remote URL {url!r}")
+        try:
+            reference = parse_remote_repository_for_api(url)
+        except ValueError as exc:
+            raise UnsafeRemoteError(
+                f"could not determine a repository for remote {self.remote!r}: {exc}"
+            ) from exc
+        allowed = {allowed_host.lower() for allowed_host in self.allowed_hosts}
+        if reference.host not in allowed:
+            raise UnsafeRemoteError(
+                f"remote {self.remote!r} host {reference.host!r} is not in the allowed hosts "
+                f"{sorted(allowed)}"
+            )
+        return reference
 
     def remote_branch_sha(
         self, workspace_path: Path, branch_name: str, *, destination: str | None = None
@@ -1428,9 +1489,15 @@ class GitHubClient:
     runner: CommandRunner = default_command_runner
     gh_path: str = "gh"
     token: str | None = field(default=None, repr=False)
+    host: str | None = None
 
     def _env(self) -> Mapping[str, str] | None:
-        return {"GH_TOKEN": self.token} if self.token else None
+        values: dict[str, str] = {}
+        if self.token:
+            values["GH_TOKEN"] = self.token
+        if self.host:
+            values["GH_HOST"] = self.host
+        return values or None
 
     def _run(
         self,
@@ -1448,6 +1515,58 @@ class GitHubClient:
         if check and result.returncode != 0:
             raise GitHubCommandError((self.gh_path, *args), result.returncode, result.stderr)
         return result
+
+    def active_host(self, repo_path: Path) -> str:
+        """Resolve and pin the host selected by the current ``gh`` environment."""
+        if self.host is not None:
+            return self.host
+        args = ["auth", "status", "--active", "--json", "hosts"]
+        result = self._run(args, repo_path)
+        payload = self._parse_json(args, result)
+        if not isinstance(payload, dict) or not isinstance(payload.get("hosts"), dict):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                "expected gh auth status to return a hosts object",
+            )
+        hosts = payload["hosts"]
+        configured_host = os.environ.get("GH_HOST", "").strip().lower()
+        host_names = {
+            str(host).strip().lower()
+            for host in hosts
+            if isinstance(host, str) and str(host).strip()
+        }
+        selected = configured_host or (
+            next(iter(host_names)) if len(host_names) == 1 else "github.com"
+        )
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", selected) is None:
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                "gh selected an invalid host",
+            )
+        entries = next(
+            (
+                value
+                for key, value in hosts.items()
+                if isinstance(key, str) and key.casefold() == selected.casefold()
+            ),
+            None,
+        )
+        if not isinstance(entries, list) or not any(
+            isinstance(entry, dict)
+            and entry.get("state") == "success"
+            and isinstance(entry.get("host"), str)
+            and entry["host"].casefold() == selected.casefold()
+            for entry in entries
+        ):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                f"gh host {selected!r} is not authenticated",
+            )
+        self.host = selected
+        return selected
 
     @staticmethod
     def _repo_args(repository: str | None) -> list[str]:
@@ -1923,6 +2042,7 @@ class GitHubClient:
         repo_path: Path,
         pr: str,
         *,
+        repository: str | None = None,
         fetch_logs: bool = True,
         max_log_chars: int = DEFAULT_MAX_LOG_CHARS,
     ) -> CIStatus:
@@ -1932,7 +2052,14 @@ class GitHubClient:
         pending or failing (see ``gh help exit-codes``), so the exit code is
         only treated as an error when no JSON body was produced at all.
         """
-        args = ["pr", "checks", pr, "--json", "name,bucket,state,link,description"]
+        args = [
+            "pr",
+            "checks",
+            pr,
+            *self._repo_args(repository),
+            "--json",
+            "name,bucket,state,link,description",
+        ]
         result = self._run(args, repo_path, check=False)
         stdout = result.stdout.strip()
         if not stdout:
@@ -2006,6 +2133,7 @@ class GitHubClient:
         repo_path: Path,
         pr: str,
         *,
+        repository: str | None = None,
         interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         max_polls: int = DEFAULT_MAX_POLLS,
         max_seconds: float | None = None,
@@ -2027,7 +2155,11 @@ class GitHubClient:
         last_status: CIStatus | None = None
         for attempt in range(1, max_polls + 1):
             last_status = self.get_pr_checks(
-                repo_path, pr, fetch_logs=fetch_logs, max_log_chars=max_log_chars
+                repo_path,
+                pr,
+                repository=repository,
+                fetch_logs=fetch_logs,
+                max_log_chars=max_log_chars,
             )
             if last_status.overall is not CheckStatus.PENDING:
                 return last_status

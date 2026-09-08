@@ -99,6 +99,7 @@ class FakeGitHub:
 
     views: list[dict[str, object]] = field(default_factory=list)
     remote_url: str = "https://github.com/acme/repo.git"
+    active_host: str = "github.com"
     merge_returncode: int = 0
     merge_stderr: str = ""
     merge_response: dict[str, object] | None = None
@@ -140,6 +141,22 @@ class FakeGitHub:
             if tail[:2] == ["remote", "get-url"]:
                 return FakeCompleted(stdout=f"{self.remote_url}\n")
             return FakeCompleted()
+        if argv[1:3] == ["auth", "status"]:
+            return FakeCompleted(
+                stdout=json.dumps(
+                    {
+                        "hosts": {
+                            self.active_host: [
+                                {
+                                    "active": True,
+                                    "host": self.active_host,
+                                    "state": "success",
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
         if argv[1:3] == ["pr", "view"]:
             if self.view_error:
                 return FakeCompleted(returncode=1, stderr="gh: not found")
@@ -197,11 +214,17 @@ def merge_config(
     repositories: list[str] | None = None,
     required_checks: list[str] | None = None,
     base_branch: str = "main",
+    allowed_hosts: list[str] | None = None,
 ) -> FactoryConfig:
     payload = build_config(
         tmp_path / "data",
         verify=["true"],
-        pull_request={"enabled": True, "draft": False, "base_branch": base_branch},
+        pull_request={
+            "enabled": True,
+            "draft": False,
+            "base_branch": base_branch,
+            "allowed_hosts": allowed_hosts or ["github.com"],
+        },
         ci={"enabled": True},
     ).model_dump(mode="json")
     payload["merge"] = {
@@ -257,7 +280,45 @@ def test_merge_and_policy_calls_pin_the_requested_host(tmp_path: Path) -> None:
         if args[1] == "api":
             assert args[args.index("--hostname") + 1] == "github.com"
         if args[1:3] == ["pr", "view"]:
-            assert args[args.index("--repo") + 1] == "github.com/acme/repo"
+            assert args[args.index("--repo") + 1] == "acme/repo"
+
+
+def test_merge_allows_an_ssh_alias_with_the_authenticated_gh_host(tmp_path: Path) -> None:
+    runner = FakeGitHub(
+        views=[pr_payload(), pr_payload()],
+        view_after_merge=pr_payload(state="MERGED", merge_commit=MERGE_COMMIT),
+        remote_url="git@github.com-company:acme/repo.git",
+    )
+    merger = build_merger(
+        tmp_path,
+        runner,
+        allowed_hosts=["github.com", "github.com-company"],
+    )
+
+    result = do_merge(
+        merger,
+        tmp_path,
+        expected_repository="acme/repo",
+        expected_host="github.com-company",
+    )
+
+    assert result.commit_sha == MERGE_COMMIT
+    for args in runner.gh_commands():
+        if args[1:3] == ["pr", "view"]:
+            assert args[args.index("--repo") + 1] == "acme/repo"
+
+
+def test_merge_rejects_a_pull_request_outside_the_active_gh_host(tmp_path: Path) -> None:
+    runner = FakeGitHub(active_host="github.enterprise.example")
+    merger = build_merger(
+        tmp_path,
+        runner,
+        allowed_hosts=["github.com", "github.enterprise.example"],
+    )
+
+    with pytest.raises(MergeNotAllowedError, match="active authenticated gh host"):
+        do_merge(merger, tmp_path)
+    assert not any(argv[1:3] == ["pr", "view"] for argv in runner.gh_commands())
 
 
 @pytest.mark.parametrize(
@@ -941,7 +1002,7 @@ def test_every_pull_request_read_names_the_repository_explicitly(tmp_path: Path)
     assert views
     for argv in views:
         assert "--repo" in argv
-        assert argv[argv.index("--repo") + 1] == "github.com/acme/repo"
+        assert argv[argv.index("--repo") + 1] == "acme/repo"
 
 
 def test_a_pull_request_still_awaiting_review_is_never_merged(tmp_path: Path) -> None:

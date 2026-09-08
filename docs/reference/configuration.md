@@ -334,7 +334,10 @@ pull_request:
 | `draft` | bool | `true` | Open the PR as a draft. |
 | `allowed_hosts` | list of hosts | `["github.com"]` | The remote's host must be in this list. |
 
-Requires `gh` on `PATH`. Never force-pushes. Merging is controlled separately.
+Requires `gh` on `PATH`. The factory passes `OWNER/REPO` to `gh`, which uses
+the currently authenticated account and host configuration. Git transport may
+use a separately allowlisted SSH host alias. Never force-pushes. Merging is
+controlled separately.
 
 ## ci
 

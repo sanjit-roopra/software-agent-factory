@@ -6,7 +6,7 @@ from factory_testing import build_config, git, work_item
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.delivery import DeliveryTarget
-from software_agent_factory.github import GitHubError
+from software_agent_factory.github import GitHubError, UnexpectedRepositoryError
 from software_agent_factory.models import (
     AgentRole,
     AttemptBudget,
@@ -59,16 +59,25 @@ class LocalPublisher:
 
 
 class Observer:
-    def __init__(self, reports: list[CIReport] | None = None, *, crash: bool = False) -> None:
+    def __init__(
+        self,
+        reports: list[CIReport] | None = None,
+        *,
+        crash: bool = False,
+        error: Exception | None = None,
+    ) -> None:
         self.reports = list(reports or [CIReport(overall="PASS")])
         self.calls = 0
         self.crash = crash
+        self.error = error
 
     def observe(self, **kwargs) -> CIReport:
         self.calls += 1
         if self.crash:
             self.crash = False
             raise KeyboardInterrupt
+        if self.error is not None:
+            raise self.error
         report = self.reports[min(self.calls - 1, len(self.reports) - 1)]
         return report.model_copy(update={"repair_attempts_used": kwargs["repair_attempts_used"]})
 
@@ -324,6 +333,16 @@ def test_failed_ci_never_merges(tmp_path: Path, source_repo: Path, report: CIRep
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert merger.calls == []
     assert sum(a.budget is AttemptBudget.CI_REPAIR for a in run.attempt_records) <= 2
+
+
+def test_ci_identity_failure_halts_cleanly(tmp_path: Path, source_repo: Path) -> None:
+    observer = Observer(error=UnexpectedRepositoryError("persisted PR host changed"))
+    controller, _ = _controller(_config(tmp_path), observer=observer)
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.failure_reason == "could not observe CI: persisted PR host changed"
 
 
 @pytest.mark.parametrize("boundary", ["publish", "observe", "merge"])

@@ -271,10 +271,8 @@ class PullRequestMerger:
         """Read the pull request naming the repository explicitly, so the
         answer can never come from whatever repository the working directory
         happens to point at."""
-        reference, _ = parse_pull_request_url(pull_request_url)
-        return self._client.get_pull_request(
-            repo_path, pull_request_url, repository=f"{reference.host}/{repository}"
-        )
+        _, number = parse_pull_request_url(pull_request_url)
+        return self._client.get_pull_request(repo_path, str(number), repository=repository)
 
     def _validate_server_enforcement(
         self, repo_path: Path, repository: str, base_branch: str, *, hostname: str
@@ -332,6 +330,12 @@ class PullRequestMerger:
             reference, _number = parse_pull_request_url(pull_request_url)
         except ValueError as exc:
             raise MergeNotAllowedError(str(exc)) from exc
+        active_host = self._client.active_host(repo_path)
+        if reference.host.casefold() != active_host.casefold():
+            raise MergeNotAllowedError(
+                f"pull request host {reference.host!r} is not the active authenticated gh "
+                f"host {active_host!r}"
+            )
         repository = self._authorized_repository(reference)
         if (
             expected_repository is not None
@@ -340,11 +344,6 @@ class PullRequestMerger:
             raise MergeNotAllowedError(
                 f"pull request repository {repository!r} is not the authorized delivery "
                 f"repository {expected_repository!r}"
-            )
-        if expected_host is not None and reference.host.casefold() != expected_host.casefold():
-            raise MergeNotAllowedError(
-                f"pull request host {reference.host!r} is not the authorized delivery host "
-                f"{expected_host!r}"
             )
         local_reference = self._publisher.resolve_remote_repository(repo_path)
         if (
@@ -356,9 +355,7 @@ class PullRequestMerger:
                 f"{expected_host!r}"
             )
         local = self._authorized_repository(local_reference)
-        if local.casefold() != repository.casefold() or not local_reference.same_repository(
-            reference
-        ):
+        if local.casefold() != repository.casefold():
             raise MergeNotAllowedError(
                 f"pull request repository {repository!r} does not match the local remote "
                 f"repository {local!r}"
