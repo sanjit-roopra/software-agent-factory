@@ -1621,7 +1621,11 @@ class WorkflowController:
 
         repair_context = RepairContext(
             trigger=AttemptTrigger.SCOPE,
-            summary="The previous change drifted outside the planned scope.",
+            summary=(
+                "The existing implementation passed deterministic verification, but its "
+                "execution-plan scope metadata does not describe the verified diff. Revise "
+                "metadata only; do not request implementation changes."
+            ),
             failures=[finding.message for finding in scope.findings][:MAX_REPAIR_FAILURES],
             log_excerpt=None,
         )

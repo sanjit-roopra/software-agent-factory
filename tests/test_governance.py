@@ -336,15 +336,17 @@ def test_scope_drift_policy_replans_when_all_files_miss_planned_scope() -> None:
     assert [finding.category for finding in assessment.findings] == ["unexpected-module"]
 
 
-def test_scope_drift_policy_replans_for_excessive_file_count_even_at_high_risk() -> None:
+def test_scope_drift_policy_treats_plan_file_count_as_advisory() -> None:
     assessment = ScopeDriftPolicy().assess(
         _plan(modules=["src"], estimated_files_max=1),
         changed_files=["src/app.py", "src/utils.py"],
         risk=Risk.R3,
     )
 
-    assert assessment.decision is ScopeDecision.REPLAN
-    assert [finding.category for finding in assessment.findings] == ["excessive-file-count"]
+    assert assessment.decision is ScopeDecision.CONTINUE
+    assert assessment.findings == ()
+    assert assessment.changed_file_count == 2
+    assert assessment.estimated_files_max == 1
 
 
 def test_scope_drift_policy_escalates_unapproved_dependency_changes_at_lower_risk() -> None:
@@ -619,7 +621,7 @@ def test_scope_drift_exemptions_do_not_suppress_other_findings() -> None:
     assert assessment.approved_sensitive_files == ("pyproject.toml",)
 
 
-def test_scope_drift_max_counts_still_work_with_approved_files() -> None:
+def test_scope_drift_plan_file_count_is_advisory_with_approved_files() -> None:
     policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml", "uv.lock"])
 
     assessment = policy.assess(
@@ -632,8 +634,10 @@ def test_scope_drift_max_counts_still_work_with_approved_files() -> None:
         risk=Risk.R1,
     )
 
-    assert assessment.decision is ScopeDecision.REPLAN
-    assert [f.category for f in assessment.findings] == ["excessive-file-count"]
+    assert assessment.decision is ScopeDecision.CONTINUE
+    assert assessment.findings == ()
+    assert assessment.changed_file_count == 2
+    assert assessment.estimated_files_max == 1
     assert assessment.approved_sensitive_files == ("pyproject.toml", "uv.lock")
 
 

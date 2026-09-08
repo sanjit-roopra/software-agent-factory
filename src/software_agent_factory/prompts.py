@@ -257,7 +257,16 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "glob patterns there. "
             "For a project-linked work item, constraints describing sibling tasks are hard "
             "scope boundaries: do not plan work assigned to those tasks, including during a "
-            "scope-drift replan."
+            "scope-drift replan. When Replan context, Changed files so far, and Current diff "
+            "are present, deterministic verification has already passed and this is a "
+            "metadata-only replan of the existing implementation. Describe the verified diff "
+            "as it exists; do not propose deleting, consolidating, or otherwise changing files. "
+            "Ensure expected_scope.modules covers existing changed paths only when they remain "
+            "within this work item's requirements and hard sibling-task boundaries. Never widen "
+            "scope to absorb outcomes assigned to a sibling task; leave those paths outside the "
+            "expected scope so deterministic reassessment can stop the run. File-count estimates "
+            "are advisory; the controller separately enforces its configured hard repository "
+            "limit."
         )
     if role == "IMPLEMENTER":
         return (

@@ -128,7 +128,6 @@ It flags:
 | Finding | Trigger |
 | --- | --- |
 | `unexpected-module` | Files outside the plan's expected top-level modules. |
-| `excessive-file-count` | More files than the plan's estimated maximum. |
 | `dependency-change` | A dependency manifest or lockfile changed. |
 | `migration-change` | A path under a migrations directory changed. |
 | `ci-change` | A CI workflow file changed. |
@@ -137,10 +136,13 @@ It flags:
 The decision:
 
 - No findings: continue.
-- Findings, and risk is `R0` or `R1`: replan, up to `scope_drift.max_replans`
-  (default `1`).
-- Sensitive findings (dependency, migration, CI, infrastructure), and risk is
-  `R2` or `R3`: escalate to `NEEDS_HUMAN`.
+- Non-sensitive findings: replan, up to `scope_drift.max_replans` (default
+  `1`).
+- Sensitive findings (dependency, migration, CI, infrastructure): escalate to
+  `NEEDS_HUMAN`.
+
+The plan's estimated file range is advisory. The separate
+`repository.max_changed_files` setting is the hard controller-owned ceiling.
 
 The check runs again at the pull request boundary, so a later attempt cannot
 sneak a widened change past it.

@@ -511,16 +511,6 @@ class ScopeDriftPolicy:
                 )
 
         max_files = execution_plan.expected_scope.estimated_files_max
-        if len(normalized_files) > max_files:
-            findings.append(
-                ScopeFinding(
-                    category="excessive-file-count",
-                    message=(
-                        f"Changed {len(normalized_files)} files; plan expected at most {max_files}."
-                    ),
-                    paths=normalized_files,
-                )
-            )
 
         dependency_files = tuple(
             path for path in normalized_files if PurePosixPath(path).name in _DEPENDENCY_FILES

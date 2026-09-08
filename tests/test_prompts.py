@@ -182,6 +182,30 @@ def test_standard_planner_prompt_requires_smallest_implementation() -> None:
     assert '"estimated_files_max"' in prompt
 
 
+def test_scope_replan_prompt_treats_verified_diff_as_fixed() -> None:
+    prompt = build_prompt(
+        _request(
+            AgentRole.PLANNER,
+            specification=_specification(),
+            diff=DIFF,
+            changed_files=["src/app.py", "tests/test_app.py"],
+            repair_context=RepairContext(
+                trigger=AttemptTrigger.SCOPE,
+                summary="The verified diff exceeded the planned file count.",
+                failures=["Changed 2 files; plan expected at most 1."],
+            ),
+        )
+    )
+
+    assert "metadata-only replan of the existing implementation" in prompt
+    assert "do not propose deleting, consolidating, or otherwise changing files" in prompt
+    assert "File-count estimates are advisory" in prompt
+    assert "configured hard repository limit" in prompt
+    assert "Never widen scope to absorb outcomes assigned to a sibling task" in prompt
+    assert "src/app.py" in prompt
+    assert "tests/test_app.py" in prompt
+
+
 @pytest.mark.parametrize(
     "role",
     [
