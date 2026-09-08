@@ -104,6 +104,52 @@ USAGE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+PROJECT_FIELDS: frozenset[str] = frozenset(
+    {
+        "project_id",
+        "state",
+        "delivery_mode",
+        "delivery_repository",
+        "delivery_base_branch",
+        "integration_branch",
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "task_count",
+    }
+)
+
+PROJECT_TASK_FIELDS: frozenset[str] = frozenset(
+    {
+        "task_id",
+        "title",
+        "state",
+        "run_id",
+        "issue_url",
+        "pull_request_url",
+        "commit_sha",
+        "merge_commit_sha",
+    }
+)
+
+PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
+    {
+        "scope",
+        "task_id",
+        "invocation_number",
+        "role",
+        "purpose",
+        "model",
+        "context_tier",
+        "success",
+        "started_at",
+        "completed_at",
+        "usage",
+    }
+)
+
+NANO_AIU_PER_USD = 100_000_000_000
+
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
@@ -133,6 +179,9 @@ def sanitize_usage(raw: Any) -> dict[str, Any]:
     for key, value in _allowlist(data, USAGE_FIELDS).items():
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
             sanitized[key] = value
+    total_nano_aiu = sanitized.get("total_nano_aiu")
+    if total_nano_aiu is not None:
+        sanitized["usage_value_usd"] = total_nano_aiu / NANO_AIU_PER_USD
     return sanitized
 
 
@@ -166,4 +215,28 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     invocations = data.get("invocations")
     if isinstance(invocations, list):
         sanitized["invocations"] = [sanitize_invocation(item) for item in invocations]
+    return sanitized
+
+
+def sanitize_project(raw: Any) -> dict[str, Any]:
+    """Reduce one project to state, task and delivery identifiers only."""
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        raise TypeError("project summary must serialize to a JSON object")
+    sanitized = _allowlist(data, PROJECT_FIELDS)
+    tasks = data.get("tasks")
+    if isinstance(tasks, list):
+        sanitized["tasks"] = [
+            _allowlist(task, PROJECT_TASK_FIELDS) for task in tasks if isinstance(task, dict)
+        ]
+    models = data.get("models")
+    if isinstance(models, list):
+        sanitized["models"] = []
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_data = _allowlist(model, PROJECT_MODEL_FIELDS)
+            if "usage" in model_data:
+                model_data["usage"] = sanitize_usage(model_data["usage"])
+            sanitized["models"].append(model_data)
     return sanitized

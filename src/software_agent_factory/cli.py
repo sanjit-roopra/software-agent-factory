@@ -892,12 +892,85 @@ def dashboard_command(
             max_scanned_runs=max_scanned_runs,
         )
 
+    def project_provider() -> object:
+        projects_dir = factory_config.data_dir / "projects"
+        if not projects_dir.is_dir():
+            return {"projects": []}
+        execution_paths = sorted(
+            projects_dir.glob("*/execution.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:max_scanned_runs]
+        project_store = FileProjectStore(factory_config.data_dir)
+        projects: list[dict[str, object]] = []
+        for execution_path in execution_paths:
+            project_id = execution_path.parent.name
+            try:
+                execution = project_store.load_execution(project_id)
+                try:
+                    plan = project_store.load_plan(project_id)
+                    titles = {task.id: task.title for task in plan.tasks}
+                except (FileNotFoundError, OSError, ValueError):
+                    titles = {}
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            execution_data = execution.model_dump(mode="json")
+            tasks = [
+                {
+                    **task.model_dump(mode="json"),
+                    "title": titles.get(task.task_id),
+                }
+                for task in execution.tasks
+            ]
+            models: list[dict[str, object]] = []
+            for invocation in execution.invocation_records:
+                models.append(
+                    {
+                        **invocation.model_dump(mode="json"),
+                        "scope": "project",
+                        "task_id": None,
+                    }
+                )
+            for task in execution.tasks:
+                if task.run_id is None:
+                    continue
+                try:
+                    run = store.load_run(task.run_id)
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+                for invocation in run.invocation_records:
+                    models.append(
+                        {
+                            **invocation.model_dump(mode="json"),
+                            "scope": f"task {task.task_id}",
+                            "task_id": task.task_id,
+                        }
+                    )
+            projects.append(
+                {
+                    "project_id": execution_data["project_id"],
+                    "state": execution_data["state"],
+                    "delivery_mode": execution_data["delivery_mode"],
+                    "delivery_repository": execution_data["delivery_repository"],
+                    "delivery_base_branch": execution_data["delivery_base_branch"],
+                    "integration_branch": execution_data["integration_branch"],
+                    "created_at": execution_data["created_at"],
+                    "updated_at": execution_data["updated_at"],
+                    "completed_at": execution_data["completed_at"],
+                    "task_count": len(tasks),
+                    "tasks": tasks,
+                    "models": models,
+                }
+            )
+        return {"projects": projects}
+
     try:
         server = create_server(
             DashboardConfig(
                 snapshot_provider=snapshot_provider,
                 run_detail_provider=run_detail_provider,
                 health_provider=health_provider,
+                project_provider=project_provider,
                 host=LOOPBACK_HOST,
                 port=port,
             )

@@ -82,6 +82,12 @@ class HealthProvider(Protocol):
     def __call__(self) -> Any: ...
 
 
+class ProjectProvider(Protocol):
+    """Optional provider for bounded, dashboard-safe project summaries."""
+
+    def __call__(self) -> Any: ...
+
+
 #: The real ``build_monitoring_snapshot`` (``observability.py``) rejects
 #: ``limit <= 0``, so ``/api/summary`` -- which only needs counts/health, not
 #: the run page -- must still request at least one row rather than zero.

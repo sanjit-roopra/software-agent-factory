@@ -15,7 +15,7 @@ from http.server import ThreadingHTTPServer
 
 from .handler import DashboardRequestHandler
 from .security import generate_token, validate_bind_host
-from .snapshot import HealthProvider, RunDetailProvider, SnapshotProvider
+from .snapshot import HealthProvider, ProjectProvider, RunDetailProvider, SnapshotProvider
 
 #: Binding to port 0 asks the OS for an ephemeral free port, which is the
 #: right default for both tests (no port collisions) and casual local use
@@ -41,6 +41,7 @@ class DashboardConfig:
     snapshot_provider: SnapshotProvider
     run_detail_provider: RunDetailProvider
     health_provider: HealthProvider | None = None
+    project_provider: ProjectProvider | None = None
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     token: str | None = None
@@ -58,6 +59,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.snapshot_provider: SnapshotProvider = config.snapshot_provider
         self.run_detail_provider: RunDetailProvider = config.run_detail_provider
         self.health_provider: HealthProvider | None = config.health_provider
+        self.project_provider: ProjectProvider | None = config.project_provider
         super().__init__((bind_host, config.port), DashboardRequestHandler)
 
     @property

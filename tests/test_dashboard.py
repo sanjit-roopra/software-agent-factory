@@ -33,6 +33,9 @@ from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.sanitize import (
     ATTEMPT_FIELDS,
     INVOCATION_FIELDS,
+    PROJECT_FIELDS,
+    PROJECT_MODEL_FIELDS,
+    PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
     sanitize_usage,
@@ -156,6 +159,57 @@ def fake_health_provider() -> dict[str, Any]:
     }
 
 
+def fake_project_provider() -> dict[str, Any]:
+    return {
+        "projects": [
+            {
+                "project_id": "project-001",
+                "state": "RUNNING",
+                "delivery_mode": "merge",
+                "delivery_repository": "acme/example",
+                "delivery_base_branch": "main",
+                "integration_branch": "factory/project-project-001",
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T01:00:00+00:00",
+                "completed_at": None,
+                "task_count": 1,
+                "tasks": [
+                    {
+                        "task_id": 1,
+                        "title": "Build feature",
+                        "state": "RUNNING",
+                        "run_id": "run-001",
+                        "issue_url": None,
+                        "pull_request_url": "https://github.com/acme/example/pull/1",
+                        "commit_sha": None,
+                        "merge_commit_sha": None,
+                    }
+                ],
+                "models": [
+                    {
+                        "scope": "task 1",
+                        "task_id": 1,
+                        "invocation_number": 1,
+                        "role": "IMPLEMENTER",
+                        "purpose": "STANDARD",
+                        "model": "fake-model",
+                        "context_tier": "default",
+                        "success": True,
+                        "started_at": "2024-01-01T00:00:00+00:00",
+                        "completed_at": "2024-01-01T00:05:00+00:00",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_nano_aiu": 38_483_200_000,
+                            "total_premium_request_cost": 1.0,
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
 def fake_run_detail_provider(run_id: str) -> dict[str, Any] | None:
     return FIXTURE_DETAILS.get(run_id)
 
@@ -170,6 +224,10 @@ def failing_detail_provider(run_id: str) -> dict[str, Any] | None:
 
 def failing_health_provider() -> dict[str, Any]:
     raise RuntimeError("boom: simulated health backend failure")
+
+
+def failing_project_provider() -> dict[str, Any]:
+    raise RuntimeError("boom: simulated project backend failure")
 
 
 @dataclass
@@ -226,6 +284,7 @@ def running_server() -> Iterator[RunningServer]:
         snapshot_provider=fake_snapshot_provider,
         run_detail_provider=fake_run_detail_provider,
         health_provider=fake_health_provider,
+        project_provider=fake_project_provider,
     )
     running = _start(config)
     try:
@@ -615,6 +674,134 @@ def test_runs_pagination_defaults(running_server: RunningServer) -> None:
     assert payload["page"]["offset"] == 0
     assert payload["page"]["total"] == len(FIXTURE_RUNS)
     assert len(payload["runs"]) == len(FIXTURE_RUNS)
+
+
+def test_projects_show_project_and_task_progress(running_server: RunningServer) -> None:
+    response = running_server.request(
+        "GET", "/api/projects", headers=running_server.authed_headers()
+    )
+    assert response.status == 200
+    payload = _body_json(response)
+    project = payload["projects"][0]
+    assert set(project) <= PROJECT_FIELDS | {"tasks", "models"}
+    assert project["project_id"] == "project-001"
+    assert project["state"] == "RUNNING"
+    assert set(project["tasks"][0]) <= PROJECT_TASK_FIELDS
+    assert project["tasks"][0]["pull_request_url"].endswith("/pull/1")
+    assert set(project["models"][0]) <= PROJECT_MODEL_FIELDS
+    assert project["models"][0]["model"] == "fake-model"
+    assert project["models"][0]["usage"]["input_tokens"] == 100
+    assert project["models"][0]["usage"]["usage_value_usd"] == pytest.approx(0.384832)
+
+
+def test_projects_are_empty_when_provider_is_not_configured() -> None:
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/projects", headers=running.authed_headers())
+        assert response.status == 200
+        assert _body_json(response) == {"projects": []}
+    finally:
+        _stop(running)
+
+
+def test_project_provider_failure_returns_503_without_traceback() -> None:
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+        project_provider=failing_project_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/projects", headers=running.authed_headers())
+        assert response.status == 503
+        body_text = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
+        assert "Traceback" not in body_text
+        assert "boom" not in body_text
+    finally:
+        _stop(running)
+
+
+def test_project_response_drops_unrendered_provider_fields() -> None:
+    def adversarial_project_provider() -> dict[str, Any]:
+        project = fake_project_provider()["projects"][0]
+        return {
+            "projects": [
+                {
+                    **project,
+                    "prompt": SECRET_MARKER,
+                    "failure_reason": SECRET_MARKER,
+                    "models": [
+                        {
+                            "scope": "project",
+                            "model": "fake-model",
+                            "prompt": SECRET_MARKER,
+                            "failure_reason": SECRET_MARKER,
+                            "usage": {
+                                "input_tokens": 100,
+                                "api_key": SECRET_MARKER,
+                            },
+                        }
+                    ],
+                    "tasks": [
+                        {
+                            **project["tasks"][0],
+                            "description": SECRET_MARKER,
+                            "failure_reason": SECRET_MARKER,
+                        }
+                    ],
+                }
+            ]
+        }
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+        project_provider=adversarial_project_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/projects", headers=running.authed_headers())
+        assert response.status == 200
+        raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
+        assert SECRET_MARKER not in raw_body
+    finally:
+        _stop(running)
+
+
+@pytest.mark.parametrize(
+    "unsafe_tasks",
+    [{"secret": "PROJECT-SECRET-MARKER"}, "PROJECT-SECRET-MARKER", 42],
+)
+def test_project_response_drops_non_list_tasks(unsafe_tasks: object) -> None:
+    def adversarial_project_provider() -> dict[str, Any]:
+        return {"projects": [{"project_id": "project-001", "tasks": unsafe_tasks}]}
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+        project_provider=adversarial_project_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/projects", headers=running.authed_headers())
+        assert response.status == 200
+        raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
+        assert "PROJECT-SECRET-MARKER" not in raw_body
+        assert "tasks" not in _body_json(response)["projects"][0]
+    finally:
+        _stop(running)
 
 
 def test_runs_pagination_hard_cap(running_server: RunningServer) -> None:
@@ -1084,6 +1271,23 @@ def test_usage_sanitizer_keeps_only_non_negative_numeric_fields() -> None:
     assert sanitized == {
         "reasoning_tokens": 5,
     }
+
+
+def test_usage_sanitizer_converts_nano_aiu_to_usd_value() -> None:
+    sanitized = sanitize_usage({"total_nano_aiu": 38_483_200_000})
+
+    assert sanitized == {
+        "total_nano_aiu": 38_483_200_000,
+        "usage_value_usd": pytest.approx(0.384832),
+    }
+
+
+def test_dashboard_explains_and_renders_usage_value() -> None:
+    js = dashboard_assets.APP_JS
+
+    assert "1 AI credit = $0.01" in js
+    assert "Your invoice charge may be lower or zero" in js
+    assert "AI usage value (USD)" in js
 
 
 # --------------------------------------------------------------------------

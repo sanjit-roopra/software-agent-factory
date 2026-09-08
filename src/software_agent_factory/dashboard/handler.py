@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import assets
-from .sanitize import sanitize_run_detail, sanitize_run_summary
+from .sanitize import sanitize_project, sanitize_run_detail, sanitize_run_summary
 from .security import (
     TOKEN_HEADER,
     TOKEN_QUERY_PARAM,
@@ -187,6 +187,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runs":
             self._serve_runs(query, send_body)
             return
+        if path == "/api/projects":
+            self._serve_projects(send_body)
+            return
         detail_match = _RUN_DETAIL_PATTERN.match(path)
         if detail_match:
             self._serve_run_detail(detail_match.group(1), send_body)
@@ -282,6 +285,29 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         page["offset"] = offset
         page["returned"] = len(runs)
         self._respond_json(HTTPStatus.OK, {"runs": runs, "page": page}, send_body)
+
+    def _serve_projects(self, send_body: bool) -> None:
+        provider = self.server.project_provider
+        if provider is None:
+            self._respond_json(HTTPStatus.OK, {"projects": []}, send_body)
+            return
+        try:
+            payload = to_json_safe(provider())
+            raw_projects = payload.get("projects", []) if isinstance(payload, dict) else []
+            projects = (
+                [sanitize_project(project) for project in raw_projects]
+                if isinstance(raw_projects, list)
+                else []
+            )
+        except Exception:  # noqa: BLE001 - provider failures are degraded, not fatal
+            _logger.exception("Project provider returned unsanitizable data")
+            self._respond_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "project snapshot unavailable"},
+                send_body,
+            )
+            return
+        self._respond_json(HTTPStatus.OK, {"projects": projects}, send_body)
 
     def _serve_run_detail(self, raw_run_id: str, send_body: bool) -> None:
         if not is_valid_run_id(raw_run_id):
