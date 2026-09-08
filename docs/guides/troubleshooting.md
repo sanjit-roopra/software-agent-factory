@@ -85,9 +85,9 @@ per command. Raise it, or make the command less chatty.
 
 ## The change touched too much
 
-**`excessive-file-count`.** The change exceeded the plan's estimate. The run
-replans, up to `scope_drift.max_replans`. If this happens constantly, the work
-item is probably too big — split it.
+**The plan underestimated the file count.** Plan estimates are advisory and do
+not stop the run. Review the diff and independent review evidence to determine
+whether the task remained coherent.
 
 **`max_changed_files` exceeded.** A hard ceiling, not a replan. Either the work
 is too large or the implementer went wrong.

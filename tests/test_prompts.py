@@ -201,6 +201,7 @@ def test_scope_replan_prompt_treats_verified_diff_as_fixed() -> None:
     assert "do not propose deleting, consolidating, or otherwise changing files" in prompt
     assert "File-count estimates are advisory" in prompt
     assert "configured hard repository limit" in prompt
+    assert "Never widen scope to absorb outcomes assigned to a sibling task" in prompt
     assert "src/app.py" in prompt
     assert "tests/test_app.py" in prompt
 
