@@ -132,6 +132,22 @@ PROJECT_TASK_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
+    {
+        "scope",
+        "task_id",
+        "invocation_number",
+        "role",
+        "purpose",
+        "model",
+        "context_tier",
+        "success",
+        "started_at",
+        "completed_at",
+        "usage",
+    }
+)
+
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
@@ -208,4 +224,14 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
         sanitized["tasks"] = [
             _allowlist(task, PROJECT_TASK_FIELDS) for task in tasks if isinstance(task, dict)
         ]
+    models = data.get("models")
+    if isinstance(models, list):
+        sanitized["models"] = []
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_data = _allowlist(model, PROJECT_MODEL_FIELDS)
+            if "usage" in model_data:
+                model_data["usage"] = sanitize_usage(model_data["usage"])
+            sanitized["models"].append(model_data)
     return sanitized

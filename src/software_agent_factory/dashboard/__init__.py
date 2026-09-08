@@ -17,6 +17,7 @@ from .handler import DashboardRequestHandler
 from .sanitize import (
     ATTEMPT_FIELDS,
     PROJECT_FIELDS,
+    PROJECT_MODEL_FIELDS,
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
@@ -56,6 +57,7 @@ __all__ = [
     "InvalidBindHostError",
     "LOOPBACK_HOST",
     "PROJECT_FIELDS",
+    "PROJECT_MODEL_FIELDS",
     "PROJECT_TASK_FIELDS",
     "ProjectProvider",
     "RUN_DETAIL_FIELDS",

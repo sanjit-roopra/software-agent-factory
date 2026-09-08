@@ -922,6 +922,30 @@ def dashboard_command(
                 }
                 for task in execution.tasks
             ]
+            models: list[dict[str, object]] = []
+            for invocation in execution.invocation_records:
+                models.append(
+                    {
+                        **invocation.model_dump(mode="json"),
+                        "scope": "project",
+                        "task_id": None,
+                    }
+                )
+            for task in execution.tasks:
+                if task.run_id is None:
+                    continue
+                try:
+                    run = store.load_run(task.run_id)
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+                for invocation in run.invocation_records:
+                    models.append(
+                        {
+                            **invocation.model_dump(mode="json"),
+                            "scope": f"task {task.task_id}",
+                            "task_id": task.task_id,
+                        }
+                    )
             projects.append(
                 {
                     "project_id": execution_data["project_id"],
@@ -935,6 +959,7 @@ def dashboard_command(
                     "completed_at": execution_data["completed_at"],
                     "task_count": len(tasks),
                     "tasks": tasks,
+                    "models": models,
                 }
             )
         return {"projects": projects}

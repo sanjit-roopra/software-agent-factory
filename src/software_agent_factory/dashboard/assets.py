@@ -407,6 +407,53 @@ APP_JS = """\
       });
       table.appendChild(body);
       card.appendChild(table);
+
+      var modelsHeading = document.createElement("h4");
+      modelsHeading.textContent = "Models used";
+      card.appendChild(modelsHeading);
+      var models = Array.isArray(project.models) ? project.models : [];
+      if (models.length === 0) {
+        var emptyModels = document.createElement("p");
+        emptyModels.textContent = "No model invocations yet.";
+        card.appendChild(emptyModels);
+      } else {
+        var modelsTable = document.createElement("table");
+        var modelsHead = document.createElement("thead");
+        var modelsHeadRow = document.createElement("tr");
+        [
+          "Scope",
+          "Role",
+          "Model",
+          "Purpose",
+          "Success",
+          "Input tokens",
+          "Output tokens",
+          "Premium cost"
+        ].forEach(function (label) {
+          var th = document.createElement("th");
+          th.scope = "col";
+          th.textContent = label;
+          modelsHeadRow.appendChild(th);
+        });
+        modelsHead.appendChild(modelsHeadRow);
+        modelsTable.appendChild(modelsHead);
+        var modelsBody = document.createElement("tbody");
+        models.forEach(function (model) {
+          var usage = model.usage || {};
+          var row = document.createElement("tr");
+          textCell(row, model.scope);
+          textCell(row, model.role);
+          textCell(row, model.model);
+          textCell(row, model.purpose);
+          textCell(row, model.success);
+          textCell(row, usage.input_tokens);
+          textCell(row, usage.output_tokens);
+          textCell(row, usage.total_premium_request_cost);
+          modelsBody.appendChild(row);
+        });
+        modelsTable.appendChild(modelsBody);
+        card.appendChild(modelsTable);
+      }
       container.appendChild(card);
     });
   }

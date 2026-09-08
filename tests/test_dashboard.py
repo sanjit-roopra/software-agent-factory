@@ -34,6 +34,7 @@ from software_agent_factory.dashboard.sanitize import (
     ATTEMPT_FIELDS,
     INVOCATION_FIELDS,
     PROJECT_FIELDS,
+    PROJECT_MODEL_FIELDS,
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
@@ -182,6 +183,25 @@ def fake_project_provider() -> dict[str, Any]:
                         "pull_request_url": "https://github.com/acme/example/pull/1",
                         "commit_sha": None,
                         "merge_commit_sha": None,
+                    }
+                ],
+                "models": [
+                    {
+                        "scope": "task 1",
+                        "task_id": 1,
+                        "invocation_number": 1,
+                        "role": "IMPLEMENTER",
+                        "purpose": "STANDARD",
+                        "model": "fake-model",
+                        "context_tier": "default",
+                        "success": True,
+                        "started_at": "2024-01-01T00:00:00+00:00",
+                        "completed_at": "2024-01-01T00:05:00+00:00",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_premium_request_cost": 1.0,
+                        },
                     }
                 ],
             }
@@ -662,11 +682,14 @@ def test_projects_show_project_and_task_progress(running_server: RunningServer) 
     assert response.status == 200
     payload = _body_json(response)
     project = payload["projects"][0]
-    assert set(project) <= PROJECT_FIELDS | {"tasks"}
+    assert set(project) <= PROJECT_FIELDS | {"tasks", "models"}
     assert project["project_id"] == "project-001"
     assert project["state"] == "RUNNING"
     assert set(project["tasks"][0]) <= PROJECT_TASK_FIELDS
     assert project["tasks"][0]["pull_request_url"].endswith("/pull/1")
+    assert set(project["models"][0]) <= PROJECT_MODEL_FIELDS
+    assert project["models"][0]["model"] == "fake-model"
+    assert project["models"][0]["usage"]["input_tokens"] == 100
 
 
 def test_projects_are_empty_when_provider_is_not_configured() -> None:
@@ -713,6 +736,18 @@ def test_project_response_drops_unrendered_provider_fields() -> None:
                     **project,
                     "prompt": SECRET_MARKER,
                     "failure_reason": SECRET_MARKER,
+                    "models": [
+                        {
+                            "scope": "project",
+                            "model": "fake-model",
+                            "prompt": SECRET_MARKER,
+                            "failure_reason": SECRET_MARKER,
+                            "usage": {
+                                "input_tokens": 100,
+                                "api_key": SECRET_MARKER,
+                            },
+                        }
+                    ],
                     "tasks": [
                         {
                             **project["tasks"][0],
