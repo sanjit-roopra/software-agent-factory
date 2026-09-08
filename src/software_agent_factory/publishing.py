@@ -194,9 +194,10 @@ class PullRequestPublisher:
           the same run, so an unrelated pull request can never be adopted.
         """
         publisher = self._git_publisher(base_branch)
-        api_repository = expected_repository or publisher.resolve_remote_repository_for_api(
-            workspace_path
-        ).full_name
+        api_repository = (
+            expected_repository
+            or publisher.resolve_remote_repository_for_api(workspace_path).full_name
+        )
         api_host = self._client.active_host(workspace_path)
         if api_host.casefold() not in {
             host.casefold() for host in self._config.pull_request.allowed_hosts
@@ -384,9 +385,7 @@ class PullRequestPublisher:
             identity.full_name.casefold() != repository.casefold()
             or identity.host.casefold() != api_host.casefold()
         ):
-            raise UnexpectedRepositoryError(
-                "pull request belongs to another repository or gh host"
-            )
+            raise UnexpectedRepositoryError("pull request belongs to another repository or gh host")
 
     def _discover_pull_request(
         self,

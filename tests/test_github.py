@@ -1157,9 +1157,12 @@ def test_active_host_defaults_to_github_with_multiple_authenticated_hosts(
         }
     }
 
-    assert GitHubClient(
-        runner=FakeRunner([FakeCompletedProcess(stdout=json.dumps(payload))])
-    ).active_host(tmp_path) == "github.com"
+    assert (
+        GitHubClient(
+            runner=FakeRunner([FakeCompletedProcess(stdout=json.dumps(payload))])
+        ).active_host(tmp_path)
+        == "github.com"
+    )
 
 
 def test_parse_pull_request_url_returns_repository_and_number() -> None:

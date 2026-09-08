@@ -664,9 +664,7 @@ class GitPublisher:
                 raise UnsafeRemoteError(
                     f"could not determine an exact repository for remote {self.remote!r}"
                 ) from credential_error
-            destination = (
-                f"https://{reference.host}{port}/{reference.owner}/{reference.name}.git"
-            )
+            destination = f"https://{reference.host}{port}/{reference.owner}/{reference.name}.git"
         allowed = {allowed_host.lower() for allowed_host in self.allowed_hosts}
         if reference.host not in allowed:
             raise UnsafeRemoteError(

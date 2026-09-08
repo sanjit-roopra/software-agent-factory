@@ -203,9 +203,7 @@ def test_observe_normalizes_a_passing_status(tmp_path: Path) -> None:
     assert report.overall == "PASS"
     assert report.timed_out is False
     assert report.failed_checks == []
-    [checks] = [
-        argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "checks"]
-    ]
+    [checks] = [argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "checks"]]
     assert checks[3] == "1"
     assert checks[checks.index("--repo") + 1] == "acme/repo"
 
