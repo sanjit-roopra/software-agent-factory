@@ -209,6 +209,72 @@ def test_project_normalizes_planner_project_id(
     assert FileProjectStore(factory_data_dir).load_plan(brief.id).project_id == brief.id
 
 
+def test_project_retries_rejected_decomposition_with_feedback(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    decomposition_requests: list[AgentRequest] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
+            return _project_planner(request)
+        decomposition_requests.append(request)
+        if len(decomposition_requests) == 1:
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=False,
+                failure_reason=(
+                    "a single project task may have at most 6 acceptance criteria; "
+                    "split the project into a task DAG"
+                ),
+            )
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            project_plan=_project_planner(request).project_plan,
+        )
+
+    brief = ProjectBrief(
+        id="project-corrected-decomposition",
+        title="Build customer validation",
+        description="Implement two dependent validation outcomes.",
+        repository_path=str(factory_source_repo),
+    )
+    project_store = FileProjectStore(factory_data_dir)
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+        project_store=project_store,
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert len(decomposition_requests) == 2
+    assert decomposition_requests[0].repair_context is None
+    assert "single project task" in str(decomposition_requests[1].repair_context)
+    assert len(project_store.load_plan(brief.id).tasks) == 2
+    assert len(project_store.load_execution(brief.id).invocation_records) == 2
+
+
+def test_project_plan_rejects_overpacked_single_task() -> None:
+    with pytest.raises(ValueError, match="single project task may have at most 6"):
+        ProjectPlan(
+            project_id="overpacked-project",
+            summary="One oversized task.",
+            delivery_approach="Put every capability in one issue.",
+            tasks=(
+                ProjectTask(
+                    id=1,
+                    title="Build the entire system",
+                    description="Implement every independently verifiable capability.",
+                    acceptance_criteria=tuple(f"Outcome {index} works." for index in range(1, 8)),
+                ),
+            ),
+        )
+
+
 def test_project_persists_failed_planner_invocation_when_runtime_raises(
     factory_source_repo: Path,
     factory_data_dir: Path,

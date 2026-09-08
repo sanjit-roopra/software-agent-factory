@@ -400,6 +400,9 @@ class WorkItem(VersionedModel):
 
 PROJECT_ID_PATTERN = r"^[A-Za-z0-9._-]{1,80}$"
 MAX_PROJECT_TASKS = 12
+MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA = 8
+MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA = 6
+MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS = 2000
 
 
 class ProjectState(StrEnum):
@@ -432,7 +435,10 @@ class ProjectTask(ModelBase):
     id: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(min_length=1, max_length=10000)
-    acceptance_criteria: tuple[str, ...] = Field(min_length=1, max_length=30)
+    acceptance_criteria: tuple[str, ...] = Field(
+        min_length=1,
+        max_length=MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA,
+    )
     constraints: tuple[str, ...] = Field(default=(), max_length=30)
     dependencies: tuple[int, ...] = Field(default=(), max_length=8)
     priority: str | None = Field(default=None, max_length=20)
@@ -463,6 +469,20 @@ class ProjectPlan(VersionedModel):
         normalized_titles = [task.title.strip().casefold() for task in self.tasks]
         if len(set(normalized_titles)) != len(normalized_titles):
             raise ValueError("project task titles must be unique")
+        if len(self.tasks) == 1:
+            task = self.tasks[0]
+            if len(task.acceptance_criteria) > MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA:
+                raise ValueError(
+                    "a single project task may have at most "
+                    f"{MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA} acceptance criteria; "
+                    "split independently verifiable or prerequisite outcomes into a task DAG"
+                )
+            if len(task.description) > MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS:
+                raise ValueError(
+                    "a single project task description may have at most "
+                    f"{MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS} characters; split the "
+                    "project into reviewable, independently verifiable task outcomes"
+                )
         return self
 
 

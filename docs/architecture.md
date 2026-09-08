@@ -214,10 +214,19 @@ dependencies may reference earlier ids only, which guarantees an acyclic graph
 without a graph framework.
 
 The project planner must choose the fastest sufficient delivery approach:
-prefer one coherent task, reuse existing repository mechanisms, and split only
-for independently verifiable outcomes, hard prerequisites, safe parallel work,
-or a scope boundary. Tests, documentation, setup and cleanup stay with their
-functional outcome rather than becoming process-only issues.
+use one task only for one bounded, reviewable pull request, reuse existing
+repository mechanisms, and split independently verifiable capabilities, hard
+prerequisites, safe parallel work, or a scope boundary. A shared product goal
+or safety boundary is not sufficient reason to pack several capabilities into
+one issue. Tests, documentation, setup and cleanup stay with their functional
+outcome rather than becoming process-only issues.
+
+Deterministic plan validation bounds task acceptance criteria and rejects an
+oversized single-task description before issue creation or implementation. The
+planner receives one bounded correction attempt with the rejection reason.
+Dependencies are merge-before-start gates in remote delivery and
+integration-before-start gates locally; dependency-free ready tasks may run in
+parallel isolated worktrees within the configured concurrency cap.
 
 `ProjectExecution` is mutable coordination evidence stored separately from the
 immutable brief and plan. The factory derives its outcome from child

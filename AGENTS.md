@@ -88,6 +88,11 @@ For both project decomposition and individual task planning:
 - prefer one coherent work item when it can safely deliver the requested outcome
 - split work only for independently verifiable outcomes, hard prerequisites,
   safe parallel execution or an existing scope limit
+- treat each generated project task as one reviewable pull request; a shared
+  product goal or safety boundary does not justify one issue spanning multiple
+  independently verifiable capabilities
+- express merge-before-start requirements as task dependencies and leave safe
+  parallel tasks dependency-free so the controller can run isolated worktrees
 - reuse existing code and boundaries before adding abstractions, dependencies,
   services, configuration or infrastructure
 - do not create separate work items for tests, documentation, setup or cleanup

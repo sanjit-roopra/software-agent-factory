@@ -188,15 +188,23 @@ def _opening(role: str, model: str, reasoning: str) -> str:
 def _role_instructions(role: str, purpose: AgentPurpose) -> str:
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         return (
-            "Turn the project brief into the fewest independently executable work items "
-            "needed to finish it. Prefer one task when one coherent change is sufficient. "
-            "Split only for independently verifiable outcomes, hard prerequisite boundaries, "
-            "safe parallel work, or a scope limit that makes one work item unsafe. Different "
-            "files, layers, tests, documentation, or agent roles alone do not justify separate "
-            "tasks. Reuse existing repository capabilities and reject speculative abstractions, "
-            "dependencies, services, cleanup, and future-proofing. Task ids must be contiguous "
-            "from 1, and dependencies may reference earlier task ids only. Every task must "
-            "include acceptance criteria. Explain the smallest sufficient approach in "
+            "Turn the project brief into the smallest sufficient DAG of reviewable work items "
+            "needed to finish it. Use one task only when the brief is one bounded behavior that "
+            "can reasonably be implemented, tested, reviewed, and merged as one pull request. "
+            "A shared product goal or safety boundary does not justify packing multiple "
+            "capabilities into one issue. Split independently verifiable capabilities, hard "
+            "prerequisites, safe parallel work, and any scope that would make one pull request "
+            "too large to implement or review reliably. Keep tests and directly related "
+            "documentation with their functional outcome rather than making process-only tasks. "
+            "Each task must leave the repository coherent and deterministically verifiable. "
+            "Dependencies are execution gates: list a predecessor only when its change must be "
+            "integrated into the project branch, or merged to the target branch in remote "
+            "delivery, before the dependent task starts. Omit dependencies between tasks that "
+            "are safe to run concurrently in isolated worktrees. Reuse existing repository "
+            "capabilities and reject speculative abstractions, dependencies, services, cleanup, "
+            "and future-proofing. Task ids must be contiguous from 1, and dependencies may "
+            "reference earlier task ids only. Give each task focused acceptance criteria and "
+            "explain the decomposition, parallel waves, and merge-before-start gates in "
             "delivery_approach. Do not edit the repository."
         )
     if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
@@ -322,6 +330,8 @@ def _artifact_sections(
             sections.append(("Project brief", project_brief))
         if repository_profile is not None:
             sections.append(("Repository profile", repository_profile))
+        if repair_context is not None:
+            sections.append(("Previous decomposition rejection", repair_context))
         return sections
     if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
         if repository_profile is not None:

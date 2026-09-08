@@ -17,15 +17,21 @@ The project planner runs read-only against the repository and returns a typed,
 bounded `ProjectPlan`. It is explicitly instructed to choose the **fastest
 sufficient solution**:
 
-- prefer one coherent task
+- use one task only for one bounded change that can be implemented, tested,
+  reviewed and merged as one pull request
 - split only for an independently verifiable outcome, a hard prerequisite,
   safe parallel execution, or a scope limit
+- treat dependencies as integration/merge-before-start gates; omit them when
+  tasks are safe to run concurrently in isolated worktrees
 - reuse existing code and boundaries
 - do not manufacture separate setup, testing, documentation or cleanup tasks
 - do not add speculative abstractions, dependencies, services or infrastructure
 
-The factory validates task numbering and dependency direction before any work
-starts. A plan may contain at most 12 tasks.
+The factory validates task numbering, dependency direction, focused acceptance
+criteria, and the maximum size of a single-task description before any issue or
+implementation starts. A plan may contain at most 12 tasks. A rejected
+decomposition gets one bounded correction attempt with the deterministic
+reason; it cannot loop or continuously replan.
 
 ## Execution
 
