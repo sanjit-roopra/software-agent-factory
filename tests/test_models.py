@@ -78,6 +78,25 @@ def test_project_plan_accepts_one_smallest_sufficient_task() -> None:
 
 
 @pytest.mark.parametrize(
+    "modules",
+    [
+        ["application source"],
+        ["src/package"],
+        ["*.py"],
+        [" src"],
+        ["src", "src"],
+    ],
+)
+def test_expected_scope_rejects_invalid_top_level_paths(modules: list[str]) -> None:
+    with pytest.raises(ValueError, match="expected_scope.modules"):
+        ExpectedScope(
+            modules=modules,
+            estimated_files_min=1,
+            estimated_files_max=2,
+        )
+
+
+@pytest.mark.parametrize(
     "project_fields",
     [
         {"project_task_id": 1},

@@ -99,7 +99,11 @@ def _planner(request: AgentRequest) -> AgentResult:
                     validation=("Run configured verification.",),
                 ),
             ),
-            expected_scope=ExpectedScope(modules=(), estimated_files_min=1, estimated_files_max=3),
+            expected_scope=ExpectedScope(
+                modules=(PROJECT_LOG,),
+                estimated_files_min=1,
+                estimated_files_max=3,
+            ),
             test_strategy=("Run configured verification.",),
         ),
     )

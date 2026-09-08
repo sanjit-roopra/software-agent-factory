@@ -228,6 +228,19 @@ Dependencies are merge-before-start gates in remote delivery and
 integration-before-start gates locally; dependency-free ready tasks may run in
 parallel isolated worktrees within the configured concurrency cap.
 
+Each child WorkItem also carries a factory-generated boundary naming the
+outcomes assigned to sibling tasks. Task planners, replanners and implementers
+must not pull those outcomes forward. Execution plans use concrete
+repository-relative top-level path names in `expected_scope.modules`; prose
+labels and nested paths are rejected before implementation because scope-drift
+governance treats that field as a deterministic path allowlist.
+
+When an implementation is already deterministically green but its scope
+metadata is inaccurate, the bounded scope replan updates the ExecutionPlan and
+re-assesses the existing diff. It does not rerun the Implementer or discard
+verified work. Independent Tester and Reviewer gates still evaluate the
+resulting change before publication.
+
 `ProjectExecution` is mutable coordination evidence stored separately from the
 immutable brief and plan. The factory derives its outcome from child
 `FactoryRun` states, integration results, and one final deterministic

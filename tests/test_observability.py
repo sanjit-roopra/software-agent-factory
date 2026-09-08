@@ -512,6 +512,24 @@ def test_aggregate_metrics_scope_replans_counts_scope_triggered_attempts(
     assert snapshot.metrics.scope_replans == 1
 
 
+def test_aggregate_metrics_scope_replans_counts_metadata_only_replans(
+    tmp_path: Path,
+) -> None:
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run(
+            "run-metadata-replan",
+            state=WorkflowState.VERIFYING,
+            updated_at=T0,
+        ).model_copy(update={"scope_replans": 1})
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert snapshot.metrics.scope_replans == 1
+    assert snapshot.metrics.implementation_attempts == 0
+
+
 def test_first_pass_success_counts_single_implementation_attempt_succeeded_runs(
     tmp_path: Path,
 ) -> None:

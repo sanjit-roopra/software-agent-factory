@@ -22,6 +22,7 @@ from software_agent_factory.models import (
     ProjectTask,
     Risk,
     WorkflowState,
+    WorkItem,
 )
 from software_agent_factory.projects import FileProjectStore, ProjectError, ProjectRunner
 from software_agent_factory.store import FileRunStore
@@ -81,6 +82,12 @@ def _project_planner(request: AgentRequest) -> AgentResult:
                 ),
             ),
         )
+    task_id = request.work_item.project_task_id
+    modules = (
+        ("FACTORY_NOTES.md", f"task-{task_id}.txt")
+        if task_id is not None
+        else ("FACTORY_NOTES.md",)
+    )
     return AgentResult(
         role=AgentRole.PLANNER,
         success=True,
@@ -94,7 +101,7 @@ def _project_planner(request: AgentRequest) -> AgentResult:
                 ),
             ),
             expected_scope=ExpectedScope(
-                modules=(),
+                modules=modules,
                 estimated_files_min=1,
                 estimated_files_max=3,
             ),
@@ -273,6 +280,53 @@ def test_project_plan_rejects_overpacked_single_task() -> None:
                 ),
             ),
         )
+
+
+def test_project_work_item_preserves_sibling_task_boundaries(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    captured: list[WorkItem] = []
+
+    class CapturingController:
+        def run(
+            self,
+            work_item: WorkItem,
+            _source_repo: Path,
+            *,
+            run_id: str | None = None,
+        ) -> FactoryRun:
+            captured.append(work_item)
+            return FactoryRun(
+                id=run_id or f"run-{work_item.id}",
+                work_item_id=work_item.id,
+                state=WorkflowState.NEEDS_HUMAN,
+                failure_reason="stop after capturing task boundary",
+            )
+
+        def resume(self, run_id: str, _source_repo: Path) -> FactoryRun:
+            raise AssertionError(f"unexpected resume for {run_id}")
+
+    brief = ProjectBrief(
+        id="project-task-boundary",
+        title="Build two outcomes",
+        description="Deliver two separate capabilities.",
+        repository_path=str(factory_source_repo),
+    )
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=_project_planner),
+        controller=CapturingController(),  # type: ignore[arg-type]
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.NEEDS_HUMAN
+    assert len(captured) == 1
+    boundary = captured[0].constraints[-1]
+    assert "implement only this task" in boundary
+    assert "task 2: Build on the base behavior" in boundary
 
 
 def test_project_persists_failed_planner_invocation_when_runtime_raises(

@@ -31,6 +31,9 @@ from software_agent_factory.models import (
     ChangeSet,
     CIReport,
     Complexity,
+    ExecutionPlan,
+    ExpectedScope,
+    PlanStep,
     ReviewReport,
     Risk,
     TestReport,
@@ -338,11 +341,10 @@ def test_implementer_failure_produces_an_implementer_repair_context(
     assert contexts[0].failures == ["tooling exploded"]
 
 
-def test_scope_drift_replan_is_bounded_and_carries_scope_findings(
+def test_scope_drift_replan_updates_plan_without_rerunning_implementer(
     source_repo: Path, data_dir: Path
 ) -> None:
-    """A change touching a dependency manifest is sensitive; at R1 the policy
-    replans once, then escalates rather than looping forever."""
+    """A green diff is replanned and re-assessed without spending another worker attempt."""
     implementer_requests: list[AgentRequest] = []
     planner_requests: list[AgentRequest] = []
 
@@ -360,9 +362,36 @@ def test_scope_drift_replan_is_bounded_and_carries_scope_findings(
 
     def recording_planner(request: AgentRequest) -> AgentResult:
         planner_requests.append(request)
+        if request.repair_context is not None:
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=True,
+                execution_plan=ExecutionPlan(
+                    summary="Accept the verified dependency manifest change.",
+                    steps=[
+                        PlanStep(
+                            id="dependency",
+                            goal="Record the existing verified dependency change.",
+                            likely_files=["package.json"],
+                            validation=["Run configured verification."],
+                        )
+                    ],
+                    expected_scope=ExpectedScope(
+                        modules=["package.json"],
+                        estimated_files_min=1,
+                        estimated_files_max=1,
+                    ),
+                    test_strategy=["Use the already-passed deterministic verification."],
+                    risks=[],
+                ),
+            )
         return FakeAgentRuntime()._default_planner(request)
 
-    config = build_config(data_dir, max_replans=1)
+    config = build_config(
+        data_dir,
+        max_replans=1,
+        approved_sensitive_files=["package.json"],
+    )
     store = FileRunStore(data_dir)
     controller = WorkflowController(
         config,
@@ -372,19 +401,41 @@ def test_scope_drift_replan_is_bounded_and_carries_scope_findings(
 
     run = controller.run(work_item(), source_repo)
 
-    assert run.state is WorkflowState.NEEDS_HUMAN
-    assert "scope drift replan budget exhausted" in (run.failure_reason or "")
+    assert run.state is WorkflowState.PR_READY
     # Exactly one replan happened: the initial plan plus one re-plan.
     assert len(planner_requests) == 2
     assert planner_requests[1].repair_context is not None
     assert planner_requests[1].changed_files == ["package.json"]
-    scope_attempts = [
-        record for record in run.attempt_records if record.triggered_by is AttemptTrigger.SCOPE
-    ]
-    assert len(scope_attempts) == 1
-    contexts = _repair_contexts(implementer_requests)
-    assert contexts[0].trigger is AttemptTrigger.SCOPE
-    assert any("dependency" in failure for failure in contexts[0].failures)
+    assert len(implementer_requests) == 1
+    assert len(run.attempt_records) == 1
+    assert run.scope_replans == 1
+
+
+def test_scope_drift_replan_still_escalates_when_revised_plan_does_not_fit(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def drifting_implementer(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "package.json").write_text('{"name": "demo"}\n')
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary="touched dependencies"),
+        )
+
+    config = build_config(data_dir, max_replans=1)
+    controller = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=drifting_implementer),
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert "scope drift replan budget exhausted" in (run.failure_reason or "")
+    assert len(run.attempt_records) == 1
+    assert run.scope_replans == 1
 
 
 def test_sensitive_scope_drift_at_high_risk_escalates_immediately(
@@ -624,7 +675,10 @@ def test_excessive_changed_files_are_refused_before_publishing(
         plan = result.execution_plan.model_copy(
             update={
                 "expected_scope": result.execution_plan.expected_scope.model_copy(
-                    update={"estimated_files_max": 10}
+                    update={
+                        "modules": [f"file_{index}.txt" for index in range(4)],
+                        "estimated_files_max": 10,
+                    }
                 )
             }
         )

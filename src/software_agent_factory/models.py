@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -648,6 +648,7 @@ class FactoryRun(VersionedModel):
     state: WorkflowState
     attempt_records: list[AttemptRecord] = Field(default_factory=list)
     invocation_records: list[InvocationRecord] = Field(default_factory=list)
+    scope_replans: int = Field(default=0, ge=0)
     workspace_path: str | None = None
     branch_name: str | None = None
     created_at: UtcDateTime = Field(default_factory=utc_now)
@@ -718,9 +719,36 @@ class PlanStep(ModelBase):
 
 
 class ExpectedScope(ModelBase):
-    modules: list[str] = Field(default_factory=list)
+    modules: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repository-relative top-level path names such as 'src', 'tests', "
+            "'pyproject.toml', or '.github'; never conceptual labels."
+        ),
+    )
     estimated_files_min: int = Field(ge=0)
     estimated_files_max: int = Field(ge=0)
+
+    @field_validator("modules")
+    @classmethod
+    def _validate_modules(cls, modules: list[str]) -> list[str]:
+        for module in modules:
+            if (
+                not module
+                or module != module.strip()
+                or "/" in module
+                or "\\" in module
+                or any(character.isspace() for character in module)
+                or module in {".", ".."}
+                or any(character in module for character in "*?[]{}")
+            ):
+                raise ValueError(
+                    "expected_scope.modules entries must be repository-relative "
+                    "top-level path names such as 'src', 'tests', or 'pyproject.toml'"
+                )
+        if len(set(modules)) != len(modules):
+            raise ValueError("expected_scope.modules entries must be unique")
+        return modules
 
     @model_validator(mode="after")
     def _validate_file_bounds(self) -> ExpectedScope:

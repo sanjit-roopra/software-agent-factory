@@ -16,8 +16,8 @@ CREATED -> TRIAGING -> REFINING -> [RESEARCHING] -> PLANNING -> IMPLEMENTING
 ```
 
 with bounded loops back to ``IMPLEMENTING`` (verification/review/CI repair),
-back to ``PLANNING`` (bounded scope-drift replan), and early exits to
-``NEEDS_HUMAN``/``FAILED`` from every non-terminal state.
+a metadata-only pass through ``PLANNING`` after green scope drift, and early
+exits to ``NEEDS_HUMAN``/``FAILED`` from every non-terminal state.
 
 Terminal states are ``DONE``, ``NEEDS_HUMAN`` and ``FAILED``. ``PR_READY`` is
 *not* terminal: with ``pull_request.enabled`` it continues to ``PR_CREATED``.
@@ -39,12 +39,13 @@ before any agent sees it.
 Budgets are derived from persisted state, never from a local counter, so a
 restarted process can never grant a run a fresh retry budget (``ADR-003``):
 
-- pre-PR implementer/verification/review/scope repairs share
+- pre-PR implementer/verification/review repairs share
   ``config.retries.max_total_attempts`` (``AttemptBudget.IMPLEMENTATION``)
 - post-PR CI repairs use the separate ``config.ci.repair_attempts``
   (``AttemptBudget.CI_REPAIR``)
-- scope replans are bounded by ``config.scope_drift.max_replans``, counted
-  from persisted ``AttemptRecord``s triggered by ``AttemptTrigger.SCOPE``
+- metadata-only scope replans are bounded by
+  ``config.scope_drift.max_replans`` and persisted separately from worker
+  attempts
 """
 
 from __future__ import annotations
@@ -166,7 +167,12 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
         }
     ),
     WorkflowState.PLANNING: frozenset(
-        {WorkflowState.IMPLEMENTING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {
+            WorkflowState.IMPLEMENTING,
+            WorkflowState.VERIFYING,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.FAILED,
+        }
     ),
     WorkflowState.IMPLEMENTING: frozenset(
         {WorkflowState.VERIFYING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
@@ -1320,9 +1326,10 @@ class WorkflowController:
         )
 
     def _replans_used(self, run: FactoryRun) -> int:
-        return sum(
+        legacy_scope_attempts = sum(
             1 for attempt in run.attempt_records if attempt.triggered_by is AttemptTrigger.SCOPE
         )
+        return max(run.scope_replans, legacy_scope_attempts)
 
     def _select_worker(
         self, run: FactoryRun, context: _RunContext, budget: AttemptBudget
@@ -1408,15 +1415,19 @@ class WorkflowController:
                 evidence.changed_files,
                 context.triage_result.risk,
             )
+            while scope.decision is ScopeDecision.REPLAN:
+                run = self._replan(run, context, scope, evidence)
+                scope = self._scope_policy.assess(
+                    context.execution_plan,
+                    evidence.changed_files,
+                    context.triage_result.risk,
+                )
             if scope.decision is ScopeDecision.NEEDS_HUMAN:
                 raise self._halt(
                     run,
                     WorkflowState.NEEDS_HUMAN,
                     "scope drift requires human review: " + _describe_scope(scope),
                 )
-            if scope.decision is ScopeDecision.REPLAN:
-                run, repair_context = self._replan(run, context, scope, evidence)
-                continue
 
             if self._should_polish(run, budget, context):
                 context.polish_attempted = True
@@ -1544,8 +1555,8 @@ class WorkflowController:
         context: _RunContext,
         scope: ScopeAssessment,
         evidence: WorkspaceEvidence,
-    ) -> tuple[FactoryRun, RepairContext]:
-        """Bounded scope-drift replan: VERIFYING -> PLANNING -> IMPLEMENTING."""
+    ) -> FactoryRun:
+        """Update scope metadata for an already-green diff without reimplementation."""
         used = self._replans_used(run)
         if used >= self._config.scope_drift.max_replans:
             raise self._halt(
@@ -1574,8 +1585,15 @@ class WorkflowController:
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
         )
-        run = self.transition(run, WorkflowState.IMPLEMENTING)
-        return run, repair_context
+        run = run.model_copy(
+            update={
+                "scope_replans": used + 1,
+                "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+            }
+        )
+        self._store.save_run(run)
+        return self.transition(run, WorkflowState.VERIFYING)
 
     def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
         """Run install -> verify -> build with per-command persisted logs."""

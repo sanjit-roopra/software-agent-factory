@@ -1147,6 +1147,8 @@ The planner is instructed to choose the fastest sufficient solution:
   parallel execution, or an existing scope limit
 - treat dependencies as integration/merge-before-start gates and leave safe
   parallel work dependency-free
+- propagate sibling task outcomes as hard child-work-item boundaries so a
+  planner, replan or implementer cannot intentionally absorb later tasks
 - reuse existing mechanisms
 - avoid speculative abstractions, dependencies, services, infrastructure,
   cleanup and future-proofing
@@ -1179,6 +1181,11 @@ delivery explicitly under ADR-022.
 - a broad brief produces a persisted typed project plan of reviewable tasks
 - one task is valid and is the fake runtime default
 - an overpacked single task is rejected and receives one bounded correction
+- execution-plan scope modules are concrete top-level repository paths rather
+  than prose labels, so deterministic scope checks cannot reject every changed
+  file or be bypassed by a semantic description
+- a green implementation with inaccurate scope metadata is replanned and
+  re-assessed without another Implementer attempt
 - invalid ids, forward dependencies and duplicate task titles are rejected
 - dependency-ready work runs with bounded concurrency
 - successful child commits compose onto one integration branch

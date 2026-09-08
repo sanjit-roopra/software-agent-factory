@@ -58,7 +58,7 @@ def _plan() -> ExecutionPlan:
     return ExecutionPlan(
         summary="Add a guard clause.",
         steps=[PlanStep(id="s1", goal="Validate the name")],
-        expected_scope=ExpectedScope(estimated_files_min=1, estimated_files_max=2),
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
     )
 
 

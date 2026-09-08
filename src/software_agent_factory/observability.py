@@ -816,6 +816,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
 
     for run in runs:
         run_implementation_attempts = 0
+        legacy_scope_replans = 0
         for attempt in run.attempt_records:
             total_attempts += 1
             if attempt.budget is AttemptBudget.IMPLEMENTATION:
@@ -825,7 +826,8 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
             elif attempt.budget is AttemptBudget.CI_REPAIR:
                 ci_repair_attempts += 1
             if attempt.triggered_by is AttemptTrigger.SCOPE:
-                scope_replans += 1
+                legacy_scope_replans += 1
+        scope_replans += max(run.scope_replans, legacy_scope_replans)
 
         if run.completed_at is not None and _is_run_finished(run):
             durations.append(max((run.completed_at - run.created_at).total_seconds(), 0.0))

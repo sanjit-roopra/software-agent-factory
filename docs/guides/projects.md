@@ -41,6 +41,10 @@ delivery to the target branch, use [autonomous delivery](#autonomous-delivery).
 Each generated task becomes an ordinary `WorkItem` and passes through the full
 factory pipeline. Ready tasks execute in waves using
 `scheduler.max_concurrent_tasks`, which remains bounded to `1` or `2`.
+The factory adds sibling task titles to each child WorkItem as hard scope
+boundaries, preventing a task-level plan or scope replan from deliberately
+absorbing work assigned to a later issue. Execution-plan scope entries must be
+actual top-level repository paths, not conceptual component names.
 
 The factory keeps a persistent project integration worktree. After a child run
 passes verification and review, its local commit is cherry-picked onto that

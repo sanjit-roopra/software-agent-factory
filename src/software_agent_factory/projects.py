@@ -737,6 +737,7 @@ class ProjectRunner:
             execution = self._assign_run_ids(execution, brief, wave)
             results, errors = self._run_wave(
                 brief,
+                plan,
                 wave,
                 execution,
                 integration_path,
@@ -863,6 +864,7 @@ class ProjectRunner:
     def _run_wave(
         self,
         brief: ProjectBrief,
+        plan: ProjectPlan,
         tasks: list[ProjectTask],
         execution: ProjectExecution,
         integration_path: Path,
@@ -901,6 +903,7 @@ class ProjectRunner:
                 work_item = self._to_work_item(
                     brief,
                     task,
+                    project_tasks=plan.tasks,
                     issue_url=record.issue_url,
                 )
                 futures[task.id] = executor.submit(
@@ -1228,11 +1231,28 @@ class ProjectRunner:
         brief: ProjectBrief,
         task: ProjectTask,
         *,
+        project_tasks: tuple[ProjectTask, ...],
         issue_url: str | None,
     ) -> WorkItem:
         # Project-wide constraints are applied deterministically rather than
         # trusting the planner to copy them into every task.
-        constraints = list(dict.fromkeys((*brief.constraints, *task.constraints)))
+        sibling_outcomes = "; ".join(
+            f"task {candidate.id}: {candidate.title}"
+            for candidate in project_tasks
+            if candidate.id != task.id
+        )
+        task_boundaries = (
+            (
+                (
+                    "Project task boundary: implement only this task. These outcomes are assigned "
+                    "to separate project tasks and must not be implemented here: "
+                    f"{sibling_outcomes}"
+                ),
+            )
+            if sibling_outcomes
+            else ()
+        )
+        constraints = list(dict.fromkeys((*brief.constraints, *task.constraints, *task_boundaries)))
         return WorkItem(
             id=self._work_item_id(brief.id, task.id),
             external_id=issue_url,

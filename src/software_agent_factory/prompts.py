@@ -250,7 +250,13 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "Prefer existing code and extension points over speculative abstractions, new "
             "dependencies, services, configuration, or generalized infrastructure. Produce "
             "a concrete execution plan with bounded scope, likely files, necessary validation "
-            "steps, risks, and a practical test strategy."
+            "steps, risks, and a practical test strategy. expected_scope.modules is a "
+            "deterministic path allowlist: populate it only with repository-relative top-level "
+            "path names that may change, such as 'src', 'tests', 'pyproject.toml', or '.github'. "
+            "Never put conceptual labels, descriptions, nested paths, or glob patterns there. "
+            "For a project-linked work item, constraints describing sibling tasks are hard "
+            "scope boundaries: do not plan work assigned to those tasks, including during a "
+            "scope-drift replan."
         )
     if role == "IMPLEMENTER":
         return (
@@ -259,8 +265,10 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "not git commit, git push, open PRs, change workflow state, or work outside "
             "the current working directory. Make the narrowest change that satisfies the "
             "acceptance criteria, reuse existing mechanisms, avoid unrelated cleanup, and "
-            "stop when the required behavior and configured checks pass. Return ChangeSet "
-            "metadata only."
+            "stop when the required behavior and configured checks pass. For a project-linked "
+            "work item, constraints describing sibling tasks are hard scope boundaries: do "
+            "not implement those outcomes early, even if they are related or convenient. "
+            "Return ChangeSet metadata only."
         )
     if role == "TESTER":
         return (

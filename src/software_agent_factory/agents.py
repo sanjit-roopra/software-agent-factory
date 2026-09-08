@@ -433,7 +433,11 @@ class FakeAgentRuntime:
                     validation=["Run the repository's configured verification commands."],
                 )
             ],
-            expected_scope=ExpectedScope(modules=[], estimated_files_min=1, estimated_files_max=3),
+            expected_scope=ExpectedScope(
+                modules=[],
+                estimated_files_min=1,
+                estimated_files_max=3,
+            ),
             test_strategy=["Run the repository's configured verification commands."],
             risks=[],
         )
