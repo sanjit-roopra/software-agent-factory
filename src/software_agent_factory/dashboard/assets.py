@@ -34,6 +34,11 @@ def render_index_html(*, token: str) -> str:
   <p class="subtitle">Read-only local dashboard &mdash; loopback only, no mutation.</p>
 </header>
 <main>
+  <section id="projects-section" aria-labelledby="projects-heading">
+    <h2 id="projects-heading">Projects</h2>
+    <div id="projects-body">Loading&hellip;</div>
+  </section>
+
   <section id="health-section" aria-labelledby="health-heading">
     <h2 id="health-heading">Health</h2>
     <div id="health-body">Loading&hellip;</div>
@@ -143,6 +148,16 @@ th, td {
 th { background: rgba(127, 127, 127, 0.1); }
 tr[data-run-id] { cursor: pointer; }
 tr[data-run-id]:hover { background: rgba(127, 127, 127, 0.08); }
+.project-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+}
+.project-card h3 { margin: 0 0 0.5rem; }
+.project-meta { margin: 0 0 0.75rem; color: #666; }
+.project-card table { margin-top: 0.5rem; }
+.state-active { font-weight: 700; }
 .stale-yes { color: var(--stale); font-weight: 600; }
 #runs-toolbar { margin-bottom: 0.5rem; display: flex; gap: 0.75rem; align-items: center; }
 #error-banner {
@@ -320,6 +335,93 @@ APP_JS = """\
           : shown < state.limit;
   }
 
+  function appendLinkCell(row, value) {
+    var cell = document.createElement("td");
+    if (typeof value === "string" && value.indexOf("https://") === 0) {
+      var link = document.createElement("a");
+      link.href = value;
+      link.textContent = value;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      cell.appendChild(link);
+    } else {
+      cell.textContent = displayValue(value);
+    }
+    row.appendChild(cell);
+  }
+
+  function renderProjects(payload) {
+    var container = document.getElementById("projects-body");
+    clearChildren(container);
+    var projects = Array.isArray(payload.projects) ? payload.projects : [];
+    if (projects.length === 0) {
+      container.textContent = "No persisted projects.";
+      return;
+    }
+    projects.forEach(function (project) {
+      var card = document.createElement("article");
+      card.className = "project-card";
+      var heading = document.createElement("h3");
+      heading.textContent =
+        displayValue(project.project_id) + " \u2014 " + displayValue(project.state);
+      card.appendChild(heading);
+      var meta = document.createElement("p");
+      meta.className = "project-meta";
+      meta.textContent =
+        "Delivery: " + displayValue(project.delivery_mode) +
+        " | Target: " + displayValue(project.delivery_repository) +
+        "#" + displayValue(project.delivery_base_branch) +
+        " | Updated: " + displayValue(project.updated_at);
+      card.appendChild(meta);
+
+      var table = document.createElement("table");
+      var head = document.createElement("thead");
+      var headRow = document.createElement("tr");
+      ["Task", "Title", "State", "Run", "Pull request", "Merged commit"].forEach(function (label) {
+        var th = document.createElement("th");
+        th.scope = "col";
+        th.textContent = label;
+        headRow.appendChild(th);
+      });
+      head.appendChild(headRow);
+      table.appendChild(head);
+      var body = document.createElement("tbody");
+      var tasks = Array.isArray(project.tasks) ? project.tasks : [];
+      if (tasks.length === 0) {
+        var pendingRow = document.createElement("tr");
+        var pendingCell = document.createElement("td");
+        pendingCell.colSpan = 6;
+        pendingCell.textContent = "Planning is in progress; tasks are not persisted yet.";
+        pendingRow.appendChild(pendingCell);
+        body.appendChild(pendingRow);
+      }
+      tasks.forEach(function (task) {
+        var row = document.createElement("tr");
+        textCell(row, task.task_id);
+        textCell(row, task.title);
+        textCell(row, task.state);
+        textCell(row, task.run_id);
+        appendLinkCell(row, task.pull_request_url);
+        textCell(row, task.merge_commit_sha);
+        body.appendChild(row);
+      });
+      table.appendChild(body);
+      card.appendChild(table);
+      container.appendChild(card);
+    });
+  }
+
+  function loadProjects() {
+    return apiFetch("/api/projects")
+      .then(function (payload) {
+        renderProjects(payload);
+        clearError();
+      })
+      .catch(function () {
+        showError("Project status is currently unavailable.");
+      });
+  }
+
   function loadSummary() {
     return apiFetch("/api/summary")
       .then(function (payload) {
@@ -442,6 +544,7 @@ APP_JS = """\
   });
 
   function refresh() {
+    loadProjects();
     loadSummary();
     loadRuns();
   }

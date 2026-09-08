@@ -77,9 +77,10 @@ This is the only thing in the factory that ever opens a socket. Nothing in
   stdout once and never written to the log.
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
 
-It shows the run list, run detail, workflow state, attempt history and the
-derived metrics. It shows no command logs, no diffs, no prompts and no raw
-artifacts — those are where repository content and near-secret material would
+It shows project state and task/PR/merge progress, plus the run list, run
+detail, workflow state, attempt history and derived metrics. It shows no
+command logs, no diffs, no prompts and no raw artifacts — those are where
+repository content and near-secret material would
 leak into a browser.
 
 It cannot approve, retry, cancel or reconfigure anything. Authority stays with

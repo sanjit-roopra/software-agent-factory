@@ -104,6 +104,34 @@ USAGE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+PROJECT_FIELDS: frozenset[str] = frozenset(
+    {
+        "project_id",
+        "state",
+        "delivery_mode",
+        "delivery_repository",
+        "delivery_base_branch",
+        "integration_branch",
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "task_count",
+    }
+)
+
+PROJECT_TASK_FIELDS: frozenset[str] = frozenset(
+    {
+        "task_id",
+        "title",
+        "state",
+        "run_id",
+        "issue_url",
+        "pull_request_url",
+        "commit_sha",
+        "merge_commit_sha",
+    }
+)
+
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
@@ -166,4 +194,18 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     invocations = data.get("invocations")
     if isinstance(invocations, list):
         sanitized["invocations"] = [sanitize_invocation(item) for item in invocations]
+    return sanitized
+
+
+def sanitize_project(raw: Any) -> dict[str, Any]:
+    """Reduce one project to state, task and delivery identifiers only."""
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        raise TypeError("project summary must serialize to a JSON object")
+    sanitized = _allowlist(data, PROJECT_FIELDS)
+    tasks = data.get("tasks")
+    if isinstance(tasks, list):
+        sanitized["tasks"] = [
+            _allowlist(task, PROJECT_TASK_FIELDS) for task in tasks if isinstance(task, dict)
+        ]
     return sanitized

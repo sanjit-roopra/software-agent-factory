@@ -16,9 +16,12 @@ call :func:`create_server` explicitly.
 from .handler import DashboardRequestHandler
 from .sanitize import (
     ATTEMPT_FIELDS,
+    PROJECT_FIELDS,
+    PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
     sanitize_attempt,
+    sanitize_project,
     sanitize_run_detail,
     sanitize_run_summary,
 )
@@ -37,6 +40,7 @@ from .security import (
 from .server import DashboardConfig, DashboardServer, create_server
 from .snapshot import (
     HealthProvider,
+    ProjectProvider,
     RunDetailProvider,
     SnapshotProvider,
     is_valid_run_id,
@@ -51,6 +55,9 @@ __all__ = [
     "HealthProvider",
     "InvalidBindHostError",
     "LOOPBACK_HOST",
+    "PROJECT_FIELDS",
+    "PROJECT_TASK_FIELDS",
+    "ProjectProvider",
     "RUN_DETAIL_FIELDS",
     "RUN_SUMMARY_FIELDS",
     "RunDetailProvider",
@@ -64,6 +71,7 @@ __all__ = [
     "is_valid_run_id",
     "origin_header_is_valid",
     "sanitize_attempt",
+    "sanitize_project",
     "sanitize_run_detail",
     "sanitize_run_summary",
     "to_json_safe",

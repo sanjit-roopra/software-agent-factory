@@ -358,6 +358,9 @@ factory dashboard --port 0 --open-browser
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
+The dashboard shows active and completed projects, their task/PR/merge progress,
+individual workflow runs, attempts, usage totals and operational health.
+
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, answers `GET`
 only, and requires a token generated for that process. The tokenized URL is
 printed to stdout once and never written to the log. Ctrl-C stops it and closes
