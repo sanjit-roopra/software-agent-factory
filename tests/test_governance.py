@@ -314,16 +314,26 @@ def test_scope_drift_policy_continues_for_benign_in_scope_low_risk_changes() -> 
     assert assessment.has_sensitive_findings is False
 
 
-def test_scope_drift_policy_replans_for_unexpected_top_level_modules() -> None:
+def test_scope_drift_policy_allows_supporting_files_beside_planned_scope() -> None:
     assessment = ScopeDriftPolicy().assess(
         _plan(modules=["src"], estimated_files_max=3),
         changed_files=["src/app.py", "tests/test_app.py"],
         risk=Risk.R1,
     )
 
+    assert assessment.decision is ScopeDecision.CONTINUE
+    assert assessment.findings == ()
+
+
+def test_scope_drift_policy_replans_when_all_files_miss_planned_scope() -> None:
+    assessment = ScopeDriftPolicy().assess(
+        _plan(modules=["src"], estimated_files_max=3),
+        changed_files=["docs/guide.md", "tests/test_app.py"],
+        risk=Risk.R1,
+    )
+
     assert assessment.decision is ScopeDecision.REPLAN
     assert [finding.category for finding in assessment.findings] == ["unexpected-module"]
-    assert assessment.findings[0].paths == ("tests/test_app.py",)
 
 
 def test_scope_drift_policy_replans_for_excessive_file_count_even_at_high_risk() -> None:
@@ -337,18 +347,15 @@ def test_scope_drift_policy_replans_for_excessive_file_count_even_at_high_risk()
     assert [finding.category for finding in assessment.findings] == ["excessive-file-count"]
 
 
-def test_scope_drift_policy_replans_for_dependency_manifest_changes_at_lower_risk() -> None:
+def test_scope_drift_policy_escalates_unapproved_dependency_changes_at_lower_risk() -> None:
     assessment = ScopeDriftPolicy().assess(
         _plan(modules=["src"], estimated_files_max=3),
         changed_files=["src/app.py", "pyproject.toml", "uv.lock"],
         risk=Risk.R1,
     )
 
-    assert assessment.decision is ScopeDecision.REPLAN
-    assert {finding.category for finding in assessment.findings} == {
-        "unexpected-module",
-        "dependency-change",
-    }
+    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
+    assert {finding.category for finding in assessment.findings} == {"dependency-change"}
     dependency_finding = next(
         finding for finding in assessment.findings if finding.category == "dependency-change"
     )
@@ -439,11 +446,8 @@ def test_scope_drift_planned_and_approved_ci_workflow_succeeds() -> None:
 
 @pytest.mark.parametrize("path", ["/pyproject.toml", "./pyproject.toml", "../pyproject.toml"])
 def test_scope_authorization_requires_exact_relative_path_in_plan(path: str) -> None:
-    plan = _plan(modules=["pyproject.toml"], estimated_files_max=2, likely_files=[path])
-    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
-    assessment = policy.assess(plan, changed_files=["pyproject.toml"], risk=Risk.R2)
-    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
-    assert assessment.approved_sensitive_files == ()
+    with pytest.raises(ValueError, match="likely_files"):
+        _plan(modules=["pyproject.toml"], estimated_files_max=2, likely_files=[path])
 
 
 def test_scope_drift_approved_but_unplanned_fails() -> None:
@@ -521,22 +525,12 @@ def test_scope_drift_path_variants_and_traversal_cannot_bypass() -> None:
 
 
 def test_scope_drift_wildcard_cannot_bypass() -> None:
-    policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
-
-    # Agent attempts broad wildcard self-approval in plan
-    assessment = policy.assess(
+    with pytest.raises(ValueError, match="likely_files"):
         _plan(
             modules=["pyproject.toml"],
             estimated_files_max=2,
             likely_files=["*.toml"],
-        ),
-        changed_files=["pyproject.toml"],
-        risk=Risk.R2,
-    )
-
-    assert assessment.decision is ScopeDecision.NEEDS_HUMAN
-    assert [f.category for f in assessment.findings] == ["dependency-change"]
-    assert assessment.approved_sensitive_files == ()
+        )
 
 
 @pytest.mark.parametrize(
@@ -643,7 +637,7 @@ def test_scope_drift_max_counts_still_work_with_approved_files() -> None:
     assert assessment.approved_sensitive_files == ("pyproject.toml", "uv.lock")
 
 
-def test_scope_drift_module_checks_still_work_with_approved_files() -> None:
+def test_scope_drift_allows_planned_approved_supporting_files() -> None:
     policy = ScopeDriftPolicy(approved_sensitive_files=["pyproject.toml"])
 
     # Plan only expects "src" module, but pyproject.toml changed
@@ -657,9 +651,8 @@ def test_scope_drift_module_checks_still_work_with_approved_files() -> None:
         risk=Risk.R1,
     )
 
-    assert assessment.decision is ScopeDecision.REPLAN
-    assert [f.category for f in assessment.findings] == ["unexpected-module"]
-    assert assessment.findings[0].paths == ("pyproject.toml",)
+    assert assessment.decision is ScopeDecision.CONTINUE
+    assert assessment.findings == ()
     assert assessment.approved_sensitive_files == ("pyproject.toml",)
 
 

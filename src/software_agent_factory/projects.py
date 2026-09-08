@@ -586,9 +586,21 @@ class ProjectRunner:
         except FileNotFoundError:
             pass
         now = utc_now()
+        tasks = tuple(
+            record.model_copy(
+                update={
+                    "state": ProjectTaskState.FAILED,
+                    "failure_reason": str(exc),
+                }
+            )
+            if record.state is ProjectTaskState.RUNNING
+            else record
+            for record in execution.tasks
+        )
         execution = execution.model_copy(
             update={
                 "state": ProjectState.FAILED,
+                "tasks": tasks,
                 "failure_reason": str(exc),
                 "updated_at": now,
                 "completed_at": now,
@@ -1236,29 +1248,56 @@ class ProjectRunner:
     ) -> WorkItem:
         # Project-wide constraints are applied deterministically rather than
         # trusting the planner to copy them into every task.
-        sibling_outcomes = "; ".join(
+        predecessors = "; ".join(
             f"task {candidate.id}: {candidate.title}"
             for candidate in project_tasks
-            if candidate.id != task.id
+            if candidate.id in task.dependencies
         )
-        task_boundaries = (
+        sibling_boundaries = "; ".join(
+            f"task {candidate.id}: {candidate.title}"
+            for candidate in project_tasks
+            if candidate.id != task.id and candidate.id not in task.dependencies
+        )
+        predecessor_context = (
+            (
+                (
+                    "Integrated project predecessors are already available in this branch and may "
+                    f"be reused or extended where this task requires it: {predecessors}"
+                ),
+            )
+            if predecessors
+            else ()
+        )
+        future_boundaries = (
             (
                 (
                     "Project task boundary: implement only this task. These outcomes are assigned "
-                    "to separate project tasks and must not be implemented here: "
-                    f"{sibling_outcomes}"
+                    f"to separate project tasks and must not be implemented here: "
+                    f"{sibling_boundaries}"
                 ),
             )
-            if sibling_outcomes
+            if sibling_boundaries
             else ()
         )
-        constraints = list(dict.fromkeys((*brief.constraints, *task.constraints, *task_boundaries)))
+        constraints = list(
+            dict.fromkeys(
+                (
+                    *brief.constraints,
+                    *task.constraints,
+                    *predecessor_context,
+                    *future_boundaries,
+                )
+            )
+        )
         return WorkItem(
             id=self._work_item_id(brief.id, task.id),
             external_id=issue_url,
             source="MANUAL",
             title=task.title,
-            description=task.description,
+            description=(
+                f"Project context: {brief.title}\n\n{brief.description}\n\n"
+                f"Current task: {task.description}"
+            ),
             acceptance_criteria=list(task.acceptance_criteria),
             constraints=constraints,
             labels=list(task.labels),

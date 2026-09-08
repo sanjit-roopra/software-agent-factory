@@ -44,7 +44,9 @@ factory pipeline. Ready tasks execute in waves using
 The factory adds sibling task titles to each child WorkItem as hard scope
 boundaries, preventing a task-level plan or scope replan from deliberately
 absorbing work assigned to a later issue. Execution-plan scope entries must be
-actual top-level repository paths, not conceptual component names.
+actual repository-relative path prefixes, not conceptual component names.
+Supporting files may be added without replanning when the implementation still
+touches its planned area and stays within its file-count bound.
 
 The factory keeps a persistent project integration worktree. After a child run
 passes verification and review, its local commit is cherry-picked onto that

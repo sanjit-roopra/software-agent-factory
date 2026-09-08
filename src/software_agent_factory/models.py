@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -448,8 +449,8 @@ class ProjectTask(ModelBase):
     def _validate_dependencies(self) -> ProjectTask:
         if len(set(self.dependencies)) != len(self.dependencies):
             raise ValueError("project task dependencies must be unique")
-        if any(dependency >= self.id for dependency in self.dependencies):
-            raise ValueError("project task dependencies must reference earlier task ids")
+        if any(dependency < 1 or dependency >= self.id for dependency in self.dependencies):
+            raise ValueError("project task dependencies must reference valid earlier task ids")
         return self
 
 
@@ -717,13 +718,39 @@ class PlanStep(ModelBase):
     likely_files: list[str] = Field(default_factory=list)
     validation: list[str] = Field(default_factory=list)
 
+    @field_validator("likely_files")
+    @classmethod
+    def _validate_likely_files(cls, paths: list[str]) -> list[str]:
+        normalized_paths: list[str] = []
+        for path in paths:
+            if (
+                not path
+                or path != path.strip()
+                or "\\" in path
+                or any(character in path for character in "*?[]{}")
+                or path.startswith("/")
+                or path.startswith("./")
+                or ":" in path
+            ):
+                raise ValueError("likely_files entries must be repository-relative paths")
+            parts = PurePosixPath(path).parts
+            if not parts or any(part in {".", ".."} for part in parts):
+                raise ValueError(
+                    "likely_files entries must be repository-relative paths without traversal"
+                )
+            normalized_paths.append("/".join(parts))
+        if len(set(normalized_paths)) != len(normalized_paths):
+            raise ValueError("likely_files entries must be unique")
+        return normalized_paths
+
 
 class ExpectedScope(ModelBase):
     modules: list[str] = Field(
-        default_factory=list,
+        min_length=1,
         description=(
-            "Repository-relative top-level path names such as 'src', 'tests', "
-            "'pyproject.toml', or '.github'; never conceptual labels."
+            "Repository-relative path prefixes such as 'src', "
+            "'src/software_agent_factory', 'tests', or 'pyproject.toml'; "
+            "never conceptual labels."
         ),
     )
     estimated_files_min: int = Field(ge=0)
@@ -732,23 +759,31 @@ class ExpectedScope(ModelBase):
     @field_validator("modules")
     @classmethod
     def _validate_modules(cls, modules: list[str]) -> list[str]:
+        normalized_modules: list[str] = []
         for module in modules:
             if (
                 not module
                 or module != module.strip()
-                or "/" in module
                 or "\\" in module
                 or any(character.isspace() for character in module)
-                or module in {".", ".."}
                 or any(character in module for character in "*?[]{}")
+                or module.startswith("/")
+                or ":" in module
             ):
                 raise ValueError(
                     "expected_scope.modules entries must be repository-relative "
-                    "top-level path names such as 'src', 'tests', or 'pyproject.toml'"
+                    "path prefixes such as 'src', 'tests', or 'pyproject.toml'"
                 )
-        if len(set(modules)) != len(modules):
+            parts = PurePosixPath(module).parts
+            if not parts or any(part in {".", ".."} for part in parts):
+                raise ValueError(
+                    "expected_scope.modules entries must be repository-relative "
+                    "path prefixes without traversal"
+                )
+            normalized_modules.append("/".join(parts))
+        if len(set(normalized_modules)) != len(normalized_modules):
             raise ValueError("expected_scope.modules entries must be unique")
-        return modules
+        return normalized_modules
 
     @model_validator(mode="after")
     def _validate_file_bounds(self) -> ExpectedScope:

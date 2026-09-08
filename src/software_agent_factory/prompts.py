@@ -251,9 +251,10 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "dependencies, services, configuration, or generalized infrastructure. Produce "
             "a concrete execution plan with bounded scope, likely files, necessary validation "
             "steps, risks, and a practical test strategy. expected_scope.modules is a "
-            "deterministic path allowlist: populate it only with repository-relative top-level "
-            "path names that may change, such as 'src', 'tests', 'pyproject.toml', or '.github'. "
-            "Never put conceptual labels, descriptions, nested paths, or glob patterns there. "
+            "deterministic path allowlist: populate it only with repository-relative path "
+            "prefixes that may change, such as 'src', 'src/package', 'tests', "
+            "'pyproject.toml', or '.github'. Never put conceptual labels, descriptions, or "
+            "glob patterns there. "
             "For a project-linked work item, constraints describing sibling tasks are hard "
             "scope boundaries: do not plan work assigned to those tasks, including during a "
             "scope-drift replan."
@@ -286,7 +287,9 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "diff, the deterministic verification results and the independent tester's "
             "report below. No implementer self-assessment is provided; do not ask for "
             "one. Treat unnecessary dependencies, speculative abstractions, generalized "
-            "infrastructure, unrelated cleanup, and unrequested features as findings."
+            "infrastructure, unrelated cleanup, and unrequested features as findings. Set "
+            "approved to false whenever scope_concerns, security_concerns, or "
+            "compatibility_concerns is non-empty; suggested_changes may be advisory."
         )
     raise ValueError(f"unsupported agent role: {role!r}")
 

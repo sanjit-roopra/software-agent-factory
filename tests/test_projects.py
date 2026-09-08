@@ -282,6 +282,30 @@ def test_project_plan_rejects_overpacked_single_task() -> None:
         )
 
 
+def test_project_plan_rejects_zero_dependency() -> None:
+    with pytest.raises(ValueError, match="valid earlier task ids"):
+        ProjectPlan(
+            project_id="zero-dependency",
+            summary="Reject invalid dependency ids.",
+            delivery_approach="Use two tasks.",
+            tasks=(
+                ProjectTask(
+                    id=1,
+                    title="Foundation",
+                    description="Create the foundation.",
+                    acceptance_criteria=("The foundation exists.",),
+                ),
+                ProjectTask(
+                    id=2,
+                    title="Dependent task",
+                    description="Build on the foundation.",
+                    acceptance_criteria=("The dependent behavior exists.",),
+                    dependencies=(0,),
+                ),
+            ),
+        )
+
+
 def test_project_work_item_preserves_sibling_task_boundaries(
     factory_source_repo: Path,
     factory_data_dir: Path,
@@ -327,6 +351,49 @@ def test_project_work_item_preserves_sibling_task_boundaries(
     boundary = captured[0].constraints[-1]
     assert "implement only this task" in boundary
     assert "task 2: Build on the base behavior" in boundary
+    assert captured[0].description.startswith("Project context: Build two outcomes")
+
+
+def test_project_work_item_keeps_lower_id_independent_sibling_out_of_scope(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    brief = ProjectBrief(
+        id="parallel-boundary",
+        title="Build parallel outcomes",
+        description="Deliver independent capabilities.",
+        repository_path=str(factory_source_repo),
+    )
+    tasks = (
+        ProjectTask(
+            id=1,
+            title="Build first capability",
+            description="Implement the first capability.",
+            acceptance_criteria=("The first capability works.",),
+        ),
+        ProjectTask(
+            id=2,
+            title="Build second capability",
+            description="Implement the second capability.",
+            acceptance_criteria=("The second capability works.",),
+        ),
+    )
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=_project_planner),
+    )
+
+    work_item = runner._to_work_item(
+        brief,
+        tasks[1],
+        project_tasks=tasks,
+        issue_url=None,
+    )
+
+    boundary = work_item.constraints[-1]
+    assert "implement only this task" in boundary
+    assert "task 1: Build first capability" in boundary
 
 
 def test_project_persists_failed_planner_invocation_when_runtime_raises(

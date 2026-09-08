@@ -431,6 +431,33 @@ class WorkflowController:
         """
         if is_run_finished(run):
             return run
+        if run.active_invocation is not None:
+            active = run.active_invocation
+            now = utc_now()
+            run = run.model_copy(
+                update={
+                    "invocation_records": [
+                        *run.invocation_records,
+                        InvocationRecord(
+                            invocation_number=active.invocation_number,
+                            role=active.role,
+                            purpose=active.purpose,
+                            model=active.model,
+                            reasoning=active.reasoning,
+                            context_tier=active.context_tier,
+                            started_at=active.started_at,
+                            completed_at=now,
+                            success=False,
+                            failure_reason=reason,
+                            attempt_number=active.attempt_number,
+                            budget=active.budget,
+                        ),
+                    ],
+                    "updated_at": now,
+                    "last_activity_at": now,
+                }
+            )
+            self._store.save_run(run)
         return self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason)
 
     # -- entry point ------------------------------------------------------
@@ -585,6 +612,7 @@ class WorkflowController:
                 WorkflowState.PR_READY,
                 WorkflowState.PR_CREATED,
                 WorkflowState.CI_RUNNING,
+                WorkflowState.CI_DIAGNOSIS,
             }:
                 return self.recover_abandoned_run(
                     run,
@@ -680,7 +708,12 @@ class WorkflowController:
         except FileNotFoundError:
             pass
         else:
-            context.repository_skill = self._store.load_artifact(run.id, RepositorySkill)
+            repository_skill = self._store.load_artifact(run.id, RepositorySkill)
+            if (
+                repository_skill.dependency_fingerprint
+                == context.repository_profile.dependency_fingerprint
+            ):
+                context.repository_skill = repository_skill
         return context
 
     @staticmethod
@@ -1416,12 +1449,24 @@ class WorkflowController:
                 context.triage_result.risk,
             )
             while scope.decision is ScopeDecision.REPLAN:
+                previous_findings = tuple(
+                    (finding.category, finding.message) for finding in scope.findings
+                )
                 run = self._replan(run, context, scope, evidence)
                 scope = self._scope_policy.assess(
                     context.execution_plan,
                     evidence.changed_files,
                     context.triage_result.risk,
                 )
+                current_findings = tuple(
+                    (finding.category, finding.message) for finding in scope.findings
+                )
+                if scope.decision is ScopeDecision.REPLAN and current_findings == previous_findings:
+                    raise self._halt(
+                        run,
+                        WorkflowState.NEEDS_HUMAN,
+                        "scope metadata replan made no progress: " + _describe_scope(scope),
+                    )
             if scope.decision is ScopeDecision.NEEDS_HUMAN:
                 raise self._halt(
                     run,
@@ -1467,7 +1512,13 @@ class WorkflowController:
                 run, context, evidence, verification.report, test_report, snapshot
             )
 
-            if not review_report.approved:
+            if not review_report.approved or any(
+                (
+                    review_report.scope_concerns,
+                    review_report.security_concerns,
+                    review_report.compatibility_concerns,
+                )
+            ):
                 repair_context = self._review_repair_context(review_report, test_report)
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
@@ -1574,6 +1625,12 @@ class WorkflowController:
             failures=[finding.message for finding in scope.findings][:MAX_REPAIR_FAILURES],
             log_excerpt=None,
         )
+        if used == 0:
+            self._store.save_artifact_once(
+                run.id,
+                context.execution_plan,
+                filename="execution-plan.initial.json",
+            )
         run = self.transition(run, WorkflowState.PLANNING)
         context.execution_plan = self._run_planner(
             run,
@@ -1584,6 +1641,11 @@ class WorkflowController:
             repair_context=repair_context,
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
+        )
+        self._store.save_artifact_once(
+            run.id,
+            context.execution_plan,
+            filename=f"execution-plan.replan-{used + 1}.json",
         )
         run = run.model_copy(
             update={
@@ -1630,6 +1692,11 @@ class WorkflowController:
             execution_plan=context.execution_plan,
             repair_context=repair_context,
             diff=current_diff if repair_context is not None else None,
+            changed_files=(
+                list(context.latest_evidence.changed_files)
+                if repair_context is not None and context.latest_evidence is not None
+                else []
+            ),
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
@@ -1895,7 +1962,7 @@ class WorkflowController:
         scope = self._scope_policy.assess(
             context.execution_plan, changed_files, context.triage_result.risk
         )
-        if scope.decision is ScopeDecision.NEEDS_HUMAN:
+        if scope.decision is not ScopeDecision.CONTINUE:
             raise self._halt(
                 run,
                 WorkflowState.NEEDS_HUMAN,

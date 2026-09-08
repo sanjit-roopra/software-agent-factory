@@ -188,10 +188,12 @@ class DeterministicVerifier:
             except subprocess.TimeoutExpired as exc:
                 timed_out = True
                 exit_code = -1
-                os.killpg(process.pid, signal.SIGKILL)
-                stdout, stderr = process.communicate()
-                stdout = stdout or _decode(exc.stdout)
-                stderr = stderr or _decode(exc.stderr)
+                stdout, stderr = _kill_process_group(process)
+                stdout = _merge_timeout_output(exc.stdout, stdout)
+                stderr = _merge_timeout_output(exc.stderr, stderr)
+            except BaseException:
+                _kill_process_group(process)
+                raise
 
             duration = time.monotonic() - started
             result = CommandResult(
@@ -216,6 +218,21 @@ class DeterministicVerifier:
             failures=failures,
             confidence=1.0 if passed else 0.0,
         )
+
+
+def _merge_timeout_output(previous: object, final: str) -> str:
+    prefix = _decode(previous)
+    if not prefix or final.startswith(prefix):
+        return final
+    return f"{prefix}{final}"
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return process.communicate()
 
 
 def _describe_failure(result: "CommandResult") -> str:

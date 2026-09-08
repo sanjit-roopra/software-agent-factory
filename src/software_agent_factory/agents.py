@@ -423,18 +423,19 @@ class FakeAgentRuntime:
     def _default_planner(self, request: AgentRequest) -> AgentResult:
         specification = request.specification
         goal = specification.problem if specification is not None else request.work_item.description
+        planned_files = request.changed_files or ["FACTORY_NOTES.md"]
         execution_plan = ExecutionPlan(
             summary=f"Implement: {request.work_item.title}",
             steps=[
                 PlanStep(
                     id="implement",
                     goal=goal,
-                    likely_files=[],
+                    likely_files=planned_files,
                     validation=["Run the repository's configured verification commands."],
                 )
             ],
             expected_scope=ExpectedScope(
-                modules=[],
+                modules=planned_files,
                 estimated_files_min=1,
                 estimated_files_max=3,
             ),

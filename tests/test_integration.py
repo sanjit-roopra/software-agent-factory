@@ -8,7 +8,6 @@ is only used against throwaway repositories created under ``tmp_path``.
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -313,6 +312,42 @@ def test_review_rejection_produces_a_review_repair_context(
     assert "The whitespace-only case is still unhandled." in contexts[0].failures
 
 
+def test_approved_review_with_blocking_concern_still_requires_repair(
+    source_repo: Path, data_dir: Path
+) -> None:
+    requests: list[AgentRequest] = []
+
+    def recording_implementer(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        return FakeAgentRuntime()._default_implementer(request)
+
+    def inconsistent_reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=True,
+                security_concerns=["Authentication is bypassed."],
+            ),
+        )
+
+    run = WorkflowController(
+        build_config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(
+            implementer=recording_implementer,
+            reviewer=inconsistent_reviewer,
+        ),
+    ).run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert [record.triggered_by for record in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.REVIEW,
+    ]
+    assert "Authentication is bypassed." in _repair_contexts(requests)[0].failures
+
+
 def test_implementer_failure_produces_an_implementer_repair_context(
     source_repo: Path, data_dir: Path
 ) -> None:
@@ -351,8 +386,8 @@ def test_scope_drift_replan_updates_plan_without_rerunning_implementer(
     def drifting_implementer(request: AgentRequest) -> AgentResult:
         implementer_requests.append(request)
         assert request.workspace_path is not None
-        (Path(request.workspace_path) / "package.json").write_text(
-            json.dumps({"name": "demo", "attempt": request.attempt_number}) + "\n"
+        (Path(request.workspace_path) / "IMPLEMENTATION_NOTES.md").write_text(
+            f"attempt={request.attempt_number}\n"
         )
         return AgentResult(
             role=AgentRole.IMPLEMENTER,
@@ -370,14 +405,14 @@ def test_scope_drift_replan_updates_plan_without_rerunning_implementer(
                     summary="Accept the verified dependency manifest change.",
                     steps=[
                         PlanStep(
-                            id="dependency",
-                            goal="Record the existing verified dependency change.",
-                            likely_files=["package.json"],
+                            id="notes",
+                            goal="Record the existing verified supporting note.",
+                            likely_files=["IMPLEMENTATION_NOTES.md"],
                             validation=["Run configured verification."],
                         )
                     ],
                     expected_scope=ExpectedScope(
-                        modules=["package.json"],
+                        modules=["IMPLEMENTATION_NOTES.md"],
                         estimated_files_min=1,
                         estimated_files_max=1,
                     ),
@@ -390,7 +425,6 @@ def test_scope_drift_replan_updates_plan_without_rerunning_implementer(
     config = build_config(
         data_dir,
         max_replans=1,
-        approved_sensitive_files=["package.json"],
     )
     store = FileRunStore(data_dir)
     controller = WorkflowController(
@@ -405,7 +439,7 @@ def test_scope_drift_replan_updates_plan_without_rerunning_implementer(
     # Exactly one replan happened: the initial plan plus one re-plan.
     assert len(planner_requests) == 2
     assert planner_requests[1].repair_context is not None
-    assert planner_requests[1].changed_files == ["package.json"]
+    assert planner_requests[1].changed_files == ["IMPLEMENTATION_NOTES.md"]
     assert len(implementer_requests) == 1
     assert len(run.attempt_records) == 1
     assert run.scope_replans == 1
@@ -416,24 +450,52 @@ def test_scope_drift_replan_still_escalates_when_revised_plan_does_not_fit(
 ) -> None:
     def drifting_implementer(request: AgentRequest) -> AgentResult:
         assert request.workspace_path is not None
-        (Path(request.workspace_path) / "package.json").write_text('{"name": "demo"}\n')
+        (Path(request.workspace_path) / "UNPLANNED_NOTES.md").write_text("notes\n")
         return AgentResult(
             role=AgentRole.IMPLEMENTER,
             success=True,
-            change_set=ChangeSet(summary="touched dependencies"),
+            change_set=ChangeSet(summary="added notes"),
         )
+
+    default_runtime = FakeAgentRuntime()
+
+    def unchanged_planner(request: AgentRequest) -> AgentResult:
+        if request.repair_context is not None:
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=True,
+                execution_plan=ExecutionPlan(
+                    summary="Keep the original path scope.",
+                    steps=[
+                        PlanStep(
+                            id="implement",
+                            goal="Update the planned factory notes.",
+                            likely_files=["FACTORY_NOTES.md"],
+                            validation=["Run configured verification."],
+                        )
+                    ],
+                    expected_scope=ExpectedScope(
+                        modules=["FACTORY_NOTES.md"],
+                        estimated_files_min=1,
+                        estimated_files_max=3,
+                    ),
+                    test_strategy=["Run configured verification."],
+                    risks=[],
+                ),
+            )
+        return default_runtime._default_planner(request)
 
     config = build_config(data_dir, max_replans=1)
     controller = WorkflowController(
         config,
         FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=drifting_implementer),
+        FakeAgentRuntime(implementer=drifting_implementer, planner=unchanged_planner),
     )
 
     run = controller.run(work_item(), source_repo)
 
     assert run.state is WorkflowState.NEEDS_HUMAN
-    assert "scope drift replan budget exhausted" in (run.failure_reason or "")
+    assert "scope metadata replan made no progress" in (run.failure_reason or "")
     assert len(run.attempt_records) == 1
     assert run.scope_replans == 1
 

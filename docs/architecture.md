@@ -231,15 +231,20 @@ parallel isolated worktrees within the configured concurrency cap.
 Each child WorkItem also carries a factory-generated boundary naming the
 outcomes assigned to sibling tasks. Task planners, replanners and implementers
 must not pull those outcomes forward. Execution plans use concrete
-repository-relative top-level path names in `expected_scope.modules`; prose
-labels and nested paths are rejected before implementation because scope-drift
-governance treats that field as a deterministic path allowlist.
+repository-relative path prefixes in `expected_scope.modules`; prose labels,
+globs and traversal are rejected before implementation. Small supporting files
+beside the planned paths are allowed when the implementation also changes its
+planned area and remains within the expected file-count bound. A completely
+mismatched path set triggers bounded metadata replanning, while migrations,
+infrastructure, and unapproved dependency or CI changes stop immediately.
 
 When an implementation is already deterministically green but its scope
 metadata is inaccurate, the bounded scope replan updates the ExecutionPlan and
 re-assesses the existing diff. It does not rerun the Implementer or discard
-verified work. Independent Tester and Reviewer gates still evaluate the
-resulting change before publication.
+verified work. The initial and revised plans are retained as audit evidence;
+they do not require every incidental file to have been predicted. Independent
+Tester and Reviewer gates still evaluate the resulting change before
+publication.
 
 `ProjectExecution` is mutable coordination evidence stored separately from the
 immutable brief and plan. The factory derives its outcome from child
