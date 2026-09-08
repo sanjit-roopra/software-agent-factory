@@ -360,9 +360,12 @@ factory dashboard --port 0 --open-browser
 
 The dashboard shows active and completed projects, their task/PR/merge progress,
 models used by project and task invocations, individual workflow runs,
-attempts, usage totals and operational health. Input/output token counts and
-Copilot premium-request units are separate runtime-reported metrics; the
-dashboard never multiplies them or converts them to currency.
+attempts, usage totals and operational health. When Copilot reports nano-AIU,
+the dashboard converts it to an AI usage value in USD using GitHub's published
+conversion of 1 AI credit to $0.01. This is the priced value of the reported
+model usage, not necessarily the amount added to the bill: included or pooled
+credits may cover it. Input/output token counts and legacy premium-request
+units remain separate metrics and are never multiplied.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, answers `GET`
 only, and requires a token generated for that process. The tokenized URL is

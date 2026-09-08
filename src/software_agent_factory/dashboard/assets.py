@@ -103,6 +103,7 @@ def render_index_html(*, token: str) -> str:
           <th scope="col">Output tokens</th>
           <th scope="col">API duration (ms)</th>
           <th scope="col">Session duration (ms)</th>
+          <th scope="col">AI usage value (USD)</th>
           <th scope="col">Premium-request cost</th>
         </tr>
       </thead>
@@ -350,6 +351,13 @@ APP_JS = """\
     row.appendChild(cell);
   }
 
+  function displayUsd(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return "\u2014";
+    }
+    return "$" + value.toFixed(6);
+  }
+
   function renderProjects(payload) {
     var container = document.getElementById("projects-body");
     clearChildren(container);
@@ -413,11 +421,23 @@ APP_JS = """\
       card.appendChild(modelsHeading);
       var modelsHelp = document.createElement("p");
       modelsHelp.className = "project-meta";
-      modelsHelp.textContent =
-        "Token counts and Copilot premium-request units are separate reported metrics; " +
-        "they are not multiplied.";
-      card.appendChild(modelsHelp);
       var models = Array.isArray(project.models) ? project.models : [];
+      var projectUsageValue = 0;
+      var hasProjectUsageValue = false;
+      models.forEach(function (model) {
+        var value = model.usage ? model.usage.usage_value_usd : null;
+        if (typeof value === "number" && Number.isFinite(value)) {
+          projectUsageValue += value;
+          hasProjectUsageValue = true;
+        }
+      });
+      modelsHelp.textContent =
+        "AI usage value: " +
+        (hasProjectUsageValue ? displayUsd(projectUsageValue) : "\u2014") +
+        ". Calculated from Copilot-reported nano-AIU at 1 AI credit = $0.01. " +
+        "Your invoice charge may be lower or zero when included credits apply. " +
+        "Premium-request units are a separate legacy metric.";
+      card.appendChild(modelsHelp);
       if (models.length === 0) {
         var emptyModels = document.createElement("p");
         emptyModels.textContent = "No model invocations yet.";
@@ -434,6 +454,7 @@ APP_JS = """\
           "Success",
           "Reported input tokens",
           "Reported output tokens",
+          "AI usage value (USD)",
           "Premium-request units"
         ].forEach(function (label) {
           var th = document.createElement("th");
@@ -454,6 +475,7 @@ APP_JS = """\
           textCell(row, model.success);
           textCell(row, usage.input_tokens);
           textCell(row, usage.output_tokens);
+          textCell(row, displayUsd(usage.usage_value_usd));
           textCell(row, usage.total_premium_request_cost);
           modelsBody.appendChild(row);
         });
@@ -522,6 +544,10 @@ APP_JS = """\
       ["Output tokens", detail.usage ? detail.usage.output_tokens : null],
       ["Reasoning tokens", detail.usage ? detail.usage.reasoning_tokens : null],
       ["Cache read tokens", detail.usage ? detail.usage.cache_read_tokens : null],
+      [
+        "AI usage value (USD)",
+        detail.usage ? displayUsd(detail.usage.usage_value_usd) : null
+      ],
       ["Premium-request cost", detail.usage ? detail.usage.premium_request_cost : null],
       ["Nano AIU", detail.usage ? detail.usage.total_nano_aiu : null],
       ["Failure reason", detail.failure_reason],
@@ -566,6 +592,7 @@ APP_JS = """\
       textCell(row, usage.output_tokens);
       textCell(row, usage.total_api_duration_ms);
       textCell(row, usage.session_duration_ms);
+      textCell(row, displayUsd(usage.usage_value_usd));
       textCell(row, usage.total_premium_request_cost);
       invocationsBody.appendChild(row);
     });

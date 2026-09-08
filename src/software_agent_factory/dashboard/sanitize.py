@@ -148,6 +148,8 @@ PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+NANO_AIU_PER_USD = 100_000_000_000
+
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
@@ -177,6 +179,9 @@ def sanitize_usage(raw: Any) -> dict[str, Any]:
     for key, value in _allowlist(data, USAGE_FIELDS).items():
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
             sanitized[key] = value
+    total_nano_aiu = sanitized.get("total_nano_aiu")
+    if total_nano_aiu is not None:
+        sanitized["usage_value_usd"] = total_nano_aiu / NANO_AIU_PER_USD
     return sanitized
 
 

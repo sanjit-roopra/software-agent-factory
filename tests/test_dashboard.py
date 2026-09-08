@@ -200,6 +200,7 @@ def fake_project_provider() -> dict[str, Any]:
                         "usage": {
                             "input_tokens": 100,
                             "output_tokens": 20,
+                            "total_nano_aiu": 38_483_200_000,
                             "total_premium_request_cost": 1.0,
                         },
                     }
@@ -690,6 +691,7 @@ def test_projects_show_project_and_task_progress(running_server: RunningServer) 
     assert set(project["models"][0]) <= PROJECT_MODEL_FIELDS
     assert project["models"][0]["model"] == "fake-model"
     assert project["models"][0]["usage"]["input_tokens"] == 100
+    assert project["models"][0]["usage"]["usage_value_usd"] == pytest.approx(0.384832)
 
 
 def test_projects_are_empty_when_provider_is_not_configured() -> None:
@@ -1269,6 +1271,23 @@ def test_usage_sanitizer_keeps_only_non_negative_numeric_fields() -> None:
     assert sanitized == {
         "reasoning_tokens": 5,
     }
+
+
+def test_usage_sanitizer_converts_nano_aiu_to_usd_value() -> None:
+    sanitized = sanitize_usage({"total_nano_aiu": 38_483_200_000})
+
+    assert sanitized == {
+        "total_nano_aiu": 38_483_200_000,
+        "usage_value_usd": pytest.approx(0.384832),
+    }
+
+
+def test_dashboard_explains_and_renders_usage_value() -> None:
+    js = dashboard_assets.APP_JS
+
+    assert "1 AI credit = $0.01" in js
+    assert "Your invoice charge may be lower or zero" in js
+    assert "AI usage value (USD)" in js
 
 
 # --------------------------------------------------------------------------

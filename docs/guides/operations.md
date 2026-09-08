@@ -58,8 +58,10 @@ telemetry backend, no exporter, no network egress.
 Every agent invocation is recorded with run id, role, model, reasoning level,
 context tier, timings, attempt number and result. The Copilot runtime also
 persists token, timing, nano-AIU and premium-request-cost fields when its
-usage-output file reports them. Missing fields remain unknown; no USD estimate
-is synthesized.
+usage-output file reports them. When nano-AIU is available, the dashboard
+shows its USD-equivalent AI usage value using GitHub's conversion of 1 AI
+credit to $0.01. This is not necessarily the invoice charge because included
+or pooled credits may cover the usage. Missing fields remain unknown.
 
 ## Read-only dashboard
 
