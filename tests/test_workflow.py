@@ -371,6 +371,73 @@ def test_all_repository_reading_roles_receive_the_exact_workspace_path(
     assert store.load_run(run.id).invocation_records == run.invocation_records
 
 
+def test_planner_retries_once_after_malformed_execution_plan(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    calls = 0
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def planner(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        requests.append(request)
+        if calls == 1:
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=False,
+                failure_reason=(
+                    "PLANNER response did not validate as ExecutionPlan: summary: Field required"
+                ),
+            )
+        return default_runtime.run(request)
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        store,
+        FakeAgentRuntime(planner=planner),
+    ).run(_work_item("WI-planner-schema-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    planner_invocations = [
+        record for record in run.invocation_records if record.role is AgentRole.PLANNER
+    ]
+    assert [record.success for record in planner_invocations] == [False, True]
+    assert [record.attempt_number for record in planner_invocations] == [1, 2]
+    assert requests[0].repair_context is None
+    assert isinstance(requests[1].repair_context, str)
+    assert "summary: Field required" in requests[1].repair_context
+    assert "stdout=" not in requests[1].repair_context
+    assert "exactly one complete ExecutionPlan JSON object" in requests[1].repair_context
+
+
+def test_planner_does_not_retry_non_schema_failure(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    calls = 0
+
+    def planner(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=False,
+            failure_reason="PLANNER: copilot exited with code 1",
+        )
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(planner=planner),
+    ).run(_work_item("WI-planner-terminal-failure"), source_repo)
+
+    assert run.state is WorkflowState.FAILED
+    assert calls == 1
+
+
 def test_non_default_context_tier_reaches_requests_and_persisted_records(
     source_repo: Path,
     data_dir: Path,

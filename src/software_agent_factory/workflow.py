@@ -229,6 +229,36 @@ def is_run_finished(run: FactoryRun) -> bool:
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
+def _is_retryable_planner_output_failure(result: AgentResult) -> bool:
+    if result.success or result.failure_reason is None:
+        return False
+    return any(
+        marker in result.failure_reason
+        for marker in (
+            "did not validate as ExecutionPlan",
+            "did not contain a parseable JSON object for ExecutionPlan",
+            "did not contain a valid ExecutionPlan",
+        )
+    )
+
+
+def _planner_schema_repair_context(
+    failure_reason: str,
+    prior_context: RepairContext | None,
+) -> str:
+    validation_error = failure_reason.split(" stdout=", 1)[0].strip()
+    schema_context = (
+        "Your previous response was rejected by deterministic schema validation. "
+        f"Validation error: {validation_error}. "
+        "Correct only the output shape and return exactly one complete ExecutionPlan JSON "
+        "object matching the schema in this prompt. Do not omit required fields, add prose, "
+        "or wrap the JSON in markdown."
+    )
+    if prior_context is None:
+        return schema_context
+    return f"{prior_context.model_dump_json()}\n\n{schema_context}"
+
+
 class TransitionError(Exception):
     """Raised when a caller attempts a workflow state transition that is
     not present in ``ALLOWED_TRANSITIONS``."""
@@ -1049,15 +1079,34 @@ class WorkflowController:
             diff=diff,
             changed_files=changed_files or [],
         )
-        result = self._invoke_agent(run, request)
-        if not result.success or result.execution_plan is None:
-            raise self._halt(
+        result: AgentResult | None = None
+        current_repair_context: RepairContext | str | None = repair_context
+        for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
+            result = self._invoke_agent(
                 run,
-                WorkflowState.FAILED,
-                result.failure_reason or "planner agent failed to produce a result",
+                request.model_copy(
+                    update={
+                        "attempt_number": attempt_number,
+                        "repair_context": current_repair_context,
+                    }
+                ),
             )
-        self._store.save_artifact(run.id, result.execution_plan)
-        return result.execution_plan
+            if result.success and result.execution_plan is not None:
+                self._store.save_artifact(run.id, result.execution_plan)
+                return result.execution_plan
+            if not _is_retryable_planner_output_failure(result):
+                break
+            assert result.failure_reason is not None
+            current_repair_context = _planner_schema_repair_context(
+                result.failure_reason,
+                repair_context,
+            )
+        assert result is not None
+        raise self._halt(
+            run,
+            WorkflowState.FAILED,
+            result.failure_reason or "planner agent failed to produce a result",
+        )
 
     def _run_tester(
         self,
