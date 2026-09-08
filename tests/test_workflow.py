@@ -388,7 +388,9 @@ def test_planner_retries_once_after_malformed_execution_plan(
                 role=AgentRole.PLANNER,
                 success=False,
                 failure_reason=(
-                    "PLANNER response did not validate as ExecutionPlan: summary: Field required"
+                    "PLANNER response did not validate as ExecutionPlan: "
+                    "steps.0.goal: Field required; expected_scope: Input should be a valid "
+                    "dictionary"
                 ),
             )
         return default_runtime.run(request)
@@ -408,7 +410,8 @@ def test_planner_retries_once_after_malformed_execution_plan(
     assert [record.attempt_number for record in planner_invocations] == [1, 2]
     assert requests[0].repair_context is None
     assert isinstance(requests[1].repair_context, str)
-    assert "summary: Field required" in requests[1].repair_context
+    assert "steps.0.goal: Field required" in requests[1].repair_context
+    assert "expected_scope: Input should be a valid dictionary" in requests[1].repair_context
     assert "stdout=" not in requests[1].repair_context
     assert "exactly one complete ExecutionPlan JSON object" in requests[1].repair_context
 
