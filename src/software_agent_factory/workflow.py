@@ -73,6 +73,7 @@ from .governance import (
     assess_publish_gate,
 )
 from .models import (
+    ActiveInvocation,
     AgentPurpose,
     AgentRole,
     AttemptBudget,
@@ -369,6 +370,7 @@ class WorkflowController:
         if new_state in TERMINAL_STATES:
             updates["completed_at"] = now
             updates["lease"] = None
+            updates["active_invocation"] = None
         else:
             updates["completed_at"] = None
             if run.lease is not None:
@@ -404,6 +406,7 @@ class WorkflowController:
                 "updated_at": now,
                 "last_activity_at": now,
                 "lease": None,
+                "active_invocation": None,
             }
         )
         self._store.save_run(run)
@@ -1234,6 +1237,21 @@ class WorkflowController:
         """Run one agent and persist its routing and reported usage."""
 
         started_at = utc_now()
+        invocation_number = len(run.invocation_records) + 1
+        run.active_invocation = ActiveInvocation(
+            invocation_number=invocation_number,
+            role=request.role,
+            purpose=request.purpose,
+            model=request.model,
+            reasoning=request.reasoning,
+            context_tier=request.context_tier,
+            started_at=started_at,
+            attempt_number=request.attempt_number,
+            budget=budget,
+        )
+        run.updated_at = started_at
+        run.last_activity_at = started_at
+        self._store.save_run(run)
         try:
             result = self._runtime.run(request)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1241,7 +1259,7 @@ class WorkflowController:
             failure_reason = runtime_exception_failure_reason(exc)
             run.invocation_records.append(
                 InvocationRecord(
-                    invocation_number=len(run.invocation_records) + 1,
+                    invocation_number=invocation_number,
                     role=request.role,
                     purpose=request.purpose,
                     model=request.model,
@@ -1255,6 +1273,7 @@ class WorkflowController:
                     budget=budget,
                 )
             )
+            run.active_invocation = None
             run.updated_at = completed_at
             run.last_activity_at = completed_at
             self._store.save_run(run)
@@ -1268,7 +1287,7 @@ class WorkflowController:
         completed_at = utc_now()
         run.invocation_records.append(
             InvocationRecord(
-                invocation_number=len(run.invocation_records) + 1,
+                invocation_number=invocation_number,
                 role=request.role,
                 purpose=request.purpose,
                 model=request.model,
@@ -1283,6 +1302,7 @@ class WorkflowController:
                 usage=result.usage,
             )
         )
+        run.active_invocation = None
         run.updated_at = completed_at
         run.last_activity_at = completed_at
         self._store.save_run(run)
@@ -1601,6 +1621,15 @@ class WorkflowController:
         completed_at = utc_now()
 
         if not result.success:
+            failure_reason = result.failure_reason or "implementer reported failure"
+            try:
+                evidence = context.workspace.collect_evidence()
+                context.latest_evidence = evidence
+                self._store.save_patch(run.id, evidence.diff, attempt=snapshot)
+            except WorkspaceError as exc:
+                failure_reason = (
+                    f"{failure_reason}; could not capture partial worktree evidence: {exc}"
+                )
             run = self._record_attempt(
                 run,
                 attempt_number,
@@ -1608,7 +1637,7 @@ class WorkflowController:
                 started_at,
                 completed_at,
                 outcome="failed",
-                failure_reason=result.failure_reason or "implementer reported failure",
+                failure_reason=failure_reason,
                 budget=budget,
                 trigger=trigger,
             )
@@ -1693,7 +1722,11 @@ class WorkflowController:
             )
         return RepairContext(
             trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
-            summary="The previous implementation attempt did not complete.",
+            summary=(
+                "The previous implementation attempt did not complete. The working tree "
+                "may contain partial, unverified edits from that attempt; inspect and "
+                "reconcile them before continuing."
+            ),
             failures=[last.failure_reason or "implementer reported failure"],
             log_excerpt=None,
         )

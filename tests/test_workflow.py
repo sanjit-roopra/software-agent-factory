@@ -66,6 +66,7 @@ from software_agent_factory.workflow import (
     WorkflowController,
     is_run_finished,
 )
+from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
 
 
 @pytest.fixture(autouse=True)
@@ -377,12 +378,15 @@ def test_planner_retries_once_after_malformed_execution_plan(
 ) -> None:
     calls = 0
     requests: list[AgentRequest] = []
+    active_invocations = []
     default_runtime = FakeAgentRuntime()
+    store = FileRunStore(data_dir)
 
     def planner(request: AgentRequest) -> AgentResult:
         nonlocal calls
         calls += 1
         requests.append(request)
+        active_invocations.append(store.list_runs()[0].active_invocation)
         if calls == 1:
             return AgentResult(
                 role=AgentRole.PLANNER,
@@ -395,7 +399,6 @@ def test_planner_retries_once_after_malformed_execution_plan(
             )
         return default_runtime.run(request)
 
-    store = FileRunStore(data_dir)
     run = WorkflowController(
         _config(data_dir, same_model_attempts=2),
         store,
@@ -414,6 +417,9 @@ def test_planner_retries_once_after_malformed_execution_plan(
     assert "expected_scope: Input should be a valid dictionary" in requests[1].repair_context
     assert "stdout=" not in requests[1].repair_context
     assert "exactly one complete ExecutionPlan JSON object" in requests[1].repair_context
+    assert all(active is not None for active in active_invocations)
+    assert [active.attempt_number for active in active_invocations if active is not None] == [1, 2]
+    assert run.active_invocation is None
 
 
 def test_planner_does_not_retry_non_schema_failure(
@@ -2012,6 +2018,78 @@ def test_implementer_failures_consume_the_shared_attempt_budget(
     assert len(run.attempt_records) == 2
     assert all(attempt.outcome == "failed" for attempt in run.attempt_records)
     assert all(attempt.failure_reason == "simulated crash" for attempt in run.attempt_records)
+    assert run.active_invocation is None
+
+
+def test_implementer_retry_receives_partial_worktree_diff(
+    source_repo: Path, data_dir: Path
+) -> None:
+    calls = 0
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        requests.append(request)
+        if calls == 1:
+            assert request.workspace_path is not None
+            Path(request.workspace_path, "partial.py").write_text(
+                "PARTIAL = True\n", encoding="utf-8"
+            )
+            return AgentResult(
+                role=AgentRole.IMPLEMENTER,
+                success=False,
+                failure_reason="IMPLEMENTER: copilot timed out after 900s",
+            )
+        return default_runtime.run(request)
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        store,
+        FakeAgentRuntime(implementer=implementer),
+    ).run(_work_item("WI-partial-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert calls == 2
+    assert requests[1].diff is not None
+    assert "partial.py" in requests[1].diff
+    assert isinstance(requests[1].repair_context, RepairContext)
+    assert "partial, unverified edits" in requests[1].repair_context.summary
+    assert (store.run_dir(run.id) / "attempts" / "01" / "patch.diff").is_file()
+
+
+def test_failed_partial_evidence_capture_does_not_abort_retry_loop(
+    source_repo: Path,
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def always_failing_implementer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=False,
+            failure_reason="simulated timeout",
+        )
+
+    def fail_evidence(self: object) -> object:
+        raise WorkspaceError("locked index")
+
+    monkeypatch.setattr(GitWorktreeWorkspace, "collect_evidence", fail_evidence)
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        store,
+        FakeAgentRuntime(implementer=always_failing_implementer),
+    ).run(_work_item("WI-broken-partial-evidence"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert len(run.attempt_records) == 2
+    assert all(
+        "could not capture partial worktree evidence: locked index"
+        in (attempt.failure_reason or "")
+        for attempt in run.attempt_records
+    )
 
 
 # -- triage-driven human gates ------------------------------------------------

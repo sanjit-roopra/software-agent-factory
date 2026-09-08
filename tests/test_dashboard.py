@@ -31,6 +31,7 @@ from software_agent_factory.dashboard import (
 )
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.sanitize import (
+    ACTIVE_INVOCATION_FIELDS,
     ATTEMPT_FIELDS,
     INVOCATION_FIELDS,
     PROJECT_FIELDS,
@@ -38,6 +39,7 @@ from software_agent_factory.dashboard.sanitize import (
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    sanitize_run_detail,
     sanitize_usage,
 )
 from software_agent_factory.dashboard.security import TOKEN_HEADER, validate_bind_host
@@ -111,6 +113,17 @@ FIXTURE_DETAILS: dict[str, dict[str, Any]] = {
                 },
             }
         ],
+        "active_invocation": {
+            "invocation_number": 2,
+            "role": "IMPLEMENTER",
+            "purpose": "STANDARD",
+            "model": "fake-model",
+            "context_tier": "default",
+            "status": "running",
+            "started_at": "2024-01-01T00:06:00+00:00",
+            "attempt_number": 2,
+            "prompt": "must-not-be-exposed",
+        },
     }
     for run in FIXTURE_RUNS
 }
@@ -929,6 +942,9 @@ def test_valid_run_id_reaches_provider(running_server: RunningServer) -> None:
     payload = _body_json(response)
     assert payload["run_id"] == "run-001"
     assert "attempts" in payload
+    assert set(payload["active_invocation"]) <= ACTIVE_INVOCATION_FIELDS
+    assert payload["active_invocation"]["status"] == "running"
+    assert "prompt" not in payload["active_invocation"]
     # No raw logs, diffs or prompt content are exposed by the fixture detail
     # shape, and the client-side allowlist in app.js never renders such keys
     # even if a future provider were to include them.
@@ -941,6 +957,22 @@ def test_unknown_but_valid_run_id_is_404(running_server: RunningServer) -> None:
         "GET", "/api/runs/does-not-exist", headers=running_server.authed_headers()
     )
     assert response.status == 404
+
+
+def test_non_object_active_invocation_is_dropped() -> None:
+    sanitized = sanitize_run_detail(
+        {
+            "run_id": "run-001",
+            "active_invocation": [
+                {
+                    "reasoning": "must-not-be-exposed",
+                    "failure_reason": "must-not-be-exposed",
+                }
+            ],
+        }
+    )
+
+    assert "active_invocation" not in sanitized
 
 
 def test_is_valid_run_id_helper() -> None:
@@ -1093,7 +1125,11 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
         payload = json.loads(raw_body)
-        assert set(payload) <= RUN_DETAIL_FIELDS | {"attempts", "invocations"}
+        assert set(payload) <= RUN_DETAIL_FIELDS | {
+            "active_invocation",
+            "attempts",
+            "invocations",
+        }
         assert "logs" not in payload
         assert "diff" not in payload
         assert "prompt" not in payload
@@ -1197,6 +1233,8 @@ def test_app_js_never_uses_dangerous_rendering_apis() -> None:
     assert "eval(" not in js
     assert "new Function(" not in js
     assert "textContent" in js
+    assert "Active invocation" in js
+    assert "model.status" in js
 
 
 def test_index_html_has_no_inline_script_body() -> None:

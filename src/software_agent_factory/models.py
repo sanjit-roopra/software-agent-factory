@@ -575,6 +575,20 @@ class InvocationRecord(ModelBase):
         return self
 
 
+class ActiveInvocation(ModelBase):
+    """One agent invocation currently owned by the workflow controller."""
+
+    invocation_number: int = Field(ge=1)
+    role: AgentRole
+    purpose: AgentPurpose = AgentPurpose.STANDARD
+    model: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+    context_tier: ContextTier = ContextTier.DEFAULT
+    started_at: UtcDateTime
+    attempt_number: int | None = Field(default=None, ge=1)
+    budget: AttemptBudget | None = None
+
+
 class AttemptRecord(ModelBase):
     attempt_number: int = Field(ge=1)
     role: AgentRole
@@ -620,6 +634,7 @@ class FactoryRun(VersionedModel):
     updated_at: UtcDateTime = Field(default_factory=utc_now)
     last_activity_at: UtcDateTime | None = None
     lease: RunLease | None = None
+    active_invocation: ActiveInvocation | None = None
     completed_at: UtcDateTime | None = None
     failure_reason: str | None = None
     commit_sha: str | None = None
