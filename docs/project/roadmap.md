@@ -42,6 +42,7 @@ item, including staging and deployment, is deferred.
 | 15.12 | Kubernetes workers | deferred |
 | 16 | Repository capability layer + bounded post-green polish | done |
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
+| 18 | Opt-in autonomous PR/CI/merge project delivery and checkpoint recovery | implemented |
 
 ## Known limits
 
@@ -59,9 +60,13 @@ item, including staging and deployment, is deferred.
   but raw premium-request cost and nano-AIU are not converted to AI Credits or
   USD. Missing fields remain unknown.
 - **Trackers.** GitHub Issues is the only backlog provider.
-- **Projects.** Project plans are flat DAGs capped at 12 tasks. The local
-  integration branch is authoritative; optional GitHub issues mirror tasks but
-  are not labelled for daemon dispatch.
+- **Projects.** Project plans are flat DAGs capped at 12 tasks. Local mode
+  composes an integration branch; opt-in merge mode delivers task PRs serially
+  to the target. Optional GitHub issues are not labelled for daemon dispatch.
+- **Delivery recovery.** Explicit project resume reuses persisted delivery
+  checkpoints; ambiguous interrupted implementation still requires a human.
+  Merge queues, automatic conflict resolution and branch-protection bypass
+  are not implemented.
 - **Concurrency.** `scheduler.max_concurrent_tasks` is validated to `1` or `2`.
 - **Capabilities.** Repository guidance is generated per repository and
   dependency fingerprint by the configured Researcher, with web access limited
@@ -85,7 +90,7 @@ item, including staging and deployment, is deferred.
 Deferred means "not now". These are stronger than deferred — they are design
 constraints for V1:
 
-- autonomous merge
+- unrestricted autonomous merge (the bounded opt-in exception is ADR-022)
 - autonomous deployment
 - a hosted, multi-user or networked service
 - a control plane, or any dashboard write path

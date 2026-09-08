@@ -9,6 +9,7 @@ is only used against throwaway repositories created under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -505,13 +506,15 @@ def test_pull_request_enabled_publishes_and_reaches_done_when_ci_disabled(
 
     assert run.state is WorkflowState.DONE
     assert run.completed_at is not None
-    assert run.commit_sha == runner.commit_sha
+    # Publication now creates a real commit object bound to the reviewed tree
+    # and the approved parent, so the SHA comes from git, not the fake runner.
+    assert re.fullmatch(r"[0-9a-f]{40}", run.commit_sha or "")
     assert run.pull_request_url == runner.pr_url
 
     pushes = [argv for argv in runner.commands("git") if "push" in argv]
     assert len(pushes) == 1
     assert "--force" not in pushes[0]
-    assert pushes[0][-1] == "HEAD:refs/heads/factory/WI-1"
+    assert pushes[0][-1].endswith(":refs/heads/factory/WI-1")
     assert not any("merge" in argv for argv in runner.commands("git"))
 
     create = [argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "create"]]
@@ -727,7 +730,7 @@ def test_repairable_ci_failure_repairs_pushes_again_and_then_passes(
     pushes = [argv for argv in runner.commands("git") if "push" in argv]
     assert len(pushes) == 2
     assert all("--force" not in argv for argv in pushes)
-    assert all(argv[-1] == "HEAD:refs/heads/factory/WI-1" for argv in pushes)
+    assert all(argv[-1].endswith(":refs/heads/factory/WI-1") for argv in pushes)
     creates = [argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "create"]]
     assert len(creates) == 1
 

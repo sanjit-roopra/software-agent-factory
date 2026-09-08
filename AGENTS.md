@@ -345,6 +345,11 @@ Do not introduce unless explicitly required:
 - autonomous merge
 - complex plugin architecture
 
+The explicit exception to autonomous merge is the opt-in, controller-owned
+delivery path in ADR-022: allowlisted repository and target, required green
+checks for the reviewed head, no branch-protection bypass, and confirmed merge
+evidence. Agents still never merge or choose delivery policy themselves.
+
 The first version uses filesystem persistence.
 
 #### The one permitted dashboard

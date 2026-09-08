@@ -263,6 +263,12 @@ def _warn_fake_backlog_claims() -> None:
     )
 
 
+def _delivery_target_text(repository: str | None, base_branch: str | None) -> str:
+    """Describe where a merge landed, degrading gracefully when unrecorded."""
+    branch = base_branch or "(unknown branch)"
+    return f"{repository}@{branch}" if repository else branch
+
+
 def _stale_after(config: FactoryConfig, override_seconds: int | None) -> timedelta:
     """Staleness threshold for monitoring surfaces.
 
@@ -378,6 +384,14 @@ def run_command(
         typer.echo(f"commit: {run.commit_sha}")
     if run.pull_request_url is not None:
         typer.echo(f"pull request: {run.pull_request_url}")
+    # DONE alone does not mean the change reached the target branch, so the
+    # merge commit and where it landed are reported explicitly.
+    if run.merge_commit_sha is not None:
+        typer.echo(f"merged commit: {run.merge_commit_sha}")
+        target = _delivery_target_text(run.delivery_repository, run.delivery_base_branch)
+        typer.echo(f"merged into: {target}")
+    elif run.pull_request_url is not None:
+        typer.echo("merged: no (the pull request was not merged by this run)")
     if run.failure_reason is not None:
         typer.echo(f"reason: {run.failure_reason}")
 
@@ -395,9 +409,13 @@ def run_command(
 @app.command("project")
 def project_command(
     repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
-    title: str = typer.Option(..., "--title", help="Short title for the project."),
+    title: str = typer.Option(
+        None, "--title", help="Short title for the project. Required unless --resume."
+    ),
     description: str = typer.Option(
-        ..., "--description", help="High-level description of what to build."
+        None,
+        "--description",
+        help="High-level description of what to build. Required unless --resume.",
     ),
     acceptance_criteria: list[str] | None = typer.Option(
         None,
@@ -414,12 +432,21 @@ def project_command(
         "--project-id",
         help="Stable project id. Defaults to a generated id.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help=(
+            "Continue an interrupted project from its persisted brief, immutable plan "
+            "and recorded task evidence. Requires --project-id. Never replans, never "
+            "resets a retry budget and never repeats delivered work."
+        ),
+    ),
     github_repo: str = typer.Option(
         None,
         "--github-repo",
         help=(
             "Optional GitHub repository in OWNER/NAME form. Creates one issue per validated "
-            "task and closes it after successful local integration."
+            "task and closes it after successful integration."
         ),
     ),
     runtime: RuntimeChoice = typer.Option(
@@ -440,26 +467,37 @@ def project_command(
     ),
 ) -> None:
     """Derive the smallest sufficient work plan and execute it to completion."""
+    if resume:
+        if project_id is None:
+            raise _fail("--resume requires --project-id")
+        for name, value in (
+            ("--title", title),
+            ("--description", description),
+            ("--github-repo", github_repo),
+        ):
+            if value is not None:
+                raise _fail(f"{name} cannot be combined with --resume; the stored project wins")
+        if acceptance_criteria or constraints:
+            raise _fail(
+                "--acceptance-criterion and --constraint cannot be combined with --resume; "
+                "the stored project brief is authoritative"
+            )
+    else:
+        if title is None or description is None:
+            raise _fail("--title and --description are required unless --resume is used")
+
     factory_config = _load_config(config, data_dir, model_profile)
     _require_prerequisites(
         require_gh=(
             github_repo is not None
             or factory_config.pull_request.enabled
             or factory_config.ci.enabled
+            or factory_config.merge.enabled
         ),
         require_copilot=runtime is RuntimeChoice.COPILOT,
     )
     _configure_logging(factory_config)
 
-    resolved_project_id = project_id or f"project-{uuid4().hex[:12]}"
-    brief = ProjectBrief(
-        id=resolved_project_id,
-        title=title,
-        description=description,
-        repository_path=str(repo.expanduser().resolve()),
-        acceptance_criteria=acceptance_criteria or [],
-        constraints=constraints or [],
-    )
     run_store = FileRunStore(factory_config.data_dir)
     try:
         project_runner = ProjectRunner(
@@ -467,17 +505,38 @@ def project_command(
             run_store,
             _build_runtime(runtime),
         )
-        execution = project_runner.run(
-            brief,
-            repo,
-            github_repository=github_repo,
-        )
+        if resume:
+            assert project_id is not None
+            execution = project_runner.resume(project_id, repo)
+        else:
+            assert title is not None and description is not None
+            brief = ProjectBrief(
+                id=project_id or f"project-{uuid4().hex[:12]}",
+                title=title,
+                description=description,
+                repository_path=str(repo.expanduser().resolve()),
+                acceptance_criteria=acceptance_criteria or [],
+                constraints=constraints or [],
+            )
+            execution = project_runner.run(
+                brief,
+                repo,
+                github_repository=github_repo,
+            )
     except (OSError, ProjectError, ValueError) as exc:
         raise _fail(str(exc)) from None
 
     project_store = FileProjectStore(factory_config.data_dir)
     typer.echo(f"project id: {execution.project_id}")
     typer.echo(f"state: {execution.state}")
+    typer.echo(f"delivery: {execution.delivery_mode}")
+    if execution.delivery_mode == "merge":
+        typer.echo(
+            "target: "
+            + _delivery_target_text(execution.delivery_repository, execution.delivery_base_branch)
+        )
+        merged = sum(1 for task in execution.tasks if task.merge_commit_sha is not None)
+        typer.echo(f"merged tasks: {merged}/{len(execution.tasks)}")
     try:
         plan = project_store.load_plan(execution.project_id)
     except FileNotFoundError:
@@ -495,6 +554,12 @@ def project_command(
             details.append(task.issue_url)
         if task.run_id is not None:
             details.append(f"run {task.run_id}")
+        if task.pull_request_url is not None:
+            details.append(task.pull_request_url)
+        if task.merge_commit_sha is not None:
+            details.append(f"merged {task.merge_commit_sha}")
+        elif execution.delivery_mode == "merge":
+            details.append("not merged")
         typer.echo(" | ".join(details))
     if execution.failure_reason is not None:
         typer.echo(f"reason: {execution.failure_reason}")

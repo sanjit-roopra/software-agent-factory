@@ -204,6 +204,13 @@ Do not delete uncertain work automatically.
 
 ## 8. Explicit retry scheduling
 
+ADR-022 extends tracker/filesystem reconciliation to explicit project delivery
+resume. Immutable plans, persisted child run ids and confirmed PR merge
+evidence determine what remains to run. Delivery checkpoints can continue
+without fresh budgets; ambiguous interrupted implementation stops rather than
+being replayed. Opt-in remote projects dispatch serially from the refreshed
+target branch, keeping reservations and dependency release deterministic.
+
 Retries are represented as state.
 
 Do not hide retry loops inside agents.

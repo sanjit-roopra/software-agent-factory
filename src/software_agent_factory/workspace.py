@@ -30,7 +30,7 @@ docs/symphony-alignment.md "Deterministic per-task workspaces" /
   present worktree is a no-op that returns the same path and base commit.
 - The controller (not this module) is responsible for turning collected
   evidence into a typed ``ChangeSet``; this module only returns raw changed
-  file paths and a ``git diff --cached <base_commit>`` text blob so it has no
+  file paths, an immutable tree SHA and a diff from the base to that tree, so it has no
   dependency on artifact models that may not exist yet.
 
 This module intentionally performs no network access and never deletes or
@@ -141,6 +141,7 @@ class WorkspaceEvidence:
 
     changed_files: list[str] = field(default_factory=list)
     diff: str = ""
+    tree_sha: str | None = None
 
 
 def _parse_worktree_list(output: str) -> list[dict[str, str]]:
@@ -172,11 +173,15 @@ class GitWorktreeWorkspace:
         source_repo: Path,
         work_item_id: str,
         branch_prefix: str = "factory/",
+        *,
+        base_ref: str | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).resolve()
         self.source_repo = self._validate_source_repo(Path(source_repo))
         self.work_item_id = work_item_id
         self.branch_prefix = branch_prefix
+        self.base_ref = base_ref
+        self._validate_base_ref()
 
         self.workspace_root = self.data_dir / "workspaces"
         self.locks_root = self.data_dir / "locks"
@@ -200,6 +205,10 @@ class GitWorktreeWorkspace:
 
         self._lock_fd: int | None = None
         self.base_commit: str | None = None
+
+    def _validate_base_ref(self) -> None:
+        if self.base_ref is not None and re.fullmatch(r"[0-9a-f]{40}", self.base_ref) is None:
+            raise WorkspaceError("explicit workspace base must be an exact commit SHA")
 
     def _git_common_dir(self) -> Path:
         completed = subprocess.run(
@@ -387,7 +396,7 @@ class GitWorktreeWorkspace:
         return None
 
     def _create_worktree(self) -> None:
-        base_ref = _run_git(self.source_repo, ["rev-parse", "HEAD"]).stdout.strip()
+        base_ref = self.base_ref or _run_git(self.source_repo, ["rev-parse", "HEAD"]).stdout.strip()
         result = _run_git(
             self.source_repo,
             ["worktree", "add", "-b", self.branch_name, str(self.path), base_ref],
@@ -422,10 +431,15 @@ class GitWorktreeWorkspace:
             except (json.JSONDecodeError, KeyError, TypeError):
                 recorded = None
             if isinstance(recorded, str) and self._commit_exists(recorded):
+                if self.base_ref is not None and recorded != self.base_ref:
+                    raise WorkspaceError("existing workspace has a different recorded base")
                 self.base_commit = recorded
                 return
 
-        base = _run_git(self.source_repo, ["merge-base", "HEAD", self.branch_name]).stdout.strip()
+        base = (
+            self.base_ref
+            or _run_git(self.source_repo, ["merge-base", "HEAD", self.branch_name]).stdout.strip()
+        )
         if not self._commit_exists(base):
             raise WorkspaceError(
                 f"computed base commit {base!r} for {self.branch_name} does not resolve "
@@ -444,20 +458,33 @@ class GitWorktreeWorkspace:
         )
         return completed.returncode == 0
 
-    def prepare(self) -> Path:
+    def prepare(self, *, base_ref: str | None = None) -> Path:
         """Create or restore the worktree for this work item.
 
         Idempotent: calling this repeatedly against an already registered
         and present worktree returns the same path without side effects
         beyond recording the base commit once.
 
+        An explicit ``base_ref`` additionally requires a clean workspace at
+        exactly that commit. Resume omits it to restore the recorded base.
+
         The whole inspect/prune/create sequence runs under the per-source-repo
         worktree administration lock, so two concurrently dispatched runs
         against the same repository can never interleave repository-global
         ``git worktree`` metadata updates.
         """
+        if base_ref is not None:
+            self.base_ref = base_ref
+        self._validate_base_ref()
         with self._prune_lock():
-            return self._prepare_locked()
+            path = self._prepare_locked()
+            if self.base_ref is not None:
+                head = _run_git(path, ["rev-parse", "HEAD"]).stdout.strip()
+                if head != self.base_ref or _run_git(path, ["status", "--porcelain"]).stdout:
+                    raise WorkspaceError(
+                        "delivery workspace must start clean at the fetched target"
+                    )
+            return path
 
     def _prepare_locked(self) -> Path:
         registered = self._find_registered_worktree()
@@ -480,8 +507,7 @@ class GitWorktreeWorkspace:
         return self.path
 
     def collect_evidence(self) -> WorkspaceEvidence:
-        """Stage all changes (including untracked files) and diff the staged
-        tree against this workspace's recorded ``base_commit``.
+        """Stage changes and freeze a tree before deriving the review diff.
 
         Diffing against the base commit (rather than the workspace ``HEAD``)
         keeps changes that a previous attempt already committed inside the
@@ -494,12 +520,13 @@ class GitWorktreeWorkspace:
         assert self.base_commit is not None
 
         _run_git(self.path, ["add", "-A"])
-        diff = _run_git(self.path, ["diff", "--cached", self.base_commit]).stdout
+        tree_sha = _run_git(self.path, ["write-tree"]).stdout.strip()
+        diff = _run_git(self.path, ["diff", self.base_commit, tree_sha]).stdout
         names_output = _run_git(
-            self.path, ["diff", "--cached", "--name-only", self.base_commit]
+            self.path, ["diff", "--name-only", self.base_commit, tree_sha]
         ).stdout
         changed_files = [line for line in names_output.splitlines() if line]
-        return WorkspaceEvidence(changed_files=changed_files, diff=diff)
+        return WorkspaceEvidence(changed_files=changed_files, diff=diff, tree_sha=tree_sha)
 
     def cleanup(self, force: bool = False) -> None:
         """Remove the worktree. Only called explicitly; never part of the

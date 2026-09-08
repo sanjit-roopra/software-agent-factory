@@ -29,13 +29,17 @@ Nothing costs money or touches the network unless you turn it on.
 | Agent runtime | `fake` — deterministic, offline, free |
 | `pull_request.enabled` | `false` |
 | `ci.enabled` | `false` |
+| `merge.enabled` | `false` |
 | `scheduler.enabled` | `false` |
 | Dashboard | not running |
 | launchd service | not installed |
 
-The factory never force-pushes, never merges and never deploys. Every retry is
-bounded. The test suite runs entirely offline: it never calls a model and never
-reaches GitHub.
+The factory never force-pushes or deploys. Automatic merging is explicitly
+opt-in: reviewed PRs in allowlisted repositories must pass the configured
+required checks, and branch protection is never bypassed. Projects can deliver
+task PRs through bounded CI repair to the target branch; see
+[autonomous project delivery](docs/guides/projects.md#autonomous-delivery).
+Every retry is bounded. The test suite runs entirely offline.
 
 ## Install
 

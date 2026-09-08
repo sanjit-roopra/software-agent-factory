@@ -621,7 +621,7 @@ def _permission_profile(request: AgentRequest) -> _PermissionProfile:
     if request.role is AgentRole.IMPLEMENTER:
         return _PermissionProfile(
             available_tools=IMPLEMENTER_TOOLS,
-            denied_permissions=("url", "shell(git push)", "shell(gh:*)"),
+            denied_permissions=("url", "shell(git commit)", "shell(git push)", "shell(gh:*)"),
         )
     return _PermissionProfile(
         available_tools=READ_ONLY_TOOLS,

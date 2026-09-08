@@ -7,6 +7,27 @@ API is still `0.x`.
 
 ## Unreleased
 
+### Added
+
+- Opt-in autonomous project delivery: task PRs pass local verification,
+  independent review and bounded CI repair before guarded merging into the
+  configured target branch. Dependent tasks start from merged predecessors.
+- A separate `merge` policy requiring explicit repository and check allowlists,
+  a target branch, non-draft PRs and deterministic verification commands.
+  Merges match the reviewed head and never bypass branch protection.
+- Explicit `factory project --resume` reconciliation of persisted plans, task
+  identities and safe delivery checkpoints, without fresh retry budgets.
+  Ambiguous interrupted implementation still stops for human intervention.
+- Exact `scope_drift.approved_sensitive_files` authorization for planned
+  dependency and CI bootstrap files, preserving all other governance gates.
+
+### Changed
+
+- Every published revision, including CI repairs, is bound to independent
+  Reviewer approval. The current review result is reflected in the PR body.
+- PR publication can reconcile a matching factory-owned PR after interruption
+  rather than creating a duplicate.
+
 ## 0.4.1 - 2026-09-07
 
 ### Added

@@ -1,19 +1,20 @@
 # GitHub backlog, PRs and CI
 
-Three separate integrations. All are disabled in the packaged configuration.
+Four separate integrations. All are disabled in the packaged configuration.
 With the defaults, the factory makes no network request at all.
 
 | Setting | Default | What it turns on |
 | --- | --- | --- |
 | `pull_request.enabled` | `false` | Commit, push and open a draft PR. |
 | `ci.enabled` | `false` | Poll checks on that PR and repair some failures. |
+| `merge.enabled` | `false` | Merge verified PRs into an explicitly configured target. |
 | `scheduler.enabled` | `false` | Poll GitHub Issues and dispatch work. |
 
-All three require `gh` on `PATH` and authenticated. `ci.enabled` also requires
+All four require `gh` on `PATH` and authenticated. `ci.enabled` also requires
 `pull_request.enabled`; the config loader rejects the combination otherwise.
 
-The factory never merges anything, ever. There is no autonomous merge and no
-autonomous deployment.
+Automatic merging requires its own explicit policy. There is no autonomous
+deployment or permission to execute production migrations.
 
 ## Pull requests
 
@@ -40,7 +41,8 @@ Guards before anything leaves the machine:
 - No changed file may match `repository.protected_file_patterns`.
 - The scope-drift check runs again at this boundary.
 
-It never force-pushes. It never merges. PRs are drafts by default.
+It never force-pushes. PRs are drafts by default; automatic delivery requires
+non-draft PRs and the merge policy below.
 
 Commits carry a `Co-authored-by: Copilot` trailer so machine-produced changes
 are attributable in history.
@@ -82,6 +84,44 @@ repair context — the normalized CI evidence — not the whole run history.
 
 An unrecognized `gh` check status is treated conservatively as still pending
 rather than as a pass.
+
+## Automatic merging
+
+Edit these sections in a complete copy of the example configuration:
+
+```yaml
+pull_request:
+  enabled: true
+  remote: "origin"
+  base_branch: "main"
+  draft: false
+  allowed_hosts: ["github.com"]
+ci:
+  enabled: true
+  poll_interval_seconds: 30
+  max_wait_seconds: 1800
+  repair_attempts: 3
+merge:
+  enabled: true
+  method: "squash"
+  allowed_repositories: ["acme/example"]
+  required_checks: ["quality", "tests"]
+```
+
+Use your repository's actual check names and configure nonempty
+`repository.commands.verify`. The controller requires current, successful
+checks, the reviewed head, the allowlisted repository and target, and GitHub
+merge eligibility. Required checks must also be enforced by the target's
+active GitHub protection policy; the factory never creates or weakens those
+rules. It supplies an expected-head guard to a synchronous merge request and
+confirms the actual merged commit before reporting `DONE`. It does not use
+administrator override or implicitly enqueue a merge.
+
+Missing/skipped required checks, stale heads, branch protection, merge conflicts
+or an outdated base stop delivery rather than merging uncertain work.
+The existing bounded CI repair handles code/test failures before this boundary.
+Project mode serializes task delivery and refreshes the target between tasks;
+it does not add a merge-queue service. See [Projects](projects.md).
 
 ## Backlog daemon
 

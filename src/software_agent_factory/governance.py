@@ -26,7 +26,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
 
-from .config import RepositoryCommandsConfig
+from .config import RepositoryCommandsConfig, ScopeDriftConfig
 from .models import CommandResult, ExecutionPlan, Risk, VerificationReport
 from .verification import DeterministicVerifier
 
@@ -216,6 +216,7 @@ class ScopeAssessment:
     findings: tuple[ScopeFinding, ...]
     changed_file_count: int
     estimated_files_max: int
+    approved_sensitive_files: tuple[str, ...] = ()
 
     @property
     def has_sensitive_findings(self) -> bool:
@@ -460,6 +461,17 @@ class RepositoryVerifier:
 class ScopeDriftPolicy:
     """Deterministically assess actual changes against planned scope."""
 
+    def __init__(
+        self,
+        approved_sensitive_files: Sequence[str] | Iterable[str] | None = None,
+    ) -> None:
+        self.approved_sensitive_files: tuple[str, ...] = tuple(
+            ScopeDriftConfig(
+                approved_sensitive_files=list(approved_sensitive_files or ())
+            ).approved_sensitive_files
+        )
+        self._approved_sensitive_files: frozenset[str] = frozenset(self.approved_sensitive_files)
+
     def assess(
         self,
         execution_plan: ExecutionPlan,
@@ -467,6 +479,7 @@ class ScopeDriftPolicy:
         risk: Risk,
     ) -> ScopeAssessment:
         normalized_files = tuple(self._unique_normalized_paths(changed_files))
+        planned_files = self._planned_step_files(execution_plan)
         findings: list[ScopeFinding] = []
 
         expected_modules = self._expected_top_level_modules(execution_plan)
@@ -503,14 +516,20 @@ class ScopeDriftPolicy:
         dependency_files = tuple(
             path for path in normalized_files if PurePosixPath(path).name in _DEPENDENCY_FILES
         )
-        if dependency_files:
+        unapproved_dependency_files = tuple(
+            path
+            for path in dependency_files
+            if not (path in self._approved_sensitive_files and path in planned_files)
+        )
+        if unapproved_dependency_files:
             findings.append(
                 ScopeFinding(
                     category="dependency-change",
                     message=(
-                        f"Changed dependency manifests or lockfiles: {', '.join(dependency_files)}"
+                        "Changed dependency manifests or lockfiles: "
+                        f"{', '.join(unapproved_dependency_files)}"
                     ),
-                    paths=dependency_files,
+                    paths=unapproved_dependency_files,
                     sensitive=True,
                 )
             )
@@ -527,12 +546,17 @@ class ScopeDriftPolicy:
             )
 
         ci_files = tuple(path for path in normalized_files if self._is_ci_workflow_path(path))
-        if ci_files:
+        unapproved_ci_files = tuple(
+            path
+            for path in ci_files
+            if not (path in self._approved_sensitive_files and path in planned_files)
+        )
+        if unapproved_ci_files:
             findings.append(
                 ScopeFinding(
                     category="ci-workflow-change",
-                    message=f"Changed CI workflow files: {', '.join(ci_files)}",
-                    paths=ci_files,
+                    message=f"Changed CI workflow files: {', '.join(unapproved_ci_files)}",
+                    paths=unapproved_ci_files,
                     sensitive=True,
                 )
             )
@@ -550,13 +574,25 @@ class ScopeDriftPolicy:
                 )
             )
 
+        exempt_sensitive_files = tuple(
+            path
+            for path in normalized_files
+            if (path in dependency_files or path in ci_files)
+            and path in self._approved_sensitive_files
+            and path in planned_files
+        )
+
         decision = self._decide(findings, risk)
         return ScopeAssessment(
             decision=decision,
             findings=tuple(findings),
             changed_file_count=len(normalized_files),
             estimated_files_max=max_files,
+            approved_sensitive_files=exempt_sensitive_files,
         )
+
+    def _planned_step_files(self, execution_plan: ExecutionPlan) -> set[str]:
+        return {path for step in execution_plan.steps for path in step.likely_files}
 
     def _expected_top_level_modules(self, execution_plan: ExecutionPlan) -> set[str]:
         expected: set[str] = set()

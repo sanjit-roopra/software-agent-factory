@@ -206,6 +206,7 @@ def test_build_command_for_implementer_denies_push_and_network() -> None:
     denied = [command[index + 1] for index, item in enumerate(command) if item == "--deny-tool"]
     assert "url" in denied
     assert "shell(git push)" in denied
+    assert "shell(git commit)" in denied
     assert "shell(gh:*)" in denied
 
 
