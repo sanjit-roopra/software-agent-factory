@@ -455,11 +455,14 @@ Compare `ExecutionPlan.expected_scope` against actual Git diff.
 
 Detect initial cases:
 - unexpected directories/modules
-- excessive changed-file count
 - package/dependency modifications
 - migration files
 - CI workflow modifications
 - infrastructure files
+
+The plan's estimated file range is advisory metadata, not an authority gate.
+The configured repository changed-file ceiling remains the deterministic hard
+limit at publication.
 
 Result may be:
 - continue

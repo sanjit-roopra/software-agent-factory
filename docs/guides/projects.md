@@ -46,7 +46,8 @@ boundaries, preventing a task-level plan or scope replan from deliberately
 absorbing work assigned to a later issue. Execution-plan scope entries must be
 actual repository-relative path prefixes, not conceptual component names.
 Supporting files may be added without replanning when the implementation still
-touches its planned area and stays within its file-count bound.
+touches its planned area. The plan's estimated file range is advisory; the
+configured repository changed-file ceiling remains the hard publication limit.
 
 The factory keeps a persistent project integration worktree. After a child run
 passes verification and review, its local commit is cherry-picked onto that

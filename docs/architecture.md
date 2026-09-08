@@ -234,9 +234,11 @@ must not pull those outcomes forward. Execution plans use concrete
 repository-relative path prefixes in `expected_scope.modules`; prose labels,
 globs and traversal are rejected before implementation. Small supporting files
 beside the planned paths are allowed when the implementation also changes its
-planned area and remains within the expected file-count bound. A completely
-mismatched path set triggers bounded metadata replanning, while migrations,
-infrastructure, and unapproved dependency or CI changes stop immediately.
+planned area. The plan's file-count range is advisory; the factory-owned
+`repository.max_changed_files` setting remains the hard publication ceiling. A
+completely mismatched path set triggers bounded metadata replanning, while
+migrations, infrastructure, and unapproved dependency or CI changes stop
+immediately.
 
 When an implementation is already deterministically green but its scope
 metadata is inaccurate, the bounded scope replan updates the ExecutionPlan and
@@ -1175,11 +1177,14 @@ Compare plan expectations with actual Git diff.
 
 Deterministically detect at least:
 - files outside expected modules
-- excessive file count
 - dependency file changes
 - migration creation
 - CI/workflow modification
 - infrastructure modification
+
+The execution plan's file-count range remains useful planning metadata but is
+not a scope gate. The configured repository changed-file ceiling is enforced
+separately before publication.
 
 Later add:
 - public API detection

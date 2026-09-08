@@ -182,7 +182,7 @@ def test_standard_planner_prompt_requires_smallest_implementation() -> None:
     assert '"estimated_files_max"' in prompt
 
 
-def test_scope_replan_prompt_requires_metadata_to_fit_verified_diff() -> None:
+def test_scope_replan_prompt_treats_verified_diff_as_fixed() -> None:
     prompt = build_prompt(
         _request(
             AgentRole.PLANNER,
@@ -199,7 +199,8 @@ def test_scope_replan_prompt_requires_metadata_to_fit_verified_diff() -> None:
 
     assert "metadata-only replan of the existing implementation" in prompt
     assert "do not propose deleting, consolidating, or otherwise changing files" in prompt
-    assert "actual changed-file count is inside the revised range" in prompt
+    assert "File-count estimates are advisory" in prompt
+    assert "configured hard repository limit" in prompt
     assert "src/app.py" in prompt
     assert "tests/test_app.py" in prompt
 
