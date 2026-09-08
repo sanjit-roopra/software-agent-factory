@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from software_agent_factory.models import (
+    ActiveInvocation,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
@@ -78,6 +80,7 @@ def _run(
     lease: RunLease | None = None,
     attempt_records: list[AttemptRecord] | None = None,
     workspace_path: str | None = None,
+    active_invocation: ActiveInvocation | None = None,
 ) -> FactoryRun:
     return FactoryRun(
         id=run_id,
@@ -90,6 +93,7 @@ def _run(
         lease=lease,
         attempt_records=attempt_records or [],
         workspace_path=workspace_path,
+        active_invocation=active_invocation,
     )
 
 
@@ -1439,6 +1443,81 @@ def test_build_run_detail_returns_summary_fields_plus_attempts(tmp_path: Path) -
     assert detail.ci_repair_attempts == 1
     assert [attempt.attempt_number for attempt in detail.attempts] == [1, 2]
     assert detail.attempts[0].role is AgentRole.IMPLEMENTER
+
+
+def test_build_run_detail_shows_live_active_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    monkeypatch.setattr("software_agent_factory.observability.os.kill", lambda pid, sig: None)
+    store = _fake_store(tmp_path)
+    run = _run(
+        "run-active",
+        state=WorkflowState.IMPLEMENTING,
+        updated_at=T0,
+        last_activity_at=T0,
+        lease=RunLease(host=socket.gethostname(), pid=os.getpid(), heartbeat_at=T0),
+        active_invocation=ActiveInvocation(
+            invocation_number=3,
+            role=AgentRole.IMPLEMENTER,
+            model="gemini-3.8-flash",
+            reasoning="high",
+            started_at=T0,
+            attempt_number=2,
+            budget=AttemptBudget.IMPLEMENTATION,
+        ),
+    )
+    store.add_run(run)
+    store.add_artifact("run-active", WorkItem(id="WI-active", title="Title", description="D"))
+
+    detail = build_run_detail(
+        store,
+        "run-active",
+        now=T0 + timedelta(minutes=30),
+        stale_after=timedelta(minutes=15),
+    )
+
+    assert detail is not None
+    assert detail.active_invocation is not None
+    assert detail.active_invocation.status == "running"
+    assert detail.active_invocation.role is AgentRole.IMPLEMENTER
+    assert detail.active_invocation.attempt_number == 2
+
+
+def test_build_run_detail_marks_active_invocation_crashed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    def missing_process(pid: int, signal_number: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr("software_agent_factory.observability.os.kill", missing_process)
+    store = _fake_store(tmp_path)
+    run = _run(
+        "run-crashed",
+        state=WorkflowState.IMPLEMENTING,
+        lease=RunLease(host=socket.gethostname(), pid=999_999, heartbeat_at=T0),
+        active_invocation=ActiveInvocation(
+            invocation_number=1,
+            role=AgentRole.IMPLEMENTER,
+            model="gemini-3.8-flash",
+            reasoning="high",
+            started_at=T0,
+            attempt_number=1,
+        ),
+    )
+    store.add_run(run)
+    store.add_artifact("run-crashed", WorkItem(id="WI-crashed", title="Title", description="D"))
+
+    detail = build_run_detail(store, "run-crashed", now=T0 + timedelta(minutes=1))
+
+    assert detail is not None
+    assert detail.active_invocation is not None
+    assert detail.active_invocation.status == "crashed"
 
 
 def test_build_run_detail_returns_none_for_missing_or_unreadable_runs(

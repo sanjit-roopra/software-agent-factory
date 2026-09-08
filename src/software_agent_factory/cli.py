@@ -93,6 +93,7 @@ from .models import (
 )
 from .observability import (
     DEFAULT_MAX_SCANNED_RUNS,
+    build_active_invocation_summary,
     build_monitoring_snapshot,
     build_operational_health,
     build_run_detail,
@@ -944,6 +945,21 @@ def dashboard_command(
                             **invocation.model_dump(mode="json"),
                             "scope": f"task {task.task_id}",
                             "task_id": task.task_id,
+                        }
+                    )
+                active_invocation = build_active_invocation_summary(
+                    run,
+                    stale_after=stale_after,
+                )
+                if active_invocation is not None:
+                    models.append(
+                        {
+                            **active_invocation.model_dump(mode="json"),
+                            "scope": f"task {task.task_id}",
+                            "task_id": task.task_id,
+                            "success": None,
+                            "completed_at": None,
+                            "usage": None,
                         }
                     )
             projects.append(

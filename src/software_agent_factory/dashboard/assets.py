@@ -451,7 +451,8 @@ APP_JS = """\
           "Role",
           "Model",
           "Purpose",
-          "Success",
+          "Status",
+          "Started",
           "Reported input tokens",
           "Reported output tokens",
           "AI usage value (USD)",
@@ -472,7 +473,12 @@ APP_JS = """\
           textCell(row, model.role);
           textCell(row, model.model);
           textCell(row, model.purpose);
-          textCell(row, model.success);
+          textCell(
+            row,
+            model.status ||
+              (model.success === true ? "SUCCESS" : model.success === false ? "FAILED" : null)
+          );
+          textCell(row, model.started_at);
           textCell(row, usage.input_tokens);
           textCell(row, usage.output_tokens);
           textCell(row, displayUsd(usage.usage_value_usd));
@@ -539,6 +545,15 @@ APP_JS = """\
       ["Updated", detail.updated_at],
       ["Completed", detail.completed_at],
       ["Invocations", detail.invocation_count],
+      [
+        "Active invocation",
+        detail.active_invocation
+          ? detail.active_invocation.role +
+            " (" + detail.active_invocation.model + ") \u2014 " +
+            detail.active_invocation.status +
+            " since " + detail.active_invocation.started_at
+          : null
+      ],
       ["Usage reported", detail.usage ? detail.usage.reported_invocations : null],
       ["Input tokens", detail.usage ? detail.usage.input_tokens : null],
       ["Output tokens", detail.usage ? detail.usage.output_tokens : null],
@@ -596,6 +611,23 @@ APP_JS = """\
       textCell(row, usage.total_premium_request_cost);
       invocationsBody.appendChild(row);
     });
+    if (detail.active_invocation) {
+      var active = detail.active_invocation;
+      var activeRow = document.createElement("tr");
+      activeRow.className = "invocation-active";
+      textCell(activeRow, active.invocation_number);
+      textCell(activeRow, active.role);
+      textCell(activeRow, active.model);
+      textCell(activeRow, active.context_tier);
+      textCell(activeRow, active.status);
+      textCell(activeRow, "\u2014");
+      textCell(activeRow, "\u2014");
+      textCell(activeRow, "\u2014");
+      textCell(activeRow, "\u2014");
+      textCell(activeRow, "\u2014");
+      textCell(activeRow, "\u2014");
+      invocationsBody.appendChild(activeRow);
+    }
 
     section.hidden = false;
   }

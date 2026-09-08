@@ -88,6 +88,19 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+ACTIVE_INVOCATION_FIELDS: frozenset[str] = frozenset(
+    {
+        "invocation_number",
+        "role",
+        "purpose",
+        "model",
+        "context_tier",
+        "status",
+        "started_at",
+        "attempt_number",
+    }
+)
+
 USAGE_FIELDS: frozenset[str] = frozenset(
     {
         "total_premium_request_cost",
@@ -145,6 +158,7 @@ PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
         "started_at",
         "completed_at",
         "usage",
+        "status",
     }
 )
 
@@ -215,6 +229,9 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     invocations = data.get("invocations")
     if isinstance(invocations, list):
         sanitized["invocations"] = [sanitize_invocation(item) for item in invocations]
+    active_invocation = data.get("active_invocation")
+    if isinstance(active_invocation, dict):
+        sanitized["active_invocation"] = _allowlist(active_invocation, ACTIVE_INVOCATION_FIELDS)
     return sanitized
 
 

@@ -68,6 +68,7 @@ import json
 import logging
 import logging.handlers
 import os
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -365,6 +366,19 @@ class RunInvocationSummary(ModelBase):
     usage: UsageMetrics | None = None
 
 
+class ActiveInvocationSummary(ModelBase):
+    """Dashboard-safe status for an invocation that has not completed."""
+
+    invocation_number: int = Field(ge=1)
+    role: AgentRole
+    purpose: str
+    model: str
+    context_tier: ContextTier
+    status: str
+    started_at: UtcDateTime
+    attempt_number: int | None = Field(default=None, ge=1)
+
+
 class RunDetail(ModelBase):
     """One run's read-only detail view: a :class:`RunSummary` plus completion
     facts and the attempt history.
@@ -398,6 +412,7 @@ class RunDetail(ModelBase):
     pull_request_url: str | None = None
     attempts: list[RunAttemptSummary] = Field(default_factory=list)
     invocations: list[RunInvocationSummary] = Field(default_factory=list)
+    active_invocation: ActiveInvocationSummary | None = None
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -1050,7 +1065,58 @@ def build_run_detail(
             )
             for invocation in run.invocation_records
         ],
+        active_invocation=build_active_invocation_summary(
+            run,
+            now=_normalize_now(now),
+            stale_after=stale_after,
+        ),
     )
+
+
+def build_active_invocation_summary(
+    run: FactoryRun,
+    *,
+    now: datetime | None = None,
+    stale_after: timedelta = DEFAULT_STALE_AFTER,
+) -> ActiveInvocationSummary | None:
+    """Return safe liveness details for the invocation persisted as active."""
+
+    active = run.active_invocation
+    if active is None or _is_run_finished(run):
+        return None
+    current_time = _normalize_now(now)
+    status = _active_invocation_status(run, current_time, stale_after)
+    return ActiveInvocationSummary(
+        invocation_number=active.invocation_number,
+        role=active.role,
+        purpose=str(active.purpose),
+        model=active.model,
+        context_tier=active.context_tier,
+        status=status,
+        started_at=active.started_at,
+        attempt_number=active.attempt_number,
+    )
+
+
+def _active_invocation_status(
+    run: FactoryRun,
+    now: datetime,
+    stale_after: timedelta,
+) -> str:
+    lease = run.lease
+    if lease is None:
+        return "abandoned"
+    if lease.host == socket.gethostname():
+        try:
+            os.kill(lease.pid, 0)
+        except ProcessLookupError:
+            return "crashed"
+        except PermissionError:
+            return "running"
+        return "running"
+    if _is_stale(run, now, stale_after):
+        return "stale"
+    return "running"
 
 
 # ---------------------------------------------------------------------------

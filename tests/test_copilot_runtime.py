@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
 from pathlib import Path
@@ -750,6 +751,36 @@ def test_parse_copilot_artifact_prefers_final_assistant_content_over_prompt_echo
         unknowns=[],
         confidence=0.9,
     )
+
+
+def test_parse_copilot_artifact_reports_root_object_validation_errors() -> None:
+    malformed_plan = {
+        "schema_version": 1,
+        "summary": "Implement validation",
+        "steps": [
+            {
+                "id": "edit",
+                "description": "Add guard",
+                "files": ["src/api.py"],
+                "validation": ["pytest"],
+            }
+        ],
+        "expected_scope": ["src"],
+        "test_strategy": ["pytest"],
+        "risks": [],
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        parse_copilot_artifact(
+            AgentRole.PLANNER,
+            stdout=json.dumps(malformed_plan),
+        )
+
+    message = str(exc_info.value)
+    assert "steps.0.goal: Field required" in message
+    assert "steps.0.description: Extra inputs are not permitted" in message
+    assert "expected_scope: Input should be a valid dictionary" in message
+    assert "summary: Field required" not in message
 
 
 def test_build_prompt_for_triage_requires_exact_enum_values() -> None:

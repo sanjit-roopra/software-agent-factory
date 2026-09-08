@@ -287,12 +287,10 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
             f"{contract} Use exact enum values only: complexity must be one of "
             "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3."
         )
-    if model_class in {RepositorySkill, ProjectPlan}:
-        contract = (
-            f"{contract}\n{model_class.__name__} JSON Schema:\n"
-            f"{json.dumps(model_class.model_json_schema(), sort_keys=True)}"
-        )
-    return contract
+    return (
+        f"{contract}\n{model_class.__name__} JSON Schema:\n"
+        f"{json.dumps(model_class.model_json_schema(), sort_keys=True)}"
+    )
 
 
 def _artifact_sections(

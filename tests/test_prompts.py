@@ -152,6 +152,30 @@ def test_standard_planner_prompt_requires_smallest_implementation() -> None:
 
     assert "smallest implementation" in prompt
     assert "speculative" in prompt
+    assert "ExecutionPlan JSON Schema" in prompt
+    assert '"PlanStep"' in prompt
+    assert '"goal"' in prompt
+    assert '"ExpectedScope"' in prompt
+    assert '"estimated_files_max"' in prompt
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        AgentRole.TRIAGE,
+        AgentRole.REFINER,
+        AgentRole.RESEARCHER,
+        AgentRole.PLANNER,
+        AgentRole.IMPLEMENTER,
+        AgentRole.TESTER,
+        AgentRole.REVIEWER,
+    ],
+)
+def test_every_role_prompt_includes_its_complete_json_schema(role: AgentRole) -> None:
+    prompt = build_prompt(_request(role))
+    model_class = artifact_model_for_role(role)
+
+    assert f"{model_class.__name__} JSON Schema:" in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -44,6 +44,7 @@ from .governance import (
     assess_publish_gate,
 )
 from .models import (
+    ActiveInvocation,
     AgentPurpose,
     AgentRole,
     AttemptBudget,
@@ -127,6 +128,7 @@ from .workflow import (
 from .workspace import GitWorktreeWorkspace
 
 __all__ = [
+    "ActiveInvocation",
     "MergeResult",
     "PullRequestMerger",
     "ALLOWED_TRANSITIONS",

@@ -360,7 +360,10 @@ factory dashboard --port 0 --open-browser
 
 The dashboard shows active and completed projects, their task/PR/merge progress,
 models used by project and task invocations, individual workflow runs,
-attempts, usage totals and operational health. When Copilot reports nano-AIU,
+attempts, the currently active invocation, usage totals and operational health.
+An active invocation is persisted before Copilot starts and is labeled
+`running`, `stale`, `crashed` or `abandoned` from the run lease rather than
+being inferred from the previous completed attempt. When Copilot reports nano-AIU,
 the dashboard converts it to an AI usage value in USD using GitHub's published
 conversion of 1 AI credit to $0.01. This is the priced value of the reported
 model usage, not necessarily the amount added to the bill: included or pooled

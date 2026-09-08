@@ -528,20 +528,21 @@ def parse_copilot_artifact(
         candidates = _candidate_texts(assistant_text, stdout)
 
     found_object = False
-    last_validation_error: ValidationError | None = None
+    first_validation_error: ValidationError | None = None
     for candidate in candidates:
         for payload in _iter_json_objects(candidate):
             found_object = True
             try:
                 return spec.model_class.model_validate(payload)
             except ValidationError as exc:
-                last_validation_error = exc
+                if first_validation_error is None:
+                    first_validation_error = exc
 
     role_name = normalize_role(role)
-    if last_validation_error is not None:
+    if first_validation_error is not None:
         raise ValueError(
             f"{role_name} response did not validate as {spec.model_class.__name__}: "
-            f"{_summarize_validation_error(last_validation_error)}"
+            f"{_summarize_validation_error(first_validation_error)}"
         )
     if not found_object:
         raise ValueError(
@@ -822,10 +823,14 @@ def _summarize_validation_error(error: ValidationError) -> str:
     details = error.errors(include_url=False)
     if not details:
         return str(error)
-    first = details[0]
-    location = ".".join(str(part) for part in first.get("loc", ()))
-    message = str(first.get("msg", "validation error"))
-    return f"{location}: {message}" if location else message
+    summaries: list[str] = []
+    for detail in details[:8]:
+        location = ".".join(str(part) for part in detail.get("loc", ()))
+        message = str(detail.get("msg", "validation error"))
+        summaries.append(f"{location}: {message}" if location else message)
+    if len(details) > len(summaries):
+        summaries.append(f"{len(details) - len(summaries)} more validation error(s)")
+    return "; ".join(summaries)
 
 
 def _format_failure_reason(
