@@ -113,6 +113,7 @@ COPILOT_CO_AUTHOR_TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.no
 DEFAULT_MAX_LOG_CHARS = 4000
 DEFAULT_POLL_INTERVAL_SECONDS = 30.0
 DEFAULT_MAX_POLLS = 40
+MAX_GIT_PUSH_ATTEMPTS = 2
 
 
 # --------------------------------------------------------------------------
@@ -251,6 +252,53 @@ class GitCommandError(GitPublishError):
         self.stderr = _redact(stderr)
         joined = " ".join(self.command_args)
         super().__init__(f"git {joined} failed with exit code {returncode}: {self.stderr.strip()}")
+
+
+_TRANSIENT_GIT_PUSH_ERROR_MARKERS = (
+    "bad gateway",
+    "broken pipe",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "fatal error in commit_refs",
+    "gateway timeout",
+    "internal server error",
+    "operation timed out",
+    "remote end hung up unexpectedly",
+    "rpc failed",
+    "service unavailable",
+    "temporary failure",
+    "tls handshake timeout",
+    "unexpected eof",
+)
+
+_NON_RETRYABLE_GIT_PUSH_ERROR_MARKERS = (
+    "access denied",
+    "authentication failed",
+    "could not read username",
+    "fetch first",
+    "non-fast-forward",
+    "not authorized",
+    "permission to ",
+    "pre-receive hook declined",
+    "protected branch",
+    "repository not found",
+    "repository rule violation",
+)
+
+_GIT_PUSH_HTTP_STATUS_PATTERN = re.compile(r"(?:rpc failed;\s*http|returned error:)\s+(4\d{2})\b")
+
+
+def _is_transient_git_push_error(error: GitCommandError | GitTimeoutError) -> bool:
+    if isinstance(error, GitTimeoutError):
+        return True
+    stderr = error.stderr.casefold()
+    http_status = _GIT_PUSH_HTTP_STATUS_PATTERN.search(stderr)
+    if http_status is not None and int(http_status.group(1)) not in {408, 429}:
+        return False
+    if any(marker in stderr for marker in _NON_RETRYABLE_GIT_PUSH_ERROR_MARKERS):
+        return False
+    return any(marker in stderr for marker in _TRANSIENT_GIT_PUSH_ERROR_MARKERS)
 
 
 class GitHubError(Exception):
@@ -722,9 +770,12 @@ class GitPublisher:
             workspace_path,
             ["ls-remote", "--heads", destination or self.remote, f"refs/heads/{branch_name}"],
         )
+        expected_ref = f"refs/heads/{branch_name}"
         for line in result.stdout.splitlines():
-            sha = line.split()[0] if line.split() else ""
-            if _SHA_PATTERN.fullmatch(sha):
+            parts = line.split()
+            sha = parts[0] if parts else ""
+            remote_ref = parts[1] if len(parts) > 1 else ""
+            if remote_ref == expected_ref and _SHA_PATTERN.fullmatch(sha):
                 return sha
         return ""
 
@@ -814,8 +865,11 @@ class GitPublisher:
         self._verify_tree(workspace_path, expected_tree_sha, args=["rev-parse", f"{head}^{{tree}}"])
         if self.remote_branch_sha(workspace_path, branch_name, destination=destination) == head:
             return head
-        self._run_git(
-            workspace_path, ["push", "--", destination, f"{head}:refs/heads/{branch_name}"]
+        self._push_ref(
+            workspace_path,
+            destination=destination,
+            branch_name=branch_name,
+            commit_sha=head,
         )
         return head
 
@@ -925,9 +979,11 @@ class GitPublisher:
             )
 
         if self.remote_branch_sha(workspace_path, branch_name, destination=destination) != commit:
-            self._run_git(
+            self._push_ref(
                 workspace_path,
-                ["push", "--", destination, f"{commit}:refs/heads/{branch_name}"],
+                destination=destination,
+                branch_name=branch_name,
+                commit_sha=commit,
             )
         return commit
 
@@ -982,6 +1038,41 @@ class GitPublisher:
             expected_repository=expected_repository,
             expected_host=expected_host,
         ).url
+
+    def _push_ref(
+        self,
+        workspace_path: Path,
+        *,
+        destination: str,
+        branch_name: str,
+        commit_sha: str,
+    ) -> None:
+        """Push one exact commit with one bounded transient retry.
+
+        A failed push may still have updated the remote before its response was
+        lost. Reconcile the exact branch tip before every retry and after the
+        final failure; only the expected commit is accepted as success.
+        """
+        push_args = ["push", "--", destination, f"{commit_sha}:refs/heads/{branch_name}"]
+        for attempt in range(MAX_GIT_PUSH_ATTEMPTS):
+            try:
+                self._run_git(workspace_path, push_args)
+                return
+            except (GitCommandError, GitTimeoutError) as exc:
+                if not _is_transient_git_push_error(exc):
+                    raise
+                try:
+                    remote_sha = self.remote_branch_sha(
+                        workspace_path,
+                        branch_name,
+                        destination=destination,
+                    )
+                except (GitCommandError, GitTimeoutError):
+                    remote_sha = ""
+                if remote_sha == commit_sha:
+                    return
+                if attempt + 1 == MAX_GIT_PUSH_ATTEMPTS:
+                    raise
 
     def has_changes(self, workspace_path: Path) -> bool:
         """Stage everything (including untracked files) and report whether
@@ -1046,9 +1137,11 @@ class GitPublisher:
         self._verify_tree(workspace_path, expected_tree_sha, args=["rev-parse", f"{sha}^{{tree}}"])
         # Explicit refspec by SHA, no --force: pushes exactly this commit onto
         # the controller-owned branch and nothing else.
-        self._run_git(
+        self._push_ref(
             workspace_path,
-            ["push", "--", destination, f"{sha}:refs/heads/{branch_name}"],
+            destination=destination,
+            branch_name=branch_name,
+            commit_sha=sha,
         )
         return sha
 

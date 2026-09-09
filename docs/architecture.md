@@ -1215,10 +1215,16 @@ Controller owns:
 - push
 - PR creation
 
-PR creation tolerates one transient GitHub CLI or network failure. Before the
-single retry, the publisher looks up the exact repository, head, base and run
-marker so a request that succeeded remotely but lost its response is recovered
-instead of duplicated.
+Branch push tolerates one transient Git network or remote-backend failure.
+Before retrying, the publisher reads the exact target branch tip so a push that
+succeeded remotely but lost its response is accepted only when that tip is the
+expected commit. Authentication, authorization, policy and non-fast-forward
+failures are not retried.
+
+PR creation separately tolerates one transient GitHub CLI or network failure.
+Before the single retry, the publisher looks up the exact repository, head,
+base and run marker so a request that succeeded remotely but lost its response
+is recovered instead of duplicated.
 
 Agents must not directly push protected branches.
 
