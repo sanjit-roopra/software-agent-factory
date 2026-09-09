@@ -546,21 +546,24 @@ def test_post_green_polish_reserves_one_recovery_attempt(source_repo: Path, data
     assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
 
 
-def test_post_green_research_exception_is_a_safe_skip(source_repo: Path, data_dir: Path) -> None:
+def test_post_green_research_exception_gets_one_retry(source_repo: Path, data_dir: Path) -> None:
     class RaisingResearchRuntime:
         def __init__(self) -> None:
             self.delegate = FakeAgentRuntime()
+            self.generation_calls = 0
 
         def run(self, request: AgentRequest) -> AgentResult:
             if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+                self.generation_calls += 1
                 raise RuntimeError("research process unavailable")
             return self.delegate.run(request)
 
     store = FileRunStore(data_dir)
+    runtime = RaisingResearchRuntime()
     controller = WorkflowController(
         _config(data_dir, polish_enabled=True),
         store,
-        RaisingResearchRuntime(),
+        runtime,
     )
 
     run = controller.run(_work_item("WI-research-exception"), source_repo)
@@ -568,9 +571,200 @@ def test_post_green_research_exception_is_a_safe_skip(source_repo: Path, data_di
     assert run.state is WorkflowState.PR_READY
     profile = store.load_artifact(run.id, RepositoryProfile)
     assert any(
-        "repository skill research could not run: research process unavailable" in warning
+        "repository skill generation failed after 2 attempts" in warning
+        and "repository skill research could not run: research process unavailable" in warning
         for warning in profile.warnings
     )
+    assert runtime.generation_calls == 2
+
+
+def test_invalid_repository_skill_gets_one_bounded_correction(
+    source_repo: Path, data_dir: Path
+) -> None:
+    class CorrectingResearchRuntime:
+        def __init__(self) -> None:
+            self.delegate = FakeAgentRuntime()
+            self.requests: list[AgentRequest] = []
+            self.generation_calls = 0
+
+        def run(self, request: AgentRequest) -> AgentResult:
+            self.requests.append(request)
+            if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+                self.generation_calls += 1
+                if self.generation_calls == 1:
+                    return AgentResult(
+                        role=AgentRole.RESEARCHER,
+                        success=False,
+                        failure_reason=(
+                            "RESEARCHER response did not validate as RepositorySkill: "
+                            "practice sources must use the version scope 'general'"
+                        ),
+                    )
+            return self.delegate.run(request)
+
+    runtime = CorrectingResearchRuntime()
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+    ).run(_work_item("WI-skill-correction"), source_repo)
+
+    generation_requests = [
+        request
+        for request in runtime.requests
+        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
+    ]
+    assert run.state is WorkflowState.PR_READY
+    assert len(generation_requests) == 2
+    assert generation_requests[0].repair_context is None
+    assert isinstance(generation_requests[1].repair_context, str)
+    assert "Failure reason" in generation_requests[1].repair_context
+    assert "practice sources must use the version scope 'general'" in (
+        generation_requests[1].repair_context
+    )
+    assert "version_scope exactly 'general'" in generation_requests[1].repair_context
+    assert [
+        (record.success, record.attempt_number)
+        for record in run.invocation_records
+        if record.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
+    ] == [(False, 1), (True, 2)]
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+    ]
+    assert store.load_artifact(run.id, RepositorySkill)
+
+
+def test_two_invalid_repository_skills_safely_skip_polish(
+    source_repo: Path, data_dir: Path
+) -> None:
+    class InvalidResearchRuntime:
+        def __init__(self) -> None:
+            self.delegate = FakeAgentRuntime()
+            self.generation_requests: list[AgentRequest] = []
+
+        def run(self, request: AgentRequest) -> AgentResult:
+            if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+                self.generation_requests.append(request)
+                return AgentResult(
+                    role=AgentRole.RESEARCHER,
+                    success=False,
+                    failure_reason="repository skill schema remained invalid",
+                )
+            return self.delegate.run(request)
+
+    runtime = InvalidResearchRuntime()
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+    ).run(_work_item("WI-skill-correction-exhausted"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(runtime.generation_requests) == 2
+    assert runtime.generation_requests[0].repair_context is None
+    assert runtime.generation_requests[1].repair_context is not None
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "repository skill generation failed after 2 attempts; "
+        "initial rejection: repository skill schema remained invalid; "
+        "correction rejection: repository skill schema remained invalid" in warning
+        for warning in profile.warnings
+    )
+
+
+def test_repository_skill_process_failure_gets_one_retry(source_repo: Path, data_dir: Path) -> None:
+    class FailedProcessRuntime:
+        def __init__(self) -> None:
+            self.delegate = FakeAgentRuntime()
+            self.generation_calls = 0
+
+        def run(self, request: AgentRequest) -> AgentResult:
+            if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+                self.generation_calls += 1
+                return AgentResult(
+                    role=AgentRole.RESEARCHER,
+                    success=False,
+                    failure_reason="Copilot process exited with code 1",
+                )
+            return self.delegate.run(request)
+
+    runtime = FailedProcessRuntime()
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        store,
+        runtime,
+    ).run(_work_item("WI-skill-process-failure"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert runtime.generation_calls == 2
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
+    profile = store.load_artifact(run.id, RepositoryProfile)
+    assert any(
+        "repository skill generation failed after 2 attempts" in warning
+        and "Copilot process exited with code 1" in warning
+        for warning in profile.warnings
+    )
+
+
+def test_invalid_repository_skill_provenance_gets_one_correction(
+    source_repo: Path, data_dir: Path
+) -> None:
+    profile = _react_profile()
+
+    class CorrectingProvenanceRuntime:
+        def __init__(self) -> None:
+            self.delegate = FakeAgentRuntime()
+            self.generation_requests: list[AgentRequest] = []
+
+        def run(self, request: AgentRequest) -> AgentResult:
+            if request.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL:
+                return self.delegate.run(request)
+            self.generation_requests.append(request)
+            if len(self.generation_requests) == 1:
+                return AgentResult(
+                    role=AgentRole.RESEARCHER,
+                    success=True,
+                    repository_skill=_react_skill(
+                        profile,
+                        official_sources=(
+                            SkillSource(
+                                title="Untrusted version guidance",
+                                url="https://example.com/react",
+                                version_scope="19.1.0",
+                                applies_to=("react", "react-dom"),
+                            ),
+                        ),
+                    ),
+                )
+            return self.delegate.run(request)
+
+    runtime = CorrectingProvenanceRuntime()
+    run = WorkflowController(
+        _config(data_dir, polish_enabled=True),
+        FileRunStore(data_dir),
+        runtime,
+        repository_profiler=lambda path: profile,
+    ).run(_work_item("WI-skill-provenance-correction"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(runtime.generation_requests) == 2
+    correction = runtime.generation_requests[1].repair_context
+    assert isinstance(correction, str)
+    assert "outside polish.official_documentation_origins" in correction
+    assert [
+        (record.success, record.attempt_number)
+        for record in run.invocation_records
+        if record.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
+    ] == [(True, 1), (True, 2)]
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+    ]
 
 
 def test_refreshed_profile_persistence_failure_skips_skill_selection(

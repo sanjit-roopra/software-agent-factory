@@ -74,11 +74,13 @@ item, including staging and deployment, is deferred.
   `polish.practice_reference_urls`, then reused by later runs from
   repository-scoped storage under `factory.data_dir`. Generation is not
   serialized across processes: two concurrent first runs for the same
-  fingerprint may each spend one call before atomic no-clobber publication
-  picks the single winner both then revalidate. The storage key is the local
-  Git common directory, so a moved or re-cloned repository starts again at a
-  new key. Human customization is a separate `repository-skill-overlay.yaml`
-  the factory never edits. There is no fixed built-in catalog and no
+  fingerprint may each spend an initial call plus one bounded retry before
+  atomic no-clobber publication picks the single winner both then revalidate.
+  Invalid output carries its bounded rejection reason into that retry. The
+  storage key is the local Git common
+  directory, so a moved or re-cloned repository starts again at a new key.
+  Human customization is a separate `repository-skill-overlay.yaml` the
+  factory never edits. There is no fixed built-in catalog and no
   repository-provided skill/plugin system, and guidance that cannot be
   generated or verified is skipped rather than failing the run.
 - **Two release behaviours can only be proven in CI.** Publishing a real `v*`

@@ -467,10 +467,13 @@ A normal run reuses guidance instead of researching it:
 
 Reuse bounds research per fingerprint, not per process. Two truly concurrent
 first runs for the same missing fingerprint may each make one bounded
-Researcher call. Publication is atomic and no-clobber, so one result wins, the
-other run loads the winner, and both revalidate the winner in full before using
-it. The cost is at most one extra research call; correctness, stored state and
-the overlay are unaffected.
+generation sequence: an initial Researcher call and one retry after any
+failure. Invalid output or provenance carries its exact bounded rejection
+reason into the retry; infrastructure failure receives one ordinary retry.
+Publication is atomic and no-clobber, so one result wins, the other run loads
+the winner, and both revalidate the winner in full before using it. The race
+costs at most one extra sequence (two calls); correctness, stored state and the
+overlay are unaffected.
 
 #### Generation
 
@@ -478,7 +481,9 @@ When generation is required, after the first successful deterministic
 verification and scope assessment the controller re-profiles the
 post-implementation worktree, transitions through a temporary `RESEARCHING`
 state, and calls the configured Researcher (`Claude Opus 5` by default) with
-purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
+purpose `GENERATE_REPOSITORY_SKILL`. Any failure gets one bounded retry.
+Invalid typed output or provenance includes the exact bounded rejection reason
+so the Researcher can correct it. A second failure safely skips polish.
 
 That invocation is web-only and deliberately blind to the repository. It runs
 with the run's own persistence directory as its working directory, not the
@@ -1209,6 +1214,11 @@ Controller owns:
 - commit
 - push
 - PR creation
+
+PR creation tolerates one transient GitHub CLI or network failure. Before the
+single retry, the publisher looks up the exact repository, head, base and run
+marker so a request that succeeded remotely but lost its response is recovered
+instead of duplicated.
 
 Agents must not directly push protected branches.
 

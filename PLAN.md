@@ -964,10 +964,13 @@ Reuse is the normal path:
 
 Reuse bounds research per fingerprint, not per process. Two truly concurrent
 first runs for the same missing fingerprint may each make one bounded
-Researcher call; publication is atomic and no-clobber, so one winner is kept,
-the losing run loads that winner, and both revalidate it in full before use.
-The race costs at most one extra research call and cannot affect correctness,
-stored state or the overlay.
+generation sequence: an initial Researcher call and one retry after any
+failure. Invalid output or provenance includes the exact bounded rejection
+reason; infrastructure failure receives one ordinary retry. Publication is
+atomic and no-clobber, so one winner is kept, the losing run loads that winner,
+and both revalidate it in full before use. The race costs at most one extra
+sequence (two calls) and cannot affect correctness, stored state or the
+overlay.
 
 Repository identity is the canonical local Git common directory. Linked
 worktrees of one checkout share a skill directory, no remote URL is consulted,
@@ -978,7 +981,9 @@ recreate.
 
 When generation is required, the controller transitions through a temporary
 `RESEARCHING` state and invokes the configured Researcher (`GPT-5.6 Sol` by
-default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
+default) with purpose `GENERATE_REPOSITORY_SKILL`. Any failure receives one
+bounded retry. Invalid typed output or provenance carries the exact bounded
+rejection reason into that retry. A second failure safely skips polish.
 
 That call is bounded, web-only and repository-wide rather than task-scoped:
 
@@ -1088,8 +1093,10 @@ the bounded polish pass.
   generated skill; an existing generated file is never overwritten; a changed
   fingerprint selects a new file while earlier files remain; there is no TTL
 - concurrent first runs for the same missing fingerprint may each make one
-  bounded Researcher call; atomic no-clobber publication keeps one winner that
-  every participant revalidates, so the race costs at most one extra call and
+  bounded generation sequence (an initial call plus at most one retry);
+  invalid output carries its bounded rejection reason into the retry; atomic
+  no-clobber publication keeps one winner that every
+  participant revalidates, so the race costs at most one extra sequence and
   never affects stored state, the overlay or which guidance is used
 - the repository key derives from the canonical local Git common directory, so
   linked worktrees share one directory and a moved or re-cloned repository

@@ -166,6 +166,23 @@ class AgentResult(ModelBase):
             raise ValueError("failure_reason is required when success is False")
 
 
+def is_retryable_typed_artifact_failure(
+    result: AgentResult, artifact_type: type[ModelBase]
+) -> bool:
+    """Return whether one correction prompt can fix a typed-output failure."""
+    if result.success or result.failure_reason is None:
+        return False
+    artifact_name = artifact_type.__name__
+    return any(
+        marker in result.failure_reason
+        for marker in (
+            f"did not validate as {artifact_name}",
+            f"did not contain a parseable JSON object for {artifact_name}",
+            f"did not contain a valid {artifact_name}",
+        )
+    )
+
+
 class AgentRuntime(Protocol):
     """The only boundary between the factory and model inference.
 

@@ -73,9 +73,11 @@ any command.
 Repository guidance is researched once per repository and dependency
 fingerprint, then reused, so a normal run spends nothing on it. Reuse is not a
 cross-process lock: two truly concurrent first runs for the same missing
-fingerprint may each make one bounded Researcher call. Atomic no-clobber
-publication keeps one winner and both runs revalidate it, so the race costs at
-most one extra call and changes nothing else.
+fingerprint may each make one bounded generation sequence: an initial
+Researcher call and one retry after any failure. Invalid output includes the
+exact bounded rejection reason. Atomic no-clobber publication keeps one winner
+and both runs revalidate it, so the race costs at most one extra sequence (two
+calls) and changes nothing else.
 
 Two extra bounds exist for the daemon:
 

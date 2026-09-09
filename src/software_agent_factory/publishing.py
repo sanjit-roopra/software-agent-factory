@@ -38,6 +38,8 @@ from .github import (
     CIStatus,
     CommandRunner,
     GitHubClient,
+    GitHubCommandError,
+    GitHubTimeoutError,
     GitPublisher,
     GitPublishError,
     GitTimeoutError,
@@ -63,6 +65,17 @@ __all__ = [
 ]
 
 DEFAULT_BASE_BRANCH = "main"
+MAX_PULL_REQUEST_CREATE_ATTEMPTS = 2
+TRANSIENT_GITHUB_ERROR_MARKERS = (
+    " eof",
+    "bad gateway",
+    "connection refused",
+    "connection reset",
+    "gateway timeout",
+    "service unavailable",
+    "temporary failure",
+    "tls handshake timeout",
+)
 
 #: Stable, run-scoped marker rendered into every factory PR body by
 #: :func:`software_agent_factory.github.build_pr_body`. Recovering publishers
@@ -74,6 +87,13 @@ _RUN_MARKER_PATTERN = re.compile(r"^Run ID: `([^`]+)`$", re.MULTILINE)
 def _run_marker(body: str) -> str | None:
     match = _RUN_MARKER_PATTERN.search(body or "")
     return match.group(1) if match else None
+
+
+def _is_transient_github_error(error: GitHubCommandError | GitHubTimeoutError) -> bool:
+    if isinstance(error, GitHubTimeoutError):
+        return True
+    message = error.stderr.casefold()
+    return any(marker in message for marker in TRANSIENT_GITHUB_ERROR_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -329,22 +349,81 @@ class PullRequestPublisher:
                 updated_pull_request=True,
             )
 
-        url = self._client.create_pr(
+        url, created = self._create_pull_request(
             workspace_path,
-            base=base_branch,
-            head=branch_name,
+            branch_name=branch_name,
+            base_branch=base_branch,
             title=title,
             body=body,
-            draft=self._config.pull_request.draft,
             repository=api_repository,
+            api_host=api_host,
         )
         self._validate_pull_request_url(url, repository=api_repository, api_host=api_host)
         return PublishResult(
             commit_sha=commit_sha,
             base_branch=base_branch,
             pull_request_url=url,
-            created_pull_request=True,
+            created_pull_request=created,
+            updated_pull_request=not created,
         )
+
+    def _create_pull_request(
+        self,
+        workspace_path: Path,
+        *,
+        branch_name: str,
+        base_branch: str,
+        title: str,
+        body: str,
+        repository: str,
+        api_host: str,
+    ) -> tuple[str, bool]:
+        """Retry one transient creation failure without risking a duplicate PR."""
+        for attempt in range(1, MAX_PULL_REQUEST_CREATE_ATTEMPTS + 1):
+            try:
+                return (
+                    self._client.create_pr(
+                        workspace_path,
+                        base=base_branch,
+                        head=branch_name,
+                        title=title,
+                        body=body,
+                        draft=self._config.pull_request.draft,
+                        repository=repository,
+                    ),
+                    True,
+                )
+            except (GitHubCommandError, GitHubTimeoutError) as exc:
+                transient = _is_transient_github_error(exc)
+                if attempt == 1 and not transient:
+                    raise
+                try:
+                    discovered = self._discover_pull_request(
+                        workspace_path,
+                        branch_name=branch_name,
+                        base_branch=base_branch,
+                        body=body,
+                        repository=repository,
+                    )
+                except (GitHubCommandError, GitHubTimeoutError):
+                    discovered = None
+                if discovered is not None:
+                    self._validate_pull_request_url(
+                        discovered,
+                        repository=repository,
+                        api_host=api_host,
+                    )
+                    self._refresh_pull_request(
+                        workspace_path,
+                        discovered,
+                        title=title,
+                        body=body,
+                        repository=repository,
+                    )
+                    return discovered, False
+                if attempt == MAX_PULL_REQUEST_CREATE_ATTEMPTS:
+                    raise
+        raise AssertionError("pull request creation retry loop did not return")
 
     def _refresh_pull_request(
         self,

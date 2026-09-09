@@ -218,10 +218,13 @@ generation time. Stored guidance that fails revalidation is left on disk as
 written and reported with a warning pointing at `factory skill refresh`.
 
 Reuse bounds research per fingerprint, not per process. Do not claim exactly
-one call under cross-process concurrency: two truly concurrent first runs for
-the same missing fingerprint may each make one bounded Researcher call.
-Publication is atomic and no-clobber, so one winner is kept, the other run
-loads it, and both revalidate it in full. The cost is at most one extra call;
+one call under cross-process concurrency. One generation sequence makes an
+initial Researcher call and may make one bounded retry after any failure.
+Invalid output receives the exact bounded rejection reason; infrastructure
+failures receive one ordinary retry. Two truly concurrent first runs for the
+same missing fingerprint may each run that bounded sequence. Publication is
+atomic and no-clobber, so one winner is kept, the other run loads it, and both
+revalidate it in full. The race costs at most one extra sequence (two calls);
 correctness, stored state and the overlay are unaffected.
 
 Repository identity is the canonical local Git common directory, so linked

@@ -319,6 +319,28 @@ class RecoveryRunner(ScriptedRunner):
         return super()._gh(argv)
 
 
+class TransientCreateRunner(RecoveryRunner):
+    def __init__(self, *, appears_after_failure: bool = False) -> None:
+        super().__init__(listed=[])
+        self.appears_after_failure = appears_after_failure
+        self.create_calls = 0
+        self.list_calls = 0
+
+    def _gh(self, argv):  # noqa: ANN001 - test double
+        if argv[1:3] == ["pr", "list"]:
+            self.list_calls += 1
+            listed = [listed_pr()] if self.appears_after_failure and self.create_calls == 1 else []
+            return FakeCompleted(stdout=json.dumps(listed))
+        if argv[1:3] == ["pr", "create"]:
+            self.create_calls += 1
+            if self.create_calls == 1:
+                return FakeCompleted(
+                    returncode=1,
+                    stderr='Post "https://api.github.com/graphql": EOF',
+                )
+        return super()._gh(argv)
+
+
 def listed_pr(
     *,
     url: str = "https://github.com/acme/repo/pull/42",
@@ -383,6 +405,60 @@ def test_publish_creates_a_pull_request_when_none_exists(tmp_path: Path) -> None
 
     assert result.created_pull_request is True
     assert result.pull_request_url == runner.pr_url
+
+
+def test_publish_retries_one_transient_pull_request_creation_failure(
+    tmp_path: Path,
+) -> None:
+    runner = TransientCreateRunner()
+
+    result = _publish(_publisher(tmp_path, runner), tmp_path)
+
+    assert result.created_pull_request is True
+    assert result.pull_request_url == runner.pr_url
+    assert runner.create_calls == 2
+    assert runner.list_calls == 2
+
+
+def test_publish_recovers_when_pull_request_was_created_before_transient_failure(
+    tmp_path: Path,
+) -> None:
+    runner = TransientCreateRunner(appears_after_failure=True)
+
+    result = _publish(_publisher(tmp_path, runner), tmp_path)
+
+    assert result.created_pull_request is False
+    assert result.updated_pull_request is True
+    assert result.pull_request_url == "https://github.com/acme/repo/pull/42"
+    assert runner.create_calls == 1
+    assert runner.list_calls == 2
+
+
+def test_publish_does_not_retry_non_transient_pull_request_failure(
+    tmp_path: Path,
+) -> None:
+    class AuthenticationFailureRunner(RecoveryRunner):
+        def __init__(self) -> None:
+            super().__init__(listed=[])
+            self.create_calls = 0
+
+        def _gh(self, argv):  # noqa: ANN001 - test double
+            if argv[1:3] == ["pr", "create"]:
+                self.create_calls += 1
+                return FakeCompleted(returncode=1, stderr="not authenticated")
+            return super()._gh(argv)
+
+    runner = AuthenticationFailureRunner()
+
+    with pytest.raises(GitHubCommandError, match="not authenticated"):
+        _publish(
+            _publisher(tmp_path, runner),
+            tmp_path,
+            title="Handle connection reset",
+            body=f"{BODY}\nService unavailable diagnostics.\n",
+        )
+
+    assert runner.create_calls == 1
 
 
 @pytest.mark.parametrize(

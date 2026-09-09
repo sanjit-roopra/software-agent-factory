@@ -102,10 +102,13 @@ from .observability import (
 from .projects import FileProjectStore, ProjectError, ProjectRunner
 from .repository_profile import profile_repository
 from .repository_skills import (
+    MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS,
     RepositorySkillError,
     RepositorySkillManager,
     RepositorySkillMergeError,
     merge_repository_skill,
+    repository_skill_correction_context,
+    repository_skill_exhausted_warning,
     repository_skill_validation_error,
 )
 from .routing import ModelRouter
@@ -1383,27 +1386,69 @@ def skill_refresh_command(
         raise _fail(f"cannot create the skill generation directory {neutral_dir}: {exc}") from None
 
     role_model = ModelRouter(factory_config).model_for_researcher()
-    request = AgentRequest(
-        role=AgentRole.RESEARCHER,
-        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-        model=role_model.model,
-        reasoning=role_model.reasoning,
-        context_tier=role_model.context_tier,
-        work_item=_skill_generation_work_item(),
-        repository_profile=profile,
-        official_documentation_origins=list(factory_config.polish.official_documentation_origins),
-        practice_reference_urls=list(factory_config.polish.practice_reference_urls),
-        workspace_path=str(neutral_dir),
-        timeout_seconds=factory_config.agent_timeout_seconds,
-    )
+    agent_runtime = _build_runtime(runtime)
+    skill: RepositorySkill | None = None
+    rejection: str | None = None
+    initial_rejection: str | None = None
+    for attempt in range(1, MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS + 1):
+        request = AgentRequest(
+            role=AgentRole.RESEARCHER,
+            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+            model=role_model.model,
+            reasoning=role_model.reasoning,
+            context_tier=role_model.context_tier,
+            work_item=_skill_generation_work_item(),
+            repair_context=(
+                repository_skill_correction_context(rejection) if rejection is not None else None
+            ),
+            repository_profile=profile,
+            official_documentation_origins=list(
+                factory_config.polish.official_documentation_origins
+            ),
+            practice_reference_urls=list(factory_config.polish.practice_reference_urls),
+            workspace_path=str(neutral_dir),
+            attempt_number=attempt,
+            timeout_seconds=factory_config.agent_timeout_seconds,
+        )
 
-    started_at = utc_now()
-    try:
-        result = _build_runtime(runtime).run(request)
-    except ValueError as exc:
+        started_at = utc_now()
+        try:
+            result = agent_runtime.run(request)
+        except ValueError as exc:
+            completed_at = utc_now()
+            invocation = InvocationRecord(
+                invocation_number=attempt,
+                role=request.role,
+                purpose=request.purpose,
+                model=request.model,
+                reasoning=request.reasoning,
+                context_tier=request.context_tier,
+                started_at=started_at,
+                completed_at=completed_at,
+                success=False,
+                failure_reason=runtime_exception_failure_reason(exc),
+                attempt_number=attempt,
+            )
+            try:
+                _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
+            except OSError as persist_exc:
+                raise _fail(
+                    f"repository skill invocation telemetry could not be persisted: {persist_exc}",
+                    code=FAILURE_EXIT_CODE,
+                ) from None
+            rejection = f"repository skill generation could not run: {exc}"
+            if attempt == 1:
+                initial_rejection = rejection
+                continue
+            assert initial_rejection is not None
+            raise _fail(
+                repository_skill_exhausted_warning(initial_rejection, rejection),
+                code=FAILURE_EXIT_CODE,
+            ) from None
+
         completed_at = utc_now()
         invocation = InvocationRecord(
-            invocation_number=1,
+            invocation_number=attempt,
             role=request.role,
             purpose=request.purpose,
             model=request.model,
@@ -1411,66 +1456,55 @@ def skill_refresh_command(
             context_tier=request.context_tier,
             started_at=started_at,
             completed_at=completed_at,
-            success=False,
-            failure_reason=runtime_exception_failure_reason(exc),
+            success=result.success,
+            failure_reason=result.failure_reason,
+            attempt_number=attempt,
+            usage=result.usage,
         )
         try:
             _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
-        except OSError as persist_exc:
+        except OSError as exc:
             raise _fail(
-                f"repository skill invocation telemetry could not be persisted: {persist_exc}",
+                f"repository skill invocation telemetry could not be persisted: {exc}",
                 code=FAILURE_EXIT_CODE,
             ) from None
-        # The runtime boundary turns an unusable executable, a timeout and
-        # unparsable output into a failed AgentResult; only a request it
-        # refuses to send at all is raised.
-        raise _fail(
-            f"repository skill generation could not run: {exc}", code=FAILURE_EXIT_CODE
-        ) from None
-    completed_at = utc_now()
-    invocation = InvocationRecord(
-        invocation_number=1,
-        role=request.role,
-        purpose=request.purpose,
-        model=request.model,
-        reasoning=request.reasoning,
-        context_tier=request.context_tier,
-        started_at=started_at,
-        completed_at=completed_at,
-        success=result.success,
-        failure_reason=result.failure_reason,
-        usage=result.usage,
-    )
-    try:
-        _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
-    except OSError as exc:
-        raise _fail(
-            f"repository skill invocation telemetry could not be persisted: {exc}",
-            code=FAILURE_EXIT_CODE,
-        ) from None
 
-    skill = result.repository_skill
-    if not result.success or skill is None:
+        skill = result.repository_skill
+        if not result.success:
+            rejection = result.failure_reason or "the researcher produced no repository guidance"
+            if attempt == 1:
+                initial_rejection = rejection
+                continue
+            if initial_rejection is not None:
+                rejection = repository_skill_exhausted_warning(initial_rejection, rejection)
+            raise _fail(rejection, code=FAILURE_EXIT_CODE)
+        if skill is None:
+            rejection = "the researcher reported success without repository guidance"
+        elif skill.dependency_fingerprint != profile.dependency_fingerprint:
+            rejection = (
+                "the researcher returned guidance for a different dependency fingerprint: "
+                f"{skill.dependency_fingerprint} is not {profile.dependency_fingerprint}"
+            )
+        elif problem := repository_skill_validation_error(
+            skill,
+            profile,
+            official_documentation_origins=factory_config.polish.official_documentation_origins,
+            practice_reference_urls=factory_config.polish.practice_reference_urls,
+        ):
+            rejection = f"refusing to store unverified repository guidance: {problem}"
+        else:
+            break
+
+        if attempt == 1:
+            initial_rejection = rejection
+            continue
+        assert initial_rejection is not None
         raise _fail(
-            result.failure_reason or "the researcher produced no repository guidance",
+            repository_skill_exhausted_warning(initial_rejection, rejection),
             code=FAILURE_EXIT_CODE,
         )
-    if skill.dependency_fingerprint != profile.dependency_fingerprint:
-        raise _fail(
-            "the researcher returned guidance for a different dependency fingerprint: "
-            f"{skill.dependency_fingerprint} is not {profile.dependency_fingerprint}",
-            code=FAILURE_EXIT_CODE,
-        )
-    if problem := repository_skill_validation_error(
-        skill,
-        profile,
-        official_documentation_origins=factory_config.polish.official_documentation_origins,
-        practice_reference_urls=factory_config.polish.practice_reference_urls,
-    ):
-        raise _fail(
-            f"refusing to store unverified repository guidance: {problem}",
-            code=FAILURE_EXIT_CODE,
-        )
+
+    assert skill is not None
 
     # Stamped once, here, so the stored record says when this guidance was
     # produced rather than when the model claimed it was.
