@@ -1274,6 +1274,24 @@ def test_ensure_pushed_is_a_no_op_when_the_remote_already_has_head(tmp_path: Pat
     assert not any("commit" in call[0] for call in runner.calls)
 
 
+def test_remote_branch_sha_requires_the_exact_returned_ref(tmp_path: Path) -> None:
+    expected = "a" * 40
+    actual = "b" * 40
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(
+                stdout=(
+                    f"{expected}\trefs/heads/decoy/refs/heads/factory/wi-1\n"
+                    f"{actual}\trefs/heads/factory/wi-1\n"
+                )
+            )
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    assert publisher.remote_branch_sha(tmp_path, "factory/wi-1") == actual
+
+
 def test_ensure_pushed_pushes_an_existing_commit_without_creating_one(tmp_path: Path) -> None:
     sha = "a" * 40
     runner = FakeRunner(
@@ -1291,6 +1309,101 @@ def test_ensure_pushed_pushes_an_existing_commit_without_creating_one(tmp_path: 
     assert push[-3:] == ["--", "origin", f"{sha}:refs/heads/factory/wi-1"]
     assert "--force" not in push and "-f" not in push
     assert not any("commit" in call[0] for call in runner.calls)
+
+
+def test_ensure_pushed_retries_a_transient_commit_refs_failure(tmp_path: Path) -> None:
+    sha = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(stdout=f"{sha}\n"),
+            FakeCompletedProcess(stdout=""),  # branch initially missing
+            FakeCompletedProcess(
+                returncode=1,
+                stderr=(
+                    "remote: fatal error in commit_refs\n"
+                    "! [remote rejected] HEAD -> factory/wi-1 (failure)\n"
+                ),
+            ),
+            FakeCompletedProcess(stdout=""),  # first push did not land
+            FakeCompletedProcess(),  # one retry succeeds
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
+    pushes = [call[0] for call in runner.calls if "push" in call[0]]
+    assert len(pushes) == 2
+    assert all("--force" not in push and "-f" not in push for push in pushes)
+
+
+def test_ensure_pushed_recovers_when_a_transient_push_response_was_lost(
+    tmp_path: Path,
+) -> None:
+    sha = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(stdout=f"{sha}\n"),
+            FakeCompletedProcess(stdout=""),  # branch initially missing
+            FakeCompletedProcess(returncode=1, stderr="fatal: unexpected EOF"),
+            FakeCompletedProcess(stdout=f"{sha}\trefs/heads/factory/wi-1\n"),
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
+    assert len([call for call in runner.calls if "push" in call[0]]) == 1
+
+
+def test_ensure_pushed_reconciles_after_the_final_transient_failure(tmp_path: Path) -> None:
+    sha = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(stdout=f"{sha}\n"),
+            FakeCompletedProcess(stdout=""),  # branch initially missing
+            FakeCompletedProcess(returncode=1, stderr="fatal: unexpected EOF"),
+            FakeCompletedProcess(stdout=""),  # first push did not land
+            FakeCompletedProcess(returncode=1, stderr="fatal: unexpected EOF"),
+            FakeCompletedProcess(stdout=f"{sha}\trefs/heads/factory/wi-1\n"),
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
+    assert len([call for call in runner.calls if "push" in call[0]]) == 2
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "! [rejected] HEAD -> factory/wi-1 (non-fast-forward)",
+        "remote: error: GH007: protected branch update failed\n"
+        "remote: error: pre-receive hook declined",
+        "remote: Permission to acme/repo.git denied to user.",
+        "fatal: Authentication failed for 'https://github.com/acme/repo.git/'",
+        "error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\n"
+        "fatal: the remote end hung up unexpectedly",
+    ],
+)
+def test_ensure_pushed_does_not_retry_non_transient_rejections(tmp_path: Path, stderr: str) -> None:
+    sha = "a" * 40
+    runner = FakeRunner(
+        [
+            _remote_url_response(),
+            FakeCompletedProcess(stdout=f"{sha}\n"),
+            FakeCompletedProcess(stdout=""),  # branch initially missing
+            FakeCompletedProcess(returncode=1, stderr=stderr),
+        ]
+    )
+    publisher = GitPublisher(runner=runner)
+
+    with pytest.raises(GitCommandError):
+        publisher.ensure_pushed(tmp_path, "factory/wi-1")
+
+    assert len([call for call in runner.calls if "push" in call[0]]) == 1
+    assert len([call for call in runner.calls if "ls-remote" in call[0]]) == 1
 
 
 def test_ensure_pushed_enforces_the_branch_prefix(tmp_path: Path) -> None:

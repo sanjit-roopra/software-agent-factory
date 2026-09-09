@@ -15,10 +15,16 @@ eligibility before requesting a normal merge. It never bypasses branch
 protection, uses administrator privileges, force-pushes or deploys. Completion
 requires persisted evidence that the PR actually merged.
 
-PR creation gets one bounded retry for transient GitHub transport failures.
-Before retrying, the controller searches for the exact repository, head, base
-and run marker. This recovers a PR that GitHub created before the response was
-lost and prevents duplicate publication.
+Branch push gets one bounded retry for transient Git transport or remote
+backend failures. Before retrying, the controller reads the exact target
+branch tip and accepts a lost response only when that tip is the expected
+commit. Authentication, authorization, policy and non-fast-forward failures
+are not retried.
+
+PR creation separately gets one bounded retry for transient GitHub transport
+failures. Before retrying, the controller searches for the exact repository,
+head, base and run marker. This recovers a PR that GitHub created before the
+response was lost and prevents duplicate publication.
 
 Every PR revision, including each CI repair, must pass the configured
 independent Reviewer. The controller binds approval to the published commit
