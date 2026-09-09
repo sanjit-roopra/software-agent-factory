@@ -67,7 +67,10 @@ def test_token_reaches_gh_only_through_the_child_environment(tmp_path: Path) -> 
     assert gh_calls, "expected a gh invocation"
     for argv, _cwd, env in gh_calls:
         assert "ghp_supersecrettoken1234" not in " ".join(argv)
-        assert env == {"GH_TOKEN": "ghp_supersecrettoken1234"}
+        assert env is not None
+        assert env["GH_TOKEN"] == "ghp_supersecrettoken1234"
+        if argv[1:3] != ["auth", "status"]:
+            assert env["GH_HOST"] == "github.com"
 
     # git never receives the token at all.
     for argv, _cwd, env in runner.calls:
@@ -200,6 +203,31 @@ def test_observe_normalizes_a_passing_status(tmp_path: Path) -> None:
     assert report.overall == "PASS"
     assert report.timed_out is False
     assert report.failed_checks == []
+    [checks] = [argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "checks"]]
+    assert checks[3] == "1"
+    assert checks[checks.index("--repo") + 1] == "acme/repo"
+
+
+def test_observe_rejects_a_persisted_pr_outside_the_active_gh_host(
+    tmp_path: Path,
+) -> None:
+    runner = ScriptedRunner(active_host="ghe.example.com")
+    config = build_config(
+        tmp_path,
+        pull_request={
+            "enabled": True,
+            "allowed_hosts": ["github.com", "ghe.example.com"],
+        },
+        ci={"enabled": True},
+    )
+    observer = CIObserver(config, client=GitHubClient(runner=runner), sleep=lambda _s: None)
+
+    with pytest.raises(UnexpectedRepositoryError, match="another repository or gh host"):
+        observer.observe(
+            repo_path=tmp_path,
+            pull_request_url="https://github.com/acme/repo/pull/1",
+        )
+    assert not any(argv[1:3] == ["pr", "checks"] for argv in runner.commands("gh"))
 
 
 def test_observe_reports_a_timeout_with_the_last_known_status(tmp_path: Path) -> None:
@@ -449,7 +477,7 @@ def test_republishing_refreshes_the_body_with_the_latest_reviewer_evidence(
     assert result.created_pull_request is False
     assert result.updated_pull_request is True
     [edit] = _pr_edits(runner)
-    assert edit[3] == "https://github.com/acme/repo/pull/7"
+    assert edit[3] == "7"
     assert edit[edit.index("--body") + 1] == repaired
     assert edit[edit.index("--title") + 1] == "Do the thing"
 
@@ -461,7 +489,7 @@ def test_a_discovered_pull_request_is_also_refreshed(tmp_path: Path) -> None:
 
     assert result.updated_pull_request is True
     [edit] = _pr_edits(runner)
-    assert edit[3] == "https://github.com/acme/repo/pull/42"
+    assert edit[3] == "42"
 
 
 def test_a_newly_created_pull_request_is_not_edited_again(tmp_path: Path) -> None:
@@ -498,7 +526,7 @@ def test_publishing_never_submits_a_github_review_or_bypasses_protection(
 
     _publish(_publisher(tmp_path, runner), tmp_path)
 
-    gh_commands = runner.commands("gh")
+    gh_commands = [argv for argv in runner.commands("gh") if argv[1:2] == ["pr"]]
     assert not any(argv[1:3] == ["pr", "review"] for argv in gh_commands)
     assert not any(argv[1:3] == ["pr", "merge"] for argv in gh_commands)
     assert not any("--admin" in argv for argv in gh_commands)
@@ -629,11 +657,129 @@ def test_pull_request_commands_name_the_authorized_repository(tmp_path: Path) ->
         expected_host="github.com",
     )
 
-    gh_commands = runner.commands("gh")
+    gh_commands = [argv for argv in runner.commands("gh") if argv[1:2] == ["pr"]]
     assert gh_commands
     for argv in gh_commands:
         assert "--repo" in argv
-        assert argv[argv.index("--repo") + 1] == "github.com/acme/repo"
+        assert argv[argv.index("--repo") + 1] == "acme/repo"
+
+
+def test_pull_request_commands_do_not_use_the_ssh_host_alias(tmp_path: Path) -> None:
+    runner = RecoveryRunner(
+        listed=[],
+        remote_url="git@github.com-company:acme/repo.git",
+    )
+    config = build_config(
+        tmp_path,
+        pull_request={
+            "enabled": True,
+            "draft": False,
+            "allowed_hosts": ["github.com", "github.com-company"],
+        },
+    )
+    publisher = PullRequestPublisher(
+        config,
+        publisher=GitPublisher(
+            runner=runner,
+            base_branch="main",
+            branch_prefix="factory/",
+            allowed_hosts=frozenset({"github.com", "github.com-company"}),
+        ),
+        client=GitHubClient(runner=runner),
+        token=None,
+        runner=runner,
+    )
+
+    _publish(
+        publisher,
+        tmp_path,
+        expected_repository="acme/repo",
+        expected_host="github.com-company",
+    )
+
+    gh_commands = [argv for argv in runner.commands("gh") if argv[1:2] == ["pr"]]
+    assert gh_commands
+    for argv in gh_commands:
+        assert argv[argv.index("--repo") + 1] == "acme/repo"
+
+
+def test_pr_only_publish_derives_repository_without_using_the_ssh_alias(
+    tmp_path: Path,
+) -> None:
+    runner = RecoveryRunner(
+        listed=[],
+        remote_url="git@github.com-company:acme/repo.git",
+    )
+    config = build_config(
+        tmp_path,
+        pull_request={
+            "enabled": True,
+            "draft": False,
+            "allowed_hosts": ["github.com", "github.com-company"],
+        },
+    )
+    publisher = PullRequestPublisher(
+        config,
+        publisher=GitPublisher(
+            runner=runner,
+            base_branch="main",
+            branch_prefix="factory/",
+            allowed_hosts=frozenset({"github.com", "github.com-company"}),
+        ),
+        client=GitHubClient(runner=runner),
+        token=None,
+        runner=runner,
+    )
+
+    _publish(publisher, tmp_path)
+
+    gh_commands = [argv for argv in runner.commands("gh") if argv[1:2] == ["pr"]]
+    assert gh_commands
+    assert all(argv[argv.index("--repo") + 1] == "acme/repo" for argv in gh_commands)
+
+
+def test_publish_rejects_a_pr_url_from_a_host_other_than_active_gh_auth(
+    tmp_path: Path,
+) -> None:
+    runner = RecoveryRunner(
+        listed=[],
+        active_host="github.enterprise.example",
+    )
+    config = build_config(
+        tmp_path,
+        pull_request={
+            "enabled": True,
+            "allowed_hosts": ["github.com", "github.enterprise.example"],
+        },
+    )
+    publisher = PullRequestPublisher(
+        config,
+        publisher=GitPublisher(
+            runner=runner,
+            base_branch="main",
+            allowed_hosts=frozenset({"github.com", "github.enterprise.example"}),
+        ),
+        client=GitHubClient(runner=runner),
+        runner=runner,
+    )
+
+    with pytest.raises(UnexpectedRepositoryError, match="another repository or gh host"):
+        _publish(publisher, tmp_path)
+
+
+def test_credential_bearing_https_remote_is_sanitized_before_push(tmp_path: Path) -> None:
+    runner = RecoveryRunner(
+        listed=[],
+        remote_url="https://oauth2:secret-token@github.com/acme/repo.git",
+    )
+
+    _publish(_publisher(tmp_path, runner), tmp_path)
+
+    push = runner.pushes()[0]
+    assert "secret-token" not in " ".join(push)
+    assert push[-2] == "origin"
+    for argv in [command for command in runner.commands("gh") if command[1:2] == ["pr"]]:
+        assert argv[argv.index("--repo") + 1] == "acme/repo"
 
 
 def test_an_existing_pull_request_is_refreshed_against_the_authorized_repository(

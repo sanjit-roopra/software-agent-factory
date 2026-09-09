@@ -184,6 +184,7 @@ class ScriptedRunner:
     commit_sha: str = "0123456789abcdef0123456789abcdef01234567"
     base_branch: str = "main"
     pr_url: str = "https://github.com/acme/repo/pull/42"
+    active_host: str = "github.com"
     check_responses: list[list[dict[str, str]]] = field(default_factory=list)
     run_log: str = ""
     remote_missing: bool = False
@@ -237,6 +238,22 @@ class ScriptedRunner:
 
     def _gh(self, argv: list[str]) -> FakeCompleted:
         tail = argv[1:]
+        if tail[:2] == ["auth", "status"]:
+            return FakeCompleted(
+                stdout=json.dumps(
+                    {
+                        "hosts": {
+                            self.active_host: [
+                                {
+                                    "active": True,
+                                    "host": self.active_host,
+                                    "state": "success",
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
         if tail[:2] == ["pr", "create"]:
             return FakeCompleted(stdout=f"{self.pr_url}\n")
         if tail[:2] == ["pr", "checks"]:

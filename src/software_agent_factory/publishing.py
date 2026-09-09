@@ -193,23 +193,24 @@ class PullRequestPublisher:
           fork head and -- when the body carries a run marker -- when it names
           the same run, so an unrelated pull request can never be adopted.
         """
-        api_repository = (
-            f"{expected_host}/{expected_repository}"
-            if expected_host is not None and expected_repository is not None
-            else expected_repository
-        )
-        if existing_pull_request_url is not None and expected_repository is not None:
-            try:
-                identity, _ = parse_pull_request_url(existing_pull_request_url)
-            except ValueError as exc:
-                raise UnexpectedRepositoryError("invalid persisted pull request URL") from exc
-            if identity.full_name.casefold() != expected_repository.casefold() or (
-                expected_host is not None and identity.host.casefold() != expected_host.casefold()
-            ):
-                raise UnexpectedRepositoryError(
-                    "persisted pull request belongs to another repository"
-                )
         publisher = self._git_publisher(base_branch)
+        api_repository = (
+            expected_repository
+            or publisher.resolve_remote_repository_for_api(workspace_path).full_name
+        )
+        api_host = self._client.active_host(workspace_path)
+        if api_host.casefold() not in {
+            host.casefold() for host in self._config.pull_request.allowed_hosts
+        }:
+            raise UnexpectedRepositoryError(
+                f"active gh host {api_host!r} is not in pull_request.allowed_hosts"
+            )
+        if existing_pull_request_url is not None:
+            self._validate_pull_request_url(
+                existing_pull_request_url,
+                repository=api_repository,
+                api_host=api_host,
+            )
         bound = (
             expected_parent_sha is not None
             or prepared_commit_sha is not None
@@ -241,6 +242,7 @@ class PullRequestPublisher:
                 body=body,
                 existing_pull_request_url=existing_pull_request_url,
                 api_repository=api_repository,
+                api_host=api_host,
             )
         try:
             commit_sha = publisher.commit_and_push(
@@ -269,6 +271,7 @@ class PullRequestPublisher:
             body=body,
             existing_pull_request_url=existing_pull_request_url,
             api_repository=api_repository,
+            api_host=api_host,
         )
 
     def _attach_pull_request(
@@ -281,7 +284,8 @@ class PullRequestPublisher:
         title: str,
         body: str,
         existing_pull_request_url: str | None,
-        api_repository: str | None,
+        api_repository: str,
+        api_host: str,
     ) -> PublishResult:
         """Reuse, refresh or create the pull request for an already-published
         commit. Never creates a second pull request for the same head/base."""
@@ -309,6 +313,11 @@ class PullRequestPublisher:
             repository=api_repository,
         )
         if discovered is not None:
+            self._validate_pull_request_url(
+                discovered,
+                repository=api_repository,
+                api_host=api_host,
+            )
             self._refresh_pull_request(
                 workspace_path, discovered, title=title, body=body, repository=api_repository
             )
@@ -329,6 +338,7 @@ class PullRequestPublisher:
             draft=self._config.pull_request.draft,
             repository=api_repository,
         )
+        self._validate_pull_request_url(url, repository=api_repository, api_host=api_host)
         return PublishResult(
             commit_sha=commit_sha,
             base_branch=base_branch,
@@ -343,7 +353,7 @@ class PullRequestPublisher:
         *,
         title: str,
         body: str,
-        repository: str | None = None,
+        repository: str,
     ) -> None:
         """Republish the description so GitHub shows the *current* revision's
         independent Reviewer outcome.
@@ -360,9 +370,22 @@ class PullRequestPublisher:
         the model Reviewer is evidence in the description, not an approving
         GitHub user, and the repository's own review requirements still apply.
         """
+        _, number = parse_pull_request_url(pull_request_url)
         self._client.update_pr(
-            workspace_path, pull_request_url, body=body, title=title, repository=repository
+            workspace_path, str(number), body=body, title=title, repository=repository
         )
+
+    @staticmethod
+    def _validate_pull_request_url(url: str, *, repository: str, api_host: str) -> None:
+        try:
+            identity, _ = parse_pull_request_url(url)
+        except ValueError as exc:
+            raise UnexpectedRepositoryError("invalid pull request URL") from exc
+        if (
+            identity.full_name.casefold() != repository.casefold()
+            or identity.host.casefold() != api_host.casefold()
+        ):
+            raise UnexpectedRepositoryError("pull request belongs to another repository or gh host")
 
     def _discover_pull_request(
         self,
@@ -429,6 +452,7 @@ class CIObserver:
         self._client = (
             client if client is not None else GitHubClient(runner=runner, token=resolved_token)
         )
+        self._runner = self._client.runner
         self._sleep = sleep
 
     @property
@@ -446,10 +470,33 @@ class CIObserver:
         """Poll until checks settle or the configured budget is spent."""
         ci = self._config.ci
         try:
+            pull_request, number = parse_pull_request_url(pull_request_url)
+        except ValueError as exc:
+            raise UnexpectedRepositoryError("invalid persisted pull request URL") from exc
+        publisher = GitPublisher(
+            runner=self._runner,
+            remote=self._config.pull_request.remote,
+            branch_prefix=self._config.repository.branch_prefix,
+            base_branch=self._config.pull_request.base_branch or DEFAULT_BASE_BRANCH,
+            max_changed_files=self._config.repository.max_changed_files,
+            allowed_hosts=frozenset(self._config.pull_request.allowed_hosts),
+        )
+        remote = publisher.resolve_remote_repository_for_api(repo_path)
+        active_host = self._client.active_host(repo_path)
+        if (
+            pull_request.full_name.casefold() != remote.full_name.casefold()
+            or pull_request.host.casefold() != active_host.casefold()
+        ):
+            raise UnexpectedRepositoryError(
+                "persisted pull request belongs to another repository or gh host"
+            )
+        repository = pull_request.full_name
+        try:
             if self._sleep is None:
                 status = self._client.poll_checks(
                     repo_path,
-                    pull_request_url,
+                    str(number),
+                    repository=repository,
                     interval_seconds=float(ci.poll_interval_seconds),
                     max_polls=self.max_polls,
                     max_seconds=float(ci.max_wait_seconds),
@@ -457,7 +504,8 @@ class CIObserver:
             else:
                 status = self._client.poll_checks(
                     repo_path,
-                    pull_request_url,
+                    str(number),
+                    repository=repository,
                     interval_seconds=float(ci.poll_interval_seconds),
                     max_polls=self.max_polls,
                     max_seconds=float(ci.max_wait_seconds),

@@ -64,6 +64,7 @@ from software_agent_factory.github import (
     normalize_status_check_rollup,
     parse_pull_request_url,
     parse_remote_repository,
+    parse_remote_repository_for_api,
 )
 from software_agent_factory.models import (
     ExecutionPlan,
@@ -1079,6 +1080,89 @@ def test_parse_remote_repository_is_case_insensitive_on_identity() -> None:
     second = parse_remote_repository("git@github.com:acme/repo.git")
 
     assert first.same_repository(second)
+
+
+def test_api_remote_parser_discards_https_credentials() -> None:
+    reference = parse_remote_repository_for_api(
+        "https://oauth2:secret-token@github.com/acme/repo.git"
+    )
+
+    assert reference.host == "github.com"
+    assert reference.full_name == "acme/repo"
+
+
+def test_active_host_uses_the_current_gh_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GH_HOST", raising=False)
+    payload = {
+        "hosts": {
+            "github.com": [
+                {"active": True, "host": "github.com", "state": "success"},
+            ]
+        }
+    }
+    runner = FakeRunner([FakeCompletedProcess(stdout=json.dumps(payload))])
+
+    assert GitHubClient(runner=runner).active_host(tmp_path) == "github.com"
+    assert runner.calls[0][0] == [
+        "gh",
+        "auth",
+        "status",
+        "--active",
+        "--json",
+        "hosts",
+    ]
+
+
+def test_active_host_honors_and_pins_gh_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_HOST", "ghe.example.com")
+    payload = {
+        "hosts": {
+            "github.com": [
+                {"active": True, "host": "github.com", "state": "success"},
+            ],
+            "ghe.example.com": [
+                {"active": True, "host": "ghe.example.com", "state": "success"},
+            ],
+        }
+    }
+    runner = FakeRunner([FakeCompletedProcess(stdout=json.dumps(payload))])
+    client = GitHubClient(runner=runner)
+
+    assert client.active_host(tmp_path) == "ghe.example.com"
+    client.find_pull_requests(
+        tmp_path,
+        head="factory/WI-1",
+        base="main",
+        repository="acme/repo",
+    )
+    assert runner.calls[-1][2] == {"GH_HOST": "ghe.example.com"}
+
+
+def test_active_host_defaults_to_github_with_multiple_authenticated_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GH_HOST", raising=False)
+    payload = {
+        "hosts": {
+            "github.com": [
+                {"active": True, "host": "github.com", "state": "success"},
+            ],
+            "ghe.example.com": [
+                {"active": True, "host": "ghe.example.com", "state": "success"},
+            ],
+        }
+    }
+
+    assert (
+        GitHubClient(
+            runner=FakeRunner([FakeCompletedProcess(stdout=json.dumps(payload))])
+        ).active_host(tmp_path)
+        == "github.com"
+    )
 
 
 def test_parse_pull_request_url_returns_repository_and_number() -> None:

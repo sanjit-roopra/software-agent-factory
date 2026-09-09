@@ -32,6 +32,10 @@ When enabled, a run continues past `PR_READY` to `PR_CREATED`. The controller â€
 not an agent â€” commits the worktree, pushes the branch and opens the pull
 request through `gh`.
 
+The factory passes `OWNER/REPO` to `gh`, so GitHub operations use the current
+authenticated `gh` account and host configuration. The Git remote may use a
+different allowlisted SSH host alias for push transport.
+
 Guards before anything leaves the machine:
 
 - The branch name must start with `repository.branch_prefix` (default
