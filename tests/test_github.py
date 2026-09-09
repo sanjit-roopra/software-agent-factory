@@ -842,6 +842,23 @@ def test_get_pr_checks_raises_when_no_output_and_gh_failed(tmp_path: Path) -> No
         client.get_pr_checks(tmp_path, "42")
 
 
+def test_get_pr_checks_treats_unregistered_checks_as_pending(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(
+                returncode=1,
+                stdout="",
+                stderr="no checks reported on the 'factory/task-1' branch",
+            )
+        ]
+    )
+    client = GitHubClient(runner=runner)
+
+    status = client.get_pr_checks(tmp_path, "42")
+
+    assert status == CIStatus(overall=CheckStatus.PENDING)
+
+
 def test_get_pr_checks_tolerates_nonzero_exit_when_json_present(tmp_path: Path) -> None:
     # gh pr checks exits non-zero while checks are pending; JSON body is
     # still authoritative and must be parsed, not treated as an error.
@@ -858,6 +875,34 @@ def test_get_pr_checks_tolerates_nonzero_exit_when_json_present(tmp_path: Path) 
     status = client.get_pr_checks(tmp_path, "42")
 
     assert status.overall == CheckStatus.PENDING
+
+
+def test_poll_checks_waits_for_checks_to_register(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        [
+            FakeCompletedProcess(
+                returncode=1,
+                stdout="",
+                stderr="no checks reported on the 'factory/task-1' branch",
+            ),
+            _checks_response({"name": "build", "bucket": "pending", "link": "", "description": ""}),
+            _checks_response({"name": "build", "bucket": "pass", "link": "", "description": ""}),
+        ]
+    )
+    client = GitHubClient(runner=runner)
+    sleeps: list[float] = []
+
+    status = client.poll_checks(
+        tmp_path,
+        "42",
+        interval_seconds=5,
+        max_polls=3,
+        sleep=sleeps.append,
+        clock=lambda: 0.0,
+    )
+
+    assert status.overall == CheckStatus.PASS
+    assert sleeps == [5, 5]
 
 
 def test_get_pr_checks_redacts_token_like_text_in_description(tmp_path: Path) -> None:
