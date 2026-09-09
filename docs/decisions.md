@@ -15,6 +15,11 @@ eligibility before requesting a normal merge. It never bypasses branch
 protection, uses administrator privileges, force-pushes or deploys. Completion
 requires persisted evidence that the PR actually merged.
 
+PR creation gets one bounded retry for transient GitHub transport failures.
+Before retrying, the controller searches for the exact repository, head, base
+and run marker. This recovers a PR that GitHub created before the response was
+lost and prevents duplicate publication.
+
 Every PR revision, including each CI repair, must pass the configured
 independent Reviewer. The controller binds approval to the published commit
 SHA and refuses to merge a different head. The PR displays the latest reviewer
@@ -394,7 +399,10 @@ attempt is eligible, after the first successful deterministic verification the
 controller re-profiles the post-implementation worktree (capturing any
 dependency upgrades the task made), transitions through a temporary
 `RESEARCHING` state, and invokes the configured Researcher (`Claude Opus 5` by
-default) with purpose `GENERATE_REPOSITORY_SKILL`, at most once per run.
+default) with purpose `GENERATE_REPOSITORY_SKILL`. Invalid typed output or
+provenance receives its exact bounded rejection reason in one retry.
+Infrastructure failure receives one ordinary retry. A second failure safely
+skips polish.
 
 That call is bounded and web-only. It runs in the run's own persistence
 directory rather than the worktree, has `web_fetch` as its only tool, runs
@@ -499,13 +507,14 @@ that points at the explicit `factory skill refresh`.
 
 This bounds research per fingerprint, not per process, and that choice is
 deliberate. Two truly concurrent first runs for the same missing fingerprint
-may each make one bounded Researcher call; publication is atomic and
-no-clobber, so one result is kept, the loser loads the winner, and both
-revalidate it in full before use. Serializing generation across processes would
-need a cross-process lock — more machinery, and a new stall mode — to save at
-most one research call, so the race is accepted as a cost concern only. It
-cannot corrupt storage, produce competing files, change which guidance is used,
-or affect the overlay.
+may each make one bounded generation sequence: an initial Researcher call and
+one retry after any failure. Publication is atomic and no-clobber, so one
+result is kept, the loser loads the winner, and both revalidate it in full
+before use. Serializing generation across processes would need a cross-process
+lock — more machinery, and a new stall mode — to save at most one sequence
+(two calls), so the race is accepted as a cost concern only. It cannot corrupt
+storage, produce competing files, change which guidance is used, or affect the
+overlay.
 
 Repository identity is the canonical local Git common directory, so every
 linked worktree of a checkout shares one skill directory and no remote URL is

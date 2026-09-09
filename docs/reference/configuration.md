@@ -262,16 +262,18 @@ never stored in, or loaded from, the target repository or its worktree.
 Only when the current fingerprint has no generated skill does the controller
 transition through a temporary `RESEARCHING` state and call the configured
 Researcher (`Claude Opus 5` in the default profile) with purpose
-`GENERATE_REPOSITORY_SKILL`, at most once per run. That call runs in the run's
-own directory rather than the worktree, receives only the normalized
-`RepositoryProfile` and the two configured URL lists — never changed filenames,
-source code, README content, task prose or the diff — has `web_fetch` as its
-only tool, and runs without repository custom instructions. An existing
+`GENERATE_REPOSITORY_SKILL`. Invalid typed output or provenance receives one
+bounded retry carrying the exact rejection reason; infrastructure failure also
+receives one retry. The calls run in the run's own directory rather than the
+worktree, receive only the normalized `RepositoryProfile` and the two
+configured URL lists — never changed filenames, source code, README content,
+task prose or the diff — have `web_fetch` as their only tool, and run without
+repository custom instructions. An existing
 generated file is never overwritten; a dependency change selects a new file and
 earlier files remain. There is no TTL. Two truly concurrent first runs for the
-same missing fingerprint may each make one bounded call; publication is atomic
-and no-clobber, so one winner is kept and revalidated by both, costing at most
-one extra call.
+same missing fingerprint may each run the bounded initial-plus-correction
+sequence; publication is atomic and no-clobber, so one winner is kept and
+revalidated by both, costing at most one extra sequence.
 
 The repository key derives from the canonical local Git common directory, so
 linked worktrees share one directory and a moved or re-cloned repository gets a

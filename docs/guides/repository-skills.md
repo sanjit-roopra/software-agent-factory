@@ -55,13 +55,16 @@ the only command that may replace generated guidance.
 
 Reuse means a repository normally researches once per set of dependencies, but
 that is not a cross-process lock. Two truly concurrent first runs for the same
-missing fingerprint may each make one bounded Researcher call. Publication is
-atomic and no-clobber, so exactly one result is kept, the other run loads the
-winner, and both revalidate the winner in full before using it.
+missing fingerprint may each run one bounded generation sequence. The sequence
+starts with one Researcher call and allows one retry after any failure. Invalid
+output or provenance includes the exact bounded rejection reason; an
+infrastructure failure receives one ordinary retry. Publication is atomic and
+no-clobber, so exactly one result is kept, the other run loads the winner, and
+both revalidate the winner in full before using it.
 
-The cost of that race is one extra research call. It cannot corrupt storage,
-produce two competing files, change which guidance is used, or touch your
-overlay.
+The cost of that race is at most one extra sequence (two calls). It cannot
+corrupt storage, produce two competing files, change which guidance is used, or
+touch your overlay.
 
 ### Moving or re-cloning a repository
 

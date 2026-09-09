@@ -179,11 +179,14 @@ file is never overwritten, a dependency change simply selects a new one, and
 nothing expires on a timer.
 
 Reuse bounds research per fingerprint, not per process: two truly concurrent
-first runs for the same missing fingerprint may each make one call, one result
-wins the atomic no-clobber publication, and both runs revalidate that winner.
-That costs at most one extra call and changes nothing else. The repository key
-is derived from the local Git common directory, so moving or re-cloning a
-repository starts fresh at a new key — see
+first runs for the same missing fingerprint may each make an initial call plus
+one bounded retry after any failure. Invalid output or provenance includes the
+exact bounded rejection reason; infrastructure failure receives one ordinary
+retry. One result wins the atomic no-clobber publication, and both runs
+revalidate that winner. The race costs at most one extra sequence and changes
+nothing else. The repository key is derived from the local Git common
+directory, so moving or re-cloning a repository starts fresh at a new key —
+see
 [Repository skills and overlays](../guides/repository-skills.md).
 
 That call is deliberately blind. It runs in the run's own directory instead of

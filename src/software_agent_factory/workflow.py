@@ -61,7 +61,13 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-from .agents import AgentRequest, AgentResult, AgentRuntime, runtime_exception_failure_reason
+from .agents import (
+    AgentRequest,
+    AgentResult,
+    AgentRuntime,
+    is_retryable_typed_artifact_failure,
+    runtime_exception_failure_reason,
+)
 from .config import FactoryConfig, RoleModelConfig
 from .delivery import DeliveryTarget, fetch_delivery_target
 from .github import SHA_PATTERN, GitHubError, GitPublishError, build_pr_body
@@ -108,9 +114,12 @@ from .repository_profile import (
     profile_repository,
 )
 from .repository_skills import (
+    MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS,
     RepositorySkillError,
     RepositorySkillManager,
     RepositorySkillSelection,
+    repository_skill_correction_context,
+    repository_skill_exhausted_warning,
     repository_skill_validation_error,
 )
 from .routing import ModelRouter
@@ -234,19 +243,6 @@ def is_run_finished(run: FactoryRun) -> bool:
     if run.state in TERMINAL_STATES:
         return True
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
-
-
-def _is_retryable_planner_output_failure(result: AgentResult) -> bool:
-    if result.success or result.failure_reason is None:
-        return False
-    return any(
-        marker in result.failure_reason
-        for marker in (
-            "did not validate as ExecutionPlan",
-            "did not contain a parseable JSON object for ExecutionPlan",
-            "did not contain a valid ExecutionPlan",
-        )
-    )
 
 
 def _planner_schema_repair_context(
@@ -906,32 +902,72 @@ class WorkflowController:
         guidance the controller accepts, and never restamped afterwards.
         """
 
-        try:
-            request = self._build_request(
-                AgentRole.RESEARCHER,
-                context.work_item,
-                purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-                repository_profile=repository_profile,
-                official_documentation_origins=list(
-                    self._config.polish.official_documentation_origins
-                ),
-                practice_reference_urls=list(self._config.polish.practice_reference_urls),
-                workspace_path=str(self._store.run_dir(run.id)),
-            )
-            result = self._invoke_agent(run, request, reraise_runtime_errors=True)
-        except (OSError, RuntimeError, ValueError) as exc:
-            return None, f"repository skill research could not run: {exc}"
-        skill = result.repository_skill
-        if not result.success or skill is None:
-            return (
-                None,
-                result.failure_reason
-                or "researcher failed to produce version-specific repository guidance",
-            )
-        validation_error = self._repository_skill_validation_error(skill, repository_profile)
-        if validation_error is not None:
-            return None, validation_error
-        return skill.model_copy(update={"generated_at": utc_now()}), None
+        rejection: str | None = None
+        initial_rejection: str | None = None
+        for _attempt in range(1, MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS + 1):
+            try:
+                request = self._build_request(
+                    AgentRole.RESEARCHER,
+                    context.work_item,
+                    purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+                    repair_context=(
+                        repository_skill_correction_context(rejection)
+                        if rejection is not None
+                        else None
+                    ),
+                    repository_profile=repository_profile,
+                    official_documentation_origins=list(
+                        self._config.polish.official_documentation_origins
+                    ),
+                    practice_reference_urls=list(self._config.polish.practice_reference_urls),
+                    workspace_path=str(self._store.run_dir(run.id)),
+                    attempt_number=_attempt,
+                )
+                result = self._invoke_agent(run, request, reraise_runtime_errors=True)
+            except (OSError, RuntimeError, ValueError) as exc:
+                rejection = f"repository skill research could not run: {exc}"
+                if _attempt == 1:
+                    initial_rejection = rejection
+                    continue
+                assert initial_rejection is not None
+                return None, repository_skill_exhausted_warning(initial_rejection, rejection)
+
+            skill = result.repository_skill
+            if not result.success:
+                rejection = (
+                    result.failure_reason
+                    or "researcher failed to produce version-specific repository guidance"
+                )
+                if _attempt == 1:
+                    initial_rejection = rejection
+                    continue
+                if initial_rejection is not None:
+                    return (
+                        None,
+                        repository_skill_exhausted_warning(initial_rejection, rejection),
+                    )
+                return None, rejection
+            if skill is None:
+                rejection = "researcher reported success without repository guidance"
+                if initial_rejection is not None:
+                    return (
+                        None,
+                        repository_skill_exhausted_warning(initial_rejection, rejection),
+                    )
+                return None, rejection
+            rejection = self._repository_skill_validation_error(skill, repository_profile)
+            if rejection is None:
+                return skill.model_copy(update={"generated_at": utc_now()}), None
+            if _attempt == 1:
+                initial_rejection = rejection
+                continue
+
+        assert rejection is not None
+        assert initial_rejection is not None
+        return (
+            None,
+            repository_skill_exhausted_warning(initial_rejection, rejection),
+        )
 
     # -- repository-scoped skill reuse and overlay ---------------------------
 
@@ -1136,7 +1172,7 @@ class WorkflowController:
             if result.success and result.execution_plan is not None:
                 self._store.save_artifact(run.id, result.execution_plan)
                 return result.execution_plan
-            if not _is_retryable_planner_output_failure(result):
+            if not is_retryable_typed_artifact_failure(result, ExecutionPlan):
                 break
             assert result.failure_reason is not None
             current_repair_context = _planner_schema_repair_context(

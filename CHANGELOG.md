@@ -23,6 +23,12 @@ API is still `0.x`.
 
 ### Changed
 
+- Repository-skill generation now retries once after either invalid guidance
+  or an infrastructure failure. Invalid output receives the bounded validation
+  reason, and a second failure still skips optional polish safely.
+- Pull-request creation now retries one transient GitHub failure. It checks for
+  an already-created PR before retrying, so a lost response cannot create a
+  duplicate.
 - Every published revision, including CI repairs, is bound to independent
   Reviewer approval. The current review result is reflected in the PR body.
 - PR publication can reconcile a matching factory-owned PR after interruption
