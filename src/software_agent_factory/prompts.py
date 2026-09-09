@@ -498,6 +498,8 @@ def _artifact_sections(
             sections.append(("Specification", specification))
         if execution_plan is not None:
             sections.append(("Execution plan", execution_plan))
+        if repair_context is not None:
+            sections.append(("Previous output rejection", repair_context))
         if changed_files:
             sections.append(("Changed files", changed_files))
         if diff:
@@ -511,6 +513,8 @@ def _artifact_sections(
             sections.append(("Specification", specification))
         if execution_plan is not None:
             sections.append(("Execution plan", execution_plan))
+        if repair_context is not None:
+            sections.append(("Previous output rejection", repair_context))
         if changed_files:
             sections.append(("Changed files", changed_files))
         if diff:

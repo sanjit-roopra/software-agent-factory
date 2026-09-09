@@ -669,6 +669,28 @@ def test_parse_copilot_artifact_handles_fenced_json_plain_text_fallback() -> Non
     )
 
 
+def test_parse_copilot_artifact_handles_pretty_printed_json() -> None:
+    artifact = parse_copilot_artifact(
+        AgentRole.IMPLEMENTER,
+        stdout=json.dumps(
+            {
+                "summary": "Updated validation",
+                "changed_files": ["src/api.py"],
+                "tests_added": ["tests/test_api.py"],
+                "commands_run": ["pytest"],
+            },
+            indent=2,
+        ),
+    )
+
+    assert artifact == ChangeSet(
+        summary="Updated validation",
+        changed_files=["src/api.py"],
+        tests_added=["tests/test_api.py"],
+        commands_run=["pytest"],
+    )
+
+
 def test_parse_repository_skill_artifact_for_research_purpose() -> None:
     stdout = RepositorySkill(
         dependency_fingerprint="a" * 64,
@@ -711,6 +733,78 @@ def test_parse_copilot_artifact_reads_actual_assistant_message_data_shape() -> N
         compatibility_concerns=[],
         suggested_changes=[],
     )
+
+
+def test_parse_copilot_artifact_ignores_lifecycle_events_before_direct_json() -> None:
+    artifact = parse_copilot_artifact(
+        AgentRole.TESTER,
+        stdout="\n".join(
+            [
+                (
+                    '{"type":"session.mcp_server_status_changed","data":{"name":"github"},'
+                    '"ephemeral":true,"id":"event-1","timestamp":"2026-09-09T22:29:32Z",'
+                    '"parentId":null}'
+                ),
+                (
+                    '{"passed":true,"findings":["No issues found"],'
+                    '"suggested_tests":[],"confidence":0.9}'
+                ),
+            ]
+        ),
+    )
+
+    assert artifact == TestReport(
+        passed=True,
+        findings=["No issues found"],
+        suggested_tests=[],
+        confidence=0.9,
+    )
+
+
+def test_parse_copilot_artifact_keeps_non_event_logs_before_direct_json() -> None:
+    artifact = parse_copilot_artifact(
+        AgentRole.TESTER,
+        stdout="\n".join(
+            [
+                '{"level":"info","message":"starting session"}',
+                (
+                    '{"passed":true,"findings":["No issues found"],'
+                    '"suggested_tests":[],"confidence":0.9}'
+                ),
+            ]
+        ),
+    )
+
+    assert isinstance(artifact, TestReport)
+    assert artifact.passed is True
+
+
+def test_parse_copilot_artifact_does_not_validate_lifecycle_event_as_artifact() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        parse_copilot_artifact(
+            AgentRole.TESTER,
+            stdout=(
+                '{"type":"session.mcp_server_status_changed","data":{"name":"github"},'
+                '"ephemeral":true,"id":"event-1","timestamp":"2026-09-09T22:29:32Z",'
+                '"parentId":null}'
+            ),
+        )
+
+    message = str(exc_info.value)
+    assert "did not contain a parseable JSON object for TestReport" in message
+    assert "type: Extra inputs are not permitted" not in message
+
+
+def test_parse_copilot_artifact_ignores_result_event_without_artifact() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        parse_copilot_artifact(
+            AgentRole.TESTER,
+            stdout='{"type":"result","usage":{"premiumRequests":1}}',
+        )
+
+    message = str(exc_info.value)
+    assert "did not contain a parseable JSON object for TestReport" in message
+    assert "type: Extra inputs are not permitted" not in message
 
 
 def test_parse_copilot_artifact_prefers_final_assistant_content_over_prompt_echo() -> None:

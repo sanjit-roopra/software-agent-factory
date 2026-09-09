@@ -447,6 +447,174 @@ def test_planner_does_not_retry_non_schema_failure(
     assert calls == 1
 
 
+def test_tester_retries_typed_artifact_failure_without_spending_implementation_attempt(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    calls = 0
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def tester(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        requests.append(request)
+        if calls == 1:
+            return AgentResult(
+                role=AgentRole.TESTER,
+                success=False,
+                failure_reason=(
+                    "TESTER response did not contain a parseable JSON object for TestReport"
+                ),
+            )
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(tester=tester),
+    ).run(_work_item("WI-tester-schema-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    tester_invocations = [
+        record for record in run.invocation_records if record.role is AgentRole.TESTER
+    ]
+    assert [record.success for record in tester_invocations] == [False, True]
+    assert [record.attempt_number for record in tester_invocations] == [1, 1]
+    assert len(run.attempt_records) == 1
+    assert requests[0].repair_context is None
+    assert isinstance(requests[1].repair_context, str)
+    assert "parseable JSON object for TestReport" in requests[1].repair_context
+    assert "exactly one complete TestReport JSON object" in requests[1].repair_context
+
+
+def test_reviewer_retries_typed_artifact_failure_without_spending_implementation_attempt(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    calls = 0
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        requests.append(request)
+        if calls == 1:
+            return AgentResult(
+                role=AgentRole.REVIEWER,
+                success=False,
+                failure_reason=("REVIEWER response did not contain a valid ReviewReport"),
+            )
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-reviewer-schema-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    reviewer_invocations = [
+        record for record in run.invocation_records if record.role is AgentRole.REVIEWER
+    ]
+    assert [record.success for record in reviewer_invocations] == [False, True]
+    assert [record.attempt_number for record in reviewer_invocations] == [1, 1]
+    assert len(run.attempt_records) == 1
+    assert requests[0].repair_context is None
+    assert isinstance(requests[1].repair_context, str)
+    assert "did not contain a valid ReviewReport" in requests[1].repair_context
+    assert "exactly one complete ReviewReport JSON object" in requests[1].repair_context
+
+
+def test_verification_workspace_mutation_requires_repair_before_review(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    class MutatingVerifier:
+        def run(self, *args: object, **kwargs: object) -> RepositoryVerificationResult:
+            workspace = Path(str(kwargs["cwd"]))
+            (workspace / ".coverage").write_text("generated\n")
+            return RepositoryVerificationResult(
+                report=VerificationReport(passed=True, confidence=1.0),
+                command_logs=(),
+                failure_kind=None,
+                failed_phase=None,
+                failed_command=None,
+            )
+
+    implementer_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        implementer_requests.append(request)
+        if len(implementer_requests) == 2:
+            assert request.workspace_path is not None
+            workspace = Path(request.workspace_path)
+            (workspace / ".gitignore").write_text(".coverage\n")
+            (workspace / ".coverage").unlink(missing_ok=True)
+        return default_runtime.run(request)
+
+    runtime = RecordingRuntime(FakeAgentRuntime(implementer=implementer))
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        FileRunStore(data_dir),
+        runtime,
+        repository_verifier=MutatingVerifier(),
+    ).run(_work_item("WI-verification-mutation"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(run.attempt_records) == 2
+    assert run.attempt_records[1].triggered_by is AttemptTrigger.VERIFICATION
+    assert isinstance(implementer_requests[1].repair_context, RepairContext)
+    assert "modified the repository" in implementer_requests[1].repair_context.summary
+    assert ".coverage" in implementer_requests[1].repair_context.failures[1]
+    tester_request = next(
+        request for request in runtime.requests if request.role is AgentRole.TESTER
+    )
+    assert ".coverage" not in tester_request.changed_files
+    assert ".gitignore" in tester_request.changed_files
+
+
+def test_verification_generated_artifact_must_be_removed_not_only_ignored(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    class MutatingVerifier:
+        def run(self, *args: object, **kwargs: object) -> RepositoryVerificationResult:
+            workspace = Path(str(kwargs["cwd"]))
+            (workspace / ".coverage").write_text("generated\n")
+            return RepositoryVerificationResult(
+                report=VerificationReport(passed=True, confidence=1.0),
+                command_logs=(),
+                failure_kind=None,
+                failed_phase=None,
+                failed_command=None,
+            )
+
+    calls = 0
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            assert request.workspace_path is not None
+            (Path(request.workspace_path) / ".gitignore").write_text(".coverage\n")
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer),
+        repository_verifier=MutatingVerifier(),
+    ).run(_work_item("WI-verification-artifact-retained"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert len(run.attempt_records) == 2
+    assert "implementation attempt budget exhausted" in (run.failure_reason or "")
+
+
 def test_non_default_context_tier_reaches_requests_and_persisted_records(
     source_repo: Path,
     data_dir: Path,

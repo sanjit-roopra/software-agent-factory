@@ -527,7 +527,7 @@ def parse_copilot_artifact(
     candidates = _assistant_response_candidates(stdout)
     if not candidates:
         assistant_text = extract_assistant_text(stdout)
-        candidates = _candidate_texts(assistant_text, stdout)
+        candidates = _candidate_texts(assistant_text)
 
     found_object = False
     first_validation_error: ValidationError | None = None
@@ -557,11 +557,13 @@ def parse_copilot_artifact(
 def extract_assistant_text(stdout: str) -> str:
     """Collect assistant text fragments from Copilot JSONL output.
 
-    If no recognized JSONL fragments are found, the plain stdout text is
-    returned unchanged so direct-JSON and plain-text fallbacks still work.
+    If no recognized JSONL fragments are found, non-event output is returned
+    so direct-JSON and plain-text fallbacks still work without treating
+    Copilot lifecycle events as candidate artifacts.
     """
 
     fragments: list[str] = []
+    fallback_lines: list[str] = []
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line:
@@ -569,6 +571,17 @@ def extract_assistant_text(stdout: str) -> str:
         try:
             event = json.loads(line)
         except JSONDecodeError:
+            fallback_lines.append(raw_line)
+            continue
+        if not isinstance(event, dict):
+            fallback_lines.append(raw_line)
+            continue
+        if not _is_copilot_event(event):
+            nested_fragments = _extract_text_fragments(event)
+            if nested_fragments:
+                fragments.extend(nested_fragments)
+            else:
+                fallback_lines.append(raw_line)
             continue
         event_type = event.get("type")
         if (
@@ -585,9 +598,7 @@ def extract_assistant_text(stdout: str) -> str:
             fragments.extend(_extract_text_fragments(event))
 
     cleaned = [fragment.strip() for fragment in fragments if fragment.strip()]
-    if cleaned:
-        return "\n".join(_dedupe_fragments(cleaned))
-    return stdout.strip()
+    return "\n".join([*_dedupe_fragments(cleaned), *fallback_lines]).strip()
 
 
 def _artifact_spec(
@@ -705,12 +716,9 @@ def _kill_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
     return process.communicate()
 
 
-def _candidate_texts(assistant_text: str, stdout: str) -> list[str]:
-    candidates: list[str] = []
-    for text in (assistant_text.strip(), stdout.strip()):
-        if text and text not in candidates:
-            candidates.append(text)
-    return candidates
+def _candidate_texts(assistant_text: str) -> list[str]:
+    text = assistant_text.strip()
+    return [text] if text else []
 
 
 def _assistant_response_candidates(stdout: str) -> list[str]:
@@ -724,6 +732,8 @@ def _assistant_response_candidates(stdout: str) -> list[str]:
         try:
             event = json.loads(line)
         except JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
             continue
         _collect_event_candidates(event, direct_candidates, fallback_candidates)
 
@@ -785,6 +795,10 @@ def _collect_event_candidates(
                 return
     if event_type in {"assistant.message.delta", "model.response.delta"}:
         fallback_candidates.extend(_extract_text_fragments(event))
+
+
+def _is_copilot_event(event: dict[str, object]) -> bool:
+    return isinstance(event.get("type"), str)
 
 
 def _extract_text_fragments(value: object) -> list[str]:

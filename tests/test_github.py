@@ -1313,6 +1313,7 @@ def test_ensure_pushed_pushes_an_existing_commit_without_creating_one(tmp_path: 
 
 def test_ensure_pushed_retries_a_transient_commit_refs_failure(tmp_path: Path) -> None:
     sha = "a" * 40
+    delays: list[float] = []
     runner = FakeRunner(
         [
             _remote_url_response(),
@@ -1326,14 +1327,16 @@ def test_ensure_pushed_retries_a_transient_commit_refs_failure(tmp_path: Path) -
                 ),
             ),
             FakeCompletedProcess(stdout=""),  # first push did not land
+            FakeCompletedProcess(stdout=""),  # still missing after the retry delay
             FakeCompletedProcess(),  # one retry succeeds
         ]
     )
-    publisher = GitPublisher(runner=runner)
+    publisher = GitPublisher(runner=runner, sleeper=delays.append)
 
     assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
     pushes = [call[0] for call in runner.calls if "push" in call[0]]
     assert len(pushes) == 2
+    assert delays == [2.0]
     assert all("--force" not in push and "-f" not in push for push in pushes)
 
 
@@ -1358,6 +1361,7 @@ def test_ensure_pushed_recovers_when_a_transient_push_response_was_lost(
 
 def test_ensure_pushed_reconciles_after_the_final_transient_failure(tmp_path: Path) -> None:
     sha = "a" * 40
+    delays: list[float] = []
     runner = FakeRunner(
         [
             _remote_url_response(),
@@ -1365,14 +1369,19 @@ def test_ensure_pushed_reconciles_after_the_final_transient_failure(tmp_path: Pa
             FakeCompletedProcess(stdout=""),  # branch initially missing
             FakeCompletedProcess(returncode=1, stderr="fatal: unexpected EOF"),
             FakeCompletedProcess(stdout=""),  # first push did not land
+            FakeCompletedProcess(stdout=""),  # still missing after the retry delay
             FakeCompletedProcess(returncode=1, stderr="fatal: unexpected EOF"),
-            FakeCompletedProcess(stdout=f"{sha}\trefs/heads/factory/wi-1\n"),
+            FakeCompletedProcess(stdout=""),  # final immediate reconciliation
+            FakeCompletedProcess(
+                stdout=f"{sha}\trefs/heads/factory/wi-1\n"
+            ),  # visible after propagation delay
         ]
     )
-    publisher = GitPublisher(runner=runner)
+    publisher = GitPublisher(runner=runner, sleeper=delays.append)
 
     assert publisher.ensure_pushed(tmp_path, "factory/wi-1") == sha
     assert len([call for call in runner.calls if "push" in call[0]]) == 2
+    assert delays == [2.0, 5.0]
 
 
 @pytest.mark.parametrize(
