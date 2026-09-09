@@ -2061,6 +2061,8 @@ class GitHubClient:
         result = self._run(args, repo_path, check=False)
         stdout = result.stdout.strip()
         if not stdout:
+            if "no checks reported on the " in result.stderr.casefold():
+                return CIStatus(overall=CheckStatus.PENDING)
             raise GitHubCommandError((self.gh_path, *args), result.returncode, result.stderr)
         try:
             raw_checks = json.loads(stdout)
