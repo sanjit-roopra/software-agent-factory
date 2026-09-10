@@ -36,6 +36,10 @@ The factory passes `OWNER/REPO` to `gh`, so GitHub operations use the current
 authenticated `gh` account and host configuration. The Git remote may use a
 different allowlisted SSH host alias for push transport.
 
+The controller fixes the repository and GitHub host identity for the run. It
+rechecks the pull request identity during CI and merge operations. A mismatch
+stops delivery instead of observing or merging a different pull request.
+
 Guards before anything leaves the machine:
 
 - The branch name must start with `repository.branch_prefix` (default
@@ -53,6 +57,12 @@ are attributable in history.
 
 Credentials go to the `gh` subprocess through its environment, never as a
 command-line argument. Agents never see them.
+
+Branch push gets one bounded retry for transient transport or remote-backend
+failures. Before retrying, and once more after the final failure, the controller
+reads the exact remote branch tip. It accepts a lost response only when the
+remote tip is the expected commit. Authentication, authorization, policy and
+non-fast-forward failures are not retried.
 
 ## CI observation and repair
 
@@ -88,6 +98,11 @@ repair context — the normalized CI evidence — not the whole run history.
 
 An unrecognized `gh` check status is treated conservatively as still pending
 rather than as a pass.
+
+GitHub may briefly report that no checks exist before Actions registers the
+workflow runs. The factory treats that response as pending too. The normal
+`ci.max_wait_seconds` bound still applies, so missing checks cannot wait
+forever.
 
 ## Automatic merging
 

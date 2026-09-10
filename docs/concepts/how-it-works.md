@@ -131,12 +131,16 @@ kept as file-content provenance. There is no built-in skill catalog.
 | Researcher | Answer specific open questions, or generate repository-wide guidance (`RepositorySkill`) when the repository's current dependency fingerprint has none yet. | Specification; or, for skill generation, only the normalized repository profile and the configured source lists — no repository access, no changed filenames, no task prose. |
 | Planner | Produce an execution plan with an expected scope. | Specification, research. |
 | Implementer | Edit the worktree. | Plan, repository; the effective repository guidance (stored skill plus any human overlay), only during the bounded polish attempt. |
-| Tester | Judge whether the change is actually tested. | Controller-derived diff, changed files, deterministic results; the same post-green guidance as the polish Implementer, while it is still current. |
-| Reviewer | Independent review. | Controller-derived diff, changed files, deterministic results; the same post-green guidance as the polish Implementer, while it is still current. |
+| Tester | Judge whether the change is actually tested. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results; the same post-green guidance as the polish Implementer, while it is still current. |
+| Reviewer | Independent review. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results, independent TestReport, implementation snapshot number and earlier blocking review findings; the same post-green guidance as the polish Implementer, while it is still current. |
 | Failure Investigator | Diagnose a CI failure. | Normalized CI evidence. |
 
 The tester and reviewer never see the implementer's own summary. That is
 deliberate: a model's claim about its work is not evidence.
+
+Planner, Tester and Reviewer typed-output failures get bounded same-model
+correction attempts. The validation error is passed back as correction context.
+Tester and Reviewer corrections do not spend implementation attempts.
 
 Research runs; it does not escalate. A researcher that finds nothing useful
 returns a report and the run continues.
@@ -255,10 +259,11 @@ risk. A large refactor of a test helper is hard and low risk.
 `ModelRouter` maps role and complexity to a configured model and reasoning
 level. Model names live in configuration, not in the source.
 
-Escalation is bounded: after `retries.same_model_attempts` failures the router
-moves to a stronger model, up to `retries.max_total_attempts` total. The chosen
-model and the attempt number are persisted on every attempt record, so routing
-can be calibrated later against real success and cost data.
+Implementation escalation is bounded: after
+`retries.same_model_attempts` failures the router moves to a stronger model, up
+to `retries.max_total_attempts` total. The chosen model and the attempt number
+are persisted on every attempt record, so routing can be calibrated later
+against real success and cost data.
 
 ## Deterministic gates
 

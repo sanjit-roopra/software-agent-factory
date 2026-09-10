@@ -60,9 +60,10 @@ xattr -dr com.apple.quarantine ~/.local/opt/software-agent-factory
     attribute with the `xattr` command above. Every archive ships an
     `INSTALL.txt` repeating these steps.
 
-Do not skip step 1. GitHub release immutability is a repository setting that is
-not enabled yet, so a published release is not guaranteed by the platform to be
-unchanged. See [Releases](../project/releases.md#releases-are-write-once-by-convention-not-by-guarantee).
+Do not skip step 1. GitHub immutability protects current releases from
+replacement, but the checksum still confirms that the downloaded bytes match
+the published artifact. See
+[Releases](../project/releases.md#releases-are-protected-by-workflow-and-platform-controls).
 
 Extracting an archive installs nothing, starts nothing and changes no system
 state. In particular it does not install a background service. See

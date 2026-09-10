@@ -20,6 +20,12 @@ API is still `0.x`.
   Ambiguous interrupted implementation still stops for human intervention.
 - Exact `scope_drift.approved_sensitive_files` authorization for planned
   dependency and CI bootstrap files, preserving all other governance gates.
+- Project and task progress in the read-only dashboard, including the currently
+  active invocation and lease-derived `running`, `stale`, `crashed` or
+  `abandoned` status.
+- A dashboard-only AI usage value in USD when Copilot reports nano-AIU. Raw
+  usage remains persisted unchanged, and the displayed value is not an invoice
+  charge.
 
 ### Changed
 
@@ -33,6 +39,23 @@ API is still `0.x`.
   Reviewer approval. The current review result is reflected in the PR body.
 - PR publication can reconcile a matching factory-owned PR after interruption
   rather than creating a duplicate.
+- Git push now retries one transient transport or remote-backend failure and
+  reconciles the exact remote branch tip before retrying or failing.
+- GitHub CLI operations use the authenticated `gh` host independently from an
+  allowlisted Git SSH transport alias. PR identity is rechecked during CI and
+  merge operations.
+- CI polling treats an initial "no checks reported" response as pending, not as
+  an immediate command failure.
+- Planned file-count ranges are advisory. The configured changed-file ceiling
+  remains the hard publication limit.
+- Planner, Tester and Reviewer schema failures get bounded same-model output
+  correction with the exact validation error. Tester and Reviewer corrections
+  do not consume implementation attempts.
+- Verification commands that modify the Git tree are detected before review.
+  The Implementer receives a repair request to remove generated artifacts or
+  make the verification step read-only.
+- Tester and Reviewer prompts now include the work item and execution plan.
+  Reviewer repair attempts also retain earlier blocking findings from the run.
 
 ## 0.4.1 - 2026-09-07
 

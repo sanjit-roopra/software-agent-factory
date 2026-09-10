@@ -64,8 +64,8 @@ factory show RUN_ID
 
 `FAILED` is operational: an agent or infrastructure failure, not a judgement.
 Typical causes are an agent timeout (`factory.agent_timeout_seconds`, 900s by
-default), a `copilot` process that returned output the runtime could not
-validate as a typed artifact, or a Git or filesystem error.
+default), a `copilot` process that still returned an invalid typed artifact
+after any supported bounded correction attempts, or a Git or filesystem error.
 
 Check `<data_dir>/logs/factory.log` for the structured record of the failing
 agent invocation.
@@ -82,6 +82,27 @@ it is two commands. Put each on its own line in `repository.commands`.
 
 **Output is cut off.** Only `repository.log_capture_bytes` (32 KiB) is retained
 per command. Raise it, or make the command less chatty.
+
+**Verification modifies files.** The controller compares the Git tree before
+and after verification. If a command creates, stages or rewrites files, the run
+returns to implementation before review. Remove generated artifacts from the
+worktree and index, add appropriate ignore rules, or configure the command to
+write outside the repository. Intentional generated source must be part of the
+implementation before verification starts.
+
+## PR publication or CI stops
+
+**A transient push failed.** The factory retries once and checks whether the
+expected commit reached the remote despite a lost response. Authentication,
+authorization, policy and non-fast-forward errors stop immediately.
+
+**CI says no checks are reported.** This is treated as pending because GitHub
+Actions may not have registered the checks yet. The run keeps polling until
+checks appear or `ci.max_wait_seconds` expires.
+
+**The pull request identity does not match.** Check the authenticated `gh` host
+and account, the configured repository, and the pull request URL. The factory
+will not observe or merge a PR from another repository or host.
 
 ## The change touched too much
 

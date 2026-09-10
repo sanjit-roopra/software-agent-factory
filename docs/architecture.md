@@ -891,10 +891,12 @@ polish second; the initial implementation attempt receives none.
 Model: `Gemini 3.8 Flash`
 
 Receives:
+- WorkItem brief
 - Specification
 - ExecutionPlan
-- actual diff
-- repository
+- controller-derived diff and changed files
+- deterministic `VerificationReport`
+- read-only repository access
 
 The implementer's `ChangeSet` (including its summary) is never provided: the
 tester sees only controller-derived Git evidence plus deterministic results.
@@ -909,11 +911,15 @@ Output: `TestReport`
 Model: `GPT-5.6 Sol`
 
 Receives:
+- WorkItem brief
 - Specification
 - ExecutionPlan
 - controller-derived diff and changed files
 - deterministic `VerificationReport`
 - independent `TestReport`
+- implementation snapshot number
+- earlier blocking Reviewer findings from this run
+- read-only repository access
 
 Never receives the implementer's `ChangeSet` summary.
 
@@ -1114,6 +1120,9 @@ Production runtime: `CopilotAgentRuntime` (`--runtime copilot`), which builds a
 role-scoped prompt, runs the `copilot` CLI with constrained tool permissions and
 a scrubbed environment, and validates exactly one typed artifact from the final
 response. Malformed output is an explicit agent failure, never a silent pass.
+Planner, Tester and Reviewer schema failures get bounded same-model correction
+with the exact validation reason. Tester and Reviewer corrections do not spend
+implementation attempts.
 
 Default runtime: `FakeAgentRuntime` (`--runtime fake`). It is the CLI default so
 no command can make a paid call by accident, and it is the only runtime the test
@@ -1203,6 +1212,12 @@ reviewer or any publishing. `REPLAN` returns the run to `PLANNING` at most
 triggered by `SCOPE`), then escalates. The risk/sensitive-scope gate is
 re-evaluated at the PR boundary, together with a deterministic publish gate
 enforcing `repository.max_changed_files` and `repository.protected_file_patterns`.
+
+The controller also compares the Git tree before and after repository
+verification. Any generated, staged or rewritten file returns the run to
+`IMPLEMENTING` with explicit repair context before Tester or Reviewer runs.
+Verification-generated paths must be removed or made intentionally part of the
+implementation; verification itself may not silently change the reviewed tree.
 
 ## Git ownership
 
@@ -1311,10 +1326,12 @@ telemetry backend, no exporter, no network egress.
 
 The Copilot runtime requests its usage-output file and persists the reported
 input, output, reasoning and cache token counts, nano-AIU, premium-request
-cost and timing fields. An unreported value stays unknown; it is never
-defaulted to zero, converted to USD or reconstructed from a price table
-(ADR-017). These invocation records are separate from implementer
-`AttemptRecord`s, so telemetry cannot alter retry budgets.
+cost and timing fields. An unreported value stays unknown and is never
+defaulted to zero. Persisted telemetry remains in raw runtime units. The
+dashboard may derive an AI usage value in USD from nano-AIU for display, but it
+does not reconstruct an invoice from a model price table (ADR-017). These
+invocation records are separate from implementer `AttemptRecord`s, so telemetry
+cannot alter retry budgets.
 
 ## Health and metrics
 
@@ -1377,14 +1394,12 @@ GitHub Release (workflow refuses to replace an existing one)
 human downloads and extracts
 ```
 
-Releases are treated as write-once by convention, not by platform guarantee. The
-release workflow fails if the tag's release already exists, so a re-run cannot
-replace published artifacts. It cannot stop an edit or delete through the GitHub
-UI or API. GitHub's own release immutability is a repository setting, it is off
-by default, and the current releases report `immutable=false`; enable it in the
-repository settings before relying on platform enforcement. `SHA256SUMS` and
-`build-info.json` are what let a consumer detect a swapped artifact in the
-meantime.
+The release workflow fails if the tag's release already exists, so a re-run
+cannot replace published artifacts. GitHub release immutability is enabled for
+new releases, and existing releases from `v0.3.0` onward report
+`immutable=true`. Older historical releases remain mutable through the
+platform. `SHA256SUMS` and `build-info.json` still let a consumer verify the
+downloaded artifact and its build provenance.
 
 A release contains:
 

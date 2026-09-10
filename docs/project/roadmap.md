@@ -53,12 +53,13 @@ item, including staging and deployment, is deferred.
   signing and notarization are deferred, so Gatekeeper quarantine is expected.
   See [Releases](releases.md).
 - **Release immutability.** The release workflow refuses to replace an existing
-  release, but GitHub's own release immutability is a repository setting that is
-  not enabled; releases currently report `immutable=false`. Verify
-  `SHA256SUMS`.
+  release. GitHub immutability is enabled for new releases, and existing
+  releases from `v0.3.0` onward report `immutable=true`. Older historical
+  releases remain mutable through the platform. Verify `SHA256SUMS`.
 - **Billing conversion.** Copilot runtime usage is persisted when reported,
-  but raw premium-request cost and nano-AIU are not converted to AI Credits or
-  USD. Missing fields remain unknown.
+  and missing fields remain unknown. The dashboard derives a USD usage value
+  from nano-AIU when available, but this is not necessarily the invoice charge.
+  Premium-request units remain separate.
 - **Trackers.** GitHub Issues is the only backlog provider.
 - **Projects.** Project plans are flat DAGs capped at 12 tasks. Local mode
   composes an integration branch; opt-in merge mode delivers task PRs serially
