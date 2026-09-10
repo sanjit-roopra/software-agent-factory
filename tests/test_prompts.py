@@ -305,6 +305,10 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
             test_report=TestReport(
                 passed=False, findings=["Whitespace is still accepted."], confidence=0.5
             ),
+            attempt_number=3,
+            prior_review_findings=[
+                "Attempt 2 finding: Empty values bypass normalization.",
+            ],
             change_set=ChangeSet(summary="I did a great job and everything works."),
         )
     )
@@ -319,6 +323,12 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
     assert "Every item in findings" in prompt
     assert "non-blocking improvements only in suggested_changes" in prompt
     assert "plausible exploit path" in prompt
+    assert "enumerate every blocking issue" in prompt
+    assert "does not lower the high-confidence threshold" in prompt
+    assert "Previously reported blocking issues from this run" in prompt
+    assert "Empty values bypass normalization." in prompt
+    assert "Implementation snapshot under review" in prompt
+    assert "\n3\n" in prompt
     # The implementer's self-justification never reaches an independent gate.
     assert "I did a great job" not in prompt
 

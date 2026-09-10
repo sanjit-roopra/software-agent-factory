@@ -143,6 +143,9 @@ TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
 #: operator problem, not a code problem, and escalates with evidence.
 REPAIRABLE_CI_CATEGORIES: frozenset[str] = frozenset({"CODE_FAILURE", "TEST_FAILURE"})
+MAX_PRIOR_REVIEW_FINDINGS = 24
+MAX_PRIOR_REVIEW_CONTEXT_CHARS = 6000
+MAX_PRIOR_REVIEW_FINDING_CHARS = 1000
 
 #: Bound on how much failure text is copied into a repair prompt.
 MAX_REPAIR_EXCERPT_CHARS = 4000
@@ -1252,6 +1255,7 @@ class WorkflowController:
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
             test_report=test_report,
+            prior_review_findings=self._prior_review_findings(run.id, snapshot),
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=snapshot,
@@ -1296,6 +1300,7 @@ class WorkflowController:
         changed_files: list[str] | None = None,
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
+        prior_review_findings: list[str] | None = None,
         repair_context: RepairContext | str | None = None,
         repository_profile: RepositoryProfile | None = None,
         repository_skill: RepositorySkill | None = None,
@@ -1321,6 +1326,7 @@ class WorkflowController:
             changed_files=changed_files or [],
             verification_report=verification_report,
             test_report=test_report,
+            prior_review_findings=prior_review_findings or [],
             repair_context=repair_context,
             repository_profile=repository_profile,
             repository_skill=repository_skill,
@@ -2040,6 +2046,55 @@ class WorkflowController:
             failures=findings[:MAX_REPAIR_FAILURES],
             log_excerpt=excerpt,
         )
+
+    def _prior_review_findings(self, run_id: str, snapshot: int) -> list[str]:
+        findings: list[str] = []
+        total_chars = 0
+        for attempt in range(snapshot - 1, 0, -1):
+            try:
+                review = self._store.load_artifact(
+                    run_id,
+                    ReviewReport,
+                    attempt=attempt,
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            categories = [
+                ("finding", review.findings),
+                ("scope concern", review.scope_concerns),
+                ("security concern", review.security_concerns),
+                ("compatibility concern", review.compatibility_concerns),
+            ]
+            blocking = [item for _, items in categories for item in items]
+            if not blocking and not review.approved:
+                categories = [("rejection detail", review.suggested_changes)]
+            for category, items in categories:
+                for item in items:
+                    stripped = item.strip()
+                    if not stripped:
+                        continue
+                    if len(findings) >= MAX_PRIOR_REVIEW_FINDINGS:
+                        return findings
+                    prefix = f"Attempt {attempt} {category}: "
+                    available = min(
+                        MAX_PRIOR_REVIEW_FINDING_CHARS,
+                        MAX_PRIOR_REVIEW_CONTEXT_CHARS - total_chars,
+                    )
+                    if available <= len(prefix):
+                        return findings
+                    full_entry = f"{prefix}{stripped}"
+                    if len(full_entry) > available:
+                        omitted = len(full_entry) - available
+                        suffix = f"...[truncated {omitted} characters]"
+                        if len(suffix) < available:
+                            entry = f"{full_entry[: available - len(suffix)]}{suffix}"
+                        else:
+                            entry = full_entry[:available]
+                    else:
+                        entry = full_entry
+                    findings.append(entry)
+                    total_chars += len(entry)
+        return findings
 
     def _ci_repair_context(self, report: CIReport) -> RepairContext:
         failed = report.failed_checks

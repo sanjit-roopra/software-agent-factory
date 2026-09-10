@@ -101,6 +101,7 @@ def build_prompt(request: AgentRequest) -> str:
         changed_files=request.changed_files,
         verification_report=request.verification_report,
         test_report=request.test_report,
+        prior_review_findings=request.prior_review_findings,
         repair_context=request.repair_context,
         repository_profile=request.repository_profile,
         repository_skill=request.repository_skill,
@@ -126,6 +127,7 @@ def build_prompt_for_role(
     changed_files: Sequence[str] | None = None,
     verification_report: VerificationReport | None = None,
     test_report: TestReport | None = None,
+    prior_review_findings: Sequence[str] | None = None,
     repair_context: RepairContext | str | None = None,
     repository_profile: RepositoryProfile | None = None,
     repository_skill: RepositorySkill | None = None,
@@ -164,6 +166,7 @@ def build_prompt_for_role(
         changed_files=list(changed_files or []),
         verification_report=verification_report,
         test_report=test_report,
+        prior_review_findings=list(prior_review_findings or []),
         repair_context=repair_context,
         purpose=purpose,
         repository_profile=repository_profile,
@@ -318,7 +321,12 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "scope_concerns, security_concerns, or compatibility_concerns is release-blocking, "
             "so set approved to false whenever any of those lists is non-empty. Put all "
             "non-blocking improvements only in suggested_changes; when suggestions are the only "
-            "items, leave the other lists empty and keep approved true."
+            "items, leave the other lists empty and keep approved true. In each review, "
+            "enumerate every blocking issue you can substantiate rather than reporting only "
+            "the first or most severe issue; this completeness duty does not lower the "
+            "high-confidence threshold. Previously reported issues were already sent for "
+            "repair: verify whether each remains, but do not let that history limit a fresh, "
+            "complete review of the current diff."
         )
     raise ValueError(f"unsupported agent role: {role!r}")
 
@@ -355,6 +363,7 @@ def _artifact_sections(
     changed_files: list[str],
     verification_report: VerificationReport | None,
     test_report: TestReport | None,
+    prior_review_findings: list[str],
     repair_context: RepairContext | str | None,
     repository_profile: RepositoryProfile | None,
     repository_skill: RepositorySkill | None,
@@ -542,6 +551,15 @@ def _artifact_sections(
             sections.append(("Deterministic verification", verification_report))
         if test_report is not None:
             sections.append(("Independent tester report", test_report))
+        if attempt_number is not None:
+            sections.append(("Implementation snapshot under review", attempt_number))
+        if prior_review_findings:
+            sections.append(
+                (
+                    "Previously reported blocking issues from this run",
+                    prior_review_findings,
+                )
+            )
         return sections
 
     raise ValueError(f"unsupported agent role: {normalized_role!r}")

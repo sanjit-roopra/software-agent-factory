@@ -2365,6 +2365,7 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
     data_dir: Path,
 ) -> None:
     reviewer_calls = 0
+    reviewer_requests: list[AgentRequest] = []
     implementer_requests: list[AgentRequest] = []
     default_runtime = FakeAgentRuntime()
 
@@ -2375,6 +2376,7 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
     def reviewer(request: AgentRequest) -> AgentResult:
         nonlocal reviewer_calls
         reviewer_calls += 1
+        reviewer_requests.append(request)
         if reviewer_calls == 1:
             return AgentResult(
                 role=AgentRole.REVIEWER,
@@ -2398,6 +2400,10 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
     repair_context = implementer_requests[1].repair_context
     assert isinstance(repair_context, RepairContext)
     assert repair_context.failures == ["A concrete correctness defect remains."]
+    assert reviewer_requests[0].prior_review_findings == []
+    assert reviewer_requests[1].prior_review_findings == [
+        "Attempt 1 finding: A concrete correctness defect remains."
+    ]
 
 
 def test_rejected_review_uses_suggestions_as_fallback_repair_detail(
@@ -2436,6 +2442,30 @@ def test_rejected_review_uses_suggestions_as_fallback_repair_detail(
     repair_context = implementer_requests[1].repair_context
     assert isinstance(repair_context, RepairContext)
     assert repair_context.failures == ["Correct the reported return type."]
+
+
+def test_prior_review_history_keeps_newest_findings_when_bounded(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
+    run_id = "run-review-history-bounds"
+    store.save_artifact(
+        run_id,
+        ReviewReport(approved=False, findings=["old " + ("x" * 900)] * 10),
+        attempt=1,
+    )
+    store.save_artifact(
+        run_id,
+        ReviewReport(approved=False, findings=["newest actionable defect"]),
+        attempt=2,
+    )
+
+    history = controller._prior_review_findings(run_id, 3)
+
+    assert history[0] == "Attempt 2 finding: newest actionable defect"
+    assert sum(len(item) for item in history) <= 6000
 
 
 def test_implementer_failures_consume_the_shared_attempt_budget(

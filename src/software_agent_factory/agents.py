@@ -107,6 +107,7 @@ class AgentRequest(ModelBase):
     changed_files: list[str] = Field(default_factory=list)
     verification_report: VerificationReport | None = None
     test_report: TestReport | None = None
+    prior_review_findings: list[str] = Field(default_factory=list)
     repair_context: RepairContext | str | None = None
     repository_profile: RepositoryProfile | None = None
     repository_skill: RepositorySkill | None = None
