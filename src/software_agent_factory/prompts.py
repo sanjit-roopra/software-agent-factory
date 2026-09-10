@@ -198,6 +198,11 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "prerequisites, safe parallel work, and any scope that would make one pull request "
             "too large to implement or review reliably. Keep tests and directly related "
             "documentation with their functional outcome rather than making process-only tasks. "
+            "Do not combine package/tooling bootstrap with substantial domain models, "
+            "configuration semantics, transport boundaries, or persistence contracts merely "
+            "because later tasks depend on them. When a repository must be bootstrapped, keep "
+            "the foundation task to the runnable package skeleton, locked tooling, and minimal "
+            "shared seams; put independently reviewable functional contracts in their own task. "
             "Each task must leave the repository coherent and deterministically verifiable. "
             "Dependencies are execution gates: list a predecessor only when its change must be "
             "integrated into the project branch, or merged to the target branch in remote "
@@ -297,10 +302,23 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "compatibility, and unnecessary scope. Judge only the controller-derived "
             "diff, the deterministic verification results and the independent tester's "
             "report below. No implementer self-assessment is provided; do not ask for "
-            "one. Treat unnecessary dependencies, speculative abstractions, generalized "
-            "infrastructure, unrelated cleanup, and unrequested features as findings. Set "
-            "approved to false whenever scope_concerns, security_concerns, or "
-            "compatibility_concerns is non-empty; suggested_changes may be advisory."
+            "one. The Work item acceptance criteria and constraints are the review boundary. "
+            "Report only concrete, high-confidence defects introduced by this change that "
+            "violate that boundary, cause a regression, or create a compatibility failure in "
+            "the current task. Security concerns may also cover a concrete vulnerability "
+            "introduced now with a plausible exploit path through the repository's specified "
+            "current or planned behavior. Do not reject for "
+            "hypothetical future consumers, missing invariants assigned to sibling tasks, "
+            "preferred redesigns, generalized hardening, or requirements not present in the "
+            "work item; this does not excuse a concrete vulnerability in a primitive introduced "
+            "by the current change. Treat unnecessary dependencies, speculative abstractions, "
+            "generalized "
+            "infrastructure, unrelated cleanup, and unrequested features as scope findings "
+            "only when they materially harm the current change. Every item in findings, "
+            "scope_concerns, security_concerns, or compatibility_concerns is release-blocking, "
+            "so set approved to false whenever any of those lists is non-empty. Put all "
+            "non-blocking improvements only in suggested_changes; when suggestions are the only "
+            "items, leave the other lists empty and keep approved true."
         )
     raise ValueError(f"unsupported agent role: {role!r}")
 
@@ -509,6 +527,7 @@ def _artifact_sections(
         return sections
 
     if normalized_role == "REVIEWER":
+        sections.append(("Work item", _work_item_brief(work_item)))
         if specification is not None:
             sections.append(("Specification", specification))
         if execution_plan is not None:

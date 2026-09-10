@@ -2360,6 +2360,84 @@ def test_reviewer_rejection_is_bounded_by_same_global_attempt_budget(
     assert all(attempt.model == "claude-opus-5" for attempt in run.attempt_records)
 
 
+def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    reviewer_calls = 0
+    implementer_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        implementer_requests.append(request)
+        return default_runtime.run(request)
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_calls
+        reviewer_calls += 1
+        if reviewer_calls == 1:
+            return AgentResult(
+                role=AgentRole.REVIEWER,
+                success=True,
+                review_report=ReviewReport(
+                    approved=True,
+                    findings=["A concrete correctness defect remains."],
+                    suggested_changes=["Consider renaming a helper later."],
+                ),
+            )
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer, reviewer=reviewer),
+    ).run(_work_item("WI-reviewer-finding-gate"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(run.attempt_records) == 2
+    repair_context = implementer_requests[1].repair_context
+    assert isinstance(repair_context, RepairContext)
+    assert repair_context.failures == ["A concrete correctness defect remains."]
+
+
+def test_rejected_review_uses_suggestions_as_fallback_repair_detail(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    reviewer_calls = 0
+    implementer_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        implementer_requests.append(request)
+        return default_runtime.run(request)
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_calls
+        reviewer_calls += 1
+        if reviewer_calls == 1:
+            return AgentResult(
+                role=AgentRole.REVIEWER,
+                success=True,
+                review_report=ReviewReport(
+                    approved=False,
+                    suggested_changes=["Correct the reported return type."],
+                ),
+            )
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer, reviewer=reviewer),
+    ).run(_work_item("WI-reviewer-suggestion-fallback"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    repair_context = implementer_requests[1].repair_context
+    assert isinstance(repair_context, RepairContext)
+    assert repair_context.failures == ["Correct the reported return type."]
+
+
 def test_implementer_failures_consume_the_shared_attempt_budget(
     source_repo: Path, data_dir: Path
 ) -> None:

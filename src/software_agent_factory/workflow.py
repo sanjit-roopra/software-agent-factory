@@ -1617,6 +1617,7 @@ class WorkflowController:
 
             if not review_report.approved or any(
                 (
+                    review_report.findings,
                     review_report.scope_concerns,
                     review_report.security_concerns,
                     review_report.compatibility_concerns,
@@ -2025,8 +2026,9 @@ class WorkflowController:
             *review.scope_concerns,
             *review.security_concerns,
             *review.compatibility_concerns,
-            *review.suggested_changes,
         ]
+        if not findings and not review.approved:
+            findings.extend(review.suggested_changes)
         if not findings:
             findings = ["The independent reviewer rejected the change without detail."]
         excerpt = None
