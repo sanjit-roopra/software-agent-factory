@@ -114,6 +114,8 @@ DEFAULT_MAX_LOG_CHARS = 4000
 DEFAULT_POLL_INTERVAL_SECONDS = 30.0
 DEFAULT_MAX_POLLS = 40
 MAX_GIT_PUSH_ATTEMPTS = 2
+GIT_PUSH_RETRY_DELAY_SECONDS = 2.0
+GIT_PUSH_FINAL_RECONCILE_DELAY_SECONDS = 5.0
 
 
 # --------------------------------------------------------------------------
@@ -629,6 +631,7 @@ class GitPublisher:
     base_branch: str = "main"
     max_changed_files: int = DEFAULT_MAX_CHANGED_FILES
     allowed_hosts: frozenset[str] = field(default_factory=lambda: DEFAULT_ALLOWED_HOSTS)
+    sleeper: Callable[[float], None] = time.sleep
 
     def _run_git(
         self, workspace_path: Path, args: Sequence[str], *, check: bool = True
@@ -1071,7 +1074,24 @@ class GitPublisher:
                     remote_sha = ""
                 if remote_sha == commit_sha:
                     return
-                if attempt + 1 == MAX_GIT_PUSH_ATTEMPTS:
+                final_attempt = attempt + 1 == MAX_GIT_PUSH_ATTEMPTS
+                delay = (
+                    GIT_PUSH_FINAL_RECONCILE_DELAY_SECONDS
+                    if final_attempt
+                    else GIT_PUSH_RETRY_DELAY_SECONDS
+                )
+                self.sleeper(delay)
+                try:
+                    remote_sha = self.remote_branch_sha(
+                        workspace_path,
+                        branch_name,
+                        destination=destination,
+                    )
+                except (GitCommandError, GitTimeoutError):
+                    remote_sha = ""
+                if remote_sha == commit_sha:
+                    return
+                if final_attempt:
                     raise
 
     def has_changes(self, workspace_path: Path) -> bool:

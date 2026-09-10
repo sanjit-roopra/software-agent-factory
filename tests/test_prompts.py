@@ -305,6 +305,10 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
             test_report=TestReport(
                 passed=False, findings=["Whitespace is still accepted."], confidence=0.5
             ),
+            attempt_number=3,
+            prior_review_findings=[
+                "Attempt 2 finding: Empty values bypass normalization.",
+            ],
             change_set=ChangeSet(summary="I did a great job and everything works."),
         )
     )
@@ -312,8 +316,43 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
     assert "ReviewReport" in prompt
     assert "Independent tester report" in prompt
     assert "Whitespace is still accepted." in prompt
+    assert "Work item" in prompt
+    assert "Reject empty customer names" in prompt
+    assert "acceptance criteria and constraints are the review boundary" in prompt
+    assert "hypothetical future consumers" in prompt
+    assert "Every item in findings" in prompt
+    assert "non-blocking improvements only in suggested_changes" in prompt
+    assert "plausible exploit path" in prompt
+    assert "enumerate every blocking issue" in prompt
+    assert "does not lower the high-confidence threshold" in prompt
+    assert "Previously reported blocking issues from this run" in prompt
+    assert "Empty values bypass normalization." in prompt
+    assert "Implementation snapshot under review" in prompt
+    assert "\n3\n" in prompt
     # The implementer's self-justification never reaches an independent gate.
     assert "I did a great job" not in prompt
+
+
+def test_project_decomposition_keeps_bootstrap_separate_from_functional_contracts() -> None:
+    prompt = build_prompt(
+        _request(
+            AgentRole.PLANNER,
+            purpose=AgentPurpose.DECOMPOSE_PROJECT,
+            project_brief=ProjectBrief(
+                id="project-1",
+                repository_path="/tmp/repo",
+                title="Build a migration tool",
+                description="Create a new package and implement migration behavior.",
+            ),
+            repository_profile=RepositoryProfile(
+                manifest_fingerprint="0" * 64,
+                dependency_fingerprint="0" * 64,
+            ),
+        )
+    )
+
+    assert "Do not combine package/tooling bootstrap with substantial domain models" in prompt
+    assert "put independently reviewable functional contracts in their own task" in prompt
 
 
 def test_implementer_prompt_carries_repair_context_and_current_diff() -> None:

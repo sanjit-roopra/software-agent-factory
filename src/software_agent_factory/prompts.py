@@ -101,6 +101,7 @@ def build_prompt(request: AgentRequest) -> str:
         changed_files=request.changed_files,
         verification_report=request.verification_report,
         test_report=request.test_report,
+        prior_review_findings=request.prior_review_findings,
         repair_context=request.repair_context,
         repository_profile=request.repository_profile,
         repository_skill=request.repository_skill,
@@ -126,6 +127,7 @@ def build_prompt_for_role(
     changed_files: Sequence[str] | None = None,
     verification_report: VerificationReport | None = None,
     test_report: TestReport | None = None,
+    prior_review_findings: Sequence[str] | None = None,
     repair_context: RepairContext | str | None = None,
     repository_profile: RepositoryProfile | None = None,
     repository_skill: RepositorySkill | None = None,
@@ -164,6 +166,7 @@ def build_prompt_for_role(
         changed_files=list(changed_files or []),
         verification_report=verification_report,
         test_report=test_report,
+        prior_review_findings=list(prior_review_findings or []),
         repair_context=repair_context,
         purpose=purpose,
         repository_profile=repository_profile,
@@ -198,6 +201,11 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "prerequisites, safe parallel work, and any scope that would make one pull request "
             "too large to implement or review reliably. Keep tests and directly related "
             "documentation with their functional outcome rather than making process-only tasks. "
+            "Do not combine package/tooling bootstrap with substantial domain models, "
+            "configuration semantics, transport boundaries, or persistence contracts merely "
+            "because later tasks depend on them. When a repository must be bootstrapped, keep "
+            "the foundation task to the runnable package skeleton, locked tooling, and minimal "
+            "shared seams; put independently reviewable functional contracts in their own task. "
             "Each task must leave the repository coherent and deterministically verifiable. "
             "Dependencies are execution gates: list a predecessor only when its change must be "
             "integrated into the project branch, or merged to the target branch in remote "
@@ -297,10 +305,28 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "compatibility, and unnecessary scope. Judge only the controller-derived "
             "diff, the deterministic verification results and the independent tester's "
             "report below. No implementer self-assessment is provided; do not ask for "
-            "one. Treat unnecessary dependencies, speculative abstractions, generalized "
-            "infrastructure, unrelated cleanup, and unrequested features as findings. Set "
-            "approved to false whenever scope_concerns, security_concerns, or "
-            "compatibility_concerns is non-empty; suggested_changes may be advisory."
+            "one. The Work item acceptance criteria and constraints are the review boundary. "
+            "Report only concrete, high-confidence defects introduced by this change that "
+            "violate that boundary, cause a regression, or create a compatibility failure in "
+            "the current task. Security concerns may also cover a concrete vulnerability "
+            "introduced now with a plausible exploit path through the repository's specified "
+            "current or planned behavior. Do not reject for "
+            "hypothetical future consumers, missing invariants assigned to sibling tasks, "
+            "preferred redesigns, generalized hardening, or requirements not present in the "
+            "work item; this does not excuse a concrete vulnerability in a primitive introduced "
+            "by the current change. Treat unnecessary dependencies, speculative abstractions, "
+            "generalized "
+            "infrastructure, unrelated cleanup, and unrequested features as scope findings "
+            "only when they materially harm the current change. Every item in findings, "
+            "scope_concerns, security_concerns, or compatibility_concerns is release-blocking, "
+            "so set approved to false whenever any of those lists is non-empty. Put all "
+            "non-blocking improvements only in suggested_changes; when suggestions are the only "
+            "items, leave the other lists empty and keep approved true. In each review, "
+            "enumerate every blocking issue you can substantiate rather than reporting only "
+            "the first or most severe issue; this completeness duty does not lower the "
+            "high-confidence threshold. Previously reported issues were already sent for "
+            "repair: verify whether each remains, but do not let that history limit a fresh, "
+            "complete review of the current diff."
         )
     raise ValueError(f"unsupported agent role: {role!r}")
 
@@ -337,6 +363,7 @@ def _artifact_sections(
     changed_files: list[str],
     verification_report: VerificationReport | None,
     test_report: TestReport | None,
+    prior_review_findings: list[str],
     repair_context: RepairContext | str | None,
     repository_profile: RepositoryProfile | None,
     repository_skill: RepositorySkill | None,
@@ -498,6 +525,8 @@ def _artifact_sections(
             sections.append(("Specification", specification))
         if execution_plan is not None:
             sections.append(("Execution plan", execution_plan))
+        if repair_context is not None:
+            sections.append(("Previous output rejection", repair_context))
         if changed_files:
             sections.append(("Changed files", changed_files))
         if diff:
@@ -507,10 +536,13 @@ def _artifact_sections(
         return sections
 
     if normalized_role == "REVIEWER":
+        sections.append(("Work item", _work_item_brief(work_item)))
         if specification is not None:
             sections.append(("Specification", specification))
         if execution_plan is not None:
             sections.append(("Execution plan", execution_plan))
+        if repair_context is not None:
+            sections.append(("Previous output rejection", repair_context))
         if changed_files:
             sections.append(("Changed files", changed_files))
         if diff:
@@ -519,6 +551,15 @@ def _artifact_sections(
             sections.append(("Deterministic verification", verification_report))
         if test_report is not None:
             sections.append(("Independent tester report", test_report))
+        if attempt_number is not None:
+            sections.append(("Implementation snapshot under review", attempt_number))
+        if prior_review_findings:
+            sections.append(
+                (
+                    "Previously reported blocking issues from this run",
+                    prior_review_findings,
+                )
+            )
         return sections
 
     raise ValueError(f"unsupported agent role: {normalized_role!r}")

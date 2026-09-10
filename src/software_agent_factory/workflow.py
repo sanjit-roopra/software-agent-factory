@@ -143,6 +143,9 @@ TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
 #: operator problem, not a code problem, and escalates with evidence.
 REPAIRABLE_CI_CATEGORIES: frozenset[str] = frozenset({"CODE_FAILURE", "TEST_FAILURE"})
+MAX_PRIOR_REVIEW_FINDINGS = 24
+MAX_PRIOR_REVIEW_CONTEXT_CHARS = 6000
+MAX_PRIOR_REVIEW_FINDING_CHARS = 1000
 
 #: Bound on how much failure text is copied into a repair prompt.
 MAX_REPAIR_EXCERPT_CHARS = 4000
@@ -245,15 +248,16 @@ def is_run_finished(run: FactoryRun) -> bool:
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
-def _planner_schema_repair_context(
+def _typed_artifact_schema_repair_context(
     failure_reason: str,
-    prior_context: RepairContext | None,
+    artifact_name: str,
+    prior_context: RepairContext | None = None,
 ) -> str:
     validation_error = failure_reason.split(" stdout=", 1)[0].strip()
     schema_context = (
         "Your previous response was rejected by deterministic schema validation. "
         f"Validation error: {validation_error}. "
-        "Correct only the output shape and return exactly one complete ExecutionPlan JSON "
+        f"Correct only the output shape and return exactly one complete {artifact_name} JSON "
         "object matching the schema in this prompt. Do not omit required fields, add prose, "
         "or wrap the JSON in markdown."
     )
@@ -1175,9 +1179,10 @@ class WorkflowController:
             if not is_retryable_typed_artifact_failure(result, ExecutionPlan):
                 break
             assert result.failure_reason is not None
-            current_repair_context = _planner_schema_repair_context(
+            current_repair_context = _typed_artifact_schema_repair_context(
                 result.failure_reason,
-                repair_context,
+                ExecutionPlan.__name__,
+                prior_context=repair_context,
             )
         assert result is not None
         raise self._halt(
@@ -1208,15 +1213,29 @@ class WorkflowController:
             workspace_path=str(context.workspace.path),
             attempt_number=snapshot,
         )
-        result = self._invoke_agent(run, request)
-        if not result.success or result.test_report is None:
-            raise self._halt(
+        result: AgentResult | None = None
+        repair_context: str | None = None
+        for _ in range(self._config.retries.same_model_attempts):
+            result = self._invoke_agent(
                 run,
-                WorkflowState.FAILED,
-                result.failure_reason or "tester agent failed to produce a result",
+                request.model_copy(update={"repair_context": repair_context}),
             )
-        self._store.save_artifact(run.id, result.test_report, attempt=snapshot)
-        return result.test_report
+            if result.success and result.test_report is not None:
+                self._store.save_artifact(run.id, result.test_report, attempt=snapshot)
+                return result.test_report
+            if not is_retryable_typed_artifact_failure(result, TestReport):
+                break
+            assert result.failure_reason is not None
+            repair_context = _typed_artifact_schema_repair_context(
+                result.failure_reason,
+                TestReport.__name__,
+            )
+        assert result is not None
+        raise self._halt(
+            run,
+            WorkflowState.FAILED,
+            result.failure_reason or "tester agent failed to produce a result",
+        )
 
     def _run_reviewer(
         self,
@@ -1236,19 +1255,34 @@ class WorkflowController:
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
             test_report=test_report,
+            prior_review_findings=self._prior_review_findings(run.id, snapshot),
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=snapshot,
         )
-        result = self._invoke_agent(run, request)
-        if not result.success or result.review_report is None:
-            raise self._halt(
+        result: AgentResult | None = None
+        repair_context: str | None = None
+        for _ in range(self._config.retries.same_model_attempts):
+            result = self._invoke_agent(
                 run,
-                WorkflowState.FAILED,
-                result.failure_reason or "reviewer agent failed to produce a result",
+                request.model_copy(update={"repair_context": repair_context}),
             )
-        self._store.save_artifact(run.id, result.review_report, attempt=snapshot)
-        return result.review_report
+            if result.success and result.review_report is not None:
+                self._store.save_artifact(run.id, result.review_report, attempt=snapshot)
+                return result.review_report
+            if not is_retryable_typed_artifact_failure(result, ReviewReport):
+                break
+            assert result.failure_reason is not None
+            repair_context = _typed_artifact_schema_repair_context(
+                result.failure_reason,
+                ReviewReport.__name__,
+            )
+        assert result is not None
+        raise self._halt(
+            run,
+            WorkflowState.FAILED,
+            result.failure_reason or "reviewer agent failed to produce a result",
+        )
 
     def _build_request(
         self,
@@ -1266,6 +1300,7 @@ class WorkflowController:
         changed_files: list[str] | None = None,
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
+        prior_review_findings: list[str] | None = None,
         repair_context: RepairContext | str | None = None,
         repository_profile: RepositoryProfile | None = None,
         repository_skill: RepositorySkill | None = None,
@@ -1291,6 +1326,7 @@ class WorkflowController:
             changed_files=changed_files or [],
             verification_report=verification_report,
             test_report=test_report,
+            prior_review_findings=prior_review_findings or [],
             repair_context=repair_context,
             repository_profile=repository_profile,
             repository_skill=repository_skill,
@@ -1438,6 +1474,7 @@ class WorkflowController:
         Shared by the pre-PR loop and the post-CI repair loop; only the
         consumed :class:`AttemptBudget` differs.
         """
+        verification_generated_paths: set[str] = set()
         while True:
             role_model, attempt_number = self._select_worker(run, context, budget)
             if role_model is None:
@@ -1470,6 +1507,16 @@ class WorkflowController:
                 continue
             assert evidence is not None
 
+            retained_generated_paths = sorted(
+                verification_generated_paths.intersection(evidence.changed_files)
+            )
+            if retained_generated_paths:
+                repair_context = self._verification_artifact_repair_context(
+                    retained_generated_paths
+                )
+                continue
+            verification_generated_paths.clear()
+
             run = self.transition(run, WorkflowState.VERIFYING)
             verification = self._verify(run, context)
             self._store.save_artifact(run.id, verification.report, attempt=snapshot)
@@ -1478,6 +1525,32 @@ class WorkflowController:
                 repair_context = self._verification_repair_context(verification)
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
+
+            verified_evidence = context.workspace.collect_evidence()
+            if (
+                verified_evidence.diff != evidence.diff
+                or verified_evidence.tree_sha != evidence.tree_sha
+            ):
+                verification_generated_paths.update(
+                    set(verified_evidence.changed_files) - set(evidence.changed_files)
+                )
+                context.latest_evidence = verified_evidence
+                change_set = self._store.load_artifact(run.id, ChangeSet, attempt=snapshot)
+                self._store.save_artifact(
+                    run.id,
+                    change_set.model_copy(
+                        update={"changed_files": verified_evidence.changed_files}
+                    ),
+                    attempt=snapshot,
+                )
+                self._store.save_patch(run.id, verified_evidence.diff, attempt=snapshot)
+                repair_context = self._verification_mutation_repair_context(
+                    evidence,
+                    verified_evidence,
+                )
+                run = self.transition(run, WorkflowState.IMPLEMENTING)
+                continue
+            evidence = verified_evidence
 
             scope = self._scope_policy.assess(
                 context.execution_plan,
@@ -1550,6 +1623,7 @@ class WorkflowController:
 
             if not review_report.approved or any(
                 (
+                    review_report.findings,
                     review_report.scope_concerns,
                     review_report.security_concerns,
                     review_report.compatibility_concerns,
@@ -1908,6 +1982,48 @@ class WorkflowController:
             log_excerpt=excerpt,
         )
 
+    def _verification_mutation_repair_context(
+        self,
+        before: WorkspaceEvidence,
+        after: WorkspaceEvidence,
+    ) -> RepairContext:
+        before_files = set(before.changed_files)
+        after_files = set(after.changed_files)
+        added = sorted(after_files - before_files)
+        removed = sorted(before_files - after_files)
+        details = [
+            "Repository verification commands changed the Git tree after implementation "
+            "evidence was captured. Verification must leave source contents unchanged. "
+            "Remove generated artifacts from the worktree and Git index, then add appropriate "
+            "ignore rules so verification cannot stage them again."
+        ]
+        if added:
+            details.append(f"Newly tracked after verification: {', '.join(added)}")
+        if removed:
+            details.append(f"No longer tracked after verification: {', '.join(removed)}")
+        if not added and not removed:
+            details.append("One or more already-changed files were modified during verification.")
+        return RepairContext(
+            trigger=AttemptTrigger.VERIFICATION,
+            summary="Deterministic verification modified the repository.",
+            failures=details[:MAX_REPAIR_FAILURES],
+            log_excerpt=None,
+        )
+
+    def _verification_artifact_repair_context(
+        self,
+        retained_paths: list[str],
+    ) -> RepairContext:
+        return RepairContext(
+            trigger=AttemptTrigger.VERIFICATION,
+            summary="Verification-generated artifacts are still part of the proposed change.",
+            failures=[
+                "Remove these generated paths from the worktree and Git index before retrying: "
+                + ", ".join(retained_paths)
+            ],
+            log_excerpt=None,
+        )
+
     def _review_repair_context(
         self, review: ReviewReport, test_report: TestReport
     ) -> RepairContext:
@@ -1916,8 +2032,9 @@ class WorkflowController:
             *review.scope_concerns,
             *review.security_concerns,
             *review.compatibility_concerns,
-            *review.suggested_changes,
         ]
+        if not findings and not review.approved:
+            findings.extend(review.suggested_changes)
         if not findings:
             findings = ["The independent reviewer rejected the change without detail."]
         excerpt = None
@@ -1929,6 +2046,55 @@ class WorkflowController:
             failures=findings[:MAX_REPAIR_FAILURES],
             log_excerpt=excerpt,
         )
+
+    def _prior_review_findings(self, run_id: str, snapshot: int) -> list[str]:
+        findings: list[str] = []
+        total_chars = 0
+        for attempt in range(snapshot - 1, 0, -1):
+            try:
+                review = self._store.load_artifact(
+                    run_id,
+                    ReviewReport,
+                    attempt=attempt,
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            categories = [
+                ("finding", review.findings),
+                ("scope concern", review.scope_concerns),
+                ("security concern", review.security_concerns),
+                ("compatibility concern", review.compatibility_concerns),
+            ]
+            blocking = [item for _, items in categories for item in items]
+            if not blocking and not review.approved:
+                categories = [("rejection detail", review.suggested_changes)]
+            for category, items in categories:
+                for item in items:
+                    stripped = item.strip()
+                    if not stripped:
+                        continue
+                    if len(findings) >= MAX_PRIOR_REVIEW_FINDINGS:
+                        return findings
+                    prefix = f"Attempt {attempt} {category}: "
+                    available = min(
+                        MAX_PRIOR_REVIEW_FINDING_CHARS,
+                        MAX_PRIOR_REVIEW_CONTEXT_CHARS - total_chars,
+                    )
+                    if available <= len(prefix):
+                        return findings
+                    full_entry = f"{prefix}{stripped}"
+                    if len(full_entry) > available:
+                        omitted = len(full_entry) - available
+                        suffix = f"...[truncated {omitted} characters]"
+                        if len(suffix) < available:
+                            entry = f"{full_entry[: available - len(suffix)]}{suffix}"
+                        else:
+                            entry = full_entry[:available]
+                    else:
+                        entry = full_entry
+                    findings.append(entry)
+                    total_chars += len(entry)
+        return findings
 
     def _ci_repair_context(self, report: CIReport) -> RepairContext:
         failed = report.failed_checks
