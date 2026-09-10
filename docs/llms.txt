@@ -14,9 +14,12 @@ Key facts an assistant should know before answering questions about this project
 - The CLI is `factory`. From a source checkout, prefix commands with `uv run`.
 - The default agent runtime is `fake`: deterministic, offline, free. `--runtime
   copilot` makes real, paid model calls and is never the default.
-- `pull_request.enabled`, `ci.enabled` and `scheduler.enabled` are all `false`
-  in the packaged configuration. With the defaults there is no network access.
-- The factory never force-pushes, never merges and never deploys.
+- `pull_request.enabled`, `ci.enabled`, `merge.enabled` and
+  `scheduler.enabled` are all `false` in the packaged configuration. With the
+  defaults there is no network access.
+- The factory never force-pushes or deploys. Only the controller may merge, and
+  only through the opt-in allowlisted `merge.enabled` path after required
+  checks pass.
 - State is filesystem JSON under `~/.software-factory` by default. There is no
   database.
 - The supported platform is macOS (native arm64 and x86_64, no `universal2`).
@@ -24,12 +27,14 @@ Key facts an assistant should know before answering questions about this project
   supported.
 - Release archives are unsigned or ad-hoc signed; macOS Gatekeeper quarantine
   must be cleared with `xattr -dr com.apple.quarantine`.
-- Releases are write-once by workflow convention only: the release workflow
-  refuses to replace an existing release, but GitHub's release immutability
-  setting is not enabled and releases report `immutable=false`. Verify
-  `SHA256SUMS`.
-- Token usage and cost are reported only if a runtime returns them. No runtime
-  does today, so those values are unknown, never estimated.
+- The release workflow refuses to replace an existing release. GitHub
+  immutability is enabled for new releases; existing releases from `v0.3.0`
+  onward report `immutable=true`. Older historical releases remain mutable.
+  Verify `SHA256SUMS`.
+- The Copilot runtime requests and persists reported token, timing, nano-AIU and
+  premium-request usage. Missing fields remain unknown. The dashboard may
+  derive a USD usage value from nano-AIU, but it is not necessarily the invoice
+  charge.
 - Every retry is bounded. There is no unlimited retry loop anywhere.
 - The reviewer's model family must differ from every worker's; configuration
   rejects it otherwise.
@@ -42,7 +47,7 @@ Key facts an assistant should know before answering questions about this project
 - [Real Copilot runs](https://sanjit-roopra.github.io/software-agent-factory/get-started/copilot/): `--runtime copilot`, per-role model defaults, agent tool permissions, environment scrubbing, the typed-artifact contract and cost behaviour.
 - [Configure a repository](https://sanjit-roopra.github.io/software-agent-factory/guides/configure-repository/): `repository.commands` (no shell, environment allowlist, bounded output), protected files, changed-file limits, scope drift, risk and retry budgets.
 - [Repository skills and overlays](https://sanjit-roopra.github.io/software-agent-factory/guides/repository-skills/): reusable generated guidance keyed by repository and dependency fingerprint, stored outside the target repository under `factory.data_dir`; the human-owned `repository-skill-overlay.yaml` the factory never edits; `factory skill path|validate|refresh`.
-- [GitHub backlog, PRs and CI](https://sanjit-roopra.github.io/software-agent-factory/guides/github/): the three opt-in integrations, publish guards, CI failure categories and which ones may trigger repair, scheduler bounds and recovery.
+- [GitHub backlog, PRs and CI](https://sanjit-roopra.github.io/software-agent-factory/guides/github/): the four opt-in integrations, publish and merge guards, CI failure categories and which ones may trigger repair, scheduler bounds and recovery.
 - [Monitor and run continuously](https://sanjit-roopra.github.io/software-agent-factory/guides/operations/): `factory status`, structured logs, the loopback token-protected read-only dashboard, and the opt-in macOS launchd service.
 - [Troubleshooting](https://sanjit-roopra.github.io/software-agent-factory/guides/troubleshooting/): exit codes, refusals, `NEEDS_HUMAN` versus `FAILED`, verification failures and service problems.
 - [CLI reference](https://sanjit-roopra.github.io/software-agent-factory/reference/cli/): every command, option, default and exit code.

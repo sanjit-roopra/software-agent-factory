@@ -9,7 +9,7 @@ hide:
 
 <div class="saf-hero" markdown>
 
-<span class="saf-eyebrow">{{ factory_release_tag }} · macOS · early</span>
+<span class="saf-eyebrow">Latest release {{ factory_release_tag }} · docs track main · macOS · early</span>
 
 # Software engineering agents with a deterministic controller
 
@@ -31,6 +31,11 @@ features.
 </div>
 
 </div>
+
+!!! note
+    This site follows the current `main` branch. The latest published package
+    is {{ factory_release_tag }}. Newer changes are listed under
+    [Unreleased in the changelog](https://github.com/sanjit-roopra/software-agent-factory/blob/main/CHANGELOG.md#unreleased).
 
 ## What a run does
 

@@ -138,8 +138,10 @@ right basis for normal current cost comparisons.
 The Copilot runtime requests the CLI's usage-output file and persists only
 values the CLI reports: input/output/reasoning/cache tokens, nano-AIU and
 premium-request cost where available. These are shown by `factory status` and
-the local dashboard. The factory does not convert them to AI Credits or USD;
-the figures below remain planning inputs rather than reconstructed billing.
+the local dashboard. Persisted telemetry remains in the reported units. The
+dashboard also derives an AI usage value in USD from nano-AIU when available.
+That display is not necessarily the invoice charge. The figures below remain
+planning inputs rather than reconstructed billing.
 
 Official sources:
 
@@ -637,7 +639,8 @@ by role instead of optimizing one blended score.
 6. Runtime telemetry is best effort because Copilot's usage-output schema is
    experimental. Missing or malformed fields remain unknown.
 7. Reported premium-request cost and nano-AIU are preserved as distinct raw
-   units; the factory does not calculate AI Credits or USD.
+   units. The dashboard may derive a USD usage value from nano-AIU for display;
+   it does not turn premium-request units into current billing.
 8. Named profiles are complete `models` blocks. Other custom YAML sections are
    still not deep-merged with packaged defaults.
 

@@ -22,21 +22,17 @@ a human downloads and extracts it
 
 Pushing a `v*` tag triggers the release workflow.
 
-## Releases are write-once by convention, not by guarantee
+## Releases are protected by workflow and platform controls
 
 The workflow checks whether the tag's release already exists and fails if it
 does, so re-running a tag cannot replace published artifacts.
 
-That is a workflow rule, not a platform rule. It does not prevent someone
-editing or deleting a release through the GitHub UI or API.
+GitHub release immutability is enabled for new releases. Existing releases from
+`v0.3.0` onward report `immutable=true`. Older historical releases still report
+`immutable=false`, so the workflow guard remains useful defense in depth.
 
-GitHub has its own release immutability feature. It is a repository setting, it
-is off by default, and the current releases report `immutable=false`. Enable
-immutable releases in the repository settings before relying on platform
-enforcement.
-
-Until then, verify what you downloaded rather than trusting that it cannot have
-changed.
+Always verify the checksum. Immutability prevents replacement; it does not prove
+that the original artifact was the one you intended to download.
 
 ## What a release contains
 
@@ -64,8 +60,8 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 PyInstaller version and architecture, so an archive is traceable to the build
 that produced it.
 
-Because release immutability is not enforced by the platform yet, this check is
-how you detect a swapped artifact. Do it every time.
+This check confirms the downloaded bytes match the published checksum. Do it
+every time, including for immutable releases.
 
 ## Gatekeeper
 
@@ -88,14 +84,15 @@ you ran `factory service install`.
 
 ## Versioning
 
-Semantic versioning. The current documented release is
+Semantic versioning. The latest published release is
 {{ factory_version }}. Pre-1.0, expect breaking changes to configuration keys
 and CLI flags in minor releases; they are called out in the changelog.
 
-The documentation build reads this value from `project.version` in
-`pyproject.toml`. Release preparation updates that one authoritative value, and
-the next GitHub Pages build renders the matching tag and artifact names without
-separate documentation edits.
+The public documentation follows the current `main` branch. It reads the latest
+published version from `project.version` in `pyproject.toml` so install commands
+and artifact names stay tied to {{ factory_release_tag }}. Features listed under
+`Unreleased` in the changelog may therefore be documented before the next
+package is published.
 
 Check what you are running:
 

@@ -146,11 +146,17 @@ operations you explicitly enabled.
 ## Contract
 
 Each role must return exactly one valid typed artifact. The runtime parses the
-Copilot JSON output and validates it against the Pydantic model for that role.
+final Copilot JSON output, ignores lifecycle events, and validates the artifact
+against the Pydantic model for that role.
 
 Malformed or missing output is an explicit agent failure. It is never treated
-as a silent pass, and it never lets a stage skip its gate. Failures consume the
-run's bounded retry budget like any other failure.
+as a silent pass, and it never lets a stage skip its gate.
+
+Planner, Tester and Reviewer output-shape failures get a bounded same-model
+correction sequence. The correction includes the exact validation error and
+asks for one complete artifact. Tester and Reviewer corrections are recorded as
+agent invocations but do not consume implementation attempts. Other failures,
+or an exhausted correction limit, fail the stage.
 
 ## Cost and usage reporting
 
@@ -159,9 +165,12 @@ Run and project artifacts persist reported input, output, reasoning and cache
 tokens, timing, nano-AIU and premium-request cost. `factory status` and the
 local dashboard derive summaries from those records.
 
-Missing or malformed usage stays unknown. The factory does not convert raw
-premium-request cost or nano-AIU to AI Credits or USD, so GitHub billing
-remains authoritative for spend.
+Missing or malformed usage stays unknown. Persisted telemetry and
+`factory status` keep the runtime-reported units unchanged. When nano-AIU is
+available, the dashboard also derives an AI usage value in USD using GitHub's
+conversion of one AI Credit to $0.01. This is not necessarily the invoice
+charge because included or pooled credits may cover it. Premium-request cost
+remains a separate raw metric, and GitHub billing remains authoritative.
 
 ## Sensible practice
 

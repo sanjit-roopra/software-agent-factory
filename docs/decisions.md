@@ -32,6 +32,12 @@ SHA and refuses to merge a different head. The PR displays the latest reviewer
 outcome. This model review does not impersonate a GitHub user review or bypass
 repository rules requiring additional human approvals.
 
+Planner, Tester and Reviewer schema failures get bounded same-model correction
+with the exact validation error. Tester and Reviewer correction calls do not
+spend implementation attempts. Reviewer repair attempts receive the current
+work item and earlier blocking findings, and deterministic verification must
+leave the Git tree unchanged before independent review starts.
+
 Remote project delivery executes tasks serially against the freshly fetched
 target branch. This is the smallest sufficient way to ensure every task
 includes its merged predecessors and avoids inventing a merge-queue scheduler.
@@ -249,16 +255,12 @@ version tag builds artifacts and attaches them. Nothing installs, restarts,
 promotes or self-updates, and there is no mutable pointer a client follows
 automatically. Autonomous deployment stays banned by `AGENTS.md`.
 
-Releases are intended to be treated as write-once, but that is a workflow
-convention, not a platform guarantee. The release workflow checks whether the
-tag's release already exists and refuses to replace its artifacts. It does not
-stop someone editing or deleting a release through the GitHub UI or API.
-
-GitHub's own release immutability is a repository setting and is off by default;
-the current releases report `immutable=false`. Enable immutable releases in the
-repository settings before relying on platform enforcement. Until then,
-`SHA256SUMS` and `build-info.json` are what let a consumer detect a swapped
-artifact.
+The release workflow checks whether the tag's release already exists and
+refuses to replace its artifacts. GitHub release immutability is also enabled
+for new releases. Existing releases from `v0.3.0` onward report
+`immutable=true`; older historical releases remain mutable through the
+platform. `SHA256SUMS` and `build-info.json` remain required consumer checks for
+the downloaded bytes and their build provenance.
 
 Two native macOS builds are produced — arm64 on `macos-15` and x86_64 on
 `macos-15-intel` — as separate PyInstaller `onedir` archives. `universal2` is
@@ -324,9 +326,12 @@ runtime actually reported them; otherwise the value is unknown, never zero and
 never inferred from a hard-coded price table. A confidently wrong spend number
 is worse than no number. Copilot invocations request the CLI's experimental
 usage-output file and persist typed `InvocationRecord` telemetry. Raw
-premium-request cost and nano-AIU remain separate units; neither is presented
-as AI Credits or USD. `AttemptRecord` remains the implementer retry ledger and
-links to its invocation rather than being overloaded with every agent call.
+premium-request cost and nano-AIU remain separate persisted units. The
+dashboard may derive an AI usage value in USD from nano-AIU for display, using
+GitHub's fixed AI Credit conversion. It is labeled as usage value rather than
+invoice spend because included or pooled credits may cover it. `AttemptRecord`
+remains the implementer retry ledger and links to its invocation rather than
+being overloaded with every agent call.
 
 Monitoring stays local: structured JSON logs bounded in size inside the data
 directory, with the same credential redaction already applied to command

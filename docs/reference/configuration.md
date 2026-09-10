@@ -27,7 +27,7 @@ factory:
 | --- | --- | --- | --- |
 | `data_dir` | path | `~/.software-factory` | Where runs, workspaces, locks, logs and reusable repository guidance live. `~` is expanded. |
 | `agent_timeout_seconds` | int > 0 | `900` | Per-agent-invocation timeout. |
-| `retries.same_model_attempts` | int > 0 | `2` | Attempts with the same model before escalating to a stronger one. |
+| `retries.same_model_attempts` | int > 0 | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | int > 0 | `6` | Hard ceiling on implementation attempts per run. Must be at least `same_model_attempts`. |
 
 The retry budget is persisted on the run. Restarting the process does not grant

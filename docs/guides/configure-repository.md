@@ -178,10 +178,11 @@ factory:
     max_total_attempts: 6
 ```
 
-`same_model_attempts` is how many times the same model is retried before
-escalating to a stronger one. `max_total_attempts` is the hard ceiling for the
-run. The budget is persisted on the run, so restarting the process does not hand
-a run a fresh budget. There is no unbounded retry anywhere.
+`same_model_attempts` sets the number of same-model implementation attempts
+before escalation. It also bounds typed-output correction for supported roles.
+`max_total_attempts` is the hard ceiling for implementation attempts in the
+run. The budget is persisted, so restarting the process does not hand a run a
+fresh budget. There is no unbounded retry anywhere.
 
 CI repair has its own separate budget, `ci.repair_attempts`.
 

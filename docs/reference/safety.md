@@ -86,10 +86,12 @@ Two extra bounds exist for the daemon:
 - `scheduler.max_runs_per_day` (default `20`) caps claims per UTC day,
   independently of concurrency.
 
-Token usage and cost are reported only if the runtime returns them. No runtime
-does today, so those fields stay unknown. They are never defaulted to zero and
-never reconstructed from a price table. Use GitHub Copilot billing for real
-numbers.
+Token usage and cost are reported only if the runtime returns them. The Copilot
+runtime requests and persists its usage-output data; missing or malformed
+fields stay unknown and are never defaulted to zero. Persisted telemetry remains
+in raw runtime units. The dashboard may derive an AI usage value in USD from
+nano-AIU for display, but it is not necessarily the invoice charge. Use GitHub
+Copilot billing for authoritative spend.
 
 ## Credentials
 
@@ -226,7 +228,7 @@ There is no unlimited retry loop anywhere.
 
 | Budget | Default | Bounds |
 | --- | --- | --- |
-| `retries.same_model_attempts` | `2` | Retries before escalating to a stronger model. |
+| `retries.same_model_attempts` | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
 | `polish.enabled` | `true` packaged; `false` if omitted | At most one post-green implementation attempt. |
 | `scope_drift.max_replans` | `1` | Replans after scope drift. |
@@ -298,12 +300,10 @@ Release archives are unsigned or ad-hoc signed. Apple Developer ID signing and
 notarization are deferred. macOS quarantines a downloaded archive until you
 clear the attribute yourself.
 
-Releases are write-once by workflow convention only. The release workflow
-refuses to replace an existing release, but nothing stops an edit or delete
-through the GitHub UI or API. GitHub's release immutability is a repository
-setting, it is off by default, and the current releases report
-`immutable=false`. Enable it in the repository settings before relying on
-platform enforcement.
+The release workflow refuses to replace an existing release. GitHub release
+immutability is also enabled for new releases; existing releases from `v0.3.0`
+onward report `immutable=true`. Older historical releases still report
+`immutable=false`.
 
 Verify `SHA256SUMS` before you extract anything.
 
