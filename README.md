@@ -5,18 +5,19 @@
 [![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-A local-first autonomous software engineering factory. It takes one work item
-from triage to a reviewed change using specialized agents — triage, refinement,
-optional research, planning, implementation, verification and review — each with
-its own model.
+A local factory that turns a work item into a reviewed change. Specialized
+agents triage, refine, research, plan, implement, test and review the work.
 
-Orchestration, Git worktrees, tests, builds and persisted state stay on your
-machine. The real agent runtime calls GitHub Copilot. GitHub automation is
-separate and opt-in.
+Git worktrees, commands and state stay on your machine. GitHub Copilot runs the
+real agents. GitHub automation stays separate and opt-in.
 
-The design rule is that LLMs provide intelligence and deterministic code
-provides authority. Agents return typed artifacts. They do not control workflow
-state, retry budgets, model routing, quality gates or merging.
+LLMs provide intelligence. Deterministic code provides authority. Agents return
+short typed artifacts. They do not control state, budgets, routing, gates or
+merging.
+
+All factory-authored prose uses a mandatory controlled writing policy. It uses
+selected checks from [SimpleEnglish](https://github.com/AminBlg/SimpleEnglish)
+and follows ASD-STE100 principles. The checks do not prove formal compliance.
 
 **[Documentation](https://sanjit-roopra.github.io/software-agent-factory/)**
 
@@ -110,15 +111,11 @@ uv run factory project \
   --runtime copilot
 ```
 
-The project planner defaults to one work item and decomposes only for real
-delivery, dependency, parallelism, or scope boundaries. It persists the typed
-plan under `factory.data_dir/projects`, runs dependency-ready tasks with bounded
-concurrency, and composes successful task commits onto one local integration
-branch. It reruns deterministic repository verification against the fully
-composed branch before declaring the project complete. Add
-`--github-repo OWNER/NAME` to create one GitHub issue per validated task; those
-issues are intentionally not labelled `agent-ready`, preventing the backlog
-daemon from dispatching the same work a second time.
+The project planner uses one work item unless a real boundary requires more.
+The factory stores the plan, runs ready tasks and combines their commits. It
+then runs repository verification on the combined branch. Use
+`--github-repo OWNER/NAME` to create one issue for each task. The factory does
+not add the `agent-ready` label.
 
 ## Commands
 
@@ -160,6 +157,7 @@ See the
 - [How it works](https://sanjit-roopra.github.io/software-agent-factory/concepts/how-it-works/)
 - [Safety and trust boundaries](https://sanjit-roopra.github.io/software-agent-factory/reference/safety/)
 - [Configuration reference](https://sanjit-roopra.github.io/software-agent-factory/reference/configuration/)
+- [Writing policy](docs/reference/writing-policy.md)
 - [Architecture](docs/architecture.md) ·
   [Symphony alignment](docs/symphony-alignment.md) ·
   [Decisions](docs/decisions.md)

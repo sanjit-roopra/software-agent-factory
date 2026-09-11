@@ -67,6 +67,7 @@ from .agents import (
     AgentResult,
     AgentRuntime,
     is_retryable_typed_artifact_failure,
+    is_writing_policy_failure,
     runtime_exception_failure_reason,
 )
 from .config import FactoryConfig, RoleModelConfig
@@ -93,6 +94,7 @@ from .models import (
     ExecutionPlan,
     FactoryRun,
     InvocationRecord,
+    ModelBase,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -142,6 +144,10 @@ from .workspace import (
     WorkspaceError,
     WorkspaceEvidence,
     WorkspaceLockError,
+)
+from .writing_policy import (
+    apply_agent_result_writing_policy,
+    writing_policy_correction_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -264,22 +270,30 @@ def is_run_finished(run: FactoryRun) -> bool:
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
-def _typed_artifact_schema_repair_context(
+def _typed_artifact_repair_context(
     failure_reason: str,
     artifact_name: str,
     prior_context: RepairContext | None = None,
+    rejected_artifact: ModelBase | None = None,
 ) -> str:
     validation_error = failure_reason.split(" stdout=", 1)[0].strip()
-    schema_context = (
-        "Your previous response was rejected by deterministic schema validation. "
-        f"Validation error: {validation_error}. "
-        f"Correct only the output shape and return exactly one complete {artifact_name} JSON "
-        "object matching the schema in this prompt. Do not omit required fields, add prose, "
-        "or wrap the JSON in markdown."
-    )
+    if f"{artifact_name} did not satisfy writing policy" in validation_error:
+        if rejected_artifact is None:
+            raise ValueError("a writing-policy correction requires the rejected artifact")
+        correction = writing_policy_correction_context(
+            validation_error,
+            rejected_artifact,
+        )
+    else:
+        correction = (
+            "Your previous response failed deterministic schema validation.\n"
+            f"{validation_error}\n"
+            f"Correct only the output shape. Return one complete {artifact_name} JSON object. "
+            "Do not add markdown or text outside the JSON."
+        )
     if prior_context is None:
-        return schema_context
-    return f"{prior_context.model_dump_json()}\n\n{schema_context}"
+        return correction
+    return f"{prior_context.model_dump_json()}\n\n{correction}"
 
 
 def _review_contract_repair_context(failure_reason: str) -> str:
@@ -859,15 +873,40 @@ class WorkflowController:
         self, run: FactoryRun, work_item: WorkItem, *, workspace_path: str
     ) -> TriageResult:
         request = self._build_request(AgentRole.TRIAGE, work_item, workspace_path=workspace_path)
-        result = self._invoke_agent(run, request)
-        if not result.success or result.triage_result is None:
-            raise self._halt(
+        result: AgentResult | None = None
+        repair_context: str | None = None
+        writing_correction_used = False
+        for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
+            result = self._invoke_agent(
                 run,
-                WorkflowState.FAILED,
-                result.failure_reason or "triage agent failed to produce a result",
+                request.model_copy(
+                    update={
+                        "attempt_number": attempt_number,
+                        "repair_context": repair_context,
+                    }
+                ),
             )
-        self._store.save_artifact(run.id, result.triage_result)
-        return result.triage_result
+            if result.success and result.triage_result is not None:
+                self._store.save_artifact(run.id, result.triage_result)
+                return result.triage_result
+            if not is_retryable_typed_artifact_failure(result, TriageResult):
+                break
+            assert result.failure_reason is not None
+            if is_writing_policy_failure(result, TriageResult):
+                if writing_correction_used:
+                    break
+                writing_correction_used = True
+            repair_context = _typed_artifact_repair_context(
+                result.failure_reason,
+                TriageResult.__name__,
+                rejected_artifact=result.triage_result,
+            )
+        assert result is not None
+        raise self._halt(
+            run,
+            WorkflowState.FAILED,
+            result.failure_reason or "triage agent failed to produce a result",
+        )
 
     def _run_refiner(
         self,
@@ -883,15 +922,40 @@ class WorkflowController:
             triage_result=triage_result,
             workspace_path=workspace_path,
         )
-        result = self._invoke_agent(run, request)
-        if not result.success or result.specification is None:
-            raise self._halt(
+        result: AgentResult | None = None
+        repair_context: str | None = None
+        writing_correction_used = False
+        for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
+            result = self._invoke_agent(
                 run,
-                WorkflowState.FAILED,
-                result.failure_reason or "refiner agent failed to produce a result",
+                request.model_copy(
+                    update={
+                        "attempt_number": attempt_number,
+                        "repair_context": repair_context,
+                    }
+                ),
             )
-        self._store.save_artifact(run.id, result.specification)
-        return result.specification
+            if result.success and result.specification is not None:
+                self._store.save_artifact(run.id, result.specification)
+                return result.specification
+            if not is_retryable_typed_artifact_failure(result, Specification):
+                break
+            assert result.failure_reason is not None
+            if is_writing_policy_failure(result, Specification):
+                if writing_correction_used:
+                    break
+                writing_correction_used = True
+            repair_context = _typed_artifact_repair_context(
+                result.failure_reason,
+                Specification.__name__,
+                rejected_artifact=result.specification,
+            )
+        assert result is not None
+        raise self._halt(
+            run,
+            WorkflowState.FAILED,
+            result.failure_reason or "refiner agent failed to produce a result",
+        )
 
     def _run_researcher(
         self,
@@ -910,15 +974,40 @@ class WorkflowController:
             specification=specification,
             workspace_path=workspace_path,
         )
-        result = self._invoke_agent(run, request)
-        if not result.success or result.research_report is None:
-            raise self._halt(
+        result: AgentResult | None = None
+        repair_context: str | None = None
+        writing_correction_used = False
+        for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
+            result = self._invoke_agent(
                 run,
-                WorkflowState.FAILED,
-                result.failure_reason or "researcher agent failed to produce a result",
+                request.model_copy(
+                    update={
+                        "attempt_number": attempt_number,
+                        "repair_context": repair_context,
+                    }
+                ),
             )
-        self._store.save_artifact(run.id, result.research_report)
-        return result.research_report
+            if result.success and result.research_report is not None:
+                self._store.save_artifact(run.id, result.research_report)
+                return result.research_report
+            if not is_retryable_typed_artifact_failure(result, ResearchReport):
+                break
+            assert result.failure_reason is not None
+            if is_writing_policy_failure(result, ResearchReport):
+                if writing_correction_used:
+                    break
+                writing_correction_used = True
+            repair_context = _typed_artifact_repair_context(
+                result.failure_reason,
+                ResearchReport.__name__,
+                rejected_artifact=result.research_report,
+            )
+        assert result is not None
+        raise self._halt(
+            run,
+            WorkflowState.FAILED,
+            result.failure_reason or "researcher agent failed to produce a result",
+        )
 
     def _run_repository_skill_researcher(
         self,
@@ -937,6 +1026,7 @@ class WorkflowController:
 
         rejection: str | None = None
         initial_rejection: str | None = None
+        rejected_skill: RepositorySkill | None = None
         for _attempt in range(1, MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS + 1):
             try:
                 request = self._build_request(
@@ -944,7 +1034,7 @@ class WorkflowController:
                     context.work_item,
                     purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
                     repair_context=(
-                        repository_skill_correction_context(rejection)
+                        repository_skill_correction_context(rejection, rejected_skill)
                         if rejection is not None
                         else None
                     ),
@@ -971,6 +1061,7 @@ class WorkflowController:
                     result.failure_reason
                     or "researcher failed to produce version-specific repository guidance"
                 )
+                rejected_skill = result.repository_skill
                 if _attempt == 1:
                     initial_rejection = rejection
                     continue
@@ -991,6 +1082,7 @@ class WorkflowController:
             rejection = self._repository_skill_validation_error(skill, repository_profile)
             if rejection is None:
                 return skill.model_copy(update={"generated_at": utc_now()}), None
+            rejected_skill = skill
             if _attempt == 1:
                 initial_rejection = rejection
                 continue
@@ -1192,6 +1284,7 @@ class WorkflowController:
         )
         result: AgentResult | None = None
         current_repair_context: RepairContext | str | None = repair_context
+        writing_correction_used = False
         for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
             result = self._invoke_agent(
                 run,
@@ -1208,10 +1301,15 @@ class WorkflowController:
             if not is_retryable_typed_artifact_failure(result, ExecutionPlan):
                 break
             assert result.failure_reason is not None
-            current_repair_context = _typed_artifact_schema_repair_context(
+            if is_writing_policy_failure(result, ExecutionPlan):
+                if writing_correction_used:
+                    break
+                writing_correction_used = True
+            current_repair_context = _typed_artifact_repair_context(
                 result.failure_reason,
                 ExecutionPlan.__name__,
                 prior_context=repair_context,
+                rejected_artifact=result.execution_plan,
             )
         assert result is not None
         raise self._halt(
@@ -1244,6 +1342,7 @@ class WorkflowController:
         )
         result: AgentResult | None = None
         repair_context: str | None = None
+        writing_correction_used = False
         for _ in range(self._config.retries.same_model_attempts):
             result = self._invoke_agent(
                 run,
@@ -1255,9 +1354,14 @@ class WorkflowController:
             if not is_retryable_typed_artifact_failure(result, TestReport):
                 break
             assert result.failure_reason is not None
-            repair_context = _typed_artifact_schema_repair_context(
+            if is_writing_policy_failure(result, TestReport):
+                if writing_correction_used:
+                    break
+                writing_correction_used = True
+            repair_context = _typed_artifact_repair_context(
                 result.failure_reason,
                 TestReport.__name__,
+                rejected_artifact=result.test_report,
             )
         assert result is not None
         raise self._halt(
@@ -1296,6 +1400,7 @@ class WorkflowController:
         result: AgentResult | None = None
         repair_context: str | None = None
         semantic_failure: str | None = None
+        writing_correction_used = False
         for _ in range(self._config.retries.same_model_attempts):
             result = self._invoke_agent(
                 run,
@@ -1315,9 +1420,14 @@ class WorkflowController:
             if not is_retryable_typed_artifact_failure(result, ReviewReport):
                 break
             assert result.failure_reason is not None
-            repair_context = _typed_artifact_schema_repair_context(
+            if is_writing_policy_failure(result, ReviewReport):
+                if writing_correction_used:
+                    break
+                writing_correction_used = True
+            repair_context = _typed_artifact_repair_context(
                 result.failure_reason,
                 ReviewReport.__name__,
+                rejected_artifact=result.review_report,
             )
         assert result is not None
         raise self._halt(
@@ -1476,7 +1586,10 @@ class WorkflowController:
         run.last_activity_at = started_at
         self._store.save_run(run)
         try:
-            result = self._runtime.run(request)
+            result = apply_agent_result_writing_policy(
+                self._runtime.run(request),
+                request.purpose,
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             completed_at = utc_now()
             failure_reason = runtime_exception_failure_reason(exc)
@@ -1607,7 +1720,7 @@ class WorkflowController:
             if run.review_acceptance is not None:
                 run = run.model_copy(update={"review_acceptance": None, "updated_at": utc_now()})
                 self._store.save_run(run)
-            run, implemented, evidence = self._invoke_implementer(
+            run, implemented, evidence, rejected_change_set = self._invoke_implementer(
                 run,
                 attempt_number,
                 snapshot,
@@ -1618,7 +1731,20 @@ class WorkflowController:
                 repair_context,
             )
             if not implemented:
-                repair_context = self._implementer_failure_context(run)
+                last_failure = run.attempt_records[-1].failure_reason or ""
+                if "ChangeSet did not satisfy writing policy" in last_failure:
+                    writing_failures = sum(
+                        1
+                        for attempt in run.attempt_records
+                        if attempt.failure_reason is not None
+                        and "ChangeSet did not satisfy writing policy" in attempt.failure_reason
+                    )
+                    if writing_failures > 1:
+                        raise self._halt(run, WorkflowState.NEEDS_HUMAN, last_failure)
+                repair_context = self._implementer_failure_context(
+                    run,
+                    rejected_change_set,
+                )
                 continue
             assert evidence is not None
 
@@ -2017,7 +2143,7 @@ class WorkflowController:
         budget: AttemptBudget,
         trigger: AttemptTrigger,
         repair_context: RepairContext | None,
-    ) -> tuple[FactoryRun, bool, WorkspaceEvidence | None]:
+    ) -> tuple[FactoryRun, bool, WorkspaceEvidence | None, ChangeSet | None]:
         started_at = utc_now()
         current_diff = context.latest_evidence.diff if context.latest_evidence else None
         request = AgentRequest(
@@ -2065,7 +2191,7 @@ class WorkflowController:
                 budget=budget,
                 trigger=trigger,
             )
-            return run, False, None
+            return run, False, None, result.change_set
 
         # Controller-derived evidence only: the agent's own ChangeSet.changed_files
         # claim is discarded and replaced with what Git actually recorded,
@@ -2088,7 +2214,7 @@ class WorkflowController:
             budget=budget,
             trigger=trigger,
         )
-        return run, True, evidence
+        return run, True, evidence, None
 
     def _record_attempt(
         self,
@@ -2132,8 +2258,31 @@ class WorkflowController:
 
     # -- repair context builders --------------------------------------------
 
-    def _implementer_failure_context(self, run: FactoryRun) -> RepairContext:
+    def _implementer_failure_context(
+        self,
+        run: FactoryRun,
+        rejected_change_set: ChangeSet | None = None,
+    ) -> RepairContext:
         last = run.attempt_records[-1]
+        if (
+            rejected_change_set is not None
+            and last.failure_reason is not None
+            and "ChangeSet did not satisfy writing policy" in last.failure_reason
+        ):
+            return RepairContext(
+                trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
+                summary=(
+                    "The implementation is not rejected. Correct only the ChangeSet prose. "
+                    "Do not change source files unless the current diff is incomplete."
+                ),
+                failures=[
+                    writing_policy_correction_context(
+                        last.failure_reason,
+                        rejected_change_set,
+                    )
+                ],
+                log_excerpt=None,
+            )
         if last.triggered_by is AttemptTrigger.POLISH:
             return RepairContext(
                 trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
@@ -2794,7 +2943,7 @@ class WorkflowController:
                 branch_name=branch_name,
                 base_branch=base_branch,
                 commit_message=_commit_message(context, run.id),
-                title=context.work_item.title,
+                title=context.execution_plan.summary.strip().rstrip(".").strip(),
                 body=self._build_pr_body(run, context, changed_files),
                 existing_pull_request_url=run.pull_request_url,
                 expected_tree_sha=run.reviewed_tree_sha,
@@ -3150,9 +3299,10 @@ def _overlay_warnings(
 
 
 def _commit_message(context: _RunContext, run_id: str) -> str:
+    summary = context.execution_plan.summary.strip().rstrip(".").strip()
     return (
-        f"{context.work_item.title}\n\n"
+        f"{summary}\n\n"
         f"{context.specification.problem.strip()}\n\n"
-        f"Factory run: {run_id}\n"
-        f"Work item: {context.work_item.id}"
+        f"Factory run: `{run_id}`\n"
+        f"Work item: `{context.work_item.id}`"
     )

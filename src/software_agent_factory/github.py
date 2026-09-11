@@ -2314,31 +2314,26 @@ def build_pr_body(
     produced so far. Never merges or claims approval on the caller's
     behalf -- it only renders what it is given.
     """
-    lines: list[str] = [f"## {work_item.title}", "", work_item.description.strip(), ""]
-
-    if work_item.acceptance_criteria:
-        lines.append("### Acceptance criteria")
-        lines.extend(f"- {item}" for item in work_item.acceptance_criteria)
-        lines.append("")
+    lines: list[str] = ["## Summary", ""]
 
     if specification is not None:
-        lines.append("### Specification")
         lines.append(specification.problem.strip())
         if specification.acceptance_criteria:
             lines.append("")
-            lines.append("Acceptance criteria:")
+            lines.append("## Acceptance criteria")
             lines.extend(f"- {item}" for item in specification.acceptance_criteria)
+        lines.append("")
+    else:
+        lines.append(f"Complete work item `{work_item.id}`.")
         lines.append("")
 
     if plan is not None:
-        lines.append("### Plan")
-        lines.append(plan.summary.strip())
+        lines.append("## Plan")
         if plan.steps:
-            lines.append("")
             lines.extend(f"- {step.goal}" for step in plan.steps)
         lines.append("")
 
-    lines.append("### Changed files")
+    lines.append("## Changed files")
     if changed_files:
         lines.extend(f"- `{changed_file}`" for changed_file in changed_files)
     else:
@@ -2346,7 +2341,7 @@ def build_pr_body(
     lines.append("")
 
     if verification is not None:
-        lines.append("### Deterministic verification")
+        lines.append("## Verification")
         lines.append(f"Passed: {verification.passed}")
         if verification.failures:
             lines.extend(f"- {failure}" for failure in verification.failures)
@@ -2359,12 +2354,12 @@ def build_pr_body(
             )
         if verification.test_findings:
             lines.append("")
-            lines.append("AI tester findings:")
+            lines.append("Tester findings:")
             lines.extend(f"- {finding}" for finding in verification.test_findings)
         lines.append("")
 
     if test_report is not None:
-        lines.append("### Independent tester")
+        lines.append("## Independent tester")
         lines.append(f"Passed: {test_report.passed}")
         if test_report.findings:
             lines.extend(f"- {finding}" for finding in test_report.findings)
@@ -2375,18 +2370,16 @@ def build_pr_body(
         lines.append("")
 
     if review is not None:
-        lines.append("### Reviewer result")
+        lines.append("## Review")
         lines.append(f"Approved: {review.approved}")
         if review.findings:
             lines.extend(f"- {finding}" for finding in review.findings)
         lines.append("")
 
     if review_acceptance is not None:
-        lines.append("### Accepted with findings")
-        lines.append(
-            "The controller continued under the bounded review policy; this is not "
-            "Reviewer approval."
-        )
+        lines.append("## Accepted findings")
+        lines.append("The controller accepted these findings under the bounded review policy.")
+        lines.append("The Reviewer did not approve this result.")
         lines.append(f"Reviewed tree: `{review_acceptance.reviewed_tree_sha}`")
         lines.append(f"Review rounds: {review_acceptance.review_rounds}")
         lines.extend(
@@ -2395,7 +2388,7 @@ def build_pr_body(
         )
         lines.append("")
 
-    lines.append("### Run")
+    lines.append("## Run")
     lines.append(f"Run ID: `{run_id}`")
 
     return "\n".join(lines).strip() + "\n"

@@ -36,7 +36,12 @@ from pathlib import Path
 from typing import Callable, TypeVar
 from uuid import uuid4
 
-from .agents import AgentRequest, AgentRuntime, runtime_exception_failure_reason
+from .agents import (
+    AgentRequest,
+    AgentRuntime,
+    is_writing_policy_failure,
+    runtime_exception_failure_reason,
+)
 from .config import FactoryConfig
 from .delivery import DeliveryTarget, fetch_delivery_target
 from .github import (
@@ -75,6 +80,11 @@ from .workflow import (
     is_run_finished,
 )
 from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
+from .writing_policy import (
+    apply_agent_result_writing_policy,
+    require_publication_text,
+    writing_policy_correction_context,
+)
 
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
@@ -642,7 +652,10 @@ class ProjectRunner:
             )
             started_at = utc_now()
             try:
-                result = self._runtime.run(request)
+                result = apply_agent_result_writing_policy(
+                    self._runtime.run(request),
+                    request.purpose,
+                )
             except (OSError, RuntimeError, ValueError) as exc:
                 completed_at = utc_now()
                 execution.invocation_records.append(
@@ -683,6 +696,8 @@ class ProjectRunner:
             if result.success and result.project_plan is not None:
                 return result.project_plan.model_copy(update={"project_id": brief.id})
             rejection = result.failure_reason or "project planner failed to produce a ProjectPlan"
+            if is_writing_policy_failure(result, ProjectPlan) and result.project_plan is not None:
+                rejection = writing_policy_correction_context(rejection, result.project_plan)
         raise ProjectError(rejection or "project planner failed to produce a ProjectPlan")
 
     def _publish_issues(
@@ -693,10 +708,20 @@ class ProjectRunner:
         source_repo: Path,
         repository: str,
     ) -> ProjectExecution:
+        placeholder_urls = {
+            task.id: f"https://github.invalid/issues/{task.id}" for task in plan.tasks
+        }
+        for task in plan.tasks:
+            body = self._issue_body(brief, task, placeholder_urls)
+            require_publication_text("issue title", task.title, max_words=15)
+            require_publication_text("issue body", body, max_words=500)
+
         issue_urls: dict[int, str] = {}
         records = list(execution.tasks)
         for task in plan.tasks:
             body = self._issue_body(brief, task, issue_urls)
+            require_publication_text("issue title", task.title, max_words=15)
+            require_publication_text("issue body", body, max_words=500)
             issue_url = self._github.create_issue(
                 source_repo,
                 repository=repository,
@@ -1248,36 +1273,15 @@ class ProjectRunner:
     ) -> WorkItem:
         # Project-wide constraints are applied deterministically rather than
         # trusting the planner to copy them into every task.
-        predecessors = "; ".join(
-            f"task {candidate.id}: {candidate.title}"
+        predecessor_context = tuple(
+            f"Reuse integrated project task {candidate.id}: {candidate.title}."
             for candidate in project_tasks
             if candidate.id in task.dependencies
         )
-        sibling_boundaries = "; ".join(
-            f"task {candidate.id}: {candidate.title}"
+        future_boundaries = tuple(
+            f"Do not implement project task {candidate.id}: {candidate.title}."
             for candidate in project_tasks
             if candidate.id != task.id and candidate.id not in task.dependencies
-        )
-        predecessor_context = (
-            (
-                (
-                    "Integrated project predecessors are already available in this branch and may "
-                    f"be reused or extended where this task requires it: {predecessors}"
-                ),
-            )
-            if predecessors
-            else ()
-        )
-        future_boundaries = (
-            (
-                (
-                    "Project task boundary: implement only this task. These outcomes are assigned "
-                    f"to separate project tasks and must not be implemented here: "
-                    f"{sibling_boundaries}"
-                ),
-            )
-            if sibling_boundaries
-            else ()
         )
         constraints = list(
             dict.fromkeys(
@@ -1294,10 +1298,7 @@ class ProjectRunner:
             external_id=issue_url,
             source="MANUAL",
             title=task.title,
-            description=(
-                f"Project context: {brief.title}\n\n{brief.description}\n\n"
-                f"Current task: {task.description}"
-            ),
+            description=task.description,
             acceptance_criteria=list(task.acceptance_criteria),
             constraints=constraints,
             labels=list(task.labels),
@@ -1320,9 +1321,9 @@ class ProjectRunner:
             if task.dependencies
             else "- None"
         )
-        suggested_labels = "\n".join(f"- {label}" for label in task.labels) or "- None"
+        suggested_labels = "\n".join(f"- `{label}`" for label in task.labels) or "- None"
         return (
-            f"Project: {brief.title}\n\n"
+            f"Project ID: `{brief.id}`\n\n"
             f"{task.description}\n\n"
             f"## Acceptance criteria\n{criteria}\n\n"
             f"## Constraints\n{constraints}\n\n"
@@ -1368,7 +1369,9 @@ class ProjectRunner:
 
     @staticmethod
     def _child_commit_message(task: ProjectTask) -> str:
-        return f"Implement project task {task.id}: {task.title}"
+        message = f"Implement project task {task.id}: {task.title}"
+        require_publication_text("commit message", message, max_words=20)
+        return message
 
     @staticmethod
     def _cherry_pick(integration_path: Path, commit_sha: str) -> str | None:

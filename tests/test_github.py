@@ -711,10 +711,11 @@ def test_build_pr_body_includes_all_supplied_sections() -> None:
         run_id="RUN-1",
     )
 
-    assert "Reject empty customer names" in body
-    assert "Return HTTP 400" in body
+    assert "## Summary" in body
+    assert "Return HTTP 400" not in body
     assert "Names should not be empty." in body
-    assert "Add validation to the customer creation endpoint." in body
+    assert "Add input validation" in body
+    assert "Add validation to the customer creation endpoint." not in body
     assert "`src/app.py`" in body
     assert "`tests/test_app.py`" in body
     assert "Passed: True" in body
@@ -773,8 +774,8 @@ def test_build_pr_body_discloses_controller_accepted_findings() -> None:
         run_id="RUN-accepted",
     )
 
-    assert "### Accepted with findings" in body
-    assert "this is not Reviewer approval" in body
+    assert "## Accepted findings" in body
+    assert "The Reviewer did not approve this result." in body
     assert "review-correctness-1234" in body
     assert "`" + ("a" * 40) + "`" in body
 

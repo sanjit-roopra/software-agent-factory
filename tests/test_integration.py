@@ -715,15 +715,16 @@ def test_pr_body_contains_every_required_section(source_repo: Path, data_dir: Pa
 
     assert run.state is WorkflowState.DONE
     body = runner.pr_bodies[0]
-    assert "Reject empty customer names" in body
+    assert "Reject empty customer names" not in body
+    assert "Return HTTP 400 for empty or whitespace-only names." in body
     assert "Empty names are rejected with HTTP 400" in body
-    assert "### Specification" in body
-    assert "### Plan" in body
+    assert "## Acceptance criteria" in body
+    assert "## Plan" in body
     assert "`FACTORY_NOTES.md`" in body
-    assert "### Deterministic verification" in body
+    assert "## Verification" in body
     assert "echo checking" in body
-    assert "### Independent tester" in body
-    assert "### Reviewer result" in body
+    assert "## Independent tester" in body
+    assert "## Review" in body
     assert run.id in body
 
 

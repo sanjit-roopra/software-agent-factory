@@ -9,7 +9,7 @@ description = "Local-first autonomous software engineering factory foundations."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE.md"]
 authors = [
   { name = "Software Agent Factory contributors" },
 ]
@@ -91,6 +91,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 software_agent_factory = [
+  "_vendor/simple_english/LICENSE",
+  "_vendor/simple_english/slop.tsv",
   "build-info.json",
   "default_config.yaml",
 ]

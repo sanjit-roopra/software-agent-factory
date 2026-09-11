@@ -186,7 +186,21 @@ def is_retryable_typed_artifact_failure(
             f"did not validate as {artifact_name}",
             f"did not contain a parseable JSON object for {artifact_name}",
             f"did not contain a valid {artifact_name}",
+            f"{artifact_name} did not satisfy writing policy",
         )
+    )
+
+
+def is_writing_policy_failure(
+    result: AgentResult,
+    artifact_type: type[ModelBase],
+) -> bool:
+    """Return whether the result failed the writing policy for this artifact."""
+
+    return (
+        not result.success
+        and result.failure_reason is not None
+        and f"{artifact_type.__name__} did not satisfy writing policy" in result.failure_reason
     )
 
 

@@ -1,5 +1,32 @@
 # Architecture Decisions
 
+## ADR-023: Enforce concise controlled writing
+
+All factory-authored prose uses one controller-owned writing policy. This
+includes agent artifacts, agent prompts, generated issues, pull requests and
+commit messages.
+
+The factory includes a reviewed subset of the SimpleEnglish v2.0.2 linter at
+revision `61ee200efbd423050aab982eed94226229891ae0`. The MIT license and source
+notice ship with every package. The factory uses only local deterministic
+checks. It does not run upstream plugins, hooks or benchmark tools.
+
+The policy checks sentence length, field word limits, filler terms, semicolons,
+em dashes and Latin abbreviations. It does not ban uncertainty words such as
+`may` or `might`. Review and research must keep calibrated uncertainty.
+
+The controller rejects invalid model prose and gives one bounded correction
+prompt. It never silently rewrites an artifact. Publication text fails before
+Git or GitHub mutation.
+
+Human input, code, identifiers, paths, commands, URLs, quoted errors and raw
+command output remain exact. Generated pull request text uses the refined
+specification instead of repeating the original work item description.
+
+These checks apply ASD-STE100 principles. They cannot validate the full
+standard or its controlled dictionary, so the factory does not claim formal
+compliance.
+
 ## ADR-022: Opt-in autonomous project delivery
 
 The explicitly requested delivery boundary is reviewed, CI-green code merged
