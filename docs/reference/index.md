@@ -10,4 +10,4 @@
 : Current Copilot model prices, context and reasoning capabilities, benchmark evidence and role-specific selection guidance.
 
 [Safety and trust boundaries](safety.md)
-: What the factory may do, what agents may do, and what nothing may do.
+: What the factory can do, what agents can do, and what nothing can do.

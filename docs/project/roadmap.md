@@ -6,7 +6,7 @@ which is the authoritative record. This page summarizes it.
 
 Phases 0–14 and Phases 16–17 are implemented and integrated. Five Phase 15
 sub-phases were explicitly requested and are implemented. Every other Phase 15
-item, including staging and deployment, is deferred.
+item is deferred. Staging and deployment remain deferred.
 
 ## Phases
 
@@ -62,35 +62,33 @@ item, including staging and deployment, is deferred.
   Premium-request units remain separate.
 - **Trackers.** GitHub Issues is the only backlog provider.
 - **Projects.** Project plans are flat DAGs capped at 12 tasks. Local mode
-  composes an integration branch; opt-in merge mode delivers task PRs serially
+  composes an integration branch. Opt-in merge mode delivers task PRs serially
   to the target. Optional GitHub issues are not labelled for daemon dispatch.
 - **Delivery recovery.** Explicit project resume reuses persisted delivery
-  checkpoints; ambiguous interrupted implementation still requires a human.
+  checkpoints. Ambiguous interrupted implementation still requires a human.
   Merge queues, automatic conflict resolution and branch-protection bypass
   are not implemented.
 - **Concurrency.** `scheduler.max_concurrent_tasks` is validated to `1` or `2`.
-- **Capabilities.** Repository guidance is generated per repository and
-  dependency fingerprint by the configured Researcher, with web access limited
-  to `polish.official_documentation_origins` and
-  `polish.practice_reference_urls`, then reused by later runs from
-  repository-scoped storage under `factory.data_dir`. Generation is not
-  serialized across processes: two concurrent first runs for the same
-  fingerprint may each spend an initial call plus one bounded retry before
-  atomic no-clobber publication picks the single winner both then revalidate.
-  Invalid output carries its bounded rejection reason into that retry. The
-  storage key is the local Git common
-  directory, so a moved or re-cloned repository starts again at a new key.
-  Human customization is a separate `repository-skill-overlay.yaml` the
-  factory never edits. There is no fixed built-in catalog and no
-  repository-provided skill/plugin system, and guidance that cannot be
-  generated or verified is skipped rather than failing the run.
+- **Capabilities.** The Researcher generates repository guidance per
+  repository and dependency fingerprint. Web access is limited to
+  `polish.official_documentation_origins` and `polish.practice_reference_urls`.
+  Later runs reuse guidance from repository storage under `factory.data_dir`.
+  Generation is not serialized across processes. Two concurrent first runs for
+  the same fingerprint can each make an initial call and one bounded retry.
+  Atomic no-clobber publication selects the single winner that both runs
+  revalidate. Invalid output carries its bounded rejection reason into that
+  retry. The storage key is the local Git common directory. A moved or
+  re-cloned repository starts again at a new key. Human customization is a
+  separate `repository-skill-overlay.yaml` that the factory never edits.
+  There is no fixed built-in catalog and no repository plugin system. Guidance
+  that cannot be generated or verified is skipped rather than failing the run.
 - **Two release behaviours can only be proven in CI.** Publishing a real `v*`
   tag, and the native Intel (`macos-15-intel`) build. Both are implemented and
-  statically tested; the first real tag exercises them end to end.
+  statically tested. The first real tag exercises them end to end.
 
 ## Deliberately not planned
 
-Deferred means "not now". These are stronger than deferred — they are design
+Deferred means "not now". These items are stronger than deferred: they are design
 constraints for V1:
 
 - unrestricted autonomous merge (the bounded opt-in exception is ADR-022)
@@ -110,9 +108,9 @@ on web UIs. Its bounds are recorded in
 ## How scope changes
 
 The rule in
-[`AGENTS.md`](https://github.com/sanjit-roopra/software-agent-factory/blob/main/AGENTS.md):
-if implementation reveals the architecture should change, stop, describe the
-problem, propose the smallest correction, update the architecture
-documentation, and only then implement. Silent redesign is not allowed.
+[`AGENTS.md`](https://github.com/sanjit-roopra/software-agent-factory/blob/main/AGENTS.md)
+is strict. If implementation reveals that architecture must change, stop and
+describe the problem. Propose the smallest correction, update the architecture
+documentation, and then implement. Silent redesign is not allowed.
 
 New decisions are recorded as ADRs in [Decisions](../decisions.md).

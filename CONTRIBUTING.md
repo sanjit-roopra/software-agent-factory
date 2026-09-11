@@ -31,8 +31,9 @@ Run the checks:
 ```bash
 uv run --no-sync ruff format --check .
 uv run --no-sync ruff check .
-uv run --no-sync mypy src/software_agent_factory scripts/release
+uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
 uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
+uv run --no-sync python scripts/docs/check_simple_english.py
 uv run --no-sync mkdocs build --strict
 ```
 
@@ -41,6 +42,7 @@ uv run --no-sync mkdocs build --strict
 - Follow the existing architecture and naming.
 - Add tests for behavior changes.
 - Update the docs when commands, configuration, or behavior change.
+- Use the pinned SimpleEnglish skill for changes to `README.md` or `docs/`.
 - Keep integrations disabled by default.
 - Keep retries and external calls bounded.
 - Never let an agent change workflow state directly.

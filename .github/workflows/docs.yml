@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/docs.yml"
+      - "README.md"
       - "docs/**"
       - "mkdocs.yml"
       - "pyproject.toml"
@@ -53,6 +54,7 @@ jobs:
         run: |
           uv sync --locked --no-default-groups --group docs
           uv run --no-sync mkdocs build --strict
+          uv run --no-sync python scripts/docs/check_simple_english.py
           uv run --no-sync python scripts/docs/check_rendered_links.py site
 
       - name: Configure GitHub Pages

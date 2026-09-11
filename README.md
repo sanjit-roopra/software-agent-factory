@@ -12,8 +12,8 @@ Git worktrees, commands and state stay on your machine. GitHub Copilot runs the
 real agents. GitHub automation stays separate and opt-in.
 
 LLMs provide intelligence. Deterministic code provides authority. Agents return
-short typed artifacts. They do not control state, budgets, routing, gates or
-merging.
+short typed artifacts. They do not control state, budgets, model routes, gates,
+or merges.
 
 All factory-authored prose uses a mandatory controlled writing policy. It uses
 selected checks from [SimpleEnglish](https://github.com/AminBlg/SimpleEnglish)
@@ -23,11 +23,11 @@ and follows ASD-STE100 principles. The checks do not prove formal compliance.
 
 ## Safety defaults
 
-Nothing costs money or touches the network unless you turn it on.
+Nothing costs money or touches the network unless you enable it.
 
 | Default | Value |
 | --- | --- |
-| Agent runtime | `fake` — deterministic, offline, free |
+| Agent runtime | `fake` (deterministic, offline, free) |
 | `pull_request.enabled` | `false` |
 | `ci.enabled` | `false` |
 | `merge.enabled` | `false` |
@@ -35,12 +35,12 @@ Nothing costs money or touches the network unless you turn it on.
 | Dashboard | not running |
 | launchd service | not installed |
 
-The factory never force-pushes or deploys. Automatic merging is explicitly
-opt-in: reviewed PRs in allowlisted repositories must pass the configured
-required checks, and branch protection is never bypassed. Projects can deliver
-task PRs through bounded CI repair to the target branch; see
-[autonomous project delivery](docs/guides/projects.md#autonomous-delivery).
-Every retry is bounded. The test suite runs entirely offline.
+The factory never force-pushes or deploys. Automatic merging is opt-in.
+Reviewed pull requests in allowlisted repositories must pass required checks.
+The factory never bypasses branch protection. Projects can deliver task
+pull requests to the target branch through bounded CI repair.
+Read [autonomous project delivery](docs/guides/projects.md#autonomous-delivery).
+Every retry is bounded. The test suite runs offline.
 
 ## Install
 
@@ -55,13 +55,13 @@ uv run factory --version
 
 Released macOS archives and wheels are on the
 [releases page](https://github.com/sanjit-roopra/software-agent-factory/releases).
-Verify `SHA256SUMS` before extracting, and clear the macOS Gatekeeper quarantine
-flag — archives are unsigned. See
-[Install](https://sanjit-roopra.github.io/software-agent-factory/get-started/install/).
+Make sure that `SHA256SUMS` matches before you extract an archive.
+Clear the macOS Gatekeeper quarantine flag because archives are unsigned.
+Read [Install](https://sanjit-roopra.github.io/software-agent-factory/get-started/install/).
 
 ## Five minutes
 
-Run one work item through the whole pipeline. This makes no network calls and
+Run one work item through the pipeline. This makes no network calls and
 costs nothing.
 
 ```bash
@@ -82,8 +82,9 @@ changed files: FACTORY_NOTES.md
 ```
 
 The run moved through `CREATED → TRIAGING → REFINING → [RESEARCHING] → PLANNING
-→ IMPLEMENTING → VERIFYING → REVIEWING → PR_READY`, in an isolated Git worktree,
-persisting a typed artifact per stage.
+→ IMPLEMENTING → VERIFYING → REVIEWING → PR_READY`.
+The run used an isolated Git worktree.
+Each stage persisted a typed artifact.
 
 Inspect it:
 
@@ -93,10 +94,10 @@ uv run factory show   RUN_ID --data-dir ./.factory-demo
 uv run factory status --data-dir ./.factory-demo
 ```
 
-Add `--runtime copilot` for real agents. That costs money and is never the
-default.
+Add `--runtime copilot` for real agents.
+That option costs money and is not the default.
 
-Full walkthrough:
+Read the full walkthrough:
 [First offline run](https://sanjit-roopra.github.io/software-agent-factory/get-started/first-run/).
 
 For a broader product or feature description, let the factory derive and
@@ -112,10 +113,10 @@ uv run factory project \
 ```
 
 The project planner uses one work item unless a real boundary requires more.
-The factory stores the plan, runs ready tasks and combines their commits. It
-then runs repository verification on the combined branch. Use
-`--github-repo OWNER/NAME` to create one issue for each task. The factory does
-not add the `agent-ready` label.
+The factory stores the plan, runs ready tasks, and combines their commits.
+Then the factory runs repository verification on the combined branch.
+Use `--github-repo OWNER/NAME` to create one issue for each task.
+The factory does not add the `agent-ready` label.
 
 ## Commands
 
@@ -136,17 +137,17 @@ See the
 
 ## Platform and status
 
-Early, and supervised use only. It works end to end, and CI, packaging and the
-release process are real.
+Use with supervision only.
+The system works end to end. Packaging, CI, and the release process are real.
 
-- **Packaged builds:** macOS, native arm64 and native x86_64. No `universal2`.
-- **Supported platform:** macOS with Python 3.13+. Other platforms are not
+- Packaged builds: macOS, native arm64 and native x86_64. No `universal2`.
+- Supported platform: macOS with Python 3.13+. Other platforms are not
   tested or supported.
-- **External tools:** `git` always; `gh` only for the GitHub integrations;
-  `copilot` only for `--runtime copilot`.
-- **Implemented:** phases 0–14, plus 15.0, 15.1, 15.2, 15.5, 15.11, 16 and 17.
-- **Deferred:** staging, deployment, Docker and Kubernetes sandboxes, remote
-  workers, Postgres, Temporal, non-GitHub trackers.
+- External tools: `git` is always required. `gh` is required only for GitHub
+  integrations. `copilot` is required only for `--runtime copilot`.
+- Implemented: phases 0 to 14, plus 15.0, 15.1, 15.2, 15.5, 15.11, 16, and 17.
+- Deferred: staging, deployment, Docker and Kubernetes sandboxes, remote
+  workers, Postgres, Temporal, and non-GitHub trackers.
 
 See the
 [roadmap](https://sanjit-roopra.github.io/software-agent-factory/project/roadmap/).
@@ -161,7 +162,7 @@ See the
 - [Architecture](docs/architecture.md) ·
   [Symphony alignment](docs/symphony-alignment.md) ·
   [Decisions](docs/decisions.md)
-- [`AGENTS.md`](AGENTS.md) and [`PLAN.md`](PLAN.md) — the rules for changing this
+- [`AGENTS.md`](AGENTS.md) and [`PLAN.md`](PLAN.md): rules for changing this
   repository, and the phased implementation plan.
 
 ## Contributing
@@ -171,8 +172,9 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). Local checks:
 ```bash
 uv run --no-sync ruff format --check .
 uv run --no-sync ruff check .
-uv run --no-sync mypy src/software_agent_factory scripts/release
+uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
 uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
+uv run --no-sync python scripts/docs/check_simple_english.py
 uv run --no-sync mkdocs build --strict
 ```
 

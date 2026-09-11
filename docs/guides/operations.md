@@ -9,7 +9,7 @@ factory status --json --limit 50 --offset 50
 
 `status` recomputes everything from persisted artifacts on each call. There is
 no counter store and no time-series database. It creates, mutates and repairs
-nothing — it will not even create the data directory.
+nothing. It will not even create the data directory.
 
 ```text
 data dir: ~/.software-factory
@@ -30,8 +30,8 @@ status: complete
 ```
 
 The health section reports findings, not repairs. A stale lock, an orphaned
-worktree or an abandoned run is something for you to act on; the factory will
-not silently clean it up.
+worktree, or an abandoned run requires your action. The factory will not
+silently clean it up.
 
 Two bounds worth knowing:
 
@@ -55,16 +55,18 @@ The file is rotated and size-bounded. Credentials are redacted with the same
 rules applied to captured command output. Nothing is exported anywhere: no
 telemetry backend, no exporter, no network egress.
 
-Every agent invocation is recorded with run id, role, model, reasoning level,
-context tier, timings, attempt number and result. The Copilot runtime also
-persists token, timing, nano-AIU and premium-request-cost fields when its
-usage-output file reports them. When nano-AIU is available, the dashboard
-shows its USD-equivalent AI usage value using GitHub's conversion of 1 AI
-credit to $0.01. This is not necessarily the invoice charge because included
-or pooled credits may cover the usage. In-progress invocations are persisted
-before Copilot starts and shown separately with lease-derived liveness, so a
-failed prior attempt cannot hide a currently running retry. Missing fields
-remain unknown.
+The log records each agent invocation with run id, role, model, and
+reasoning level. It also records context tier, duration, attempt number,
+and result. The Copilot runtime persists reported token counts, elapsed time,
+nano-AIU, and premium-request cost.
+When nano-AIU is available, the dashboard shows its USD-equivalent AI usage value.
+It uses the GitHub conversion of one AI credit to $0.01.
+This value is not necessarily the invoice charge.
+Included or pooled credits can cover the usage.
+The factory persists in-progress invocations before Copilot starts.
+It shows them separately with lease-derived liveness.
+Thus, a failed prior attempt cannot hide a current retry.
+Missing fields remain unknown.
 
 ## Read-only dashboard
 
@@ -84,9 +86,8 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 
 It shows project state and task/PR/merge progress, plus the run list, run
 detail, workflow state, attempt history and derived metrics. It shows no
-command logs, no diffs, no prompts and no raw artifacts — those are where
-repository content and near-secret material would
-leak into a browser.
+command logs, diffs, prompts, or raw artifacts. Those items can leak repository
+content and private material into a browser.
 
 It cannot approve, retry, cancel or reconfigure anything. Authority stays with
 the workflow controller.
@@ -111,8 +112,8 @@ factory service uninstall
 It writes exactly one plist under `~/Library/LaunchAgents` and nothing under
 `/Library`. There is no root `LaunchDaemon`.
 
-Nothing installs a service as a side effect of extracting an archive, running
-the factory or upgrading it. It happens only because you typed this command.
+Archive extraction, factory execution, and software upgrades never install
+a service automatically. Installation occurs only when you run this command.
 
 `service install` refuses if:
 
@@ -124,10 +125,10 @@ It defaults to `--runtime fake`, so an installed-and-forgotten agent cannot
 spend money. Use `--runtime copilot` to opt in deliberately.
 
 Use `--model-profile economy` to persist the packaged lower-cost routing
-selection in the LaunchAgent's arguments.
+selection in arguments for the LaunchAgent.
 
-Use `--model-profile security` when the higher-cost Astra Tester plus Sol
-Reviewer route is appropriate for a security-sensitive backlog.
+When a security-sensitive backlog needs the higher-cost route, use
+`--model-profile security`. This route uses the Astra Tester and Sol Reviewer.
 
 Useful flags:
 
@@ -138,16 +139,16 @@ Useful flags:
   `com.github.software-agent-factory`.
 
 The installer captures a `PATH` snapshot, because launchd agents inherit a
-minimal environment and would not otherwise find `git`, `gh` or `copilot`.
+minimal environment and do not find `git`, `gh`, or `copilot` without it.
 
-launchd's own stdout and stderr go to `/dev/null`. The factory writes its own
-bounded, rotating log under the data directory instead; a launchd-captured stdio
-file is never rotated. `KeepAlive` is `Crashed`-only, so no exit code — including
-the configuration-error code `2` — can produce a restart loop.
+The stdout and stderr output of launchd goes to `/dev/null`. The factory writes
+its own bounded rotating log under the data directory. A stdio file captured
+by launchd is never rotated. `KeepAlive` is set to `Crashed` only. No exit code
+(including configuration-error code `2`) can produce a restart loop.
 
 `service uninstall` unloads the agent and removes the plist. It leaves every
-run, artifact and workspace on disk. Uninstalling stops future polling; it does
-not delete history.
+run, artifact and workspace on disk. Uninstalling stops future polling.
+It does not delete history.
 
 ## Housekeeping
 

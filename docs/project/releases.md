@@ -31,7 +31,7 @@ GitHub release immutability is enabled for new releases. Existing releases from
 `v0.3.0` onward report `immutable=true`. Older historical releases still report
 `immutable=false`, so the workflow guard remains useful defense in depth.
 
-Always verify the checksum. Immutability prevents replacement; it does not prove
+Always verify the checksum. Immutability prevents replacement. It does not prove
 that the original artifact was the one you intended to download.
 
 ## What a release contains
@@ -61,7 +61,7 @@ PyInstaller version and architecture, so an archive is traceable to the build
 that produced it.
 
 This check confirms the downloaded bytes match the published checksum. Do it
-every time, including for immutable releases.
+every time. Do this check for immutable releases as well.
 
 ## Gatekeeper
 
@@ -86,12 +86,12 @@ you ran `factory service install`.
 
 Semantic versioning. The latest published release is
 {{ factory_version }}. Pre-1.0, expect breaking changes to configuration keys
-and CLI flags in minor releases; they are called out in the changelog.
+and CLI flags in minor releases. The changelog notes these changes.
 
 The public documentation follows the current `main` branch. It reads the latest
 published version from `project.version` in `pyproject.toml` so install commands
 and artifact names stay tied to {{ factory_release_tag }}. Features listed under
-`Unreleased` in the changelog may therefore be documented before the next
+`Unreleased` in the changelog can be documented before the next
 package is published.
 
 Check what you are running:

@@ -14,9 +14,9 @@ The factory bundles no toolchain. It looks for these on `PATH`:
 | `gh` | Only when `pull_request.enabled`, `ci.enabled` or `scheduler.enabled` is true. |
 | `copilot` | Only with `--runtime copilot`. |
 
-`factory run` and `factory start` check this before doing any work. If a tool
-they actually need is missing they print one line and exit with code `2`. You
-never get a traceback.
+`factory run` and `factory start` check required tools before starting work.
+If a required tool is missing, they print one message line and exit with code `2`.
+The CLI never displays a Python traceback.
 
 `factory doctor` explains every requirement for your configuration.
 
@@ -29,8 +29,8 @@ uv sync --locked --group dev
 uv run factory --version
 ```
 
-Every command in these docs can be run as `uv run factory ...` from a source
-checkout, or as `factory ...` from an installed wheel or an extracted archive.
+You can run every command in this documentation as `uv run factory ...` from a source checkout.
+You can also run `factory ...` from an installed wheel or an extracted archive.
 
 ## Install a released macOS archive
 
@@ -39,7 +39,7 @@ is no `universal2` build), a wheel, an sdist, `SHA256SUMS` and
 `build-info.json`.
 
 ```bash
-# 1. download the archive for your architecture plus SHA256SUMS, then verify
+# 1. download the archive for your architecture and SHA256SUMS, then verify
 shasum -a 256 -c SHA256SUMS --ignore-missing
 
 # 2. extract and move it somewhere permanent
@@ -55,24 +55,23 @@ xattr -dr com.apple.quarantine ~/.local/opt/software-agent-factory
 
 !!! warning "Archives are unsigned or ad-hoc signed"
 
-    Apple Developer ID signing and notarization are deferred. macOS quarantines
-    a downloaded archive and refuses to run it until you remove the quarantine
-    attribute with the `xattr` command above. Every archive ships an
-    `INSTALL.txt` repeating these steps.
+    Remove the quarantine attribute with `xattr` before you run the binary.
+    macOS quarantines downloaded archives and refuses to run unsigned binaries.
+    Apple Developer ID signing and notarization are deferred.
+    Every archive ships an `INSTALL.txt` file repeating these steps.
 
-Do not skip step 1. GitHub immutability protects current releases from
-replacement, but the checksum still confirms that the downloaded bytes match
-the published artifact. See
-[Releases](../project/releases.md#releases-are-protected-by-workflow-and-platform-controls).
+Do not skip step 1.
+GitHub immutability protects current releases from replacement.
+The checksum confirms that the downloaded bytes match the published artifact.
+Read [Releases](../project/releases.md#releases-are-protected-by-workflow-and-platform-controls).
 
-Extracting an archive installs nothing, starts nothing and changes no system
-state. In particular it does not install a background service. See
-[Monitor and run continuously](../guides/operations.md#background-service-macos)
-if you want one.
+Extracting an archive installs nothing, starts nothing, and changes no system state.
+Specifically, it does not install a background service.
+If you want a service, read [Monitor and run continuously](../guides/operations.md#background-service-macos).
 
 ## Install the wheel
 
-With Python 3.13 already available:
+If Python 3.13 is available:
 
 ```bash
 pip install software_agent_factory-{{ factory_version }}-py3-none-any.whl
@@ -85,11 +84,11 @@ factory --version
 factory doctor
 ```
 
-`doctor` reports the platform, whether this is a frozen or source build,
-`launchctl`, `git`, whether the configuration parses, the executables behind
-your configured repository commands, and whether the data directory is
-writable. It never makes a paid model call: the only `copilot` interaction is a
-bounded `copilot --version` probe, and only with `--runtime copilot`.
+`doctor` reports the platform and build type (source or frozen).
+It checks `launchctl`, `git`, configuration syntax, configured command paths,
+and write access to the data directory.
+It never makes a paid model call.
+The only `copilot` action is a bounded `copilot --version` probe with `--runtime copilot`.
 
 ```text
 ok    platform    macOS arm64
@@ -102,7 +101,7 @@ ok    data_dir    ~/.software-factory is writable
 doctor: ok (0 error(s), 0 warning(s))
 ```
 
-It exits nonzero if any check errored. Warnings alone do not fail it.
+It exits with a nonzero code if a check fails. Warnings alone do not cause failure.
 
 ## Where state lives
 
@@ -117,9 +116,9 @@ by default:
 └── logs/         factory.log, rotated and size-bounded
 ```
 
-Change it with `factory.data_dir` in configuration, or override it per command
-with `--data-dir`. Nothing is written outside it, except the LaunchAgent plist
-if you explicitly install the service.
+Change this path with `factory.data_dir` in configuration.
+You can also override the path per command with `--data-dir`.
+The factory writes nothing outside this directory, unless you install the LaunchAgent service.
 
 ## Next
 

@@ -1,13 +1,13 @@
 # First offline run
 
-This takes about five minutes and costs nothing. The default agent runtime is
+This process takes five minutes and costs nothing. The default agent runtime is
 `fake`: a deterministic test double that returns valid artifacts without calling
-a model. The rest of the system is real — real Git worktrees, real state
-machine, real persisted artifacts.
+a model. The rest of the system is real. It uses real Git worktrees, a real state
+machine, and real persisted artifacts.
 
 ## 1. Pick a target repository
 
-Any Git repository with at least one commit works. To keep the walkthrough
+A Git repository with at least one commit works. To keep the walkthrough
 self-contained:
 
 ```bash
@@ -51,22 +51,22 @@ CREATED → prepare worktree → profile repository → TRIAGING
 
 The profile and polish reuse existing states rather than adding
 `PROFILING`/`POLISHING`. The example configuration enables one bounded polish
-pass, informed by version-aware guidance for the versions this repository
-actually declares. That guidance is stored under the data directory, keyed by
-the repository and its dependency fingerprint, and reused: the web-only
-research call happens only on the first run for a given set of dependencies.
-Polish may make no edits, but it still records an attempt and reruns
-deterministic verification. If the research or its validation fails, the
-factory records a warning on the profile and skips polish; the already-verified
+pass. It uses version-aware guidance for the versions that this repository
+declares. That guidance is stored under the data directory, keyed by
+the repository and its dependency fingerprint. The factory reuses that guidance.
+The web-only research call happens only on the first run for given dependencies.
+Polish can make no edits. It still records an attempt and runs
+deterministic verification again. If research or validation fails, the
+factory records a warning on the profile and skips polish. The verified
 run continues to review. A legacy configuration that omits `polish` defaults to
 disabled.
 
-`PR_READY` is the completed endpoint when pull requests are disabled, which they
-are in `config/factory.example.yaml`. A nonzero exit code means the run did not
-finish successfully; `NEEDS_HUMAN` and `FAILED` are the other endings.
+`PR_READY` is the terminal state when pull requests are disabled, as in
+`config/factory.example.yaml`. A nonzero exit code means that the run did not
+finish successfully. `NEEDS_HUMAN` and `FAILED` are the other terminal states.
 
 `--data-dir ./.factory-demo` keeps this experiment out of `~/.software-factory`.
-Drop it once you are past the demo.
+Drop this option once you finish the demo.
 
 ## 3. Look at what happened
 
@@ -117,19 +117,17 @@ Nothing is hidden in a database. Everything is JSON on disk.
     └── 02/               bounded polish snapshot
 ```
 
-The distinction between `change-set.json` and `patch.diff` matters: the tester
-and reviewer are given the controller-derived diff, not the implementer's own
-account of it.
+The difference between `change-set.json` and `patch.diff` is important. The tester
+and reviewer receive the diff from the controller, not the summary from the implementer.
 
-The Git worktree stays on disk too, under `workspaces/`. Workspaces are
-preserved by default so you can inspect or reuse the change.
+The Git worktree stays on disk, under `workspaces/`. The factory preserves workspaces
+by default so you can inspect or reuse the change.
 
-The reusable guidance itself lives outside the run, under
-`<data_dir>/repository-skills/v1/<repository-key>/...`, together with the
-optional `repository-skill-overlay.yaml` you may write by hand. Run
-`uv run factory skill path --repo ~/projects/example` to see the exact
-locations, and read
-[Repository skills and overlays](../guides/repository-skills.md).
+Reusable guidance lives outside the run, under
+`<data_dir>/repository-skills/v1/<repository-key>/...`. It lives alongside the
+optional `repository-skill-overlay.yaml` that you can write by hand. Run
+`uv run factory skill path --repo ~/projects/example` to display the exact
+locations. Read [Repository skills and overlays](../guides/repository-skills.md).
 
 ## 5. Check the derived metrics
 
@@ -178,7 +176,7 @@ Did not:
 ## Next
 
 - [Real Copilot runs](copilot.md) to use actual models.
-- [Configure a repository](../guides/configure-repository.md) to make
-  verification run your project's real lint, tests and build. Until you do, the
-  `install`, `verify` and `build` command lists are empty and verification has
-  nothing deterministic to check.
+- [Configure a repository](../guides/configure-repository.md) to configure
+  verification with the lint, test, and build commands for your project. Until
+  you configure commands, the `install`, `verify`, and `build` command lists
+  remain empty. Verification then has no deterministic checks to run.
