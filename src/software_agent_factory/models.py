@@ -122,6 +122,23 @@ class ReviewDispositionStatus(StrEnum):
     WITHDRAWN = "WITHDRAWN"
 
 
+class ReviewAcceptanceReason(StrEnum):
+    REVIEW_ROUND_LIMIT = "REVIEW_ROUND_LIMIT"
+    REVIEW_IMPASSE = "REVIEW_IMPASSE"
+    ATTEMPT_BUDGET_LIMIT = "ATTEMPT_BUDGET_LIMIT"
+    CARRIED_FORWARD = "CARRIED_FORWARD"
+
+
+class ReviewImpasseKind(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    TOO_MANY_FINDINGS = "TOO_MANY_FINDINGS"
+    REPEATED_PATH = "REPEATED_PATH"
+    REPEATED_FINDING = "REPEATED_FINDING"
+    REPLACEMENT_LOOP = "REPLACEMENT_LOOP"
+    ATTEMPT_BUDGET_LIMIT = "ATTEMPT_BUDGET_LIMIT"
+    REVIEW_ROUND_LIMIT = "REVIEW_ROUND_LIMIT"
+
+
 class ModelBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -710,11 +727,24 @@ class ReviewLedger(ModelBase):
         default_factory=list,
         max_length=MAX_OPEN_REVIEW_FINDINGS,
     )
+    accepted_findings: list[ReviewFinding] = Field(
+        default_factory=list,
+        max_length=MAX_OPEN_REVIEW_FINDINGS,
+    )
     last_reviewed_tree_sha: str | None = None
     late_adoption_rounds: int = Field(default=0, ge=0)
     consecutive_replacement_rounds: int = Field(default=0, ge=0)
     path_streaks: dict[str, int] = Field(default_factory=dict)
     unresolved_streaks: dict[str, int] = Field(default_factory=dict)
+
+
+class ReviewAcceptance(VersionedModel):
+    snapshot: int = Field(ge=1)
+    reason: ReviewAcceptanceReason
+    risk: Risk
+    review_rounds: int = Field(ge=1)
+    reviewed_tree_sha: str = Field(min_length=40, max_length=64)
+    findings: list[ReviewFinding] = Field(min_length=1, max_length=MAX_OPEN_REVIEW_FINDINGS)
 
 
 class FactoryRun(VersionedModel):
@@ -745,6 +775,7 @@ class FactoryRun(VersionedModel):
     base_commit_sha: str | None = None
     pending_commit_sha: str | None = None
     review_ledger: ReviewLedger = Field(default_factory=ReviewLedger)
+    review_acceptance: ReviewAcceptance | None = None
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:
@@ -966,6 +997,7 @@ class ReviewReport(VersionedModel):
 
 class ReviewImpasse(VersionedModel):
     snapshot: int = Field(ge=1)
+    kind: ReviewImpasseKind = ReviewImpasseKind.UNKNOWN
     reason: str = Field(min_length=1)
     paths: list[str] = Field(default_factory=list)
     finding_ids: list[str] = Field(default_factory=list)

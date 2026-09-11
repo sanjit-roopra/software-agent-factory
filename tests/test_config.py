@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from software_agent_factory.config import PolishConfig, load_config
-from software_agent_factory.models import ContextTier
+from software_agent_factory.models import ContextTier, ReviewFindingCategory, Risk
 
 #: The curated bdfinst references must stay pinned to this reviewed commit so
 #: the sandboxed skill researcher can never fetch mutated guidance.
@@ -251,6 +251,13 @@ def test_phase_1_config_still_loads_and_new_sections_default(tmp_path: Path) -> 
     assert config.agent_timeout_seconds == 900
     assert config.factory.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
+    assert config.review.max_rounds == 3
+    assert config.review.max_accepted_findings == 5
+    assert config.review.accepted_risks == [Risk.R0, Risk.R1]
+    assert config.review.blocked_categories == [
+        ReviewFindingCategory.SECURITY,
+        ReviewFindingCategory.SCOPE,
+    ]
     assert config.polish.enabled is False
     assert any(
         origin == "https://react.dev" for origin in config.polish.official_documentation_origins
@@ -285,6 +292,8 @@ def test_packaged_default_config_publishes_every_section() -> None:
 
     assert config.agent_timeout_seconds == 900
     assert config.scope_drift.max_replans == 1
+    assert config.review.max_rounds == 3
+    assert config.review.max_accepted_findings == 5
     assert config.polish.enabled is True
     assert any(
         origin == "https://vite.dev" for origin in config.polish.official_documentation_origins
@@ -300,6 +309,26 @@ def test_packaged_default_config_publishes_every_section() -> None:
     assert config.repository.log_capture_bytes == 32768
     assert config.repository.max_changed_files == 100
     assert config.repository.protected_file_patterns
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        {"accepted_risks": ["R2"]},
+        {"blocked_categories": ["SECURITY"]},
+        {"blocked_categories": ["SCOPE"]},
+        {"max_rounds": 0},
+        {"max_accepted_findings": 13},
+    ],
+)
+def test_review_policy_rejects_unsafe_configuration(
+    tmp_path: Path,
+    review: dict[str, object],
+) -> None:
+    config_path = _config_with(tmp_path, {"review": review})
+
+    with pytest.raises(ValidationError):
+        load_config(config_path)
 
 
 def test_ci_requires_pull_request_enabled(tmp_path: Path) -> None:
@@ -611,6 +640,7 @@ def test_both_configs_publish_the_same_structural_keys() -> None:
         "models",
         "repository",
         "scope_drift",
+        "review",
         "polish",
         "pull_request",
         "ci",

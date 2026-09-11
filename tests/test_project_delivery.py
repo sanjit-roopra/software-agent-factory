@@ -486,7 +486,7 @@ def test_remote_task_merged_without_reviewer_bound_head_stops_the_project(
     execution = runner.run(_brief(source_repo), source_repo)
 
     assert execution.state is ProjectState.NEEDS_HUMAN
-    assert "independent Reviewer approval" in (execution.failure_reason or "")
+    assert "review authorization" in (execution.failure_reason or "")
     assert execution.tasks[0].merge_commit_sha is None
 
 
@@ -1139,7 +1139,7 @@ def test_remote_task_without_a_reviewer_approved_tree_stops_the_project(
     execution = runner.run(_brief(source_repo), source_repo)
 
     assert execution.state is ProjectState.NEEDS_HUMAN
-    assert "Reviewer-approved Git tree" in (execution.failure_reason or "")
+    assert "reviewed Git tree" in (execution.failure_reason or "")
     assert execution.tasks[0].merge_commit_sha is None
 
 
@@ -1179,7 +1179,7 @@ def test_remote_task_with_a_tree_the_reviewer_never_approved_stops_the_project(
     execution = runner.run(_brief(source_repo), source_repo)
 
     assert execution.state is ProjectState.NEEDS_HUMAN
-    assert "the independent Reviewer approved" in (execution.failure_reason or "")
+    assert "review authorization was bound" in (execution.failure_reason or "")
 
 
 def test_refresh_target_refuses_an_integration_branch_ahead_of_the_target(

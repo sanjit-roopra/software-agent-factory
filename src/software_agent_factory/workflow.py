@@ -98,13 +98,17 @@ from .models import (
     RepositorySkill,
     RepositorySkillUse,
     ResearchReport,
+    ReviewAcceptance,
+    ReviewAcceptanceReason,
     ReviewDispositionStatus,
     ReviewFinding,
     ReviewFindingDraft,
     ReviewFindingOrigin,
     ReviewImpasse,
+    ReviewImpasseKind,
     ReviewReport,
     ReviewSourceLocation,
+    Risk,
     RunLease,
     SkillSelectionSource,
     Specification,
@@ -711,15 +715,19 @@ class WorkflowController:
         if context.latest_evidence.diff != self._store.load_patch(run.id):
             raise ValueError("workspace changes do not match the reviewed delivery checkpoint")
         if not run.reviewed_tree_sha or context.latest_evidence.tree_sha != run.reviewed_tree_sha:
-            raise ValueError("workspace tree does not match the independent Reviewer's approval")
+            raise ValueError("workspace tree does not match the reviewed delivery checkpoint")
         if run.base_commit_sha != workspace.base_commit:
             raise ValueError("workspace base does not match the recorded delivery base")
         context.latest_verification = self._store.load_artifact(run.id, VerificationReport)
         context.latest_test_report = self._store.load_artifact(run.id, TestReport)
         context.latest_review = self._store.load_artifact(run.id, ReviewReport)
-        if not context.latest_verification.passed or not context.latest_review.approved:
+        if not context.latest_verification.passed or not self._review_authorizes_delivery(
+            run,
+            context.latest_review,
+            context.triage_result.risk,
+        ):
             raise ValueError(
-                "delivery checkpoint has not passed verification and independent review"
+                "delivery checkpoint has not passed verification and bounded review policy"
             )
         context.polish_attempted = any(
             attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records
@@ -1279,6 +1287,7 @@ class WorkflowController:
             verification_report=verification_report,
             test_report=test_report,
             prior_review_findings=prior_findings,
+            accepted_review_findings=list(run.review_ledger.accepted_findings),
             repair_diff=repair_diff,
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
@@ -1400,6 +1409,7 @@ class WorkflowController:
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
         prior_review_findings: list[ReviewFinding] | None = None,
+        accepted_review_findings: list[ReviewFinding] | None = None,
         repair_diff: str | None = None,
         repair_context: RepairContext | str | None = None,
         repository_profile: RepositoryProfile | None = None,
@@ -1427,6 +1437,7 @@ class WorkflowController:
             verification_report=verification_report,
             test_report=test_report,
             prior_review_findings=prior_review_findings or [],
+            accepted_review_findings=accepted_review_findings or [],
             repair_diff=repair_diff,
             repair_context=repair_context,
             repository_profile=repository_profile,
@@ -1593,6 +1604,9 @@ class WorkflowController:
             trigger = (
                 repair_context.trigger if repair_context is not None else AttemptTrigger.INITIAL
             )
+            if run.review_acceptance is not None:
+                run = run.model_copy(update={"review_acceptance": None, "updated_at": utc_now()})
+                self._store.save_run(run)
             run, implemented, evidence = self._invoke_implementer(
                 run,
                 attempt_number,
@@ -1738,6 +1752,65 @@ class WorkflowController:
             )
             self._store.save_artifact(run.id, review_report, attempt=snapshot)
 
+            review_rounds = self._review_rounds_used(run, budget)
+            acceptance_reason: ReviewAcceptanceReason | None = None
+            if impasse is not None and impasse.kind in {
+                ReviewImpasseKind.REPEATED_PATH,
+                ReviewImpasseKind.REPEATED_FINDING,
+            }:
+                acceptance_reason = ReviewAcceptanceReason.REVIEW_IMPASSE
+            elif (
+                impasse is None
+                and run.review_ledger.open_findings
+                and review_rounds >= self._config.review.max_rounds
+            ):
+                acceptance_reason = ReviewAcceptanceReason.REVIEW_ROUND_LIMIT
+
+            attempts_limit = (
+                self._config.ci.repair_attempts
+                if budget is AttemptBudget.CI_REPAIR
+                else self._config.retries.max_total_attempts
+            )
+            if (
+                acceptance_reason is None
+                and impasse is None
+                and run.review_ledger.open_findings
+                and self._attempts_used(run, budget) >= attempts_limit
+            ):
+                acceptance_reason = ReviewAcceptanceReason.ATTEMPT_BUDGET_LIMIT
+
+            if acceptance_reason is not None:
+                acceptance = self._accept_review_findings(
+                    run,
+                    context,
+                    verification.report,
+                    review_report,
+                    snapshot,
+                    evidence.tree_sha,
+                    review_rounds,
+                    acceptance_reason,
+                )
+                if acceptance is not None:
+                    run = self._persist_review_acceptance(run, acceptance)
+                    context.latest_evidence = evidence
+                    context.latest_verification = verification.report
+                    context.latest_test_report = test_report
+                    context.latest_review = review_report
+                    return self.transition(run, WorkflowState.PR_READY)
+                if impasse is None:
+                    impasse_kind = (
+                        ReviewImpasseKind.ATTEMPT_BUDGET_LIMIT
+                        if acceptance_reason is ReviewAcceptanceReason.ATTEMPT_BUDGET_LIMIT
+                        else ReviewImpasseKind.REVIEW_ROUND_LIMIT
+                    )
+                    impasse = self._review_impasse(
+                        run,
+                        snapshot,
+                        "review reached its configured limit and the remaining findings "
+                        "are not eligible for automatic acceptance",
+                        kind=impasse_kind,
+                    )
+
             if impasse is not None:
                 self._store.save_artifact(run.id, impasse, attempt=snapshot)
                 raise self._halt(
@@ -1747,23 +1820,6 @@ class WorkflowController:
                 )
 
             if run.review_ledger.open_findings:
-                attempts_limit = (
-                    self._config.ci.repair_attempts
-                    if budget is AttemptBudget.CI_REPAIR
-                    else self._config.retries.max_total_attempts
-                )
-                if self._attempts_used(run, budget) >= attempts_limit:
-                    impasse = self._review_impasse(
-                        run,
-                        snapshot,
-                        "review blockers remain at the implementation repair budget limit",
-                    )
-                    self._store.save_artifact(run.id, impasse, attempt=snapshot)
-                    raise self._halt(
-                        run,
-                        WorkflowState.NEEDS_HUMAN,
-                        impasse.reason,
-                    )
                 repair_context = self._review_repair_context(
                     run.review_ledger.open_findings,
                     test_report,
@@ -1784,6 +1840,18 @@ class WorkflowController:
             run = run.model_copy(
                 update={
                     "reviewed_tree_sha": evidence.tree_sha,
+                    "review_acceptance": (
+                        ReviewAcceptance(
+                            snapshot=snapshot,
+                            reason=ReviewAcceptanceReason.CARRIED_FORWARD,
+                            risk=context.triage_result.risk,
+                            review_rounds=review_rounds,
+                            reviewed_tree_sha=evidence.tree_sha,
+                            findings=run.review_ledger.accepted_findings,
+                        )
+                        if run.review_ledger.accepted_findings
+                        else None
+                    ),
                     "review_ledger": run.review_ledger.model_copy(
                         update={
                             "open_findings": [],
@@ -1796,6 +1864,12 @@ class WorkflowController:
                 }
             )
             self._store.save_run(run)
+            if run.review_acceptance is not None:
+                self._store.save_artifact(
+                    run.id,
+                    run.review_acceptance,
+                    attempt=snapshot,
+                )
             return self.transition(run, WorkflowState.PR_READY)
 
     def _prepare_polish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
@@ -2243,8 +2317,14 @@ class WorkflowController:
         ledger = run.review_ledger
         prior = list(ledger.open_findings)
         if not prior:
+            accepted = list(ledger.accepted_findings)
+            new_drafts = [
+                draft
+                for draft in review.blocking_findings
+                if not any(_review_draft_matches_finding(draft, finding) for finding in accepted)
+            ]
             open_findings = self._mint_review_findings(
-                review.blocking_findings,
+                new_drafts,
                 ReviewFindingOrigin.INITIAL,
                 snapshot,
             )
@@ -2294,6 +2374,11 @@ class WorkflowController:
             )
             regressions.extend(self._mint_review_findings([draft], origin, snapshot))
 
+        safety_late_drafts = [
+            draft
+            for draft in latent_drafts
+            if draft.category in self._config.review.blocked_categories
+        ]
         adopt_late = bool(latent_drafts) and (
             ledger.late_adoption_rounds < MAX_LATE_REVIEW_ADOPTION_ROUNDS
         )
@@ -2304,7 +2389,11 @@ class WorkflowController:
                 snapshot,
             )
             if adopt_late
-            else []
+            else self._mint_review_findings(
+                safety_late_drafts,
+                ReviewFindingOrigin.LATE_ADOPTED,
+                snapshot,
+            )
         )
         unresolved = [finding for finding in prior if finding.id in unresolved_ids]
         current = _deduplicate_review_findings([*unresolved, *regressions, *adopted_late])
@@ -2336,11 +2425,12 @@ class WorkflowController:
             }
         )
         suggestions = list(review.suggested_changes)
-        if latent_drafts and not adopt_late:
+        advisory_late_drafts = [draft for draft in latent_drafts if draft not in safety_late_drafts]
+        if advisory_late_drafts and not adopt_late:
             suggestions.extend(
                 f"Late review finding left advisory after the bounded adoption round: "
                 f"{draft.message}"
-                for draft in latent_drafts
+                for draft in advisory_late_drafts
             )
         effective = review.model_copy(
             update={
@@ -2359,6 +2449,7 @@ class WorkflowController:
                     run,
                     snapshot,
                     f"more than {MAX_OPEN_REVIEW_FINDINGS} blockers remained open",
+                    kind=ReviewImpasseKind.TOO_MANY_FINDINGS,
                 ),
             )
         path_limit = sorted(
@@ -2379,6 +2470,7 @@ class WorkflowController:
                     run,
                     snapshot,
                     "review blockers kept returning on the same path(s): " + ", ".join(path_limit),
+                    kind=ReviewImpasseKind.REPEATED_PATH,
                 ),
             )
         if unresolved_limit:
@@ -2390,6 +2482,7 @@ class WorkflowController:
                     snapshot,
                     "review findings remained unresolved across repeated repairs: "
                     + ", ".join(unresolved_limit),
+                    kind=ReviewImpasseKind.REPEATED_FINDING,
                 ),
             )
         if replacement_rounds >= MAX_CONSECUTIVE_REPLACEMENT_REVIEWS:
@@ -2400,6 +2493,7 @@ class WorkflowController:
                     run,
                     snapshot,
                     "consecutive repairs replaced every previous blocker with new blockers",
+                    kind=ReviewImpasseKind.REPLACEMENT_LOOP,
                 ),
             )
         return run, effective, None
@@ -2428,6 +2522,8 @@ class WorkflowController:
         run: FactoryRun,
         snapshot: int,
         summary: str,
+        *,
+        kind: ReviewImpasseKind = ReviewImpasseKind.UNKNOWN,
     ) -> ReviewImpasse:
         findings = run.review_ledger.open_findings[:MAX_REVIEW_IMPASSE_FINDINGS]
         paths = sorted(_review_finding_paths(findings))
@@ -2437,10 +2533,119 @@ class WorkflowController:
             reason += "; blocking paths: " + ", ".join(paths)
         return ReviewImpasse(
             snapshot=snapshot,
+            kind=kind,
             reason=reason,
             paths=paths,
             finding_ids=[finding.id for finding in findings],
             findings=details,
+        )
+
+    def _review_rounds_used(self, run: FactoryRun, budget: AttemptBudget) -> int:
+        return sum(
+            1
+            for attempt in run.attempt_records
+            if attempt.budget is budget and attempt.reviewed_tree_sha is not None
+        )
+
+    def _accept_review_findings(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        verification: VerificationReport,
+        review: ReviewReport,
+        snapshot: int,
+        tree_sha: str | None,
+        review_rounds: int,
+        reason: ReviewAcceptanceReason,
+    ) -> ReviewAcceptance | None:
+        findings = _deduplicate_review_findings(
+            [*run.review_ledger.accepted_findings, *run.review_ledger.open_findings]
+        )
+        if (
+            not tree_sha
+            or not verification.passed
+            or context.triage_result.risk not in self._config.review.accepted_risks
+            or not findings
+            or len(findings) > self._config.review.max_accepted_findings
+            or any(
+                finding.category in self._config.review.blocked_categories for finding in findings
+            )
+            or any(
+                finding.origin
+                not in {
+                    ReviewFindingOrigin.INITIAL,
+                    ReviewFindingOrigin.LATE_ADOPTED,
+                }
+                for finding in findings
+            )
+            or review.repair_regressions
+            or any(
+                finding.category in self._config.review.blocked_categories
+                for finding in review.blocking_findings
+            )
+        ):
+            return None
+        return ReviewAcceptance(
+            snapshot=snapshot,
+            reason=reason,
+            risk=context.triage_result.risk,
+            review_rounds=review_rounds,
+            reviewed_tree_sha=tree_sha,
+            findings=findings,
+        )
+
+    def _persist_review_acceptance(
+        self,
+        run: FactoryRun,
+        acceptance: ReviewAcceptance,
+    ) -> FactoryRun:
+        ledger = run.review_ledger.model_copy(
+            update={
+                "open_findings": [],
+                "accepted_findings": acceptance.findings,
+                "last_reviewed_tree_sha": None,
+                "consecutive_replacement_rounds": 0,
+                "path_streaks": {},
+                "unresolved_streaks": {},
+            }
+        )
+        run = run.model_copy(
+            update={
+                "reviewed_tree_sha": acceptance.reviewed_tree_sha,
+                "review_acceptance": acceptance,
+                "review_ledger": ledger,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.save_run(run)
+        self._store.save_artifact(run.id, acceptance, attempt=acceptance.snapshot)
+        return run
+
+    def _review_authorizes_delivery(
+        self,
+        run: FactoryRun,
+        review: ReviewReport,
+        risk: Risk,
+    ) -> bool:
+        acceptance = run.review_acceptance
+        if acceptance is None:
+            return review.approved
+        return (
+            run.reviewed_tree_sha is not None
+            and acceptance.reviewed_tree_sha == run.reviewed_tree_sha
+            and acceptance.risk is risk
+            and acceptance.risk in self._config.review.accepted_risks
+            and 0 < len(acceptance.findings) <= self._config.review.max_accepted_findings
+            and acceptance.findings == run.review_ledger.accepted_findings
+            and not review.repair_regressions
+            and not any(
+                finding.category in self._config.review.blocked_categories
+                for finding in acceptance.findings
+            )
+            and not any(
+                finding.category in self._config.review.blocked_categories
+                for finding in review.blocking_findings
+            )
         )
 
     def _review_repair_context(
@@ -2498,11 +2703,16 @@ class WorkflowController:
         """PR boundary: re-run the deterministic gates, then commit/push/open."""
         evidence = context.latest_evidence
         assert evidence is not None
-        if context.latest_review is None or not context.latest_review.approved:
+        if context.latest_review is None or not self._review_authorizes_delivery(
+            run,
+            context.latest_review,
+            context.triage_result.risk,
+        ):
             raise self._halt(
                 run,
                 WorkflowState.NEEDS_HUMAN,
-                "independent Reviewer approval is required for every PR",
+                "independent review or a matching bounded controller acceptance is required "
+                "for every PR",
             )
         current_evidence = context.workspace.collect_evidence()
         if (
@@ -2628,10 +2838,16 @@ class WorkflowController:
             verification=context.latest_verification,
             test_report=context.latest_test_report,
             review=context.latest_review,
+            review_acceptance=run.review_acceptance,
             run_id=run.id,
         )
         if run.reviewed_tree_sha is not None:
-            body += f"\nReviewer-approved Git tree: `{run.reviewed_tree_sha}`\n"
+            label = (
+                "Controller-accepted reviewed Git tree"
+                if run.review_acceptance is not None
+                else "Reviewer-approved Git tree"
+            )
+            body += f"\n{label}: `{run.reviewed_tree_sha}`\n"
         return body
 
     def _ci_loop(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
@@ -2710,8 +2926,7 @@ class WorkflowController:
                 raise self._halt(
                     run,
                     WorkflowState.NEEDS_HUMAN,
-                    "missing delivery evidence or independent Reviewer approval "
-                    "for the current head",
+                    "missing delivery evidence or review authorization for the current head",
                 )
             try:
                 self._check_delivery_workspace(run, context.workspace.path)
@@ -2833,6 +3048,17 @@ def _review_draft_overlaps_finding(
         _locations_overlap(draft_location, finding_location)
         for draft_location in draft.locations
         for finding_location in finding.locations
+    )
+
+
+def _review_draft_matches_finding(
+    draft: ReviewFindingDraft,
+    finding: ReviewFinding,
+) -> bool:
+    return (
+        draft.category is finding.category
+        and draft.message == finding.message
+        and draft.locations == finding.locations
     )
 
 

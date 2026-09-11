@@ -186,7 +186,7 @@ class PullRequestPublisher:
         history rewrite, no merge.
 
         ``expected_tree_sha`` binds the publication to the exact Git tree the
-        independent Reviewer approved, and ``expected_repository``/
+        controller authorized after independent review, and ``expected_repository``/
         ``expected_host`` bind it to the repository the run was authorized
         against; a mismatch aborts before anything is committed or pushed.
 

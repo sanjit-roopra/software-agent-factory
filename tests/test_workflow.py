@@ -43,12 +43,17 @@ from software_agent_factory.models import (
     RepositorySkillOverlay,
     RepositorySkillUse,
     ResearchReport,
+    ReviewAcceptance,
+    ReviewAcceptanceReason,
     ReviewDispositionStatus,
+    ReviewFinding,
     ReviewFindingCategory,
     ReviewFindingDisposition,
     ReviewFindingDraft,
     ReviewFindingOrigin,
     ReviewImpasse,
+    ReviewImpasseKind,
+    ReviewLedger,
     ReviewReport,
     ReviewSourceLocation,
     Risk,
@@ -2365,7 +2370,7 @@ def test_verification_failure_with_l0_triage_escalates_and_ends_needs_human(
     assert all(attempt.outcome == "succeeded" for attempt in run.attempt_records)
 
 
-def test_reviewer_rejection_is_bounded_by_same_global_attempt_budget(
+def test_low_risk_reviewer_rejection_continues_at_global_attempt_budget(
     source_repo: Path, data_dir: Path
 ) -> None:
     def rejecting_reviewer(request: AgentRequest) -> AgentResult:
@@ -2402,10 +2407,11 @@ def test_reviewer_rejection_is_bounded_by_same_global_attempt_budget(
 
     run = controller.run(_work_item(), source_repo)
 
-    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.state is WorkflowState.PR_READY
     assert len(run.attempt_records) == 3
     assert all(attempt.outcome == "succeeded" for attempt in run.attempt_records)
     assert all(attempt.model == "claude-opus-5" for attempt in run.attempt_records)
+    assert run.review_acceptance is not None
 
 
 def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
@@ -2509,7 +2515,12 @@ def test_reviewer_ledger_persists_typed_open_findings(
             success=True,
             review_report=ReviewReport(
                 approved=False,
-                blocking_findings=[_review_finding("newest actionable defect")],
+                blocking_findings=[
+                    _review_finding(
+                        "newest actionable defect",
+                        category=ReviewFindingCategory.SECURITY,
+                    )
+                ],
             ),
         )
 
@@ -2638,7 +2649,7 @@ def test_only_one_round_of_late_findings_can_expand_repair_scope(
     assert any("Drip-fed blocker." in item for item in latest_review.suggested_changes)
 
 
-def test_repeated_review_blocker_halts_with_diagnostic_impasse(
+def test_repeated_low_risk_review_blocker_is_accepted_after_three_rounds(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
@@ -2670,15 +2681,312 @@ def test_repeated_review_blocker_halts_with_diagnostic_impasse(
         FakeAgentRuntime(reviewer=reviewer),
     ).run(_work_item("WI-review-impasse"), source_repo)
 
-    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.state is WorkflowState.PR_READY
     assert len(run.attempt_records) == 3
-    assert run.failure_reason is not None
-    assert "review failed to converge" in run.failure_reason
-    assert "FACTORY_NOTES.md" in run.failure_reason
-    assert "attempt budget exhausted" not in run.failure_reason
+    assert run.failure_reason is None
+    assert run.review_acceptance is not None
+    assert run.review_acceptance.review_rounds == 3
+    assert run.review_acceptance.reviewed_tree_sha == run.reviewed_tree_sha
+    assert [finding.message for finding in run.review_acceptance.findings] == [
+        "Contradictory sanitizer requirement."
+    ]
+    persisted = store.load_artifact(run.id, ReviewAcceptance, attempt=3)
+    assert persisted == run.review_acceptance
+
+
+def test_low_risk_finding_is_accepted_at_configured_review_round_limit(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Bounded low-risk defect.")],
+            ),
+        )
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=3)
+    config.review.max_rounds = 1
+    run = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-review-round-limit"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(run.attempt_records) == 1
+    assert run.review_acceptance is not None
+    assert run.review_acceptance.reason is ReviewAcceptanceReason.REVIEW_ROUND_LIMIT
+
+
+def test_ineligible_finding_stops_at_configured_review_round_limit(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    _review_finding(
+                        "Security defect.",
+                        category=ReviewFindingCategory.SECURITY,
+                    )
+                ],
+            ),
+        )
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=3)
+    config.review.max_rounds = 1
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-ineligible-round-limit"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert len(run.attempt_records) == 1
+    assert run.review_acceptance is None
+    impasse = store.load_artifact(run.id, ReviewImpasse, attempt=1)
+    assert impasse.kind is ReviewImpasseKind.REVIEW_ROUND_LIMIT
+
+
+def test_approved_followup_cannot_bypass_carried_acceptance_policy(
+    data_dir: Path,
+) -> None:
+    finding = ReviewFinding(
+        id="review-security-carried",
+        category=ReviewFindingCategory.SECURITY,
+        message="Unsafe carried debt.",
+        locations=[
+            ReviewSourceLocation(
+                path="FACTORY_NOTES.md",
+                start_line=1,
+                end_line=1,
+            )
+        ],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+    acceptance = ReviewAcceptance(
+        snapshot=1,
+        reason=ReviewAcceptanceReason.CARRIED_FORWARD,
+        risk=Risk.R1,
+        review_rounds=1,
+        reviewed_tree_sha="a" * 40,
+        findings=[finding],
+    )
+    run = FactoryRun(
+        id="run-carried-policy",
+        work_item_id="WI-carried-policy",
+        state=WorkflowState.PR_READY,
+        reviewed_tree_sha="a" * 40,
+        review_acceptance=acceptance,
+        review_ledger=ReviewLedger(accepted_findings=[finding]),
+    )
+    controller = WorkflowController(
+        _config(data_dir),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(),
+    )
+
+    assert not controller._review_authorizes_delivery(
+        run,
+        ReviewReport(approved=True),
+        Risk.R1,
+    )
+
+
+def test_security_review_blocker_still_requires_human_after_three_rounds(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        report = (
+            ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    _review_finding(
+                        "Authentication can be bypassed.",
+                        category=ReviewFindingCategory.SECURITY,
+                    )
+                ],
+            )
+            if not request.prior_review_findings
+            else ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(
+                    request,
+                    ReviewDispositionStatus.UNRESOLVED,
+                ),
+            )
+        )
+        return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=6),
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-security-impasse"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.review_acceptance is None
     impasse = store.load_artifact(run.id, ReviewImpasse, attempt=3)
-    assert impasse.findings
-    assert impasse.paths == ["FACTORY_NOTES.md"]
+    assert impasse.finding_ids
+
+
+def test_high_risk_review_blocker_cannot_be_accepted(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Risky behavior remains.")],
+            ),
+        )
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=1)
+    config.risk[Risk.R2].human_approval = False
+    run = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L1, Risk.R2),
+            reviewer=reviewer,
+        ),
+    ).run(_work_item("WI-high-risk-impasse"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.review_acceptance is None
+
+
+def test_repair_regression_cannot_be_accepted_at_attempt_limit(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        if not request.prior_review_findings:
+            report = ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Initial blocker.")],
+            )
+        else:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(request),
+                repair_regressions=[_review_finding("Repair introduced a defect.", line=4)],
+            )
+        return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-regression-impasse"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.review_acceptance is None
+    assert run.review_ledger.open_findings[0].origin is (
+        ReviewFindingOrigin.REPAIR_REGRESSION_DIRECT
+    )
+
+
+def test_finding_count_over_policy_limit_cannot_be_accepted(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    _review_finding("Correctness defect."),
+                    _review_finding(
+                        "Compatibility defect.",
+                        category=ReviewFindingCategory.COMPATIBILITY,
+                    ),
+                ],
+            ),
+        )
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=1)
+    config.review.max_accepted_findings = 1
+    run = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-too-many-accepted-findings"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.review_acceptance is None
+    assert len(run.review_ledger.open_findings) == 2
+
+
+def test_late_security_finding_remains_blocking_after_adoption_round(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    calls = 0
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            report = ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Initial correctness defect.")],
+            )
+        elif calls == 2:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(request),
+                blocking_findings=[
+                    _review_finding(
+                        "Late compatibility defect.",
+                        line=2,
+                        category=ReviewFindingCategory.COMPATIBILITY,
+                    )
+                ],
+            )
+        else:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(request),
+                blocking_findings=[
+                    _review_finding(
+                        "Late security defect.",
+                        line=3,
+                        category=ReviewFindingCategory.SECURITY,
+                    )
+                ],
+            )
+        return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=3),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-late-security"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.review_acceptance is None
+    assert run.review_ledger.late_adoption_rounds == 1
+    assert run.review_ledger.open_findings[0].category is ReviewFindingCategory.SECURITY
+    latest_review = FileRunStore(data_dir).load_artifact(run.id, ReviewReport, attempt=3)
+    assert not any("Late security defect." in item for item in latest_review.suggested_changes)
 
 
 def test_implementer_failures_consume_the_shared_attempt_budget(

@@ -101,6 +101,7 @@ from .copilot_runtime import TOKEN_PATTERNS
 from .models import (
     ExecutionPlan,
     ModelBase,
+    ReviewAcceptance,
     ReviewReport,
     Specification,
     TestReport,
@@ -220,7 +221,8 @@ class UnauthorizedHistoryError(GitPublishError):
 
 class UnreviewedContentError(GitPublishError):
     """Raised when the workspace content about to be published is not the exact
-    tree the independent Reviewer approved. Nothing is committed or pushed."""
+    tree the controller authorized after independent review. Nothing is committed
+    or pushed."""
 
 
 class UnexpectedRepositoryError(GitPublishError):
@@ -819,7 +821,7 @@ class GitPublisher:
         *,
         args: Sequence[str],
     ) -> None:
-        """Compare the workspace tree with the tree the Reviewer approved.
+        """Compare the workspace tree with the tree authorized after review.
 
         The extra ``git`` call is only made when a reviewed tree was supplied,
         so publications without delivery binding keep their command shape.
@@ -2303,6 +2305,7 @@ def build_pr_body(
     verification: VerificationReport | None,
     test_report: TestReport | None = None,
     review: ReviewReport | None,
+    review_acceptance: ReviewAcceptance | None = None,
     run_id: str,
 ) -> str:
     """Pure function assembling a PR description from typed artifacts.
@@ -2376,6 +2379,20 @@ def build_pr_body(
         lines.append(f"Approved: {review.approved}")
         if review.findings:
             lines.extend(f"- {finding}" for finding in review.findings)
+        lines.append("")
+
+    if review_acceptance is not None:
+        lines.append("### Accepted with findings")
+        lines.append(
+            "The controller continued under the bounded review policy; this is not "
+            "Reviewer approval."
+        )
+        lines.append(f"Reviewed tree: `{review_acceptance.reviewed_tree_sha}`")
+        lines.append(f"Review rounds: {review_acceptance.review_rounds}")
+        lines.extend(
+            f"- `{finding.id}` ({finding.category.value}): {finding.message}"
+            for finding in review_acceptance.findings
+        )
         lines.append("")
 
     lines.append("### Run")

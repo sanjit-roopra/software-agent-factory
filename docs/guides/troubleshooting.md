@@ -59,7 +59,10 @@ Look at the run:
 factory show RUN_ID
 ```
 
-`run.json` records the reason. The workspace and every artifact stay on disk.
+The dashboard shows a bounded **What happened** summary, the next action and
+the relevant artifact name. Raw failure text, logs and diffs are not sent to
+the browser. `run.json` records the full reason. The workspace and every
+artifact stay on disk.
 
 For a review convergence stop, inspect:
 
@@ -70,6 +73,11 @@ For a review convergence stop, inspect:
 It records the blocking paths and finding ids. The matching per-attempt
 `review.json`, `patch.diff` and reviewed tree ids show whether a defect remained,
 the repair introduced a regression, or later reviews kept replacing the target.
+
+An eligible low-risk run can instead continue as **Accepted with findings**.
+The dashboard and pull request identify that decision. Inspect
+`review-acceptance.json` for its exact reviewed tree, review count and accepted
+typed findings. It is a controller decision, not Reviewer approval.
 
 ## A run ends in FAILED
 

@@ -112,6 +112,7 @@ class AgentRequest(ModelBase):
     verification_report: VerificationReport | None = None
     test_report: TestReport | None = None
     prior_review_findings: list[ReviewFinding] = Field(default_factory=list)
+    accepted_review_findings: list[ReviewFinding] = Field(default_factory=list)
     repair_diff: str | None = None
     repair_context: RepairContext | str | None = None
     repository_profile: RepositoryProfile | None = None

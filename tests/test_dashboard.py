@@ -1178,6 +1178,31 @@ def test_failure_reason_is_never_returned_even_when_provider_sets_it() -> None:
         _stop(running)
 
 
+def test_run_guidance_is_reconstructed_from_safe_reason_code() -> None:
+    payload = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "guidance": {
+                "status": SECRET_MARKER,
+                "reason_code": "REVIEW_IMPASSE",
+                "summary": SECRET_MARKER,
+                "next_action": SECRET_MARKER,
+                "artifact": SECRET_MARKER,
+                "finding_count": 1,
+                "finding_ids": ["review-correctness-1234", SECRET_MARKER],
+                "category_counts": {"CORRECTNESS": 1, SECRET_MARKER: 99},
+            },
+        }
+    )
+
+    guidance = payload["guidance"]
+    assert guidance["status"] == "ACTION_REQUIRED"
+    assert guidance["artifact"] == "review-impasse.json"
+    assert guidance["finding_ids"] == ["review-correctness-1234"]
+    assert guidance["category_counts"] == {"CORRECTNESS": 1}
+    assert SECRET_MARKER not in json.dumps(guidance)
+
+
 # --------------------------------------------------------------------------
 # Provider failure handling
 # --------------------------------------------------------------------------

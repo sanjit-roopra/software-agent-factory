@@ -164,6 +164,13 @@ controller derives repair approval from those dispositions rather than trusting
 the model's approval flag. Repair regressions remain blocking. One batch of
 late findings may be adopted; later drip-fed findings are advisory.
 
+Review loops are bounded separately from implementation retries. The default
+allows three logical reviews. After that, the controller may continue an
+`R0`/`R1` run with at most five correctness or compatibility findings. It
+persists `review-acceptance.json`, binds it to the exact tree, and discloses the
+debt in the PR. Security, scope, repair-regression and high-risk findings are
+never accepted automatically.
+
 Broken required checks cannot reach the tester or reviewer at all.
 
 Repository guidance is advisory prompt context only. There is no fixed built-in
@@ -237,8 +244,12 @@ There is no unlimited retry loop anywhere.
 | `retries.same_model_attempts` | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
 | `polish.enabled` | `true` packaged; `false` if omitted | At most one post-green implementation attempt. |
+| `review.max_rounds` | `3` | Absolute logical review rounds; eligible low-risk findings may be accepted, otherwise the run stops for a human. |
+| `review.max_accepted_findings` | `5` | Maximum findings in one controller acceptance. |
+| `review.accepted_risks` | `[R0, R1]` | Risk levels eligible for bounded acceptance. |
+| `review.blocked_categories` | `[SECURITY, SCOPE]` | Finding categories that always require resolution or a human. |
 | Reviewer late-finding adoption | `1` round | One repair review may add a batch of previously missed blockers. |
-| Reviewer path/finding stall guard | `3` reviews | Stops repeated blockers with `review-impasse.json`. |
+| Reviewer path/finding stall guard | `3` reviews | Triggers bounded acceptance evaluation or stops with `review-impasse.json`. |
 | Reviewer blocker-replacement guard | `2` reviews | Stops consecutive complete blocker replacement cycles. |
 | `scope_drift.max_replans` | `1` | Replans after scope drift. |
 | `ci.repair_attempts` | `3` | CI repair cycles. |

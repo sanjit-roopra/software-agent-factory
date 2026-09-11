@@ -44,6 +44,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "is_finished",
         "is_stale",
         "stale",
+        "review_status",
     }
 )
 
@@ -57,6 +58,7 @@ RUN_DETAIL_FIELDS: frozenset[str] = RUN_SUMMARY_FIELDS | frozenset(
         "pull_request_url",
         "invocation_count",
         "usage",
+        "guidance",
     }
 )
 
@@ -163,6 +165,62 @@ PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
 )
 
 NANO_AIU_PER_USD = 100_000_000_000
+GUIDANCE_COPY: dict[str, tuple[str, str, str, str | None]] = {
+    "BOUNDED_REVIEW_ACCEPTANCE": (
+        "ACCEPTED_WITH_FINDINGS",
+        "The controller continued after the bounded review limit.",
+        "Review the accepted findings in the pull request before merging.",
+        "review-acceptance.json",
+    ),
+    "REVIEW_IMPASSE": (
+        "ACTION_REQUIRED",
+        "Independent review did not converge within the safe automatic policy.",
+        "Inspect review-impasse.json, resolve or accept the listed findings, then retry.",
+        "review-impasse.json",
+    ),
+    "RISK_APPROVAL": (
+        "ACTION_REQUIRED",
+        "The run requires approval under the configured risk policy.",
+        "Review the work item risk and approve or change the policy before retrying.",
+        None,
+    ),
+    "SCOPE_REVIEW": (
+        "ACTION_REQUIRED",
+        "The proposed changes exceeded the approved scope.",
+        "Review the planned and changed files, then update the scope or retry.",
+        None,
+    ),
+    "ATTEMPT_BUDGET_EXHAUSTED": (
+        "ACTION_REQUIRED",
+        "The run exhausted a bounded retry budget.",
+        "Inspect the run artifacts, correct the underlying issue, then retry.",
+        None,
+    ),
+    "CI_INTERVENTION": (
+        "ACTION_REQUIRED",
+        "CI could not be completed or repaired automatically.",
+        "Inspect the pull request checks, fix the failing check, then retry delivery.",
+        None,
+    ),
+    "DELIVERY_INTERVENTION": (
+        "ACTION_REQUIRED",
+        "The controller could not complete pull request delivery.",
+        "Check repository permissions and delivery settings, then retry delivery.",
+        None,
+    ),
+    "RECOVERY_INTERVENTION": (
+        "ACTION_REQUIRED",
+        "The run could not safely recover its persisted workspace.",
+        "Inspect the run and workspace metadata before starting a replacement run.",
+        None,
+    ),
+    "MANUAL_INSPECTION": (
+        "ACTION_REQUIRED",
+        "The controller stopped at a manual decision boundary.",
+        "Inspect the typed run artifacts and decide whether to retry or replace the run.",
+        None,
+    ),
+}
 
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
@@ -232,7 +290,51 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     active_invocation = data.get("active_invocation")
     if isinstance(active_invocation, dict):
         sanitized["active_invocation"] = _allowlist(active_invocation, ACTIVE_INVOCATION_FIELDS)
+    guidance = data.get("guidance")
+    if isinstance(guidance, dict):
+        sanitized_guidance = _sanitize_guidance(guidance)
+        if sanitized_guidance is not None:
+            sanitized["guidance"] = sanitized_guidance
     return sanitized
+
+
+def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
+    reason_code = data.get("reason_code")
+    if not isinstance(reason_code, str) or reason_code not in GUIDANCE_COPY:
+        return None
+    status, summary, next_action, artifact = GUIDANCE_COPY[reason_code]
+    result: dict[str, Any] = {
+        "status": status,
+        "reason_code": reason_code,
+        "summary": summary,
+        "next_action": next_action,
+    }
+    if artifact is not None:
+        result["artifact"] = artifact
+    count = data.get("finding_count")
+    if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 12:
+        result["finding_count"] = count
+    finding_ids = data.get("finding_ids")
+    if isinstance(finding_ids, list):
+        result["finding_ids"] = [
+            item
+            for item in finding_ids[:12]
+            if isinstance(item, str)
+            and item.startswith("review-")
+            and len(item) <= 64
+            and item.replace("-", "").isalnum()
+        ]
+    category_counts = data.get("category_counts")
+    if isinstance(category_counts, dict):
+        result["category_counts"] = {
+            key: value
+            for key, value in category_counts.items()
+            if key in {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"}
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 12
+        }
+    return result
 
 
 def sanitize_project(raw: Any) -> dict[str, Any]:

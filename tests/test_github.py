@@ -70,7 +70,14 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
+    ReviewAcceptance,
+    ReviewAcceptanceReason,
+    ReviewFinding,
+    ReviewFindingCategory,
+    ReviewFindingOrigin,
     ReviewReport,
+    ReviewSourceLocation,
+    Risk,
     Specification,
     VerificationReport,
     WorkItem,
@@ -735,6 +742,41 @@ def test_build_pr_body_handles_missing_optional_artifacts() -> None:
     assert "### Plan" not in body
     assert "### Deterministic verification" not in body
     assert "### Reviewer result" not in body
+
+
+def test_build_pr_body_discloses_controller_accepted_findings() -> None:
+    acceptance = ReviewAcceptance(
+        snapshot=3,
+        reason=ReviewAcceptanceReason.REVIEW_ROUND_LIMIT,
+        risk=Risk.R1,
+        review_rounds=3,
+        reviewed_tree_sha="a" * 40,
+        findings=[
+            ReviewFinding(
+                id="review-correctness-1234",
+                category=ReviewFindingCategory.CORRECTNESS,
+                message="A bounded edge case remains.",
+                locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
+                origin=ReviewFindingOrigin.INITIAL,
+                first_seen_snapshot=1,
+            )
+        ],
+    )
+    body = build_pr_body(
+        work_item=_work_item(),
+        specification=None,
+        plan=None,
+        changed_files=["src/app.py"],
+        verification=VerificationReport(passed=True, confidence=1.0),
+        review=ReviewReport(approved=False),
+        review_acceptance=acceptance,
+        run_id="RUN-accepted",
+    )
+
+    assert "### Accepted with findings" in body
+    assert "this is not Reviewer approval" in body
+    assert "review-correctness-1234" in body
+    assert "`" + ("a" * 40) + "`" in body
 
 
 # --------------------------------------------------------------------------
