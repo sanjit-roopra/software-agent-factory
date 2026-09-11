@@ -43,7 +43,14 @@ from software_agent_factory.models import (
     RepositorySkillOverlay,
     RepositorySkillUse,
     ResearchReport,
+    ReviewDispositionStatus,
+    ReviewFindingCategory,
+    ReviewFindingDisposition,
+    ReviewFindingDraft,
+    ReviewFindingOrigin,
+    ReviewImpasse,
     ReviewReport,
+    ReviewSourceLocation,
     Risk,
     RunLease,
     SkillGuidance,
@@ -161,6 +168,34 @@ def _work_item(work_item_id: str = "WI-1") -> WorkItem:
         title="Reject empty customer names",
         description="Return HTTP 400 for empty or whitespace-only names.",
     )
+
+
+def _review_finding(
+    message: str,
+    *,
+    path: str = "FACTORY_NOTES.md",
+    line: int = 1,
+    category: ReviewFindingCategory = ReviewFindingCategory.CORRECTNESS,
+) -> ReviewFindingDraft:
+    return ReviewFindingDraft(
+        category=category,
+        message=message,
+        locations=[ReviewSourceLocation(path=path, start_line=line, end_line=line)],
+    )
+
+
+def _resolve_prior(
+    request: AgentRequest,
+    status: ReviewDispositionStatus = ReviewDispositionStatus.RESOLVED,
+) -> list[ReviewFindingDisposition]:
+    return [
+        ReviewFindingDisposition(
+            finding_id=finding.id,
+            status=status,
+            rationale="Checked the current implementation against the cited location.",
+        )
+        for finding in request.prior_review_findings
+    ]
 
 
 def _triage_hook(complexity: Complexity, risk: Risk, *, needs_research: bool = False):
@@ -2334,10 +2369,23 @@ def test_reviewer_rejection_is_bounded_by_same_global_attempt_budget(
     source_repo: Path, data_dir: Path
 ) -> None:
     def rejecting_reviewer(request: AgentRequest) -> AgentResult:
+        if request.prior_review_findings:
+            review = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(
+                    request,
+                    ReviewDispositionStatus.UNRESOLVED,
+                ),
+            )
+        else:
+            review = ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("not good enough")],
+            )
         return AgentResult(
             role=AgentRole.REVIEWER,
             success=True,
-            review_report=ReviewReport(approved=False, findings=["not good enough"]),
+            review_report=review,
         )
 
     # L2's worker and L3's worker are the same model (claude-opus-5), so with
@@ -2382,12 +2430,19 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
                 role=AgentRole.REVIEWER,
                 success=True,
                 review_report=ReviewReport(
-                    approved=True,
-                    findings=["A concrete correctness defect remains."],
+                    approved=False,
+                    blocking_findings=[_review_finding("A concrete correctness defect remains.")],
                     suggested_changes=["Consider renaming a helper later."],
                 ),
             )
-        return default_runtime.run(request)
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=True,
+                prior_finding_dispositions=_resolve_prior(request),
+            ),
+        )
 
     run = WorkflowController(
         _config(data_dir, same_model_attempts=1, max_total_attempts=2),
@@ -2399,24 +2454,19 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
     assert len(run.attempt_records) == 2
     repair_context = implementer_requests[1].repair_context
     assert isinstance(repair_context, RepairContext)
-    assert repair_context.failures == ["A concrete correctness defect remains."]
+    assert repair_context.failures[0].endswith("A concrete correctness defect remains.")
     assert reviewer_requests[0].prior_review_findings == []
-    assert reviewer_requests[1].prior_review_findings == [
-        "Attempt 1 finding: A concrete correctness defect remains."
+    assert [finding.message for finding in reviewer_requests[1].prior_review_findings] == [
+        "A concrete correctness defect remains."
     ]
+    assert reviewer_requests[1].repair_diff is not None
 
 
-def test_rejected_review_uses_suggestions_as_fallback_repair_detail(
+def test_reviewer_semantic_contract_gets_bounded_same_model_correction(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
     reviewer_calls = 0
-    implementer_requests: list[AgentRequest] = []
-    default_runtime = FakeAgentRuntime()
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        implementer_requests.append(request)
-        return default_runtime.run(request)
 
     def reviewer(request: AgentRequest) -> AgentResult:
         nonlocal reviewer_calls
@@ -2430,42 +2480,205 @@ def test_rejected_review_uses_suggestions_as_fallback_repair_detail(
                     suggested_changes=["Correct the reported return type."],
                 ),
             )
-        return default_runtime.run(request)
+        assert isinstance(request.repair_context, str)
+        assert "violated the deterministic review contract" in request.repair_context
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(approved=True),
+        )
 
     run = WorkflowController(
-        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        _config(data_dir, same_model_attempts=2, max_total_attempts=2),
         FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=implementer, reviewer=reviewer),
+        FakeAgentRuntime(reviewer=reviewer),
     ).run(_work_item("WI-reviewer-suggestion-fallback"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
-    repair_context = implementer_requests[1].repair_context
-    assert isinstance(repair_context, RepairContext)
-    assert repair_context.failures == ["Correct the reported return type."]
+    assert len(run.attempt_records) == 1
+    assert reviewer_calls == 2
 
 
-def test_prior_review_history_keeps_newest_findings_when_bounded(
+def test_reviewer_ledger_persists_typed_open_findings(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("newest actionable defect")],
+            ),
+        )
+
     store = FileRunStore(data_dir)
-    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
-    run_id = "run-review-history-bounds"
-    store.save_artifact(
-        run_id,
-        ReviewReport(approved=False, findings=["old " + ("x" * 900)] * 10),
-        attempt=1,
-    )
-    store.save_artifact(
-        run_id,
-        ReviewReport(approved=False, findings=["newest actionable defect"]),
-        attempt=2,
-    )
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=1),
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-review-ledger"), source_repo)
 
-    history = controller._prior_review_findings(run_id, 3)
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert [finding.message for finding in run.review_ledger.open_findings] == [
+        "newest actionable defect"
+    ]
+    reloaded = store.load_run(run.id)
+    assert reloaded.review_ledger == run.review_ledger
 
-    assert history[0] == "Attempt 2 finding: newest actionable defect"
-    assert sum(len(item) for item in history) <= 6000
+
+def test_repair_regression_joins_ledger_and_requires_next_disposition(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    reviewer_requests: list[AgentRequest] = []
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        reviewer_requests.append(request)
+        call = len(reviewer_requests)
+        if call == 1:
+            report = ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Fix the original defect.", line=1)],
+            )
+        elif call == 2:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(request),
+                repair_regressions=[_review_finding("The repair broke attempt metadata.", line=4)],
+            )
+        else:
+            assert [finding.message for finding in request.prior_review_findings] == [
+                "The repair broke attempt metadata."
+            ]
+            assert request.prior_review_findings[0].origin is (
+                ReviewFindingOrigin.REPAIR_REGRESSION_DIRECT
+            )
+            report = ReviewReport(
+                approved=True,
+                prior_finding_dispositions=_resolve_prior(request),
+            )
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=report,
+        )
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=3),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-review-regression-ledger"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(run.attempt_records) == 3
+    assert all(record.reviewed_tree_sha for record in run.attempt_records)
+    assert reviewer_requests[1].repair_diff is not None
+    assert reviewer_requests[2].repair_diff is not None
+
+
+def test_only_one_round_of_late_findings_can_expand_repair_scope(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    reviewer_requests: list[AgentRequest] = []
+    implementer_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        implementer_requests.append(request)
+        return default_runtime.run(request)
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        reviewer_requests.append(request)
+        call = len(reviewer_requests)
+        if call == 1:
+            report = ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Initial blocker.", line=1)],
+            )
+        elif call == 2:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(request),
+                blocking_findings=[_review_finding("Late blocker batch.", line=2)],
+            )
+        else:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(request),
+                blocking_findings=[_review_finding("Drip-fed blocker.", line=3)],
+            )
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=report,
+        )
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=4),
+        store,
+        FakeAgentRuntime(implementer=implementer, reviewer=reviewer),
+    ).run(_work_item("WI-review-late-adoption"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(run.attempt_records) == 3
+    assert run.review_ledger.late_adoption_rounds == 1
+    assert len(implementer_requests) == 3
+    first_repair = implementer_requests[1].repair_context
+    second_repair = implementer_requests[2].repair_context
+    assert isinstance(first_repair, RepairContext)
+    assert isinstance(second_repair, RepairContext)
+    assert "Initial blocker." in first_repair.failures[0]
+    assert "Late blocker batch." in second_repair.failures[0]
+    latest_review = store.load_artifact(run.id, ReviewReport, attempt=3)
+    assert latest_review.approved is True
+    assert any("Drip-fed blocker." in item for item in latest_review.suggested_changes)
+
+
+def test_repeated_review_blocker_halts_with_diagnostic_impasse(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        report = (
+            ReviewReport(
+                approved=False,
+                blocking_findings=[_review_finding("Contradictory sanitizer requirement.")],
+            )
+            if not request.prior_review_findings
+            else ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(
+                    request,
+                    ReviewDispositionStatus.UNRESOLVED,
+                ),
+            )
+        )
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=report,
+        )
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=6),
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-review-impasse"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert len(run.attempt_records) == 3
+    assert run.failure_reason is not None
+    assert "review failed to converge" in run.failure_reason
+    assert "FACTORY_NOTES.md" in run.failure_reason
+    assert "attempt budget exhausted" not in run.failure_reason
+    impasse = store.load_artifact(run.id, ReviewImpasse, attempt=3)
+    assert impasse.findings
+    assert impasse.paths == ["FACTORY_NOTES.md"]
 
 
 def test_implementer_failures_consume_the_shared_attempt_budget(

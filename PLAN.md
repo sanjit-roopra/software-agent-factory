@@ -391,6 +391,18 @@ PR_READY
 
 Reviewer rejection enters a bounded repair cycle.
 
+Completed reliability behavior:
+
+- typed Reviewer findings carry exact source locations
+- the controller assigns stable ids and requires an explicit disposition for
+  every open blocker on repair review
+- repair reviews receive the exact Git delta since the previous reviewed tree
+- repair regressions stay blocking and join the persisted review ledger
+- one bounded late-finding batch may expand repair scope; later drip-feeding is
+  advisory
+- repeated blockers stop early with a persisted diagnostic review impasse
+  instead of exhausting the implementation budget without explanation
+
 # Phase 7. Routing calibration
 
 Status: done. Model choice and attempt are persisted on every `AttemptRecord`.

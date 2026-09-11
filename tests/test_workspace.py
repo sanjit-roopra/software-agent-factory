@@ -241,6 +241,17 @@ def test_collect_evidence_recovers_when_stored_base_commit_is_unresolvable(
     assert "later.txt" in recovered.collect_evidence().changed_files
 
 
+def test_file_line_count_handles_non_utf8_files(source_repo: Path, data_dir: Path) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-BINARY")
+    path = ws.prepare()
+    (path / "asset.bin").write_bytes(b"\x89PNG\r\n\x1a\n\xff\x00")
+
+    evidence = ws.collect_evidence()
+
+    assert evidence.tree_sha is not None
+    assert ws.file_line_count(evidence.tree_sha, "asset.bin") == 3
+
+
 # -- locking ------------------------------------------------------------
 
 

@@ -19,6 +19,7 @@ def _normalize_utc(value: datetime) -> datetime:
 
 
 UtcDateTime = Annotated[datetime, AfterValidator(_normalize_utc)]
+MAX_OPEN_REVIEW_FINDINGS = 24
 
 
 class WorkflowState(StrEnum):
@@ -99,6 +100,26 @@ class AttemptTrigger(StrEnum):
     REVIEW = "REVIEW"
     SCOPE = "SCOPE"
     CI = "CI"
+
+
+class ReviewFindingCategory(StrEnum):
+    CORRECTNESS = "CORRECTNESS"
+    SCOPE = "SCOPE"
+    SECURITY = "SECURITY"
+    COMPATIBILITY = "COMPATIBILITY"
+
+
+class ReviewFindingOrigin(StrEnum):
+    INITIAL = "INITIAL"
+    LATE_ADOPTED = "LATE_ADOPTED"
+    REPAIR_REGRESSION_DIRECT = "REPAIR_REGRESSION_DIRECT"
+    REPAIR_REGRESSION_INDIRECT = "REPAIR_REGRESSION_INDIRECT"
+
+
+class ReviewDispositionStatus(StrEnum):
+    RESOLVED = "RESOLVED"
+    UNRESOLVED = "UNRESOLVED"
+    WITHDRAWN = "WITHDRAWN"
 
 
 class ModelBase(BaseModel):
@@ -623,6 +644,7 @@ class AttemptRecord(ModelBase):
     failure_reason: str | None = None
     budget: AttemptBudget = AttemptBudget.IMPLEMENTATION
     triggered_by: AttemptTrigger = AttemptTrigger.INITIAL
+    reviewed_tree_sha: str | None = None
 
     @model_validator(mode="after")
     def _validate_timestamps(self) -> AttemptRecord:
@@ -641,6 +663,58 @@ class RunLease(ModelBase):
     host: str = Field(min_length=1)
     pid: int = Field(ge=1)
     heartbeat_at: UtcDateTime
+
+
+class ReviewSourceLocation(ModelBase):
+    path: str = Field(min_length=1)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if "\\" in value:
+            raise ValueError("path must use POSIX separators")
+        path = PurePosixPath(value)
+        if path.is_absolute() or value != path.as_posix() or ".." in path.parts:
+            raise ValueError("path must be a normalized repository-relative path")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_lines(self) -> ReviewSourceLocation:
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must be greater than or equal to start_line")
+        return self
+
+
+class ReviewFindingDraft(ModelBase):
+    category: ReviewFindingCategory
+    message: str = Field(min_length=1, max_length=1000)
+    locations: list[ReviewSourceLocation] = Field(min_length=1, max_length=8)
+
+
+class ReviewFinding(ReviewFindingDraft):
+    id: str = Field(min_length=1, max_length=80)
+    origin: ReviewFindingOrigin
+    first_seen_snapshot: int = Field(ge=1)
+
+
+class ReviewFindingDisposition(ModelBase):
+    finding_id: str = Field(min_length=1, max_length=80)
+    status: ReviewDispositionStatus
+    rationale: str = Field(min_length=1, max_length=1000)
+
+
+class ReviewLedger(ModelBase):
+    open_findings: list[ReviewFinding] = Field(
+        default_factory=list,
+        max_length=MAX_OPEN_REVIEW_FINDINGS,
+    )
+    last_reviewed_tree_sha: str | None = None
+    late_adoption_rounds: int = Field(default=0, ge=0)
+    consecutive_replacement_rounds: int = Field(default=0, ge=0)
+    path_streaks: dict[str, int] = Field(default_factory=dict)
+    unresolved_streaks: dict[str, int] = Field(default_factory=dict)
 
 
 class FactoryRun(VersionedModel):
@@ -670,6 +744,7 @@ class FactoryRun(VersionedModel):
     reviewed_tree_sha: str | None = None
     base_commit_sha: str | None = None
     pending_commit_sha: str | None = None
+    review_ledger: ReviewLedger = Field(default_factory=ReviewLedger)
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:
@@ -875,6 +950,26 @@ class ReviewReport(VersionedModel):
     security_concerns: list[str] = Field(default_factory=list)
     compatibility_concerns: list[str] = Field(default_factory=list)
     suggested_changes: list[str] = Field(default_factory=list)
+    blocking_findings: list[ReviewFindingDraft] = Field(
+        default_factory=list,
+        max_length=MAX_OPEN_REVIEW_FINDINGS,
+    )
+    prior_finding_dispositions: list[ReviewFindingDisposition] = Field(
+        default_factory=list,
+        max_length=MAX_OPEN_REVIEW_FINDINGS,
+    )
+    repair_regressions: list[ReviewFindingDraft] = Field(
+        default_factory=list,
+        max_length=MAX_OPEN_REVIEW_FINDINGS,
+    )
+
+
+class ReviewImpasse(VersionedModel):
+    snapshot: int = Field(ge=1)
+    reason: str = Field(min_length=1)
+    paths: list[str] = Field(default_factory=list)
+    finding_ids: list[str] = Field(default_factory=list)
+    findings: list[str] = Field(default_factory=list)
 
 
 class CICheckEvidence(ModelBase):

@@ -24,7 +24,11 @@ from software_agent_factory.models import (
     RepositoryProfile,
     RepositorySkill,
     ResearchReport,
+    ReviewFinding,
+    ReviewFindingCategory,
+    ReviewFindingOrigin,
     ReviewReport,
+    ReviewSourceLocation,
     SkillGuidance,
     Specification,
     TestReport,
@@ -81,7 +85,7 @@ def _request(role: AgentRole, **overrides: object) -> AgentRequest:
         "timeout_seconds": 60,
     }
     payload.update(overrides)
-    return AgentRequest(**payload)  # type: ignore[arg-type]
+    return AgentRequest(**payload)
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +311,22 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
             ),
             attempt_number=3,
             prior_review_findings=[
-                "Attempt 2 finding: Empty values bypass normalization.",
+                ReviewFinding(
+                    id="review-correctness-123",
+                    category=ReviewFindingCategory.CORRECTNESS,
+                    message="Empty values bypass normalization.",
+                    locations=[
+                        ReviewSourceLocation(
+                            path="src/app.py",
+                            start_line=1,
+                            end_line=1,
+                        )
+                    ],
+                    origin=ReviewFindingOrigin.INITIAL,
+                    first_seen_snapshot=2,
+                ),
             ],
+            repair_diff="diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n",
             change_set=ChangeSet(summary="I did a great job and everything works."),
         )
     )
@@ -320,13 +338,16 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
     assert "Reject empty customer names" in prompt
     assert "acceptance criteria and constraints are the review boundary" in prompt
     assert "hypothetical future consumers" in prompt
-    assert "Every item in findings" in prompt
     assert "non-blocking improvements only in suggested_changes" in prompt
     assert "plausible exploit path" in prompt
-    assert "enumerate every blocking issue" in prompt
-    assert "does not lower the high-confidence threshold" in prompt
+    assert "targeted repair review, not a fresh unrestricted review" in prompt
+    assert "return exactly one disposition" in prompt
+    assert "RESOLVED" in prompt
+    assert "WITHDRAWN" in prompt
     assert "Previously reported blocking issues from this run" in prompt
     assert "Empty values bypass normalization." in prompt
+    assert "Changes since the previous review" in prompt
+    assert "@@ -1 +1 @@" in prompt
     assert "Implementation snapshot under review" in prompt
     assert "\n3\n" in prompt
     # The implementer's self-justification never reaches an independent gate.

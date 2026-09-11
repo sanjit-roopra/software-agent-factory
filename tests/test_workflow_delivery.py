@@ -13,7 +13,12 @@ from software_agent_factory.models import (
     CICheckEvidence,
     CIReport,
     FactoryRun,
+    ReviewDispositionStatus,
+    ReviewFindingCategory,
+    ReviewFindingDisposition,
+    ReviewFindingDraft,
     ReviewReport,
+    ReviewSourceLocation,
     WorkflowState,
 )
 from software_agent_factory.publishing import MergeResult, PublishResult
@@ -289,10 +294,39 @@ def test_unbound_review_cannot_authorize_merge_after_resume(
 
 def test_reviewer_rejection_blocks_every_pr_and_merge(tmp_path: Path, source_repo: Path) -> None:
     def reject(request: AgentRequest) -> AgentResult:
+        if request.prior_review_findings:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=[
+                    ReviewFindingDisposition(
+                        finding_id=finding.id,
+                        status=ReviewDispositionStatus.UNRESOLVED,
+                        rationale="The defect remains.",
+                    )
+                    for finding in request.prior_review_findings
+                ],
+            )
+        else:
+            report = ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    ReviewFindingDraft(
+                        category=ReviewFindingCategory.CORRECTNESS,
+                        message="Not correct yet",
+                        locations=[
+                            ReviewSourceLocation(
+                                path="FACTORY_NOTES.md",
+                                start_line=1,
+                                end_line=1,
+                            )
+                        ],
+                    )
+                ],
+            )
         return AgentResult(
             role=AgentRole.REVIEWER,
             success=True,
-            review_report=ReviewReport(approved=False, findings=["Not correct yet"]),
+            review_report=report,
         )
 
     publisher = LocalPublisher()

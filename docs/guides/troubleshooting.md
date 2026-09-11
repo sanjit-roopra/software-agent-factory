@@ -48,6 +48,7 @@ Check for a typo against
 - Scope drift found a sensitive change — dependency, migration, CI or
   infrastructure — on an `R2`/`R3` run.
 - The implementation retry budget ran out.
+- Independent review did not converge after repeated repairs.
 - CI failed in a way that is not repairable: flaky, infra, dependency or
   unknown.
 - The scheduler found a non-terminal run left behind by a dead process.
@@ -59,6 +60,16 @@ factory show RUN_ID
 ```
 
 `run.json` records the reason. The workspace and every artifact stay on disk.
+
+For a review convergence stop, inspect:
+
+```text
+<data_dir>/runs/RUN_ID/review-impasse.json
+```
+
+It records the blocking paths and finding ids. The matching per-attempt
+`review.json`, `patch.diff` and reviewed tree ids show whether a defect remained,
+the repair introduced a regression, or later reviews kept replacing the target.
 
 ## A run ends in FAILED
 

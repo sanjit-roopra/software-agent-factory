@@ -53,7 +53,11 @@ from .models import (
     RepositoryProfile,
     RepositorySkill,
     ResearchReport,
+    ReviewFinding,
+    ReviewFindingCategory,
+    ReviewFindingDraft,
     ReviewReport,
+    ReviewSourceLocation,
     Risk,
     SkillGuidance,
     SkillSource,
@@ -107,7 +111,8 @@ class AgentRequest(ModelBase):
     changed_files: list[str] = Field(default_factory=list)
     verification_report: VerificationReport | None = None
     test_report: TestReport | None = None
-    prior_review_findings: list[str] = Field(default_factory=list)
+    prior_review_findings: list[ReviewFinding] = Field(default_factory=list)
+    repair_diff: str | None = None
     repair_context: RepairContext | str | None = None
     repository_profile: RepositoryProfile | None = None
     repository_skill: RepositorySkill | None = None
@@ -502,10 +507,20 @@ class FakeAgentRuntime:
     def _default_reviewer(self, request: AgentRequest) -> AgentResult:
         test_report = request.test_report
         if test_report is not None and not test_report.passed:
+            path = request.changed_files[0] if request.changed_files else "FACTORY_NOTES.md"
             review_report = ReviewReport(
                 approved=False,
-                findings=list(test_report.findings)
-                or ["The independent tester reported a failure."],
+                blocking_findings=[
+                    ReviewFindingDraft(
+                        category=ReviewFindingCategory.CORRECTNESS,
+                        message=(
+                            test_report.findings[0]
+                            if test_report.findings
+                            else "The independent tester reported a failure."
+                        ),
+                        locations=[ReviewSourceLocation(path=path, start_line=1, end_line=1)],
+                    )
+                ],
                 suggested_changes=list(test_report.suggested_tests),
             )
             return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=review_report)
