@@ -48,7 +48,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator, Sequence
 
 
@@ -66,6 +66,7 @@ class WorkspaceSafetyError(WorkspaceError):
 
 
 _SANITIZE_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]")
+_GIT_OBJECT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SANITIZE_COLLAPSE = re.compile(r"-{2,}")
 _MAX_KEY_LEN = 80
 _HASH_LEN = 10
@@ -128,6 +129,19 @@ def _run_git(
     )
     if check and completed.returncode != 0:
         raise WorkspaceError(f"git {' '.join(args)} failed in {cwd}: {completed.stderr.strip()}")
+    return completed
+
+
+def _run_git_bytes(
+    cwd: Path, args: Sequence[str], check: bool = True
+) -> subprocess.CompletedProcess[bytes]:
+    completed = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+    )
+    if check and completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkspaceError(f"git {' '.join(args)} failed in {cwd}: {stderr}")
     return completed
 
 
@@ -527,6 +541,37 @@ class GitWorktreeWorkspace:
         ).stdout
         changed_files = [line for line in names_output.splitlines() if line]
         return WorkspaceEvidence(changed_files=changed_files, diff=diff, tree_sha=tree_sha)
+
+    def diff_trees(self, previous_tree_sha: str, current_tree_sha: str) -> str:
+        """Return a zero-context patch between two immutable reviewed trees."""
+        for tree_sha in (previous_tree_sha, current_tree_sha):
+            if _GIT_OBJECT_PATTERN.fullmatch(tree_sha) is None:
+                raise WorkspaceError(f"invalid Git tree object: {tree_sha!r}")
+        return _run_git(
+            self.path,
+            ["diff", "--unified=0", previous_tree_sha, current_tree_sha],
+        ).stdout
+
+    def file_line_count(self, tree_sha: str, relative_path: str) -> int | None:
+        """Return line count for a file in ``tree_sha``, or ``None`` when absent."""
+        if _GIT_OBJECT_PATTERN.fullmatch(tree_sha) is None:
+            raise WorkspaceError(f"invalid Git tree object: {tree_sha!r}")
+        path = PurePosixPath(relative_path)
+        if (
+            path.is_absolute()
+            or relative_path != path.as_posix()
+            or ".." in path.parts
+            or "\\" in relative_path
+        ):
+            raise WorkspaceError(f"invalid repository-relative path: {relative_path!r}")
+        completed = _run_git_bytes(
+            self.path,
+            ["show", f"{tree_sha}:{relative_path}"],
+            check=False,
+        )
+        if completed.returncode != 0:
+            return None
+        return len(completed.stdout.splitlines())
 
     def cleanup(self, force: bool = False) -> None:
         """Remove the worktree. Only called explicitly; never part of the

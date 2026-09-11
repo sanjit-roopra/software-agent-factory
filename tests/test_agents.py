@@ -421,7 +421,9 @@ def test_reviewer_consumes_test_report_and_diff_contract() -> None:
 
     assert result.review_report is not None
     assert result.review_report.approved is False
-    assert result.review_report.findings == ["Whitespace-only names are still accepted."]
+    assert [finding.message for finding in result.review_report.blocking_findings] == [
+        "Whitespace-only names are still accepted."
+    ]
     assert result.review_report.suggested_changes == ["Add a whitespace-only regression test."]
 
 

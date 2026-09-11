@@ -54,6 +54,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 from datetime import datetime
@@ -80,6 +81,7 @@ from .governance import (
     assess_publish_gate,
 )
 from .models import (
+    MAX_OPEN_REVIEW_FINDINGS,
     ActiveInvocation,
     AgentPurpose,
     AgentRole,
@@ -96,7 +98,13 @@ from .models import (
     RepositorySkill,
     RepositorySkillUse,
     ResearchReport,
+    ReviewDispositionStatus,
+    ReviewFinding,
+    ReviewFindingDraft,
+    ReviewFindingOrigin,
+    ReviewImpasse,
     ReviewReport,
+    ReviewSourceLocation,
     RunLease,
     SkillSelectionSource,
     Specification,
@@ -143,9 +151,13 @@ TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
 #: operator problem, not a code problem, and escalates with evidence.
 REPAIRABLE_CI_CATEGORIES: frozenset[str] = frozenset({"CODE_FAILURE", "TEST_FAILURE"})
-MAX_PRIOR_REVIEW_FINDINGS = 24
-MAX_PRIOR_REVIEW_CONTEXT_CHARS = 6000
-MAX_PRIOR_REVIEW_FINDING_CHARS = 1000
+MAX_LATE_REVIEW_ADOPTION_ROUNDS = 1
+MAX_CONSECUTIVE_BLOCKING_REVIEWS_PER_PATH = 3
+MAX_CONSECUTIVE_UNRESOLVED_REVIEWS = 3
+MAX_CONSECUTIVE_REPLACEMENT_REVIEWS = 2
+MAX_REVIEW_IMPASSE_FINDINGS = 12
+
+_DIFF_HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
 #: Bound on how much failure text is copied into a repair prompt.
 MAX_REPAIR_EXCERPT_CHARS = 4000
@@ -264,6 +276,15 @@ def _typed_artifact_schema_repair_context(
     if prior_context is None:
         return schema_context
     return f"{prior_context.model_dump_json()}\n\n{schema_context}"
+
+
+def _review_contract_repair_context(failure_reason: str) -> str:
+    return (
+        "Your previous ReviewReport passed JSON schema validation but violated the deterministic "
+        f"review contract. Contract error: {failure_reason}. Correct the complete ReviewReport "
+        "using the typed blocker, disposition, and regression fields exactly as instructed. "
+        "Do not change repository files."
+    )
 
 
 class TransitionError(Exception):
@@ -1245,7 +1266,9 @@ class WorkflowController:
         verification_report: VerificationReport,
         test_report: TestReport,
         snapshot: int,
+        repair_diff: str | None,
     ) -> ReviewReport:
+        prior_findings = list(run.review_ledger.open_findings)
         request = self._build_request(
             AgentRole.REVIEWER,
             context.work_item,
@@ -1255,21 +1278,31 @@ class WorkflowController:
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
             test_report=test_report,
-            prior_review_findings=self._prior_review_findings(run.id, snapshot),
+            prior_review_findings=prior_findings,
+            repair_diff=repair_diff,
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=snapshot,
         )
         result: AgentResult | None = None
         repair_context: str | None = None
+        semantic_failure: str | None = None
         for _ in range(self._config.retries.same_model_attempts):
             result = self._invoke_agent(
                 run,
                 request.model_copy(update={"repair_context": repair_context}),
             )
             if result.success and result.review_report is not None:
-                self._store.save_artifact(run.id, result.review_report, attempt=snapshot)
-                return result.review_report
+                semantic_failure = self._review_contract_failure(
+                    result.review_report,
+                    prior_findings,
+                    evidence,
+                    context.workspace,
+                )
+                if semantic_failure is None:
+                    return result.review_report
+                repair_context = _review_contract_repair_context(semantic_failure)
+                continue
             if not is_retryable_typed_artifact_failure(result, ReviewReport):
                 break
             assert result.failure_reason is not None
@@ -1281,8 +1314,74 @@ class WorkflowController:
         raise self._halt(
             run,
             WorkflowState.FAILED,
-            result.failure_reason or "reviewer agent failed to produce a result",
+            semantic_failure
+            or result.failure_reason
+            or "reviewer agent failed to produce a result",
         )
+
+    def _review_contract_failure(
+        self,
+        review: ReviewReport,
+        prior_findings: list[ReviewFinding],
+        evidence: WorkspaceEvidence,
+        workspace: GitWorktreeWorkspace,
+    ) -> str | None:
+        legacy = [
+            *review.findings,
+            *review.scope_concerns,
+            *review.security_concerns,
+            *review.compatibility_concerns,
+        ]
+        if legacy:
+            return (
+                "reviewer used legacy string blocker fields; leave them empty and use "
+                "blocking_findings with typed source locations"
+            )
+        if evidence.tree_sha is None:
+            return "review evidence is missing its immutable Git tree"
+        for finding in [*review.blocking_findings, *review.repair_regressions]:
+            for location in finding.locations:
+                line_count = workspace.file_line_count(evidence.tree_sha, location.path)
+                if line_count is None:
+                    return (
+                        f"review finding cites {location.path!r}, which does not exist in "
+                        "the reviewed tree"
+                    )
+                if location.end_line > line_count:
+                    return (
+                        f"review finding cites {location.path}:{location.start_line}-"
+                        f"{location.end_line}, but the reviewed file has {line_count} line(s)"
+                    )
+        if not prior_findings:
+            if review.prior_finding_dispositions:
+                return "initial review must leave prior_finding_dispositions empty"
+            if review.repair_regressions:
+                return "initial review must use blocking_findings, not repair_regressions"
+            if review.approved == bool(review.blocking_findings):
+                return (
+                    "initial review approved must be true exactly when blocking_findings is empty"
+                )
+            return None
+
+        expected_ids = {finding.id for finding in prior_findings}
+        returned_ids = [disposition.finding_id for disposition in review.prior_finding_dispositions]
+        if len(returned_ids) != len(set(returned_ids)):
+            return "repair review contains duplicate prior finding dispositions"
+        returned_id_set = set(returned_ids)
+        missing = sorted(expected_ids - returned_id_set)
+        extra = sorted(returned_id_set - expected_ids)
+        if missing or extra:
+            details: list[str] = []
+            if missing:
+                details.append("missing: " + ", ".join(missing))
+            if extra:
+                details.append("unknown: " + ", ".join(extra))
+            return (
+                "repair review must disposition every prior finding exactly once ("
+                + "; ".join(details)
+                + ")"
+            )
+        return None
 
     def _build_request(
         self,
@@ -1300,7 +1399,8 @@ class WorkflowController:
         changed_files: list[str] | None = None,
         verification_report: VerificationReport | None = None,
         test_report: TestReport | None = None,
-        prior_review_findings: list[str] | None = None,
+        prior_review_findings: list[ReviewFinding] | None = None,
+        repair_diff: str | None = None,
         repair_context: RepairContext | str | None = None,
         repository_profile: RepositoryProfile | None = None,
         repository_skill: RepositorySkill | None = None,
@@ -1327,6 +1427,7 @@ class WorkflowController:
             verification_report=verification_report,
             test_report=test_report,
             prior_review_findings=prior_review_findings or [],
+            repair_diff=repair_diff,
             repair_context=repair_context,
             repository_profile=repository_profile,
             repository_skill=repository_skill,
@@ -1617,19 +1718,56 @@ class WorkflowController:
 
             run = self.transition(run, WorkflowState.REVIEWING)
             test_report = self._run_tester(run, context, evidence, verification.report, snapshot)
+            repair_diff = self._repair_review_diff(run, context.workspace, evidence)
             review_report = self._run_reviewer(
-                run, context, evidence, verification.report, test_report, snapshot
+                run,
+                context,
+                evidence,
+                verification.report,
+                test_report,
+                snapshot,
+                repair_diff,
             )
+            run = self._record_reviewed_tree(run, snapshot, evidence.tree_sha)
+            run, review_report, impasse = self._apply_review_report(
+                run,
+                review_report,
+                snapshot,
+                evidence.tree_sha,
+                repair_diff,
+            )
+            self._store.save_artifact(run.id, review_report, attempt=snapshot)
 
-            if not review_report.approved or any(
-                (
-                    review_report.findings,
-                    review_report.scope_concerns,
-                    review_report.security_concerns,
-                    review_report.compatibility_concerns,
+            if impasse is not None:
+                self._store.save_artifact(run.id, impasse, attempt=snapshot)
+                raise self._halt(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    impasse.reason,
                 )
-            ):
-                repair_context = self._review_repair_context(review_report, test_report)
+
+            if run.review_ledger.open_findings:
+                attempts_limit = (
+                    self._config.ci.repair_attempts
+                    if budget is AttemptBudget.CI_REPAIR
+                    else self._config.retries.max_total_attempts
+                )
+                if self._attempts_used(run, budget) >= attempts_limit:
+                    impasse = self._review_impasse(
+                        run,
+                        snapshot,
+                        "review blockers remain at the implementation repair budget limit",
+                    )
+                    self._store.save_artifact(run.id, impasse, attempt=snapshot)
+                    raise self._halt(
+                        run,
+                        WorkflowState.NEEDS_HUMAN,
+                        impasse.reason,
+                    )
+                repair_context = self._review_repair_context(
+                    run.review_ledger.open_findings,
+                    test_report,
+                )
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
 
@@ -1643,7 +1781,20 @@ class WorkflowController:
                     WorkflowState.NEEDS_HUMAN,
                     "review evidence is missing its immutable Git tree",
                 )
-            run = run.model_copy(update={"reviewed_tree_sha": evidence.tree_sha})
+            run = run.model_copy(
+                update={
+                    "reviewed_tree_sha": evidence.tree_sha,
+                    "review_ledger": run.review_ledger.model_copy(
+                        update={
+                            "open_findings": [],
+                            "last_reviewed_tree_sha": None,
+                            "consecutive_replacement_rounds": 0,
+                            "path_streaks": {},
+                            "unresolved_streaks": {},
+                        }
+                    ),
+                }
+            )
             self._store.save_run(run)
             return self.transition(run, WorkflowState.PR_READY)
 
@@ -2024,77 +2175,290 @@ class WorkflowController:
             log_excerpt=None,
         )
 
-    def _review_repair_context(
-        self, review: ReviewReport, test_report: TestReport
-    ) -> RepairContext:
+    def _record_reviewed_tree(
+        self,
+        run: FactoryRun,
+        snapshot: int,
+        tree_sha: str | None,
+    ) -> FactoryRun:
+        if tree_sha is None:
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "review evidence is missing its immutable Git tree",
+            )
+        if snapshot > len(run.attempt_records):
+            raise self._halt(
+                run,
+                WorkflowState.FAILED,
+                f"review snapshot {snapshot} has no matching implementation attempt",
+            )
+        attempts = list(run.attempt_records)
+        attempts[snapshot - 1] = attempts[snapshot - 1].model_copy(
+            update={"reviewed_tree_sha": tree_sha}
+        )
+        run = run.model_copy(update={"attempt_records": attempts, "updated_at": utc_now()})
+        self._store.save_run(run)
+        return run
+
+    def _repair_review_diff(
+        self,
+        run: FactoryRun,
+        workspace: GitWorktreeWorkspace,
+        evidence: WorkspaceEvidence,
+    ) -> str | None:
+        if not run.review_ledger.open_findings:
+            return None
+        previous_tree = run.review_ledger.last_reviewed_tree_sha
+        current_tree = evidence.tree_sha
+        if previous_tree is None or current_tree is None:
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "repair review cannot compare immutable Git trees",
+            )
+        try:
+            return workspace.diff_trees(previous_tree, current_tree)
+        except WorkspaceError as exc:
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                f"repair review could not derive its change delta: {exc}",
+            ) from exc
+
+    def _apply_review_report(
+        self,
+        run: FactoryRun,
+        review: ReviewReport,
+        snapshot: int,
+        tree_sha: str | None,
+        repair_diff: str | None,
+    ) -> tuple[FactoryRun, ReviewReport, ReviewImpasse | None]:
+        if tree_sha is None:
+            raise self._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "review evidence is missing its immutable Git tree",
+            )
+        ledger = run.review_ledger
+        prior = list(ledger.open_findings)
+        if not prior:
+            open_findings = self._mint_review_findings(
+                review.blocking_findings,
+                ReviewFindingOrigin.INITIAL,
+                snapshot,
+            )
+            ledger = ledger.model_copy(
+                update={
+                    "open_findings": open_findings,
+                    "last_reviewed_tree_sha": tree_sha if open_findings else None,
+                    "late_adoption_rounds": 0,
+                    "consecutive_replacement_rounds": 0,
+                    "path_streaks": {path: 1 for path in _review_finding_paths(open_findings)},
+                    "unresolved_streaks": {finding.id: 1 for finding in open_findings},
+                }
+            )
+            effective = review.model_copy(update={"approved": not open_findings})
+            run = run.model_copy(update={"review_ledger": ledger, "updated_at": utc_now()})
+            self._store.save_run(run)
+            return run, effective, None
+
+        dispositions = {
+            disposition.finding_id: disposition for disposition in review.prior_finding_dispositions
+        }
+        unresolved_ids = {
+            finding.id
+            for finding in prior
+            if dispositions[finding.id].status is ReviewDispositionStatus.UNRESOLVED
+        }
+        prior_by_id = {finding.id: finding for finding in prior}
+
+        regression_overlaps, regression_drafts = _partition_review_drafts(
+            prior,
+            review.repair_regressions,
+        )
+        latent_overlaps, latent_drafts = _partition_review_drafts(
+            prior,
+            review.blocking_findings,
+        )
+        unresolved_ids.update(regression_overlaps)
+        unresolved_ids.update(latent_overlaps)
+
+        changed_ranges = _changed_line_ranges(repair_diff or "")
+        regressions: list[ReviewFinding] = []
+        for draft in regression_drafts:
+            origin = (
+                ReviewFindingOrigin.REPAIR_REGRESSION_DIRECT
+                if _review_draft_intersects_ranges(draft, changed_ranges)
+                else ReviewFindingOrigin.REPAIR_REGRESSION_INDIRECT
+            )
+            regressions.extend(self._mint_review_findings([draft], origin, snapshot))
+
+        adopt_late = bool(latent_drafts) and (
+            ledger.late_adoption_rounds < MAX_LATE_REVIEW_ADOPTION_ROUNDS
+        )
+        adopted_late = (
+            self._mint_review_findings(
+                latent_drafts,
+                ReviewFindingOrigin.LATE_ADOPTED,
+                snapshot,
+            )
+            if adopt_late
+            else []
+        )
+        unresolved = [finding for finding in prior if finding.id in unresolved_ids]
+        current = _deduplicate_review_findings([*unresolved, *regressions, *adopted_late])
+        too_many_findings = len(current) > MAX_OPEN_REVIEW_FINDINGS
+        if too_many_findings:
+            current = current[:MAX_OPEN_REVIEW_FINDINGS]
+
+        replacement_rounds = (
+            ledger.consecutive_replacement_rounds + 1
+            if not unresolved and bool(regressions or adopted_late)
+            else 0
+        )
+        current_paths = _review_finding_paths(current)
+        path_streaks = {path: ledger.path_streaks.get(path, 0) + 1 for path in current_paths}
+        unresolved_streaks = {
+            finding.id: (
+                ledger.unresolved_streaks.get(finding.id, 0) + 1 if finding.id in prior_by_id else 1
+            )
+            for finding in current
+        }
+        ledger = ledger.model_copy(
+            update={
+                "open_findings": current,
+                "last_reviewed_tree_sha": tree_sha if current else None,
+                "late_adoption_rounds": ledger.late_adoption_rounds + int(adopt_late),
+                "consecutive_replacement_rounds": replacement_rounds,
+                "path_streaks": path_streaks,
+                "unresolved_streaks": unresolved_streaks,
+            }
+        )
+        suggestions = list(review.suggested_changes)
+        if latent_drafts and not adopt_late:
+            suggestions.extend(
+                f"Late review finding left advisory after the bounded adoption round: "
+                f"{draft.message}"
+                for draft in latent_drafts
+            )
+        effective = review.model_copy(
+            update={
+                "approved": not current,
+                "suggested_changes": suggestions,
+            }
+        )
+        run = run.model_copy(update={"review_ledger": ledger, "updated_at": utc_now()})
+        self._store.save_run(run)
+
+        if too_many_findings:
+            return (
+                run,
+                effective,
+                self._review_impasse(
+                    run,
+                    snapshot,
+                    f"more than {MAX_OPEN_REVIEW_FINDINGS} blockers remained open",
+                ),
+            )
+        path_limit = sorted(
+            path
+            for path, count in path_streaks.items()
+            if count >= MAX_CONSECUTIVE_BLOCKING_REVIEWS_PER_PATH
+        )
+        unresolved_limit = sorted(
+            finding_id
+            for finding_id, count in unresolved_streaks.items()
+            if count >= MAX_CONSECUTIVE_UNRESOLVED_REVIEWS
+        )
+        if path_limit:
+            return (
+                run,
+                effective,
+                self._review_impasse(
+                    run,
+                    snapshot,
+                    "review blockers kept returning on the same path(s): " + ", ".join(path_limit),
+                ),
+            )
+        if unresolved_limit:
+            return (
+                run,
+                effective,
+                self._review_impasse(
+                    run,
+                    snapshot,
+                    "review findings remained unresolved across repeated repairs: "
+                    + ", ".join(unresolved_limit),
+                ),
+            )
+        if replacement_rounds >= MAX_CONSECUTIVE_REPLACEMENT_REVIEWS:
+            return (
+                run,
+                effective,
+                self._review_impasse(
+                    run,
+                    snapshot,
+                    "consecutive repairs replaced every previous blocker with new blockers",
+                ),
+            )
+        return run, effective, None
+
+    def _mint_review_findings(
+        self,
+        drafts: list[ReviewFindingDraft],
+        origin: ReviewFindingOrigin,
+        snapshot: int,
+    ) -> list[ReviewFinding]:
         findings = [
-            *review.findings,
-            *review.scope_concerns,
-            *review.security_concerns,
-            *review.compatibility_concerns,
+            ReviewFinding(
+                id=_review_finding_id(draft),
+                category=draft.category,
+                message=draft.message,
+                locations=draft.locations,
+                origin=origin,
+                first_seen_snapshot=snapshot,
+            )
+            for draft in drafts
         ]
-        if not findings and not review.approved:
-            findings.extend(review.suggested_changes)
-        if not findings:
-            findings = ["The independent reviewer rejected the change without detail."]
+        return _deduplicate_review_findings(findings)
+
+    def _review_impasse(
+        self,
+        run: FactoryRun,
+        snapshot: int,
+        summary: str,
+    ) -> ReviewImpasse:
+        findings = run.review_ledger.open_findings[:MAX_REVIEW_IMPASSE_FINDINGS]
+        paths = sorted(_review_finding_paths(findings))
+        details = [f"[{finding.id}] {finding.message}" for finding in findings]
+        reason = f"review failed to converge at snapshot {snapshot}: {summary}"
+        if paths:
+            reason += "; blocking paths: " + ", ".join(paths)
+        return ReviewImpasse(
+            snapshot=snapshot,
+            reason=reason,
+            paths=paths,
+            finding_ids=[finding.id for finding in findings],
+            findings=details,
+        )
+
+    def _review_repair_context(
+        self,
+        findings: list[ReviewFinding],
+        test_report: TestReport,
+    ) -> RepairContext:
         excerpt = None
         if test_report.findings:
             excerpt = _bounded("\n".join(test_report.findings))
         return RepairContext(
             trigger=AttemptTrigger.REVIEW,
             summary="The independent reviewer rejected the change.",
-            failures=findings[:MAX_REPAIR_FAILURES],
+            failures=[
+                f"[{finding.id}] {finding.message}" for finding in findings[:MAX_REPAIR_FAILURES]
+            ],
             log_excerpt=excerpt,
         )
-
-    def _prior_review_findings(self, run_id: str, snapshot: int) -> list[str]:
-        findings: list[str] = []
-        total_chars = 0
-        for attempt in range(snapshot - 1, 0, -1):
-            try:
-                review = self._store.load_artifact(
-                    run_id,
-                    ReviewReport,
-                    attempt=attempt,
-                )
-            except (FileNotFoundError, OSError, ValueError):
-                continue
-            categories = [
-                ("finding", review.findings),
-                ("scope concern", review.scope_concerns),
-                ("security concern", review.security_concerns),
-                ("compatibility concern", review.compatibility_concerns),
-            ]
-            blocking = [item for _, items in categories for item in items]
-            if not blocking and not review.approved:
-                categories = [("rejection detail", review.suggested_changes)]
-            for category, items in categories:
-                for item in items:
-                    stripped = item.strip()
-                    if not stripped:
-                        continue
-                    if len(findings) >= MAX_PRIOR_REVIEW_FINDINGS:
-                        return findings
-                    prefix = f"Attempt {attempt} {category}: "
-                    available = min(
-                        MAX_PRIOR_REVIEW_FINDING_CHARS,
-                        MAX_PRIOR_REVIEW_CONTEXT_CHARS - total_chars,
-                    )
-                    if available <= len(prefix):
-                        return findings
-                    full_entry = f"{prefix}{stripped}"
-                    if len(full_entry) > available:
-                        omitted = len(full_entry) - available
-                        suffix = f"...[truncated {omitted} characters]"
-                        if len(suffix) < available:
-                            entry = f"{full_entry[: available - len(suffix)]}{suffix}"
-                        else:
-                            entry = full_entry[:available]
-                    else:
-                        entry = full_entry
-                    findings.append(entry)
-                    total_chars += len(entry)
-        return findings
 
     def _ci_repair_context(self, report: CIReport) -> RepairContext:
         failed = report.failed_checks
@@ -2425,6 +2789,99 @@ def _bounded(text: str, limit: int = MAX_REPAIR_EXCERPT_CHARS) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+def _review_finding_id(draft: ReviewFindingDraft) -> str:
+    locations = ",".join(
+        f"{location.path}:{location.start_line}-{location.end_line}"
+        for location in sorted(
+            draft.locations,
+            key=lambda item: (item.path, item.start_line, item.end_line),
+        )
+    )
+    digest = hashlib.sha256(f"{draft.category.value}:{locations}".encode("utf-8")).hexdigest()[:16]
+    return f"review-{draft.category.value.lower()}-{digest}"
+
+
+def _deduplicate_review_findings(findings: list[ReviewFinding]) -> list[ReviewFinding]:
+    deduplicated: dict[str, ReviewFinding] = {}
+    for finding in findings:
+        deduplicated.setdefault(finding.id, finding)
+    return list(deduplicated.values())
+
+
+def _review_finding_paths(findings: list[ReviewFinding]) -> set[str]:
+    return {location.path for finding in findings for location in finding.locations}
+
+
+def _locations_overlap(
+    left: ReviewSourceLocation,
+    right: ReviewSourceLocation,
+) -> bool:
+    return (
+        left.path == right.path
+        and left.start_line <= right.end_line
+        and right.start_line <= left.end_line
+    )
+
+
+def _review_draft_overlaps_finding(
+    draft: ReviewFindingDraft,
+    finding: ReviewFinding,
+) -> bool:
+    return any(
+        _locations_overlap(draft_location, finding_location)
+        for draft_location in draft.locations
+        for finding_location in finding.locations
+    )
+
+
+def _partition_review_drafts(
+    prior: list[ReviewFinding],
+    drafts: list[ReviewFindingDraft],
+) -> tuple[set[str], list[ReviewFindingDraft]]:
+    overlapping_ids: set[str] = set()
+    new_drafts: list[ReviewFindingDraft] = []
+    for draft in drafts:
+        overlapping = {
+            finding.id for finding in prior if _review_draft_overlaps_finding(draft, finding)
+        }
+        if overlapping:
+            overlapping_ids.update(overlapping)
+        else:
+            new_drafts.append(draft)
+    return overlapping_ids, new_drafts
+
+
+def _changed_line_ranges(diff: str) -> dict[str, list[tuple[int, int]]]:
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    current_path: str | None = None
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            current_path = line[6:]
+            ranges.setdefault(current_path, [])
+            continue
+        if current_path is None:
+            continue
+        match = _DIFF_HUNK_PATTERN.match(line)
+        if match is None:
+            continue
+        start = int(match.group("start"))
+        count = int(match.group("count") or "1")
+        end = start + max(count, 1) - 1
+        ranges[current_path].append((start, end))
+    return ranges
+
+
+def _review_draft_intersects_ranges(
+    draft: ReviewFindingDraft,
+    changed_ranges: dict[str, list[tuple[int, int]]],
+) -> bool:
+    return any(
+        location.start_line <= end and start <= location.end_line
+        for location in draft.locations
+        for start, end in changed_ranges.get(location.path, [])
+    )
 
 
 def _profile_with_warnings(

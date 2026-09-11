@@ -744,12 +744,29 @@ Fields approximately:
 
 ```text
 approved
-findings
-scope_concerns
-security_concerns
-compatibility_concerns
 suggested_changes
+blocking_findings:
+  - category
+  - message
+  - locations:
+      - path
+      - start_line
+      - end_line
+prior_finding_dispositions:
+  - finding_id
+  - status: RESOLVED | UNRESOLVED | WITHDRAWN
+  - rationale
+repair_regressions:
+  - category
+  - message
+  - locations
 ```
+
+The old string blocker fields remain readable for historical artifacts, but
+new Reviewer output must use the typed fields. The controller assigns stable
+finding ids and persists the open set in the run's `ReviewLedger`. Every
+implementation attempt that reaches review also records the immutable tree
+that was reviewed.
 
 ## Complexity model
 
@@ -918,7 +935,8 @@ Receives:
 - deterministic `VerificationReport`
 - independent `TestReport`
 - implementation snapshot number
-- earlier blocking Reviewer findings from this run
+- typed, controller-owned open Reviewer findings from this run
+- the exact Git diff since the previous reviewed tree during repair review
 - read-only repository access
 
 Never receives the implementer's `ChangeSet` summary.
@@ -939,6 +957,20 @@ Checks:
 - scope drift
 
 Output: `ReviewReport`
+
+The first review establishes the initial blocker set. A repair review is
+targeted. It must explicitly disposition every open finding. New defects caused
+by the repair remain blocking and join the ledger. A newly noticed older defect
+may expand repair scope in one bounded adoption round; later drip-fed findings
+are recorded as advisory rather than consuming every implementation attempt.
+Overlapping locations keep an earlier finding unresolved even if the Reviewer
+rephrases it.
+
+The controller derives repair approval from the ledger. It does not trust the
+Reviewer's `approved` boolean during a repair. Repeated blockers on the same
+path, the same unresolved finding, or consecutive complete blocker replacement
+rounds stop early in `NEEDS_HUMAN` with `review-impasse.json`. This is an
+actionable non-convergence result, not generic attempt-budget exhaustion.
 
 ### Failure Investigator
 Model: `Claude Opus 5`
@@ -1018,6 +1050,13 @@ only after the first successful deterministic verification, never during CI
 repair, and only when one later recovery attempt remains available. It may make
 no edits; deterministic verification and scope assessment always run again.
 Actual limits belong in configuration.
+
+Review repair has additional fixed convergence bounds. One repair review may
+adopt a batch of late findings. A blocker on the same path or the same
+unresolved finding for three reviews stops as an impasse. Two consecutive
+repairs that replace every old blocker with new blockers also stop. If the
+ordinary implementation budget is reached while review blockers remain, the
+controller writes the same diagnostic artifact before stopping.
 
 ## Local workspace
 

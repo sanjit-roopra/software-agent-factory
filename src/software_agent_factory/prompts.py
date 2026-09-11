@@ -36,6 +36,7 @@ from .models import (
     RepositoryProfile,
     RepositorySkill,
     ResearchReport,
+    ReviewFinding,
     ReviewReport,
     Specification,
     TestReport,
@@ -102,6 +103,7 @@ def build_prompt(request: AgentRequest) -> str:
         verification_report=request.verification_report,
         test_report=request.test_report,
         prior_review_findings=request.prior_review_findings,
+        repair_diff=request.repair_diff,
         repair_context=request.repair_context,
         repository_profile=request.repository_profile,
         repository_skill=request.repository_skill,
@@ -127,7 +129,8 @@ def build_prompt_for_role(
     changed_files: Sequence[str] | None = None,
     verification_report: VerificationReport | None = None,
     test_report: TestReport | None = None,
-    prior_review_findings: Sequence[str] | None = None,
+    prior_review_findings: Sequence[ReviewFinding] | None = None,
+    repair_diff: str | None = None,
     repair_context: RepairContext | str | None = None,
     repository_profile: RepositoryProfile | None = None,
     repository_skill: RepositorySkill | None = None,
@@ -150,7 +153,11 @@ def build_prompt_for_role(
 
     sections = [
         _opening(normalized_role, model, reasoning),
-        _role_instructions(normalized_role, purpose),
+        _role_instructions(
+            normalized_role,
+            purpose,
+            repair_review=bool(prior_review_findings),
+        ),
         _output_contract(normalized_role, model_class),
     ]
 
@@ -167,6 +174,7 @@ def build_prompt_for_role(
         verification_report=verification_report,
         test_report=test_report,
         prior_review_findings=list(prior_review_findings or []),
+        repair_diff=repair_diff,
         repair_context=repair_context,
         purpose=purpose,
         repository_profile=repository_profile,
@@ -190,7 +198,12 @@ def _opening(role: str, model: str, reasoning: str) -> str:
     )
 
 
-def _role_instructions(role: str, purpose: AgentPurpose) -> str:
+def _role_instructions(
+    role: str,
+    purpose: AgentPurpose,
+    *,
+    repair_review: bool = False,
+) -> str:
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         return (
             "Turn the project brief into the smallest sufficient DAG of reviewable work items "
@@ -300,7 +313,7 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "relevant regressions are covered."
         )
     if role == "REVIEWER":
-        return (
+        common = (
             "Perform an independent review for correctness, regressions, security, "
             "compatibility, and unnecessary scope. Judge only the controller-derived "
             "diff, the deterministic verification results and the independent tester's "
@@ -317,16 +330,30 @@ def _role_instructions(role: str, purpose: AgentPurpose) -> str:
             "by the current change. Treat unnecessary dependencies, speculative abstractions, "
             "generalized "
             "infrastructure, unrelated cleanup, and unrequested features as scope findings "
-            "only when they materially harm the current change. Every item in findings, "
-            "scope_concerns, security_concerns, or compatibility_concerns is release-blocking, "
-            "so set approved to false whenever any of those lists is non-empty. Put all "
-            "non-blocking improvements only in suggested_changes; when suggestions are the only "
-            "items, leave the other lists empty and keep approved true. In each review, "
-            "enumerate every blocking issue you can substantiate rather than reporting only "
-            "the first or most severe issue; this completeness duty does not lower the "
-            "high-confidence threshold. Previously reported issues were already sent for "
-            "repair: verify whether each remains, but do not let that history limit a fresh, "
-            "complete review of the current diff."
+            "only when they materially harm the current change. Cite every blocking issue with "
+            "one or more exact repository-relative paths and current line ranges. Leave the "
+            "legacy findings, scope_concerns, security_concerns, and compatibility_concerns "
+            "string lists empty; use the typed fields instead. Put non-blocking improvements "
+            "only in suggested_changes."
+        )
+        if not repair_review:
+            return (
+                f"{common} This is the initial review. Enumerate the complete set of concrete, "
+                "high-confidence blockers in blocking_findings rather than returning only the "
+                "first or most severe issue. Leave prior_finding_dispositions and "
+                "repair_regressions empty. Set approved true only when blocking_findings is empty."
+            )
+        return (
+            f"{common} This is a targeted repair review, not a fresh unrestricted review. For "
+            "every previously reported blocking issue, return exactly one disposition with its "
+            "controller-owned finding_id: RESOLVED when the defect is fixed, UNRESOLVED when it "
+            "remains, or WITHDRAWN only when the earlier finding itself was invalid, with a "
+            "concrete rationale. Put defects caused by the repair in repair_regressions. Put "
+            "newly noticed defects that were already present in the previous reviewed tree in "
+            "blocking_findings; the controller applies a bounded late-adoption policy. The "
+            "repair diff below is authoritative evidence of what changed since the last review. "
+            "Approval is derived by the controller from dispositions and accepted new blockers; "
+            "do not omit or reframe a prior issue to make it disappear."
         )
     raise ValueError(f"unsupported agent role: {role!r}")
 
@@ -363,7 +390,8 @@ def _artifact_sections(
     changed_files: list[str],
     verification_report: VerificationReport | None,
     test_report: TestReport | None,
-    prior_review_findings: list[str],
+    prior_review_findings: list[ReviewFinding],
+    repair_diff: str | None,
     repair_context: RepairContext | str | None,
     repository_profile: RepositoryProfile | None,
     repository_skill: RepositorySkill | None,
@@ -557,9 +585,11 @@ def _artifact_sections(
             sections.append(
                 (
                     "Previously reported blocking issues from this run",
-                    prior_review_findings,
+                    [finding.model_dump(mode="json") for finding in prior_review_findings],
                 )
             )
+        if repair_diff:
+            sections.append(("Changes since the previous review", _bounded_diff(repair_diff)))
         return sections
 
     raise ValueError(f"unsupported agent role: {normalized_role!r}")

@@ -132,7 +132,7 @@ kept as file-content provenance. There is no built-in skill catalog.
 | Planner | Produce an execution plan with an expected scope. | Specification, research. |
 | Implementer | Edit the worktree. | Plan, repository; the effective repository guidance (stored skill plus any human overlay), only during the bounded polish attempt. |
 | Tester | Judge whether the change is actually tested. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results; the same post-green guidance as the polish Implementer, while it is still current. |
-| Reviewer | Independent review. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results, independent TestReport, implementation snapshot number and earlier blocking review findings; the same post-green guidance as the polish Implementer, while it is still current. |
+| Reviewer | Independent review. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results, independent TestReport, implementation snapshot number and typed open review findings. A repair review also receives the exact diff since the previous reviewed tree; the same post-green guidance as the polish Implementer, while it is still current. |
 | Failure Investigator | Diagnose a CI failure. | Normalized CI evidence. |
 
 The tester and reviewer never see the implementer's own summary. That is
@@ -141,6 +141,14 @@ deliberate: a model's claim about its work is not evidence.
 Planner, Tester and Reviewer typed-output failures get bounded same-model
 correction attempts. The validation error is passed back as correction context.
 Tester and Reviewer corrections do not spend implementation attempts.
+
+The first review establishes typed blockers with exact source locations. The
+controller assigns their ids and persists them. A repair review must mark every
+open blocker `RESOLVED`, `UNRESOLVED` or `WITHDRAWN`. Repair regressions join
+the open set. One late batch may also be adopted so a serious missed defect is
+not silently accepted, but later drip-fed findings are advisory. Repeated
+blockers on one path, one unresolved id, or repeated blocker replacement stop
+early with `review-impasse.json`.
 
 Research runs; it does not escalate. A researcher that finds nothing useful
 returns a report and the run continues.

@@ -29,6 +29,11 @@ API is still `0.x`.
 
 ### Changed
 
+- Reviewer repair now uses a persisted typed blocker ledger with stable
+  controller-owned ids, required dispositions and exact reviewed-tree deltas.
+  Repair regressions remain blocking, one late-finding batch may be adopted,
+  and contradictory or drip-fed review loops stop early with an actionable
+  `review-impasse.json` instead of generic attempt-budget exhaustion.
 - Repository-skill generation now retries once after either invalid guidance
   or an infrastructure failure. Invalid output receives the bounded validation
   reason, and a second failure still skips optional polish safely.

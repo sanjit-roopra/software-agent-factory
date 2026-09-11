@@ -33,7 +33,12 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
+    ReviewDispositionStatus,
+    ReviewFindingCategory,
+    ReviewFindingDisposition,
+    ReviewFindingDraft,
     ReviewReport,
+    ReviewSourceLocation,
     Risk,
     TestReport,
     VerificationReport,
@@ -282,14 +287,40 @@ def test_review_rejection_produces_a_review_repair_context(
         return FakeAgentRuntime()._default_implementer(request)
 
     def rejecting_reviewer(request: AgentRequest) -> AgentResult:
+        if request.prior_review_findings:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=[
+                    ReviewFindingDisposition(
+                        finding_id=finding.id,
+                        status=ReviewDispositionStatus.UNRESOLVED,
+                        rationale="The whitespace-only case remains unhandled.",
+                    )
+                    for finding in request.prior_review_findings
+                ],
+            )
+        else:
+            report = ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    ReviewFindingDraft(
+                        category=ReviewFindingCategory.CORRECTNESS,
+                        message="The whitespace-only case is still unhandled.",
+                        locations=[
+                            ReviewSourceLocation(
+                                path="FACTORY_NOTES.md",
+                                start_line=1,
+                                end_line=1,
+                            )
+                        ],
+                    )
+                ],
+                suggested_changes=["Add a guard clause."],
+            )
         return AgentResult(
             role=AgentRole.REVIEWER,
             success=True,
-            review_report=ReviewReport(
-                approved=False,
-                findings=["The whitespace-only case is still unhandled."],
-                suggested_changes=["Add a guard clause."],
-            ),
+            review_report=report,
         )
 
     config = build_config(data_dir, same_model_attempts=1, max_total_attempts=2)
@@ -309,30 +340,62 @@ def test_review_rejection_produces_a_review_repair_context(
     ]
     contexts = _repair_contexts(requests)
     assert contexts[0].trigger is AttemptTrigger.REVIEW
-    assert "The whitespace-only case is still unhandled." in contexts[0].failures
+    assert any(
+        "The whitespace-only case is still unhandled." in failure
+        for failure in contexts[0].failures
+    )
 
 
 def test_approved_review_with_blocking_concern_still_requires_repair(
     source_repo: Path, data_dir: Path
 ) -> None:
     requests: list[AgentRequest] = []
+    reviewer_calls = 0
 
     def recording_implementer(request: AgentRequest) -> AgentResult:
         requests.append(request)
         return FakeAgentRuntime()._default_implementer(request)
 
     def inconsistent_reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_calls
+        reviewer_calls += 1
+        if request.prior_review_findings:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=[
+                    ReviewFindingDisposition(
+                        finding_id=finding.id,
+                        status=ReviewDispositionStatus.UNRESOLVED,
+                        rationale="Authentication remains bypassed.",
+                    )
+                    for finding in request.prior_review_findings
+                ],
+            )
+        else:
+            report = ReviewReport(
+                approved=reviewer_calls != 2,
+                blocking_findings=[
+                    ReviewFindingDraft(
+                        category=ReviewFindingCategory.SECURITY,
+                        message="Authentication is bypassed.",
+                        locations=[
+                            ReviewSourceLocation(
+                                path="FACTORY_NOTES.md",
+                                start_line=1,
+                                end_line=1,
+                            )
+                        ],
+                    )
+                ],
+            )
         return AgentResult(
             role=AgentRole.REVIEWER,
             success=True,
-            review_report=ReviewReport(
-                approved=True,
-                security_concerns=["Authentication is bypassed."],
-            ),
+            review_report=report,
         )
 
     run = WorkflowController(
-        build_config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        build_config(data_dir, same_model_attempts=2, max_total_attempts=2),
         FileRunStore(data_dir),
         FakeAgentRuntime(
             implementer=recording_implementer,
@@ -345,7 +408,10 @@ def test_approved_review_with_blocking_concern_still_requires_repair(
         AttemptTrigger.INITIAL,
         AttemptTrigger.REVIEW,
     ]
-    assert "Authentication is bypassed." in _repair_contexts(requests)[0].failures
+    assert any(
+        "Authentication is bypassed." in failure
+        for failure in _repair_contexts(requests)[0].failures
+    )
 
 
 def test_implementer_failure_produces_an_implementer_repair_context(

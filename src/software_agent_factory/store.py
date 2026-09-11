@@ -41,6 +41,7 @@ from .models import (
     RepositorySkillOverlay,
     RepositorySkillUse,
     ResearchReport,
+    ReviewImpasse,
     ReviewReport,
     Specification,
     TestReport,
@@ -66,6 +67,7 @@ ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     VerificationReport: "verification.json",
     TestReport: "test-report.json",
     ReviewReport: "review.json",
+    ReviewImpasse: "review-impasse.json",
     CIReport: "ci.json",
 }
 

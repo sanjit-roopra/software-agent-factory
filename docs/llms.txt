@@ -36,6 +36,9 @@ Key facts an assistant should know before answering questions about this project
   derive a USD usage value from nano-AIU, but it is not necessarily the invoice
   charge.
 - Every retry is bounded. There is no unlimited retry loop anywhere.
+- Reviewer repair uses typed blocker ids and dispositions. Repair regressions
+  remain blocking, one late-finding batch may be adopted, and repeated
+  contradictory blockers stop with `review-impasse.json`.
 - The reviewer's model family must differ from every worker's; configuration
   rejects it otherwise.
 

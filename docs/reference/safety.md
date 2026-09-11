@@ -158,6 +158,12 @@ what it did. The implementer's success claim is not a gate.
 The reviewer's model family must differ from every worker's. Configuration
 enforces this.
 
+Reviewer repair scope is controller-owned. Typed findings have stable ids and
+source locations. Every open finding needs an explicit disposition, and the
+controller derives repair approval from those dispositions rather than trusting
+the model's approval flag. Repair regressions remain blocking. One batch of
+late findings may be adopted; later drip-fed findings are advisory.
+
 Broken required checks cannot reach the tester or reviewer at all.
 
 Repository guidance is advisory prompt context only. There is no fixed built-in
@@ -231,6 +237,9 @@ There is no unlimited retry loop anywhere.
 | `retries.same_model_attempts` | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
 | `polish.enabled` | `true` packaged; `false` if omitted | At most one post-green implementation attempt. |
+| Reviewer late-finding adoption | `1` round | One repair review may add a batch of previously missed blockers. |
+| Reviewer path/finding stall guard | `3` reviews | Stops repeated blockers with `review-impasse.json`. |
+| Reviewer blocker-replacement guard | `2` reviews | Stops consecutive complete blocker replacement cycles. |
 | `scope_drift.max_replans` | `1` | Replans after scope drift. |
 | `ci.repair_attempts` | `3` | CI repair cycles. |
 | `ci.max_wait_seconds` | `1800` | CI polling. |

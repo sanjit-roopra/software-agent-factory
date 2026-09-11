@@ -463,6 +463,14 @@ independent reviewer
 
 The reviewer should ideally use a different model family.
 
+The factory extends Symphony's bounded reconciliation model with a typed review
+ledger. The first review creates controller-owned blocker identities. Repair
+reviews must disposition every open blocker and receive only the exact delta
+since the prior reviewed tree in addition to the full task evidence. Repair
+regressions remain blocking, while late discoveries have one bounded adoption
+round. Deterministic per-finding and per-path stall guards stop contradictory or
+non-converging review loops with a persisted impasse artifact.
+
 ## Deterministic quality gates
 
 Examples:
