@@ -80,6 +80,7 @@ security = [
 test = [
   "pytest>=9.0.3,<10.0",
   "pytest-cov>=6.0,<8.0",
+  "pytest-xdist>=3.8,<4.0",
 ]
 
 [tool.setuptools]
@@ -95,6 +96,7 @@ software_agent_factory = [
 ]
 
 [tool.pytest.ini_options]
+addopts = "-n auto --maxprocesses=12 --dist=worksteal"
 testpaths = ["tests"]
 
 [tool.coverage.run]

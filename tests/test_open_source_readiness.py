@@ -99,6 +99,16 @@ def test_documentation_dependencies_are_isolated() -> None:
     assert {"include-group": "docs"} in groups["dev"]
 
 
+def test_test_suite_uses_bounded_parallelism() -> None:
+    pyproject = _load_pyproject()
+
+    assert "pytest-xdist>=3.8,<4.0" in pyproject["dependency-groups"]["test"]
+    assert (
+        pyproject["tool"]["pytest"]["ini_options"]["addopts"]
+        == "-n auto --maxprocesses=12 --dist=worksteal"
+    )
+
+
 def test_readme_has_no_placeholder_repository_urls() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 

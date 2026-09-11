@@ -29,6 +29,9 @@ API is still `0.x`.
 
 ### Changed
 
+- Pytest now runs the complete suite in parallel with work stealing and at most
+  12 workers, keeping the deterministic branch-coverage gate intact while
+  reducing local verification time.
 - Reviewer repair now uses a persisted typed blocker ledger with stable
   controller-owned ids, required dispositions and exact reviewed-tree deltas.
   Repair regressions remain blocking, one late-finding batch may be adopted,
