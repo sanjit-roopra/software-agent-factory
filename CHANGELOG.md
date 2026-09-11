@@ -7,6 +7,8 @@ API is still `0.x`.
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-11
+
 ### Added
 
 - Opt-in autonomous project delivery: task PRs pass local verification,
