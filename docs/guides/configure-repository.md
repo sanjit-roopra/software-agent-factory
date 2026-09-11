@@ -1,9 +1,9 @@
 # Configure a repository
 
-Out of the box the factory runs no checks against your project. The
-`repository.commands` lists are empty in the packaged configuration, so
-verification has nothing deterministic to assert. This is the first thing to
-change.
+By default, the factory runs no checks against your project. The
+`repository.commands` lists are empty in the packaged configuration.
+Verification has no deterministic commands to run. Configure these commands
+first.
 
 ## Copy the example config
 
@@ -11,15 +11,15 @@ change.
 cp config/factory.example.yaml ~/my-factory.yaml
 ```
 
-`config/factory.example.yaml` mirrors the packaged default exactly. Pass your
+`config/factory.example.yaml` mirrors the packaged default configuration. Pass your
 copy explicitly:
 
 ```bash
 factory run --config ~/my-factory.yaml ...
 ```
 
-The loader is strict: an unknown key is rejected, not ignored. A bad config
-fails with an explicit message and exit code `2`.
+The loader is strict. It rejects unknown configuration keys.
+An invalid configuration fails with an explicit message and exit code `2`.
 
 ## Set the three command phases
 
@@ -37,21 +37,18 @@ repository:
       - "uv build"
 ```
 
-They run in order: `install`, then `verify`, then `build`. A failure in any
-phase stops the run's verification and sends the work back to the implementer,
-within the retry budget.
+Commands run in order: `install`, `verify`, and `build`.
+A failure in a phase stops verification.
+The factory returns the work to the implementer if retry budget remains.
 
 Three properties matter:
 
-- **No shell.** Each command is split into an argument list and executed
-  directly. `&&`, pipes, globs and shell profile lookups do not work. Put each
-  step on its own line.
-- **No inherited environment.** Commands get `PATH`, `HOME`, `LANG` and `TERM`,
-  plus whatever you list in `env_passthrough`. Credentials such as `GH_TOKEN` or
-  `AWS_*` are never passed implicitly.
-- **Bounded, redacted output.** At most `log_capture_bytes` (32 KiB by default)
-  of stdout and stderr are retained per command, after credential redaction, and
-  written to a durable per-command log under the run directory.
+- No shell: Each command is split into arguments and executed directly.
+  Operators such as `&&`, pipes, and globs do not work. Put each step on its own line.
+- No inherited environment: Commands receive `PATH`, `HOME`, `LANG`, and `TERM`,
+  plus variables in `env_passthrough`. The factory never passes credentials implicitly.
+- Bounded output: The factory captures at most `log_capture_bytes` (32 KiB by default)
+  of output per command. It redacts credentials and writes output to a durable log file.
 
 To let a command read an extra variable:
 
@@ -62,27 +59,26 @@ repository:
     - "npm_config_cache"
 ```
 
-Only names are allowed, not values. The factory reads them from your
-environment; it does not store them.
+Only names are allowed, not values. The factory reads them from your environment.
+It does not store them.
 
-## Verify the commands exist
+## Make sure that commands exist
 
 ```bash
 factory doctor --config ~/my-factory.yaml
 ```
 
 `doctor` resolves the executable behind each configured command and reports it.
-A typo shows up here rather than three minutes into a run.
+A typo appears here before you start a run.
 
 ## Deterministic gates
 
-Verification classifies a failure rather than just reporting a nonzero exit:
-lint, type check, test, dependency and build failures are distinguished, and the
-category is persisted in `verification.json`.
+Verification classifies a failure instead of reporting only a nonzero exit.
+It distinguishes lint, type check, test, dependency, and build failures.
+The category is saved in `verification.json`.
 
-The tester and reviewer only run after deterministic verification succeeds. A
-broken build cannot reach them, and a model cannot talk its way past a failing
-test.
+The tester and reviewer run only after deterministic verification succeeds.
+A broken build cannot reach them. A model cannot bypass a failing test.
 
 ## Changed-file limits
 
@@ -92,7 +88,7 @@ repository:
   branch_prefix: "factory/"
 ```
 
-`max_changed_files` is a hard ceiling on how many files one change may touch.
+`max_changed_files` is a hard limit on how many files one change can touch.
 
 ## Protected files
 
@@ -108,20 +104,17 @@ repository:
     # ... see the example config for the full default list
 ```
 
-These are glob patterns matched against repository-relative changed paths. A
-change that touches one of them is blocked at the publish gate. The defaults
-cover dotenv files, private keys, `.npmrc`, `.netrc`, `.pypirc`,
-`.git-credentials`, credential and secret JSON/YAML files, and the `.aws` and
-`.ssh` directories.
+These glob patterns match repository-relative changed paths.
+A change that touches a protected pattern is blocked at the publish gate.
+Defaults cover dotenv files, private keys, `.npmrc`, `.netrc`, `.pypirc`,
+`.git-credentials`, credential JSON and YAML files, and `.aws` and `.ssh` directories.
 
-Add your own patterns; do not remove the defaults unless you have a specific
-reason.
+Add your own patterns. Do not remove default patterns without a specific reason.
 
 ## Scope drift
 
-After verification passes, the factory compares what actually changed with what
-the plan said it would change. This is deterministic — it reads the Git diff,
-not the agent's summary.
+After verification passes, the factory compares actual changes with planned changes.
+This check is deterministic. It reads the Git diff, not the summary from the agent.
 
 It flags:
 
@@ -136,16 +129,14 @@ It flags:
 The decision:
 
 - No findings: continue.
-- Non-sensitive findings: replan, up to `scope_drift.max_replans` (default
-  `1`).
-- Sensitive findings (dependency, migration, CI, infrastructure): escalate to
-  `NEEDS_HUMAN`.
+- Non-sensitive findings: replan, up to `scope_drift.max_replans` (default `1`).
+- Sensitive findings (dependency, migration, CI, infrastructure): escalate to `NEEDS_HUMAN`.
 
-The plan's estimated file range is advisory. The separate
-`repository.max_changed_files` setting is the hard controller-owned ceiling.
+The estimated file range in the plan is advisory.
+The `repository.max_changed_files` setting is the hard limit from the controller.
 
-The check runs again at the pull request boundary, so a later attempt cannot
-sneak a widened change past it.
+The check runs again at the pull request boundary.
+A later attempt cannot bypass scope limits.
 
 ```yaml
 scope_drift:
@@ -165,8 +156,7 @@ risk:
   R3: { human_approval: true }
 ```
 
-With `human_approval: true`, the run stops at `NEEDS_HUMAN` for a person to
-decide instead of proceeding automatically.
+With `human_approval: true`, the run stops at `NEEDS_HUMAN` for human review.
 
 ## Retry budgets
 
@@ -180,9 +170,9 @@ factory:
 
 `same_model_attempts` sets the number of same-model implementation attempts
 before escalation. It also bounds typed-output correction for supported roles.
-`max_total_attempts` is the hard ceiling for implementation attempts in the
-run. The budget is persisted, so restarting the process does not hand a run a
-fresh budget. There is no unbounded retry anywhere.
+`max_total_attempts` is the hard ceiling for implementation attempts in the run.
+The factory persists this budget. Restarting the process does not grant a fresh budget.
+There is no unbounded retry anywhere.
 
 CI repair has its own separate budget, `ci.repair_attempts`.
 

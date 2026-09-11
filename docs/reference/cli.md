@@ -43,7 +43,7 @@ test suite uses it for exactly that.
 | --- | --- |
 | `0` | Success. |
 | `1` | The command failed, or a run ended in `NEEDS_HUMAN` or `FAILED`. |
-| `2` | Configuration error or missing prerequisite; nothing was started. |
+| `2` | Configuration error or missing prerequisite. Nothing was started. |
 
 ---
 
@@ -61,11 +61,11 @@ factory run \
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Path to the target Git repository. |
-| `--title <str>` | yes | — | Short title for the work item. |
-| `--description <str>` | yes | — | Description of the work to perform. |
-| `--acceptance-criterion <str>` | no | none | Required outcome; repeat as needed. |
-| `--constraint <str>` | no | none | Work item constraint; repeat as needed. |
+| `--repo <path>` | yes | none | Path to the target Git repository. |
+| `--title <str>` | yes | none | Short title for the work item. |
+| `--description <str>` | yes | none | Description of the work to perform. |
+| `--acceptance-criterion <str>` | no | none | Required outcome. Repeat as needed. |
+| `--constraint <str>` | no | none | Work item constraint. Repeat as needed. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
@@ -96,21 +96,21 @@ factory project \
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Path to the target Git repository. |
-| `--title <str>` | unless resuming | — | Short project title. |
-| `--description <str>` | unless resuming | — | High-level product or feature description. |
-| `--acceptance-criterion <str>` | no | none | Required outcome; repeat as needed. |
-| `--constraint <str>` | no | none | Project constraint; repeat as needed. |
+| `--repo <path>` | yes | none | Path to the target Git repository. |
+| `--title <str>` | unless resuming | none | Short project title. |
+| `--description <str>` | unless resuming | none | High-level product or feature description. |
+| `--acceptance-criterion <str>` | no | none | Required outcome. Repeat as needed. |
+| `--constraint <str>` | no | none | Project constraint. Repeat as needed. |
 | `--project-id <str>` | no | random | Stable project identifier. |
-| `--resume` | no | `false` | Reconcile the stored project; requires `--project-id` and reuses its brief and plan. |
+| `--resume` | no | `false` | Reconcile the stored project. Requires `--project-id` and reuses its brief and plan. |
 | `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after integration or confirmed merge. |
-| `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task; `copilot` derives the real plan. |
+| `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task. `copilot` derives the real plan. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
 The planner is read-only and returns a typed `ProjectPlan`. Task ids are
-contiguous, dependencies may point only to earlier tasks, and at most 12 tasks
+contiguous. Dependencies can point only to earlier tasks. At most 12 tasks
 are accepted. One task is preferred whenever one coherent change is
 sufficient.
 
@@ -124,13 +124,14 @@ run once more against the complete integration branch before the project is
 human-approval gate stops the project instead of guessing.
 
 With PR/CI/merge disabled, project execution produces a local integration
-branch. With all three enabled, tasks run serially through PR creation, bounded
-CI repair and guarded automatic merge to the configured target. Each task
+branch. With all three enabled, tasks run serially through PR creation.
+Then they pass through bounded CI repair and guarded automatic merge.
+Each task
 starts from the refreshed target including its merged predecessors. Final
 verification and confirmed child merges determine project completion.
-GitHub issue publication is optional and does not
-apply the scheduler's `agent-ready` label, so the project command remains the
-single execution owner.
+GitHub issue publication is optional.
+It does not apply the scheduler's `agent-ready` label.
+Thus, the project command remains the single execution owner.
 
 `--resume` uses the stored brief and immutable plan, reconciles persisted
 child delivery checkpoints, and never resets attempt budgets. It refuses
@@ -159,8 +160,8 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Path to the target Git repository. |
-| `--github-repo <str>` | yes | — | Backlog repository as `OWNER/NAME`. |
+| `--repo <path>` | yes | none | Path to the target Git repository. |
+| `--github-repo <str>` | yes | none | Backlog repository as `OWNER/NAME`. |
 | `--runtime <fake\|copilot>` | no | `fake` | Agent runtime. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile for every dispatched run. |
 | `--once` | no | off | Run one bounded tick instead of polling forever. |
@@ -168,8 +169,8 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 | `--data-dir <path>` | no | configured | Data directory override. |
 
 Refuses to run, and never touches GitHub, unless `scheduler.enabled` is true in
-the configuration. Blocks in the foreground; Ctrl-C stops it after the current
-tick.
+the configuration. It blocks in the foreground. Press Ctrl-C to stop it after
+the current tick.
 
 See [GitHub backlog, PRs and CI](../guides/github.md).
 
@@ -224,10 +225,11 @@ factory doctor --json --config ~/my-factory.yaml
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
-Checks the platform, whether this is a frozen or source build, `launchctl`,
-`git`, configuration validity, the executables behind configured repository
-commands, and data directory writability. `gh` is checked only when
-configuration enables pull requests, CI observation or the scheduler.
+Checks the platform and the build type.
+Also checks `launchctl`, `git`, configuration validity, and data directory writability.
+Checks the executables behind configured repository commands.
+Checks `gh` only when the configuration enables pull requests, CI observation,
+or the scheduler.
 
 Never makes a paid model call. The only `copilot` interaction is a bounded
 `copilot --version` probe.
@@ -266,10 +268,10 @@ and premium-request cost and nano-AIU are raw Copilot units, not USD.
 
 ## factory skill
 
-Inspect, validate and refresh the repository guidance used by the optional
-post-green polish attempt. Guidance lives under the configured data directory,
-in repository-scoped storage keyed by the repository and its dependency
-fingerprint — never inside the target repository. See
+Inspect, validate and refresh the repository guidance for the optional
+post-green polish attempt. Guidance lives under the configured data directory.
+Repository-scoped storage uses the repository and its dependency fingerprint
+as its key. Guidance never exists inside the target repository. See
 [Repository skills and overlays](../guides/repository-skills.md).
 
 ### factory skill path
@@ -282,16 +284,16 @@ factory skill path --repo ~/projects/example
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--repo <path>` | yes | none | Path to the target Git repository. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
-Read-only. It creates nothing, including the overlay file.
+Read-only. It creates nothing. It does not create the overlay file.
 
-The repository key comes from the canonical local Git common directory, so
-linked worktrees of one checkout report the same directory, and moving or
-re-cloning a repository reports a different one. Run this before moving a
-repository if you want to move or copy its guidance to the new location.
+The repository key comes from the canonical local Git common directory.
+Linked worktrees of one checkout report the same directory. Moving or
+re-cloning a repository reports a different directory.
+If you want to move or copy guidance, run this command before moving the repository.
 
 ### factory skill validate
 
@@ -303,13 +305,13 @@ factory skill validate --repo ~/projects/example
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--repo <path>` | yes | none | Path to the target Git repository. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
-Reports whether the stored guidance matches the repository's current dependency
-fingerprint, whether every cited source is still inside the configured
-allowlists, and why an overlay would be ignored. Read-only: it never repairs,
+Reports whether stored guidance matches the current dependency fingerprint.
+Also checks whether every cited source is inside the configured allowlists,
+and why an overlay is ignored. Read-only: it never repairs,
 reformats, rewrites or creates a file, and an invalid overlay is left exactly
 as written.
 
@@ -323,7 +325,7 @@ factory skill refresh --repo ~/projects/example --runtime copilot
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Path to the target Git repository. |
+| `--repo <path>` | yes | none | Path to the target Git repository. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
 | `--model-profile <name>` | no | `default` | Select the Researcher configuration used for generation. |
 | `--config <path>` | no | packaged | Config YAML. |
@@ -333,11 +335,11 @@ Touches generated guidance only. It never creates, rewrites or deletes your
 `repository-skill-overlay.yaml`, and it changes no run, workspace or
 configuration.
 
-This is the only command that may replace an existing generated file, and it is
-what a run's warning points to when stored guidance no longer revalidates.
+This command is the only command that can replace an existing generated file.
+Warnings from runs point here when stored guidance no longer revalidates.
 The standalone generation invocation is persisted as `last-invocation.json` in
 the neutral generation directory. Each refresh replaces that command-specific
-record; normal run telemetry remains in the run artifact.
+record. Normal run telemetry remains in the run artifact.
 
 ---
 
@@ -358,17 +360,19 @@ factory dashboard --port 0 --open-browser
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
-The dashboard shows active and completed projects, their task/PR/merge progress,
-models used by project and task invocations, individual workflow runs,
-attempts, the currently active invocation, usage totals and operational health.
-An active invocation is persisted before Copilot starts and is labeled
-`running`, `stale`, `crashed` or `abandoned` from the run lease rather than
-being inferred from the previous completed attempt. When Copilot reports nano-AIU,
-the dashboard converts it to an AI usage value in USD using GitHub's published
-conversion of 1 AI credit to $0.01. This is the priced value of the reported
-model usage, not necessarily the amount added to the bill: included or pooled
-credits may cover it. Input/output token counts and legacy premium-request
-units remain separate metrics and are never multiplied.
+The dashboard shows active and completed projects, task progress, and models
+used by invocations. It also displays workflow runs, attempts, active
+invocations, usage totals, and operational health.
+The factory persists an active invocation before Copilot starts.
+The run lease labels it `running`, `stale`, `crashed`, or `abandoned`.
+The previous completed attempt does not determine this label.
+When Copilot reports nano-AIU, the dashboard converts it to an AI usage value in USD.
+The conversion uses GitHub's published rate of 1 AI credit to $0.01.
+This value is the price of the reported model usage.
+It is not necessarily the amount added to the bill.
+Included or pooled credits can cover it.
+Input and output token counts remain separate metrics.
+Legacy premium-request units also remain separate and are never multiplied.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, answers `GET`
 only, and requires a token generated for that process. The tokenized URL is
@@ -394,8 +398,8 @@ factory service install \
 
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
-| `--repo <path>` | yes | — | Absolute path to the target Git repository. |
-| `--github-repo <str>` | yes | — | Backlog repository as `OWNER/NAME`. |
+| `--repo <path>` | yes | none | Absolute path to the target Git repository. |
+| `--github-repo <str>` | yes | none | Backlog repository as `OWNER/NAME`. |
 | `--config <path>` | no | packaged | Config the service loads. Must enable `scheduler.enabled`. |
 | `--data-dir <path>` | no | configured | Data directory for the service. |
 | `--runtime <fake\|copilot>` | no | `fake` | Runtime the service runs with. |
@@ -410,8 +414,8 @@ configuration enables the scheduler, and refuses if `factory doctor` reports any
 error. Defaults to `--runtime fake` so an installed-but-forgotten agent cannot
 spend money.
 
-Nothing installs a service as a side effect of extracting an archive, running
-the factory or upgrading it.
+Nothing installs a service when you extract an archive, run the factory, or
+upgrade the build.
 
 ### factory service status
 

@@ -29,7 +29,7 @@ because a prompt is not what enforces it.
 
 | Feature | Default |
 | --- | --- |
-| Agent runtime | `fake` — no model calls, no cost |
+| Agent runtime | `fake` (no model calls, no cost) |
 | `pull_request.enabled` | `false` |
 | `ci.enabled` | `false` |
 | `merge.enabled` | `false` |
@@ -62,7 +62,7 @@ Nothing in the factory contacts the network unless you turned something on.
 There is no external analytics, crash reporting or telemetry exporter. When
 Copilot reports invocation usage, the factory persists a bounded typed record
 locally with the run, project plan or standalone skill refresh. Raw prompts,
-tool output and usage files are not retained; logs and telemetry stay in the
+tool output and usage files are not retained. Logs and telemetry stay in the
 data directory.
 
 ## Money
@@ -72,12 +72,11 @@ any command.
 
 Repository guidance is researched once per repository and dependency
 fingerprint, then reused, so a normal run spends nothing on it. Reuse is not a
-cross-process lock: two truly concurrent first runs for the same missing
-fingerprint may each make one bounded generation sequence: an initial
-Researcher call and one retry after any failure. Invalid output includes the
-exact bounded rejection reason. Atomic no-clobber publication keeps one winner
-and both runs revalidate it, so the race costs at most one extra sequence (two
-calls) and changes nothing else.
+cross-process lock. Two concurrent first runs for the same missing fingerprint
+can each make an initial call and one retry after failure. Invalid output
+includes the exact bounded rejection reason. Atomic no-clobber publication
+keeps one winner. Both runs revalidate it. The race costs at most one extra
+sequence (two calls) and changes nothing else.
 
 Two extra bounds exist for the daemon:
 
@@ -87,9 +86,9 @@ Two extra bounds exist for the daemon:
   independently of concurrency.
 
 Token usage and cost are reported only if the runtime returns them. The Copilot
-runtime requests and persists its usage-output data; missing or malformed
+runtime requests and persists its usage-output data. Missing or malformed
 fields stay unknown and are never defaulted to zero. Persisted telemetry remains
-in raw runtime units. The dashboard may derive an AI usage value in USD from
+in raw runtime units. The dashboard can derive an AI usage value in USD from
 nano-AIU for display, but it is not necessarily the invoice charge. Use GitHub
 Copilot billing for authoritative spend.
 
@@ -99,9 +98,9 @@ Copilot billing for authoritative spend.
   `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
   `GITHUB_PAT`, `GIT_ASKPASS` and the Actions token variables. Agents never
   receive GitHub credentials.
-- Only controller-owned code passes a token to `gh`, and only through the
-  subprocess environment — never as a command-line argument, where it would land
-  in the process list.
+- Only controller code passes a token to `gh`. It uses the subprocess
+  environment, never as a command-line argument where it lands in the process
+  list.
 - Repository commands run with an environment allowlist: `PATH`, `HOME`, `LANG`,
   `TERM` and whatever you named in `env_passthrough`. Nothing else is inherited,
   and commands use a non-login shell so profile files cannot reintroduce filtered
@@ -115,8 +114,8 @@ Copilot billing for authoritative spend.
   source checkout is not modified in place.
 - After preparing the worktree, capability detection reads only
   repository-local paths and allowlisted bounded manifests. It uses no shell,
-  network or imports, and does not load repository-defined skills — there is
-  no fixed skill catalog either.
+  network or imports, and does not load repository-defined skills. There is
+  no fixed skill catalog.
 - Repository guidance is stored under `factory.data_dir`, in repository-scoped
   storage keyed by the repository and its dependency fingerprint. Generated
   skills and your `repository-skill-overlay.yaml` are never written into the
@@ -129,20 +128,20 @@ Copilot billing for authoritative spend.
 
 ## Git and publishing
 
-- Branch names must start with `repository.branch_prefix` and may not be the
+- Branch names must start with `repository.branch_prefix` and cannot be the
   base branch.
 - The remote host must be in `pull_request.allowed_hosts`.
 - The changed-file count must be within `repository.max_changed_files`.
-- No changed file may match `repository.protected_file_patterns`.
+- No changed file can match `repository.protected_file_patterns`.
 - Scope drift is re-checked at the pull request boundary.
 - Publication binds both the immutable reviewed tree and the exact allowed
-  parent. The controller records its commit before push; resume uses that
+  parent. The controller records its commit before push. Resume uses that
   receipt rather than accepting arbitrary commit history with the same tree.
 - Pull requests are drafts by default.
 - The factory never force-pushes. Automatic merging requires explicit policy,
   named green checks on the reviewed head, a matching repository and target,
   and confirmed merge evidence. It never bypasses branch protection.
-- Exact, human-authorized dependency/CI files may pass sensitive-scope checks
+- Exact, human-authorized dependency/CI files can pass sensitive-scope checks
   only when also explicitly named in the plan. This never exempts protected
   files, migration/infrastructure changes, risk approval or ordinary scope limits.
 
@@ -162,10 +161,10 @@ Reviewer repair scope is controller-owned. Typed findings have stable ids and
 source locations. Every open finding needs an explicit disposition, and the
 controller derives repair approval from those dispositions rather than trusting
 the model's approval flag. Repair regressions remain blocking. One batch of
-late findings may be adopted; later drip-fed findings are advisory.
+late findings can be adopted. Later drip-fed findings are advisory.
 
 Review loops are bounded separately from implementation retries. The default
-allows three logical reviews. After that, the controller may continue an
+allows three logical reviews. After that, the controller can continue an
 `R0`/`R1` run with at most five correctness or compatibility findings. It
 persists `review-acceptance.json`, binds it to the exact tree, and discloses the
 debt in the PR. Security, scope, repair-regression and high-risk findings are
@@ -174,66 +173,63 @@ never accepted automatically.
 Broken required checks cannot reach the tester or reviewer at all.
 
 Repository guidance is advisory prompt context only. There is no fixed built-in
-catalog and no repository-provided plugin system. Guidance is two artifacts —
-a `RepositorySkill` generated by the configured Researcher, and an optional
-human-written overlay — and it reaches only the post-green polish attempt's
+catalog and no repository-provided plugin system. Guidance consists of two
+artifacts: a `RepositorySkill` generated by the configured Researcher, and an
+optional human-written overlay. It reaches only the post-green polish attempt's
 Implementer, Tester and Reviewer, never the initial attempt.
 
 Generated guidance is repository-wide and reusable. It is stored under
-`factory.data_dir`, keyed by the repository and the profile's
-`dependency_fingerprint`, is never overwritten once written, and never expires
-on a timer: a dependency change simply selects a new file. Reuse is not trust.
-Schema, agreement with the current profile and every cited source are
-revalidated on every load, so a corrupted or hand-edited generated file is
-rejected exactly like a bad generation — the file is left as written, polish is
-skipped, and the warning points at `factory skill refresh`.
+`factory.data_dir`, keyed by the repository and `dependency_fingerprint`. It is
+never overwritten, and never expires on a timer. Reuse is not trust. Schema,
+agreement with the profile, and cited sources are revalidated on every load. A
+corrupted or hand-edited generated file is rejected like a bad generation. The
+file is left as written, polish is skipped, and the warning points at `factory
+skill refresh`.
 
-The repository key comes from the canonical local Git common directory, so all
-linked worktrees of one checkout share a directory and no remote URL is
-involved. Moving or re-cloning a repository selects a new key: guidance at the
-old path is neither followed nor deleted.
+The repository key comes from the canonical local Git common directory. All
+linked worktrees of one checkout share a directory. No remote URL is involved.
+Moving or re-cloning a repository selects a new key: guidance at the old path
+is neither followed nor deleted.
 
 The research call behind it is deliberately blind and web-only. It runs in the
-run's own directory rather than the worktree, has `web_fetch` as its only tool,
-runs without repository custom instructions, and sees only the normalized
-profile and the configured source lists — never changed filenames, source code,
-README content, task prose or the diff. Fetched pages are treated as untrusted
-data: instructions embedded in them are ignored, official documentation is
-authoritative for version claims, and the curated practice references — pinned
-to an immutable commit rather than a mutable branch — may contribute generic
-heuristics only — never version claims, commands, tools or
-orchestration.
+run directory instead of the worktree. Its only tool is `web_fetch`. It runs
+without repository custom instructions, and sees only the normalized profile
+and configured source lists. It never sees changed filenames, source code,
+README content, task prose, or the diff. Fetched pages are treated as untrusted
+data. Embedded instructions are ignored. Official documentation is authoritative
+for version claims. Curated practice references (pinned to an immutable commit)
+contribute generic heuristics only. They never supply version claims,
+commands, tools or orchestration.
 
-The controller then checks the result deterministically: the skill must carry
-the profile's `dependency_fingerprint`, every target must match a profiled
-dependency declaration and evidence path, detected `python`, `pytest`,
-`react`, `react-dom`, `vite` and `vitest` dependencies must be covered with
-official provenance, and every source must be inside
-`polish.official_documentation_origins` or be an exact
+The controller validates the skill deterministically.
+The skill must contain the profile `dependency_fingerprint`.
+Each target must match a profiled dependency declaration and evidence path.
+Detected `python`, `pytest`, `react`, `react-dom`, `vite`, and `vitest`
+dependencies need official provenance.
+Each source must match `polish.official_documentation_origins` or an exact
 `polish.practice_reference_urls` entry.
 
 The overlay is human-owned and deliberately weaker. A repository-level
-`repository-skill-overlay.yaml` carries guidance prose only — `mode:
-extend|replace` plus optional simplify and polish blocks — and cannot declare
+`repository-skill-overlay.yaml` carries guidance prose only, with `mode:
+extend|replace` plus optional simplify and polish blocks. It cannot declare
 targets, sources, versions or fingerprints, so it can never smuggle in a
 version claim or a source. The factory never creates, rewrites, normalizes,
-refreshes or deletes it; an invalid overlay is preserved untouched, reported as
-a warning and ignored for that run, while valid generated guidance still
+refreshes or deletes it. An invalid overlay is preserved untouched, reported as
+a warning, and ignored for that run, while valid generated guidance still
 applies.
 
-Every run snapshots what it used — the effective skill, the overlay as read
-when valid, and the guidance provenance — before any agent sees it, so a run
+Every run snapshots what it used (the effective skill, the overlay as read
+when valid, and the guidance provenance) before any agent sees it. A run
 stays explainable and a mid-run edit affects later runs only.
 
-None of this can break an already-green run. A failed re-profile, failed
-research, rejected skill, invalid overlay or guidance that became stale (the
-`dependency_fingerprint` changed after it was loaded) records a warning on
-`repository-profile.json` and safely skips or disables polish instead of
-failing the run or escalating. Guidance cannot grant tools, alter models,
-change workflow states, waive gates, add commands, spend retry budget, widen
-permissions, change dependencies or widen scope. `factory skill refresh` is the
-only command that writes guidance, it writes generated files only, and the
-dashboard has no skill or overlay write path.
+None of this can break an already-green run. Failed profiling or research
+records a profile warning. A rejected skill, invalid overlay, or stale guidance
+also records a warning. The factory skips or disables polish instead of
+failing or escalating. Guidance cannot
+grant tools, alter models, change workflow states, waive gates, add commands,
+spend retry budget, widen permissions, change dependencies or widen scope.
+`factory skill refresh` is the only command that writes guidance, it writes
+generated files only, and the dashboard has no skill or overlay write path.
 
 ## Bounded everything
 
@@ -243,12 +239,12 @@ There is no unlimited retry loop anywhere.
 | --- | --- | --- |
 | `retries.same_model_attempts` | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
-| `polish.enabled` | `true` packaged; `false` if omitted | At most one post-green implementation attempt. |
-| `review.max_rounds` | `3` | Absolute logical review rounds; eligible low-risk findings may be accepted, otherwise the run stops for a human. |
+| `polish.enabled` | `true` packaged, `false` if omitted | At most one post-green implementation attempt. |
+| `review.max_rounds` | `3` | Absolute logical review rounds. Eligible low-risk findings can be accepted, otherwise the run stops for a human. |
 | `review.max_accepted_findings` | `5` | Maximum findings in one controller acceptance. |
 | `review.accepted_risks` | `[R0, R1]` | Risk levels eligible for bounded acceptance. |
 | `review.blocked_categories` | `[SECURITY, SCOPE]` | Finding categories that always require resolution or a human. |
-| Reviewer late-finding adoption | `1` round | One repair review may add a batch of previously missed blockers. |
+| Reviewer late-finding adoption | `1` round | One repair review can add a batch of previously missed blockers. |
 | Reviewer path/finding stall guard | `3` reviews | Triggers bounded acceptance evaluation or stops with `review-impasse.json`. |
 | Reviewer blocker-replacement guard | `2` reviews | Stops consecutive complete blocker replacement cycles. |
 | `scope_drift.max_replans` | `1` | Replans after scope drift. |
@@ -262,10 +258,9 @@ There is no unlimited retry loop anywhere.
 
 Budgets are persisted on the run. A restart does not reset them.
 
-Polish uses the implementation budget, runs only when one later recovery
-attempt remains, never runs during CI repair and is always followed by
-deterministic verification and scope assessment. It may make no edits. No
-`POLISHING` state or `POLISHER` role exists.
+Polish uses the implementation budget. It runs only when one recovery attempt
+remains, never runs during CI repair, and is always verified again. It can make
+no edits. No `POLISHING` state or `POLISHER` role exists.
 
 ## Recovery is conservative
 
@@ -293,11 +288,10 @@ than a control plane.
 - Token generated per process, printed once, never logged.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
-- Data minimization is applied twice, independently: the detail provider builds
-  a typed object containing only summary fields and attempt metadata — never
-  failure reasons, agent reasoning or raw artifacts — and the request handler
-  then allowlists the fields it renders. A future provider mistake still cannot
-  leak content.
+- Data minimization is applied twice. The detail provider builds a typed object
+  with summary fields and metadata (never failure reasons, agent reasoning, or
+  raw artifacts). The request handler then allowlists the fields it renders. A
+  future provider mistake still cannot leak content.
 - Cannot approve, retry, cancel or reconfigure anything.
 - Python standard library only. No framework, no npm, no bundler, no build step.
 
@@ -306,8 +300,8 @@ than a control plane.
 - macOS only, per-user, opt-in.
 - Exactly one plist under `~/Library/LaunchAgents`. Nothing under `/Library`. No
   root `LaunchDaemon`.
-- Installed only by `factory service install`. Never as a side effect of
-  extracting an archive, running the factory or upgrading it.
+- Installed only by `factory service install`. Never when you extract an
+  archive, run the factory, or upgrade it.
 - Refuses unless the configuration enables the scheduler, and refuses if
   `factory doctor` reports any error.
 - Defaults to `--runtime fake`.
@@ -321,7 +315,7 @@ notarization are deferred. macOS quarantines a downloaded archive until you
 clear the attribute yourself.
 
 The release workflow refuses to replace an existing release. GitHub release
-immutability is also enabled for new releases; existing releases from `v0.3.0`
+immutability is also enabled for new releases. Existing releases from `v0.3.0`
 onward report `immutable=true`. Older historical releases still report
 `immutable=false`.
 
@@ -331,7 +325,6 @@ See [Releases](../project/releases.md).
 
 ## What does not exist
 
-Not implemented, not designed, and nothing in the codebase requires them:
-unrestricted autonomous merge, autonomous deployment, staging promotion, remote workers,
-Docker or Kubernetes sandboxes, a hosted service, a multi-user application, a
-control plane, telemetry, and long-term semantic memory.
+The factory deliberately excludes several features. It does not implement
+unrestricted autonomous merge, deployment, a staging tier, or remote workers.
+It also omits sandboxes, hosted services, control planes, and semantic memory.

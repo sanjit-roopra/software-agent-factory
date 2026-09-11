@@ -107,15 +107,34 @@ plans.
 
 Use concise technical English for all factory-authored text.
 
+- Use the pinned
+  [SimpleEnglish skill](https://github.com/AminBlg/SimpleEnglish/blob/61ee200efbd423050aab982eed94226229891ae0/skills/simple-english/SKILL.md)
+  for every change to `README.md` or `docs/`.
+- Apply the skill's strict ASD-STE100 guidance during the writing review.
+- Classify each passage as procedural or descriptive.
 - Use active voice and simple sentences.
+- Use simple tenses and American spelling.
+- Put each condition before its instruction.
 - Put one action or fact in each sentence.
 - Use 20 words or fewer for instructions.
 - Use 25 words or fewer for descriptions.
+- Use `can`, `will` or `must` for modal meaning.
+- Do not use contractions.
+- Use one term for one meaning.
+- Define each unfamiliar concept at its first use.
 - Remove filler, semicolons, em dashes and Latin abbreviations.
+- Do not use bold lead-ins or decorative emphasis.
+- Put the command or condition before the risk in a warning.
 - Preserve facts, uncertainty, code, identifiers, paths, commands and quoted errors.
 
-The factory uses selected checks from SimpleEnglish. These checks follow
-ASD-STE100 principles but do not prove formal compliance.
+Run this local check after each documentation change:
+
+```bash
+uv run --no-sync python scripts/docs/check_simple_english.py
+```
+
+The check uses selected rules from SimpleEnglish. A successful check does not
+prove formal ASD-STE100 compliance.
 
 ## Repository delivery workflow
 

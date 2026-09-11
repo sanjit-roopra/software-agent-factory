@@ -50,7 +50,7 @@ jobs:
         run: uv run --no-sync ruff check --output-format=github .
 
       - name: Type check
-        run: uv run --no-sync mypy src/software_agent_factory scripts/release
+        run: uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
 
   tests:
     name: tests (Python ${{ matrix.python-version }})
@@ -180,6 +180,7 @@ jobs:
         run: |
           uv sync --locked --no-default-groups --group docs
           uv run --no-sync mkdocs build --strict
+          uv run --no-sync python scripts/docs/check_simple_english.py
           uv run --no-sync python scripts/docs/check_rendered_links.py site
 
   ci-gate:

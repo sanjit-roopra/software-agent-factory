@@ -20,21 +20,21 @@ There is no single best model across every factory role.
 
 | Need | Strong candidates | Why |
 | --- | --- | --- |
-| Lowest-cost mechanical work | `mai-code-1.1-flash`, `gpt-5.6-luna` | Both cost about $0.016 for the illustrative small call below. MAI is coding-specialized; Luna has broader reasoning evidence. |
+| Lowest-cost mechanical work | `mai-code-1.1-flash`, `gpt-5.6-luna` | Both cost about $0.016 for the illustrative small call below. MAI is coding-specialized. Luna has broader reasoning evidence. |
 | Cost-effective implementation | `gemini-3.8-flash`, `gpt-5.6-terra` | Gemini 3.8 has unusually strong DeepSWE results for its measured task cost. Terra offers broader reasoning evidence and selectable long context. |
-| Hard implementation | `gpt-6-astra`, `claude-opus-5` | Astra leads the current DeepSWE comparison; Opus remains a strong lower-cost frontier alternative. |
+| Hard implementation | `gpt-6-astra`, `claude-opus-5` | Astra leads the current DeepSWE comparison. Opus remains a strong lower-cost frontier alternative. |
 | Hard planning and novel reasoning | `gpt-6-astra`, `claude-opus-5` | Strongest current reasoning and agentic evidence, but expensive. |
-| Web research and synthesis | `claude-opus-5`, then `gpt-5.6-sol` | Best available exact-model BrowseComp and synthesis evidence, with major harness caveats. |
-| Cost-effective testing experiment | `gemini-3.8-flash`, `gpt-5.6-terra` | Attractive economics and coding evidence, but weaker Terminal-Bench 4 results than the frontier models; validate locally before adopting. |
+| Web research and synthesis | `claude-opus-5`, then `gpt-5.6-sol` | Best available exact-model BrowseComp and synthesis evidence, with major benchmark setup caveats. |
+| Cost-effective testing experiment | `gemini-3.8-flash`, `gpt-5.6-terra` | Attractive economics and coding evidence, but weaker Terminal-Bench 4 results than the frontier models. Validate locally before adopting. |
 | High-value final review | `gpt-5.6-sol` | Best independent audit-and-correct-patch evidence among the generally available exact models reviewed. |
-| Security-focused testing | `claude-opus-5`, then `gpt-6-astra` | Opus has stronger disclosed prompt-injection resistance; Astra is an excellent optional offensive second pass for high-risk changes. |
-| Untrusted-repository review | `claude-opus-5` has the strongest published prompt-injection result | This conflicts with the factory's reviewer-family rule when any Claude worker is configured; use it as a separate specialist or change the worker families. |
+| Security-focused testing | `claude-opus-5`, then `gpt-6-astra` | Opus has stronger disclosed prompt-injection resistance. Astra is an optional offensive second pass for high-risk changes. |
+| Untrusted-repository review | `claude-opus-5` has the strongest published prompt-injection result | This conflicts with the factory's reviewer-family rule when any Claude worker is configured. Use it as a separate specialist or change the worker families. |
 
 The strongest public autonomous-coding cluster is currently **GPT-6 Astra,
 Gemini 3.8 Flash, Claude Opus 5 and GPT-5.6 Sol**. Their best DeepSWE v1.1
 scores overlap statistically, so the ranking does not establish one universal
 winner. Price differs by more than an order of magnitude, which makes a local
-bakeoff more valuable than selecting the top headline score.
+bakeoff more useful than selecting the top headline score.
 
 The packaged `default` profile is:
 
@@ -82,7 +82,7 @@ tables, not partial overlays.
 Gemini 3.8 Flash is intentional here. In the illustrative pricing comparison,
 its call costs 5.63 credits versus 15.00 for Sonnet 5 and 16.00 for Terra.
 Sonnet has stronger directly reported research evidence, but that evidence used
-a much richer research harness than the factory's allowlisted `web_fetch`-only
+a much richer research test framework than the factory's allowlisted `web_fetch`-only
 skill-generation call. Gemini at medium effort provides a materially cheaper
 economy choice with stronger general and long-document proxies than the minimum-cost
 Luna or GPT-5 mini alternatives. Re-evaluate after Gemini's promotional pricing
@@ -109,7 +109,7 @@ model_profiles:
 
 This is a complete routing table. Astra is placed on adversarial testing
 because its strongest differentiated evidence is offensive-security
-and difficult agentic problem solving; Sol then independently performs the
+and difficult agentic problem solving. Sol then independently performs the
 final audit-and-correct-patch review. Astra is deliberately absent from
 `economy`: the illustrative call costs 75 credits, twice Opus 5 and over 13
 times Gemini 3.8 Flash. Select the route with
@@ -162,21 +162,21 @@ Official sources:
 
 Organization policy, rollout state and account eligibility can still hide a
 model even when GitHub's global documentation lists it as generally available.
-The packaged factory defaults use Claude Opus 5 and GPT-5.6 Sol, so Copilot Pro
-alone is not sufficient for a real run with the unchanged defaults.
+The packaged factory defaults use Claude Opus 5 and GPT-5.6 Sol. Copilot Pro
+alone is not sufficient for a real run with unchanged defaults.
 
 ## Available model and price table
 
 The table covers the exact models in the Copilot picker snapshot supplied for
 this research. It is not the complete global Copilot catalog. GitHub also lists
 models such as GPT-5.4 nano, Claude Sonnet 4.6, Claude Fable 5/5.1, Claude Opus
-4.8 fast mode, Kimi K2.7 Code and Kimi K3; account, plan, policy and rollout
+4.8 fast mode, Kimi K2.7 Code and Kimi K3. Account, plan, policy and rollout
 determine what an individual picker exposes.
 
 Prices are **input / cached input / cache write / output**, in USD per one
 million tokens. The illustrative call uses **50,000 uncached input tokens and
 5,000 output tokens**, excludes cache-write charges and uses the normal context
-tier. It is useful for relative comparison only; real agent calls can have
+tier. It is useful for relative comparison only. Real agent calls can have
 larger outputs, hidden reasoning tokens, cache effects and long-context rates.
 
 | Model | Factory selector | Pro | Selectable 1M | Reasoning levels | Price I/C/W/O | Illustrative call |
@@ -209,7 +209,7 @@ while live catalog metadata observed during this research reported a 400K total
 window. Verify the picker and `/context` display for the account before relying
 on 1M.
 
-`**` The live CLI catalog exposed `mai-code-1-flash-picker`; some GitHub
+`**` The live CLI catalog exposed `mai-code-1-flash-picker`. Some GitHub
 documentation uses `mai-code-1-flash`. Confirm the exact selector shown by the
 installed CLI before configuring this older model.
 
@@ -232,10 +232,10 @@ GitHub does not clearly state whether crossing the threshold reprices the whole
 interaction or only tokens above it. Budget conservatively until that is
 clarified.
 
-Grok is not listed for Copilot's selectable **1M** tier, but its provider
-context is larger than the normal Copilot tier and GitHub publishes a
-long-context price above 200K input. `No` in the table means "no selectable
-1M", not "short context".
+Grok is not listed for Copilot's selectable **1M** tier. Its provider
+context is larger than normal tiers, and GitHub publishes a long-context
+price above 200K input. `No` in the table means "no selectable 1M", not "short
+context".
 
 ## Context windows in this factory
 
@@ -255,8 +255,8 @@ Official references:
 
 Each role exposes `context_tier: default|long_context`.
 `CopilotAgentRuntime` passes `--context` explicitly, so a factory run does not
-inherit a mutable interactive CLI setting. The packaged profiles use `default`;
-enable `long_context` only for roles whose model supports it and whose task
+inherit a mutable interactive CLI setting. The packaged profiles use `default`.
+Enable `long_context` only for roles whose model supports it and whose task
 actually needs the larger window.
 
 Do not treat nominal context as effective repository understanding:
@@ -272,11 +272,11 @@ burst option for a curated evidence pack, not the default for every stage.
 
 ## Comparable benchmark snapshot
 
-No public benchmark covers every model under one identical harness. The table
-therefore separates engineering-agent evidence from broader evaluations:
+No public benchmark covers every model under one identical benchmark framework.
+The table therefore separates engineering-agent evidence from broader evaluations:
 
 - **DeepSWE v1.1:** autonomous repository work using a common mini-swe-agent
-  harness. The value is the best published effort configuration's pass@1.
+  benchmark setup. The value is the best published effort configuration's pass@1.
   Mean cost is the benchmark's provider-priced task cost, not GitHub AI Credit
   billing.
 - **Terminal-Bench 4:** terminal tasks. The rows share benchmark version and
@@ -288,7 +288,7 @@ therefore separates engineering-agent evidence from broader evaluations:
 
 `V` marks a vendor-reported value where no matching official benchmark
 submission was found. A blank cell means no qualifying exact-model score was
-found; it does not mean zero.
+found. It does not mean zero.
 
 ### Engineering-agent evidence
 
@@ -311,9 +311,9 @@ found; it does not mean zero.
 | Gemini 3.5 Flash | 36.06% | high | 32.10-40.03 | $3.45 | - |
 
 The DeepSWE mean-cost column is workload-specific. For example, Sonnet 5 used
-far more steps and cached input than Gemini 3.8 in this harness. It does not
-contradict the token price table; it shows why price per token is not cost per
-successful task.
+far more steps and cached input than Gemini 3.8 in this benchmark framework. It
+does not contradict the token price table. It shows why price per token is not
+cost per successful task.
 
 Most headline DeepSWE rows use `max` or `xhigh`, while the candidate factory
 configuration above intentionally starts several roles at `medium` or `high`.
@@ -377,7 +377,7 @@ Benchmark sources:
 Best source among the three for autonomous software-engineering selection. It
 contains 113 original long-horizon tasks across 91 repositories and uses
 behavioral verifiers. Use it to shortlist configurations, then test them in the
-factory's own Copilot CLI harness.
+factory's own Copilot CLI test framework.
 
 Limitations include only a few whole-benchmark repeats, best-effort selection
 bias, language skew toward TypeScript/Go/Python, public-task contamination over
@@ -386,13 +386,12 @@ time and a generic agent scaffold.
 ### BenchLM
 
 [BenchLM](https://benchlm.ai/) is a useful meta-leaderboard. Its overall score
-weights Agentic 22%, Coding 20%, Reasoning 17%, Multimodal/Grounded 12%,
+weights Agentic 22%, Code tasks 20%, Reason tasks 17%, Multimodal/Grounded 12%,
 Knowledge 12%, Multilingual 7%, Instruction Following 5% and Math 5%.
 
 Use its Coding and Agentic category evidence to triangulate a shortlist. Do not
-use a one-point overall difference as a procurement decision: source coverage
-varies greatly, some ranks are estimated, and the full normalization,
-missing-data prior and external-consensus calibration are not publicly
+use a one-point overall difference as a procurement decision. Source coverage
+varies, some ranks are estimated, and calibration details are not publicly
 reproducible.
 
 ### OpenRouter
@@ -419,11 +418,10 @@ availability and integrations rather than successful work.
   DeepSWE at Flash pricing.
 - Gemini 3.8's Terminal-Bench 4 result is weak under mini-swe-agent. Using it as
   a Tester is a price-driven hypothesis, not an evidence-backed conclusion
-  about native-harness terminal performance.
+  about native-runner terminal performance.
 - MAI-Code-1.1-Flash reports 72.6% SWE-bench Verified and 62.9%
-  Terminal-Bench 2.1 in Microsoft's production Copilot harness, but no
-  directly comparable DeepSWE or current independent composite result was
-  found.
+  Terminal-Bench 2.1 in Microsoft production environments. No directly
+  comparable DeepSWE score was found.
 - GPT-5.3-Codex remains a plausible coding specialist, but its exact current
   public coverage is thinner than the newer general models.
 
@@ -442,7 +440,7 @@ Primary reports:
 - GPT-6 Astra and Claude Opus 5 have the strongest current evidence for hard
   planning and novel interactive reasoning.
 - Astra scored 62.7% on ARC-AGI-3's standard interface and 98.6% using the
-  provider adapter. That enormous difference shows that harness design can be
+  provider adapter. That enormous difference shows that test framework design can be
   as important as model choice.
 - GPT-5.5, GPT-5.3-Codex, GPT-5 mini, GPT-5.4 and Sol/Terra have strong exact
   IFBench results. Gemini 3.5 Flash leads the available exact rows, despite not
@@ -468,9 +466,8 @@ research product rather than the bare model.
 - GPT-5.6 Sol is close and remains a strong current Researcher.
 - Claude Sonnet 5 is the best-supported lower-cost research alternative when
   research quality is preferred over the economy profile's larger savings.
-- Gemini 3.8 Flash is the economy Researcher: weaker direct research evidence,
-  but 62.5% cheaper than Sonnet in the illustrative call and well matched to
-  the factory's bounded, allowlisted documentation-synthesis task.
+- Gemini 3.8 Flash is the economy Researcher. It is 62.5% cheaper than Sonnet
+  in the illustrative call and well matched to bounded documentation synthesis.
 - GPT-6 Astra has strong factuality and analytical proxies, but no exact
   directly comparable BrowseComp result was found in this review.
 
@@ -497,9 +494,8 @@ Security is not one capability:
 - defensive analysis,
 - resistance to instructions hidden in untrusted content.
 
-The strongest directly relevant public review evidence is CWE-Bench, a blind
-repository audit where a result passes only when the exploit is blocked and
-the existing regression suite still passes:
+CWE-Bench provides the strongest public review evidence. It runs a blind
+repository audit where exploits must be blocked while regressions still pass:
 
 | Model/system | CWE-Bench pass@1 |
 | --- | ---: |
@@ -507,23 +503,22 @@ the existing regression suite still passes:
 | GPT-5.6 Sol | 44.2% |
 | Grok 4.6 | 38.2% |
 
-Gemini 3.8 Flash Cyber is a distinct restricted model; its result must not be
+Gemini 3.8 Flash Cyber is a distinct restricted model. Its result must not be
 assigned to ordinary Gemini 3.8 Flash. Among the generally available exact
 models in this guide, Sol therefore has the best independent audit-and-patch
 evidence.
 
-GPT-6 Astra has exceptional offensive evidence — including 85.4% on OpenAI's
-SEC-Bench Pro evaluation and large gains over Sol on exploit and
-reverse-engineering tasks — but no directly comparable public CWE-Bench result,
-false-positive measurement or regression-preserving patch score. It is a
-strong candidate for an optional second security pass on high-risk changes,
-not yet the best-supported sole reviewer.
+GPT-6 Astra has strong offensive evidence with 85.4% on SEC-Bench Pro.
+It lacks public CWE-Bench results, false-positive measurements, or
+regression-preserving patch scores. It is a strong candidate for an optional
+second security pass on high-risk changes, not yet the best-supported sole
+reviewer.
 
-Claude Opus 5 remains valuable as a complementary security tester because it
+Claude Opus 5 remains useful as a complementary security tester because it
 has the strongest disclosed prompt-injection resistance in the reviewed
-comparisons. Grok 4.6 has credible review evidence, including a slight lead over
-Sol on xAI's private SecureCodeReview evaluation, but trails Sol on the
-independent CWE-Bench result and has weaker disclosed safeguard evidence.
+comparisons. Grok 4.6 has credible review evidence on private evaluations.
+However, it trails Sol on independent CWE-Bench results and has weaker
+disclosed safeguard evidence.
 
 MAI-Code-1.1-Flash's model card says CyberBench, CyberSecEval and SecRepo were
 used, but publishes no versions, scores or task breakdown. Keep it on low-risk,
@@ -531,7 +526,7 @@ deterministically verifiable work until stronger evidence is available.
 
 Do not infer secure coding from a SWE-bench score, or reviewer precision from a
 CTF score. For security-sensitive changes, models supplement SAST, dependency
-scanning, tests, fuzzing and human review; they do not replace them.
+checks, unit tests, fuzz tests, and human review. They do not replace them.
 
 Sources:
 
@@ -554,9 +549,8 @@ comprehension:
   83.0-84.3% group.
 - On Context Arena's harder eight-needle MRCR, several nominal 1M models fall
   sharply at the largest bins.
-- Gemini 3.7 Flash retained the strongest reported full-1M result in that
-  snapshot, even though Copilot does not expose its provider-level 1M window
-  through the selectable long-context tier.
+- Gemini 3.7 Flash retained the strongest reported full-1M result. Copilot does
+  not expose its 1M window through the selectable long-context tier.
 - RULER's general result is that effective context is often much shorter than
   the claimed window.
 
@@ -584,14 +578,14 @@ by role rather than producing one global model score.
 | Reviewer | 30% defect/security recall, 25% reasoning, 20% false-positive control, 15% instruction following, 10% cost |
 
 Do not fill missing public evidence with zero. Track an evidence-coverage score
-separately, and penalize uncertainty only after the capability score has been
+separately, and penalize uncertainty only after the capability score is
 computed from observed dimensions.
 
 ## Required local bakeoff
 
-Public leaderboards are priors. The factory should make final routing decisions
-from its own persisted outcomes using the exact Copilot CLI, prompts, tool
-permissions and retry policy it will deploy.
+Public leaderboards are priors. The factory must make routing decisions from
+persisted outcomes. Test with the exact Copilot CLI, prompts, tool permissions,
+and retry policies.
 
 Build a fixed evaluation set containing:
 
@@ -616,7 +610,7 @@ For every model, record:
 - reviewer true positives, false positives and missed defects,
 - schema-valid artifact rate,
 - time to accepted result,
-- input, cached, cache-write, reasoning and output tokens when available,
+- input, cached, cache-write, thought, and output tokens when available,
 - total AI Credits and dollars,
 - retries and failure category.
 
@@ -630,7 +624,7 @@ by role instead of optimizing one blended score.
    Unsupported model or reasoning combinations fail only when the CLI executes.
 2. Reasoning is validated only as a non-empty string, not against each model's
    supported levels.
-3. One reviewer is configured for all risk levels; the router cannot use Astra
+3. One reviewer is configured for all risk levels. The router cannot use Astra
    only for high-risk review.
 4. The reviewer-family check uses the string before the first hyphen as the
    family. It is a useful guard, not a provider ontology.
@@ -639,14 +633,13 @@ by role instead of optimizing one blended score.
 6. Runtime telemetry is best effort because Copilot's usage-output schema is
    experimental. Missing or malformed fields remain unknown.
 7. Reported premium-request cost and nano-AIU are preserved as distinct raw
-   units. The dashboard may derive a USD usage value from nano-AIU for display;
-   it does not turn premium-request units into current billing.
+   units. The dashboard can derive a USD usage value from nano-AIU for display.
+   It does not turn premium-request units into current billing.
 8. Named profiles are complete `models` blocks. Other custom YAML sections are
    still not deep-merged with packaged defaults.
 
-These limitations mean model evaluation and model routing should remain
-separate tasks: first establish a measured role-specific policy, then change
-the typed configuration/runtime surfaces required to express it.
+Model evaluation and routing must remain separate tasks. First establish a
+measured policy. Then change configuration and runtime surfaces to express it.
 
 ## Source-quality rules used here
 

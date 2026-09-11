@@ -117,7 +117,7 @@ strict = true
 warn_unused_ignores = true
 show_error_codes = true
 pretty = true
-files = ["src/software_agent_factory", "scripts/release"]
+files = ["src/software_agent_factory", "scripts/docs", "scripts/release"]
 
 [tool.pydantic-mypy]
 warn_required_dynamic_aliases = true

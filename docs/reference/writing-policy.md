@@ -30,6 +30,30 @@ The factory checks these rules:
 The prompts also tell agents to use active voice, simple tenses and one idea
 per sentence.
 
+## Repository documentation
+
+`README.md` and every Markdown file in `docs/` use the pinned SimpleEnglish skill.
+`AGENTS.md` requires its strict ASD-STE100 guidance for each documentation change.
+
+The documentation gate adds these mechanical rules:
+
+- Do not use contractions.
+- Use only `can`, `will`, or `must` for modal meaning.
+- Use simple tenses.
+- Avoid selected comma-plus-`-ing` clauses.
+
+The gate classifies direct instructions and condition-first sentences as
+procedural text. It treats the other sentences as descriptive text.
+
+Run the gate locally:
+
+```bash
+uv run --no-sync python scripts/docs/check_simple_english.py
+```
+
+CI, the Pages workflow, and the release workflow run the same command.
+The gate reports each finding with its file, line, and rule.
+
 ## Correction
 
 If model prose fails, the controller sends the exact findings to the same
@@ -59,5 +83,6 @@ not copy the full project brief into every child prompt.
 The checks follow ASD-STE100 Simplified Technical English principles. They do
 not implement the full controlled dictionary or validate word meaning.
 
-No tool can guarantee ASD-STE100 compliance. The official standard is
-available from [asd-ste100.org](https://www.asd-ste100.org/).
+No tool can guarantee ASD-STE100 compliance.
+The official standard is available from
+[asd-ste100.org](https://www.asd-ste100.org/).

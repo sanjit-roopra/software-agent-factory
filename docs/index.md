@@ -2,7 +2,7 @@
 title: Software Agent Factory
 description: >-
   A local-first autonomous software engineering factory. Deterministic
-  orchestration runs on your machine; models run through GitHub Copilot.
+  orchestration runs on your machine. Models run through GitHub Copilot.
 hide:
   - navigation
 ---
@@ -14,8 +14,8 @@ hide:
 # Software engineering agents with a deterministic controller
 
 Software Agent Factory takes one work item from triage to a reviewed change.
-Triage, refinement, research, planning, implementation, verification and review
-each run as a separate agent with its own model. The workflow, the retry
+Each stage runs as a separate agent with its own model: triage, refinement,
+research, plan, implementation, verification, and review. The workflow, the retry
 budgets and the quality gates are plain Python, not prompts.
 
 Core orchestration runs on your machine: Git worktrees, tests, builds, and all
@@ -56,7 +56,7 @@ changed files: FACTORY_NOTES.md
 
 That command makes no network calls and costs nothing. The default runtime is
 `fake`, a deterministic test double that exercises the whole pipeline without a
-model. Add `--runtime copilot` when you want real agents. That costs money.
+model. When you want real agents, add `--runtime copilot`. That costs money.
 
 ## The pipeline
 
@@ -77,9 +77,10 @@ flowchart LR
   L -.bounded.-> G
 ```
 
-Each stage hands the next one a typed, persisted artifact — not a growing chat
-transcript. A stage that fails goes back to implementation a bounded number of
-times, then escalates to `NEEDS_HUMAN` with the evidence attached.
+Each stage hands the next stage a typed, persisted artifact. It does not
+pass a growing chat transcript. A stage that fails goes back to
+implementation a bounded number of times. Then it escalates to `NEEDS_HUMAN`
+with the attached evidence.
 
 ## Design
 
@@ -94,23 +95,24 @@ transition, retry budget and gate. No agent can approve its own work.
 
 <div class="saf-card" markdown>
 ### Deterministic evidence first
-Lint, type checks, tests, build, changed-file scope and the Git diff are
-computed by the factory. LLM judgement supplements that evidence; it never
-replaces it. [Read more](guides/configure-repository.md)
+The factory computes lint, type checks, tests, the build, changed-file scope,
+and the Git diff. LLM judgement supplements that evidence.
+It never replaces that evidence. [Read more](guides/configure-repository.md)
 </div>
 
 <div class="saf-card" markdown>
 ### Off by default
-Pull requests, CI observation and the backlog daemon are all disabled in the
-packaged config. With the defaults the factory does no network I/O at all.
-[Read more](reference/safety.md)
+Pull requests, CI observation and the backlog daemon are disabled in the
+packaged configuration. With default settings, the factory does no network
+I/O. [Read more](reference/safety.md)
 </div>
 
 <div class="saf-card" markdown>
 ### Independent review
 The tester and reviewer see the controller-derived diff and deterministic
-results, never the implementer's own summary. Config rejects a reviewer from
-the same model family as any worker. [Read more](concepts/how-it-works.md)
+results, never the summary of the implementer. Configuration rejects a
+reviewer from the same model family as a worker.
+[Read more](concepts/how-it-works.md)
 </div>
 
 <div class="saf-card" markdown>
@@ -122,8 +124,8 @@ artifacts and per-attempt snapshots are plain JSON on disk.
 
 <div class="saf-card" markdown>
 ### Delivery stays under policy
-The factory can open PRs, repair CI and, when explicitly enabled, merge reviewed
-changes to an allowlisted target. It never bypasses branch protection,
+The factory can open pull requests, repair CI, and merge reviewed changes
+to an allowlisted target when enabled. It never bypasses branch protection,
 force-pushes or deploys. [Read more](guides/github.md)
 </div>
 
@@ -145,14 +147,13 @@ force-pushes or deploys. [Read more](guides/github.md)
 
 ## Status
 
-Early. It works end to end, and the release process, CI and packaging are real.
-Treat it as a tool you supervise, not one you leave alone with production
-credentials.
+Use with supervision only.
+The system works end to end. The release process, CI, and packaging are real.
 
-- **Platform:** macOS (Apple silicon and Intel). A source checkout needs Python
+- Platform: macOS (Apple silicon and Intel). A source checkout needs Python
   3.13+. Other platforms are not tested or supported.
-- **Implemented:** phases 0–14 plus Phase 15.0, 15.1, 15.2, 15.5 and 15.11.
-- **Deferred:** staging, deployment, Docker or Kubernetes sandboxes, remote
-  workers, Postgres, Temporal and non-GitHub trackers.
+- Implemented: phases 0 to 14, plus phases 15.0, 15.1, 15.2, 15.5, and 15.11.
+- Deferred: staging, deployment, Docker or Kubernetes sandboxes, remote
+  workers, Postgres, Temporal, and non-GitHub trackers.
 
 See [Roadmap and status](project/roadmap.md) for the full table.

@@ -74,16 +74,15 @@ Phase 16 is also implemented: deterministic repository capability profiling and
 an optional bounded post-green polish pass.
 
 Those phases make the factory installable, observable and inspectable on one
-MacBook. Phase 18 explicitly adds opt-in autonomous delivery under ADR-022:
-only the controller may merge an allowlisted, independently reviewed PR after
-the required checks pass for its exact head. Production execution and
-deployment remain out of scope.
+MacBook. Phase 18 adds opt-in autonomous delivery under ADR-022. Only the
+controller can merge an allowlisted, independently reviewed PR after required
+checks pass for its exact head. Production execution and deployment remain
+out of scope.
 
-The project path is also implemented. `factory project` invokes the configured
-Planner once with purpose `DECOMPOSE_PROJECT`, validates a flat task DAG of at
-most 12 items, optionally mirrors those items to GitHub Issues, and executes
-dependency-ready tasks through the existing `WorkflowController`. It does not
-add a second SDLC state machine: project state is limited to planning,
+The project path is also implemented. The command `factory project` invokes the
+Planner with purpose `DECOMPOSE_PROJECT`. It validates a task DAG of at most
+12 items, optionally creates GitHub issues, and executes ready tasks. It does
+not add a second SDLC state machine: project state is limited to planning,
 execution and aggregate outcome, while every child remains an ordinary
 `FactoryRun`.
 
@@ -229,41 +228,40 @@ a stalled run without inspecting lock files.
 Delivery records `base_commit_sha`, `reviewed_tree_sha` and
 `reviewed_commit_sha`. Before pushing, the controller persists
 `pending_commit_sha`: the exact commit it created from the approved tree and
-authorized parent. Recovery uses that receipt, including a crash before the
-branch ref was advanced, rather than inferring approval from arbitrary local
-history. The receipt is cleared only after successful publication records the
-published commit.
+authorized parent. Recovery uses that receipt even after a crash before the
+branch ref advances, rather than inferring approval from local history. The
+receipt is cleared only after successful publication records the published
+commit.
 
 ### ProjectBrief and ProjectPlan
 
 `ProjectBrief` is the optional high-level intake above `WorkItem`.
 `ProjectPlan` is one immutable, typed decomposition containing a flat list of
 `ProjectTask` objects. Task ids are contiguous positive integers and
-dependencies may reference earlier ids only, which guarantees an acyclic graph
+dependencies can reference earlier ids only, which guarantees an acyclic graph
 without a graph framework.
 
-The project planner must choose the fastest sufficient delivery approach:
-use one task only for one bounded, reviewable pull request, reuse existing
-repository mechanisms, and split independently verifiable capabilities, hard
-prerequisites, safe parallel work, or a scope boundary. A shared product goal
-or safety boundary is not sufficient reason to pack several capabilities into
-one issue. Tests, documentation, setup and cleanup stay with their functional
-outcome rather than becoming process-only issues.
+The project planner must choose the fastest sufficient delivery approach.
+It uses one task per reviewable pull request and reuses existing mechanisms.
+Split only for independent capabilities, hard prerequisites, or safe parallel
+work. A shared product goal or safety boundary is not sufficient reason to pack
+several capabilities into one issue. Tests, documentation, setup and cleanup
+stay with their functional outcome rather than becoming process-only issues.
 
 Deterministic plan validation bounds task acceptance criteria and rejects an
 oversized single-task description before issue creation or implementation. The
 planner receives one bounded correction attempt with the rejection reason.
 Dependencies are merge-before-start gates in remote delivery and
-integration-before-start gates locally; dependency-free ready tasks may run in
+integration-before-start gates locally. Dependency-free ready tasks can run in
 parallel isolated worktrees within the configured concurrency cap.
 
 Each child WorkItem also carries a factory-generated boundary naming the
 outcomes assigned to sibling tasks. Task planners, replanners and implementers
 must not pull those outcomes forward. Execution plans use concrete
-repository-relative path prefixes in `expected_scope.modules`; prose labels,
+repository-relative path prefixes in `expected_scope.modules`. Prose labels,
 globs and traversal are rejected before implementation. Small supporting files
 beside the planned paths are allowed when the implementation also changes its
-planned area. The plan's file-count range is advisory; the factory-owned
+planned area. The plan's file-count range is advisory. The factory-owned
 `repository.max_changed_files` setting remains the hard publication ceiling. A
 completely mismatched path set triggers bounded metadata replanning, while
 migrations, infrastructure, and unapproved dependency or CI changes stop
@@ -272,19 +270,19 @@ immediately.
 When an implementation is already deterministically green but its scope
 metadata is inaccurate, the bounded scope replan updates the ExecutionPlan and
 re-assesses the existing diff. It does not rerun the Implementer or discard
-verified work. The initial and revised plans are retained as audit evidence;
-they do not require every incidental file to have been predicted. Independent
+verified work. The initial and revised plans are retained as audit evidence.
+They do not require prediction of every incidental file. Independent
 Tester and Reviewer gates still evaluate the resulting change before
 publication.
 
 `ProjectExecution` is mutable coordination evidence stored separately from the
 immutable brief and plan. The factory derives its outcome from child
 `FactoryRun` states, integration results, and one final deterministic
-verification of the fully composed integration branch; an agent cannot declare
-the project complete. In merge mode every child must also have confirmed merge
+verification of the fully composed integration branch. An agent cannot declare
+the project complete. In merge mode, every child must include confirmed merge
 evidence in the fetched target history. Explicit `factory project --resume`
 reconciles persisted child identifiers and delivery checkpoints without
-replanning, recreating PRs or resetting budgets. Ambiguous interrupted agent
+replanning, PR recreation, or budget resets. Ambiguous interrupted agent
 work stops at `NEEDS_HUMAN`.
 
 ## Workflow states
@@ -309,20 +307,18 @@ NEEDS_HUMAN
 FAILED
 ```
 
-There is deliberately no `REPAIRING`, `PLAN_READY` or `BLOCKED` state: repair is
-a bounded transition back to `IMPLEMENTING` (or, for scope drift, back to
-`PLANNING`), not a second workflow, and "blocked" is expressed as
-`NEEDS_HUMAN` with a recorded reason.
+There is no `REPAIRING`, `PLAN_READY` or `BLOCKED` state. Repair is a
+bounded transition back to `IMPLEMENTING` (or back to `PLANNING` for scope
+drift). A blocked task enters `NEEDS_HUMAN` with a recorded reason.
 
 There is also no `POLISHING` state or `POLISHER` role. When enabled, an
-eligible bounded polish attempt transitions `VERIFYING → RESEARCHING` when the
-current dependency fingerprint has no generated `RepositorySkill` yet, then
-`RESEARCHING → IMPLEMENTING` for one ordinary `IMPLEMENTER` attempt triggered
-by `POLISH`, followed by the normal `VERIFYING` transition. When reusable
-guidance already exists, no research call is made. `RESEARCHING` remains a
-temporary transition, not a new role. When the research or its validation
-fails, the run stays on its existing green path: the reason is recorded as a
-profile warning and the controller transitions straight to `REVIEWING`.
+eligible polish attempt transitions `VERIFYING → RESEARCHING` if no
+`RepositorySkill` exists. It then transitions `RESEARCHING → IMPLEMENTING` with
+trigger `POLISH`, followed by normal `VERIFYING`. When reusable guidance
+already exists, no research call is made. `RESEARCHING` remains a temporary
+transition, not a new role. If research or validation fails, the run stays on
+its green path. The reason is recorded as a profile warning, and the
+controller transitions to `REVIEWING`.
 
 The workflow controller owns every transition. The full table is declared as
 data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
@@ -342,14 +338,14 @@ CI_RUNNING   → DONE | CI_DIAGNOSIS
 CI_DIAGNOSIS → IMPLEMENTING
 ```
 
-Every non-terminal state may additionally escalate to `NEEDS_HUMAN` (a business
+Every non-terminal state can additionally escalate to `NEEDS_HUMAN` (a business
 decision: eligibility, risk, scope, exhausted budget, non-repairable CI) or
 `FAILED` (an operational agent/infrastructure failure).
 
 Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
 
 `PR_READY` is *not* terminal. When pull requests are enabled it continues to
-`PR_CREATED`; when they are disabled it is the completed endpoint of the manual
+`PR_CREATED`. When they are disabled it is the completed endpoint of the manual
 flow and the controller finalizes it explicitly by stamping `completed_at`.
 `workflow.is_run_finished` is the single predicate that expresses this, and the
 scheduler uses it rather than a raw state comparison.
@@ -357,8 +353,8 @@ scheduler uses it rather than a raw state comparison.
 ## Scheduling state
 
 Scheduling ownership is separate from detailed SDLC state. `Scheduler` owns
-reservations, ordering, bounded concurrency and stall detection entirely
-in-memory; it never mutates a `FactoryRun`. `FactoryService` composes it with
+reservations, task order, bounded concurrency, and stall detection entirely
+in-memory. It never mutates a `FactoryRun`. `FactoryService` composes it with
 `GitHubIssueProvider` and `WorkflowController`, and dispatches through a thread
 pool bounded by `scheduler.max_concurrent_tasks` (1 or 2).
 
@@ -427,14 +423,14 @@ parsed manifests are:
 
 | Manifest | Ecosystem | Recorded as |
 | --- | --- | --- |
-| `pyproject.toml` (`project.dependencies`, `project.optional-dependencies.*`, `dependency-groups.*`) | Python | one declaration per requirement, grouped by table; `requires-python` becomes the `python` runtime target |
-| `pyproject.toml` (`tool.poetry.dependencies`, `tool.poetry.dev-dependencies`, `tool.poetry.group.*.dependencies`) | Python | one declaration per entry, grouped by table; also marks the `poetry` package manager |
-| `requirements.txt`, `requirements-*.txt` | Python | one declaration per requirement in group `requirements`; marks the `pip` package manager |
-| `setup.cfg`, `tox.ini` | Python | technology and pytest evidence only — no versions |
+| `pyproject.toml` (`project.dependencies`, `project.optional-dependencies.*`, `dependency-groups.*`) | Python | one declaration per requirement, grouped by table. `requires-python` becomes the `python` runtime target |
+| `pyproject.toml` (`tool.poetry.dependencies`, `tool.poetry.dev-dependencies`, `tool.poetry.group.*.dependencies`) | Python | one declaration per entry, grouped by table. Also marks the `poetry` package manager |
+| `requirements.txt`, `requirements-*.txt` | Python | one declaration per requirement in group `requirements`. Marks the `pip` package manager |
+| `setup.cfg`, `tox.ini` | Python | technology and pytest evidence only, with no versions |
 | `package.json` (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `packageManager`) | npm | one declaration per entry, grouped by table |
 
 Exact versions are resolved from `uv.lock`, `package-lock.json` and
-`pnpm-lock.yaml` when unambiguous; an ambiguous resolution records a warning
+`pnpm-lock.yaml` when unambiguous. An ambiguous resolution records a warning
 instead of a version. `poetry.lock`, `yarn.lock`, `bun.lock`/`bun.lockb`,
 `Pipfile.lock` and `pylock.toml` mark their package manager where applicable
 and are fingerprinted as `version_files`, but exact graph parsing is not
@@ -456,7 +452,7 @@ generated, reused and customized.
 
 ### RepositorySkill
 
-Generated for the repository as a whole — not selected from a catalog, and not
+Generated for the repository as a whole, not selected from a catalog, and not
 scoped to one task's changed files. Guidance is used only when `polish.enabled`
 and the bounded polish attempt is eligible.
 
@@ -464,7 +460,7 @@ and the bounded polish attempt is eligible.
 
 Generated skills are stored under `factory.data_dir` in repository-scoped
 storage, keyed by the canonical local repository identity and the profile's
-`dependency_fingerprint`, following the template:
+`dependency_fingerprint`. Storage follows the template:
 
 ```text
 <data_dir>/repository-skills/v1/<repository-key>/...
@@ -474,12 +470,11 @@ They are never written into the target repository or its worktree, and the
 factory never auto-loads a skill from the target repository. Use
 `factory skill path --repo PATH` to discover the real paths.
 
-The repository key is derived from the canonical local Git common directory, so
-every linked worktree of one checkout shares a single skill directory and no
-remote URL is consulted. It follows that moving or re-cloning a repository
-selects a new key with no generated skills and no overlay: guidance at the old
-path is neither followed nor deleted, and a human moves or copies the directory
-(or recreates guidance and overlay at the new path) deliberately.
+The repository key derives from the local Git common directory. All
+linked worktrees of one checkout share a skill directory. No remote URL is
+consulted. Moving or re-cloning a repository selects a new key with no
+guidance. Guidance at the old path is neither followed nor deleted. A human can
+copy the directory or recreate guidance deliberately.
 
 A normal run reuses guidance instead of researching it:
 
@@ -487,46 +482,42 @@ A normal run reuses guidance instead of researching it:
   reused
 - generation runs only when the current fingerprint has no generated skill
 - an existing generated file is never overwritten
-- every load is validated in full — schema, agreement with the current profile,
-  and every cited source against the configured allowlists — not only at
-  generation time
-- a changed `dependency_fingerprint` selects a new generated file; earlier
+- every load is validated in full (schema, agreement with the current profile,
+  and every cited source against allowlists), not only at generation time
+- a changed `dependency_fingerprint` selects a new generated file. Earlier
   files remain on disk
 - there is no TTL and no time-based expiry
 
-Reuse bounds research per fingerprint, not per process. Two truly concurrent
-first runs for the same missing fingerprint may each make one bounded
-generation sequence: an initial Researcher call and one retry after any
-failure. Invalid output or provenance carries its exact bounded rejection
-reason into the retry; infrastructure failure receives one ordinary retry.
-Publication is atomic and no-clobber, so one result wins, the other run loads
-the winner, and both revalidate the winner in full before using it. The race
-costs at most one extra sequence (two calls); correctness, stored state and the
-overlay are unaffected.
+Reuse bounds research per fingerprint, not per process. Two concurrent first
+runs for the same missing fingerprint can each make one bounded generation
+sequence: an initial Researcher call and one retry after failure. Invalid
+output or provenance carries its exact bounded rejection reason into the retry.
+An infrastructure failure receives one ordinary retry. Publication is atomic
+and no-clobber, so one result wins, the other run loads the winner, and both
+revalidate the winner in full before using it. The race costs at most one extra
+sequence (two calls). Correctness, stored state and the overlay are unaffected.
 
 #### Generation
 
-When generation is required, after the first successful deterministic
-verification and scope assessment the controller re-profiles the
-post-implementation worktree, transitions through a temporary `RESEARCHING`
-state, and calls the configured Researcher (`Claude Opus 5` by default) with
-purpose `GENERATE_REPOSITORY_SKILL`. Any failure gets one bounded retry.
-Invalid typed output or provenance includes the exact bounded rejection reason
-so the Researcher can correct it. A second failure safely skips polish.
+When generation is required, the controller re-profiles the worktree and enters
+a temporary `RESEARCHING` state. It calls the Researcher (`Claude Opus 5` by
+default) with purpose `GENERATE_REPOSITORY_SKILL`. Any failure gets one bounded
+retry. Invalid typed output or provenance includes the exact bounded rejection
+reason so the Researcher can correct it. A second failure safely skips polish.
 
 That invocation is web-only and deliberately blind to the repository. It runs
 with the run's own persistence directory as its working directory, not the
 worktree, and its only tool is `web_fetch`. Repository custom instructions are
 disabled for it. It receives the normalized `RepositoryProfile`, the two
-configured URL lists and the factory-owned generation rules — never changed
-filenames, source code, README content, task prose or the diff. It may fetch
-only:
+configured URL lists and the factory-owned generation rules. It never receives
+changed filenames, source code, README content, task prose or the diff. It can
+fetch only:
 
 - `polish.official_documentation_origins`: official documentation, migration
   guides and release notes. These are authoritative for every version claim.
 - `polish.practice_reference_urls`: exact curated general-practice references
   (by default the reviewed `bdfinst/agentic-dev-team` notes, pinned to commit
-  `52cc5efd`, not a mutable branch). They may contribute generic quality
+  `52cc5efd`, not a mutable branch). They can contribute generic quality
   heuristics only, synthesized rather than copied, and never version claims,
   tools, commands or orchestration.
 
@@ -547,15 +538,15 @@ uncertainties
 
 `targets` are bounded package/runtime versions with evidence paths.
 `official_sources` and `practice_sources` are HTTPS citations from the
-respective configured lists; each names, in `applies_to`, the detected
-dependencies it grounds, and a practice source may instead use the single
+respective configured lists. Each names, in `applies_to`, the detected
+dependencies it grounds, and a practice source can instead use the single
 generic marker `repository`. `simplify` and `polish` are each a bounded
 `SkillGuidance` (summary, guidance, things to avoid, validation). The model
 itself refuses a skill that has neither an official source nor an explicit
 uncertainty, and refuses an official source claiming generic applicability.
 
-The controller then validates the artifact deterministically — on generation
-and on every later load — and rejects it when:
+The controller then validates the artifact deterministically (on generation
+and on every later load) and rejects it when:
 
 - its `dependency_fingerprint` does not match the profile it was generated
   from,
@@ -571,16 +562,15 @@ and on every later load — and rejects it when:
   (compared by origin) or is not an exact `polish.practice_reference_urls`
   entry.
 
-Rejection never fails an already-green run. The reason is appended to the
-persisted profile's `warnings`, polish is skipped, and the run continues to
-testing and review. When a *stored* generated skill fails revalidation, the
-warning names the file, the file is left exactly as written, and the remedy is
-the explicit `factory skill refresh` — the only command that may replace
-generated guidance. The same applies when the re-profile itself fails. Before
-testing and review the controller re-profiles once more: if profiling fails or
-the `dependency_fingerprint` has changed since the guidance was loaded, the
-skill is treated as stale, disabled for the Tester and Reviewer, and the reason
-is recorded as a profile warning.
+Rejection never fails an already-green run. The controller appends the reason
+to the persisted profile's `warnings`. It skips polish, and the run continues
+to testing and review. When a stored generated skill fails revalidation, a
+warning names the file. The file stays as written. Run `factory skill refresh`
+to replace it. The same rule applies when the re-profile fails.
+Before testing and review, the controller re-profiles once more.
+It disables the skill if profiling fails.
+It also disables the skill if the fingerprint changed after guidance loading.
+The controller records the reason as a profile warning.
 
 #### Human overlay
 
@@ -596,17 +586,18 @@ polish:   optional SkillGuidance block
 
 It declares no targets, sources, versions or fingerprints, so it is not bound
 to a dependency state and survives dependency changes. `extend` adds the
-overlay's guidance to the generated guidance; `replace` makes the overlay's
+overlay's guidance to the generated guidance. `replace` makes the overlay's
 blocks the guidance for the sections it provides. The factory never creates,
 rewrites, normalizes, refreshes or deletes this file. An invalid overlay is
 preserved exactly as written, recorded as a warning and ignored for that run,
-while valid generated guidance may still apply.
+while valid generated guidance can still apply.
 
-Three read-mostly commands support it: `factory skill path --repo PATH`
-discovers the generated and overlay paths, `factory skill validate --repo PATH`
-validates the current files, and `factory skill refresh --repo PATH
-[--runtime fake|copilot]` explicitly refreshes generated guidance only. The
-read-only dashboard has no skill or overlay write path.
+Three commands support guidance.
+`factory skill path --repo PATH` discovers the generated and overlay paths.
+`factory skill validate --repo PATH` validates current files without changes.
+`factory skill refresh --repo PATH [--runtime fake|copilot]` refreshes generated
+guidance only. It is the only command that can replace generated guidance.
+The read-only dashboard has no skill or overlay write path.
 
 #### Per-run snapshots
 
@@ -748,8 +739,8 @@ confidence
 ### CIReport
 
 Normalized, persisted CI evidence (`ci.json`). Produced by the controller from
-`gh pr checks` output; expressed with plain strings so the domain layer has no
-dependency on the `gh` adapter.
+`gh pr checks` output. It is expressed with plain strings so the domain layer
+has no dependency on the `gh` adapter.
 
 Fields approximately:
 
@@ -796,7 +787,7 @@ new Reviewer output must use the typed fields. The controller assigns stable
 finding ids and persists the open set in the run's `ReviewLedger`. Every
 implementation attempt that reaches review also records the immutable tree
 that was reviewed. After `review.max_rounds` logical reviews, the controller
-may persist a separate, tree-bound `ReviewAcceptance` and continue with
+can persist a separate, tree-bound `ReviewAcceptance` and continue with
 explicit findings. It never changes `ReviewReport.approved` to claim approval
 the Reviewer did not give.
 
@@ -903,11 +894,11 @@ Output: `ResearchReport`
 
 The same role also serves the `GENERATE_REPOSITORY_SKILL` purpose when an
 eligible polish attempt finds no reusable generated skill for the current
-dependency fingerprint. That invocation is different: it has no repository
-read at all, runs in the run's persistence directory, has only `web_fetch`
-restricted to the configured official documentation origins and curated
-practice references, sees only the normalized profile and those source lists,
-and outputs a `RepositorySkill` instead of a `ResearchReport`.
+dependency fingerprint. That invocation has no repository read. It runs in the
+run directory and has only `web_fetch`.
+Configured official documentation origins and curated practice references
+restrict that tool. The call sees only the normalized profile and source lists.
+It returns a `RepositorySkill`.
 
 ### Planner
 Model: `Claude Opus 5`
@@ -931,10 +922,9 @@ Permissions:
 
 Output: `ChangeSet`
 
-Receives the effective repository guidance — the reused or newly generated
-`RepositorySkill` plus any valid human overlay — only during the optional
-post-green polish attempt, applying simplification first and version-specific
-polish second; the initial implementation attempt receives none.
+Receives effective repository guidance only during the optional post-green
+polish attempt. It applies simplification first and version-specific polish
+second. The initial implementation attempt receives none.
 
 ### Tester
 Model: `Gemini 3.8 Flash`
@@ -951,8 +941,8 @@ The implementer's `ChangeSet` (including its summary) is never provided: the
 tester sees only controller-derived Git evidence plus deterministic results.
 
 Receives the same post-green repository guidance as the polish Implementer,
-once it has been loaded or generated and while it is still current; none before
-that point, and none when the guidance was disabled as stale.
+once loaded or generated and while still current. Receives none before that
+point, and none when the guidance was disabled as stale.
 
 Output: `TestReport`
 
@@ -974,8 +964,8 @@ Receives:
 Never receives the implementer's `ChangeSet` summary.
 
 Receives the same post-green repository guidance as the polish Implementer,
-once it has been loaded or generated and while it is still current; none before
-that point, and none when the guidance was disabled as stale.
+once loaded or generated and while still current. Receives none before that
+point, and none when the guidance was disabled as stale.
 
 Checks:
 - correctness
@@ -993,14 +983,14 @@ Output: `ReviewReport`
 The first review establishes the initial blocker set. A repair review is
 targeted. It must explicitly disposition every open finding. New defects caused
 by the repair remain blocking and join the ledger. A newly noticed older defect
-may expand repair scope in one bounded adoption round; later drip-fed findings
+can expand repair scope in one bounded adoption round. Later drip-fed findings
 are recorded as advisory rather than consuming every implementation attempt.
 Overlapping locations keep an earlier finding unresolved even if the Reviewer
 rephrases it.
 
 The controller derives repair approval from the ledger. It does not trust the
 Reviewer's `approved` boolean during a repair. Low-risk correctness or
-compatibility findings may be accepted after the configured review-round or
+compatibility findings can be accepted after the configured review-round or
 attempt limit. The acceptance is persisted in `review-acceptance.json`, bound
 to the exact reviewed tree, and shown in the pull request. Security, scope and
 repair-regression findings, high-risk work, excessive findings and complete
@@ -1018,7 +1008,7 @@ Later invoked after repeated implementation or CI failures.
 
 Model routing must be deterministic configuration.
 
-Agents may recommend:
+Agents can recommend:
 
 ```text
 complexity = L2
@@ -1082,11 +1072,11 @@ Every entry into `IMPLEMENTING` appends one attempt record. Verification,
 review and the optional post-green polish consume the same monotonic
 implementation budget so no path can evade the limit. Polish runs at most once,
 only after the first successful deterministic verification, never during CI
-repair, and only when one later recovery attempt remains available. It may make
-no edits; deterministic verification and scope assessment always run again.
+repair, and only when one later recovery attempt remains available. It can make
+no edits. Deterministic verification and scope assessment always run again.
 Actual limits belong in configuration.
 
-Review repair has additional convergence bounds. One repair review may adopt a
+Review repair has additional convergence bounds. One repair review can adopt a
 batch of late findings. The packaged policy allows three logical reviews and
 at most five accepted findings for `R0` and `R1`. At that limit, eligible
 findings become explicit review debt and the run continues. Security, scope,
@@ -1157,7 +1147,7 @@ Provide a small `RunStore` interface with behavior conceptually similar to:
 
 Initial implementation: `FileRunStore`
 
-A future implementation might be: `PostgresRunStore`
+A future implementation is possibly: `PostgresRunStore`
 
 Do not implement a database until needed.
 
@@ -1195,13 +1185,12 @@ AgentRuntime.run(
 `AgentRequest` includes the role, configured model and reasoning level, typed
 context, assigned workspace path where applicable, and a timeout.
 
-Production runtime: `CopilotAgentRuntime` (`--runtime copilot`), which builds a
-role-scoped prompt, runs the `copilot` CLI with constrained tool permissions and
-a scrubbed environment, and validates exactly one typed artifact from the final
-response. Malformed output is an explicit agent failure, never a silent pass.
-Planner, Tester and Reviewer schema failures get bounded same-model correction
-with the exact validation reason. Tester and Reviewer corrections do not spend
-implementation attempts.
+Production runtime: `CopilotAgentRuntime` (`--runtime copilot`). It builds a
+role-scoped prompt, runs the `copilot` CLI with constrained tools, and validates
+one typed artifact from the final response. Malformed output is an explicit agent
+failure, never a silent pass. Planner, Tester and Reviewer schema failures get
+bounded same-model correction with the exact validation reason. Tester and
+Reviewer corrections do not spend implementation attempts.
 
 Default runtime: `FakeAgentRuntime` (`--runtime fake`). It is the CLI default so
 no command can make a paid call by accident, and it is the only runtime the test
@@ -1250,19 +1239,19 @@ build:
 
 The factory runs deterministic checks after implementation.
 
-When `polish.enabled` is true, the first successful deterministic verification
-and scope assessment are followed by at most one `IMPLEMENTER` polish attempt,
-informed by the reusable repository guidance for the current dependency
-fingerprint plus any human overlay. A bounded web-only research call happens
-only when that fingerprint has no generated guidance yet. The full
+When `polish.enabled` is true, verification is followed by at most one
+`IMPLEMENTER` polish attempt. That attempt uses guidance for the current
+dependency fingerprint and any human overlay. A bounded web-only research call
+happens only when that fingerprint has no generated guidance yet. The full
 deterministic verification and scope assessment then run again before the
 tester and reviewer. If research or guidance validation fails, polish is
-skipped with a recorded warning and the already-green run proceeds unchanged. The packaged default and example enable
-polish; a legacy configuration that omits the section uses the model fallback
-of `false`.
+skipped with a recorded warning and the already-green run proceeds unchanged.
+The packaged default and example enable polish. A legacy configuration that
+omits the section uses the model fallback of `false`.
 
-The small command runner is part of Phase 1. Empty command lists pass, keeping
-repositories usable before they add factory-specific configuration.
+The small command runner is part of Phase 1. Empty command lists pass. This
+behavior keeps repositories usable before they add factory-specific
+configuration.
 
 ## Scope drift
 
@@ -1296,7 +1285,7 @@ The controller also compares the Git tree before and after repository
 verification. Any generated, staged or rewritten file returns the run to
 `IMPLEMENTING` with explicit repair context before Tester or Reviewer runs.
 Verification-generated paths must be removed or made intentionally part of the
-implementation; verification itself may not silently change the reviewed tree.
+implementation. Verification itself must not silently change the reviewed tree.
 
 ## Git ownership
 
@@ -1310,15 +1299,13 @@ Controller owns:
 - PR creation
 
 Branch push tolerates one transient Git network or remote-backend failure.
-Before retrying, the publisher reads the exact target branch tip so a push that
-succeeded remotely but lost its response is accepted only when that tip is the
-expected commit. Authentication, authorization, policy and non-fast-forward
-failures are not retried.
+Before retrying, the publisher reads the target branch tip. It accepts a push
+only when that tip matches the expected commit. Authentication, authorization,
+policy and non-fast-forward failures are not retried.
 
 PR creation separately tolerates one transient GitHub CLI or network failure.
-Before the single retry, the publisher looks up the exact repository, head,
-base and run marker so a request that succeeded remotely but lost its response
-is recovered instead of duplicated.
+Before retrying, the publisher looks up repository, head, base, and run marker.
+This recovers a successful remote request and prevents duplicate PR creation.
 
 Agents must not directly push protected branches.
 
@@ -1331,8 +1318,8 @@ factory/<task-id>
 `GitPublisher` never force-pushes, never merges, never mutates repository
 configuration or remotes (only `git remote get-url` is permitted), and refuses
 remotes whose host is outside `pull_request.allowed_hosts`. A CI repair pushes
-an additional normal commit to the same branch, updating the existing PR rather
-than creating a new one.
+an additional normal commit to the same branch. It updates the existing PR
+rather than creating a new one.
 
 `PullRequestMerger` is a separate, opt-in controller boundary. It requires an
 explicit target branch, repository allowlist, named required checks and local
@@ -1343,13 +1330,13 @@ pending merge request into a success claim.
 
 GitHub credentials are read from the controller's own environment and handed to
 `gh` through the child environment only. `CopilotAgentRuntime` independently
-strips `GH_TOKEN`/`GITHUB_TOKEN`/etc. from every agent subprocess, so no agent
-ever sees them.
+removes `GH_TOKEN`, `GITHUB_TOKEN`, and related credential variables from every
+agent subprocess, so no agent ever sees them.
 
 ## Command surface
 
-One CLI, with an explicit split between commands that may change something and
-commands that may not:
+One CLI, with an explicit split between commands that can change something and
+commands that cannot:
 
 ```text
 factory --version              version only, no side effects
@@ -1357,7 +1344,7 @@ factory run                    mutates: creates a run, a worktree, artifacts
 factory start                  mutates: dispatches runs (opt-in scheduler)
 factory runs / show            read-only
 factory doctor                 read-only apart from the data-dir write probe
-factory status                 read-only; does not even create the data dir
+factory status                 read-only (does not create the data dir)
 factory dashboard              read-only server, explicit and blocking
 factory service install        mutates: one per-user LaunchAgent plist
 factory service status         read-only
@@ -1368,11 +1355,9 @@ factory service uninstall      mutates: removes that plist only
 `<data_dir>/logs` once configuration and the data directory are resolved. The
 dashboard token is printed to stdout and never logged.
 
-Exit codes are uniform: `2` means "this environment or configuration cannot do
-what you asked" (invalid configuration, disabled feature, missing prerequisite,
-unusable port, refused install), `1` means "the command ran and the answer is
-no" (a run that did not succeed, an unknown run id, a doctor report with
-errors).
+Exit codes are uniform. Code `2` indicates an invalid configuration, a missing
+prerequisite, or refused installation. Code `1` indicates an unsuccessful run,
+unknown run id, or doctor check error.
 
 ## Observability
 
@@ -1404,13 +1389,12 @@ redaction already applied to captured command output. Nothing is exported: no
 telemetry backend, no exporter, no network egress.
 
 The Copilot runtime requests its usage-output file and persists the reported
-input, output, reasoning and cache token counts, nano-AIU, premium-request
-cost and timing fields. An unreported value stays unknown and is never
-defaulted to zero. Persisted telemetry remains in raw runtime units. The
-dashboard may derive an AI usage value in USD from nano-AIU for display, but it
-does not reconstruct an invoice from a model price table (ADR-017). These
-invocation records are separate from implementer `AttemptRecord`s, so telemetry
-cannot alter retry budgets.
+input, output, thought, and cache token counts, nano-AIU, premium-request cost
+and timing fields. An unreported value stays unknown and is never defaulted to
+zero. Persisted telemetry remains in raw runtime units. The dashboard can derive
+an AI usage value in USD from nano-AIU for display. It does not reconstruct an
+invoice from a price table (ADR-017). These invocation records are separate from
+implementer `AttemptRecord`s, so telemetry cannot alter retry budgets.
 
 ## Health and metrics
 
@@ -1450,13 +1434,13 @@ factory service status
 ```
 
 Both are strictly read-only. They report a stale lock, an orphaned worktree or
-an abandoned run as findings; repairing one remains an explicit operator action
+an abandoned run as findings. Repairing one remains an explicit operator action
 through the controller, exactly as in ADR-011.
 
 ## Delivery and packaging
 
 Delivery ends at a published release artifact. A `v*` tag builds a GitHub
-Release; it does not install, restart, promote or self-update anything
+Release. It does not install, restart, promote or self-update anything
 (ADR-015).
 
 ```text
@@ -1494,7 +1478,7 @@ build-info.json
 The two macOS archives are built natively on their own runners. There is no
 `universal2` build.
 
-Artifacts are unsigned or ad-hoc signed; Developer ID signing and notarization
+Artifacts are unsigned or ad-hoc signed. Developer ID signing and notarization
 are deferred, so Gatekeeper quarantine is a documented, expected condition and
 release notes must explain it.
 
@@ -1509,10 +1493,10 @@ required if chosen   copilot   (--runtime copilot)
 
 Preflight validates prerequisites for *enabled* features only, so a default
 offline run never demands `gh` or `copilot`. `gh` covers every GitHub-touching
-feature, including the backlog daemon: `scheduler.enabled` polls GitHub Issues
+feature. It covers the backlog daemon: `scheduler.enabled` polls GitHub Issues
 through `gh`.
 
-`factory doctor` runs the full report; `factory run` and `factory start` apply
+`factory doctor` runs the full report. `factory run` and `factory start` apply
 the same rule as a cheap `PATH`-only gate that fails with one explicit line and
 exit code 2 before any work starts.
 
@@ -1531,17 +1515,16 @@ factory start
 
 No root `LaunchDaemon`, no automatic installation, no installation as a side
 effect of extracting an archive or running a command. The installer captures an
-explicit `PATH` snapshot because launchd agents inherit a minimal environment,
-refuses unless the given configuration enables the scheduler, and refuses while
-`factory doctor` reports an error.
+explicit `PATH` snapshot because launchd agents inherit a minimal environment.
+It requires `scheduler.enabled` and a clean `factory doctor` report.
 
 launchd's own stdout/stderr go to `/dev/null`: the factory writes its own
-bounded, rotating structured log under `<data_dir>/logs/factory.log`, and a
+bounded rotating structured log under `<data_dir>/logs/factory.log`, and a
 launchd-captured stdio file is never rotated. `KeepAlive` is `Crashed`-only, so
-no exit code — including the CLI's configuration-error code 2 — can produce a
+no exit code (including the CLI configuration-error code 2) can produce a
 restart loop.
 
-Uninstall unloads the agent and removes the plist, leaving runs and workspaces
+Uninstall unloads the agent and removes the plist. It leaves runs and workspaces
 intact.
 
 ## Local dashboard
@@ -1562,12 +1545,12 @@ GET only, read-only
 Implemented with the Python standard library: no web framework, no npm, no
 bundler, no build step. It renders the run list, run detail, workflow state,
 attempt history and the derived metrics above. It renders no command logs and
-no diffs at all, because those are where repository content and near-secret
-material would leak into a browser.
+no diffs at all, because repository content and near-secret material can leak
+into a browser in those places.
 
 Data minimization is applied twice, independently. The detail provider builds a
 typed `RunDetail` containing only summary fields, completion facts and attempt
-metadata — never `failure_reason`, agent reasoning or a raw artifact — and the
+metadata (never `failure_reason`, agent reasoning or a raw artifact). The
 request handler then allowlists the fields it renders, so a future provider
 mistake still cannot leak content. A run that does not exist, or whose id is
 not even shaped like one, is a 404.
@@ -1577,7 +1560,7 @@ It cannot approve, retry, cancel or reconfigure anything. Authority stays with
 
 ## Long-term architecture
 
-The current abstractions should permit later addition of:
+The current abstractions permit later addition of:
 - Jira
 - staging
 - deployment

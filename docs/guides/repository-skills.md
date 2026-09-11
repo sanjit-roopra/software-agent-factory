@@ -6,7 +6,7 @@ attempt. There are two artifacts, and they are trusted differently:
 | Artifact | Written by | Bound to | Lifetime |
 | --- | --- | --- | --- |
 | Generated skill | the configured Researcher | the canonical repository identity and the profile's `dependency_fingerprint` | reused until the dependency fingerprint changes |
-| Overlay | you | the repository only | survives dependency changes; the factory never edits it |
+| Overlay | you | the repository only | survives dependency changes, and the factory never edits it |
 
 Both live outside your repository, under the factory's `factory.data_dir`.
 Nothing is ever written into your checkout or its worktree, and the factory
@@ -16,24 +16,23 @@ never loads skills from the target repository.
 
 Generation describes the repository, not the task. The Researcher receives the
 normalized `RepositoryProfile` and the configured source lists
-(`polish.official_documentation_origins` and `polish.practice_reference_urls`)
-and nothing else — no changed filenames, no source code, no README content, no
-task prose and no diff.
+(`polish.official_documentation_origins` and `polish.practice_reference_urls`).
+It receives no changed filenames, source code, README content, task prose, or diff.
 
-A normal run therefore does not research anything:
+A standard run does not do research:
 
-- if a generated skill exists for the current `dependency_fingerprint`, it is
-  loaded and reused;
-- guidance is generated only when the current fingerprint has no generated
-  skill yet;
-- an existing generated file is never overwritten;
-- every load is validated again in full — schema, agreement with the current
-  profile, and every cited source against the configured allowlists;
-- when dependencies change, the new fingerprint selects a new generated file
-  and earlier files stay on disk untouched;
-- there is no TTL and no expiry. Guidance does not go stale on a timer.
+- If a generated skill exists for the current `dependency_fingerprint`, the factory
+  loads and reuses it.
+- The factory generates guidance only when the current fingerprint has no
+  generated skill yet.
+- The factory never overwrites an existing generated file.
+- Every load is validated again in full. Validation checks schema, agreement with
+  the profile, and cited sources against allowlists.
+- When dependencies change, the new fingerprint selects a new generated file.
+  Earlier files stay on disk untouched.
+- There is no TTL and no expiration date. Guidance does not expire on a timer.
 
-Storage is repository-scoped and keyed, following the template:
+Storage is repository-scoped and keyed. It uses this path template:
 
 ```text
 <data_dir>/repository-skills/v1/<repository-key>/...
@@ -45,22 +44,22 @@ Ask the factory for the real paths rather than guessing them:
 uv run factory skill path --repo ~/projects/example
 ```
 
-If a stored generated skill no longer revalidates — for example because it
-cites a source you have since removed from `polish.official_documentation_origins`
-— the run records a warning naming the file, leaves it on disk exactly as it
-is, and skips polish. The warning points at `factory skill refresh`, which is
-the only command that may replace generated guidance.
+A stored generated skill can fail revalidation if you remove a cited source
+from `polish.official_documentation_origins`. In that case, the run records a
+warning naming the file. It leaves the file on disk as written and skips polish.
+The warning points to `factory skill refresh`. That command is the only
+command that can replace generated guidance.
 
 ### Two first runs at the same time
 
-Reuse means a repository normally researches once per set of dependencies, but
-that is not a cross-process lock. Two truly concurrent first runs for the same
-missing fingerprint may each run one bounded generation sequence. The sequence
-starts with one Researcher call and allows one retry after any failure. Invalid
-output or provenance includes the exact bounded rejection reason; an
-infrastructure failure receives one ordinary retry. Publication is atomic and
-no-clobber, so exactly one result is kept, the other run loads the winner, and
-both revalidate the winner in full before using it.
+Reuse means that a repository researches once per set of dependencies.
+That behavior is not a cross-process lock. Two concurrent first runs for the same
+missing fingerprint can each run one bounded generation sequence.
+The sequence starts with one Researcher call and allows one retry after a failure.
+Invalid output or provenance includes the exact bounded rejection reason.
+An infrastructure failure receives one ordinary retry. Publication is atomic
+and does not overwrite existing files. Exactly one result is kept. The other
+run loads the winner, and both runs revalidate the winner in full before using it.
 
 The cost of that race is at most one extra sequence (two calls). It cannot
 corrupt storage, produce two competing files, change which guidance is used, or
@@ -68,11 +67,12 @@ touch your overlay.
 
 ### Moving or re-cloning a repository
 
-The repository key is derived from the canonical local Git common directory —
-the path on this machine — not from a remote URL. Moving a checkout to another
-path, or cloning it again elsewhere, therefore selects a *new* repository key
-with no generated skills and no overlay. Every linked worktree of the same
-checkout keeps sharing one key.
+The factory derives the repository key from the canonical local Git common
+directory. This directory is the path on this machine.
+The factory does not use a remote URL for this key.
+A moved or new clone selects a new repository key.
+The new key has no generated skills or overlay.
+Every linked worktree of the same checkout shares one key.
 
 Before you move a repository:
 
@@ -80,16 +80,17 @@ Before you move a repository:
 uv run factory skill path --repo ~/projects/example
 ```
 
-Note the repository directory, move the checkout, then either move or copy that
-directory to the path reported for the new location, or let the next run
-regenerate guidance at the new key and write your overlay there yourself. The
-factory does not follow a moved repository for you, it never creates an overlay
-on your behalf, and it never deletes the guidance left behind at the old key.
+Record the repository directory, then move the checkout.
+Copy the directory to the path reported for the new location.
+Alternatively, let the next run regenerate guidance and write your overlay there.
+The factory does not follow moved repositories.
+It never creates an overlay on your behalf.
+It never deletes guidance at the old key.
 
 ## The overlay is yours
 
 Human customization goes in a repository-level `repository-skill-overlay.yaml`
-in that same repository-scoped directory — outside the target repository.
+file in that repository-scoped directory, outside the target repository.
 
 It carries guidance prose only:
 
@@ -100,7 +101,7 @@ simplify:
   summary: House rules for simplification in this service.
   guidance:
     - Prefer a plain function over a class with one method.
-    - Keep request handlers free of database access; use the repository layer.
+    - Keep request handlers free of database access. Use the repository layer.
   avoid:
     - Do not introduce new abstraction layers to remove two lines of duplication.
   validation:
@@ -128,7 +129,7 @@ Rules that make the overlay safe to hand-edit:
 - The factory never creates, rewrites, normalizes, refreshes or deletes it. It
   is your file.
 - An invalid overlay is preserved exactly as you wrote it. The run records a
-  warning and ignores the overlay; valid generated guidance may still apply.
+  warning and ignores the overlay. Valid generated guidance can still apply.
 
 ## Edit workflow
 
@@ -143,25 +144,25 @@ $EDITOR <reported-overlay-path>
 uv run factory skill validate --repo ~/projects/example
 ```
 
-`validate` is read-only: it reports what the current generated skill and
-overlay are, and why either would be ignored. It never repairs, rewrites or
+`validate` is read-only. It reports current generated skills and overlays,
+and explains why either file is ignored. It never repairs, rewrites, or
 creates a file.
 
-To refresh generated guidance deliberately — for example after upgrading
-dependencies, without waiting for the next run:
+To refresh generated guidance deliberately (for example after updating
+dependencies, without waiting for the next run):
 
 ```bash
 uv run factory skill refresh --repo ~/projects/example --runtime copilot
 ```
 
-`refresh` touches generated guidance only. It never creates, rewrites or
-removes your overlay. `--runtime fake` is the default and makes no model call;
-`--runtime copilot` is a real, paid call.
+`refresh` updates generated guidance only. It never creates, rewrites, or
+removes your overlay. `--runtime fake` is the default and makes no model call.
+`--runtime copilot` is a paid call.
 
 ## What a run records
 
-Before any agent sees guidance, the run stores immutable snapshots of what it
-actually used, in the run directory:
+Before agents receive guidance, the run stores immutable snapshots in
+the run directory:
 
 | File | Contents |
 | --- | --- |
@@ -174,12 +175,13 @@ later runs only, never the run already in progress.
 
 ## Limits
 
-Guidance is advisory prompt text. It cannot change tools, models, commands,
-workflow states, retry budgets, permissions, quality gates, dependencies or
-scope, and it cannot approve a change. The polish attempt applies simplify
-first and polish second, in one bounded attempt after the first successful
-deterministic verification, and full deterministic verification then runs again
-before testing and review.
+Guidance is advisory prompt text.
+It cannot change tools, models, commands, workflow states, retry budgets, permissions,
+quality gates, dependencies, or scope.
+It cannot approve a change.
+The polish attempt applies simplify first and polish second.
+This bounded attempt runs after the first successful verification.
+Full deterministic verification runs again before testing and review.
 
 The dashboard never writes: it cannot generate, refresh, edit or delete a
 skill or an overlay.
