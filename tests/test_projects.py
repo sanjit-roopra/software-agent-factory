@@ -20,6 +20,7 @@ from software_agent_factory.models import (
     ProjectPlan,
     ProjectState,
     ProjectTask,
+    ProjectTaskExecution,
     Risk,
     WorkflowState,
     WorkItem,
@@ -349,9 +350,10 @@ def test_project_work_item_preserves_sibling_task_boundaries(
     assert execution.state is ProjectState.NEEDS_HUMAN
     assert len(captured) == 1
     boundary = captured[0].constraints[-1]
-    assert "implement only this task" in boundary
-    assert "task 2: Build on the base behavior" in boundary
-    assert captured[0].description.startswith("Project context: Build two outcomes")
+    assert "Do not implement project task 2" in boundary
+    assert "Build on the base behavior" in boundary
+    assert captured[0].description == "Implement the first required outcome."
+    assert "Deliver two separate capabilities." not in captured[0].description
 
 
 def test_project_work_item_keeps_lower_id_independent_sibling_out_of_scope(
@@ -392,8 +394,8 @@ def test_project_work_item_keeps_lower_id_independent_sibling_out_of_scope(
     )
 
     boundary = work_item.constraints[-1]
-    assert "implement only this task" in boundary
-    assert "task 1: Build first capability" in boundary
+    assert "Do not implement project task 1" in boundary
+    assert "Build first capability" in boundary
 
 
 def test_project_persists_failed_planner_invocation_when_runtime_raises(
@@ -673,7 +675,7 @@ def test_project_can_publish_and_close_issues_without_daemon_label(
                         title="Implement the feature",
                         description="Implement and verify the requested behavior.",
                         acceptance_criteria=("The behavior works.",),
-                        labels=("project", "agent-ready"),
+                        labels=("project", "enhancement"),
                     ),
                 ),
             ),
@@ -696,9 +698,62 @@ def test_project_can_publish_and_close_issues_without_daemon_label(
 
     assert execution.state is ProjectState.DONE
     assert github.created[0][2] == ()
-    assert "## Suggested labels\n- project\n- agent-ready" in github.created[0][1]
+    assert "## Suggested labels\n- `project`\n- `enhancement`" in github.created[0][1]
     assert "software-agent-factory project=project-github task=1" in github.created[0][1]
     assert github.closed == ["https://github.com/acme/repo/issues/1"]
+
+
+def test_issue_text_is_fully_validated_before_any_issue_is_created(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    github = _RecordingGitHubClient()
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(),
+        github_client=github,  # type: ignore[arg-type]
+    )
+    brief = ProjectBrief(
+        id="project-prevalidate",
+        title="Validate issue text",
+        description="Validate all issue text before publication.",
+        repository_path=str(factory_source_repo),
+    )
+    plan = ProjectPlan(
+        project_id=brief.id,
+        summary="Two issue templates.",
+        delivery_approach="Publish only after every template passes.",
+        tasks=(
+            ProjectTask(
+                id=1,
+                title="Create first issue",
+                description="Create the first issue.",
+                acceptance_criteria=("The first issue exists.",),
+            ),
+            ProjectTask(
+                id=2,
+                title="Create second issue",
+                description="Create the second issue.",
+                acceptance_criteria=("The second issue exists.",),
+                constraints=tuple(" ".join(["word"] * 30) for _ in range(20)),
+                dependencies=(1,),
+            ),
+        ),
+    )
+    execution = ProjectExecution(
+        project_id=brief.id,
+        state=ProjectState.PLANNING,
+        tasks=(
+            ProjectTaskExecution(task_id=1, work_item_id="project-prevalidate-task-1"),
+            ProjectTaskExecution(task_id=2, work_item_id="project-prevalidate-task-2"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="issue body did not satisfy writing policy"):
+        runner._publish_issues(brief, plan, execution, factory_source_repo, "acme/repo")
+
+    assert github.created == []
 
 
 def test_issue_close_failure_is_a_warning_after_successful_integration(

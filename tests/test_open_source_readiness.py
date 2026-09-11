@@ -44,6 +44,7 @@ def test_public_project_files_exist() -> None:
         "CONTRIBUTING.md",
         "GOVERNANCE.md",
         "LICENSE",
+        "NOTICE.md",
         "MAINTAINERS.md",
         "SECURITY.md",
         "SUPPORT.md",
@@ -66,7 +67,7 @@ def test_package_metadata_links_to_public_project_resources() -> None:
     project = _load_pyproject()["project"]
 
     assert project["license"] == "Apache-2.0"
-    assert project["license-files"] == ["LICENSE"]
+    assert project["license-files"] == ["LICENSE", "NOTICE.md"]
     assert project["requires-python"] == ">=3.13"
     assert project["maintainers"] == [{"name": "Sanjit Roopra"}]
     assert set(project["urls"]) == {

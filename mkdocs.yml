@@ -130,6 +130,7 @@ nav:
       - reference/index.md
       - CLI: reference/cli.md
       - Configuration file: reference/configuration.md
+      - Writing policy: reference/writing-policy.md
       - Model selection, cost and benchmarks: reference/model-selection.md
       - Safety and trust boundaries: reference/safety.md
   - Concepts:

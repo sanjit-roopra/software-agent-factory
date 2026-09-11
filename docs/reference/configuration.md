@@ -33,6 +33,9 @@ factory:
 The retry budget is persisted on the run. Restarting the process does not grant
 a run a fresh budget.
 
+The writing policy is mandatory and has no configuration switch. See
+[Writing policy](writing-policy.md).
+
 ## models
 
 ```yaml

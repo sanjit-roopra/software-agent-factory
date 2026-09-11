@@ -103,6 +103,20 @@ Agents explain the selected approach. Deterministic factory code validates
 task bounds and dependencies, owns execution order, and rejects malformed
 plans.
 
+## Writing principle
+
+Use concise technical English for all factory-authored text.
+
+- Use active voice and simple sentences.
+- Put one action or fact in each sentence.
+- Use 20 words or fewer for instructions.
+- Use 25 words or fewer for descriptions.
+- Remove filler, semicolons, em dashes and Latin abbreviations.
+- Preserve facts, uncertainty, code, identifiers, paths, commands and quoted errors.
+
+The factory uses selected checks from SimpleEnglish. These checks follow
+ASD-STE100 principles but do not prove formal compliance.
+
 ## Repository delivery workflow
 
 After completing and verifying repository changes, commit and push the current

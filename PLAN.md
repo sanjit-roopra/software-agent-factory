@@ -48,12 +48,28 @@ tested here; the first real tag is what exercises them end to end.
 | 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`, `GENERATE_REPOSITORY_SKILL`) |
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 | 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
+| 19 | Mandatory controlled writing policy | implemented (ADR-023) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
 (`--runtime fake` is the default) and finishes at `PR_READY`. No dashboard
 listens unless `factory dashboard` is running, and no launchd service exists
 unless someone ran `factory service install`.
+
+## Phase 19. Controlled writing
+
+Status: done.
+
+Use one mandatory writing policy for all factory-authored prose.
+
+- Give every agent the same short writing rules.
+- Check model-authored artifact fields before acceptance.
+- Give one bounded correction prompt for invalid prose.
+- Check generated issue, pull request and commit text before mutation.
+- Do not repeat the full project brief in each child work item.
+- Preserve code, identifiers, commands, paths, URLs, quoted errors and uncertainty.
+- Include the pinned SimpleEnglish linter subset and its MIT license.
+- Do not claim formal ASD-STE100 compliance.
 
 ## Principle
 

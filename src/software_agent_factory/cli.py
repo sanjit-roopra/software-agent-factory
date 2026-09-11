@@ -127,6 +127,7 @@ from .service_install import (
 from .store import FileRunStore
 from .version import format_version_line
 from .workflow import WorkflowController
+from .writing_policy import apply_agent_result_writing_policy
 
 app = typer.Typer(help="Local-first autonomous software engineering factory.")
 service_app = typer.Typer(
@@ -1390,6 +1391,7 @@ def skill_refresh_command(
     skill: RepositorySkill | None = None
     rejection: str | None = None
     initial_rejection: str | None = None
+    rejected_skill: RepositorySkill | None = None
     for attempt in range(1, MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS + 1):
         request = AgentRequest(
             role=AgentRole.RESEARCHER,
@@ -1399,7 +1401,9 @@ def skill_refresh_command(
             context_tier=role_model.context_tier,
             work_item=_skill_generation_work_item(),
             repair_context=(
-                repository_skill_correction_context(rejection) if rejection is not None else None
+                repository_skill_correction_context(rejection, rejected_skill)
+                if rejection is not None
+                else None
             ),
             repository_profile=profile,
             official_documentation_origins=list(
@@ -1413,7 +1417,10 @@ def skill_refresh_command(
 
         started_at = utc_now()
         try:
-            result = agent_runtime.run(request)
+            result = apply_agent_result_writing_policy(
+                agent_runtime.run(request),
+                request.purpose,
+            )
         except ValueError as exc:
             completed_at = utc_now()
             invocation = InvocationRecord(
@@ -1472,6 +1479,7 @@ def skill_refresh_command(
         skill = result.repository_skill
         if not result.success:
             rejection = result.failure_reason or "the researcher produced no repository guidance"
+            rejected_skill = result.repository_skill
             if attempt == 1:
                 initial_rejection = rejection
                 continue
@@ -1485,6 +1493,7 @@ def skill_refresh_command(
                 "the researcher returned guidance for a different dependency fingerprint: "
                 f"{skill.dependency_fingerprint} is not {profile.dependency_fingerprint}"
             )
+            rejected_skill = skill
         elif problem := repository_skill_validation_error(
             skill,
             profile,
@@ -1492,6 +1501,7 @@ def skill_refresh_command(
             practice_reference_urls=factory_config.polish.practice_reference_urls,
         ):
             rejection = f"refusing to store unverified repository guidance: {problem}"
+            rejected_skill = skill
         else:
             break
 

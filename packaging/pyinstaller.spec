@@ -15,7 +15,16 @@ bundle_name = os.environ.get("SOFTWARE_AGENT_FACTORY_BUNDLE_NAME", "software-age
 executable_name = os.environ.get("SOFTWARE_AGENT_FACTORY_EXECUTABLE_NAME", "factory")
 
 package_data = [
+    (str(project_root / "NOTICE.md"), "."),
     (str(package_root / "default_config.yaml"), "software_agent_factory"),
+    (
+        str(package_root / "_vendor" / "simple_english" / "LICENSE"),
+        "software_agent_factory/_vendor/simple_english",
+    ),
+    (
+        str(package_root / "_vendor" / "simple_english" / "slop.tsv"),
+        "software_agent_factory/_vendor/simple_english",
+    ),
 ]
 
 build_info_path = package_root / "build-info.json"

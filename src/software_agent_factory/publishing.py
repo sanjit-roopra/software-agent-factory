@@ -52,6 +52,7 @@ from .github import (
 )
 from .merging import MergeResult, PullRequestMerger
 from .models import CICheckEvidence, CIReport
+from .writing_policy import require_publication_text
 
 __all__ = [
     "TOKEN_ENV_VARS",
@@ -213,6 +214,13 @@ class PullRequestPublisher:
           fork head and -- when the body carries a run marker -- when it names
           the same run, so an unrelated pull request can never be adopted.
         """
+        try:
+            require_publication_text("pull request title", title, max_words=25)
+            require_publication_text("pull request body", body, max_words=800)
+            require_publication_text("commit message", commit_message, max_words=140)
+        except ValueError as exc:
+            raise GitPublishError(str(exc)) from exc
+
         publisher = self._git_publisher(base_branch)
         api_repository = (
             expected_repository

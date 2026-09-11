@@ -480,6 +480,9 @@ def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets
     spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
 
     assert '"default_config.yaml"' in spec_text
+    assert '"simple_english" / "slop.tsv"' in spec_text
+    assert '"simple_english" / "LICENSE"' in spec_text
+    assert 'project_root / "NOTICE.md"' in spec_text
     assert 'build_info_path = package_root / "build-info.json"' in spec_text
     assert 'collect_submodules("software_agent_factory")' in spec_text
     assert "dashboard/static" not in spec_text

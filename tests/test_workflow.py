@@ -35,7 +35,10 @@ from software_agent_factory.models import (
     Complexity,
     ContextTier,
     DependencyEcosystem,
+    ExecutionPlan,
+    ExpectedScope,
     FactoryRun,
+    PlanStep,
     RepairContext,
     RepositoryDependency,
     RepositoryProfile,
@@ -456,10 +459,147 @@ def test_planner_retries_once_after_malformed_execution_plan(
     assert "steps.0.goal: Field required" in requests[1].repair_context
     assert "expected_scope: Input should be a valid dictionary" in requests[1].repair_context
     assert "stdout=" not in requests[1].repair_context
-    assert "exactly one complete ExecutionPlan JSON object" in requests[1].repair_context
+    assert "Return one complete ExecutionPlan JSON object" in requests[1].repair_context
     assert all(active is not None for active in active_invocations)
     assert [active.attempt_number for active in active_invocations if active is not None] == [1, 2]
     assert run.active_invocation is None
+
+
+def test_planner_retries_once_after_writing_policy_failure(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def planner(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        if len(requests) == 1:
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=True,
+                execution_plan=ExecutionPlan(
+                    summary="Use a robust and comprehensive implementation.",
+                    steps=[PlanStep(id="one", goal="Change the parser.")],
+                    expected_scope=ExpectedScope(
+                        modules=["FACTORY_NOTES.md"],
+                        estimated_files_min=1,
+                        estimated_files_max=1,
+                    ),
+                ),
+            )
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(planner=planner),
+    ).run(_work_item("WI-planner-writing-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 2
+    assert isinstance(requests[1].repair_context, str)
+    assert "ExecutionPlan did not satisfy writing policy" in requests[1].repair_context
+    assert "Rewrite only the prose fields" in requests[1].repair_context
+    assert "Use a robust and comprehensive implementation." in requests[1].repair_context
+    assert '"FACTORY_NOTES.md"' in requests[1].repair_context
+
+
+def test_planner_allows_only_one_writing_policy_correction(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Use a robust and comprehensive implementation.",
+                steps=[PlanStep(id="one", goal="Change the parser.")],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=1,
+                ),
+            ),
+        )
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=4),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(planner=planner),
+    ).run(_work_item("WI-planner-writing-limit"), source_repo)
+
+    assert run.state is WorkflowState.FAILED
+    assert len(requests) == 2
+
+
+def test_implementer_allows_only_one_writing_policy_correction(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
+        )
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=4, max_total_attempts=4),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer),
+    ).run(_work_item("WI-implementer-writing-limit"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert len(requests) == 2
+    assert requests[1].repair_context is not None
+    assert "Previous rejected artifact" in requests[1].repair_context.failures[0]
+    assert (
+        "Use a robust and comprehensive implementation." in (requests[1].repair_context.failures[0])
+    )
+
+
+def test_triage_retries_once_after_writing_policy_failure(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def triage(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        if len(requests) == 1:
+            return AgentResult(
+                role=AgentRole.TRIAGE,
+                success=True,
+                triage_result=TriageResult(
+                    factory_eligible=True,
+                    complexity=Complexity.L1,
+                    risk=Risk.R1,
+                    requirements_quality="A robust and comprehensive task.",
+                    needs_research=False,
+                    confidence=0.8,
+                ),
+            )
+        return default_runtime.run(request)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(triage=triage),
+    ).run(_work_item("WI-triage-writing-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 2
+    assert isinstance(requests[1].repair_context, str)
+    assert "TriageResult did not satisfy writing policy" in requests[1].repair_context
 
 
 def test_planner_does_not_retry_non_schema_failure(
@@ -525,7 +665,7 @@ def test_tester_retries_typed_artifact_failure_without_spending_implementation_a
     assert requests[0].repair_context is None
     assert isinstance(requests[1].repair_context, str)
     assert "parseable JSON object for TestReport" in requests[1].repair_context
-    assert "exactly one complete TestReport JSON object" in requests[1].repair_context
+    assert "Return one complete TestReport JSON object" in requests[1].repair_context
 
 
 def test_reviewer_retries_typed_artifact_failure_without_spending_implementation_attempt(
@@ -564,7 +704,7 @@ def test_reviewer_retries_typed_artifact_failure_without_spending_implementation
     assert requests[0].repair_context is None
     assert isinstance(requests[1].repair_context, str)
     assert "did not contain a valid ReviewReport" in requests[1].repair_context
-    assert "exactly one complete ReviewReport JSON object" in requests[1].repair_context
+    assert "Return one complete ReviewReport JSON object" in requests[1].repair_context
 
 
 def test_verification_workspace_mutation_requires_repair_before_review(
