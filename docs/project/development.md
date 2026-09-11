@@ -35,6 +35,9 @@ uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
 uv run --no-sync mkdocs build --strict
 ```
 
+Pytest distributes the suite across the available CPUs, capped at 12 workers.
+Use `uv run --no-sync pytest -n 0 ...` when debugging a test serially.
+
 Packaging checks, if you touched anything that ships:
 
 ```bash
@@ -52,7 +55,7 @@ job needs.
 | Group | Contents |
 | --- | --- |
 | `quality` | ruff, mypy, type stubs |
-| `test` | pytest and coverage |
+| `test` | pytest, pytest-xdist and coverage |
 | `docs` | mkdocs-material |
 | `distribution` | twine, check-wheel-contents |
 | `native` | pyinstaller |
