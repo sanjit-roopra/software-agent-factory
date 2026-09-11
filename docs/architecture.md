@@ -766,7 +766,10 @@ The old string blocker fields remain readable for historical artifacts, but
 new Reviewer output must use the typed fields. The controller assigns stable
 finding ids and persists the open set in the run's `ReviewLedger`. Every
 implementation attempt that reaches review also records the immutable tree
-that was reviewed.
+that was reviewed. After `review.max_rounds` logical reviews, the controller
+may persist a separate, tree-bound `ReviewAcceptance` and continue with
+explicit findings. It never changes `ReviewReport.approved` to claim approval
+the Reviewer did not give.
 
 ## Complexity model
 
@@ -967,10 +970,13 @@ Overlapping locations keep an earlier finding unresolved even if the Reviewer
 rephrases it.
 
 The controller derives repair approval from the ledger. It does not trust the
-Reviewer's `approved` boolean during a repair. Repeated blockers on the same
-path, the same unresolved finding, or consecutive complete blocker replacement
-rounds stop early in `NEEDS_HUMAN` with `review-impasse.json`. This is an
-actionable non-convergence result, not generic attempt-budget exhaustion.
+Reviewer's `approved` boolean during a repair. Low-risk correctness or
+compatibility findings may be accepted after the configured review-round or
+attempt limit. The acceptance is persisted in `review-acceptance.json`, bound
+to the exact reviewed tree, and shown in the pull request. Security, scope and
+repair-regression findings, high-risk work, excessive findings and complete
+blocker-replacement loops still stop in `NEEDS_HUMAN` with
+`review-impasse.json`.
 
 ### Failure Investigator
 Model: `Claude Opus 5`
@@ -1051,12 +1057,13 @@ repair, and only when one later recovery attempt remains available. It may make
 no edits; deterministic verification and scope assessment always run again.
 Actual limits belong in configuration.
 
-Review repair has additional fixed convergence bounds. One repair review may
-adopt a batch of late findings. A blocker on the same path or the same
-unresolved finding for three reviews stops as an impasse. Two consecutive
-repairs that replace every old blocker with new blockers also stop. If the
-ordinary implementation budget is reached while review blockers remain, the
-controller writes the same diagnostic artifact before stopping.
+Review repair has additional convergence bounds. One repair review may adopt a
+batch of late findings. The packaged policy allows three logical reviews and
+at most five accepted findings for `R0` and `R1`. At that limit, eligible
+findings become explicit review debt and the run continues. Security, scope,
+repair regressions, `R2`/`R3`, and two consecutive complete blocker-replacement
+cycles are not eligible. When acceptance is unsafe, the controller writes
+`review-impasse.json` and stops in `NEEDS_HUMAN`.
 
 ## Local workspace
 
@@ -1090,6 +1097,8 @@ Suggested layout:
 │       ├── verification.json
 │       ├── test-report.json
 │       ├── review.json
+│       ├── review-acceptance.json
+│       ├── review-impasse.json
 │       ├── ci.json
 │       ├── logs/
 │       └── attempts/
@@ -1098,7 +1107,9 @@ Suggested layout:
 │               ├── patch.diff
 │               ├── verification.json
 │               ├── test-report.json
-│               └── review.json
+│               ├── review.json
+│               ├── review-acceptance.json
+│               └── review-impasse.json
 └── workspaces/
     └── TASK-ID/
         └── repository worktree

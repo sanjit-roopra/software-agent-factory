@@ -62,6 +62,7 @@ def render_index_html(*, token: str) -> str:
           <th scope="col">Run</th>
           <th scope="col">Work item</th>
           <th scope="col">State</th>
+          <th scope="col">Review</th>
           <th scope="col">Created</th>
           <th scope="col">Idle</th>
           <th scope="col">Attempts</th>
@@ -305,6 +306,7 @@ APP_JS = """\
       textCell(row, runId);
       textCell(row, run.work_item_id);
       textCell(row, run.state);
+      textCell(row, run.review_status);
       textCell(row, run.created_at);
       textCell(row, run.idle_seconds);
       textCell(row, run.attempt_count);
@@ -565,7 +567,27 @@ APP_JS = """\
       ],
       ["Premium-request cost", detail.usage ? detail.usage.premium_request_cost : null],
       ["Nano AIU", detail.usage ? detail.usage.total_nano_aiu : null],
-      ["Failure reason", detail.failure_reason],
+      ["Decision status", detail.guidance ? detail.guidance.status : detail.review_status],
+      ["What happened", detail.guidance ? detail.guidance.summary : null],
+      ["Next action", detail.guidance ? detail.guidance.next_action : null],
+      ["Evidence artifact", detail.guidance ? detail.guidance.artifact : null],
+      ["Finding count", detail.guidance ? detail.guidance.finding_count : null],
+      [
+        "Finding IDs",
+        detail.guidance && Array.isArray(detail.guidance.finding_ids)
+          ? detail.guidance.finding_ids.join(", ")
+          : null
+      ],
+      [
+        "Finding categories",
+        detail.guidance && detail.guidance.category_counts
+          ? Object.keys(detail.guidance.category_counts)
+              .map(function (category) {
+                return category + ": " + detail.guidance.category_counts[category];
+              })
+              .join(", ")
+          : null
+      ],
       ["Commit", detail.commit_sha],
       ["Pull request", detail.pull_request_url]
     ];

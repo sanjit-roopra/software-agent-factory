@@ -326,6 +326,22 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
                     first_seen_snapshot=2,
                 ),
             ],
+            accepted_review_findings=[
+                ReviewFinding(
+                    id="review-compatibility-456",
+                    category=ReviewFindingCategory.COMPATIBILITY,
+                    message="A legacy response remains accepted debt.",
+                    locations=[
+                        ReviewSourceLocation(
+                            path="src/app.py",
+                            start_line=2,
+                            end_line=2,
+                        )
+                    ],
+                    origin=ReviewFindingOrigin.INITIAL,
+                    first_seen_snapshot=1,
+                ),
+            ],
             repair_diff="diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n",
             change_set=ChangeSet(summary="I did a great job and everything works."),
         )
@@ -343,6 +359,8 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
     assert "targeted repair review, not a fresh unrestricted review" in prompt
     assert "return exactly one disposition" in prompt
     assert "RESOLVED" in prompt
+    assert "Controller-accepted review debt" in prompt
+    assert "Do not report an unchanged accepted finding again" in prompt
     assert "WITHDRAWN" in prompt
     assert "Previously reported blocking issues from this run" in prompt
     assert "Empty values bypass normalization." in prompt

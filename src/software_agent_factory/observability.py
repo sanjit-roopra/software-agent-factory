@@ -85,6 +85,8 @@ from .models import (
     FactoryRun,
     InvocationRecord,
     ModelBase,
+    ReviewFindingCategory,
+    ReviewImpasse,
     Risk,
     TriageResult,
     UsageMetrics,
@@ -122,6 +124,7 @@ __all__ = [
     "RunInvocationSummary",
     "UsageSummary",
     "RunDetail",
+    "RunGuidance",
     "StaleRunFinding",
     "StaleLockFinding",
     "OrphanedWorkspaceFinding",
@@ -313,6 +316,7 @@ class RunSummary(ModelBase):
     usage: UsageSummary
     is_finished: bool
     is_stale: bool
+    review_status: str | None = None
 
 
 class RunAttemptSummary(ModelBase):
@@ -379,6 +383,17 @@ class ActiveInvocationSummary(ModelBase):
     attempt_number: int | None = Field(default=None, ge=1)
 
 
+class RunGuidance(ModelBase):
+    status: str
+    reason_code: str
+    summary: str
+    next_action: str
+    artifact: str | None = None
+    finding_count: int = Field(default=0, ge=0)
+    finding_ids: list[str] = Field(default_factory=list, max_length=12)
+    category_counts: dict[ReviewFindingCategory, int] = Field(default_factory=dict)
+
+
 class RunDetail(ModelBase):
     """One run's read-only detail view: a :class:`RunSummary` plus completion
     facts and the attempt history.
@@ -408,11 +423,13 @@ class RunDetail(ModelBase):
     usage: UsageSummary
     is_finished: bool
     is_stale: bool
+    review_status: str | None = None
     commit_sha: str | None = None
     pull_request_url: str | None = None
     attempts: list[RunAttemptSummary] = Field(default_factory=list)
     invocations: list[RunInvocationSummary] = Field(default_factory=list)
     active_invocation: ActiveInvocationSummary | None = None
+    guidance: RunGuidance | None = None
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -1002,6 +1019,13 @@ def _build_run_summary(
         usage=_usage_summary(run.invocation_records),
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
+        review_status=(
+            "ACTION_REQUIRED"
+            if run.state is WorkflowState.NEEDS_HUMAN
+            else "ACCEPTED_WITH_FINDINGS"
+            if run.review_acceptance is not None
+            else None
+        ),
     )
 
 
@@ -1072,7 +1096,82 @@ def build_run_detail(
             now=_normalize_now(now),
             stale_after=stale_after,
         ),
+        guidance=_build_run_guidance(store, run),
     )
+
+
+def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance | None:
+    if run.state is not WorkflowState.NEEDS_HUMAN and run.review_acceptance is not None:
+        return RunGuidance(
+            status="ACCEPTED_WITH_FINDINGS",
+            reason_code="BOUNDED_REVIEW_ACCEPTANCE",
+            summary="The controller continued after the bounded review limit.",
+            next_action="Review the accepted findings in the pull request before merging.",
+            artifact="review-acceptance.json",
+            finding_count=len(run.review_acceptance.findings),
+            finding_ids=[finding.id for finding in run.review_acceptance.findings],
+            category_counts=_review_category_counts(run.review_acceptance.findings),
+        )
+    if run.state is not WorkflowState.NEEDS_HUMAN:
+        return None
+
+    impasse = _load_optional_artifact(store, run.id, ReviewImpasse)
+    if impasse is not None:
+        return RunGuidance(
+            status="ACTION_REQUIRED",
+            reason_code="REVIEW_IMPASSE",
+            summary="Independent review did not converge within the safe automatic policy.",
+            next_action=(
+                "Inspect review-impasse.json, resolve or accept the listed findings, then retry."
+            ),
+            artifact="review-impasse.json",
+            finding_count=len(impasse.finding_ids),
+            finding_ids=impasse.finding_ids,
+            category_counts=_review_category_counts(run.review_ledger.open_findings),
+        )
+
+    reason = (run.failure_reason or "").lower()
+    if "risk" in reason or "approval" in reason:
+        code = "RISK_APPROVAL"
+        summary = "The run requires approval under the configured risk policy."
+        action = "Review the work item risk and approve or change the policy before retrying."
+    elif "scope" in reason:
+        code = "SCOPE_REVIEW"
+        summary = "The proposed changes exceeded the approved scope."
+        action = "Review the planned and changed files, then update the scope or retry."
+    elif "budget" in reason or "attempt" in reason:
+        code = "ATTEMPT_BUDGET_EXHAUSTED"
+        summary = "The run exhausted a bounded retry budget."
+        action = "Inspect the run artifacts, correct the underlying issue, then retry."
+    elif "ci " in reason or reason.startswith("ci"):
+        code = "CI_INTERVENTION"
+        summary = "CI could not be completed or repaired automatically."
+        action = "Inspect the pull request checks, fix the failing check, then retry delivery."
+    elif any(term in reason for term in ("publish", "pull request", "merge", "permission")):
+        code = "DELIVERY_INTERVENTION"
+        summary = "The controller could not complete pull request delivery."
+        action = "Check repository permissions and delivery settings, then retry delivery."
+    elif any(term in reason for term in ("abandon", "interrupt", "workspace")):
+        code = "RECOVERY_INTERVENTION"
+        summary = "The run could not safely recover its persisted workspace."
+        action = "Inspect the run and workspace metadata before starting a replacement run."
+    else:
+        code = "MANUAL_INSPECTION"
+        summary = "The controller stopped at a manual decision boundary."
+        action = "Inspect the typed run artifacts and decide whether to retry or replace the run."
+    return RunGuidance(
+        status="ACTION_REQUIRED",
+        reason_code=code,
+        summary=summary,
+        next_action=action,
+    )
+
+
+def _review_category_counts(findings: Iterable[Any]) -> dict[ReviewFindingCategory, int]:
+    counts: dict[ReviewFindingCategory, int] = {}
+    for finding in findings:
+        counts[finding.category] = counts.get(finding.category, 0) + 1
+    return counts
 
 
 def build_active_invocation_summary(

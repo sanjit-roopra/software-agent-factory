@@ -189,6 +189,14 @@ scope_drift:
   # Exact files must also appear in the execution plan; no glob exemptions.
   approved_sensitive_files: []
 
+review:
+  # One initial review plus at most two review-driven repair rounds.
+  max_rounds: 3
+  # Low-risk runs may continue with bounded, explicitly recorded review debt.
+  max_accepted_findings: 5
+  accepted_risks: [R0, R1]
+  blocked_categories: [SECURITY, SCOPE]
+
 polish:
   # After deterministic verification first succeeds, one bounded worker pass
   # applies version-specific simplify and polish guidance, then the controller

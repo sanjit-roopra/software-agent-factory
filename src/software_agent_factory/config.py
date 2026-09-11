@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from .models import Complexity, ContextTier, Risk
+from .models import Complexity, ContextTier, ReviewFindingCategory, Risk
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
 
@@ -216,6 +216,41 @@ class ScopeDriftConfig(ConfigModel):
                 )
         if len(value) != len(set(value)):
             raise ValueError("approved_sensitive_files entries must be unique")
+        return value
+
+
+class ReviewConfig(ConfigModel):
+    """Controller-owned limits for bounded independent review."""
+
+    max_rounds: int = Field(default=3, ge=1, le=10)
+    max_accepted_findings: int = Field(default=5, ge=1, le=12)
+    accepted_risks: list[Risk] = Field(default_factory=lambda: [Risk.R0, Risk.R1])
+    blocked_categories: list[ReviewFindingCategory] = Field(
+        default_factory=lambda: [
+            ReviewFindingCategory.SECURITY,
+            ReviewFindingCategory.SCOPE,
+        ]
+    )
+
+    @field_validator("accepted_risks")
+    @classmethod
+    def _validate_accepted_risks(cls, value: list[Risk]) -> list[Risk]:
+        if len(value) != len(set(value)):
+            raise ValueError("review policy entries must be unique")
+        if not set(value) <= {Risk.R0, Risk.R1}:
+            raise ValueError("bounded review acceptance is limited to R0 and R1")
+        return value
+
+    @field_validator("blocked_categories")
+    @classmethod
+    def _validate_blocked_categories(
+        cls, value: list[ReviewFindingCategory]
+    ) -> list[ReviewFindingCategory]:
+        if len(value) != len(set(value)):
+            raise ValueError("review policy entries must be unique")
+        mandatory = {ReviewFindingCategory.SECURITY, ReviewFindingCategory.SCOPE}
+        if not mandatory <= set(value):
+            raise ValueError("SECURITY and SCOPE must remain blocked review categories")
         return value
 
 
@@ -438,6 +473,7 @@ class FactoryConfig(ConfigModel):
     repository: RepositoryConfig
     risk: dict[Risk, RiskRuleConfig]
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
     polish: PolishConfig = Field(default_factory=PolishConfig)
     pull_request: PullRequestConfig = Field(default_factory=PullRequestConfig)
     ci: CiConfig = Field(default_factory=CiConfig)

@@ -1065,24 +1065,24 @@ class ProjectRunner:
         if not run.pull_request_url or not run.merge_commit_sha:
             raise ProjectError(f"task {task.id} has no persisted pull request and merge evidence")
         # Defense in depth over the controller's own gate: the merged head must
-        # be exactly the revision the independent Reviewer approved, so a CI
-        # repair push can never inherit an earlier revision's approval.
+        # be exactly the reviewed revision the controller authorized, so a CI
+        # repair push can never inherit an earlier revision's decision.
         if not run.commit_sha or run.reviewed_commit_sha != run.commit_sha:
             raise ProjectError(
-                f"task {task.id} was delivered without independent Reviewer approval "
-                "bound to its published head"
+                f"task {task.id} was delivered without review authorization bound "
+                "to its published head"
             )
-        # The Reviewer approves a tree, not just a commit id: bind the published
-        # head to the tree the independent review actually saw whenever that
+        # Review authorization binds a tree, not just a commit id: bind the
+        # published head to the tree the independent review actually saw whenever that
         # commit object is available locally (it is for a merge-commit merge).
         if not run.reviewed_tree_sha:
-            raise ProjectError(f"task {task.id} was delivered without a Reviewer-approved Git tree")
+            raise ProjectError(f"task {task.id} was delivered without a reviewed Git tree")
         target = self._refresh_target(integration_path, delivery)
         published_tree = _tree_of(integration_path, run.commit_sha)
         if published_tree is not None and published_tree != run.reviewed_tree_sha:
             raise ProjectError(
-                f"task {task.id} merged tree {published_tree} but the independent Reviewer "
-                f"approved {run.reviewed_tree_sha}"
+                f"task {task.id} merged tree {published_tree} but review authorization "
+                f"was bound to {run.reviewed_tree_sha}"
             )
         if not _is_ancestor(integration_path, run.merge_commit_sha, target):
             raise ProjectError(

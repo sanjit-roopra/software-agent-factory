@@ -13,6 +13,7 @@ from software_agent_factory.models import (
     CICheckEvidence,
     CIReport,
     FactoryRun,
+    ReviewAcceptanceReason,
     ReviewDispositionStatus,
     ReviewFindingCategory,
     ReviewFindingDisposition,
@@ -288,11 +289,13 @@ def test_unbound_review_cannot_authorize_merge_after_resume(
     store.save_run(run.model_copy(update={"reviewed_commit_sha": "a" * 40}))
     recovered = controller.resume(run.id, source_repo)
     assert recovered.state is WorkflowState.NEEDS_HUMAN
-    assert "Reviewer approval" in recovered.failure_reason
+    assert "review authorization" in recovered.failure_reason
     assert merger.calls == []
 
 
-def test_reviewer_rejection_blocks_every_pr_and_merge(tmp_path: Path, source_repo: Path) -> None:
+def test_low_risk_reviewer_rejection_continues_through_pr_and_merge(
+    tmp_path: Path, source_repo: Path
+) -> None:
     def reject(request: AgentRequest) -> AgentResult:
         if request.prior_review_findings:
             report = ReviewReport(
@@ -336,9 +339,66 @@ def test_reviewer_rejection_blocks_every_pr_and_merge(tmp_path: Path, source_rep
         _config(tmp_path), runtime=runtime, publisher=publisher, merger=merger
     )
     run = controller.run(work_item(), source_repo)
-    assert run.state is WorkflowState.NEEDS_HUMAN
-    assert publisher.calls == 0
-    assert merger.calls == []
+    assert run.state is WorkflowState.DONE
+    assert run.review_acceptance is not None
+    assert publisher.calls == 1
+    assert len(merger.calls) == 1
+
+
+def test_ci_repair_carries_accepted_debt_without_reopening_unchanged_finding(
+    tmp_path: Path,
+    source_repo: Path,
+) -> None:
+    reviewer_requests: list[AgentRequest] = []
+
+    def reject_until_accepted(request: AgentRequest) -> AgentResult:
+        reviewer_requests.append(request)
+        finding = ReviewFindingDraft(
+            category=ReviewFindingCategory.CORRECTNESS,
+            message="Not correct yet",
+            locations=[
+                ReviewSourceLocation(
+                    path="FACTORY_NOTES.md",
+                    start_line=1,
+                    end_line=1,
+                )
+            ],
+        )
+        if request.accepted_review_findings:
+            report = ReviewReport(approved=False, blocking_findings=[finding])
+        elif request.prior_review_findings:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=[
+                    ReviewFindingDisposition(
+                        finding_id=prior.id,
+                        status=ReviewDispositionStatus.UNRESOLVED,
+                        rationale="The defect remains.",
+                    )
+                    for prior in request.prior_review_findings
+                ],
+            )
+        else:
+            report = ReviewReport(approved=False, blocking_findings=[finding])
+        return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
+
+    publisher = LocalPublisher()
+    controller, _ = _controller(
+        _config(tmp_path),
+        runtime=FakeAgentRuntime(reviewer=reject_until_accepted),
+        publisher=publisher,
+        observer=Observer([_failed_ci(), CIReport(overall="PASS")]),
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE
+    assert publisher.calls == 2
+    assert run.review_acceptance is not None
+    assert run.review_acceptance.reason is ReviewAcceptanceReason.CARRIED_FORWARD
+    assert run.review_acceptance.reviewed_tree_sha == run.reviewed_tree_sha
+    assert reviewer_requests[-1].accepted_review_findings
+    assert run.review_ledger.open_findings == []
 
 
 def test_changes_after_review_cannot_be_published(tmp_path: Path, source_repo: Path) -> None:

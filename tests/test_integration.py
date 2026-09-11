@@ -333,7 +333,8 @@ def test_review_rejection_produces_a_review_repair_context(
 
     run = controller.run(work_item(), source_repo)
 
-    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.state is WorkflowState.PR_READY
+    assert run.review_acceptance is not None
     assert [record.triggered_by for record in run.attempt_records] == [
         AttemptTrigger.INITIAL,
         AttemptTrigger.REVIEW,

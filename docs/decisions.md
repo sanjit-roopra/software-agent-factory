@@ -27,10 +27,16 @@ head, base and run marker. This recovers a PR that GitHub created before the
 response was lost and prevents duplicate publication.
 
 Every PR revision, including each CI repair, must pass the configured
-independent Reviewer. The controller binds approval to the published commit
-SHA and refuses to merge a different head. The PR displays the latest reviewer
-outcome. This model review does not impersonate a GitHub user review or bypass
-repository rules requiring additional human approvals.
+independent Reviewer or the controller's bounded review-acceptance policy. A
+controller acceptance is a separate typed artifact, never a rewritten Reviewer
+approval. It is limited to configured low-risk findings, bound to the exact
+reviewed tree, and disclosed in the PR. When opt-in automatic merge is enabled,
+an eligible accepted-with-findings revision may merge after required CI passes;
+this path does not wait for a human to read the disclosure. The controller
+refuses to publish or merge a different head. Security, scope and
+repair-regression findings cannot be accepted. This model review does not
+impersonate a GitHub user review or bypass repository rules requiring
+additional human approvals.
 
 Planner, Tester and Reviewer schema failures get bounded same-model correction
 with the exact validation error. Tester and Reviewer correction calls do not

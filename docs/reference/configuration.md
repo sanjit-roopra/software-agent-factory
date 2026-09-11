@@ -206,6 +206,23 @@ review. Migration and infrastructure findings are never exempted by this list.
 See [Configure a repository](../guides/configure-repository.md#scope-drift) for
 the finding categories and decisions.
 
+## review
+
+```yaml
+review:
+  max_rounds: 3
+  max_accepted_findings: 5
+  accepted_risks: [R0, R1]
+  blocked_categories: [SECURITY, SCOPE]
+```
+
+This is an absolute bound on review-driven repair. After three logical reviews,
+the controller may continue low-risk work with a small number of correctness or
+compatibility findings. If the remaining findings are not eligible, the run
+stops in `NEEDS_HUMAN` at the same limit. The decision is stored separately
+from the Reviewer's report and is bound to the exact reviewed tree. Security,
+scope, repair-regression and high-risk findings still require a human.
+
 ## polish
 
 ```yaml

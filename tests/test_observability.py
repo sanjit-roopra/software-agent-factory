@@ -37,6 +37,15 @@ from software_agent_factory.models import (
     FactoryRun,
     InvocationRecord,
     ModelUsage,
+    ReviewAcceptance,
+    ReviewAcceptanceReason,
+    ReviewFinding,
+    ReviewFindingCategory,
+    ReviewFindingOrigin,
+    ReviewImpasse,
+    ReviewImpasseKind,
+    ReviewLedger,
+    ReviewSourceLocation,
     Risk,
     RunLease,
     TriageResult,
@@ -1583,6 +1592,128 @@ def test_build_run_detail_omits_free_text_and_raw_artifacts(tmp_path: Path) -> N
     assert "failure_reason" not in payload
     assert all("reasoning" not in attempt for attempt in payload["attempts"])
     assert all("failure_reason" not in attempt for attempt in payload["attempts"])
+
+
+def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    finding = ReviewFinding(
+        id="review-correctness-1234",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message="repository text must stay server-side",
+        locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+    run = _run("run-review-help", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "failure_reason": "secret raw review failure",
+            "review_ledger": ReviewLedger(open_findings=[finding]),
+        }
+    )
+    impasse = ReviewImpasse(
+        snapshot=1,
+        kind=ReviewImpasseKind.REPEATED_FINDING,
+        reason="secret raw review failure",
+        finding_ids=[finding.id],
+        paths=["src/app.py"],
+        findings=[finding.message],
+    )
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+    store.add_artifact(run.id, impasse)
+
+    payload = build_run_detail(store, run.id).model_dump(mode="json")
+
+    assert "failure_reason" not in payload
+    assert payload["guidance"] == {
+        "status": "ACTION_REQUIRED",
+        "reason_code": "REVIEW_IMPASSE",
+        "summary": "Independent review did not converge within the safe automatic policy.",
+        "next_action": (
+            "Inspect review-impasse.json, resolve or accept the listed findings, then retry."
+        ),
+        "artifact": "review-impasse.json",
+        "finding_count": 1,
+        "finding_ids": ["review-correctness-1234"],
+        "category_counts": {"CORRECTNESS": 1},
+    }
+    assert finding.message not in json.dumps(payload)
+
+
+def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    finding = ReviewFinding(
+        id="review-correctness-accepted",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message="Accepted debt stays out of dashboard prose.",
+        locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+    acceptance = ReviewAcceptance(
+        snapshot=1,
+        reason=ReviewAcceptanceReason.REVIEW_ROUND_LIMIT,
+        risk=Risk.R1,
+        review_rounds=3,
+        reviewed_tree_sha="a" * 40,
+        findings=[finding],
+    )
+    store = _fake_store(tmp_path)
+    accepted = _run("run-accepted", state=WorkflowState.PR_READY).model_copy(
+        update={"review_acceptance": acceptance}
+    )
+    halted = _run("run-accepted-halted", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "review_acceptance": acceptance,
+            "failure_reason": "CI checks were still pending",
+        }
+    )
+    store.add_run(accepted)
+    store.add_run(halted)
+
+    accepted_payload = build_run_detail(store, accepted.id).model_dump(mode="json")
+    halted_payload = build_run_detail(store, halted.id).model_dump(mode="json")
+
+    assert accepted_payload["review_status"] == "ACCEPTED_WITH_FINDINGS"
+    assert accepted_payload["guidance"]["reason_code"] == "BOUNDED_REVIEW_ACCEPTANCE"
+    assert halted_payload["review_status"] == "ACTION_REQUIRED"
+    assert halted_payload["guidance"]["reason_code"] == "CI_INTERVENTION"
+    assert finding.message not in json.dumps(halted_payload)
+
+
+@pytest.mark.parametrize(
+    ("failure_reason", "reason_code"),
+    [
+        ("risk approval required", "RISK_APPROVAL"),
+        ("scope drift requires human review", "SCOPE_REVIEW"),
+        ("implementation attempt budget exhausted", "ATTEMPT_BUDGET_EXHAUSTED"),
+        ("CI failure is not repairable", "CI_INTERVENTION"),
+        ("could not publish the pull request", "DELIVERY_INTERVENTION"),
+        ("delivery workspace identity changed", "RECOVERY_INTERVENTION"),
+        ("an uncategorized manual boundary", "MANUAL_INSPECTION"),
+    ],
+)
+def test_build_run_detail_classifies_action_required_without_exposing_reason(
+    tmp_path: Path,
+    failure_reason: str,
+    reason_code: str,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    run = _run(f"run-{reason_code.lower()}", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={"failure_reason": failure_reason}
+    )
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+
+    payload = build_run_detail(store, run.id).model_dump(mode="json")
+
+    assert payload["guidance"]["reason_code"] == reason_code
+    assert failure_reason not in json.dumps(payload)
 
 
 def test_build_run_detail_is_read_only(tmp_path: Path) -> None:

@@ -103,6 +103,7 @@ def build_prompt(request: AgentRequest) -> str:
         verification_report=request.verification_report,
         test_report=request.test_report,
         prior_review_findings=request.prior_review_findings,
+        accepted_review_findings=request.accepted_review_findings,
         repair_diff=request.repair_diff,
         repair_context=request.repair_context,
         repository_profile=request.repository_profile,
@@ -130,6 +131,7 @@ def build_prompt_for_role(
     verification_report: VerificationReport | None = None,
     test_report: TestReport | None = None,
     prior_review_findings: Sequence[ReviewFinding] | None = None,
+    accepted_review_findings: Sequence[ReviewFinding] | None = None,
     repair_diff: str | None = None,
     repair_context: RepairContext | str | None = None,
     repository_profile: RepositoryProfile | None = None,
@@ -174,6 +176,7 @@ def build_prompt_for_role(
         verification_report=verification_report,
         test_report=test_report,
         prior_review_findings=list(prior_review_findings or []),
+        accepted_review_findings=list(accepted_review_findings or []),
         repair_diff=repair_diff,
         repair_context=repair_context,
         purpose=purpose,
@@ -391,6 +394,7 @@ def _artifact_sections(
     verification_report: VerificationReport | None,
     test_report: TestReport | None,
     prior_review_findings: list[ReviewFinding],
+    accepted_review_findings: list[ReviewFinding],
     repair_diff: str | None,
     repair_context: RepairContext | str | None,
     repository_profile: RepositoryProfile | None,
@@ -586,6 +590,23 @@ def _artifact_sections(
                 (
                     "Previously reported blocking issues from this run",
                     [finding.model_dump(mode="json") for finding in prior_review_findings],
+                )
+            )
+        if accepted_review_findings:
+            sections.append(
+                (
+                    "Controller-accepted review debt",
+                    [finding.model_dump(mode="json") for finding in accepted_review_findings],
+                )
+            )
+            sections.append(
+                (
+                    "Accepted-debt review rule",
+                    (
+                        "Do not report an unchanged accepted finding again. If the current "
+                        "repair changed its cited path and the defect remains, report it as a "
+                        "new blocking finding with current locations."
+                    ),
                 )
             )
         if repair_diff:
