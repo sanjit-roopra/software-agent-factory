@@ -45,6 +45,8 @@ from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
 
+pytestmark = pytest.mark.project_delivery
+
 PROJECT_LOG = "PROJECT_LOG.md"
 
 

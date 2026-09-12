@@ -37,10 +37,14 @@ from software_agent_factory.models import (
     WorkItem,
 )
 from software_agent_factory.prompts import (
+    MAX_COLLECTION_ERROR_CHARS,
+    MAX_COLLECTION_ERRORS,
     MAX_DIFF_CHARS,
     artifact_model_for_role,
     build_prompt,
     normalize_role,
+    parse_collection_errors,
+    summarize_command_result,
 )
 
 DIFF = "diff --git a/src/app.py b/src/app.py\n+    if not name.strip():\n"
@@ -577,3 +581,196 @@ def test_every_prompt_has_the_shared_writing_rules() -> None:
         assert "Use concise technical English in the spirit of ASD-STE100" in prompt
         assert "Use at most 20 words for an instruction sentence" in prompt
         assert "Preserve facts, uncertainty, identifiers, paths, commands" in prompt
+
+
+def test_correct_change_set_prompt_requires_correcting_only_prose() -> None:
+    change_set = ChangeSet(
+        summary="Initial draft summary.",
+        changed_files=["src/app.py"],
+        tests_added=["tests/test_app.py"],
+        commands_run=["pytest"],
+    )
+    repair_context = RepairContext(
+        trigger=AttemptTrigger.VERIFICATION,
+        summary="Summary is inaccurate.",
+        failures=["Describe customer validation."],
+    )
+    prompt = build_prompt(
+        _request(
+            AgentRole.IMPLEMENTER,
+            purpose=AgentPurpose.CORRECT_CHANGE_SET,
+            change_set=change_set,
+            repair_context=repair_context,
+            diff=DIFF,
+            execution_plan=_plan(),
+        )
+    )
+
+    assert "ChangeSet" in prompt
+    assert "Correct only the prose fields in the supplied ChangeSet" in prompt
+    assert "Update the summary to describe the change accurately" in prompt
+    assert "Preserve the verified changed_files, tests_added, and commands_run" in prompt
+    assert "Supplied ChangeSet to correct:" in prompt
+    assert "Initial draft summary." in prompt
+    assert "Correction context:" in prompt
+    assert "Summary is inaccurate." in prompt
+    # Scope bounds: diff, plan, tools must not appear in prompt
+    assert DIFF.strip() not in prompt
+    assert "Execution plan:" not in prompt
+
+
+def test_embedded_typed_artifacts_render_as_compact_json() -> None:
+    prompt = build_prompt(
+        _request(
+            AgentRole.REFINER,
+            triage_result=TriageResult(
+                factory_eligible=True,
+                complexity="L1",
+                risk="R0",
+                requirements_quality="clear",
+                needs_research=False,
+                confidence=0.9,
+            ),
+        )
+    )
+
+    # Compact JSON uses separators (',', ':') without 2-space line indentation
+    assert '{"acceptance_criteria":[]' in prompt
+    assert '"complexity":"L1"' in prompt
+    assert '"needs_research":false' in prompt
+    assert '{\n  "complexity"' not in prompt
+
+
+def test_verification_report_concise_successful_command_evidence() -> None:
+    import hashlib
+
+    stdout_text = "test session starts\n.....\n=== 42 passed in 1.23s ==="
+    expected_hash = hashlib.sha256(stdout_text.encode("utf-8")).hexdigest()
+    report = VerificationReport(
+        passed=True,
+        confidence=1.0,
+        deterministic_checks=[
+            CommandResult(
+                command="pytest -v",
+                exit_code=0,
+                stdout=stdout_text,
+                stderr="",
+                duration_seconds=1.23,
+            )
+        ],
+    )
+    prompt = build_prompt(
+        _request(
+            AgentRole.TESTER,
+            specification=_specification(),
+            execution_plan=_plan(),
+            diff=DIFF,
+            changed_files=["src/app.py"],
+            verification_report=report,
+        )
+    )
+
+    assert "Deterministic verification:" in prompt
+    assert '"command":"pytest -v"' in prompt
+    assert '"exit_code":0' in prompt
+    assert '"duration_seconds":1.23' in prompt
+    assert '"test_counts":{"passed":42}' in prompt
+    assert f'"stdout":"[omitted: sha256={expected_hash}]"' in prompt
+    assert f'"stdout_hash":"{expected_hash}"' in prompt
+    # Verbose output is omitted
+    assert "test session starts" not in prompt
+
+
+def test_verification_report_parsed_collection_errors_and_bounded_failure() -> None:
+    long_stderr = "x" * 5000
+    report = VerificationReport(
+        passed=False,
+        confidence=0.0,
+        failures=["collection failed"],
+        deterministic_checks=[
+            CommandResult(
+                command="pytest",
+                exit_code=2,
+                stdout="ERROR collecting tests/test_bad.py: SyntaxError\n",
+                stderr=long_stderr,
+                duration_seconds=0.45,
+            )
+        ],
+    )
+    prompt = build_prompt(
+        _request(
+            AgentRole.TESTER,
+            specification=_specification(),
+            execution_plan=_plan(),
+            diff=DIFF,
+            changed_files=["src/app.py"],
+            verification_report=report,
+        )
+    )
+
+    assert "Deterministic verification:" in prompt
+    assert '"command":"pytest"' in prompt
+    assert '"exit_code":2' in prompt
+    assert '"collection_errors":["ERROR collecting tests/test_bad.py: SyntaxError"]' in prompt
+    assert "...[truncated " in prompt
+    assert len(prompt) < len(long_stderr) + 5000
+
+
+def test_parse_collection_errors_bounds_count_and_line_size() -> None:
+    # 50 errors with long lines (> 400 chars) and duplicate lines
+    lines: list[str] = []
+    for i in range(50):
+        long_line = f"ERROR collecting tests/test_{i}.py: " + ("detail_" * 50)
+        lines.append(long_line)
+        if i % 5 == 0:
+            lines.append(long_line)  # duplicate
+
+    raw_output = "\n".join(lines)
+    errors = parse_collection_errors(raw_output)
+
+    # Bounded to MAX_COLLECTION_ERRORS
+    assert len(errors) == MAX_COLLECTION_ERRORS
+    # Each line bounded to MAX_COLLECTION_ERROR_CHARS
+    assert all(len(error) <= MAX_COLLECTION_ERROR_CHARS for error in errors)
+    # Preserves deterministic order and deduplication
+    assert errors[0].startswith("ERROR collecting tests/test_0.py:")
+    assert errors[1].startswith("ERROR collecting tests/test_1.py:")
+    assert errors[9].startswith("ERROR collecting tests/test_9.py:")
+
+    # Custom limit honored
+    limited = parse_collection_errors(raw_output, limit=3)
+    assert len(limited) == 3
+    assert limited[0].startswith("ERROR collecting tests/test_0.py:")
+    assert limited[2].startswith("ERROR collecting tests/test_2.py:")
+
+
+def test_summarize_command_result_tail_traceback_retention() -> None:
+    passing_noise = "test_feature.py ......................... [ 80%]\n" * 120
+    traceback_lines = (
+        "FAILURES:\n"
+        "______________________________ test_failure ______________________________\n"
+        "Traceback (most recent call last):\n"
+        '  File "/workspace/tests/test_feature.py", line 42, in test_failure\n'
+        "    assert result == 42\n"
+        "AssertionError: expected 42 but got 0\n"
+        "=== 1 failed, 120 passed in 2.34s ==="
+    )
+    full_stdout = passing_noise + traceback_lines
+
+    check = CommandResult(
+        command="pytest",
+        exit_code=1,
+        stdout=full_stdout,
+        stderr="",
+        duration_seconds=2.34,
+    )
+    summary = summarize_command_result(check, max_failure_chars=2000)
+
+    stdout_summary = str(summary["stdout"])
+    assert "...[truncated " in stdout_summary
+    # The traceback and failure assertion at the tail must be preserved
+    assert "Traceback (most recent call last):" in stdout_summary
+    assert "AssertionError: expected 42 but got 0" in stdout_summary
+    assert "=== 1 failed, 120 passed in 2.34s ===" in stdout_summary
+    # Length is strictly bounded
+    assert len(stdout_summary) <= 2100

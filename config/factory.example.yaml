@@ -239,6 +239,11 @@ polish:
     - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/react-reactivity-review.md"
     - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/refactor-opportunity-review.md"
 
+performance:
+  # The fast mode applies only to eligible low-risk work and keeps all gates.
+  mode: "standard"
+  fast_model_profile: "economy"
+
 pull_request:
   enabled: false
   remote: "origin"

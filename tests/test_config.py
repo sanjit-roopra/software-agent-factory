@@ -7,7 +7,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from software_agent_factory.config import PolishConfig, load_config
+from software_agent_factory.config import PerformanceConfig, PolishConfig, load_config
 from software_agent_factory.models import ContextTier, ReviewFindingCategory, Risk
 
 #: The curated bdfinst references must stay pinned to this reviewed commit so
@@ -80,6 +80,7 @@ def test_load_config_uses_packaged_defaults() -> None:
     assert config.models.reviewer.context_tier is ContextTier.DEFAULT
     assert config.repository.branch_prefix == "factory/"
     assert config.risk["R2"].human_approval is True
+    assert config.performance == PerformanceConfig()
 
 
 def test_load_config_selects_named_model_profile() -> None:
@@ -104,6 +105,16 @@ def test_load_config_selects_security_model_profile() -> None:
 def test_load_config_rejects_unknown_model_profile() -> None:
     with pytest.raises(ValueError, match="unknown model profile 'missing'"):
         load_config(model_profile="missing")
+
+
+def test_fast_performance_mode_requires_configured_model_profile(tmp_path: Path) -> None:
+    payload = yaml.safe_load(_MINIMAL_CONFIG)
+    payload["performance"] = {"mode": "fast", "fast_model_profile": "missing"}
+    path = tmp_path / "invalid-fast-profile.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="performance.fast_model_profile"):
+        load_config(path)
 
 
 def test_context_tier_defaults_for_older_configs(tmp_path: Path) -> None:

@@ -18,7 +18,9 @@ Two contracts matter beyond "one JSON object":
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Sequence, TypeAlias
 
 from .agents import AgentRequest
@@ -28,6 +30,7 @@ from .models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
+    CommandResult,
     ExecutionPlan,
     ModelBase,
     ProjectBrief,
@@ -121,6 +124,7 @@ def build_prompt(request: AgentRequest) -> str:
         official_documentation_origins=request.official_documentation_origins,
         practice_reference_urls=request.practice_reference_urls,
         attempt_number=request.attempt_number,
+        change_set=request.change_set,
     )
 
 
@@ -151,6 +155,7 @@ def build_prompt_for_role(
     attempt_number: int | None = None,
     research_question: str | None = None,
     research_context: str | None = None,
+    change_set: ChangeSet | None = None,
 ) -> str:
     """Build a concise role-specific prompt from only the required artifacts."""
 
@@ -160,6 +165,8 @@ def build_prompt_for_role(
         model_class = RepositorySkill
     elif purpose is AgentPurpose.DECOMPOSE_PROJECT:
         model_class = ProjectPlan
+    elif purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        model_class = ChangeSet
     else:
         model_class = artifact_model_for_role(normalized_role)
 
@@ -198,6 +205,7 @@ def build_prompt_for_role(
         attempt_number=attempt_number,
         research_question=research_question,
         research_context=research_context,
+        change_set=change_set,
     ):
         sections.append(_section(title, value))
 
@@ -218,6 +226,13 @@ def _role_instructions(
     *,
     repair_review: bool = False,
 ) -> str:
+    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        return """Correct only the prose fields in the supplied ChangeSet.
+- Update the summary to describe the change accurately.
+- Do not edit files or run commands.
+- Do not change workflow state.
+- Preserve the verified changed_files, tests_added, and commands_run.
+- Return ChangeSet metadata only."""
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         return """Create the smallest sufficient DAG of reviewable work items.
 - Use one task only for one bounded pull request.
@@ -330,7 +345,7 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
         )
     return (
         f"{contract}\n{model_class.__name__} JSON Schema:\n"
-        f"{json.dumps(model_class.model_json_schema(), sort_keys=True)}"
+        f"{json.dumps(model_class.model_json_schema(), separators=(',', ':'), sort_keys=True)}"
     )
 
 
@@ -359,8 +374,16 @@ def _artifact_sections(
     attempt_number: int | None,
     research_question: str | None,
     research_context: str | None,
+    change_set: ChangeSet | None = None,
 ) -> list[tuple[str, object]]:
     sections: list[tuple[str, object]] = []
+    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        sections.append(("Work item", _work_item_brief(work_item)))
+        if change_set is not None:
+            sections.append(("Supplied ChangeSet to correct", change_set))
+        if repair_context is not None:
+            sections.append(("Correction context", repair_context))
+        return sections
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         if project_brief is not None:
             sections.append(("Project brief", project_brief))
@@ -577,9 +600,196 @@ def _section(title: str, value: object) -> str:
     return f"{title}:\n{_render(value)}"
 
 
+def parse_test_counts(*outputs: str) -> dict[str, int]:
+    combined = "\n".join(output for output in outputs if output)
+    if not combined:
+        return {}
+    counts: dict[str, int] = {}
+
+    passed_matches = re.findall(r"\b(\d+)\s+passed\b", combined, re.IGNORECASE)
+    if passed_matches:
+        counts["passed"] = int(passed_matches[-1])
+
+    failed_matches = re.findall(r"\b(\d+)\s+failed\b", combined, re.IGNORECASE)
+    if failed_matches:
+        counts["failed"] = int(failed_matches[-1])
+
+    skipped_matches = re.findall(r"\b(\d+)\s+skipped\b", combined, re.IGNORECASE)
+    if skipped_matches:
+        counts["skipped"] = int(skipped_matches[-1])
+
+    xfailed_matches = re.findall(r"\b(\d+)\s+xfailed\b", combined, re.IGNORECASE)
+    if xfailed_matches:
+        counts["xfailed"] = int(xfailed_matches[-1])
+
+    xpassed_matches = re.findall(r"\b(\d+)\s+xpassed\b", combined, re.IGNORECASE)
+    if xpassed_matches:
+        counts["xpassed"] = int(xpassed_matches[-1])
+
+    error_matches = re.findall(r"\b(\d+)\s+error(?:s)?\b", combined, re.IGNORECASE)
+    if error_matches:
+        counts["errors"] = int(error_matches[-1])
+
+    collected_matches = re.findall(r"\bcollected\s+(\d+)\s+items?\b", combined, re.IGNORECASE)
+    if collected_matches:
+        counts["collected"] = int(collected_matches[-1])
+
+    cargo_match = re.search(
+        r"test result: \w+\.\s+(\d+)\s+passed;\s+(\d+)\s+failed;\s+(\d+)\s+ignored",
+        combined,
+        re.IGNORECASE,
+    )
+    if cargo_match:
+        counts["passed"] = int(cargo_match.group(1))
+        counts["failed"] = int(cargo_match.group(2))
+        counts["skipped"] = int(cargo_match.group(3))
+
+    return counts
+
+
+MAX_COLLECTION_ERRORS: int = 10
+MAX_COLLECTION_ERROR_CHARS: int = 300
+
+
+def parse_collection_errors(
+    *outputs: str,
+    limit: int = MAX_COLLECTION_ERRORS,
+    max_line_chars: int = MAX_COLLECTION_ERROR_CHARS,
+) -> list[str]:
+    combined = "\n".join(output for output in outputs if output)
+    if not combined or limit <= 0:
+        return []
+    errors: list[str] = []
+    for line in combined.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if (
+            stripped.startswith("ERROR collecting")
+            or "CollectionError" in stripped
+            or "collection error" in stripped.casefold()
+            or (stripped.startswith("ERROR ") and "test" in stripped.casefold())
+        ):
+            bounded = stripped[:max_line_chars].rstrip()
+            if bounded not in errors:
+                errors.append(bounded)
+                if len(errors) >= limit:
+                    break
+    return errors
+
+
+def _bound_text(text: str, limit: int = 2000) -> str:
+    if len(text) <= limit:
+        return text
+    tail_len = int(limit * 0.75)
+    head_len = limit - tail_len
+    omitted = len(text) - limit
+    head = text[:head_len]
+    tail = text[len(text) - tail_len :]
+    return f"{head}\n...[truncated {omitted} characters]...\n{tail}"
+
+
+def summarize_command_result(
+    check: CommandResult,
+    *,
+    max_failure_chars: int = 2000,
+    max_collection_errors: int = MAX_COLLECTION_ERRORS,
+) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "command": check.command,
+        "exit_code": check.exit_code,
+        "duration_seconds": check.duration_seconds,
+    }
+    is_success = check.exit_code == 0 and not check.timed_out
+    test_counts = parse_test_counts(check.stdout, check.stderr)
+    if test_counts:
+        summary["test_counts"] = test_counts
+    collection_errors = parse_collection_errors(
+        check.stdout,
+        check.stderr,
+        limit=max_collection_errors,
+    )
+    if collection_errors:
+        summary["collection_errors"] = collection_errors
+
+    if is_success:
+        if check.stdout:
+            stdout_hash = hashlib.sha256(check.stdout.encode("utf-8")).hexdigest()
+            summary["stdout"] = f"[omitted: sha256={stdout_hash}]"
+            summary["stdout_hash"] = stdout_hash
+        else:
+            summary["stdout"] = ""
+        if check.stderr:
+            stderr_hash = hashlib.sha256(check.stderr.encode("utf-8")).hexdigest()
+            summary["stderr"] = f"[omitted: sha256={stderr_hash}]"
+            summary["stderr_hash"] = stderr_hash
+        else:
+            summary["stderr"] = ""
+    else:
+        summary["timed_out"] = check.timed_out
+        if check.stdout:
+            summary["stdout"] = _bound_text(check.stdout, limit=max_failure_chars)
+        else:
+            summary["stdout"] = ""
+        if check.stderr:
+            summary["stderr"] = _bound_text(check.stderr, limit=max_failure_chars)
+        else:
+            summary["stderr"] = ""
+
+    return summary
+
+
+def summarize_verification_report(
+    report: VerificationReport,
+    *,
+    max_failure_chars: int = 2000,
+    max_collection_errors: int = MAX_COLLECTION_ERRORS,
+) -> dict[str, object]:
+    checks = [
+        summarize_command_result(
+            check,
+            max_failure_chars=max_failure_chars,
+            max_collection_errors=max_collection_errors,
+        )
+        for check in report.deterministic_checks
+    ]
+    summary: dict[str, object] = {
+        "passed": report.passed,
+        "confidence": report.confidence,
+        "deterministic_checks": checks,
+    }
+    if report.failures:
+        summary["failures"] = report.failures
+    if report.coverage_change is not None:
+        summary["coverage_change"] = report.coverage_change
+    if report.test_findings:
+        summary["test_findings"] = report.test_findings
+    return summary
+
+
 def _render(value: object) -> str:
+    if isinstance(value, VerificationReport):
+        return json.dumps(
+            summarize_verification_report(value),
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    if isinstance(value, CommandResult):
+        return json.dumps(
+            summarize_command_result(value),
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     if isinstance(value, ModelBase):
-        return json.dumps(value.model_dump(mode="json"), indent=2, sort_keys=True)
+        return json.dumps(
+            value.model_dump(mode="json"),
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     if isinstance(value, (dict, list)):
-        return json.dumps(value, indent=2, sort_keys=True)
+        return json.dumps(
+            value,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     return str(value).strip()

@@ -133,10 +133,14 @@ def _run_git(
 
 
 def _run_git_bytes(
-    cwd: Path, args: Sequence[str], check: bool = True
+    cwd: Path,
+    args: Sequence[str],
+    check: bool = True,
+    input_bytes: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     completed = subprocess.run(
         ["git", "-C", str(cwd), *args],
+        input=input_bytes,
         capture_output=True,
     )
     if check and completed.returncode != 0:
@@ -176,6 +180,122 @@ def _parse_worktree_list(output: str) -> list[dict[str, str]]:
     if current:
         entries.append(current)
     return entries
+
+
+def _parse_patch_with_raw(output: str) -> tuple[list[str], str]:
+    """Parse combined diff output from ``git diff --patch-with-raw -z``.
+
+    Returns ``(changed_files, diff_patch)``. The raw diff section is
+    NUL-delimited and machine-safe: file paths are unquoted and exact,
+    including paths with spaces, newlines, or special characters.
+    """
+    if not output:
+        return [], ""
+
+    delimiter_idx = output.find("\0\0")
+    if delimiter_idx == -1:
+        raw_section = output.rstrip("\0")
+        diff = ""
+    else:
+        raw_section = output[:delimiter_idx]
+        diff = output[delimiter_idx + 2 :]
+
+    if not raw_section:
+        return [], diff
+
+    parts = raw_section.split("\0")
+    changed_files: list[str] = []
+    seen: set[str] = set()
+
+    def _add_file(path: str) -> None:
+        if path not in seen:
+            seen.add(path)
+            changed_files.append(path)
+
+    idx = 0
+    while idx < len(parts):
+        token = parts[idx]
+        if not token:
+            idx += 1
+            continue
+        header_fields = token.split()
+        if not header_fields or not token.startswith(":"):
+            raise WorkspaceError(f"malformed raw diff header: {token!r}")
+        status = header_fields[-1]
+        if status.startswith(("R", "C")):
+            if idx + 2 >= len(parts):
+                raise WorkspaceError(f"truncated raw diff record for rename/copy: {token!r}")
+            _add_file(parts[idx + 1])
+            _add_file(parts[idx + 2])
+            idx += 3
+        else:
+            if idx + 1 >= len(parts):
+                raise WorkspaceError(f"truncated raw diff record: {token!r}")
+            _add_file(parts[idx + 1])
+            idx += 2
+
+    return changed_files, diff
+
+
+_BATCH_LINE_CHUNK_SIZE = 128
+
+
+def _validate_repository_relative_path(relative_path: str) -> None:
+    if (
+        not relative_path
+        or relative_path == "."
+        or "\0" in relative_path
+        or "\n" in relative_path
+        or "\r" in relative_path
+    ):
+        raise WorkspaceError(f"invalid repository-relative path: {relative_path!r}")
+    path = PurePosixPath(relative_path)
+    if (
+        path.is_absolute()
+        or relative_path != path.as_posix()
+        or ".." in path.parts
+        or "\\" in relative_path
+    ):
+        raise WorkspaceError(f"invalid repository-relative path: {relative_path!r}")
+
+
+def _parse_cat_file_batch_output(
+    stdout: bytes, expected_paths: Sequence[str]
+) -> dict[str, int | None]:
+    result: dict[str, int | None] = {}
+    pos = 0
+    stdout_len = len(stdout)
+    for path in expected_paths:
+        newline_idx = stdout.find(b"\n", pos)
+        if newline_idx == -1:
+            raise WorkspaceError(f"truncated git cat-file header for {path!r}")
+        header = stdout[pos:newline_idx].decode("utf-8", errors="replace")
+        pos = newline_idx + 1
+        if header.endswith(" missing"):
+            result[path] = None
+            continue
+        parts = header.split()
+        if len(parts) != 3:
+            raise WorkspaceError(f"invalid git cat-file header for {path!r}: {header!r}")
+        _, obj_type, size_str = parts
+        try:
+            size = int(size_str)
+        except ValueError:
+            raise WorkspaceError(f"invalid git cat-file size for {path!r}: {size_str!r}")
+        if pos + size > stdout_len:
+            raise WorkspaceError(f"truncated git cat-file content for {path!r}")
+        content = stdout[pos : pos + size]
+        pos += size
+        if pos < stdout_len and stdout[pos : pos + 1] == b"\n":
+            pos += 1
+        elif pos < stdout_len:
+            raise WorkspaceError(f"expected newline after content for {path!r}")
+
+        if obj_type != "blob":
+            result[path] = None
+        else:
+            result[path] = len(content.splitlines())
+    return result
 
 
 class GitWorktreeWorkspace:
@@ -535,11 +655,19 @@ class GitWorktreeWorkspace:
 
         _run_git(self.path, ["add", "-A"])
         tree_sha = _run_git(self.path, ["write-tree"]).stdout.strip()
-        diff = _run_git(self.path, ["diff", self.base_commit, tree_sha]).stdout
-        names_output = _run_git(
-            self.path, ["diff", "--name-only", self.base_commit, tree_sha]
+        raw_patch = _run_git(
+            self.path,
+            [
+                "diff",
+                "--patch-with-raw",
+                "-z",
+                "--find-copies=1%",
+                "--find-copies-harder",
+                self.base_commit,
+                tree_sha,
+            ],
         ).stdout
-        changed_files = [line for line in names_output.splitlines() if line]
+        changed_files, diff = _parse_patch_with_raw(raw_patch)
         return WorkspaceEvidence(changed_files=changed_files, diff=diff, tree_sha=tree_sha)
 
     def diff_trees(self, previous_tree_sha: str, current_tree_sha: str) -> str:
@@ -552,26 +680,46 @@ class GitWorktreeWorkspace:
             ["diff", "--unified=0", previous_tree_sha, current_tree_sha],
         ).stdout
 
-    def file_line_count(self, tree_sha: str, relative_path: str) -> int | None:
-        """Return line count for a file in ``tree_sha``, or ``None`` when absent."""
+    def file_line_counts(
+        self, tree_sha: str, relative_paths: Sequence[str]
+    ) -> dict[str, int | None]:
+        """Return line counts for files in ``tree_sha``, or ``None`` when absent.
+
+        Paths are queried in bounded batches using ``git cat-file --batch -z``
+        without invoking one subprocess per path.
+        """
         if _GIT_OBJECT_PATTERN.fullmatch(tree_sha) is None:
             raise WorkspaceError(f"invalid Git tree object: {tree_sha!r}")
-        path = PurePosixPath(relative_path)
-        if (
-            path.is_absolute()
-            or relative_path != path.as_posix()
-            or ".." in path.parts
-            or "\\" in relative_path
-        ):
-            raise WorkspaceError(f"invalid repository-relative path: {relative_path!r}")
-        completed = _run_git_bytes(
-            self.path,
-            ["show", f"{tree_sha}:{relative_path}"],
-            check=False,
-        )
-        if completed.returncode != 0:
-            return None
-        return len(completed.stdout.splitlines())
+        for path in relative_paths:
+            _validate_repository_relative_path(path)
+
+        unique_paths = list(dict.fromkeys(relative_paths))
+        if not unique_paths:
+            return {}
+
+        result: dict[str, int | None] = {}
+        for i in range(0, len(unique_paths), _BATCH_LINE_CHUNK_SIZE):
+            chunk = unique_paths[i : i + _BATCH_LINE_CHUNK_SIZE]
+            stdin_bytes = b"".join(f"{tree_sha}:{p}\0".encode("utf-8") for p in chunk)
+            completed = _run_git_bytes(
+                self.path,
+                ["cat-file", "--batch", "-z"],
+                input_bytes=stdin_bytes,
+            )
+            parsed = _parse_cat_file_batch_output(completed.stdout, chunk)
+            result.update(parsed)
+
+        return result
+
+    def batch_file_line_counts(
+        self, tree_sha: str, relative_paths: Sequence[str]
+    ) -> dict[str, int | None]:
+        """Return line counts for files in ``tree_sha`` in bounded batches."""
+        return self.file_line_counts(tree_sha, relative_paths)
+
+    def file_line_count(self, tree_sha: str, relative_path: str) -> int | None:
+        """Return line count for a file in ``tree_sha``, or ``None`` when absent."""
+        return self.file_line_counts(tree_sha, [relative_path]).get(relative_path)
 
     def cleanup(self, force: bool = False) -> None:
         """Remove the worktree. Only called explicitly; never part of the

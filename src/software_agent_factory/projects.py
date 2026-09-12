@@ -36,6 +36,8 @@ from pathlib import Path
 from typing import Callable, TypeVar
 from uuid import uuid4
 
+from pydantic_core import from_json
+
 from .agents import (
     AgentRequest,
     AgentRuntime,
@@ -250,7 +252,17 @@ class FileProjectStore:
         model: type[ProjectArtifact],
     ) -> ProjectArtifact:
         path = self._project_dir(project_id, create=False) / filename
-        return model.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        raw = path.read_text(encoding="utf-8")
+        try:
+            payload = from_json(raw)
+        except ValueError as exc:
+            raise json.JSONDecodeError(str(exc), raw, 0) from exc
+        if not isinstance(payload, dict):
+            return model.model_validate(payload)
+        schema_version = payload.get("schema_version")
+        if schema_version != 1:
+            raise ValueError(f"Unsupported {model.__name__} schema_version: {schema_version}")
+        return model.model_validate(payload)
 
     @staticmethod
     def _model_text(model: VersionedModel) -> str:

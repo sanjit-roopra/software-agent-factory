@@ -10,22 +10,32 @@ class ModelRouter:
     def __init__(self, config: FactoryConfig):
         self._config = config
 
-    def model_for_role(self, role: AgentRole) -> RoleModelConfig:
+    def model_for_role(
+        self,
+        role: AgentRole,
+        *,
+        model_profile: str | None = None,
+    ) -> RoleModelConfig:
         if role is AgentRole.IMPLEMENTER:
             raise ValueError("Implementer routing requires complexity and attempt_number")
 
+        models = (
+            self._config.models
+            if model_profile is None
+            else self._config.model_profiles[model_profile]
+        )
         if role is AgentRole.TRIAGE:
-            return self._config.models.triage
+            return models.triage
         if role is AgentRole.REFINER:
-            return self._config.models.refiner
+            return models.refiner
         if role is AgentRole.RESEARCHER:
-            return self._config.models.researcher
+            return models.researcher
         if role is AgentRole.PLANNER:
-            return self._config.models.planner
+            return models.planner
         if role is AgentRole.TESTER:
-            return self._config.models.tester
+            return models.tester
         if role is AgentRole.REVIEWER:
-            return self._config.models.reviewer
+            return models.reviewer
         raise ValueError(f"No fixed model is configured for role {role}")
 
     def model_for_researcher(self) -> RoleModelConfig:

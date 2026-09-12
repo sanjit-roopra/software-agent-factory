@@ -468,6 +468,105 @@ def test_show_command_fails_clearly_for_unknown_run_id(data_dir: Path) -> None:
 # -- runtime selection ---------------------------------------------------
 
 
+def test_run_accepts_fast_performance_mode(source_repo: Path, data_dir: Path) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Fast task",
+            "--description",
+            "A low-risk task for the fast mode.",
+            "--performance-mode",
+            "fast",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    run = FileRunStore(data_dir).list_runs()[0]
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "fast"
+    assert run.performance_model_profile == "economy"
+
+
+def test_project_accepts_fast_performance_mode(source_repo: Path, data_dir: Path) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    result = runner.invoke(
+        app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Fast project",
+            "--description",
+            "A project for fast mode.",
+            "--acceptance-criterion",
+            "Fast execution succeeds.",
+            "--project-id",
+            "project-fast",
+            "--data-dir",
+            str(data_dir),
+            "--performance-mode",
+            "fast",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    runs = FileRunStore(data_dir).list_runs()
+    assert len(runs) >= 1
+    child_run = runs[0]
+    assert child_run.requested_performance_mode == "fast"
+    assert child_run.effective_performance_mode == "fast"
+    assert child_run.performance_model_profile == "economy"
+
+
+def test_cli_rejects_fast_performance_mode_with_unconfigured_profile(
+    source_repo: Path, data_dir: Path, tmp_path: Path
+) -> None:
+    import yaml
+
+    import software_agent_factory
+    from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
+
+    assert software_agent_factory.__file__ is not None
+    packaged = Path(software_agent_factory.__file__).parent / DEFAULT_CONFIG_FILENAME
+    payload = yaml.safe_load(packaged.read_text(encoding="utf-8"))
+    payload["factory"]["data_dir"] = str(data_dir)
+    payload["performance"] = {"mode": "standard", "fast_model_profile": "unconfigured"}
+    config_path = tmp_path / "factory-unconfigured-fast.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Unconfigured profile task",
+            "--description",
+            "Should fail.",
+            "--config",
+            str(config_path),
+            "--performance-mode",
+            "fast",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "fast performance mode requires performance.fast_model_profile" in result.output
+
+
 def test_run_defaults_to_the_fake_runtime_and_never_builds_copilot(
     source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -722,6 +821,45 @@ def test_start_once_runs_one_bounded_tick_without_touching_github(
     assert "tracker-acme/repo#11" in runs_result.output
 
 
+def test_start_accepts_fast_performance_mode(
+    source_repo: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_with,
+) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    path_with("gh")
+    _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
+
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "start",
+            "--repo",
+            str(source_repo),
+            "--github-repo",
+            "acme/repo",
+            "--once",
+            "--performance-mode",
+            "fast",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    runs = FileRunStore(data_dir).list_runs()
+    assert len(runs) >= 1
+    dispatched_run = runs[0]
+    assert dispatched_run.requested_performance_mode == "fast"
+    assert dispatched_run.effective_performance_mode == "fast"
+    assert dispatched_run.performance_model_profile == "economy"
+
+
 def test_start_requires_gh_because_it_polls_github_issues(
     source_repo: Path, data_dir: Path, tmp_path: Path, path_without
 ) -> None:
@@ -832,3 +970,44 @@ def test_start_once_reports_a_rate_limited_tick(
     assert result.exit_code == 0, result.output
     assert "dispatched: (none)" in result.output
     assert "rate limited: the daily run limit (1/day)" in result.output
+
+
+def test_show_json_output_exact_formatting(source_repo: Path, data_dir: Path) -> None:
+    from software_agent_factory.models import FactoryRun, WorkflowState
+    from software_agent_factory.store import FileRunStore
+
+    store = FileRunStore(data_dir)
+    run = FactoryRun(
+        id="run-exact-format",
+        work_item_id="work-item-exact",
+        state=WorkflowState.PR_READY,
+    )
+    store.save_run(run)
+
+    result = runner.invoke(app, ["show", run.id, "--data-dir", str(data_dir)])
+    assert result.exit_code == 0, result.output
+    # Must match model_dump_json(indent=2) exactly without double-encoding artifacts
+    expected = run.model_dump_json(indent=2)
+    assert result.output.strip() == expected.strip()
+
+
+def test_main_version_fast_path() -> None:
+    for flag in ["--version", "-V"]:
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            code = module_main([flag])
+        assert code == 0
+        assert get_version() in captured.getvalue()
+
+
+def test_cli_deferred_seam_and_getattr(monkeypatch: pytest.MonkeyPatch) -> None:
+    import software_agent_factory.cli as cli_module
+
+    # Test that unmonkeypatched deferred export loads via getattr
+    copilot_runtime_cls = getattr(cli_module, "CopilotAgentRuntime")
+    assert copilot_runtime_cls.__name__ == "CopilotAgentRuntime"
+
+    # Test that monkeypatched attribute is respected by _seam
+    sentinel = object()
+    monkeypatch.setattr(cli_module, "WorkflowController", sentinel)
+    assert cli_module._seam("WorkflowController") is sentinel

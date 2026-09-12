@@ -66,12 +66,14 @@ from software_agent_factory.models import (
     SkillSelectionSource,
     SkillSource,
     SkillTarget,
+    Specification,
     TriageResult,
     VerificationReport,
     WorkflowState,
     WorkItem,
     utc_now,
 )
+from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.repository_skills import RepositorySkillManager
 from software_agent_factory.store import ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
@@ -79,6 +81,7 @@ from software_agent_factory.workflow import (
     TERMINAL_STATES,
     TransitionError,
     WorkflowController,
+    _RunContext,
     is_run_finished,
 )
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
@@ -130,6 +133,8 @@ def _config(
     same_model_attempts: int = 2,
     max_total_attempts: int = 6,
     polish_enabled: bool = False,
+    performance_mode: str = "standard",
+    fast_model_profile: str = "economy",
 ) -> FactoryConfig:
     return FactoryConfig.model_validate(
         {
@@ -153,6 +158,26 @@ def _config(
                 },
                 "tester": {"model": "claude-sonnet-5", "reasoning": "high"},
                 "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
+            },
+            "model_profiles": {
+                "economy": {
+                    "triage": {"model": "gpt-5.6-luna", "reasoning": "medium"},
+                    "refiner": {"model": "gpt-5.6-terra", "reasoning": "high"},
+                    "researcher": {"model": "gemini-3.8-flash", "reasoning": "medium"},
+                    "planner": {"model": "gpt-5.6-terra", "reasoning": "high"},
+                    "workers": {
+                        "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
+                        "L1": {"model": "gemini-3.8-flash", "reasoning": "medium"},
+                        "L2": {"model": "claude-sonnet-5", "reasoning": "high"},
+                        "L3": {"model": "claude-opus-5", "reasoning": "high"},
+                    },
+                    "tester": {"model": "gemini-3.8-flash", "reasoning": "high"},
+                    "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
+                }
+            },
+            "performance": {
+                "mode": performance_mode,
+                "fast_model_profile": fast_model_profile,
             },
             "repository": {
                 "branch_prefix": "factory/",
@@ -563,6 +588,149 @@ def test_implementer_allows_only_one_writing_policy_correction(
     assert "Previous rejected artifact" in requests[1].repair_context.failures[0]
     assert (
         "Use a robust and comprehensive implementation." in (requests[1].repair_context.failures[0])
+    )
+
+
+def test_implementer_change_set_prose_correction_succeeds_without_extra_attempt(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            assert request.change_set is not None
+            assert request.diff is None
+            assert request.repair_context is not None
+            assert (
+                "Do not edit, add, or remove any source files or workspace files. "
+                "Source edits are strictly forbidden for this artifact-only correction."
+            ) in request.repair_context.summary
+            return AgentResult(
+                role=AgentRole.IMPLEMENTER,
+                success=True,
+                change_set=ChangeSet(
+                    summary="Add requested notes.",
+                    tests_added=[],
+                    commands_run=[],
+                ),
+            )
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text("repaired notes\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(
+                summary="Use a robust and comprehensive implementation.",
+                tests_added=["tests/test_notes.py"],
+                commands_run=["echo 1"],
+            ),
+        )
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        store,
+        FakeAgentRuntime(implementer=implementer),
+    ).run(_work_item("WI-change-set-correction"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 2
+    assert requests[0].purpose is AgentPurpose.STANDARD
+    assert requests[1].purpose is AgentPurpose.CORRECT_CHANGE_SET
+    assert len(run.attempt_records) == 1
+    assert run.attempt_records[0].attempt_number == 1
+    assert run.attempt_records[0].outcome == "succeeded"
+    saved_patch = store.load_patch(run.id, attempt=1)
+    assert "repaired notes" in saved_patch
+    saved_change_set = store.load_artifact(run.id, ChangeSet, attempt=1)
+    assert saved_change_set.summary == "Add requested notes."
+    assert saved_change_set.tests_added == ["tests/test_notes.py"]
+    assert saved_change_set.commands_run == ["echo 1"]
+    assert saved_change_set.changed_files == ["FACTORY_NOTES.md"]
+    assert run.performance.counters.get("rework.change_set_artifact_correction") == 1
+
+
+def test_implementer_change_set_correction_is_capped_at_one_across_attempts(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+    attempt_count = 0
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        nonlocal attempt_count
+        requests.append(request)
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            return AgentResult(
+                role=AgentRole.IMPLEMENTER,
+                success=True,
+                change_set=ChangeSet(summary="Add clean notes."),
+            )
+        attempt_count += 1
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text(f"work {attempt_count}\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
+        )
+
+    config = _config(
+        data_dir,
+        verify=["test -f pass_flag.txt"],
+        same_model_attempts=2,
+        max_total_attempts=3,
+    )
+    run = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer),
+    ).run(_work_item("WI-correction-capped"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    correction_requests = [r for r in requests if r.purpose is AgentPurpose.CORRECT_CHANGE_SET]
+    assert len(correction_requests) == 1
+
+
+def test_implementer_change_set_correction_rejected_if_worktree_diff_changes(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        assert request.workspace_path is not None
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            (Path(request.workspace_path) / "unexpected.txt").write_text("sneaky edit\n")
+            return AgentResult(
+                role=AgentRole.IMPLEMENTER,
+                success=True,
+                change_set=ChangeSet(summary="Add clean notes."),
+            )
+        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text("initial edit\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
+        )
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=1, max_total_attempts=1),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer),
+    ).run(_work_item("WI-diff-change-rejected"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert len(requests) == 2
+    assert requests[1].purpose is AgentPurpose.CORRECT_CHANGE_SET
+    assert len(run.attempt_records) == 1
+    assert run.attempt_records[0].outcome == "failed"
+    assert (
+        "ChangeSet correction changed the Git diff; the artifact-only correction was rejected"
+        in (run.attempt_records[0].failure_reason or "")
     )
 
 
@@ -2561,10 +2729,15 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
     reviewer_calls = 0
     reviewer_requests: list[AgentRequest] = []
     implementer_requests: list[AgentRequest] = []
+    tester_requests: list[AgentRequest] = []
     default_runtime = FakeAgentRuntime()
 
     def implementer(request: AgentRequest) -> AgentResult:
         implementer_requests.append(request)
+        return default_runtime.run(request)
+
+    def tester(request: AgentRequest) -> AgentResult:
+        tester_requests.append(request)
         return default_runtime.run(request)
 
     def reviewer(request: AgentRequest) -> AgentResult:
@@ -2593,7 +2766,7 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
     run = WorkflowController(
         _config(data_dir, same_model_attempts=1, max_total_attempts=2),
         FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=implementer, reviewer=reviewer),
+        FakeAgentRuntime(implementer=implementer, tester=tester, reviewer=reviewer),
     ).run(_work_item("WI-reviewer-finding-gate"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
@@ -2606,6 +2779,271 @@ def test_reviewer_findings_are_blocking_and_suggestions_stay_advisory(
         "A concrete correctness defect remains."
     ]
     assert reviewer_requests[1].repair_diff is not None
+    assert tester_requests[0].repair_diff is None
+    assert tester_requests[1].repair_diff is not None
+    assert [finding.message for finding in tester_requests[1].prior_review_findings] == [
+        "A concrete correctness defect remains."
+    ]
+
+
+def test_tester_receives_repair_diff_and_prior_accepted_findings_during_review_repair(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    store = FileRunStore(data_dir)
+    default_runtime = FakeAgentRuntime()
+    tester_requests: list[AgentRequest] = []
+
+    def tester(request: AgentRequest) -> AgentResult:
+        tester_requests.append(request)
+        return default_runtime.run(request)
+
+    runtime = FakeAgentRuntime(tester=tester)
+    config = _config(data_dir)
+    controller = WorkflowController(config, store, runtime)
+
+    accepted_finding = ReviewFinding(
+        id="review-compatibility-accepted",
+        category=ReviewFindingCategory.COMPATIBILITY,
+        message="A legacy response remains accepted debt.",
+        locations=[
+            ReviewSourceLocation(
+                path="FACTORY_NOTES.md",
+                start_line=1,
+                end_line=1,
+            )
+        ],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+    open_finding = ReviewFinding(
+        id="review-correctness-open",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message="A concrete correctness defect remains.",
+        locations=[
+            ReviewSourceLocation(
+                path="FACTORY_NOTES.md",
+                start_line=1,
+                end_line=1,
+            )
+        ],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+
+    workspace = GitWorktreeWorkspace(
+        config.data_dir,
+        source_repo,
+        "WI-tester-repair-context",
+        branch_prefix=config.repository.branch_prefix,
+    )
+    workspace.acquire_lock()
+    try:
+        workspace.prepare()
+        (workspace.path / "FACTORY_NOTES.md").write_text("repaired notes\n")
+        evidence = workspace.collect_evidence()
+
+        run = FactoryRun(
+            id="RUN-tester-repair-context",
+            work_item_id="WI-tester-repair-context",
+            state=WorkflowState.REVIEWING,
+            review_ledger=ReviewLedger(
+                accepted_findings=[accepted_finding],
+                open_findings=[open_finding],
+            ),
+        )
+        context = _RunContext(
+            work_item=_work_item("WI-tester-repair-context"),
+            triage_result=TriageResult(
+                factory_eligible=True,
+                complexity=Complexity.L1,
+                risk=Risk.R0,
+                requirements_quality="clear",
+                needs_research=False,
+                dependencies=[],
+                unknowns=[],
+                confidence=0.8,
+            ),
+            specification=Specification(
+                problem="Fix defect.",
+                acceptance_criteria=["Notes are updated."],
+                confidence=0.9,
+            ),
+            research_report=None,
+            execution_plan=ExecutionPlan(
+                summary="Fix defect.",
+                steps=[PlanStep(id="1", goal="Update notes.")],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=1,
+                ),
+            ),
+            repository_profile=RepositoryProfile(
+                manifest_fingerprint="0" * 64,
+                dependency_fingerprint="0" * 64,
+            ),
+            workspace=workspace,
+            source_repo=source_repo,
+        )
+        repair_diff = (
+            "diff --git a/FACTORY_NOTES.md b/FACTORY_NOTES.md\n@@ -1 +1 @@\n-old\n+repaired notes\n"
+        )
+        verification_report = VerificationReport(passed=True, confidence=1.0)
+
+        report = controller._run_tester(
+            run,
+            context,
+            evidence,
+            verification_report,
+            snapshot=2,
+            repair_diff=repair_diff,
+        )
+
+        assert report.passed is True
+        assert len(tester_requests) == 1
+        tester_request = tester_requests[0]
+        assert tester_request.repair_diff == repair_diff
+        assert tester_request.accepted_review_findings == [accepted_finding]
+        assert tester_request.prior_review_findings == [open_finding]
+    finally:
+        workspace.release_lock()
+
+
+def test_review_repair_loop_passes_repair_diff_and_prior_accepted_findings_to_tester(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    accepted_finding = ReviewFinding(
+        id="review-compatibility-accepted",
+        category=ReviewFindingCategory.COMPATIBILITY,
+        message="A legacy response remains accepted debt.",
+        locations=[
+            ReviewSourceLocation(
+                path="FACTORY_NOTES.md",
+                start_line=1,
+                end_line=1,
+            )
+        ],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+    reviewer_calls = 0
+    tester_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def tester(request: AgentRequest) -> AgentResult:
+        tester_requests.append(request)
+        return default_runtime.run(request)
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_calls
+        reviewer_calls += 1
+        if reviewer_calls == 1:
+            return AgentResult(
+                role=AgentRole.REVIEWER,
+                success=True,
+                review_report=ReviewReport(
+                    approved=False,
+                    blocking_findings=[_review_finding("A concrete correctness defect remains.")],
+                ),
+            )
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=True,
+                prior_finding_dispositions=_resolve_prior(request),
+            ),
+        )
+
+    store = FileRunStore(data_dir)
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=2)
+    workspace = GitWorktreeWorkspace(
+        config.data_dir,
+        source_repo,
+        "WI-tester-repair-loop",
+        branch_prefix=config.repository.branch_prefix,
+    )
+    workspace.acquire_lock()
+    try:
+        workspace.prepare()
+        run = FactoryRun(
+            id="RUN-tester-repair-loop",
+            work_item_id="WI-tester-repair-loop",
+            state=WorkflowState.IMPLEMENTING,
+            workspace_path=str(workspace.path),
+            branch_name=workspace.branch_name,
+            base_commit_sha=workspace.base_commit,
+            review_ledger=ReviewLedger(accepted_findings=[accepted_finding]),
+        )
+        work_item = _work_item("WI-tester-repair-loop")
+        spec = Specification(
+            problem="Fix defect.",
+            acceptance_criteria=["Notes are updated."],
+            confidence=0.9,
+        )
+        plan = ExecutionPlan(
+            summary="Fix defect.",
+            steps=[PlanStep(id="1", goal="Update notes.")],
+            expected_scope=ExpectedScope(
+                modules=["FACTORY_NOTES.md"],
+                estimated_files_min=1,
+                estimated_files_max=1,
+            ),
+        )
+        profile = RepositoryProfile(
+            manifest_fingerprint="0" * 64,
+            dependency_fingerprint="0" * 64,
+        )
+        store.save_run(run)
+        store.save_artifact(run.id, work_item)
+        store.save_artifact(run.id, spec)
+        store.save_artifact(run.id, plan)
+        store.save_artifact(run.id, profile)
+
+        context = _RunContext(
+            work_item=work_item,
+            triage_result=TriageResult(
+                factory_eligible=True,
+                complexity=Complexity.L1,
+                risk=Risk.R0,
+                requirements_quality="clear",
+                needs_research=False,
+                dependencies=[],
+                unknowns=[],
+                confidence=0.8,
+            ),
+            specification=spec,
+            research_report=None,
+            execution_plan=plan,
+            repository_profile=profile,
+            workspace=workspace,
+            source_repo=source_repo,
+        )
+
+        controller = WorkflowController(
+            config,
+            store,
+            FakeAgentRuntime(tester=tester, reviewer=reviewer),
+        )
+        completed_run = controller._drive_to_pr_ready(
+            run, context, AttemptBudget.IMPLEMENTATION, None
+        )
+
+        assert completed_run.state is WorkflowState.PR_READY
+        assert len(tester_requests) == 2
+        # Round 1 before repair: no repair diff, but accepted debt is present
+        assert tester_requests[0].repair_diff is None
+        assert tester_requests[0].accepted_review_findings == [accepted_finding]
+        # Round 2 during review repair: repair diff and accepted debt are both present
+        assert tester_requests[1].repair_diff is not None
+        assert tester_requests[1].accepted_review_findings == [accepted_finding]
+        assert [f.message for f in tester_requests[1].prior_review_findings] == [
+            "A concrete correctness defect remains."
+        ]
+    finally:
+        workspace.release_lock()
 
 
 def test_reviewer_semantic_contract_gets_bounded_same_model_correction(
@@ -3504,3 +3942,897 @@ def test_is_run_finished_distinguishes_completed_from_interrupted_pr_ready() -> 
         is_run_finished(FactoryRun(id="c", work_item_id="w", state=WorkflowState.CI_RUNNING))
         is False
     )
+
+
+# -- performance mode and fast profile ----------------------------------------
+
+
+def test_standard_performance_mode_is_default_and_runs_polish(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    recorded_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def recording_runtime(request: AgentRequest) -> AgentResult:
+        recorded_requests.append(request)
+        return default_runtime.run(request)
+
+    config = _config(data_dir, polish_enabled=True, performance_mode="standard")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            refiner=recording_runtime,
+            planner=recording_runtime,
+            tester=recording_runtime,
+            reviewer=recording_runtime,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-standard-mode"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.requested_performance_mode == "standard"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile is None
+    assert run.performance_fallback_reason is None
+
+    # Refiner and planner used top-level models, not fast profile
+    refiner_req = next(r for r in recorded_requests if r.role is AgentRole.REFINER)
+    planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
+    assert refiner_req.model == config.models.refiner.model
+    assert planner_req.model == config.models.planner.model
+
+    # Optional polish pass ran because standard mode does not skip polish
+    polish_attempts = [
+        att for att in run.attempt_records if att.triggered_by is AttemptTrigger.POLISH
+    ]
+    assert len(polish_attempts) == 1
+
+    # Reload from store confirms persistence
+    persisted = store.load_run(run.id)
+    assert persisted.requested_performance_mode == "standard"
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_model_profile is None
+    assert persisted.performance_fallback_reason is None
+
+
+def test_fast_performance_mode_eligible_runs_fast_refiner_planner_and_skips_polish(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    recorded_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def recording_runtime(request: AgentRequest) -> AgentResult:
+        recorded_requests.append(request)
+        return default_runtime.run(request)
+
+    config = _config(data_dir, polish_enabled=True, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L1, Risk.R1),
+            refiner=recording_runtime,
+            planner=recording_runtime,
+            tester=recording_runtime,
+            reviewer=recording_runtime,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-mode-eligible"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "fast"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason is None
+
+    # Refiner and planner used fast profile models from config
+    refiner_req = next(r for r in recorded_requests if r.role is AgentRole.REFINER)
+    planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
+    fast_profile = config.model_profiles["economy"]
+    assert refiner_req.model == fast_profile.refiner.model
+    assert planner_req.model == fast_profile.planner.model
+
+    # Tester and reviewer preserved independent top-level models
+    tester_req = next(r for r in recorded_requests if r.role is AgentRole.TESTER)
+    reviewer_req = next(r for r in recorded_requests if r.role is AgentRole.REVIEWER)
+    assert tester_req.model == config.models.tester.model
+    assert reviewer_req.model == config.models.reviewer.model
+
+    # Optional polish pass was skipped
+    polish_attempts = [
+        att for att in run.attempt_records if att.triggered_by is AttemptTrigger.POLISH
+    ]
+    assert len(polish_attempts) == 0
+
+    # Reload from store confirms persistence
+    persisted = store.load_run(run.id)
+    assert persisted.requested_performance_mode == "fast"
+    assert persisted.effective_performance_mode == "fast"
+    assert persisted.performance_model_profile == "economy"
+    assert persisted.performance_fallback_reason is None
+
+
+def test_fast_performance_mode_fallback_triage_ineligible_complexity(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    recorded_requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def recording_runtime(request: AgentRequest) -> AgentResult:
+        recorded_requests.append(request)
+        return default_runtime.run(request)
+
+    config = _config(data_dir, polish_enabled=True, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L2, Risk.R1),
+            refiner=recording_runtime,
+            planner=recording_runtime,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-complexity"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == "complexity L2 is not eligible for fast mode"
+
+    # Refiner and planner fell back to standard top-level models
+    refiner_req = next(r for r in recorded_requests if r.role is AgentRole.REFINER)
+    planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
+    assert refiner_req.model == config.models.refiner.model
+    assert planner_req.model == config.models.planner.model
+
+    # Polish is not skipped after fallback to standard
+    polish_attempts = [
+        att for att in run.attempt_records if att.triggered_by is AttemptTrigger.POLISH
+    ]
+    assert len(polish_attempts) == 1
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == "complexity L2 is not eligible for fast mode"
+
+
+def test_fast_performance_mode_fallback_triage_ineligible_risk(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    config = _config(data_dir, performance_mode="fast")
+    # Allow R2 without human approval so triage can proceed to fallback evaluation
+    config.risk[Risk.R2].human_approval = False
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(triage=_triage_hook(Complexity.L1, Risk.R2)),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-risk"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == "risk R2 is not eligible for fast mode"
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == "risk R2 is not eligible for fast mode"
+
+
+def test_fast_performance_mode_fallback_triage_requires_research(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    research_requests: list[AgentRequest] = []
+    planner_requests: list[AgentRequest] = []
+
+    def recording_researcher(request: AgentRequest) -> AgentResult:
+        research_requests.append(request)
+        return FakeAgentRuntime()._default_researcher(request)
+
+    def recording_planner(request: AgentRequest) -> AgentResult:
+        planner_requests.append(request)
+        return FakeAgentRuntime()._default_planner(request)
+
+    config = _config(data_dir, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0, needs_research=True),
+            researcher=recording_researcher,
+            planner=recording_planner,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-research"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == "triage requires research"
+    assert len(research_requests) == 1
+    assert planner_requests[0].model == config.models.planner.model
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == "triage requires research"
+
+
+def test_fast_performance_mode_fallback_after_planning_protected_file(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def planner_planning_protected_file(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan with protected file.",
+                steps=[PlanStep(id="1", goal="Edit protected file.", likely_files=["README.md"])],
+                expected_scope=ExpectedScope(
+                    modules=["README.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+            ),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    config.repository.protected_file_patterns = ["README.md"]
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            planner=planner_planning_protected_file,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-plan-protected"), source_repo)
+
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == "scope includes protected files: README.md"
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == "scope includes protected files: README.md"
+
+
+def test_fast_performance_mode_fallback_after_planning_manifest_or_version_file(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def planner_planning_manifest(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan updating pyproject.toml.",
+                steps=[PlanStep(id="1", goal="Add dependency.", likely_files=["pyproject.toml"])],
+                expected_scope=ExpectedScope(
+                    modules=["pyproject.toml"],
+                    estimated_files_min=1,
+                    estimated_files_max=1,
+                ),
+            ),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            planner=planner_planning_manifest,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-plan-manifest"), source_repo)
+
+    expected_reason = "scope includes manifest or version files: pyproject.toml"
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == expected_reason
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == expected_reason
+
+
+def test_fast_performance_mode_fallback_after_planning_sensitive_file(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def planner_planning_ci_workflow(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan modifying CI workflow.",
+                steps=[
+                    PlanStep(
+                        id="1",
+                        goal="Update CI.",
+                        likely_files=[".github/workflows/ci.yml"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=[".github/workflows/ci.yml"],
+                    estimated_files_min=1,
+                    estimated_files_max=1,
+                ),
+            ),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            planner=planner_planning_ci_workflow,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-plan-sensitive"), source_repo)
+
+    expected_reason = "scope includes sensitive files: .github/workflows/ci.yml"
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == expected_reason
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == expected_reason
+
+
+def test_fast_performance_mode_fallback_actual_scope_manifest_file(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def implementer_changing_manifest(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        manifest = Path(request.workspace_path, "package.json")
+        manifest.write_text('{"name": "test-pkg"}\n', encoding="utf-8")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(changed_files=["package.json"], summary="Add package.json"),
+        )
+
+    def planner_safe(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Safe plan.",
+                steps=[PlanStep(id="1", goal="Safe work.", likely_files=["app.py"])],
+                expected_scope=ExpectedScope(
+                    modules=["package.json"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+            ),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            planner=planner_safe,
+            implementer=implementer_changing_manifest,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-actual-manifest"), source_repo)
+
+    expected_reason = "scope includes manifest or version files: package.json"
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == expected_reason
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == expected_reason
+
+
+def test_fast_performance_mode_fallback_actual_scope_sensitive_file(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def implementer_changing_migration(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        migration_dir = Path(request.workspace_path, "alembic", "versions")
+        migration_dir.mkdir(parents=True, exist_ok=True)
+        (migration_dir / "001_init.py").write_text("# migration\n", encoding="utf-8")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(
+                changed_files=["alembic/versions/001_init.py"],
+                summary="Add migration",
+            ),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            implementer=implementer_changing_migration,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-actual-sensitive"), source_repo)
+
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert "scope includes sensitive files" in (run.performance_fallback_reason or "")
+    assert "alembic/versions/001_init.py" in (run.performance_fallback_reason or "")
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert "scope includes sensitive files" in (persisted.performance_fallback_reason or "")
+
+
+def test_fast_performance_mode_fallback_actual_scope_protected_file(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def implementer_changing_protected(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        Path(request.workspace_path, "README.md").write_text("# new readme\n", encoding="utf-8")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(changed_files=["README.md"], summary="Edit README"),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    config.repository.protected_file_patterns = ["README.md"]
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            implementer=implementer_changing_protected,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-actual-protected"), source_repo)
+
+    assert run.requested_performance_mode == "fast"
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_model_profile == "economy"
+    assert run.performance_fallback_reason == "scope includes protected files: README.md"
+
+    persisted = store.load_run(run.id)
+    assert persisted.effective_performance_mode == "standard"
+    assert persisted.performance_fallback_reason == "scope includes protected files: README.md"
+
+
+def test_implementer_change_set_correction_bound_enforced_across_recovery_records(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+    attempt_count = 0
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        nonlocal attempt_count
+        requests.append(request)
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            return AgentResult(
+                role=AgentRole.IMPLEMENTER,
+                success=True,
+                change_set=ChangeSet(summary="Add clean notes."),
+            )
+        attempt_count += 1
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text(f"attempt {attempt_count}\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
+        )
+
+    config = _config(
+        data_dir,
+        verify=["test -f pass_flag.txt"],
+        same_model_attempts=2,
+        max_total_attempts=3,
+    )
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(implementer=implementer),
+    )
+    run = controller.run(_work_item("WI-correction-bound-recovery"), source_repo)
+
+    correction_invocations = [
+        inv for inv in run.invocation_records if inv.purpose is AgentPurpose.CORRECT_CHANGE_SET
+    ]
+    assert len(correction_invocations) == 1
+
+    workspace = GitWorktreeWorkspace(data_dir, source_repo, run.work_item_id)
+    context = _RunContext(
+        work_item=store.load_artifact(run.id, WorkItem),
+        triage_result=store.load_artifact(run.id, TriageResult),
+        specification=store.load_artifact(run.id, Specification),
+        research_report=None,
+        execution_plan=store.load_artifact(run.id, ExecutionPlan),
+        repository_profile=store.load_artifact(run.id, RepositoryProfile),
+        workspace=workspace,
+        source_repo=source_repo,
+    )
+    assert controller._change_set_correction_used(run, context) is True
+
+
+def test_reviewer_source_location_model_validation_rejects_invalid_paths() -> None:
+    invalid_paths = [
+        ".",
+        "foo\nbar.py",
+        "foo\0bar.py",
+        "foo\rbar.py",
+        "/abs/path.py",
+        "../escape.py",
+        "a\\b.py",
+    ]
+    for invalid in invalid_paths:
+        with pytest.raises(ValidationError):
+            ReviewSourceLocation(path=invalid, start_line=1, end_line=5)
+
+
+def test_reviewer_invalid_path_rejected_by_workspace_validation_does_not_strand_reviewing(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    reviewer_attempts = 0
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_attempts
+        reviewer_attempts += 1
+        invalid_path = "." if reviewer_attempts == 1 else "foo\nbar.py"
+        report = ReviewReport.model_construct(
+            approved=False,
+            blocking_findings=[],
+            repair_regressions=[],
+            prior_finding_dispositions=[],
+        )
+        draft = ReviewFindingDraft.model_construct(
+            category=ReviewFindingCategory.CORRECTNESS,
+            message="Invalid path finding",
+            locations=[
+                ReviewSourceLocation.model_construct(
+                    path=invalid_path,
+                    start_line=1,
+                    end_line=1,
+                )
+            ],
+        )
+        report.blocking_findings.append(draft)
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=report,
+        )
+
+    config = _config(data_dir, same_model_attempts=2)
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    )
+    run = controller.run(_work_item("WI-reviewer-invalid-path"), source_repo)
+
+    assert run.state is WorkflowState.FAILED
+    assert reviewer_attempts == 2
+    assert "review finding cites an invalid repository path" in (run.failure_reason or "")
+
+
+def test_rework_counters_verification_and_review_not_double_counted(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    implementer_attempts = 0
+    reviewer_calls = 0
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        nonlocal implementer_attempts
+        implementer_attempts += 1
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "app.txt").write_text(f"attempt {implementer_attempts}\n")
+        if implementer_attempts >= 2:
+            (Path(request.workspace_path) / "verification_passed.txt").write_text("ok\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary=f"Attempt {implementer_attempts}"),
+        )
+
+    def planner_with_app_txt(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan with app.txt.",
+                steps=[
+                    PlanStep(
+                        id="1",
+                        goal="Edit app.txt.",
+                        likely_files=["app.txt", "verification_passed.txt"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=["app.txt", "verification_passed.txt"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+            ),
+        )
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_calls
+        reviewer_calls += 1
+        if reviewer_calls == 1:
+            return AgentResult(
+                role=AgentRole.REVIEWER,
+                success=True,
+                review_report=ReviewReport(
+                    approved=False,
+                    blocking_findings=[
+                        ReviewFindingDraft(
+                            category=ReviewFindingCategory.CORRECTNESS,
+                            message="Please fix this bug.",
+                            locations=[
+                                ReviewSourceLocation(
+                                    path="app.txt",
+                                    start_line=1,
+                                    end_line=1,
+                                )
+                            ],
+                        )
+                    ],
+                ),
+            )
+        dispositions = [
+            ReviewFindingDisposition(
+                finding_id=f.id,
+                status=ReviewDispositionStatus.RESOLVED,
+                rationale="Fixed in attempt 3.",
+            )
+            for f in request.prior_review_findings
+        ]
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=True,
+                blocking_findings=[],
+                prior_finding_dispositions=dispositions,
+            ),
+        )
+
+    config = _config(
+        data_dir,
+        verify=["test -f verification_passed.txt"],
+        same_model_attempts=3,
+        max_total_attempts=5,
+    )
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(planner=planner_with_app_txt, implementer=implementer, reviewer=reviewer),
+    )
+    run = controller.run(_work_item("WI-rework-no-double-count"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert implementer_attempts == 3
+
+    assert run.performance.counters.get("rework_total") == 2
+    assert run.performance.counters.get("rework.repair_attempt") == 2
+
+    assert run.performance.counters.get("gate_failures_total") == 2
+    assert run.performance.counters.get("gate_failure.verification") == 1
+    assert run.performance.counters.get("gate_failure.review") == 1
+
+    assert run.performance.counters.get("rework_cause.verification_failure") == 1
+    assert run.performance.counters.get("rework_cause.review_rejection") == 1
+
+    valid_states = {s.value for s in WorkflowState}
+    for metric in run.performance.metrics:
+        if metric.stage is not None:
+            assert metric.stage in valid_states, f"Invalid stage label: {metric.stage}"
+
+
+def test_rework_telemetry_initial_plus_polish(source_repo: Path, data_dir: Path) -> None:
+    profile = _react_profile()
+    run, _, _ = _polish_run(source_repo, data_dir, "WI-polish-rework-telemetry", profile=profile)
+
+    assert run.state is WorkflowState.PR_READY
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.POLISH,
+    ]
+    # Rework telemetry excludes initial implementation and optional POLISH
+    assert run.performance.counters.get("rework_total", 0) == 0
+    assert run.performance.counters.get("rework.repair_attempt", 0) == 0
+    assert run.performance.counters.get("gate_failures_total", 0) == 0
+
+    metrics = _compute_aggregate_metrics([run])
+    assert metrics.performance.rework.total_rework_attempts == 0
+    assert metrics.performance.rework.runs_with_rework == 0
+    assert metrics.performance.rework.total_gate_failures == 0
+
+
+def test_rework_telemetry_initial_plus_verification_repair(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    implementer_attempts = 0
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        nonlocal implementer_attempts
+        implementer_attempts += 1
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "app.txt").write_text(f"attempt {implementer_attempts}\n")
+        if implementer_attempts >= 2:
+            (Path(request.workspace_path) / "verification_passed.txt").write_text("ok\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary=f"Attempt {implementer_attempts}"),
+        )
+
+    def planner_with_app_txt(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan with app.txt.",
+                steps=[
+                    PlanStep(
+                        id="1",
+                        goal="Edit app.txt.",
+                        likely_files=["app.txt", "verification_passed.txt"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=["app.txt", "verification_passed.txt"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+            ),
+        )
+
+    config = _config(
+        data_dir,
+        verify=["test -f verification_passed.txt"],
+        same_model_attempts=3,
+        max_total_attempts=5,
+    )
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(planner=planner_with_app_txt, implementer=implementer),
+    )
+    run = controller.run(_work_item("WI-rework-verification-repair"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert implementer_attempts == 2
+    assert [attempt.triggered_by for attempt in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.VERIFICATION,
+    ]
+
+    # Exactly 1 rework attempt counted, verification gate failure is the cause
+    assert run.performance.counters.get("rework_total") == 1
+    assert run.performance.counters.get("rework.repair_attempt") == 1
+    assert run.performance.counters.get("rework_cause.verification_failure") == 1
+    assert run.performance.counters.get("gate_failures_total") == 1
+    assert run.performance.counters.get("gate_failure.verification") == 1
+
+    metrics = _compute_aggregate_metrics([run])
+    assert metrics.performance.rework.total_rework_attempts == 1
+    assert metrics.performance.rework.runs_with_rework == 1
+    assert metrics.performance.rework.total_gate_failures == 1
+    assert metrics.performance.rework.verification_gate_failures == 1
+
+
+def test_fast_planned_scope_fallback_does_not_rerun_planner(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    planner_calls = 0
+    planner_requests: list[AgentRequest] = []
+
+    def planner_planning_protected_file(request: AgentRequest) -> AgentResult:
+        nonlocal planner_calls
+        planner_calls += 1
+        planner_requests.append(request)
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan with protected file.",
+                steps=[PlanStep(id="1", goal="Edit protected file.", likely_files=["README.md"])],
+                expected_scope=ExpectedScope(
+                    modules=["README.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+            ),
+        )
+
+    def implementer_touching_readme(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "README.md").write_text("updated readme\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary="Edit README", changed_files=["README.md"]),
+        )
+
+    config = _config(data_dir, performance_mode="fast")
+    config.repository.protected_file_patterns = ["README.md"]
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(
+            triage=_triage_hook(Complexity.L0, Risk.R0),
+            planner=planner_planning_protected_file,
+            implementer=implementer_touching_readme,
+        ),
+    )
+
+    run = controller.run(_work_item("WI-fast-fallback-no-planner-rerun"), source_repo)
+
+    assert planner_calls == 1
+    fast_planner_model = controller._router.model_for_role(
+        AgentRole.PLANNER, model_profile="economy"
+    ).model
+    assert planner_requests[0].model == fast_planner_model
+    assert planner_requests[0].model != config.models.planner.model
+    assert run.effective_performance_mode == "standard"
+    assert run.performance_fallback_reason == "scope includes protected files: README.md"
+    persisted_plan = store.load_artifact(run.id, ExecutionPlan)
+    assert persisted_plan.summary == "Plan with protected file."

@@ -56,6 +56,18 @@ def test_model_router_routes_fixed_roles_and_risk_gate() -> None:
     assert router.requires_human_approval(Risk.R2) is True
 
 
+def test_model_router_routes_fixed_role_from_named_profile() -> None:
+    payload = _config_dict()
+    fast_models = dict(payload["models"])  # type: ignore[arg-type]
+    fast_models["refiner"] = {"model": "fast-refiner", "reasoning": "low"}
+    fast_models["planner"] = {"model": "fast-planner", "reasoning": "low"}
+    payload["model_profiles"] = {"fast": fast_models}
+    router = ModelRouter(FactoryConfig.model_validate(payload))
+
+    assert router.model_for_role(AgentRole.REFINER, model_profile="fast").model == "fast-refiner"
+    assert router.model_for_role(AgentRole.PLANNER, model_profile="fast").model == "fast-planner"
+
+
 def test_model_router_rejects_implementer_without_complexity() -> None:
     router = ModelRouter(FactoryConfig.model_validate(_config_dict()))
 

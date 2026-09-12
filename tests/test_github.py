@@ -28,6 +28,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,10 @@ from software_agent_factory.github import (
     UnreviewedContentError,
     UnsafeBranchNameError,
     UnsafeRemoteError,
+    _parse_diff_changed_files,
+    _parse_name_only_changed_files,
+    _parse_name_status_changed_files,
+    _parse_raw_diff_changed_files,
     build_pr_body,
     classify_failure,
     default_command_runner,
@@ -134,6 +139,11 @@ def _remote_url_response(url: str = "https://github.com/acme/repo.git") -> FakeC
     return FakeCompletedProcess(returncode=0, stdout=f"{url}\n")
 
 
+def _raw_diff_output(*paths: str) -> str:
+    """Format file paths as NUL-delimited git diff --raw -z output for test doubles."""
+    return "".join(f":100644 100644 1111111 2222222 M\0{p}\0" for p in paths)
+
+
 # --------------------------------------------------------------------------
 # GitPublisher
 # --------------------------------------------------------------------------
@@ -144,7 +154,7 @@ def test_commit_and_push_raises_when_nothing_staged(tmp_path: Path) -> None:
         [
             _remote_url_response(),  # remote get-url
             FakeCompletedProcess(returncode=0),  # add -A
-            FakeCompletedProcess(returncode=0, stdout=""),  # diff --cached --name-only
+            FakeCompletedProcess(returncode=0, stdout=""),  # diff --cached --raw -z
         ]
     )
     publisher = GitPublisher(runner=runner)
@@ -187,7 +197,7 @@ def test_commit_and_push_appends_copilot_trailer_and_returns_sha(tmp_path: Path)
         [
             _remote_url_response(),  # remote get-url
             FakeCompletedProcess(returncode=0),  # add -A
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),  # diff --cached --name-only
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0),  # commit
             FakeCompletedProcess(returncode=0, stdout="abc123\n"),  # rev-parse HEAD
             FakeCompletedProcess(returncode=0),  # push
@@ -209,7 +219,7 @@ def test_commit_and_push_does_not_duplicate_trailer_if_already_present(tmp_path:
         [
             _remote_url_response(),
             FakeCompletedProcess(returncode=0),
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0),
             FakeCompletedProcess(returncode=0, stdout="abc123\n"),
             FakeCompletedProcess(returncode=0),
@@ -234,7 +244,7 @@ def test_commit_and_push_never_forces_and_pushes_explicit_branch_refspec(
         [
             _remote_url_response(),
             FakeCompletedProcess(returncode=0),
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0),
             FakeCompletedProcess(returncode=0, stdout="abc123\n"),
             FakeCompletedProcess(returncode=0),
@@ -260,7 +270,7 @@ def test_commit_and_push_raises_typed_error_on_git_failure(tmp_path: Path) -> No
         [
             _remote_url_response(),
             FakeCompletedProcess(returncode=0),
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=1, stderr="fatal: could not commit"),
         ]
     )
@@ -332,8 +342,8 @@ def test_commit_and_push_rejects_protected_files(tmp_path: Path, protected_file:
         [
             _remote_url_response(),  # remote get-url
             FakeCompletedProcess(returncode=0),  # add -A
-            FakeCompletedProcess(  # diff --cached --name-only
-                returncode=0, stdout=f"src/app.py\n{protected_file}\n"
+            FakeCompletedProcess(  # diff --cached --raw -z
+                returncode=0, stdout=_raw_diff_output("src/app.py", protected_file)
             ),
         ]
     )
@@ -348,7 +358,7 @@ def test_commit_and_push_rejects_protected_files(tmp_path: Path, protected_file:
 
 
 def test_commit_and_push_rejects_excessive_changed_files(tmp_path: Path) -> None:
-    many_files = "\n".join(f"file{i}.py" for i in range(250)) + "\n"
+    many_files = _raw_diff_output(*(f"file{i}.py" for i in range(250)))
     runner = FakeRunner(
         [
             _remote_url_response(),
@@ -367,7 +377,7 @@ def test_commit_and_push_rejects_excessive_changed_files(tmp_path: Path) -> None
 
 
 def test_commit_and_push_allows_changed_files_within_the_bound(tmp_path: Path) -> None:
-    files = "\n".join(f"file{i}.py" for i in range(150)) + "\n"
+    files = _raw_diff_output(*(f"file{i}.py" for i in range(150)))
     runner = FakeRunner(
         [
             _remote_url_response(),
@@ -425,7 +435,7 @@ def test_commit_and_push_accepts_github_com_https_and_ssh_remotes(tmp_path: Path
         [
             _remote_url_response(url),
             FakeCompletedProcess(returncode=0),  # add -A
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),  # diff --cached
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0),  # commit
             FakeCompletedProcess(returncode=0, stdout="abc123\n"),  # rev-parse HEAD
             FakeCompletedProcess(returncode=0),  # push
@@ -458,7 +468,7 @@ def test_commit_and_push_allows_custom_allowed_hosts(tmp_path: Path) -> None:
         [
             _remote_url_response("https://git.internal.example/acme/repo.git"),
             FakeCompletedProcess(returncode=0),
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0),
             FakeCompletedProcess(returncode=0, stdout="abc123\n"),
             FakeCompletedProcess(returncode=0),
@@ -544,6 +554,281 @@ def test_commit_and_push_leaves_source_git_config_untouched(tmp_path: Path) -> N
         text=True,
     ).stdout.strip()
     assert pushed_sha == sha
+
+
+def test_commit_and_push_detects_protected_to_allowed_rename(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / ".env").write_text("SECRET=123\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit with secret")
+
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    remote_url = f"file://localhost{remote}"
+    _git(repo, "remote", "add", "origin", remote_url)
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "factory/wi-1")
+    _git(repo, "mv", ".env", "safe.txt")
+
+    publisher = GitPublisher(
+        runner=default_command_runner,
+        remote="origin",
+        allowed_hosts=frozenset({"localhost"}),
+    )
+    with pytest.raises(ProtectedFileError, match=r"protected file\(s\): \.env"):
+        publisher.commit_and_push(repo, "factory/wi-1", "Rename secret to safe")
+
+
+def test_commit_and_push_detects_protected_to_allowed_copy(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / ".env").write_text("SECRET=123\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit with secret")
+
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    remote_url = f"file://localhost{remote}"
+    _git(repo, "remote", "add", "origin", remote_url)
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "factory/wi-1")
+    shutil.copy(repo / ".env", repo / "safe.txt")
+
+    publisher = GitPublisher(
+        runner=default_command_runner,
+        remote="origin",
+        allowed_hosts=frozenset({"localhost"}),
+    )
+    with pytest.raises(ProtectedFileError, match=r"protected file\(s\): \.env"):
+        publisher.commit_and_push(repo, "factory/wi-1", "Copy secret to safe")
+
+
+def test_commit_and_push_detects_padded_and_modified_protected_copy(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / ".env").write_text("SECRET=123\nAPI_KEY=xyz\nTOKEN=abc\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit with secret")
+
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    remote_url = f"file://localhost{remote}"
+    _git(repo, "remote", "add", "origin", remote_url)
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "factory/wi-1")
+    (repo / "safe.txt").write_text(
+        "# Configuration file header\n" * 10
+        + "SECRET=123\nAPI_KEY=xyz_modified\nTOKEN=abc\n"
+        + "# Trailing helper padding\n" * 10
+    )
+
+    publisher = GitPublisher(
+        runner=default_command_runner,
+        remote="origin",
+        allowed_hosts=frozenset({"localhost"}),
+    )
+    with pytest.raises(ProtectedFileError, match=r"protected file\(s\): \.env"):
+        publisher.commit_and_push(repo, "factory/wi-1", "Copy secret to safe with edits")
+
+
+def test_commit_and_push_allows_ordinary_rename(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "old.py").write_text("def hello(): pass\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit with old.py")
+
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    remote_url = f"file://localhost{remote}"
+    _git(repo, "remote", "add", "origin", remote_url)
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "factory/wi-1")
+    _git(repo, "mv", "old.py", "new.py")
+
+    publisher = GitPublisher(
+        runner=default_command_runner,
+        remote="origin",
+        allowed_hosts=frozenset({"localhost"}),
+    )
+    sha = publisher.commit_and_push(repo, "factory/wi-1", "Rename old to new")
+    assert len(sha) == 40
+
+
+def test_commit_and_push_allows_status_like_filenames(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "README.md").write_text("base\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit")
+
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    remote_url = f"file://localhost{remote}"
+    _git(repo, "remote", "add", "origin", remote_url)
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "factory/wi-1")
+    (repo / "M").write_text("status-like filename M\n")
+    (repo / "A0").write_text("status-like filename A0\n")
+    (repo / "R100").write_text("status-like filename R100\n")
+
+    publisher = GitPublisher(
+        runner=default_command_runner,
+        remote="origin",
+        allowed_hosts=frozenset({"localhost"}),
+    )
+    sha = publisher.commit_and_push(repo, "factory/wi-1", "Add status-like files")
+    assert len(sha) == 40
+    tree_ls = _git(repo, "ls-tree", "--name-only", f"{sha}^{{tree}}")
+    assert set(tree_ls.splitlines()) == {"README.md", "M", "A0", "R100"}
+
+
+def test_parse_diff_changed_files_unit() -> None:
+    # Empty
+    assert _parse_diff_changed_files("") == []
+
+    # Raw diff with rename and copy
+    raw = (
+        ":100644 100644 1111111 2222222 R100\0.env\0safe.txt\0"
+        ":100644 100644 3333333 4444444 C100\0src.py\0dst.py\0"
+        ":100644 100644 5555555 6666666 M\0safe.txt\0"
+    )
+    assert _parse_diff_changed_files(raw) == [".env", "safe.txt", "src.py", "dst.py"]
+
+    # Name-status with rename and copy
+    name_status = "R100\0.env\0safe.txt\0C090\0orig.py\0copy.py\0M\0other.py\0"
+    assert _parse_diff_changed_files(name_status) == [
+        ".env",
+        "safe.txt",
+        "orig.py",
+        "copy.py",
+        "other.py",
+    ]
+
+    # Newline-delimited file paths (plain / no-renames)
+    newline_paths = ".env\nsafe.txt\napp.py\n"
+    assert _parse_diff_changed_files(newline_paths) == [".env", "safe.txt", "app.py"]
+
+    # NUL-delimited plain paths
+    nul_paths = "file1.txt\0file2.txt\0"
+    assert _parse_diff_changed_files(nul_paths) == ["file1.txt", "file2.txt"]
+
+
+def test_parse_raw_diff_changed_files_unit() -> None:
+    # Empty
+    assert _parse_raw_diff_changed_files("") == []
+    assert _parse_raw_diff_changed_files("\0") == []
+
+    # Mixed modifications, renames, copies, and legal status-like filenames
+    raw = (
+        ":000000 100644 0000000 1111111 A\0M\0"
+        ":000000 100644 0000000 2222222 A\0A0\0"
+        ":000000 100644 0000000 3333333 A\0R100\0"
+        ":100644 100644 4444444 5555555 R100\0src.py\0dst.py\0"
+        ":100644 100644 6666666 7777777 C100\0.env\0safe.txt\0"
+        ":100644 100644 8888888 9999999 M\0dst.py\0"
+    )
+    assert _parse_raw_diff_changed_files(raw) == [
+        "M",
+        "A0",
+        "R100",
+        "src.py",
+        "dst.py",
+        ".env",
+        "safe.txt",
+    ]
+
+    # Malformed header
+    with pytest.raises(GitPublishError, match="malformed raw diff header"):
+        _parse_raw_diff_changed_files("bad header\0file.txt\0")
+
+    # Truncated record
+    with pytest.raises(GitPublishError, match="truncated raw diff record"):
+        _parse_raw_diff_changed_files(":100644 100644 1111111 2222222 M")
+
+    # Truncated rename/copy record
+    with pytest.raises(GitPublishError, match="truncated raw diff record for rename/copy"):
+        _parse_raw_diff_changed_files(":100644 100644 1111111 2222222 R100\0src.txt")
+
+
+def test_parse_name_only_changed_files_unit() -> None:
+    # Empty
+    assert _parse_name_only_changed_files("") == []
+
+    # NUL-delimited with legal status-like filenames
+    nul_output = "M\0A0\0R100\0C100\0app.py\0"
+    assert _parse_name_only_changed_files(nul_output) == [
+        "M",
+        "A0",
+        "R100",
+        "C100",
+        "app.py",
+    ]
+
+    # Newline-delimited with legal status-like filenames
+    newline_output = "M\nA0\nR100\nC100\napp.py\n"
+    assert _parse_name_only_changed_files(newline_output) == [
+        "M",
+        "A0",
+        "R100",
+        "C100",
+        "app.py",
+    ]
+
+    # Deduplication and deterministic ordering
+    dup_output = "M\0A0\0M\0R100\0A0\0"
+    assert _parse_name_only_changed_files(dup_output) == ["M", "A0", "R100"]
+
+
+def test_parse_name_status_changed_files_unit() -> None:
+    # Empty
+    assert _parse_name_status_changed_files("") == []
+    assert _parse_name_status_changed_files("\0") == []
+
+    # Status-like filenames at path positions are not confused with status codes
+    output = "M\0R100\0A\0M\0R100\0old.py\0new.py\0C100\0.env\0safe.txt\0"
+    assert _parse_name_status_changed_files(output) == [
+        "R100",
+        "M",
+        "old.py",
+        "new.py",
+        ".env",
+        "safe.txt",
+    ]
+
+    # Truncated record
+    with pytest.raises(GitPublishError, match="truncated name-status record"):
+        _parse_name_status_changed_files("M")
+
+    # Truncated rename record
+    with pytest.raises(GitPublishError, match="truncated name-status record for rename/copy"):
+        _parse_name_status_changed_files("R100\0src.txt")
 
 
 # --------------------------------------------------------------------------
@@ -2157,7 +2442,7 @@ def test_commit_and_push_verifies_the_staged_tree_before_committing(tmp_path: Pa
         [
             _remote_url_response(),
             FakeCompletedProcess(returncode=0),  # add -A
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0, stdout=f"{reviewed}\n"),  # write-tree
             FakeCompletedProcess(returncode=0),  # commit
             FakeCompletedProcess(returncode=0, stdout="abc123\n"),  # rev-parse HEAD
@@ -2180,7 +2465,7 @@ def test_commit_and_push_refuses_a_tree_the_reviewer_did_not_approve(tmp_path: P
         [
             _remote_url_response(),
             FakeCompletedProcess(returncode=0),
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
+            FakeCompletedProcess(returncode=0, stdout=_raw_diff_output("src/app.py")),
             FakeCompletedProcess(returncode=0, stdout=f"{'b' * 40}\n"),
         ]
     )

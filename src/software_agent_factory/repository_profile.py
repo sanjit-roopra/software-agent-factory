@@ -13,6 +13,7 @@ import json
 import os
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,14 @@ _VITEST_CONFIGS = frozenset(
         "vitest.config.cts",
     }
 )
+_NON_VERSION_MARKER_FILES = frozenset(
+    _VITE_CONFIGS
+    | _VITEST_CONFIGS
+    | {
+        "conftest.py",
+        "pytest.ini",
+    }
+)
 _NODE_LOCKFILES = {
     "package-lock.json": RepositoryPackageManager.NPM,
     "pnpm-lock.yaml": RepositoryPackageManager.PNPM,
@@ -98,10 +107,25 @@ _VERSION_FILES = frozenset(
         "poetry.lock",
         "pylock.toml",
         "pyproject.toml",
+        "tox.ini",
         "uv.lock",
         "yarn.lock",
     }
 )
+
+
+def is_version_file(file_name: str) -> bool:
+    """Return whether ``file_name`` is an allowlisted version or manifest file."""
+    lower_name = file_name.lower()
+    return lower_name in _VERSION_FILES or _is_python_marker(lower_name)
+
+
+def _prune_directory_names(directory: str, directory_names: list[str]) -> None:
+    directory_names[:] = sorted(
+        name
+        for name in directory_names
+        if name not in _PRUNED_DIRECTORIES and not (Path(directory) / name).is_symlink()
+    )
 
 
 def profile_repository(repository_root: Path) -> RepositoryProfile:
@@ -124,13 +148,12 @@ def profile_repository(repository_root: Path) -> RepositoryProfile:
     warnings: list[str] = []
     scanned_files = 0
     test_markers = 0
+    has_python = False
+    has_typescript = False
+    shape_markers: set[str] = set()
 
     for directory, directory_names, file_names in os.walk(root, followlinks=False):
-        directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if name not in _PRUNED_DIRECTORIES and not (Path(directory) / name).is_symlink()
-        )
+        _prune_directory_names(directory, directory_names)
         for file_name in sorted(file_names):
             scanned_files += 1
             if scanned_files > MAX_SCANNED_FILES:
@@ -144,17 +167,22 @@ def profile_repository(repository_root: Path) -> RepositoryProfile:
             relative = path.relative_to(root).as_posix()
             lower_name = file_name.lower()
 
-            if lower_name in _VERSION_FILES or _is_python_marker(lower_name):
+            if is_version_file(lower_name):
                 digest = _fingerprint_file(path, relative, warnings)
                 if digest is not None:
                     version_digests[relative] = digest
 
             if lower_name.endswith(".py"):
+                has_python = True
                 technologies.add(RepositoryTechnology.PYTHON)
             if lower_name.endswith((".ts", ".tsx")):
+                has_typescript = True
                 technologies.add(RepositoryTechnology.TYPESCRIPT)
+            if lower_name in _NON_VERSION_MARKER_FILES:
+                shape_markers.add(relative)
             if _looks_like_test(relative, lower_name) and test_markers < MAX_TEST_MARKERS:
                 markers.add(relative)
+                shape_markers.add(relative)
                 test_markers += 1
 
             if _is_python_marker(lower_name):
@@ -257,9 +285,16 @@ def profile_repository(repository_root: Path) -> RepositoryProfile:
         package_managers,
         normalized_dependencies,
     )
+    bounded_shape_markers = tuple(sorted(shape_markers)[:MAX_PROFILE_PATHS])
+    shape_fingerprint = _shape_fingerprint(
+        has_python=has_python,
+        has_typescript=has_typescript,
+        shape_markers=bounded_shape_markers,
+    )
     return RepositoryProfile(
         manifest_fingerprint=manifest_fingerprint,
         dependency_fingerprint=dependency_fingerprint,
+        shape_fingerprint=shape_fingerprint,
         markers=tuple(sorted(markers)[:MAX_PROFILE_PATHS]),
         version_files=version_files,
         technologies=tuple(sorted(technologies, key=str)),
@@ -286,12 +321,33 @@ def _bounded_version_files(
     return tuple(ordered[:MAX_PROFILE_PATHS])
 
 
+def _shape_fingerprint(
+    *,
+    has_python: bool,
+    has_typescript: bool,
+    shape_markers: tuple[str, ...],
+) -> str:
+    payload = {
+        "detector_version": 2,
+        "has_python": has_python,
+        "has_typescript": has_typescript,
+        "shape_markers": list(shape_markers),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(b"repository-shape-v1\0" + canonical).hexdigest()
+
+
 def generic_repository_profile(*, warning: str | None = None) -> RepositoryProfile:
     """Return a safe profile when repository detection degrades."""
 
     return RepositoryProfile(
         manifest_fingerprint=_manifest_fingerprint({}),
         dependency_fingerprint=_dependency_fingerprint(set(), set(), set(), ()),
+        shape_fingerprint=_shape_fingerprint(
+            has_python=False,
+            has_typescript=False,
+            shape_markers=(),
+        ),
         warnings=(warning,) if warning else (),
     )
 
@@ -302,6 +358,190 @@ def _manifest_fingerprint(version_digests: dict[str, str]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(b"repository-manifests-v1\0" + canonical).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryProfileReuseDecision:
+    """Decision indicating whether an existing RepositoryProfile can be reused."""
+
+    reusable: bool
+    reason: str | None = None
+    manifest_fingerprint: str | None = None
+    version_files: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    shape_fingerprint: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.reusable
+
+
+def _scan_repository_shape_and_digests(
+    root: Path,
+) -> tuple[dict[str, str], str, list[str], bool]:
+    version_digests: dict[str, str] = {}
+    warnings: list[str] = []
+    scanned_files = 0
+    scan_limit_reached = False
+    test_markers = 0
+    has_python = False
+    has_typescript = False
+    shape_markers: set[str] = set()
+
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        _prune_directory_names(directory, directory_names)
+        for file_name in sorted(file_names):
+            scanned_files += 1
+            if scanned_files > MAX_SCANNED_FILES:
+                scan_limit_reached = True
+                warnings.append(f"scan limit reached after {MAX_SCANNED_FILES} files")
+                directory_names[:] = []
+                break
+
+            path = Path(directory) / file_name
+            if path.is_symlink():
+                continue
+
+            lower_name = file_name.lower()
+            relative = path.relative_to(root).as_posix()
+
+            if is_version_file(lower_name):
+                digest = _fingerprint_file(path, relative, warnings)
+                if digest is not None:
+                    version_digests[relative] = digest
+
+            if lower_name.endswith(".py"):
+                has_python = True
+            if lower_name.endswith((".ts", ".tsx")):
+                has_typescript = True
+            if lower_name in _NON_VERSION_MARKER_FILES:
+                shape_markers.add(relative)
+            if _looks_like_test(relative, lower_name) and test_markers < MAX_TEST_MARKERS:
+                shape_markers.add(relative)
+                test_markers += 1
+
+        if scan_limit_reached:
+            break
+
+    shape_fingerprint = _shape_fingerprint(
+        has_python=has_python,
+        has_typescript=has_typescript,
+        shape_markers=tuple(sorted(shape_markers)[:MAX_PROFILE_PATHS]),
+    )
+    return version_digests, shape_fingerprint, warnings, scan_limit_reached
+
+
+def can_reuse_repository_profile(
+    repository_root: Path,
+    profile: RepositoryProfile,
+) -> RepositoryProfileReuseDecision:
+    """Decide whether an existing RepositoryProfile can be safely reused.
+
+    Traverses the repository directory tree without reparsing manifests or
+    lockfiles, verifying that the exact current version-file path set,
+    the file-content provenance represented by ``manifest_fingerprint``, and
+    the non-version repository shape match the existing profile.
+    """
+    root = repository_root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"repository root is not a directory: {repository_root}")
+
+    (
+        version_digests,
+        current_shape_fingerprint,
+        scan_warnings,
+        scan_limit_reached,
+    ) = _scan_repository_shape_and_digests(root)
+    warnings = tuple(scan_warnings)
+    current_version_files = tuple(sorted(version_digests.keys()))
+
+    if scan_limit_reached:
+        return RepositoryProfileReuseDecision(
+            reusable=False,
+            reason=f"scan limit reached after {MAX_SCANNED_FILES} files",
+            manifest_fingerprint=_manifest_fingerprint(version_digests),
+            shape_fingerprint=current_shape_fingerprint,
+            version_files=current_version_files,
+            warnings=warnings,
+        )
+
+    if any(warning.startswith("could not fingerprint ") for warning in warnings):
+        return RepositoryProfileReuseDecision(
+            reusable=False,
+            reason="could not fingerprint all version files",
+            manifest_fingerprint=_manifest_fingerprint(version_digests),
+            shape_fingerprint=current_shape_fingerprint,
+            version_files=current_version_files,
+            warnings=warnings,
+        )
+
+    current_paths = set(current_version_files)
+    expected_paths = set(profile.version_files)
+
+    if current_paths != expected_paths:
+        added = sorted(current_paths - expected_paths)
+        removed = sorted(expected_paths - current_paths)
+        if added and removed:
+            reason = (
+                f"version files changed: added ({', '.join(added)}), removed ({', '.join(removed)})"
+            )
+        elif added:
+            reason = f"version files added: {', '.join(added)}"
+        else:
+            reason = f"version files removed: {', '.join(removed)}"
+        return RepositoryProfileReuseDecision(
+            reusable=False,
+            reason=reason,
+            manifest_fingerprint=_manifest_fingerprint(version_digests),
+            shape_fingerprint=current_shape_fingerprint,
+            version_files=current_version_files,
+            warnings=warnings,
+        )
+
+    current_manifest_fingerprint = _manifest_fingerprint(version_digests)
+    if current_manifest_fingerprint != profile.manifest_fingerprint:
+        return RepositoryProfileReuseDecision(
+            reusable=False,
+            reason=(
+                f"manifest fingerprint changed (expected {profile.manifest_fingerprint}, "
+                f"got {current_manifest_fingerprint})"
+            ),
+            manifest_fingerprint=current_manifest_fingerprint,
+            shape_fingerprint=current_shape_fingerprint,
+            version_files=current_version_files,
+            warnings=warnings,
+        )
+
+    if profile.shape_fingerprint is None:
+        return RepositoryProfileReuseDecision(
+            reusable=False,
+            reason="repository profile missing shape evidence",
+            manifest_fingerprint=current_manifest_fingerprint,
+            shape_fingerprint=current_shape_fingerprint,
+            version_files=current_version_files,
+            warnings=warnings,
+        )
+
+    if current_shape_fingerprint != profile.shape_fingerprint:
+        return RepositoryProfileReuseDecision(
+            reusable=False,
+            reason=(
+                f"repository shape changed (expected {profile.shape_fingerprint}, "
+                f"got {current_shape_fingerprint})"
+            ),
+            manifest_fingerprint=current_manifest_fingerprint,
+            shape_fingerprint=current_shape_fingerprint,
+            version_files=current_version_files,
+            warnings=warnings,
+        )
+
+    return RepositoryProfileReuseDecision(
+        reusable=True,
+        reason=None,
+        manifest_fingerprint=current_manifest_fingerprint,
+        shape_fingerprint=current_shape_fingerprint,
+        version_files=current_version_files,
+        warnings=warnings,
+    )
 
 
 def _dependency_fingerprint(

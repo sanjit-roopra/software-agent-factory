@@ -39,6 +39,26 @@ uv run --no-sync mkdocs build --strict
 Pytest distributes the suite across the available CPUs, capped at 12 workers.
 When you debug one test serially, use `uv run --no-sync pytest -n 0 ...`.
 
+Use this command for a faster local feedback run:
+
+```bash
+uv run --no-sync pytest -q -m "not project_delivery"
+```
+
+The command skips the Git-heavy project delivery tests. Run the full test
+command before you finish a change.
+
+Use the offline benchmark script to compare local performance:
+
+```bash
+uv run --no-sync python scripts/performance/benchmark.py \
+  --iterations 5 \
+  --output benchmark.json
+```
+
+Pass `--baseline <file>` to compare the result with an earlier JSON report.
+The script does not call a paid model or use the network.
+
 Packaging checks, if you touched anything that ships:
 
 ```bash

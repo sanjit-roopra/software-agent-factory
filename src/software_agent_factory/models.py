@@ -20,6 +20,12 @@ def _normalize_utc(value: datetime) -> datetime:
 
 UtcDateTime = Annotated[datetime, AfterValidator(_normalize_utc)]
 MAX_OPEN_REVIEW_FINDINGS = 24
+MAX_PERFORMANCE_METRICS = 250
+MAX_PERFORMANCE_NAME_LENGTH = 100
+MAX_PERFORMANCE_STAGE_LENGTH = 50
+MAX_PERFORMANCE_OPERATION_LENGTH = 50
+MAX_PERFORMANCE_UNIT_LENGTH = 20
+MAX_PERFORMANCE_MAP_ENTRIES = 100
 
 
 class WorkflowState(StrEnum):
@@ -70,6 +76,7 @@ class AgentPurpose(StrEnum):
     STANDARD = "STANDARD"
     DECOMPOSE_PROJECT = "DECOMPOSE_PROJECT"
     GENERATE_REPOSITORY_SKILL = "GENERATE_REPOSITORY_SKILL"
+    CORRECT_CHANGE_SET = "CORRECT_CHANGE_SET"
 
 
 class ContextTier(StrEnum):
@@ -197,6 +204,7 @@ class RepositoryProfile(VersionedModel):
     detector_version: Literal[2] = 2
     manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     dependency_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    shape_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     markers: tuple[str, ...] = ()
     version_files: tuple[str, ...] = ()
     technologies: tuple[RepositoryTechnology, ...] = ()
@@ -608,6 +616,139 @@ class UsageMetrics(ModelBase):
     model_usage: tuple[ModelUsage, ...] = ()
 
 
+class PerformanceMetric(ModelBase):
+    """One bounded typed performance metric observation."""
+
+    name: str = Field(min_length=1, max_length=MAX_PERFORMANCE_NAME_LENGTH)
+    value: float = Field(ge=0.0)
+    unit: str = Field(default="ms", max_length=MAX_PERFORMANCE_UNIT_LENGTH)
+    stage: str | None = Field(default=None, max_length=MAX_PERFORMANCE_STAGE_LENGTH)
+    operation: str | None = Field(default=None, max_length=MAX_PERFORMANCE_OPERATION_LENGTH)
+
+
+class PerformanceRecord(ModelBase):
+    """Cohesive bounded telemetry record for operations, timings, sizes, and rework."""
+
+    durations_ms: dict[str, float] = Field(default_factory=dict)
+    counters: dict[str, int] = Field(default_factory=dict)
+    prompt_chars: int | None = Field(default=None, ge=0)
+    response_chars: int | None = Field(default=None, ge=0)
+    process_boot_ms: float | None = Field(default=None, ge=0.0)
+    first_event_ms: float | None = Field(default=None, ge=0.0)
+    metrics: list[PerformanceMetric] = Field(
+        default_factory=list,
+        max_length=MAX_PERFORMANCE_METRICS,
+    )
+
+    @field_validator("durations_ms")
+    @classmethod
+    def _validate_durations(cls, value: dict[str, float]) -> dict[str, float]:
+        if len(value) > MAX_PERFORMANCE_MAP_ENTRIES:
+            raise ValueError(f"durations_ms cannot exceed {MAX_PERFORMANCE_MAP_ENTRIES} entries")
+        for k, v in value.items():
+            if not k or len(k) > MAX_PERFORMANCE_NAME_LENGTH:
+                raise ValueError("duration key must be between 1 and 100 characters")
+            if v < 0:
+                raise ValueError("duration value must be non-negative")
+        return value
+
+    @field_validator("counters")
+    @classmethod
+    def _validate_counters(cls, value: dict[str, int]) -> dict[str, int]:
+        if len(value) > MAX_PERFORMANCE_MAP_ENTRIES:
+            raise ValueError(f"counters cannot exceed {MAX_PERFORMANCE_MAP_ENTRIES} entries")
+        for k, v in value.items():
+            if not k or len(k) > MAX_PERFORMANCE_NAME_LENGTH:
+                raise ValueError("counter key must be between 1 and 100 characters")
+            if v < 0:
+                raise ValueError("counter value must be non-negative")
+        return value
+
+    def record_duration(
+        self,
+        name: str,
+        duration_ms: float,
+        *,
+        stage: str | None = None,
+        operation: str | None = None,
+        accumulate: bool = False,
+    ) -> None:
+        clean_name = str(name)[:MAX_PERFORMANCE_NAME_LENGTH]
+        duration = max(0.0, float(duration_ms))
+        if accumulate:
+            val = self.durations_ms.get(clean_name, 0.0) + duration
+        else:
+            val = duration
+        if len(self.durations_ms) < MAX_PERFORMANCE_MAP_ENTRIES or clean_name in self.durations_ms:
+            self.durations_ms[clean_name] = val
+        if len(self.metrics) < MAX_PERFORMANCE_METRICS:
+            self.metrics.append(
+                PerformanceMetric(
+                    name=clean_name,
+                    value=duration,
+                    unit="ms",
+                    stage=stage,
+                    operation=operation,
+                )
+            )
+
+    def record_counter(
+        self,
+        name: str,
+        delta: int = 1,
+        *,
+        stage: str | None = None,
+        operation: str | None = None,
+    ) -> None:
+        if delta < 0:
+            raise ValueError("delta must be non-negative")
+        clean_name = str(name)[:MAX_PERFORMANCE_NAME_LENGTH]
+        if len(self.counters) < MAX_PERFORMANCE_MAP_ENTRIES or clean_name in self.counters:
+            self.counters[clean_name] = self.counters.get(clean_name, 0) + delta
+        if len(self.metrics) < MAX_PERFORMANCE_METRICS:
+            self.metrics.append(
+                PerformanceMetric(
+                    name=clean_name,
+                    value=float(delta),
+                    unit="count",
+                    stage=stage,
+                    operation=operation,
+                )
+            )
+
+    def add_metric(
+        self,
+        name: str,
+        value: float,
+        unit: str = "ms",
+        *,
+        stage: str | None = None,
+        operation: str | None = None,
+    ) -> None:
+        clean_name = str(name)[:MAX_PERFORMANCE_NAME_LENGTH]
+        if len(self.metrics) < MAX_PERFORMANCE_METRICS:
+            self.metrics.append(
+                PerformanceMetric(
+                    name=clean_name,
+                    value=max(0.0, float(value)),
+                    unit=unit,
+                    stage=stage,
+                    operation=operation,
+                )
+            )
+
+    def record_size(
+        self,
+        *,
+        prompt_chars: int | None = None,
+        response_chars: int | None = None,
+    ) -> None:
+        if prompt_chars is not None:
+            self.prompt_chars = max(0, (self.prompt_chars or 0) + prompt_chars)
+        if response_chars is not None:
+            self.response_chars = max(0, (self.response_chars or 0) + response_chars)
+
+
 class InvocationRecord(ModelBase):
     """One persisted agent invocation, independent of retry-budget attempts."""
 
@@ -624,6 +765,7 @@ class InvocationRecord(ModelBase):
     attempt_number: int | None = Field(default=None, ge=1)
     budget: AttemptBudget | None = None
     usage: UsageMetrics | None = None
+    performance: PerformanceRecord | None = None
 
     @model_validator(mode="after")
     def _validate_invocation(self) -> InvocationRecord:
@@ -690,8 +832,15 @@ class ReviewSourceLocation(ModelBase):
     @field_validator("path")
     @classmethod
     def _validate_path(cls, value: str) -> str:
-        if "\\" in value:
-            raise ValueError("path must use POSIX separators")
+        if (
+            not value
+            or value == "."
+            or "\0" in value
+            or "\n" in value
+            or "\r" in value
+            or "\\" in value
+        ):
+            raise ValueError("path must be a normalized repository-relative path")
         path = PurePosixPath(value)
         if path.is_absolute() or value != path.as_posix() or ".." in path.parts:
             raise ValueError("path must be a normalized repository-relative path")
@@ -758,6 +907,7 @@ class FactoryRun(VersionedModel):
     branch_name: str | None = None
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
+    state_started_at: UtcDateTime | None = None
     last_activity_at: UtcDateTime | None = None
     lease: RunLease | None = None
     active_invocation: ActiveInvocation | None = None
@@ -774,8 +924,13 @@ class FactoryRun(VersionedModel):
     reviewed_tree_sha: str | None = None
     base_commit_sha: str | None = None
     pending_commit_sha: str | None = None
+    requested_performance_mode: Literal["standard", "fast"] = "standard"
+    effective_performance_mode: Literal["standard", "fast"] = "standard"
+    performance_model_profile: str | None = None
+    performance_fallback_reason: str | None = None
     review_ledger: ReviewLedger = Field(default_factory=ReviewLedger)
     review_acceptance: ReviewAcceptance | None = None
+    performance: PerformanceRecord = Field(default_factory=PerformanceRecord)
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:
@@ -783,6 +938,8 @@ class FactoryRun(VersionedModel):
             raise ValueError("completed_at must be greater than or equal to created_at")
         if self.updated_at < self.created_at:
             raise ValueError("updated_at must be greater than or equal to created_at")
+        if self.state_started_at is not None and self.state_started_at < self.created_at:
+            raise ValueError("state_started_at must be greater than or equal to created_at")
         if self.last_activity_at is not None and self.last_activity_at < self.created_at:
             raise ValueError("last_activity_at must be greater than or equal to created_at")
         return self

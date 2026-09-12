@@ -466,6 +466,13 @@ class FactorySettings(ConfigModel):
         return Path(value).expanduser()
 
 
+class PerformanceConfig(ConfigModel):
+    """Opt-in policy for the bounded low-risk fast path."""
+
+    mode: Literal["standard", "fast"] = "standard"
+    fast_model_profile: str = Field(default="economy", min_length=1, max_length=32)
+
+
 class FactoryConfig(ConfigModel):
     factory: FactorySettings
     models: ModelsConfig
@@ -475,6 +482,7 @@ class FactoryConfig(ConfigModel):
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     polish: PolishConfig = Field(default_factory=PolishConfig)
+    performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
     pull_request: PullRequestConfig = Field(default_factory=PullRequestConfig)
     ci: CiConfig = Field(default_factory=CiConfig)
     merge: MergeConfig = Field(default_factory=MergeConfig)
@@ -520,6 +528,14 @@ class FactoryConfig(ConfigModel):
                 raise ValueError(
                     "model profile names must be 1-32 lowercase letters, digits, '_' or '-'"
                 )
+        if (
+            self.performance.mode == "fast"
+            and self.performance.fast_model_profile not in self.model_profiles
+        ):
+            raise ValueError(
+                "performance.fast_model_profile must name a configured model profile "
+                "when performance.mode is 'fast'"
+            )
         return self
 
     @property

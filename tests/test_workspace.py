@@ -24,6 +24,7 @@ import threading
 import time
 from pathlib import Path
 from textwrap import dedent
+from typing import Sequence
 
 import pytest
 
@@ -34,6 +35,7 @@ if str(_SRC) not in sys.path:
 from software_agent_factory import workspace as workspace_module  # noqa: E402
 from software_agent_factory.workspace import (  # noqa: E402
     GitWorktreeWorkspace,
+    WorkspaceError,
     WorkspaceLockError,
     WorkspaceSafetyError,
     sanitize_work_item_id,
@@ -252,6 +254,253 @@ def test_file_line_count_handles_non_utf8_files(source_repo: Path, data_dir: Pat
     assert ws.file_line_count(evidence.tree_sha, "asset.bin") == 3
 
 
+def test_collect_evidence_subprocess_calls_reduced(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """collect_evidence must execute exactly 3 git subprocess calls:
+    add -A, write-tree, and a combined diff --patch-with-raw -z,
+    eliminating the redundant diff --name-only call.
+    """
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-CALLS")
+    path = ws.prepare()
+    (path / "file.txt").write_text("content\n")
+
+    executed_commands: list[list[str]] = []
+    original_run_git = workspace_module._run_git
+
+    def recording_run_git(
+        cwd: Path, args: Sequence[str], check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        executed_commands.append(list(args))
+        return original_run_git(cwd, args, check)
+
+    monkeypatch.setattr(workspace_module, "_run_git", recording_run_git)
+
+    evidence = ws.collect_evidence()
+
+    assert len(executed_commands) == 3
+    assert executed_commands[0] == ["add", "-A"]
+    assert executed_commands[1] == ["write-tree"]
+    assert executed_commands[2] == [
+        "diff",
+        "--patch-with-raw",
+        "-z",
+        "--find-copies=1%",
+        "--find-copies-harder",
+        ws.base_commit,
+        evidence.tree_sha,
+    ]
+    assert evidence.changed_files == ["file.txt"]
+    assert "content" in evidence.diff
+
+
+def test_collect_evidence_handles_spaces_in_paths(source_repo: Path, data_dir: Path) -> None:
+    """File paths with spaces must be preserved without quoting or splitting."""
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-SPACES")
+    path = ws.prepare()
+
+    spaced_dir = path / "spaced directory"
+    spaced_dir.mkdir()
+    (spaced_dir / "spaced file.txt").write_text("hello in sub\n")
+    (path / "another space file.txt").write_text("root spaced\n")
+
+    evidence = ws.collect_evidence()
+
+    assert "another space file.txt" in evidence.changed_files
+    assert "spaced directory/spaced file.txt" in evidence.changed_files
+    assert "another space file.txt" in evidence.diff
+    assert "spaced directory/spaced file.txt" in evidence.diff
+
+
+def test_collect_evidence_handles_renames(source_repo: Path, data_dir: Path) -> None:
+    """Renamed files must be tracked by their destination path and diff must record the rename."""
+    # Commit the initial file into source_repo so it exists in base_commit
+    (source_repo / "file_to_rename.txt").write_text("content to be renamed\n" * 10)
+    _git(source_repo, "add", "-A")
+    _git(source_repo, "commit", "-m", "add file to rename in base")
+
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-RENAMES")
+    path = ws.prepare()
+
+    _git(path, "mv", "file_to_rename.txt", "renamed_destination.txt")
+
+    evidence = ws.collect_evidence()
+
+    assert evidence.changed_files == ["file_to_rename.txt", "renamed_destination.txt"]
+    assert "rename from file_to_rename.txt" in evidence.diff
+    assert "rename to renamed_destination.txt" in evidence.diff
+
+    # Rename with spaces
+    _git(path, "mv", "renamed_destination.txt", "renamed with spaces.txt")
+    evidence_spaces = ws.collect_evidence()
+
+    assert evidence_spaces.changed_files == ["file_to_rename.txt", "renamed with spaces.txt"]
+    assert "rename to renamed with spaces.txt" in evidence_spaces.diff
+
+
+def test_collect_evidence_tracks_protected_source_rename(source_repo: Path, data_dir: Path) -> None:
+    """Renaming a protected source file such as .env to an allowed destination
+    must include the protected source path in changed_files."""
+    (source_repo / ".env").write_text("SECRET=123\n")
+    _git(source_repo, "add", "-A")
+    _git(source_repo, "commit", "-m", "add .env in base")
+
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-PROTECTED-RENAME")
+    path = ws.prepare()
+
+    _git(path, "mv", ".env", "safe.txt")
+
+    evidence = ws.collect_evidence()
+    assert evidence.changed_files == [".env", "safe.txt"]
+    assert "rename from .env" in evidence.diff
+    assert "rename to safe.txt" in evidence.diff
+
+
+def test_collect_evidence_tracks_protected_source_copy(source_repo: Path, data_dir: Path) -> None:
+    """Copying a protected source file such as .env to an allowed destination
+    must include both the protected source path and destination path in changed_files."""
+    (source_repo / ".env").write_text("SECRET=123\n")
+    _git(source_repo, "add", "-A")
+    _git(source_repo, "commit", "-m", "add .env in base")
+
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-PROTECTED-COPY")
+    path = ws.prepare()
+
+    shutil.copy(path / ".env", path / "safe.txt")
+
+    evidence = ws.collect_evidence()
+    assert evidence.changed_files == [".env", "safe.txt"]
+    assert "copy from .env" in evidence.diff
+    assert "copy to safe.txt" in evidence.diff
+
+
+def test_collect_evidence_tracks_padded_and_modified_protected_copy(
+    source_repo: Path, data_dir: Path
+) -> None:
+    """Copying a protected source file (.env) to an allowed destination with
+    modest modifications and padding must still detect the copy and include
+    the protected source path in changed_files."""
+    (source_repo / ".env").write_text("SECRET=123\nAPI_KEY=xyz\nTOKEN=abc\n")
+    _git(source_repo, "add", "-A")
+    _git(source_repo, "commit", "-m", "add .env in base")
+
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-PROTECTED-PADDED-COPY")
+    path = ws.prepare()
+
+    (path / "safe.txt").write_text(
+        "# Header comments\n" * 10
+        + "SECRET=123\nAPI_KEY=xyz_mod\nTOKEN=abc\n"
+        + "# Footer comments\n" * 10
+    )
+
+    evidence = ws.collect_evidence()
+    assert ".env" in evidence.changed_files
+    assert "safe.txt" in evidence.changed_files
+    assert "copy from .env" in evidence.diff
+    assert "copy to safe.txt" in evidence.diff
+
+
+def test_collect_evidence_handles_status_like_filenames(source_repo: Path, data_dir: Path) -> None:
+    """Legal filenames matching status tokens like M, A0, R100 must be properly tracked."""
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-STATUS-FILENAMES")
+    path = ws.prepare()
+
+    (path / "M").write_text("file named M\n")
+    (path / "A0").write_text("file named A0\n")
+    (path / "R100").write_text("file named R100\n")
+    (path / "C100").write_text("file named C100\n")
+
+    evidence = ws.collect_evidence()
+    assert set(evidence.changed_files) == {"M", "A0", "R100", "C100"}
+    assert len(evidence.changed_files) == 4
+    for name in ("M", "A0", "R100", "C100"):
+        assert name in evidence.diff
+
+
+def test_collect_evidence_handles_untracked_files(source_repo: Path, data_dir: Path) -> None:
+    """Untracked files created in the worktree must be staged and frozen into the tree."""
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-UNTRACKED")
+    path = ws.prepare()
+
+    (path / "untracked_one.txt").write_text("untracked content 1\n")
+    (path / "untracked_two.txt").write_text("untracked content 2\n")
+
+    evidence = ws.collect_evidence()
+
+    assert "untracked_one.txt" in evidence.changed_files
+    assert "untracked_two.txt" in evidence.changed_files
+    assert "new file mode" in evidence.diff
+    assert "untracked content 1" in evidence.diff
+    assert "untracked content 2" in evidence.diff
+    assert evidence.tree_sha is not None
+    assert ws.file_line_count(evidence.tree_sha, "untracked_one.txt") == 1
+    assert ws.file_line_count(evidence.tree_sha, "untracked_two.txt") == 1
+
+
+def test_collect_evidence_handles_empty_diff(source_repo: Path, data_dir: Path) -> None:
+    """When no changes exist, collect_evidence returns empty changed_files and empty diff."""
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-EMPTY")
+    ws.prepare()
+
+    evidence = ws.collect_evidence()
+
+    assert evidence.changed_files == []
+    assert evidence.diff == ""
+    assert evidence.tree_sha is not None
+
+
+def test_parse_patch_with_raw_unit() -> None:
+    """Unit test covering parsing corner cases including malformed tokens."""
+    # Empty
+    assert workspace_module._parse_patch_with_raw("") == ([], "")
+
+    # Standard modified
+    raw_mod = ":100644 100644 1111111 2222222 M\0file.txt\0\0diff --git a/file.txt b/file.txt\n"
+    files, diff = workspace_module._parse_patch_with_raw(raw_mod)
+    assert files == ["file.txt"]
+    assert diff == "diff --git a/file.txt b/file.txt\n"
+
+    # Copy / Rename
+    raw_ren = ":100644 100644 1111111 1111111 R100\0src.txt\0dst.txt\0\0diff --git ...\n"
+    files, diff = workspace_module._parse_patch_with_raw(raw_ren)
+    assert files == ["src.txt", "dst.txt"]
+
+    # Status-like filenames (M, A0, R100, C100) are treated strictly as paths
+    raw_status_names = (
+        ":000000 100644 0000000 1111111 A\0M\0"
+        ":000000 100644 0000000 2222222 A\0A0\0"
+        ":000000 100644 0000000 3333333 A\0R100\0"
+        ":100644 100644 4444444 5555555 M\0C100\0"
+        "\0diff --git ...\n"
+    )
+    files, diff = workspace_module._parse_patch_with_raw(raw_status_names)
+    assert files == ["M", "A0", "R100", "C100"]
+
+    # Deduplication and deterministic order preservation across records
+    raw_dup = (
+        ":100644 100644 1111111 1111111 R100\0src.txt\0dst.txt\0"
+        ":100644 100644 2222222 3333333 M\0dst.txt\0"
+        ":100644 100644 1111111 4444444 C100\0src.txt\0copy.txt\0"
+        "\0diff --git ...\n"
+    )
+    files, diff = workspace_module._parse_patch_with_raw(raw_dup)
+    assert files == ["src.txt", "dst.txt", "copy.txt"]
+
+    # Malformed headers
+    with pytest.raises(workspace_module.WorkspaceError, match="malformed raw diff header"):
+        workspace_module._parse_patch_with_raw("bad header\0file.txt\0\0diff")
+
+    # Truncated record
+    with pytest.raises(workspace_module.WorkspaceError, match="truncated raw diff record"):
+        workspace_module._parse_patch_with_raw(":100644 100644 1111111 2222222 M")
+
+    # Truncated rename record
+    with pytest.raises(
+        workspace_module.WorkspaceError, match="truncated raw diff record for rename/copy"
+    ):
+        workspace_module._parse_patch_with_raw(":100644 100644 1111111 2222222 R100\0src.txt")
+
+
 # -- locking ------------------------------------------------------------
 
 
@@ -353,7 +602,9 @@ def test_prune_is_serialized_per_source_repository(
     observed: list[bool] = []
     original_run_git = workspace_module._run_git
 
-    def recording_run_git(cwd: Path, args, check: bool = True):
+    def recording_run_git(
+        cwd: Path, args: Sequence[str], check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
         if list(args)[:2] == ["worktree", "prune"]:
             observed.append(_prune_lock_is_held(ws.prune_lock_path))
         return original_run_git(cwd, args, check)
@@ -505,3 +756,123 @@ def test_workspace_and_lock_paths_are_root_contained(source_repo: Path, data_dir
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-10")
     assert ws.path.is_relative_to((data_dir / "workspaces").resolve())
     assert ws.lock_path.is_relative_to((data_dir / "locks").resolve())
+
+
+# -- batch line counts ----------------------------------------------------
+
+
+def test_file_line_counts_batch_correctness(source_repo: Path, data_dir: Path) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-BATCH-CORRECTNESS")
+    path = ws.prepare()
+
+    (path / "one.txt").write_text("no newline at end")
+    (path / "two.txt").write_text("line 1\nline 2\n")
+    (path / "empty.txt").write_text("")
+    (path / "with space.txt").write_text("a\nb\nc\n")
+    sub = path / "subdir"
+    sub.mkdir()
+    (sub / "nested.py").write_text("1\n2\n3\n4\n5\n")
+    (path / "binary.bin").write_bytes(b"\x00\x01\n\x02\n\x03")
+
+    evidence = ws.collect_evidence()
+    assert evidence.tree_sha is not None
+
+    paths = [
+        "one.txt",
+        "two.txt",
+        "empty.txt",
+        "with space.txt",
+        "subdir/nested.py",
+        "binary.bin",
+        "missing.txt",
+        "subdir",
+    ]
+
+    counts = ws.file_line_counts(evidence.tree_sha, paths)
+    assert counts == {
+        "one.txt": 1,
+        "two.txt": 2,
+        "empty.txt": 0,
+        "with space.txt": 3,
+        "subdir/nested.py": 5,
+        "binary.bin": 3,
+        "missing.txt": None,
+        "subdir": None,
+    }
+    # batch_file_line_counts alias returns identical result
+    assert ws.batch_file_line_counts(evidence.tree_sha, paths) == counts
+
+
+def test_file_line_counts_subprocess_calls_bounded_and_deduplicated(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-BATCH-SUBPROCESS")
+    path = ws.prepare()
+
+    (path / "file_a.txt").write_text("alpha 1\nalpha 2\n")
+    (path / "file_b.txt").write_text("beta 1\nbeta 2\nbeta 3\n")
+
+    evidence = ws.collect_evidence()
+    assert evidence.tree_sha is not None
+
+    executed_commands: list[list[str]] = []
+    original_run_git_bytes = workspace_module._run_git_bytes
+
+    def recording_run_git_bytes(
+        cwd: Path,
+        args: Sequence[str],
+        check: bool = True,
+        input_bytes: bytes | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        executed_commands.append(list(args))
+        return original_run_git_bytes(cwd, args, check=check, input_bytes=input_bytes)
+
+    monkeypatch.setattr(workspace_module, "_run_git_bytes", recording_run_git_bytes)
+
+    # Empty paths must execute 0 git subprocesses
+    assert ws.file_line_counts(evidence.tree_sha, []) == {}
+    assert len(executed_commands) == 0
+
+    # Query with multiple files, duplicates, and missing file: exactly 1 git subprocess call
+    query_paths = [
+        "file_a.txt",
+        "file_b.txt",
+        "file_a.txt",
+        "file_b.txt",
+        "missing.txt",
+    ]
+    counts = ws.file_line_counts(evidence.tree_sha, query_paths)
+
+    assert counts == {
+        "file_a.txt": 2,
+        "file_b.txt": 3,
+        "missing.txt": None,
+    }
+    assert len(executed_commands) == 1
+    assert executed_commands[0] == ["cat-file", "--batch", "-z"]
+
+
+def test_file_line_counts_safety_and_validation(source_repo: Path, data_dir: Path) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-BATCH-SAFETY")
+    ws.prepare()
+    evidence = ws.collect_evidence()
+    assert evidence.tree_sha is not None
+
+    # Invalid tree object format
+    with pytest.raises(WorkspaceError, match="invalid Git tree object"):
+        ws.file_line_counts("not-a-sha", ["file.txt"])
+
+    # Path traversal and invalid relative path forms
+    invalid_paths = [
+        "/etc/passwd",
+        "../escape.txt",
+        "subdir/../escape.txt",
+        r"win\path.txt",
+        "",
+        ".",
+        "file\nwith\nnewline.txt",
+        "file\0with\0null.txt",
+    ]
+    for invalid_path in invalid_paths:
+        with pytest.raises(WorkspaceError, match="invalid repository-relative path"):
+            ws.file_line_counts(evidence.tree_sha, [invalid_path])

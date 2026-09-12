@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Sequence
 
@@ -27,6 +28,8 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.projects import FileProjectStore, ProjectError, ProjectRunner
 from software_agent_factory.store import FileRunStore
+
+pytestmark = pytest.mark.project_delivery
 
 
 class _RecordingGitHubClient:
@@ -754,6 +757,55 @@ def test_issue_text_is_fully_validated_before_any_issue_is_created(
         runner._publish_issues(brief, plan, execution, factory_source_repo, "acme/repo")
 
     assert github.created == []
+
+
+def test_file_project_store_rejects_corrupt_json(tmp_path: Path) -> None:
+    store = FileProjectStore(tmp_path / "data")
+    project_dir = tmp_path / "data" / "projects" / "proj-corrupt"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project-plan.json").write_text(
+        '{"schema_version": 1, "project_id": "proj-corrupt", invalid...',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        store.load_plan("proj-corrupt")
+
+
+def test_file_project_store_rejects_unknown_schema_version(tmp_path: Path) -> None:
+    store = FileProjectStore(tmp_path / "data")
+    project_dir = tmp_path / "data" / "projects" / "proj-bad-schema"
+    project_dir.mkdir(parents=True)
+    bad_plan = {
+        "schema_version": 99,
+        "project_id": "proj-bad-schema",
+        "summary": "Bad",
+        "delivery_approach": "None",
+        "tasks": [],
+    }
+    (project_dir / "project-plan.json").write_text(
+        json.dumps(bad_plan),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported ProjectPlan schema_version: 99"):
+        store.load_plan("proj-bad-schema")
+
+
+def test_file_project_store_rejects_missing_schema_version(tmp_path: Path) -> None:
+    store = FileProjectStore(tmp_path / "data")
+    project_dir = tmp_path / "data" / "projects" / "proj-bad-schema"
+    project_dir.mkdir(parents=True)
+    plan = {
+        "project_id": "proj-bad-schema",
+        "summary": "Bad",
+        "delivery_approach": "None",
+        "tasks": [],
+    }
+    (project_dir / "project-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported ProjectPlan schema_version: None"):
+        store.load_plan("proj-bad-schema")
 
 
 def test_issue_close_failure_is_a_warning_after_successful_integration(

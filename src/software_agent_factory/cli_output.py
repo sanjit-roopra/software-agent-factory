@@ -110,6 +110,11 @@ def render_status_report(
             f"max {_format_seconds(metrics.completed_run_durations.max_seconds)}"
         ),
         (
+            f"rework: {metrics.performance.rework.total_gate_failures} gate failure(s), "
+            f"{metrics.performance.rework.total_rework_attempts} rework attempt(s), "
+            f"rework rate {_format_rate(metrics.performance.rework.rework_rate)}"
+        ),
+        (
             "reported usage: "
             f"{metrics.usage.reported_invocations}/{metrics.usage.invocation_count} invocation(s), "
             f"{_format_optional_number(metrics.usage.input_tokens)} "

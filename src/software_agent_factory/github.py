@@ -599,6 +599,198 @@ def _validate_branch_name(branch_name: str, *, branch_prefix: str, base_branch: 
         )
 
 
+_STATUS_TOKEN_PATTERN = re.compile(r"^[ACDMRTUX][0-9]*$")
+
+
+def _parse_raw_diff_changed_files(output: str) -> list[str]:
+    """Extract changed file paths from NUL-delimited raw git diff (``--raw -z``).
+
+    For rename and copy records, both source and destination paths are
+    included, without duplicates and preserving deterministic order.
+    File names that match status codes (e.g. 'M', 'A0', 'R100') are never
+    treated as status tokens because every record unambiguously starts with
+    a ':' header.
+    """
+    if not output:
+        return []
+
+    changed_files: list[str] = []
+    seen: set[str] = set()
+
+    def add_path(p: str) -> None:
+        if p and p not in seen:
+            seen.add(p)
+            changed_files.append(p)
+
+    parts = output.rstrip("\0").split("\0")
+    if not parts or parts == [""]:
+        return []
+
+    idx = 0
+    while idx < len(parts):
+        token = parts[idx]
+        if not token:
+            idx += 1
+            continue
+        if not token.startswith(":"):
+            raise GitPublishError(f"malformed raw diff header: {token!r}")
+        header_fields = token.split()
+        status = header_fields[-1] if header_fields else ""
+        if status.startswith(("R", "C")):
+            if idx + 2 >= len(parts):
+                raise GitPublishError(f"truncated raw diff record for rename/copy: {token!r}")
+            add_path(parts[idx + 1])
+            add_path(parts[idx + 2])
+            idx += 3
+        else:
+            if idx + 1 >= len(parts):
+                raise GitPublishError(f"truncated raw diff record: {token!r}")
+            add_path(parts[idx + 1])
+            idx += 2
+
+    return changed_files
+
+
+def _parse_name_only_changed_files(output: str, *, nul_delimited: bool | None = None) -> list[str]:
+    """Extract changed file paths from name-only diff output.
+
+    Supports NUL-delimited (``--name-only -z``) or newline-delimited
+    (``--name-only``) output. Every entry is strictly treated as a path;
+    tokens matching status codes (e.g. 'M', 'A0', 'R100') are never
+    interpreted as diff status tokens.
+    """
+    if not output:
+        return []
+
+    is_nul = nul_delimited if nul_delimited is not None else ("\0" in output)
+    tokens = output.rstrip("\0").split("\0") if is_nul else output.splitlines()
+
+    changed_files: list[str] = []
+    seen: set[str] = set()
+
+    for token in tokens:
+        p = token if is_nul else token.strip()
+        if p and p not in seen:
+            seen.add(p)
+            changed_files.append(p)
+
+    return changed_files
+
+
+def _parse_name_status_changed_files(output: str) -> list[str]:
+    """Extract changed file paths from NUL-delimited name-status diff output.
+
+    Supports ``--name-status -z``. The grammar determines which tokens are
+    status codes and which are paths, so legal filenames such as 'M' or 'R100'
+    at path positions are never confused with status tokens.
+    """
+    if not output:
+        return []
+
+    changed_files: list[str] = []
+    seen: set[str] = set()
+
+    def add_path(p: str) -> None:
+        if p and p not in seen:
+            seen.add(p)
+            changed_files.append(p)
+
+    parts = output.rstrip("\0").split("\0")
+    if not parts or parts == [""]:
+        return []
+
+    idx = 0
+    while idx < len(parts):
+        status = parts[idx]
+        if not status:
+            idx += 1
+            continue
+        if status.startswith(("R", "C")):
+            if idx + 2 >= len(parts):
+                raise GitPublishError(f"truncated name-status record for rename/copy: {status!r}")
+            add_path(parts[idx + 1])
+            add_path(parts[idx + 2])
+            idx += 3
+        else:
+            if idx + 1 >= len(parts):
+                raise GitPublishError(f"truncated name-status record: {status!r}")
+            add_path(parts[idx + 1])
+            idx += 2
+
+    return changed_files
+
+
+def _parse_diff_changed_files(output: str) -> list[str]:
+    """Extract changed file paths from git diff output.
+
+    Supports NUL-delimited raw diff (``--raw -z``), NUL-delimited
+    name-status (``--name-status -z``), and newline- or NUL-delimited
+    file lists (``--name-only``).
+
+    For rename and copy records, both source and destination paths are
+    included, without duplicates and preserving deterministic order.
+    """
+    if not output:
+        return []
+
+    changed_files: list[str] = []
+    seen: set[str] = set()
+
+    def add_path(p: str) -> None:
+        if p and p not in seen:
+            seen.add(p)
+            changed_files.append(p)
+
+    if "\0" in output:
+        parts = output.rstrip("\0").split("\0")
+        idx = 0
+        while idx < len(parts):
+            token = parts[idx]
+            if not token:
+                idx += 1
+                continue
+            if token.startswith(":"):
+                header_fields = token.split()
+                status = header_fields[-1] if header_fields else ""
+                if status.startswith(("R", "C")):
+                    if idx + 2 < len(parts):
+                        add_path(parts[idx + 1])
+                        add_path(parts[idx + 2])
+                        idx += 3
+                    else:
+                        idx += 1
+                else:
+                    if idx + 1 < len(parts):
+                        add_path(parts[idx + 1])
+                        idx += 2
+                    else:
+                        idx += 1
+            elif _STATUS_TOKEN_PATTERN.match(token):
+                if token.startswith(("R", "C")):
+                    if idx + 2 < len(parts):
+                        add_path(parts[idx + 1])
+                        add_path(parts[idx + 2])
+                        idx += 3
+                    else:
+                        idx += 1
+                else:
+                    if idx + 1 < len(parts):
+                        add_path(parts[idx + 1])
+                        idx += 2
+                    else:
+                        idx += 1
+            else:
+                add_path(token)
+                idx += 1
+    else:
+        for line in output.splitlines():
+            line = line.strip()
+            if line:
+                add_path(line)
+
+    return changed_files
+
+
 def _validate_change_scope(changed_files: Sequence[str], *, max_changed_files: int) -> None:
     protected = sorted(f for f in changed_files if _is_protected_path(f))
     if protected:
@@ -944,13 +1136,11 @@ class GitPublisher:
                     f"HEAD is {head or 'unknown'!r}, not the approved parent commit {parent!r}: "
                     "the branch carries a commit the controller did not record"
                 )
-            changed_files = [
-                line
-                for line in self._run_git(
-                    workspace_path, ["diff", "--name-only", parent, tree]
-                ).stdout.splitlines()
-                if line
-            ]
+            raw_diff = self._run_git(
+                workspace_path,
+                ["diff", "--raw", "-z", "--find-copies=1%", "--find-copies-harder", parent, tree],
+            ).stdout
+            changed_files = _parse_raw_diff_changed_files(raw_diff)
             if not changed_files:
                 raise UnauthorizedHistoryError(
                     f"the reviewed tree {tree!r} is identical to the approved parent {parent!r}: "
@@ -1140,8 +1330,11 @@ class GitPublisher:
         )
 
         self._run_git(workspace_path, ["add", "-A"])
-        staged = self._run_git(workspace_path, ["diff", "--cached", "--name-only"])
-        changed_files = [line for line in staged.stdout.splitlines() if line]
+        staged = self._run_git(
+            workspace_path,
+            ["diff", "--cached", "--raw", "-z", "--find-copies=1%", "--find-copies-harder"],
+        )
+        changed_files = _parse_raw_diff_changed_files(staged.stdout)
         if not changed_files:
             raise NoChangesToCommitError(
                 f"no staged or working changes to commit in {workspace_path}"
