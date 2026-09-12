@@ -1,43 +1,383 @@
 ---
 title: Software Agent Factory
-description: >-
-  A local-first autonomous software engineering factory. Deterministic
-  orchestration runs on your machine. Models run through GitHub Copilot.
+description: Software agents with a local workflow controller. Models propose changes. Factory code controls each stage.
 hide:
   - navigation
+  - toc
 ---
+
+<div class="saf-home" markdown>
 
 <div class="saf-hero" markdown>
 
-<span class="saf-eyebrow">Latest release {{ factory_release_tag }} · docs track main · macOS · early</span>
+<div class="saf-hero-copy" markdown>
 
-# Software engineering agents with a deterministic controller
+<span class="saf-eyebrow">Software Agent Factory / macOS</span>
 
-Software Agent Factory takes one work item from triage to a reviewed change.
-Each stage runs as a separate agent with its own model: triage, refinement,
-research, plan, implementation, verification, and review. The workflow, the retry
-budgets and the quality gates are plain Python, not prompts.
+# From a task<br>to a reviewed<br><span class="saf-accent">code change.</span>
 
-Core orchestration runs on your machine: Git worktrees, tests, builds, and all
-persisted state. Model calls and GitHub automation are separate opt-in network
-features.
+Software agents plan and implement your changes.
+A local controller manages each stage.
+The controller is code that enforces workflow rules.
 
 <div class="saf-actions" markdown>
 
-[Install](get-started/install.md){ .md-button .md-button--primary }
-[Run it offline](get-started/first-run.md){ .md-button }
-[Read the architecture](concepts/how-it-works.md){ .md-button }
+[Get started](get-started/install.md){ .md-button .md-button--primary }
+[Explore the pipeline ↓](#the-pipeline){ .md-button }
+
+</div>
+
+<p class="saf-release">{{ factory_release_tag }} <span aria-hidden="true">/</span> Documentation tracks <code>main</code>.</p>
+
+</div>
+
+<div class="saf-machine" role="img" aria-label="Three layers: agents propose changes, the controller enforces rules, and your machine stores the evidence.">
+<div class="saf-machine-grid" aria-hidden="true"></div>
+<div class="saf-machine-label saf-machine-label--top" aria-hidden="true"><span>01 / Intelligence</span>Specialized agents</div>
+<div class="saf-machine-stack" aria-hidden="true">
+<div class="saf-layer saf-layer--base"><i></i><i></i><i></i><i></i><span>LOCAL</span></div>
+<div class="saf-layer saf-layer--controller"><div class="saf-chip"><span>FACTORY</span><span>CONTROLLER</span></div></div>
+<div class="saf-layer saf-layer--agents"><i></i><i></i><i></i><i></i><span>AGENTS</span></div>
+</div>
+<div class="saf-machine-label saf-machine-label--middle" aria-hidden="true"><span>02 / Authority</span>One controller</div>
+<div class="saf-machine-label saf-machine-label--bottom" aria-hidden="true"><span>03 / Execution</span>Your machine</div>
+<span class="saf-machine-caption" aria-hidden="true">Architecture / Local execution + remote models</span>
+</div>
+
+</div>
+
+<div class="saf-facts">
+<div><span class="saf-fact-number">01</span><p>One controller owns <br>all workflow transitions.</p></div>
+<div><span class="saf-fact-number">JSON</span><p>Local files retain <br>the results of each stage.</p></div>
+<div><span class="saf-fact-number">OFF</span><p>Network features require <br>explicit configuration.</p></div>
+</div>
+
+<section class="saf-section" markdown>
+
+<span class="saf-eyebrow">01 / Follow the change</span>
+
+## The pipeline
+
+A pipeline is a sequence of processing stages.
+These six groups explain the path through one task.
+The controller permits the next stage only after the required checks pass.
+
+<div class="saf-pipeline" data-pipeline markdown>
+
+<div class="saf-stage" id="pipeline-prepare" data-label="Prepare" markdown>
+
+<div class="saf-stage-copy" markdown>
+
+<span class="saf-stage-number">01 / Prepare</span>
+
+### Give the task its own workspace
+
+A work item describes one requested change.
+A Git worktree is a separate checkout of a repository.
+The factory creates a worktree for the work item.
+
+The factory reads permitted repository files to identify dependencies.
+This scan uses no shell commands or network access.
+
+[Read about workspaces](concepts/how-it-works.md#workspaces)
+
+</div>
+
+<div class="saf-stage-evidence" markdown>
+
+<span class="saf-small-label">Stage sequence</span>
+
+<div class="saf-flow"><span>Work item</span><span>Worktree</span><span>Repository profile</span></div>
+
+<span class="saf-small-label">Saved evidence</span>
+
+`work-item.json`<br>
+`repository-profile.json`
+
+<p class="saf-stage-note">A project brief can produce several work items before this stage.</p>
 
 </div>
 
 </div>
 
-!!! note
-    This site follows the current `main` branch. The latest published package
-    is {{ factory_release_tag }}. Newer changes are listed under
-    [Unreleased in the changelog](https://github.com/sanjit-roopra/software-agent-factory/blob/main/CHANGELOG.md#unreleased).
+<div class="saf-stage" id="pipeline-plan" data-label="Plan" markdown>
 
-## What a run does
+<div class="saf-stage-copy" markdown>
+
+<span class="saf-stage-number">02 / Plan</span>
+
+### Define the change before implementation
+
+Triage is the assessment of task complexity and risk.
+Complexity selects model strength.
+Risk determines the required controls.
+
+The Refiner defines acceptance criteria, which are conditions for success.
+If triage requests research, the Researcher examines open questions.
+The Planner produces an execution plan with permitted change boundaries.
+
+[Read about the agents](concepts/how-it-works.md#the-agents)
+
+</div>
+
+<div class="saf-stage-evidence" markdown>
+
+<span class="saf-small-label">Stage sequence</span>
+
+<div class="saf-flow"><span>Triage</span><span>Refine</span><span class="saf-optional">Research / optional</span><span>Plan</span></div>
+
+<span class="saf-small-label">Saved evidence</span>
+
+`triage.json`<br>
+`specification.json`<br>
+`research.json` (optional)<br>
+`execution-plan.json`
+
+</div>
+
+</div>
+
+<div class="saf-stage" id="pipeline-implement" data-label="Implement" markdown>
+
+<div class="saf-stage-copy" markdown>
+
+<span class="saf-stage-number">03 / Implement</span>
+
+### Make the change inside the worktree
+
+The Implementer receives the execution plan and repository access.
+It edits source files and adds related tests.
+The factory obtains the changed file list from Git.
+
+An artifact is a saved record with a defined structure.
+Each stage receives the artifacts necessary for its task.
+The factory retains each attempt and its results on disk.
+
+[Read about artifacts](concepts/how-it-works.md#typed-artifacts-not-one-long-conversation)
+
+</div>
+
+<div class="saf-stage-evidence" markdown>
+
+<span class="saf-small-label">Stage sequence</span>
+
+<div class="saf-flow"><span>Execution plan</span><span>Implementation</span><span>Git evidence</span></div>
+
+<span class="saf-small-label">Saved evidence</span>
+
+`change-set.json`<br>
+`patch.diff`
+
+<p class="saf-stage-note">The controller obtains the actual changes from Git.</p>
+
+</div>
+
+</div>
+
+<div class="saf-stage" id="pipeline-verify" data-label="Verify" markdown>
+
+<div class="saf-stage-copy" markdown>
+
+<span class="saf-stage-number">04 / Verify</span>
+
+### Require evidence from repository checks
+
+Deterministic checks use fixed rules to assess a change.
+Lint is automated source code analysis.
+The factory uses the configured installation, verification, and build commands.
+These commands can include lint, type checks, and tests.
+The factory compares the changed files with the plan.
+
+Polish is one optional improvement attempt after successful verification.
+If polish is enabled and eligible, the Implementer applies repository guidance.
+The factory then does all deterministic checks again.
+
+[Configure repository checks](guides/configure-repository.md)
+
+</div>
+
+<div class="saf-stage-evidence" markdown>
+
+<span class="saf-small-label">Stage sequence</span>
+
+<div class="saf-flow"><span>Verification + scope</span><span class="saf-optional">Polish / optional</span><span class="saf-optional">Verification + scope again</span></div>
+
+<span class="saf-small-label">Saved evidence</span>
+
+`verification.json`<br>
+`repository-skill-use.json` (with guidance)
+
+<p class="saf-stage-note">The factory permits polish only when a later recovery attempt remains available.</p>
+
+</div>
+
+</div>
+
+<div class="saf-stage" id="pipeline-review" data-label="Review" markdown>
+
+<div class="saf-stage-copy" markdown>
+
+<span class="saf-stage-number">05 / Review</span>
+
+### Give separate agents the evidence
+
+The Tester examines test coverage for the change.
+The Reviewer examines the change and test evidence independently.
+Neither agent receives the Implementer summary.
+
+The controller applies the review policy to the findings.
+The default local path ends at <code>PR_READY</code>.
+This state means that the change is ready for a pull request.
+
+[Read the review policy](concepts/how-it-works.md#the-agents)
+
+</div>
+
+<div class="saf-stage-evidence" markdown>
+
+<span class="saf-small-label">Stage sequence</span>
+
+<div class="saf-flow"><span>Independent Tester</span><span>Independent Reviewer</span><span>PR_READY</span></div>
+
+<span class="saf-small-label">Saved evidence</span>
+
+`test-report.json`<br>
+`review.json`
+
+<p class="saf-stage-note">Agents cannot approve their own implementation.</p>
+
+</div>
+
+</div>
+
+<div class="saf-stage" id="pipeline-deliver" data-label="Deliver" markdown>
+
+<div class="saf-stage-copy" markdown>
+
+<span class="saf-stage-number">06 / Deliver / Optional</span>
+
+### Publish through explicit controls
+
+A pull request proposes a branch change on GitHub.
+Continuous integration (CI) does automated checks on that change.
+Pull request publication and CI observation require explicit configuration.
+
+If an eligible CI failure occurs, the controller permits a limited repair attempt.
+Merge requires separate authorization for the repository, target, and required checks.
+The factory never bypasses branch protection or deploys software.
+
+[Read about GitHub delivery](guides/github.md)
+
+</div>
+
+<div class="saf-stage-evidence" markdown>
+
+<span class="saf-small-label">Stage sequence</span>
+
+<div class="saf-flow"><span>Pull request</span><span>CI observation</span><span class="saf-optional">Merge / separate authorization</span></div>
+
+<span class="saf-small-label">Saved evidence</span>
+
+`ci.json`<br>
+`run.json`
+
+<p class="saf-stage-note">The controller requires confirmed merge evidence before it reports merge completion.</p>
+
+</div>
+
+</div>
+
+</div>
+
+<div class="saf-recovery" markdown>
+
+<span class="saf-recovery-symbol" aria-hidden="true">↳</span>
+
+<p>Recovery has limits. The controller records each retry reason and enforces attempt limits. Unsafe continuation stops at <code>NEEDS_HUMAN</code>.</p>
+
+[All workflow states →](concepts/how-it-works.md#workflow-states)
+
+</div>
+
+</section>
+
+<section class="saf-section" markdown>
+
+<span class="saf-eyebrow">02 / Understand the boundaries</span>
+
+## Models propose. Code controls. {#design}
+
+<div class="saf-boundaries" markdown>
+
+<div class="saf-boundary" markdown>
+
+<span class="saf-small-label">Intelligence / Models</span>
+
+### Agents produce changes and findings
+
+Each agent has a specific role.
+Real model calls use GitHub Copilot.
+Configuration selects the model for each role.
+
+[Model selection →](reference/model-selection.md)
+
+</div>
+
+<div class="saf-boundary saf-boundary--accent" markdown>
+
+<span class="saf-small-label">Authority / Factory</span>
+
+### The controller enforces the rules
+
+Python code owns workflow transitions and retry limits.
+It applies the required quality checks.
+Agents cannot change these controls.
+
+[Safety boundaries →](reference/safety.md)
+
+</div>
+
+<div class="saf-boundary" markdown>
+
+<span class="saf-small-label">Execution / Your machine</span>
+
+### The evidence stays on disk
+
+Git worktrees, repository commands, and saved state remain local.
+JSON files record the results of each stage.
+You can inspect these files after a run.
+
+[Operations guide →](guides/operations.md)
+
+</div>
+
+</div>
+
+</section>
+
+<section class="saf-section saf-try" markdown>
+
+<div markdown>
+
+<span class="saf-eyebrow">03 / Start with an offline example</span>
+
+## See the workflow<br>on your machine. {#what-a-run-does}
+
+The default runtime uses fake agents, which are deterministic test substitutes.
+They exercise the workflow without paid model calls.
+They do not implement the requested feature.
+
+This source checkout example uses the packaged example configuration.
+It makes no network calls.
+Real Copilot agents require <code>--runtime copilot</code> and incur charges.
+
+[First offline run →](get-started/first-run.md)
+
+</div>
+
+<div class="saf-terminal" markdown>
+
+<span class="saf-terminal-title">Terminal / Source checkout</span>
 
 ```bash
 uv run factory run \
@@ -47,113 +387,49 @@ uv run factory run \
   --config config/factory.example.yaml
 ```
 
-```text
-run id: run-9bb36bbbdf114f53bd9599a103122976
-state: PR_READY
-workspace: ~/.software-factory/workspaces/WI-c769695fc242
-changed files: FACTORY_NOTES.md
-```
-
-That command makes no network calls and costs nothing. The default runtime is
-`fake`, a deterministic test double that exercises the whole pipeline without a
-model. When you want real agents, add `--runtime copilot`. That costs money.
-
-## The pipeline
-
-```mermaid
-flowchart LR
-  A[Work item] --> B[Triage]
-  B --> C[Refine]
-  C --> D{Research?}
-  D -->|yes| E[Research]
-  D -->|no| F[Plan]
-  E --> F
-  F --> G[Implement]
-  G --> H[Verify]
-  H --> I[Review]
-  I --> J[PR ready]
-  J -.opt-in.-> K[Pull request]
-  K -.opt-in.-> L[CI]
-  L -.bounded.-> G
-```
-
-Each stage hands the next stage a typed, persisted artifact. It does not
-pass a growing chat transcript. A stage that fails goes back to
-implementation a bounded number of times. Then it escalates to `NEEDS_HUMAN`
-with the attached evidence.
-
-## Design
-
-<div class="saf-cards" markdown>
-
-<div class="saf-card" markdown>
-### Models suggest, code decides
-Agents produce artifacts. A single `WorkflowController` owns every state
-transition, retry budget and gate. No agent can approve its own work.
-[Read more](reference/safety.md)
-</div>
-
-<div class="saf-card" markdown>
-### Deterministic evidence first
-The factory computes lint, type checks, tests, the build, changed-file scope,
-and the Git diff. LLM judgement supplements that evidence.
-It never replaces that evidence. [Read more](guides/configure-repository.md)
-</div>
-
-<div class="saf-card" markdown>
-### Off by default
-Pull requests, CI observation and the backlog daemon are disabled in the
-packaged configuration. With default settings, the factory does no network
-I/O. [Read more](reference/safety.md)
-</div>
-
-<div class="saf-card" markdown>
-### Independent review
-The tester and reviewer see the controller-derived diff and deterministic
-results, never the summary of the implementer. Configuration rejects a
-reviewer from the same model family as a worker.
-[Read more](concepts/how-it-works.md)
-</div>
-
-<div class="saf-card" markdown>
-### Isolated workspaces
-Every work item gets its own Git worktree under the data directory. Runs,
-artifacts and per-attempt snapshots are plain JSON on disk.
-[Read more](concepts/how-it-works.md)
-</div>
-
-<div class="saf-card" markdown>
-### Delivery stays under policy
-The factory can open pull requests, repair CI, and merge reviewed changes
-to an allowlisted target when enabled. It never bypasses branch protection,
-force-pushes or deploys. [Read more](guides/github.md)
-</div>
+<div class="saf-terminal-result"><span>Expected result</span><code>PR_READY</code><p>The worktree and stage records remain available for inspection.</p></div>
 
 </div>
 
-## Where to start
+</section>
 
-| If you want to | Go to |
-| --- | --- |
-| Install it | [Install](get-started/install.md) |
-| See it work without spending money | [First offline run](get-started/first-run.md) |
-| Use real models | [Real Copilot runs](get-started/copilot.md) |
-| Point it at your repository's checks | [Configure a repository](guides/configure-repository.md) |
-| Customize the guidance agents get | [Repository skills and overlays](guides/repository-skills.md) |
-| Poll issues, open PRs, watch CI | [GitHub backlog, PRs and CI](guides/github.md) |
-| Watch runs and keep it running | [Monitor and run continuously](guides/operations.md) |
-| Look up a command or config key | [CLI](reference/cli.md) · [Configuration](reference/configuration.md) |
-| Understand the design | [How it works](concepts/how-it-works.md) |
+<section class="saf-section" markdown>
+
+<span class="saf-eyebrow">04 / Continue from here</span>
+
+## Choose your next step {#where-to-start}
+
+<div class="saf-paths" markdown>
+
+[<span>01 / Get started</span>Install the factory<span>macOS packages and source installation →</span>](get-started/install.md)
+
+[<span>02 / Connect</span>Use real agents<span>Copilot access and configuration →</span>](get-started/copilot.md)
+
+[<span>03 / Configure</span>Prepare your repository<span>Commands, limits, and protected files →</span>](guides/configure-repository.md)
+
+[<span>04 / Plan</span>Start from a project brief<span>Task breakdown and dependencies →</span>](guides/projects.md)
+
+[<span>05 / Inspect</span>Read the architecture<span>Workflow states and saved artifacts →</span>](concepts/how-it-works.md)
+
+[<span>06 / Reference</span>Find a command<span>Command syntax and arguments →</span>](reference/cli.md)
+
+</div>
+
+</section>
+
+<div class="saf-status" markdown>
 
 ## Status
 
-Use with supervision only.
-The system works end to end. The release process, CI, and packaging are real.
+Use the factory with supervision.
+The supported platform is macOS on Apple silicon and Intel.
+A source installation requires Python 3.13 or later.
 
-- Platform: macOS (Apple silicon and Intel). A source checkout needs Python
-  3.13+. Other platforms are not tested or supported.
-- Implemented: phases 0 to 14, plus phases 15.0, 15.1, 15.2, 15.5, and 15.11.
-- Deferred: staging, deployment, Docker or Kubernetes sandboxes, remote
-  workers, Postgres, Temporal, and non-GitHub trackers.
+This documentation describes the <code>main</code> branch.
+The latest published package is {{ factory_release_tag }}.
 
-See [Roadmap and status](project/roadmap.md) for the full table.
+[Roadmap and status](project/roadmap.md) · [Unreleased changes](https://github.com/sanjit-roopra/software-agent-factory/blob/main/CHANGELOG.md#unreleased)
+
+</div>
+
+</div>
