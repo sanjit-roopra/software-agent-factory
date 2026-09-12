@@ -100,6 +100,9 @@ software_agent_factory = [
 [tool.pytest.ini_options]
 addopts = "-n auto --maxprocesses=12 --dist=worksteal"
 testpaths = ["tests"]
+markers = [
+  "project_delivery: Git-heavy project execution and delivery tests",
+]
 
 [tool.coverage.run]
 branch = true

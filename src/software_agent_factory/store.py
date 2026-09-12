@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from pydantic_core import from_json
+
 from .models import (
     ChangeSet,
     CIReport,
@@ -164,7 +166,13 @@ class FileRunStore:
         """Load a persisted run. Read-only: a missing run raises
         ``FileNotFoundError`` and never creates the run directory."""
         path = self._run_dir_readonly(run_id) / "run.json"
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        try:
+            payload = from_json(raw)
+        except ValueError as exc:
+            raise json.JSONDecodeError(str(exc), raw, 0) from exc
+        if not isinstance(payload, dict):
+            return FactoryRun.model_validate(payload)
         schema_version = payload.get("schema_version")
         if schema_version != 1:
             raise ValueError(f"Unsupported FactoryRun schema_version: {schema_version}")
@@ -199,11 +207,12 @@ class FileRunStore:
             # the top-level latest snapshot partially updated.
             self._attempt_key(attempt)
         destination = self._artifact_path(run_id, type(artifact), filename, create=True)
-        self._write_model(destination, artifact)
+        content = self._model_text(artifact)
+        self._write_text_atomic(destination, content)
         if attempt is not None:
-            self._write_model(
+            self._write_text_atomic(
                 self.attempt_dir(run_id, attempt) / destination.name,
-                artifact,
+                content,
             )
         return destination
 

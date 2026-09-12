@@ -21,9 +21,9 @@ workspace plus every persisted artifact stay on disk for inspection.
 
 Dispatch is likewise once-only: because the factory holds no write access to
 the backlog and GitHub never withdraws an issue by itself, an item with any
-persisted ``FactoryRun`` is filtered out of the candidate set
-(:class:`AlreadyRunFilter`). Otherwise a finished issue would be re-dispatched
-on the very next tick under a new run id with a fresh, empty retry budget.
+persisted ``FactoryRun`` is excluded by the scheduler. Otherwise a finished
+issue would be re-dispatched on the very next tick under a new run id with a
+fresh, empty retry budget.
 
 Two configured safety bounds are applied here rather than left implicit
 (``PLAN.md`` Phase 15): ``scheduler.max_concurrent_tasks`` bounds how much
@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -231,21 +232,20 @@ class FactoryService:
                 required_label=self.config.scheduler.required_label,
                 local_repository_path=self.source_repo,
             )
-        # The GitHub backlog never withdraws an item on its own, so dispatch
-        # eligibility is filtered against persisted runs (see AlreadyRunFilter).
-        self._eligible_provider = AlreadyRunFilter(self.provider, self.store)
         self._executor = ThreadPoolExecutor(
             max_workers=self.config.scheduler.max_concurrent_tasks,
             thread_name_prefix="factory-run",
         )
+        self._completion_event = threading.Event()
         self._handles: dict[str, ThreadPoolRunHandle] = {}
         self.scheduler = Scheduler(
-            self._eligible_provider,
+            self.provider,
             self._dispatch,
             max_concurrent_tasks=self.config.scheduler.max_concurrent_tasks,
             stall_timeout_seconds=float(self.config.scheduler.stall_timeout_seconds),
             store=self.store,
             max_runs_per_day=self.config.scheduler.max_runs_per_day,
+            exclude_any_persisted_run=True,
         )
 
     # -- dispatch ---------------------------------------------------------
@@ -257,6 +257,7 @@ class FactoryService:
         repository = Path(item.repository_path or self.source_repo)
         future = self._executor.submit(self._execute, work_item, repository, run_id)
         handle.attach(future)
+        future.add_done_callback(lambda _future: self._completion_event.set())
         self._handles[run_id] = handle
         return handle
 
@@ -337,6 +338,10 @@ class FactoryService:
             self.recover()
             poll_interval = float(self.config.scheduler.poll_interval_seconds)
             while not stop_event.is_set():
+                # Clear before the reconciliation snapshot. A completion that
+                # races with tick() sets the event again and causes an
+                # immediate follow-up tick instead of being lost.
+                self._completion_event.clear()
                 try:
                     report = self.scheduler.tick()
                 except GitHubCommandError:
@@ -346,10 +351,29 @@ class FactoryService:
                     )
                 else:
                     self._log_tick(report)
-                if stop_event.wait(poll_interval):
+                if self._wait_for_stop_or_completion(stop_event, poll_interval):
                     break
         finally:
             self.shutdown()
+
+    def _wait_for_stop_or_completion(
+        self,
+        stop_event: Waiter,
+        timeout_seconds: float,
+    ) -> bool:
+        """Return true on stop, or false when work completes or polling is due."""
+        if timeout_seconds <= 0:
+            return stop_event.is_set()
+        if not isinstance(stop_event, threading.Event):
+            return stop_event.wait(timeout_seconds)
+        deadline = time.monotonic() + timeout_seconds
+        while not stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if self._completion_event.wait(min(remaining, 0.25)):
+                return stop_event.is_set()
+        return True
 
     def shutdown(self) -> None:
         """Cancel active work and shut the executor down cleanly."""

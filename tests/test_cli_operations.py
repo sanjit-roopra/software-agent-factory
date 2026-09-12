@@ -35,6 +35,7 @@ from software_agent_factory.observability import (
     MonitoringSnapshot,
     OperationalHealthReport,
     RunDetail,
+    RunScanResult,
 )
 from software_agent_factory.service_install import (
     DEFAULT_LABEL,
@@ -334,6 +335,65 @@ def test_status_stale_threshold_can_be_overridden(data_dir: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "stale threshold: 7s" in result.output
+
+
+def test_status_performs_single_bounded_scan_shared_with_snapshot_and_health(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_run(source_repo, data_dir, title="First")
+    make_run(source_repo, data_dir, title="Second")
+
+    import software_agent_factory.observability as obs_module
+    from software_agent_factory.store import FileRunStore
+
+    scan_calls: list[int] = []
+    snapshot_scans: list[RunScanResult | None] = []
+    health_scans: list[RunScanResult | None] = []
+    load_calls = 0
+
+    real_scan = obs_module.scan_readable_runs
+    real_snapshot = obs_module.build_monitoring_snapshot
+    real_health = obs_module.build_operational_health
+    real_load = FileRunStore.load_run
+
+    def spy_scan(store: object, max_scanned_runs: int = 1000) -> RunScanResult:
+        scan_calls.append(max_scanned_runs)
+        return real_scan(store, max_scanned_runs)  # type: ignore[arg-type]
+
+    def spy_snapshot(*args: object, **kwargs: object) -> object:
+        snapshot_scans.append(kwargs.get("scan"))  # type: ignore[arg-type]
+        return real_snapshot(*args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_health(*args: object, **kwargs: object) -> object:
+        health_scans.append(kwargs.get("scan"))  # type: ignore[arg-type]
+        return real_health(*args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_load(self: object, run_id: str) -> object:
+        nonlocal load_calls
+        load_calls += 1
+        return real_load(self, run_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(obs_module, "scan_readable_runs", spy_scan)
+    monkeypatch.setattr(obs_module, "build_monitoring_snapshot", spy_snapshot)
+    monkeypatch.setattr(obs_module, "build_operational_health", spy_health)
+    monkeypatch.setattr(FileRunStore, "load_run", spy_load)
+
+    result = runner.invoke(app, ["status", "--data-dir", str(data_dir), "--max-scanned-runs", "1"])
+    assert result.exit_code == 0, result.output
+
+    # Exactly 1 scan was performed with the configured cap
+    assert len(scan_calls) == 1
+    assert scan_calls[0] == 1
+
+    # Exactly 1 run file was loaded (cap of 1 is true command-level cap)
+    assert load_calls == 1
+
+    # Both snapshot and health received the exact same RunScanResult instance
+    assert len(snapshot_scans) == 1
+    assert len(health_scans) == 1
+    assert snapshot_scans[0] is not None
+    assert isinstance(snapshot_scans[0], RunScanResult)
+    assert snapshot_scans[0] is health_scans[0]
 
 
 # -- factory dashboard -----------------------------------------------------

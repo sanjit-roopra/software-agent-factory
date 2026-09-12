@@ -45,6 +45,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "is_stale",
         "stale",
         "review_status",
+        "performance",
     }
 )
 
@@ -87,6 +88,7 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
         "context_tier",
         "success",
         "usage",
+        "performance",
     }
 )
 
@@ -227,12 +229,46 @@ def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
 
 
+def sanitize_performance(raw: Any) -> dict[str, Any]:
+    """Reduce one performance record to bounded, safe numeric telemetry."""
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key in ("prompt_chars", "response_chars"):
+        val = data.get(key)
+        if isinstance(val, int) and not isinstance(val, bool) and val >= 0:
+            sanitized[key] = val
+    for key in ("process_boot_ms", "first_event_ms"):
+        val = data.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and val >= 0:
+            sanitized[key] = float(val)
+    durations = data.get("durations_ms")
+    if isinstance(durations, dict):
+        sanitized["durations_ms"] = {
+            str(k)[:64]: float(v)
+            for k, v in list(durations.items())[:100]
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+        }
+    counters = data.get("counters")
+    if isinstance(counters, dict):
+        sanitized["counters"] = {
+            str(k)[:64]: int(v)
+            for k, v in list(counters.items())[:100]
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0
+        }
+    return sanitized
+
+
 def sanitize_run_summary(raw: Any) -> dict[str, Any]:
     """Reduce one provider-supplied run to only the fields the UI renders."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
         raise TypeError("run summary must serialize to a JSON object")
-    return _allowlist(data, RUN_SUMMARY_FIELDS)
+    sanitized = _allowlist(data, RUN_SUMMARY_FIELDS)
+    if "performance" in sanitized:
+        sanitized["performance"] = sanitize_performance(sanitized["performance"])
+    return sanitized
 
 
 def sanitize_attempt(raw: Any) -> dict[str, Any]:
@@ -264,6 +300,8 @@ def sanitize_invocation(raw: Any) -> dict[str, Any]:
     sanitized = _allowlist(data, INVOCATION_FIELDS)
     if "usage" in sanitized:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
+    if "performance" in sanitized:
+        sanitized["performance"] = sanitize_performance(sanitized["performance"])
     return sanitized
 
 
@@ -281,6 +319,8 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     sanitized = _allowlist(data, RUN_DETAIL_FIELDS)
     if "usage" in sanitized:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
+    if "performance" in sanitized:
+        sanitized["performance"] = sanitize_performance(sanitized["performance"])
     attempts = data.get("attempts")
     if isinstance(attempts, list):
         sanitized["attempts"] = [sanitize_attempt(item) for item in attempts]

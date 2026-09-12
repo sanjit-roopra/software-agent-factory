@@ -10,6 +10,8 @@ import pytest
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.copilot_runtime import (
     CopilotAgentRuntime,
+    ScanStats,
+    _iter_json_objects,
     parse_copilot_artifact,
     parse_copilot_usage,
 )
@@ -53,7 +55,7 @@ def _request(role: AgentRole, **overrides: object) -> AgentRequest:
         "timeout_seconds": 30,
     }
     defaults.update(overrides)
-    return AgentRequest(**defaults)  # type: ignore[arg-type]
+    return AgentRequest(**defaults)
 
 
 class _FakePopen:
@@ -64,17 +66,19 @@ class _FakePopen:
         stderr: str = "",
         returncode: int = 0,
         timeout: subprocess.TimeoutExpired | None = None,
+        timeout_calls: int = 1,
     ) -> None:
         self._stdout = stdout
         self._stderr = stderr
         self._timeout = timeout
+        self._timeout_calls = timeout_calls
         self._communicate_calls = 0
         self.returncode = returncode
         self.pid = 43210
 
     def communicate(self, timeout: int | None = None) -> tuple[str, str]:
         self._communicate_calls += 1
-        if self._timeout is not None and self._communicate_calls == 1:
+        if self._timeout is not None and self._communicate_calls <= self._timeout_calls:
             raise self._timeout
         return self._stdout, self._stderr
 
@@ -465,9 +469,9 @@ def test_run_uses_workspace_cwd_and_scrubs_github_credentials(
         tests_added=[],
         commands_run=["pytest"],
     )
-    assert captured["kwargs"]["cwd"] == workspace
-    assert captured["kwargs"]["start_new_session"] is True
-    env = captured["kwargs"]["env"]
+    assert captured["kwargs"]["cwd"] == workspace  # type: ignore[index]
+    assert captured["kwargs"]["start_new_session"] is True  # type: ignore[index]
+    env = captured["kwargs"]["env"]  # type: ignore[index]
     assert "GITHUB_TOKEN" not in env
     assert "GH_TOKEN" not in env
     assert "GIT_ASKPASS" not in env
@@ -965,7 +969,7 @@ def test_launch_oserror_failure_reason_redacts_credentials(
 def test_timeout_kills_process_group_and_returns_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    killed: dict[str, object] = {}
+    killed: list[tuple[int, signal.Signals]] = []
     timeout = subprocess.TimeoutExpired(
         cmd=["copilot"],
         timeout=5,
@@ -981,8 +985,7 @@ def test_timeout_kills_process_group_and_returns_failure(
         return _FakePopen(stdout="", stderr="", timeout=timeout)
 
     def fake_killpg(pid: int, sig: signal.Signals) -> None:
-        killed["pid"] = pid
-        killed["sig"] = sig
+        killed.append((pid, sig))
 
     monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
     monkeypatch.setattr("software_agent_factory.copilot_runtime.os.killpg", fake_killpg)
@@ -996,7 +999,420 @@ def test_timeout_kills_process_group_and_returns_failure(
     assert result.usage is not None
     assert result.usage.premium_requests == 1.0
     assert result.usage.total_nano_aiu == 22456000
-    assert killed == {"pid": 43210, "sig": signal.SIGKILL}
+    assert killed == [(43210, signal.SIGTERM)]
+
+
+def test_timeout_uncooperative_process_escalates_to_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killed: list[tuple[int, signal.Signals]] = []
+    timeout = subprocess.TimeoutExpired(
+        cmd=["copilot"],
+        timeout=5,
+        output="partial stdout",
+        stderr="partial stderr",
+    )
+
+    def fake_popen(*args: object, **kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout="", stderr="", timeout=timeout, timeout_calls=2)
+
+    def fake_killpg(pid: int, sig: signal.Signals) -> None:
+        killed.append((pid, sig))
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.os.killpg", fake_killpg)
+
+    runtime = CopilotAgentRuntime()
+    result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=5))
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "timed out after 5s" in result.failure_reason
+    assert killed == [(43210, signal.SIGTERM), (43210, signal.SIGKILL)]
+
+
+def test_kill_process_group_handles_process_lookup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from software_agent_factory.copilot_runtime import _kill_process_group
+
+    class _DyingPopen:
+        def __init__(self) -> None:
+            self.pid = 99999
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return "out", "err"
+
+    def fail_killpg(pid: int, sig: signal.Signals) -> None:
+        raise ProcessLookupError("No such process")
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.os.killpg", fail_killpg)
+    stdout, stderr = _kill_process_group(_DyingPopen())  # type: ignore[arg-type]
+    assert stdout == "out"
+    assert stderr == "err"
+
+
+def test_iter_json_objects_adversarial_unclosed_braces_linear_speed() -> None:
+    from software_agent_factory.copilot_runtime import _iter_json_objects
+
+    text = "{" * 50000
+
+    objects = _iter_json_objects(text)
+    assert objects == []
+
+
+def test_iter_json_objects_adversarial_unclosed_objects_speed() -> None:
+    from software_agent_factory.copilot_runtime import _iter_json_objects
+
+    text = '{"key":' * 5000
+
+    objects = _iter_json_objects(text)
+    assert objects == []
+
+
+def test_iter_json_objects_handles_braces_in_strings_and_escapes() -> None:
+    from software_agent_factory.copilot_runtime import _iter_json_objects
+
+    text = (
+        'prose before {"summary": "has {braces} and \\"escaped\\" quotes", '
+        '"changed_files": ["foo.py"], "tests_added": [], "commands_run": []} prose after'
+    )
+    objects = _iter_json_objects(text)
+    assert len(objects) == 1
+    assert objects[0]["summary"] == 'has {braces} and "escaped" quotes'
+
+
+def test_iter_json_objects_handles_multiple_valid_objects() -> None:
+    from software_agent_factory.copilot_runtime import _iter_json_objects
+
+    text = '{"a": 1}\nsome text\n{"b": 2}\n{"c": {"nested": true}}'
+    objects = _iter_json_objects(text)
+    assert len(objects) == 3
+    assert objects[0] == {"a": 1}
+    assert objects[1] == {"b": 2}
+    assert objects[2] == {"c": {"nested": True}}
+
+
+def test_iter_json_objects_ignores_non_string_keys() -> None:
+    from software_agent_factory.copilot_runtime import _iter_json_objects
+
+    text = '{123: "invalid json"} {"valid": true}'
+    objects = _iter_json_objects(text)
+    assert len(objects) == 1
+    assert objects[0] == {"valid": True}
+
+
+def test_correct_change_set_permissions_and_command() -> None:
+    runtime = CopilotAgentRuntime()
+    change_set = ChangeSet(
+        summary="Initial summary",
+        changed_files=["app.py"],
+        tests_added=[],
+        commands_run=[],
+    )
+    request = _request(
+        AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        change_set=change_set,
+        workspace_path="/repo",
+    )
+    command = runtime._build_command(request, prompt="correct", cwd=Path("/repo"))
+
+    # No available tools
+    available_tools_idx = command.index("--available-tools")
+    assert command[available_tools_idx + 1] == ""
+
+    # Denied shell, write, url
+    denied = [command[i + 1] for i, arg in enumerate(command) if arg == "--deny-tool"]
+    assert "shell" in denied
+    assert "write" in denied
+    assert "url" in denied
+    assert "--allow-url" not in command
+
+
+def test_correct_change_set_artifact_validation() -> None:
+    stdout = json.dumps(
+        {
+            "schema_version": 1,
+            "summary": "Updated summary explaining fix",
+            "changed_files": ["app.py"],
+            "tests_added": [],
+            "commands_run": [],
+        }
+    )
+    artifact = parse_copilot_artifact(
+        AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        stdout=stdout,
+    )
+    assert isinstance(artifact, ChangeSet)
+    assert artifact.summary == "Updated summary explaining fix"
+
+
+def test_correct_change_set_requires_implementer_role() -> None:
+    with pytest.raises(ValueError, match="ChangeSet correction requires the IMPLEMENTER role"):
+        parse_copilot_artifact(
+            AgentRole.PLANNER,
+            purpose=AgentPurpose.CORRECT_CHANGE_SET,
+            stdout='{"summary": "foo"}',
+        )
+
+
+def test_correct_change_set_requires_workspace_path() -> None:
+    runtime = CopilotAgentRuntime()
+    change_set = ChangeSet(
+        summary="Initial summary",
+        changed_files=["app.py"],
+        tests_added=[],
+        commands_run=[],
+    )
+    request = _request(
+        AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        change_set=change_set,
+        workspace_path=None,
+    )
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        runtime.run(request)
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        runtime._cwd_for(request)
+
+    request_empty = _request(
+        AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        change_set=change_set,
+        workspace_path="",
+    )
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        runtime.run(request_empty)
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        runtime._cwd_for(request_empty)
+
+    request_valid = _request(
+        AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        change_set=change_set,
+        workspace_path="/tmp/explicit-workspace",
+    )
+    assert runtime._cwd_for(request_valid) == Path("/tmp/explicit-workspace").resolve()
+
+
+def test_parse_copilot_artifact_recovers_nested_envelope_object() -> None:
+    inner = {
+        "schema_version": 1,
+        "factory_eligible": True,
+        "complexity": "L0",
+        "risk": "R0",
+        "requirements_quality": "clear",
+        "needs_research": False,
+        "dependencies": [],
+        "unknowns": [],
+        "confidence": 1.0,
+    }
+    stdout = json.dumps({"status": "success", "result": inner})
+    artifact = parse_copilot_artifact(AgentRole.TRIAGE, stdout=stdout)
+    assert isinstance(artifact, TriageResult)
+    assert artifact.complexity == "L0"
+    assert artifact.risk == "R0"
+
+
+def test_parse_copilot_artifact_recovers_deeply_nested_envelope_object() -> None:
+    inner = {
+        "schema_version": 1,
+        "factory_eligible": True,
+        "complexity": "L1",
+        "risk": "R1",
+        "requirements_quality": "clear",
+        "needs_research": False,
+        "dependencies": [],
+        "unknowns": [],
+        "confidence": 0.9,
+    }
+    stdout = json.dumps({"envelope": {"response": {"output": {"payload": inner}}}})
+    artifact = parse_copilot_artifact(AgentRole.TRIAGE, stdout=stdout)
+    assert isinstance(artifact, TriageResult)
+    assert artifact.complexity == "L1"
+    assert artifact.confidence == 0.9
+
+
+def test_parse_copilot_artifact_recovers_nested_envelope_in_list() -> None:
+    inner = {
+        "schema_version": 1,
+        "factory_eligible": True,
+        "complexity": "L2",
+        "risk": "R0",
+        "requirements_quality": "clear",
+        "needs_research": False,
+        "dependencies": [],
+        "unknowns": [],
+        "confidence": 0.85,
+    }
+    stdout = json.dumps({"candidates": [{"content": inner}]})
+    artifact = parse_copilot_artifact(AgentRole.TRIAGE, stdout=stdout)
+    assert isinstance(artifact, TriageResult)
+    assert artifact.complexity == "L2"
+
+
+def test_parse_copilot_artifact_malformed_prose_followed_by_valid_object() -> None:
+    valid_json = json.dumps(
+        {
+            "schema_version": 1,
+            "factory_eligible": True,
+            "complexity": "L0",
+            "risk": "R0",
+            "requirements_quality": "clear",
+            "needs_research": False,
+            "dependencies": [],
+            "unknowns": [],
+            "confidence": 1.0,
+        }
+    )
+    stdout = (
+        "I looked at the code: function parse() { return { broken: json; }; }\n"
+        'Here is an unclosed quote: { "unclosed: text that does not end\n'
+        'And broken syntax: { "foo": [1, 2, } }\n'
+        "Finally, here is the typed artifact:\n"
+        f"{valid_json}\n"
+    )
+    artifact = parse_copilot_artifact(AgentRole.TRIAGE, stdout=stdout)
+    assert isinstance(artifact, TriageResult)
+    assert artifact.complexity == "L0"
+
+
+def test_iter_json_objects_malformed_prose_followed_by_valid_objects() -> None:
+    text = (
+        'Some text with { code: block } and { "bad": syntax, [1, } '
+        'and unclosed { "string: unclosed '
+        'and then valid: {"first": 123} and {"second": {"nested": 456}}'
+    )
+    objects = _iter_json_objects(text)
+    assert len(objects) == 2
+    assert objects[0] == {"first": 123}
+    assert objects[1] == {"second": {"nested": 456}}
+
+
+def test_iter_json_objects_deeply_nested_malformed_bounded_work() -> None:
+    depth = 1000
+    text = '{"a": ' * depth + "broken_payload" + "}" * depth
+    stats = ScanStats()
+    objects = _iter_json_objects(text, scan_stats=stats)
+
+    assert objects == []
+    # Verify deterministic near-linear work: characters scanned is bounded by 2 * len(text)
+    assert stats.chars_scanned <= 2 * len(text)
+    # Consecutive nested failures bound ensures only a small number of candidate decodes occur
+    assert stats.candidates_tested <= 10
+
+
+def test_iter_json_objects_unclosed_nested_braces_bounded_work() -> None:
+    depth = 1000
+    text = '{"a": ' * depth + "}"
+    stats = ScanStats()
+    objects = _iter_json_objects(text, scan_stats=stats)
+
+    assert objects == []
+    # Unclosed braces are tracked statefully so redundant scans are skipped in O(1)
+    assert stats.chars_scanned <= 2 * len(text)
+    assert stats.candidates_tested <= 2
+
+
+def test_iter_json_objects_enforces_max_scan_work_limit() -> None:
+    depth = 500
+    text = '{"a": ' * depth + "}" * depth
+    stats = ScanStats()
+    limit = 250
+    objects = _iter_json_objects(text, scan_stats=stats, max_scan_work=limit)
+
+    assert objects == []
+    assert stats.chars_scanned <= limit + 10
+
+
+def test_iter_json_objects_skips_non_json_braces_without_suffix_scans() -> None:
+    text = "{x" * 1000 + "}"
+    stats = ScanStats()
+
+    objects = _iter_json_objects(text, scan_stats=stats, max_scan_work=1)
+
+    assert objects == []
+    assert stats.chars_scanned == 0
+    assert stats.candidates_tested == 0
+
+
+def test_parse_copilot_artifact_recovers_valid_after_deeply_nested_prefix() -> None:
+    valid_json = json.dumps(
+        {
+            "schema_version": 1,
+            "factory_eligible": True,
+            "complexity": "L0",
+            "risk": "R0",
+            "requirements_quality": "clear",
+            "needs_research": False,
+            "dependencies": [],
+            "unknowns": [],
+            "confidence": 1.0,
+        }
+    )
+    malformed_prefix = '{"a": ' * 500 + "unparsable" + "}" * 500
+    stdout = f"Prefix noise: {malformed_prefix}\nResult:\n{valid_json}\n"
+
+    artifact = parse_copilot_artifact(AgentRole.TRIAGE, stdout=stdout)
+    assert isinstance(artifact, TriageResult)
+    assert artifact.complexity == "L0"
+
+
+def test_iter_json_objects_nested_envelope_with_broken_outer_recovers_inner() -> None:
+    text = '{ broken: syntax, "result": {"valid": 123} }'
+    objects = _iter_json_objects(text)
+    assert objects == [{"valid": 123}]
+
+
+def test_iter_json_objects_preserves_multiple_objects_and_escapes() -> None:
+    text = (
+        '{"first": "escaped \\" { and } braces", "val": 1} '
+        '{"second": {"nested": "str \\\\ with \\" quote"}}'
+    )
+    objects = _iter_json_objects(text)
+    assert len(objects) == 2
+    assert objects[0] == {"first": 'escaped " { and } braces', "val": 1}
+    assert objects[1] == {"second": {"nested": 'str \\ with " quote'}}
+
+
+def test_compatibility_non_streaming_fallback_and_no_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_command: list[str] = []
+
+    def fake_popen(command: list[str], **kwargs: object) -> _FakePopen:
+        captured_command.extend(command)
+        return _FakePopen(
+            stdout=(
+                '{"schema_version":1,"factory_eligible":true,"complexity":"L0",'
+                '"risk":"R0","requirements_quality":"clear","needs_research":false,'
+                '"dependencies":[],"unknowns":[],"confidence":1.0}'
+            )
+        )
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+    runtime = CopilotAgentRuntime()
+    result = runtime.run(_request(AgentRole.TRIAGE))
+
+    assert result.success is True
+    assert result.triage_result is not None
+    assert result.triage_result.complexity == "L0"
+    # Never persistent sessions: --resume must not appear
+    assert "--resume" not in captured_command
+    assert "--stream" in captured_command
+    assert captured_command[captured_command.index("--stream") + 1] == "off"
+    # Telemetry preserved
+    assert result.performance is not None
+    assert result.performance.prompt_chars is not None
+    assert result.performance.prompt_chars > 0
+    assert result.performance.response_chars is not None
+    assert result.performance.response_chars > 0
+    assert result.performance.process_boot_ms is not None
 
 
 def _json_string(value: str) -> str:

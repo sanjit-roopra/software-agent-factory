@@ -37,6 +37,7 @@ from software_agent_factory.models import (
     FactoryRun,
     InvocationRecord,
     ModelUsage,
+    PerformanceRecord,
     ReviewAcceptance,
     ReviewAcceptanceReason,
     ReviewFinding,
@@ -55,18 +56,23 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import (
     DEFAULT_MAX_SCANNED_RUNS,
+    DEFAULT_SCAN_CACHE_TTL,
     DEFAULT_STALE_AFTER,
     MonitoringSnapshot,
     OperationalHealthReport,
     OrphanedWorkspaceFinding,
+    RunScanCache,
+    RunScanResult,
     RunStoreProtocol,
     RunSummary,
     StaleLockFinding,
     StaleRunFinding,
+    _compute_aggregate_metrics,
     build_monitoring_snapshot,
     build_operational_health,
     configure_factory_logging,
     log_run_event,
+    scan_readable_runs,
 )
 from software_agent_factory.store import FileRunStore
 
@@ -1751,3 +1757,290 @@ def test_prune_administration_locks_are_never_reported_as_stale(tmp_path: Path) 
 
     assert report.locks_checked == 1
     assert [finding.lock_name for finding in report.stale_locks] == ["workspace-key.lock"]
+
+
+# ---------------------------------------------------------------------------
+# RunScanCache tests: scan reuse, expiry, thread-safety, mutation isolation
+# ---------------------------------------------------------------------------
+
+
+def test_run_scan_cache_reuse_within_ttl(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    for i in range(3):
+        store.save_run(_run(f"cache-run-{i:03d}", state=WorkflowState.DONE))
+
+    original_load = store.load_run
+    load_counts = 0
+
+    def load_spy(run_id: str) -> FactoryRun:
+        nonlocal load_counts
+        load_counts += 1
+        return original_load(run_id)
+
+    store.load_run = load_spy  # type: ignore[assignment]
+
+    cache = RunScanCache(store, ttl=5.0)
+    assert cache.hits == 0
+    assert cache.misses == 0
+    assert cache.ttl == 5.0
+
+    # First call triggers fresh scan (miss)
+    scan1 = cache.get_scan()
+    assert cache.misses == 1
+    assert cache.hits == 0
+    assert len(scan1.readable_runs) == 3
+    assert load_counts == 3
+
+    # Second call within TTL reuses cached scan (hit, no additional loads)
+    scan2 = cache.get_scan()
+    assert cache.misses == 1
+    assert cache.hits == 1
+    assert len(scan2.readable_runs) == 3
+    assert load_counts == 3
+
+
+def test_run_scan_cache_expiry_with_monotonic_clock(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(_run("run-exp-001", state=WorkflowState.DONE))
+
+    current_time = 1000.0
+    cache = RunScanCache(store, ttl=2.0, clock=lambda: current_time)
+
+    scan1 = cache.get_scan()
+    assert cache.misses == 1
+    assert cache.hits == 0
+
+    # Within TTL: hits cache
+    current_time = 1001.5
+    scan2 = cache.get_scan()
+    assert cache.misses == 1
+    assert cache.hits == 1
+    assert [r.id for r in scan2.readable_runs] == [r.id for r in scan1.readable_runs]
+
+    # Exactly at or past TTL: expires, triggers fresh scan
+    current_time = 1002.0
+    scan3 = cache.get_scan()
+    assert len(scan3.readable_runs) == 1
+    assert cache.misses == 2
+    assert cache.hits == 1
+
+
+def test_run_scan_cache_no_stale_mutation_behavior(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(_run("run-mut-001", state=WorkflowState.DONE))
+
+    current_time = 100.0
+    cache = RunScanCache(store, ttl=2.0, clock=lambda: current_time)
+
+    # 1. Mutating returned run objects does not taint cache
+    scan1 = cache.get_scan()
+    assert scan1.readable_runs[0].state == WorkflowState.DONE
+    # Mutate the returned in-memory object and list
+    scan1.readable_runs[0].state = WorkflowState.FAILED
+    scan1.readable_runs.clear()
+    scan1.unreadable_reasons["corrupt"] = 99
+
+    # Re-reading within TTL returns uncorrupted cached data
+    scan2 = cache.get_scan()
+    assert len(scan2.readable_runs) == 1
+    assert scan2.readable_runs[0].state == WorkflowState.DONE
+    assert "corrupt" not in scan2.unreadable_reasons
+
+    # 2. Mutating disk store does not produce permanently stale data
+    new_run = _run("run-mut-002", state=WorkflowState.IMPLEMENTING)
+    store.save_run(new_run)
+
+    # Within TTL, short refresh cycle still sees cached snapshot
+    scan3 = cache.get_scan()
+    assert len(scan3.readable_runs) == 1
+
+    # After expiry, fresh scan immediately reflects the disk mutation
+    current_time = 103.0
+    scan4 = cache.get_scan()
+    assert len(scan4.readable_runs) == 2
+    assert {r.id for r in scan4.readable_runs} == {"run-mut-001", "run-mut-002"}
+
+    # 3. Explicit invalidation also clears cache immediately
+    store.save_run(_run("run-mut-003", state=WorkflowState.DONE))
+    cache.invalidate()
+    scan5 = cache.get_scan()
+    assert len(scan5.readable_runs) == 3
+
+
+def test_run_scan_cache_thread_safety(tmp_path: Path) -> None:
+    import threading
+
+    store = FileRunStore(tmp_path / "data")
+    for i in range(5):
+        store.save_run(_run(f"thread-run-{i:03d}", state=WorkflowState.DONE))
+
+    cache = RunScanCache(store, ttl=10.0)
+    results: list[RunScanResult] = []
+    errors: list[Exception] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        try:
+            scan = cache.get_scan()
+            with lock:
+                results.append(scan)
+        except Exception as exc:
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert len(results) == 10
+    for res in results:
+        assert len(res.readable_runs) == 5
+    assert cache.misses == 1
+    assert cache.hits == 9
+
+
+def test_run_scan_cache_invalid_arguments(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    assert RunScanCache(store).ttl == DEFAULT_SCAN_CACHE_TTL
+
+    with pytest.raises(ValueError, match="ttl must be > 0"):
+        RunScanCache(store, ttl=0.0)
+
+    with pytest.raises(ValueError, match="ttl must be > 0"):
+        RunScanCache(store, ttl=-1.0)
+
+    cache = RunScanCache(store, ttl=1.0)
+    with pytest.raises(ValueError, match="max_scanned_runs must be > 0"):
+        cache.get_scan(max_scanned_runs=0)
+
+
+def test_build_monitoring_snapshot_and_health_share_scan(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    store = FileRunStore(data_dir)
+    store.save_run(_run("shared-run-001", state=WorkflowState.DONE))
+
+    cache = RunScanCache(store, ttl=2.0)
+    scan = cache.get_scan()
+
+    snapshot = build_monitoring_snapshot(store, scan=scan)
+    health = build_operational_health(store, data_dir=data_dir, scan=scan)
+
+    assert snapshot.total_runs == 1
+    assert snapshot.counts.succeeded == 1
+    assert health.stale_runs == []
+    assert cache.misses == 1
+    assert cache.hits == 0
+
+
+def test_scan_readable_runs_returns_bounded_result_and_enforces_cap(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    for i in range(5):
+        store.save_run(_run(f"scan-run-{i:03d}", state=WorkflowState.DONE))
+
+    scan = scan_readable_runs(store, max_scanned_runs=2)
+    assert isinstance(scan, RunScanResult)
+    assert scan.total_directories == 5
+    assert scan.scanned_runs == 2
+    assert scan.scan_truncated is True
+    assert len(scan.readable_runs) == 2
+
+
+def test_scan_readable_runs_rejects_nonpositive_cap(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    with pytest.raises(ValueError, match="max_scanned_runs must be > 0"):
+        scan_readable_runs(store, max_scanned_runs=0)
+    with pytest.raises(ValueError, match="max_scanned_runs must be > 0"):
+        scan_readable_runs(store, max_scanned_runs=-5)
+
+
+def test_scan_readable_runs_shared_between_snapshot_and_health_eliminates_redundant_scans(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    for i in range(4):
+        store.save_run(_run(f"shared-scan-{i:03d}", state=WorkflowState.DONE))
+
+    load_count = 0
+    original_load = store.load_run
+
+    def spy_load(run_id: str) -> FactoryRun:
+        nonlocal load_count
+        load_count += 1
+        return original_load(run_id)
+
+    store.load_run = spy_load  # type: ignore[assignment]
+
+    scan = scan_readable_runs(store, max_scanned_runs=2)
+    assert load_count == 2
+
+    snapshot = build_monitoring_snapshot(store, max_scanned_runs=2, scan=scan)
+    health = build_operational_health(
+        store, data_dir=tmp_path / "data", max_scanned_runs=2, scan=scan
+    )
+
+    # Neither snapshot nor health called store.load_run again
+    assert load_count == 2
+    assert snapshot.scanned_runs == 2
+    assert health.scanned_runs == 2
+    assert snapshot.scan_truncated is True
+    assert health.scan_truncated is True
+
+
+def test_runs_with_rework_increments_only_when_actual_rework_gt_zero() -> None:
+    # Run with gate failure but 0 rework attempts: gate failures recorded, rework not incremented
+    run_gate_only = FactoryRun(
+        id="RUN-GATE-ONLY",
+        work_item_id="WI-1",
+        state=WorkflowState.FAILED,
+        performance=PerformanceRecord(
+            counters={
+                "gate_failures_total": 2,
+                "gate_failure.verification": 1,
+                "gate_failure.review": 1,
+                "rework_total": 0,
+            }
+        ),
+    )
+    # Run with actual rework: rework incremented
+    run_rework = FactoryRun(
+        id="RUN-REWORK",
+        work_item_id="WI-2",
+        state=WorkflowState.DONE,
+        performance=PerformanceRecord(
+            counters={
+                "gate_failures_total": 1,
+                "rework_total": 1,
+            }
+        ),
+    )
+    # Clean run: no gate failures, no rework
+    run_clean = FactoryRun(
+        id="RUN-CLEAN",
+        work_item_id="WI-3",
+        state=WorkflowState.DONE,
+        performance=PerformanceRecord(
+            counters={
+                "gate_failures_total": 0,
+                "rework_total": 0,
+            }
+        ),
+    )
+
+    # 1. Run with gate failure only: runs_with_rework must be 0 and rework_rate must be 0.0
+    metrics_gate_only = _compute_aggregate_metrics([run_gate_only])
+    assert metrics_gate_only.performance.rework.total_gate_failures == 2
+    assert metrics_gate_only.performance.rework.verification_gate_failures == 1
+    assert metrics_gate_only.performance.rework.review_gate_failures == 1
+    assert metrics_gate_only.performance.rework.total_rework_attempts == 0
+    assert metrics_gate_only.performance.rework.runs_with_rework == 0
+    assert metrics_gate_only.performance.rework.rework_rate == 0.0
+
+    # 2. All 3 runs together: gate failure total = 3, but only 1 run has rework -> rate = 1/3
+    metrics_all = _compute_aggregate_metrics([run_gate_only, run_rework, run_clean])
+    assert metrics_all.performance.rework.total_gate_failures == 3
+    assert metrics_all.performance.rework.total_rework_attempts == 1
+    assert metrics_all.performance.rework.runs_with_rework == 1
+    assert metrics_all.performance.rework.rework_rate == pytest.approx(1 / 3)

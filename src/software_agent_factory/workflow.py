@@ -58,7 +58,7 @@ import re
 import socket
 import subprocess
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 from uuid import uuid4
 
@@ -80,6 +80,7 @@ from .governance import (
     ScopeDecision,
     ScopeDriftPolicy,
     assess_publish_gate,
+    find_protected_matches,
 )
 from .models import (
     MAX_OPEN_REVIEW_FINDINGS,
@@ -91,6 +92,7 @@ from .models import (
     AttemptTrigger,
     ChangeSet,
     CIReport,
+    Complexity,
     ExecutionPlan,
     FactoryRun,
     InvocationRecord,
@@ -124,7 +126,9 @@ from .models import (
 )
 from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
 from .repository_profile import (
+    can_reuse_repository_profile,
     generic_repository_profile,
+    is_version_file,
     profile_repository,
 )
 from .repository_skills import (
@@ -138,6 +142,12 @@ from .repository_skills import (
 )
 from .routing import ModelRouter
 from .store import FileRunStore
+from .telemetry import (
+    count_operation,
+    measure_operation,
+    record_gate_failure,
+    record_rework,
+)
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -369,6 +379,7 @@ class WorkflowController:
             )
         )
         self._repository_profiler = repository_profiler or profile_repository
+        self._can_reuse_repository_profile = repository_profiler is None
         # Constructed eagerly when the integration is enabled so two concurrent
         # runs sharing one controller cannot race on lazy initialization, and
         # so a misconfiguration surfaces before any work is done.
@@ -407,9 +418,20 @@ class WorkflowController:
             raise TransitionError(f"cannot transition from {run.state} to {new_state}")
 
         now = utc_now()
+        stage_name = run.state.value
+        stage_started_at = run.state_started_at or run.updated_at
+        stage_duration_ms = max(0.0, (now - stage_started_at).total_seconds() * 1000.0)
+        run.performance.record_duration(
+            f"stage.{stage_name}",
+            stage_duration_ms,
+            stage=stage_name,
+            operation="stage",
+            accumulate=True,
+        )
         updates: dict[str, object] = {
             "state": new_state,
             "updated_at": now,
+            "state_started_at": now,
             "last_activity_at": now,
         }
         if new_state in TERMINAL_STATES:
@@ -517,10 +539,20 @@ class WorkflowController:
             pass
         else:
             raise ValueError(f"run {resolved_run_id!r} already exists; resume it instead")
+        created_at = utc_now()
         run = FactoryRun(
             id=resolved_run_id,
             work_item_id=work_item.id,
             state=WorkflowState.CREATED,
+            created_at=created_at,
+            updated_at=created_at,
+            state_started_at=created_at,
+            requested_performance_mode=self._config.performance.mode,
+            performance_model_profile=(
+                self._config.performance.fast_model_profile
+                if self._config.performance.mode == "fast"
+                else None
+            ),
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
         )
 
@@ -582,11 +614,14 @@ class WorkflowController:
                 )
                 self._store.save_run(run)
             try:
-                workspace_path = (
-                    workspace.prepare(base_ref=delivery_base)
-                    if delivery_base is not None
-                    else workspace.prepare()
-                )
+                with measure_operation(
+                    run.performance, "operation.workspace_prepare", operation="workspace_prepare"
+                ):
+                    workspace_path = (
+                        workspace.prepare(base_ref=delivery_base)
+                        if delivery_base is not None
+                        else workspace.prepare()
+                    )
             except WorkspaceError as exc:
                 return self._end_failed(run, f"could not prepare workspace: {exc}")
 
@@ -606,7 +641,12 @@ class WorkflowController:
             )
             self._store.save_run(run)
             try:
-                repository_profile = self._repository_profiler(workspace_path)
+                with measure_operation(
+                    run.performance,
+                    "operation.repository_profile",
+                    operation="repository_profile",
+                ):
+                    repository_profile = self._repository_profiler(workspace_path)
             except (OSError, ValueError) as exc:
                 repository_profile = generic_repository_profile(
                     warning=f"repository profiling degraded: {exc}"
@@ -725,6 +765,9 @@ class WorkflowController:
             workspace=workspace,
             source_repo=source_repo,
         )
+        context.change_set_correction_used = any(
+            record.purpose == AgentPurpose.CORRECT_CHANGE_SET for record in run.invocation_records
+        )
         context.latest_evidence = workspace.collect_evidence()
         if context.latest_evidence.diff != self._store.load_patch(run.id):
             raise ValueError("workspace changes do not match the reviewed delivery checkpoint")
@@ -808,12 +851,17 @@ class WorkflowController:
                     f"risk {triage_result.risk} requires human approval",
                 )
 
+            run = self._select_performance_mode(run, triage_result)
+            fast_model_profile = (
+                run.performance_model_profile if run.effective_performance_mode == "fast" else None
+            )
             run = self.transition(run, WorkflowState.REFINING)
             specification = self._run_refiner(
                 run,
                 work_item,
                 triage_result,
                 workspace_path=workspace_path,
+                model_profile=fast_model_profile,
             )
 
             research_report: ResearchReport | None = None
@@ -836,6 +884,13 @@ class WorkflowController:
                 specification,
                 research_report,
                 workspace_path=workspace_path,
+                model_profile=fast_model_profile,
+            )
+            run = self._check_fast_planned_scope(
+                run,
+                execution_plan,
+                repository_profile,
+                risk=triage_result.risk,
             )
 
             context = _RunContext(
@@ -847,6 +902,10 @@ class WorkflowController:
                 repository_profile=repository_profile,
                 workspace=workspace,
                 source_repo=source_repo,
+            )
+            context.change_set_correction_used = any(
+                record.purpose == AgentPurpose.CORRECT_CHANGE_SET
+                for record in run.invocation_records
             )
 
             run = self.transition(run, WorkflowState.IMPLEMENTING)
@@ -863,6 +922,147 @@ class WorkflowController:
     def _halt(self, run: FactoryRun, state: WorkflowState, reason: str) -> _Halt:
         run = self.transition(run, state, failure_reason=reason)
         return _Halt(run)
+
+    def _select_performance_mode(
+        self,
+        run: FactoryRun,
+        triage: TriageResult,
+    ) -> FactoryRun:
+        if self._config.performance.mode != "fast":
+            return run
+
+        reason: str | None = None
+        if triage.complexity not in {Complexity.L0, Complexity.L1}:
+            reason = f"complexity {triage.complexity} is not eligible for fast mode"
+        elif triage.risk not in {Risk.R0, Risk.R1}:
+            reason = f"risk {triage.risk} is not eligible for fast mode"
+        elif triage.needs_research:
+            reason = "triage requires research"
+
+        if reason is not None:
+            selected = run.model_copy(
+                update={
+                    "effective_performance_mode": "standard",
+                    "performance_fallback_reason": reason,
+                    "performance_model_profile": self._config.performance.fast_model_profile,
+                    "updated_at": utc_now(),
+                }
+            )
+        else:
+            selected = run.model_copy(
+                update={
+                    "effective_performance_mode": "fast",
+                    "performance_model_profile": self._config.performance.fast_model_profile,
+                    "performance_fallback_reason": None,
+                    "updated_at": utc_now(),
+                }
+            )
+        self._store.save_run(selected)
+        return selected
+
+    def _check_fast_planned_scope(
+        self,
+        run: FactoryRun,
+        execution_plan: ExecutionPlan,
+        repository_profile: RepositoryProfile,
+        *,
+        risk: Risk = Risk.R0,
+    ) -> FactoryRun:
+        if run.effective_performance_mode != "fast":
+            return run
+        planned_paths = [
+            *execution_plan.expected_scope.modules,
+            *(path for step in execution_plan.steps for path in step.likely_files),
+        ]
+        reason = self._fast_scope_fallback_reason(
+            planned_paths,
+            execution_plan=execution_plan,
+            risk=risk,
+            repository_profile=repository_profile,
+        )
+        return self._fall_back_from_fast_mode(run, reason)
+
+    def _check_fast_actual_scope(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        evidence: WorkspaceEvidence,
+        scope: ScopeAssessment,
+    ) -> FactoryRun:
+        if run.effective_performance_mode != "fast":
+            return run
+        reason = self._fast_scope_fallback_reason(
+            list(evidence.changed_files),
+            execution_plan=context.execution_plan,
+            risk=context.triage_result.risk,
+            repository_profile=context.repository_profile,
+            scope=scope,
+        )
+        return self._fall_back_from_fast_mode(run, reason)
+
+    def _fast_scope_fallback_reason(
+        self,
+        paths: list[str],
+        *,
+        execution_plan: ExecutionPlan,
+        risk: Risk,
+        repository_profile: RepositoryProfile,
+        scope: ScopeAssessment | None = None,
+    ) -> str | None:
+        cleaned_paths = [path for path in paths if path and path.strip()]
+        protected = sorted(
+            set(
+                find_protected_matches(
+                    cleaned_paths,
+                    self._config.repository.protected_file_patterns,
+                )
+            )
+        )
+        if protected:
+            return f"scope includes protected files: {', '.join(protected)}"
+
+        version_files = set(repository_profile.version_files)
+        manifest_paths = sorted(
+            {
+                path
+                for path in cleaned_paths
+                if path in version_files or is_version_file(PurePosixPath(path).name)
+            }
+        )
+        if manifest_paths:
+            return f"scope includes manifest or version files: {', '.join(manifest_paths)}"
+
+        assessed = scope or self._scope_policy.assess(execution_plan, cleaned_paths, risk)
+        sensitive_paths = sorted(
+            {path for finding in assessed.findings if finding.sensitive for path in finding.paths}
+            | {
+                path
+                for path in cleaned_paths
+                if self._scope_policy._is_ci_workflow_path(path)
+                or self._scope_policy._is_migration_path(path)
+                or self._scope_policy._is_infrastructure_path(path)
+            }
+        )
+        if sensitive_paths:
+            return f"scope includes sensitive files: {', '.join(sensitive_paths)}"
+        return None
+
+    def _fall_back_from_fast_mode(
+        self,
+        run: FactoryRun,
+        reason: str | None,
+    ) -> FactoryRun:
+        if reason is None or run.effective_performance_mode != "fast":
+            return run
+        fallback = run.model_copy(
+            update={
+                "effective_performance_mode": "standard",
+                "performance_fallback_reason": reason,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.save_run(fallback)
+        return fallback
 
     def _end_failed(self, run: FactoryRun, reason: str) -> FactoryRun:
         return self.transition(run, WorkflowState.FAILED, failure_reason=reason)
@@ -915,12 +1115,14 @@ class WorkflowController:
         triage_result: TriageResult,
         *,
         workspace_path: str,
+        model_profile: str | None = None,
     ) -> Specification:
         request = self._build_request(
             AgentRole.REFINER,
             work_item,
             triage_result=triage_result,
             workspace_path=workspace_path,
+            model_profile=model_profile,
         )
         result: AgentResult | None = None
         repair_context: str | None = None
@@ -1271,6 +1473,7 @@ class WorkflowController:
         repair_context: RepairContext | None = None,
         diff: str | None = None,
         changed_files: list[str] | None = None,
+        model_profile: str | None = None,
     ) -> ExecutionPlan:
         request = self._build_request(
             AgentRole.PLANNER,
@@ -1281,6 +1484,7 @@ class WorkflowController:
             repair_context=repair_context,
             diff=diff,
             changed_files=changed_files or [],
+            model_profile=model_profile,
         )
         result: AgentResult | None = None
         current_repair_context: RepairContext | str | None = repair_context
@@ -1325,6 +1529,7 @@ class WorkflowController:
         evidence: WorkspaceEvidence,
         verification_report: VerificationReport,
         snapshot: int,
+        repair_diff: str | None,
     ) -> TestReport:
         """Independent AI tester. Sees controller-derived Git evidence and
         deterministic results only -- never the implementer's own summary."""
@@ -1336,6 +1541,9 @@ class WorkflowController:
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
             verification_report=verification_report,
+            prior_review_findings=list(run.review_ledger.open_findings),
+            accepted_review_findings=list(run.review_ledger.accepted_findings),
+            repair_diff=repair_diff,
             repository_skill=context.repository_skill,
             workspace_path=str(context.workspace.path),
             attempt_number=snapshot,
@@ -1458,9 +1666,17 @@ class WorkflowController:
             )
         if evidence.tree_sha is None:
             return "review evidence is missing its immutable Git tree"
-        for finding in [*review.blocking_findings, *review.repair_regressions]:
+        all_findings = [*review.blocking_findings, *review.repair_regressions]
+        all_paths = [location.path for finding in all_findings for location in finding.locations]
+        try:
+            line_counts = (
+                workspace.file_line_counts(evidence.tree_sha, all_paths) if all_paths else {}
+            )
+        except WorkspaceError as exc:
+            return f"review finding cites an invalid repository path: {exc}"
+        for finding in all_findings:
             for location in finding.locations:
-                line_count = workspace.file_line_count(evidence.tree_sha, location.path)
+                line_count = line_counts.get(location.path)
                 if line_count is None:
                     return (
                         f"review finding cites {location.path!r}, which does not exist in "
@@ -1509,6 +1725,7 @@ class WorkflowController:
         *,
         purpose: AgentPurpose = AgentPurpose.STANDARD,
         role_model: RoleModelConfig | None = None,
+        model_profile: str | None = None,
         triage_result: TriageResult | None = None,
         specification: Specification | None = None,
         research_report: ResearchReport | None = None,
@@ -1529,7 +1746,11 @@ class WorkflowController:
         workspace_path: str | None = None,
         attempt_number: int | None = None,
     ) -> AgentRequest:
-        resolved = role_model if role_model is not None else self._router.model_for_role(role)
+        resolved = (
+            role_model
+            if role_model is not None
+            else self._router.model_for_role(role, model_profile=model_profile)
+        )
         return AgentRequest(
             role=role,
             purpose=purpose,
@@ -1592,6 +1813,14 @@ class WorkflowController:
             )
         except (OSError, RuntimeError, ValueError) as exc:
             completed_at = utc_now()
+            invocation_duration_ms = (completed_at - started_at).total_seconds() * 1000.0
+            run.performance.record_duration(
+                f"invocation.{request.role.value}",
+                invocation_duration_ms,
+                stage=run.state.value,
+                operation="invocation",
+                accumulate=True,
+            )
             failure_reason = runtime_exception_failure_reason(exc)
             run.invocation_records.append(
                 InvocationRecord(
@@ -1621,6 +1850,19 @@ class WorkflowController:
                 failure_reason=failure_reason,
             )
         completed_at = utc_now()
+        invocation_duration_ms = (completed_at - started_at).total_seconds() * 1000.0
+        run.performance.record_duration(
+            f"invocation.{request.role.value}",
+            invocation_duration_ms,
+            stage=run.state.value,
+            operation="invocation",
+            accumulate=True,
+        )
+        if result.performance is not None:
+            run.performance.record_size(
+                prompt_chars=result.performance.prompt_chars,
+                response_chars=result.performance.response_chars,
+            )
         run.invocation_records.append(
             InvocationRecord(
                 invocation_number=invocation_number,
@@ -1636,6 +1878,7 @@ class WorkflowController:
                 attempt_number=request.attempt_number,
                 budget=budget,
                 usage=result.usage,
+                performance=result.performance,
             )
         )
         run.active_invocation = None
@@ -1686,6 +1929,18 @@ class WorkflowController:
             return f"CI repair budget exhausted after {used} attempt(s)"
         return f"implementation attempt budget exhausted after {used} attempt(s)"
 
+    @staticmethod
+    def _is_rework_attempt(
+        budget: AttemptBudget,
+        attempt_number: int,
+        trigger: AttemptTrigger,
+    ) -> bool:
+        if trigger is AttemptTrigger.POLISH:
+            return False
+        if budget is AttemptBudget.CI_REPAIR:
+            return True
+        return attempt_number > 1
+
     def _drive_to_pr_ready(
         self,
         run: FactoryRun,
@@ -1720,6 +1975,18 @@ class WorkflowController:
             if run.review_acceptance is not None:
                 run = run.model_copy(update={"review_acceptance": None, "updated_at": utc_now()})
                 self._store.save_run(run)
+            if self._is_rework_attempt(budget, attempt_number, trigger):
+                record_rework(
+                    run.performance,
+                    "repair_attempt",
+                    stage=WorkflowState.IMPLEMENTING.value,
+                )
+                count_operation(
+                    run.performance,
+                    "rework.implementation",
+                    stage=WorkflowState.IMPLEMENTING.value,
+                    operation="rework",
+                )
             run, implemented, evidence, rejected_change_set = self._invoke_implementer(
                 run,
                 attempt_number,
@@ -1739,7 +2006,7 @@ class WorkflowController:
                         if attempt.failure_reason is not None
                         and "ChangeSet did not satisfy writing policy" in attempt.failure_reason
                     )
-                    if writing_failures > 1:
+                    if writing_failures > 1 or self._change_set_correction_used(run, context):
                         raise self._halt(run, WorkflowState.NEEDS_HUMAN, last_failure)
                 repair_context = self._implementer_failure_context(
                     run,
@@ -1763,6 +2030,17 @@ class WorkflowController:
             self._store.save_artifact(run.id, verification.report, attempt=snapshot)
 
             if not verification.report.passed:
+                record_gate_failure(
+                    run.performance,
+                    "verification",
+                    stage=WorkflowState.VERIFYING.value,
+                )
+                count_operation(
+                    run.performance,
+                    "rework_cause.verification_failure",
+                    stage=WorkflowState.VERIFYING.value,
+                    operation="rework",
+                )
                 repair_context = self._verification_repair_context(verification)
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
@@ -1798,7 +2076,13 @@ class WorkflowController:
                 evidence.changed_files,
                 context.triage_result.risk,
             )
+            run = self._check_fast_actual_scope(run, context, evidence, scope)
             while scope.decision is ScopeDecision.REPLAN:
+                record_rework(
+                    run.performance,
+                    "scope_replan",
+                    stage=WorkflowState.PLANNING.value,
+                )
                 previous_findings = tuple(
                     (finding.category, finding.message) for finding in scope.findings
                 )
@@ -1834,7 +2118,7 @@ class WorkflowController:
 
             if context.repository_skill is not None:
                 try:
-                    current_profile = self._repository_profiler(context.workspace.path)
+                    current_profile = self._refresh_repository_profile(run, context)
                 except (OSError, RuntimeError, ValueError) as exc:
                     context.repository_skill = None
                     self._publish_profile(
@@ -1857,8 +2141,15 @@ class WorkflowController:
                     self._publish_profile(run, context, current_profile, *staleness)
 
             run = self.transition(run, WorkflowState.REVIEWING)
-            test_report = self._run_tester(run, context, evidence, verification.report, snapshot)
             repair_diff = self._repair_review_diff(run, context.workspace, evidence)
+            test_report = self._run_tester(
+                run,
+                context,
+                evidence,
+                verification.report,
+                snapshot,
+                repair_diff,
+            )
             review_report = self._run_reviewer(
                 run,
                 context,
@@ -1946,6 +2237,17 @@ class WorkflowController:
                 )
 
             if run.review_ledger.open_findings:
+                record_gate_failure(
+                    run.performance,
+                    "review",
+                    stage=WorkflowState.REVIEWING.value,
+                )
+                count_operation(
+                    run.performance,
+                    "rework_cause.review_rejection",
+                    stage=WorkflowState.REVIEWING.value,
+                    operation="rework",
+                )
                 repair_context = self._review_repair_context(
                     run.review_ledger.open_findings,
                     test_report,
@@ -2007,7 +2309,7 @@ class WorkflowController:
         already-green run.
         """
         try:
-            refreshed_profile = self._repository_profiler(context.workspace.path)
+            refreshed_profile = self._refresh_repository_profile(run, context)
         except (OSError, RuntimeError, ValueError) as exc:
             self._publish_profile(
                 run,
@@ -2042,6 +2344,46 @@ class WorkflowController:
             # shared overlay mid-run affects later runs only.
             context.repository_skill = selection.effective_skill
         return run
+
+    def _refresh_repository_profile(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+    ) -> RepositoryProfile:
+        initial_profile_degraded = any(
+            warning.startswith("repository profiling degraded:")
+            for warning in context.repository_profile.warnings
+        )
+        if self._can_reuse_repository_profile and not initial_profile_degraded:
+            with measure_operation(
+                run.performance,
+                "operation.repository_profile_reuse_check",
+                operation="repository_profile",
+            ):
+                decision = can_reuse_repository_profile(
+                    context.workspace.path,
+                    context.repository_profile,
+                )
+            if decision.reusable:
+                count_operation(
+                    run.performance,
+                    "repository_profile.reused",
+                    operation="repository_profile",
+                )
+                return context.repository_profile
+
+        with measure_operation(
+            run.performance,
+            "operation.repository_profile",
+            operation="repository_profile",
+        ):
+            refreshed_profile = self._repository_profiler(context.workspace.path)
+        count_operation(
+            run.performance,
+            "repository_profile.refreshed",
+            operation="repository_profile",
+        )
+        return refreshed_profile
 
     def _publish_profile(
         self,
@@ -2106,6 +2448,15 @@ class WorkflowController:
             repair_context=repair_context,
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
+            model_profile=(
+                run.performance_model_profile if run.effective_performance_mode == "fast" else None
+            ),
+        )
+        run = self._check_fast_planned_scope(
+            run,
+            context.execution_plan,
+            context.repository_profile,
+            risk=context.triage_result.risk,
         )
         self._store.save_artifact_once(
             run.id,
@@ -2131,6 +2482,13 @@ class WorkflowController:
             timeout_seconds=self._config.repository.command_timeout_seconds,
             env_passthrough=self._config.repository.env_passthrough,
             capture_bytes=self._config.repository.log_capture_bytes,
+        )
+
+    def _change_set_correction_used(self, run: FactoryRun, context: _RunContext) -> bool:
+        if context.change_set_correction_used:
+            return True
+        return any(
+            record.purpose == AgentPurpose.CORRECT_CHANGE_SET for record in run.invocation_records
         )
 
     def _invoke_implementer(
@@ -2169,6 +2527,81 @@ class WorkflowController:
         )
         result = self._invoke_agent(run, request, budget=budget)
         completed_at = utc_now()
+
+        if (
+            not result.success
+            and result.change_set is not None
+            and is_writing_policy_failure(result, ChangeSet)
+            and not self._change_set_correction_used(run, context)
+        ):
+            try:
+                evidence_before = context.workspace.collect_evidence()
+            except WorkspaceError:
+                evidence_before = None
+            if evidence_before is not None:
+                context.change_set_correction_used = True
+                rejected_change_set = result.change_set.model_copy(
+                    update={"changed_files": evidence_before.changed_files}
+                )
+                repair_context_obj = RepairContext(
+                    trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
+                    summary=(
+                        "The implementation is not rejected. Correct only the ChangeSet prose. "
+                        "Do not edit, add, or remove any source files or workspace files. "
+                        "Source edits are strictly forbidden for this artifact-only correction."
+                    ),
+                    failures=[
+                        writing_policy_correction_context(
+                            result.failure_reason or "ChangeSet did not satisfy writing policy",
+                            rejected_change_set,
+                        )
+                    ],
+                    log_excerpt=None,
+                )
+                correction_request = request.model_copy(
+                    update={
+                        "purpose": AgentPurpose.CORRECT_CHANGE_SET,
+                        "change_set": rejected_change_set,
+                        "diff": None,
+                        "changed_files": list(evidence_before.changed_files),
+                        "repair_context": repair_context_obj,
+                    }
+                )
+                record_rework(
+                    run.performance,
+                    "change_set_artifact_correction",
+                    stage=WorkflowState.IMPLEMENTING.value,
+                )
+                corrected = self._invoke_agent(run, correction_request, budget=budget)
+                try:
+                    evidence_after = context.workspace.collect_evidence()
+                except WorkspaceError:
+                    evidence_after = None
+                before_tree = evidence_before.tree_sha
+                after_tree = evidence_after.tree_sha if evidence_after is not None else None
+                before_hash = hashlib.sha256(evidence_before.diff.encode("utf-8")).hexdigest()
+                after_hash = (
+                    hashlib.sha256(evidence_after.diff.encode("utf-8")).hexdigest()
+                    if evidence_after is not None
+                    else None
+                )
+                if evidence_after is None or after_tree != before_tree or after_hash != before_hash:
+                    result = AgentResult(
+                        role=AgentRole.IMPLEMENTER,
+                        success=False,
+                        failure_reason=(
+                            "ChangeSet correction changed the Git diff; "
+                            "the artifact-only correction was rejected"
+                        ),
+                    )
+                elif corrected.success and corrected.change_set is not None:
+                    accepted_change_set = rejected_change_set.model_copy(
+                        update={"summary": corrected.change_set.summary}
+                    )
+                    result = corrected.model_copy(update={"change_set": accepted_change_set})
+                    completed_at = utc_now()
+                else:
+                    result = corrected
 
         if not result.success:
             failure_reason = result.failure_reason or "implementer reported failure"
@@ -2310,7 +2743,11 @@ class WorkflowController:
         budget: AttemptBudget,
         context: _RunContext,
     ) -> bool:
-        if budget is not AttemptBudget.IMPLEMENTATION or not self._config.polish.enabled:
+        if (
+            budget is not AttemptBudget.IMPLEMENTATION
+            or not self._config.polish.enabled
+            or run.effective_performance_mode == "fast"
+        ):
             return False
         if context.polish_attempted:
             return False
@@ -3133,6 +3570,7 @@ class _RunContext:
         self.profile_warnings: tuple[str, ...] = ()
         self.repository_skill: RepositorySkill | None = None
         self.polish_attempted = False
+        self.change_set_correction_used = False
         self.workspace = workspace
         self.source_repo = source_repo
         self.latest_evidence: WorkspaceEvidence | None = None

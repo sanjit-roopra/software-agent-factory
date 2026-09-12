@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,6 +114,63 @@ def test_file_run_store_rejects_unknown_factory_run_schema(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="Unsupported FactoryRun schema_version: 99"):
         store.load_run("RUN-123")
+
+
+def test_file_run_store_rejects_missing_factory_run_schema(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    run_dir = store.runs_dir / "RUN-123"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        '{"id": "RUN-123", "work_item_id": "WI-123", "state": "CREATED"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported FactoryRun schema_version: None"):
+        store.load_run("RUN-123")
+
+
+def test_file_run_store_rejects_corrupt_json_with_json_decode_error(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    run_dir = store.runs_dir / "RUN-CORRUPT"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        '{"schema_version": 1, "id": "RUN-CORRUPT", corrupt...',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        store.load_run("RUN-CORRUPT")
+
+
+def test_file_run_store_save_artifact_reuses_single_serialization_for_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    run = _sample_run()
+    store.save_run(run)
+    artifact = ChangeSet(summary="Optimized artifact", changed_files=["src/main.py"])
+
+    model_text_calls = 0
+    original_model_text = store._model_text
+
+    def counting_model_text(model: object) -> str:
+        nonlocal model_text_calls
+        model_text_calls += 1
+        return original_model_text(model)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "_model_text", counting_model_text)
+
+    dest = store.save_artifact(run.id, artifact, attempt=1)
+    attempt_path = store.attempt_dir(run.id, 1) / "change-set.json"
+
+    # Must be serialized exactly once despite writing both destination and attempt snapshot
+    assert model_text_calls == 1
+    assert dest.exists()
+    assert attempt_path.exists()
+    assert dest != attempt_path
+    # Both independent files must have identical content
+    assert dest.read_text(encoding="utf-8") == attempt_path.read_text(encoding="utf-8")
+    assert store.load_artifact(run.id, ChangeSet, attempt=1) == artifact
 
 
 def test_attempt_snapshots_are_written_alongside_latest_snapshot(tmp_path: Path) -> None:

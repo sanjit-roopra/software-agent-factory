@@ -10,6 +10,7 @@ from software_agent_factory.github import GitHubError, UnexpectedRepositoryError
 from software_agent_factory.models import (
     AgentRole,
     AttemptBudget,
+    AttemptTrigger,
     CICheckEvidence,
     CIReport,
     FactoryRun,
@@ -22,10 +23,13 @@ from software_agent_factory.models import (
     ReviewSourceLocation,
     WorkflowState,
 )
+from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, delivery_policy_fingerprint
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError
+
+pytestmark = pytest.mark.project_delivery
 
 
 @pytest.fixture
@@ -276,6 +280,39 @@ def test_ci_repair_reverifies_reviews_and_merges_latest_head(
     ]
     assert sum(request.role is AgentRole.REVIEWER for request in runtime.requests) == 2
     assert run.reviewed_commit_sha == run.commit_sha
+
+
+def test_rework_telemetry_initial_plus_ci_repair(tmp_path: Path, source_repo: Path) -> None:
+    runtime = RecordingRuntime()
+    merger = Merger()
+    publisher = LocalPublisher()
+    controller, _ = _controller(
+        _config(tmp_path),
+        runtime=runtime,
+        publisher=publisher,
+        merger=merger,
+        observer=Observer([_failed_ci(), CIReport(overall="PASS")]),
+    )
+    run = controller.run(work_item(), source_repo)
+    assert run.state is WorkflowState.DONE
+    assert [record.budget for record in run.attempt_records] == [
+        AttemptBudget.IMPLEMENTATION,
+        AttemptBudget.CI_REPAIR,
+    ]
+    assert [record.triggered_by for record in run.attempt_records] == [
+        AttemptTrigger.INITIAL,
+        AttemptTrigger.CI,
+    ]
+
+    # First CI repair is counted even though its per-budget attempt number is 1
+    assert run.performance.counters.get("rework_total") == 1
+    assert run.performance.counters.get("rework.repair_attempt") == 1
+    assert run.performance.counters.get("gate_failures_total", 0) == 0
+
+    metrics = _compute_aggregate_metrics([run])
+    assert metrics.performance.rework.total_rework_attempts == 1
+    assert metrics.performance.rework.runs_with_rework == 1
+    assert metrics.performance.rework.total_gate_failures == 0
 
 
 def test_unbound_review_cannot_authorize_merge_after_resume(

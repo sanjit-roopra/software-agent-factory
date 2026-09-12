@@ -69,6 +69,7 @@ factory run \
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
+| `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode. Fast mode applies only to eligible low-risk work. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -106,6 +107,7 @@ factory project \
 | `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after integration or confirmed merge. |
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task. `copilot` derives the real plan. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
+| `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for child runs. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -164,6 +166,7 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 | `--github-repo <str>` | yes | none | Backlog repository as `OWNER/NAME`. |
 | `--runtime <fake\|copilot>` | no | `fake` | Agent runtime. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile for every dispatched run. |
+| `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for dispatched runs. |
 | `--once` | no | off | Run one bounded tick instead of polling forever. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |

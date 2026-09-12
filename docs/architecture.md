@@ -58,6 +58,11 @@ Everything after "ready for PR" is strictly opt-in. With the packaged
 configuration a run performs no network access at all and completes at
 `PR_READY`.
 
+The optional fast mode applies only to low-risk `L0` and `L1` work. It can use
+a faster Refiner and Planner profile. It skips the optional polish pass.
+Deterministic verification, the independent Tester, and the independent
+Reviewer remain mandatory.
+
 Still out of scope (deferred Phase 15 items):
 - staging (15.3)
 - deployment/promotion (15.4)

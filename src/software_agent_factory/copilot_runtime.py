@@ -17,7 +17,9 @@ import re
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -29,11 +31,14 @@ from .agents import AgentRequest, AgentResult, AgentRuntime
 from .models import (
     AgentPurpose,
     AgentRole,
+    ChangeSet,
     ModelBase,
     ModelUsage,
+    PerformanceRecord,
     ProjectPlan,
     RepositorySkill,
     UsageMetrics,
+    utc_now,
 )
 from .prompts import (
     RoleName,
@@ -136,6 +141,8 @@ class CopilotAgentRuntime(AgentRuntime):
         self._max_error_chars = max_error_chars
 
     def run(self, request: AgentRequest) -> AgentResult:
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET and not request.workspace_path:
+            raise ValueError("ChangeSet correction requires workspace_path")
         if request.role is AgentRole.IMPLEMENTER and not request.workspace_path:
             raise ValueError("IMPLEMENTER requests require workspace_path")
         if request.timeout_seconds < 1:
@@ -143,7 +150,9 @@ class CopilotAgentRuntime(AgentRuntime):
 
         cwd = self._cwd_for(request)
         prompt = build_prompt(request)
+        prompt_chars = len(prompt)
         child_env, scrubbed_values = _build_child_env()
+        started_at = utc_now()
 
         with tempfile.TemporaryDirectory(
             prefix="software-agent-factory-usage-",
@@ -156,6 +165,7 @@ class CopilotAgentRuntime(AgentRuntime):
                 cwd=cwd,
                 usage_output_path=usage_path,
             )
+            boot_start = time.perf_counter()
             try:
                 process = subprocess.Popen(
                     command,
@@ -168,6 +178,12 @@ class CopilotAgentRuntime(AgentRuntime):
                     start_new_session=True,
                 )
             except OSError as exc:
+                boot_ms = (time.perf_counter() - boot_start) * 1000.0
+                perf = PerformanceRecord(
+                    prompt_chars=prompt_chars,
+                    response_chars=0,
+                    process_boot_ms=boot_ms,
+                )
                 # A missing or unusable copilot executable is an agent failure the
                 # controller can record and bound, not a factory crash.
                 reason = _format_failure_reason(
@@ -178,7 +194,13 @@ class CopilotAgentRuntime(AgentRuntime):
                     scrubbed_values=scrubbed_values,
                     limit=self._max_error_chars,
                 )
-                return AgentResult(role=request.role, success=False, failure_reason=reason)
+                return AgentResult(
+                    role=request.role,
+                    success=False,
+                    failure_reason=reason,
+                    performance=perf,
+                )
+            boot_ms = (time.perf_counter() - boot_start) * 1000.0
             try:
                 stdout, stderr = process.communicate(timeout=request.timeout_seconds)
             except subprocess.TimeoutExpired as exc:
@@ -186,6 +208,13 @@ class CopilotAgentRuntime(AgentRuntime):
                 stdout = _merge_timeout_output(exc.stdout, stdout)
                 stderr = _merge_timeout_output(exc.stderr, stderr)
                 usage = _load_usage_metrics(usage_path, stdout=stdout)
+                first_event_ms = _extract_first_event_ms(stdout, started_at)
+                perf = PerformanceRecord(
+                    prompt_chars=prompt_chars,
+                    response_chars=len(stdout),
+                    process_boot_ms=boot_ms,
+                    first_event_ms=first_event_ms,
+                )
                 reason = _format_failure_reason(
                     role=request.role,
                     message=f"copilot timed out after {request.timeout_seconds}s",
@@ -199,12 +228,20 @@ class CopilotAgentRuntime(AgentRuntime):
                     success=False,
                     failure_reason=reason,
                     usage=usage,
+                    performance=perf,
                 )
             except BaseException:
                 _kill_process_group(process)
                 raise
 
             usage = _load_usage_metrics(usage_path, stdout=stdout)
+            first_event_ms = _extract_first_event_ms(stdout, started_at)
+            perf = PerformanceRecord(
+                prompt_chars=prompt_chars,
+                response_chars=len(stdout),
+                process_boot_ms=boot_ms,
+                first_event_ms=first_event_ms,
+            )
             if process.returncode != 0:
                 reason = _format_failure_reason(
                     role=request.role,
@@ -219,6 +256,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     success=False,
                     failure_reason=reason,
                     usage=usage,
+                    performance=perf,
                 )
 
             try:
@@ -241,6 +279,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     success=False,
                     failure_reason=reason,
                     usage=usage,
+                    performance=perf,
                 )
 
             result_field = _artifact_spec(request.role, request.purpose).result_field
@@ -249,6 +288,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     "role": request.role,
                     "success": True,
                     "usage": usage,
+                    "performance": perf,
                     result_field: artifact,
                 }
             )
@@ -256,6 +296,8 @@ class CopilotAgentRuntime(AgentRuntime):
     def _cwd_for(self, request: AgentRequest) -> Path:
         if request.workspace_path:
             return Path(request.workspace_path).expanduser().resolve()
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            raise ValueError("ChangeSet correction requires workspace_path")
         if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
             # The skill researcher must run in the neutral run directory the
             # workflow passes, never in the operator's or repository's cwd.
@@ -294,9 +336,11 @@ class CopilotAgentRuntime(AgentRuntime):
             "--disable-builtin-mcps",
             "--disallow-temp-dir",
             "--allow-all-tools",
-            "--available-tools",
-            ",".join(profile.available_tools),
         ]
+        if profile.available_tools:
+            command.extend(["--available-tools", ",".join(profile.available_tools)])
+        else:
+            command.extend(["--available-tools", ""])
         if usage_output_path is not None:
             command.extend(["--usage-output-file", str(usage_output_path)])
         if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
@@ -307,6 +351,36 @@ class CopilotAgentRuntime(AgentRuntime):
             command.extend(["--deny-tool", denied_permission])
         command.extend(["-p", prompt])
         return command
+
+
+def _extract_first_event_ms(stdout: str, started_at_dt: datetime) -> float | None:
+    """Best-effort extraction of first event latency from Copilot JSONL events."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        raw_ts = event.get("timestamp")
+        if isinstance(raw_ts, str):
+            try:
+                ts_str = raw_ts.replace("Z", "+00:00")
+                event_dt = datetime.fromisoformat(ts_str)
+                delta_ms = (event_dt - started_at_dt).total_seconds() * 1000.0
+                if delta_ms >= 0:
+                    return delta_ms
+            except (ValueError, TypeError):
+                continue
+        elif isinstance(raw_ts, (int, float)) and raw_ts > 0:
+            event_sec = raw_ts if raw_ts < 1e11 else raw_ts / 1000.0
+            delta_ms = (event_sec - started_at_dt.timestamp()) * 1000.0
+            if delta_ms >= 0:
+                return delta_ms
+    return None
 
 
 def _load_usage_metrics(path: Path, *, stdout: str) -> UsageMetrics | None:
@@ -515,6 +589,36 @@ def _token_detail_count(value: object) -> int | None:
     return _non_negative_int(value.get("tokenCount"))
 
 
+def _iter_nested_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
+    """Yield payload first, then any nested dictionaries breadth-first."""
+    candidates: list[dict[str, object]] = [payload]
+    queue: list[object] = [payload]
+    seen_ids: set[int] = {id(payload)}
+
+    while queue:
+        current = queue.pop(0)
+        if isinstance(current, dict):
+            for value in current.values():
+                if isinstance(value, dict):
+                    if id(value) not in seen_ids:
+                        seen_ids.add(id(value))
+                        candidates.append(value)
+                        queue.append(value)
+                elif isinstance(value, list):
+                    queue.append(value)
+        elif isinstance(current, list):
+            for item in current:
+                if isinstance(item, dict):
+                    if id(item) not in seen_ids:
+                        seen_ids.add(id(item))
+                        candidates.append(item)
+                        queue.append(item)
+                elif isinstance(item, list):
+                    queue.append(item)
+
+    return candidates
+
+
 def parse_copilot_artifact(
     role: RoleName,
     *,
@@ -534,11 +638,14 @@ def parse_copilot_artifact(
     for candidate in candidates:
         for payload in _iter_json_objects(candidate):
             found_object = True
-            try:
-                return spec.model_class.model_validate(payload)
-            except ValidationError as exc:
-                if first_validation_error is None:
-                    first_validation_error = exc
+            for dict_candidate in _iter_nested_dicts(payload):
+                try:
+                    return spec.model_class.model_validate(dict_candidate)
+                except ValidationError as exc:
+                    if first_validation_error is None or (
+                        "schema_version" in dict_candidate and "schema_version" not in payload
+                    ):
+                        first_validation_error = exc
 
     role_name = normalize_role(role)
     if first_validation_error is not None:
@@ -619,6 +726,13 @@ def _artifact_spec(
             model_class=RepositorySkill,
             result_field="repository_skill",
         )
+    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        if normalize_role(role) != AgentRole.IMPLEMENTER.value:
+            raise ValueError("ChangeSet correction requires the IMPLEMENTER role")
+        return _ArtifactSpec(
+            model_class=ChangeSet,
+            result_field="change_set",
+        )
     normalized_role = normalize_role(role)
     try:
         return ARTIFACT_SPECS[normalized_role]
@@ -627,6 +741,11 @@ def _artifact_spec(
 
 
 def _permission_profile(request: AgentRequest) -> _PermissionProfile:
+    if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        return _PermissionProfile(
+            available_tools=(),
+            denied_permissions=("shell", "write", "url"),
+        )
     if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
         return _PermissionProfile(
             available_tools=SKILL_RESEARCH_TOOLS,
@@ -708,12 +827,24 @@ def _merge_timeout_output(previous: object, final: str) -> str:
     return f"{prefix}{final}"
 
 
-def _kill_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+def _kill_process_group(
+    process: subprocess.Popen[str],
+    *,
+    grace_seconds: float = 1.0,
+) -> tuple[str, str]:
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        pass
-    return process.communicate()
+        return process.communicate()
+
+    try:
+        return process.communicate(timeout=grace_seconds)
+    except (subprocess.TimeoutExpired, TimeoutError):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate()
 
 
 def _candidate_texts(assistant_text: str) -> list[str]:
@@ -749,18 +880,126 @@ def _assistant_response_candidates(stdout: str) -> list[str]:
     return ordered
 
 
-def _iter_json_objects(text: str) -> list[dict[str, object]]:
+@dataclass
+class ScanStats:
+    """Deterministic work counter for JSON candidate scanning."""
+
+    chars_scanned: int = 0
+    candidates_tested: int = 0
+
+
+def _iter_json_objects(
+    text: str,
+    *,
+    scan_stats: ScanStats | None = None,
+    max_scan_work: int | None = None,
+    max_nested_failures: int = 8,
+) -> list[dict[str, object]]:
     decoder = json.JSONDecoder()
     objects: list[dict[str, object]] = []
-    for index, character in enumerate(text):
-        if character != "{":
+    length = len(text)
+    stats = scan_stats if scan_stats is not None else ScanStats()
+    work_limit = max_scan_work if max_scan_work is not None else max(100_000, 10 * length)
+
+    unclosed_starts: set[int] = set()
+    matched_pairs: dict[int, int] = {}
+    enclosing_failed_end = -1
+    nested_failures = 0
+    i = 0
+
+    while i < length:
+        if stats.chars_scanned >= work_limit:
+            break
+
+        start = text.find("{", i)
+        if start == -1:
+            break
+
+        if start in unclosed_starts:
+            i = start + 1
             continue
+
+        # Check if next non-whitespace character after '{' is '"' or '}'
+        j = start + 1
+        while j < length and text[j].isspace():
+            j += 1
+        if j >= length or text[j] not in ('"', "}"):
+            i = start + 1
+            continue
+
+        # Check if matching brace was already discovered in an earlier enclosing scan
+        if start in matched_pairs:
+            found_end = matched_pairs[start]
+        else:
+            depth = 0
+            in_string = False
+            escape = False
+            k = start
+            found_end = -1
+            open_stack: list[int] = []
+
+            while k < length:
+                stats.chars_scanned += 1
+                if stats.chars_scanned >= work_limit:
+                    break
+
+                char = text[k]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif char == "\\":
+                        escape = True
+                    elif char == '"':
+                        in_string = False
+                else:
+                    if char == '"':
+                        in_string = True
+                    elif char == "{":
+                        depth += 1
+                        open_stack.append(k)
+                    elif char == "}":
+                        if open_stack:
+                            popped = open_stack.pop()
+                            matched_pairs[popped] = k
+                        depth -= 1
+                        if depth == 0:
+                            found_end = k
+                            break
+                k += 1
+
+            if stats.chars_scanned >= work_limit:
+                break
+
+            if found_end == -1:
+                unclosed_starts.update(open_stack)
+                i = start + 1
+                continue
+
+        stats.candidates_tested += 1
         try:
-            payload, _ = decoder.raw_decode(text[index:])
+            payload, end_idx = decoder.raw_decode(text, idx=start)
         except JSONDecodeError:
+            if enclosing_failed_end != -1 and found_end <= enclosing_failed_end:
+                nested_failures += 1
+                if nested_failures >= max_nested_failures:
+                    i = enclosing_failed_end + 1
+                    enclosing_failed_end = -1
+                    nested_failures = 0
+                    continue
+            else:
+                enclosing_failed_end = found_end
+                nested_failures = 1
+            i = start + 1
             continue
+
         if isinstance(payload, dict):
             objects.append(payload)
+            i = max(end_idx, found_end + 1)
+            enclosing_failed_end = -1
+            nested_failures = 0
+        else:
+            i = start + 1
+
     return objects
 
 

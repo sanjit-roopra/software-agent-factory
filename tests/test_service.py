@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
@@ -322,6 +323,19 @@ def test_run_forever_stops_on_the_stop_event(source_repo: Path, data_dir: Path) 
     service.run_forever(stop_event)
 
     assert provider.fetch_calls == 0
+
+
+def test_completion_event_shortens_the_poll_wait(source_repo: Path, data_dir: Path) -> None:
+    service = _service(data_dir, source_repo, LocalProvider([]))
+    stop_event = threading.Event()
+    service._completion_event.set()
+
+    started = time.monotonic()
+    stopped = service._wait_for_stop_or_completion(stop_event, 30.0)
+
+    assert stopped is False
+    assert time.monotonic() - started < 0.1
+    service.shutdown()
 
 
 def test_run_forever_retries_transient_github_poll_failures(

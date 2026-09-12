@@ -459,6 +459,7 @@ class Scheduler:
         on_stall: StallCallback | None = None,
         store: FileRunStore | None = None,
         max_runs_per_day: int | None = None,
+        exclude_any_persisted_run: bool = False,
     ) -> None:
         if max_concurrent_tasks not in self.SUPPORTED_CONCURRENCY_LEVELS:
             raise ValueError(
@@ -498,6 +499,10 @@ class Scheduler:
         any effect -- without a store there is nothing to count against, so
         the limit is silently not enforced, matching the no-op behavior of
         the other ``store``-optional features above."""
+        self.exclude_any_persisted_run = exclude_any_persisted_run
+        """When true, any persisted run blocks a fresh dispatch for the same
+        deterministic work item. The GitHub backlog service enables this
+        because issues remain listed after the factory finishes them."""
 
         self._active: dict[str, _ActiveEntry] = {}
         self._escalated: set[str] = set()
@@ -601,7 +606,16 @@ class Scheduler:
 
     # -- eligibility / ordering ---------------------------------------------
 
-    def _persisted_active_work_item_ids(self) -> frozenset[str]:
+    def _persisted_runs(self) -> tuple[FactoryRun, ...]:
+        """Load one authoritative run snapshot for a scheduling decision."""
+        if self.store is None:
+            return ()
+        return tuple(self.store.list_runs())
+
+    def _persisted_blocking_work_item_ids(
+        self,
+        runs: Sequence[FactoryRun],
+    ) -> frozenset[str]:
         """Deterministic ids of every persisted, unfinished ``FactoryRun``,
         computed once per tick (not once per candidate) to avoid repeated
         store scans. Empty when no ``store`` was configured.
@@ -609,18 +623,18 @@ class Scheduler:
         "Unfinished" is ``workflow.is_run_finished``: terminal states plus an
         explicitly finalized ``PR_READY`` (the completed endpoint of the
         manual, pull-request-disabled flow)."""
-        if self.store is None:
-            return frozenset()
         return frozenset(
-            run.work_item_id for run in self.store.list_runs() if not is_run_finished(run)
+            run.work_item_id
+            for run in runs
+            if self.exclude_any_persisted_run or not is_run_finished(run)
         )
 
-    def _remaining_daily_quota(self) -> int | None:
+    def _remaining_daily_quota(self, runs: Sequence[FactoryRun]) -> int | None:
         """Remaining number of runs this scheduler may still claim within
         the current UTC calendar day, per ``max_runs_per_day`` (PLAN.md Phase
         15 core safety foundation). ``None`` means unbounded: either no
         ``max_runs_per_day`` was configured, or no ``store`` is available to
-        count persisted runs against (mirrors ``_persisted_active_work_item_ids``:
+        count persisted runs against (mirrors ``_persisted_blocking_work_item_ids``:
         the feature is a no-op without a store). Never negative -- floored at
         ``0`` once the day's quota is exhausted. Counting only persisted
         runs means an in-flight dispatch this scheduler already reserved
@@ -635,7 +649,7 @@ class Scheduler:
         # ``UtcDateTime`` always normalizes to UTC) -- convert explicitly so
         # a non-UTC-offset clock can never compute the wrong calendar day.
         today = self.clock().astimezone(timezone.utc).date()
-        created_today = sum(1 for run in self.store.list_runs() if run.created_at.date() == today)
+        created_today = sum(1 for run in runs if run.created_at.date() == today)
         return max(0, self.max_runs_per_day - created_today)
 
     def _is_eligible(self, item: TrackerItem, persisted_active_ids: frozenset[str]) -> bool:
@@ -658,17 +672,24 @@ class Scheduler:
         rank = _priority_rank(item.priority, self.priority_order)
         return (rank, item.created_at, item.identifier)
 
-    def _revalidate(
-        self, item: TrackerItem, persisted_active_ids: frozenset[str]
-    ) -> TrackerItem | None:
-        fresh_items = self.provider.fetch_by_ids([item.opaque_id])
-        matching = [candidate for candidate in fresh_items if candidate.opaque_id == item.opaque_id]
-        if not matching:
-            return None
-        fresh = matching[0]
-        if not self._is_eligible(fresh, persisted_active_ids):
-            return None
-        return fresh
+    def _revalidate_batch(
+        self,
+        items: Sequence[TrackerItem],
+        persisted_active_ids: frozenset[str] | None = None,
+    ) -> dict[str, TrackerItem]:
+        """Refresh one bounded dispatch batch through one provider call."""
+        if not items:
+            return {}
+        fresh_by_id = {
+            candidate.opaque_id: candidate
+            for candidate in self.provider.fetch_by_ids([item.opaque_id for item in items])
+        }
+        return {
+            item.opaque_id: fresh
+            for item in items
+            if (fresh := fresh_by_id.get(item.opaque_id)) is not None
+            and (persisted_active_ids is None or self._is_eligible(fresh, persisted_active_ids))
+        }
 
     # -- reconciliation of already-active work -----------------------------
 
@@ -768,7 +789,8 @@ class Scheduler:
                 at_capacity=True,
             )
 
-        remaining_quota = self._remaining_daily_quota()
+        selection_runs = self._persisted_runs()
+        remaining_quota = self._remaining_daily_quota(selection_runs)
         if remaining_quota == 0:
             # Daily dispatch-rate quota is exhausted (PLAN.md Phase 15 core
             # safety foundation): reconciliation above still ran, so
@@ -785,47 +807,102 @@ class Scheduler:
                 rate_limited=True,
             )
 
-        persisted_active_ids = self._persisted_active_work_item_ids()
+        persisted_active_ids = self._persisted_blocking_work_item_ids(selection_runs)
 
         candidates = list(self.provider.fetch_candidates())
-        eligible = sorted(
-            (c for c in candidates if self._is_eligible(c, persisted_active_ids)),
-            key=self._sort_key,
-        )
+        eligible_by_id: dict[str, TrackerItem] = {}
+        for candidate in candidates:
+            if self._is_eligible(candidate, persisted_active_ids):
+                eligible_by_id.setdefault(candidate.opaque_id, candidate)
+        eligible = sorted(eligible_by_id.values(), key=self._sort_key)
+
+        if not eligible:
+            return TickReport(
+                candidates_fetched=len(candidates),
+                eligible_count=0,
+                dispatched=(),
+                completed=completed,
+                stalled=stalled,
+                skipped_stale=(),
+                at_capacity=False,
+                rate_limited=False,
+            )
 
         dispatched: list[str] = []
         skipped_stale: list[str] = []
         rate_limited = False
-        for item in eligible:
-            if len(self._active) >= self.max_concurrent_tasks:
-                break
-            if remaining_quota is not None and len(dispatched) >= remaining_quota:
-                # Enough candidates remained eligible this tick to exceed the
-                # day's remaining quota; stop claiming new work without
-                # touching what has already been reserved/dispatched above.
+        cursor = 0
+        while cursor < len(eligible) and len(self._active) < self.max_concurrent_tasks:
+            if remaining_quota == 0:
                 rate_limited = True
                 break
 
-            fresh = self._revalidate(item, persisted_active_ids)
-            if fresh is None:
-                skipped_stale.append(item.opaque_id)
-                continue
+            free_capacity = self.max_concurrent_tasks - len(self._active)
+            batch_limit = free_capacity
+            if remaining_quota is not None:
+                batch_limit = min(batch_limit, remaining_quota)
+            if batch_limit <= 0:
+                rate_limited = True
+                break
 
-            # Reserve before dispatch (handle=None marks "reserved, not yet
-            # dispatched") so nothing else in this process can pick the same
-            # opaque id up again before dispatch() returns.
-            self._active[fresh.opaque_id] = _ActiveEntry(
-                item=fresh, handle=None, started_at=self.clock()
-            )
-            try:
-                handle = self.dispatch(fresh)
-            except Exception:  # noqa: BLE001 - dispatch is integrator code
-                logger.exception("dispatch failed for %s", fresh.identifier)
-                del self._active[fresh.opaque_id]
-                continue
+            selected = eligible[cursor : cursor + batch_limit]
+            cursor += len(selected)
+            fresh_by_id = self._revalidate_batch(selected)
 
-            self._active[fresh.opaque_id].handle = handle
-            dispatched.append(fresh.opaque_id)
+            # Re-read persisted state and recompute blocking work-item IDs and
+            # daily quota after tracker revalidation returns, immediately before
+            # reserving/dispatching the batch.
+            claim_runs = self._persisted_runs()
+            persisted_active_ids = self._persisted_blocking_work_item_ids(claim_runs)
+            claim_quota = self._remaining_daily_quota(claim_runs)
+            if claim_quota is not None:
+                persisted_work_item_ids = {run.work_item_id for run in claim_runs}
+                unpersisted = sum(
+                    1
+                    for oid in dispatched
+                    if oid not in persisted_work_item_ids
+                    and f"{_WORK_ITEM_ID_PREFIX}{oid}" not in persisted_work_item_ids
+                )
+                computed_quota = max(0, claim_quota - unpersisted)
+                remaining_quota = (
+                    computed_quota
+                    if remaining_quota is None
+                    else min(remaining_quota, computed_quota)
+                )
+            if remaining_quota == 0:
+                rate_limited = True
+                break
+
+            for item in selected:
+                if remaining_quota is not None and remaining_quota <= 0:
+                    rate_limited = True
+                    break
+
+                fresh = fresh_by_id.get(item.opaque_id)
+                if fresh is None or not self._is_eligible(fresh, persisted_active_ids):
+                    skipped_stale.append(item.opaque_id)
+                    continue
+
+                # Reserve before dispatch (handle=None marks "reserved, not
+                # yet dispatched") so nothing else in this process can pick
+                # the same opaque id up again before dispatch() returns.
+                self._active[fresh.opaque_id] = _ActiveEntry(
+                    item=fresh, handle=None, started_at=self.clock()
+                )
+                try:
+                    handle = self.dispatch(fresh)
+                except Exception:  # noqa: BLE001 - dispatch is integrator code
+                    logger.exception("dispatch failed for %s", fresh.identifier)
+                    del self._active[fresh.opaque_id]
+                    continue
+
+                self._active[fresh.opaque_id].handle = handle
+                dispatched.append(fresh.opaque_id)
+                if remaining_quota is not None:
+                    remaining_quota -= 1
+
+                if len(self._active) >= self.max_concurrent_tasks:
+                    break
 
         return TickReport(
             candidates_fetched=len(candidates),
@@ -861,7 +938,7 @@ class Scheduler:
         available, :meth:`recover` is called exactly once up front and its
         records are handed to ``on_recovery`` if supplied. Every
         subsequent :meth:`tick` continues to revalidate against persisted
-        state on its own (see ``_persisted_active_work_item_ids``), so a
+        state on its own (see ``_persisted_blocking_work_item_ids``), so a
         manual invocation started *after* this loop begins is still
         honored without a second recovery pass.
 

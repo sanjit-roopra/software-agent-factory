@@ -1461,3 +1461,85 @@ def test_wires_real_observability_and_store_end_to_end(tmp_path: Path) -> None:
         assert missing_response.status == 404
     finally:
         _stop(running)
+
+
+def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> None:
+    from software_agent_factory.models import FactoryRun, WorkflowState
+    from software_agent_factory.observability import (
+        RunScanCache,
+        build_monitoring_snapshot,
+        build_operational_health,
+    )
+    from software_agent_factory.store import FileRunStore
+
+    store = FileRunStore(tmp_path / "data")
+    for index in range(1, 4):
+        run = FactoryRun(
+            id=f"shared-run-{index:03d}",
+            work_item_id=f"WI-{index:03d}",
+            state=WorkflowState.DONE,
+        )
+        store.save_run(run)
+
+    scan_cache = RunScanCache(store, ttl=2.0)
+    original_load_run = store.load_run
+    load_calls = 0
+
+    def counting_load_run(run_id: str) -> FactoryRun:
+        nonlocal load_calls
+        load_calls += 1
+        return original_load_run(run_id)
+
+    store.load_run = counting_load_run  # type: ignore[assignment]
+
+    def cached_snapshot_provider(*, limit: int, offset: int) -> Any:
+        return build_monitoring_snapshot(
+            store,
+            limit=limit,
+            offset=offset,
+            scan=scan_cache.get_scan(),
+        )
+
+    def cached_health_provider() -> Any:
+        return build_operational_health(
+            store,
+            data_dir=tmp_path / "data",
+            scan=scan_cache.get_scan(),
+        )
+
+    def detail_provider(run_id: str) -> dict[str, Any] | None:
+        try:
+            return store.load_run(run_id).model_dump(mode="json")
+        except (OSError, ValueError):
+            return None
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=cached_snapshot_provider,
+        health_provider=cached_health_provider,
+        run_detail_provider=detail_provider,
+    )
+    running = _start(config)
+    try:
+        # A dashboard refresh cycle makes /api/summary (which queries snapshot + health)
+        # and /api/runs (which queries snapshot)
+        summary_response = running.request("GET", "/api/summary", headers=running.authed_headers())
+        assert summary_response.status == 200
+        summary_payload = _body_json(summary_response)
+        assert summary_payload["counts"]["succeeded"] == 3
+
+        runs_response = running.request(
+            "GET", "/api/runs?limit=10&offset=0", headers=running.authed_headers()
+        )
+        assert runs_response.status == 200
+        runs_payload = _body_json(runs_response)
+        assert len(runs_payload["runs"]) == 3
+
+        # Exactly 3 load_run calls (each of the 3 runs loaded once during the single shared scan),
+        # instead of 9 loads across summary snapshot, summary health, and runs endpoint.
+        assert load_calls == 3
+        assert scan_cache.misses == 1
+        assert scan_cache.hits == 2
+    finally:
+        _stop(running)

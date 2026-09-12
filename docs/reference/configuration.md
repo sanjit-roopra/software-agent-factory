@@ -119,6 +119,29 @@ See [Model selection, cost and benchmarks](model-selection.md) for the current
 Copilot catalog, prices, context and reasoning capabilities, benchmark
 evidence, and role-specific tradeoffs.
 
+## performance
+
+```yaml
+performance:
+  mode: "standard"
+  fast_model_profile: "economy"
+```
+
+The standard mode uses the selected model profile and permits the optional
+polish pass. The fast mode is an explicit low-risk optimization.
+
+The controller uses the fast mode only for `L0` or `L1` work with `R0` or
+`R1` risk. Triage must not require research. Planned and changed files must
+not include protected, sensitive, manifest, or version files.
+
+If a condition fails, the controller uses the standard path. It records the
+fallback reason in the run. Both modes keep deterministic verification, the
+independent Tester, the independent Reviewer, and publishing controls.
+
+The `fast_model_profile` must name a complete entry under `model_profiles`.
+The controller uses that profile for the Refiner and Planner. It skips the
+optional polish pass only while the run remains eligible.
+
 ## repository
 
 ```yaml

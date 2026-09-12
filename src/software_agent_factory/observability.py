@@ -69,6 +69,9 @@ import logging
 import logging.handlers
 import os
 import socket
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -85,6 +88,7 @@ from .models import (
     FactoryRun,
     InvocationRecord,
     ModelBase,
+    PerformanceRecord,
     ReviewFindingCategory,
     ReviewImpasse,
     Risk,
@@ -113,11 +117,17 @@ _FCNTL_AVAILABLE = fcntl is not None
 
 __all__ = [
     "RunStoreProtocol",
+    "RunScanResult",
+    "scan_readable_runs",
+    "RunScanCache",
+    "DEFAULT_SCAN_CACHE_TTL",
     "PageMeta",
     "RunStateCounts",
     "RunSummary",
     "FirstPassSuccessMetric",
     "DurationSummary",
+    "ReworkMetrics",
+    "PerformanceSummary",
     "AggregateMetrics",
     "MonitoringSnapshot",
     "RunAttemptSummary",
@@ -317,6 +327,7 @@ class RunSummary(ModelBase):
     is_finished: bool
     is_stale: bool
     review_status: str | None = None
+    performance: PerformanceRecord | None = None
 
 
 class RunAttemptSummary(ModelBase):
@@ -368,6 +379,7 @@ class RunInvocationSummary(ModelBase):
     completed_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
     usage: UsageMetrics | None = None
+    performance: PerformanceRecord | None = None
 
 
 class ActiveInvocationSummary(ModelBase):
@@ -424,6 +436,7 @@ class RunDetail(ModelBase):
     is_finished: bool
     is_stale: bool
     review_status: str | None = None
+    performance: PerformanceRecord | None = None
     commit_sha: str | None = None
     pull_request_url: str | None = None
     attempts: list[RunAttemptSummary] = Field(default_factory=list)
@@ -468,6 +481,28 @@ class DurationSummary(ModelBase):
     average_seconds: float | None = Field(default=None, ge=0.0)
 
 
+class ReworkMetrics(ModelBase):
+    """Aggregate gate failure and rework metrics across scanned runs."""
+
+    total_gate_failures: int = Field(default=0, ge=0)
+    verification_gate_failures: int = Field(default=0, ge=0)
+    review_gate_failures: int = Field(default=0, ge=0)
+    total_rework_attempts: int = Field(default=0, ge=0)
+    runs_with_rework: int = Field(default=0, ge=0)
+    rework_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class PerformanceSummary(ModelBase):
+    """Aggregate performance telemetry across scanned runs."""
+
+    stage_durations: dict[str, DurationSummary] = Field(default_factory=dict)
+    operation_durations: dict[str, DurationSummary] = Field(default_factory=dict)
+    counters: dict[str, int] = Field(default_factory=dict)
+    total_prompt_chars: int = Field(default=0, ge=0)
+    total_response_chars: int = Field(default=0, ge=0)
+    rework: ReworkMetrics = Field(default_factory=ReworkMetrics)
+
+
 class AggregateMetrics(ModelBase):
     """Store-wide (scanned-subset) aggregate metrics: pure functions of
     persisted ``FactoryRun``/``AttemptRecord``/``InvocationRecord`` data.
@@ -489,6 +524,7 @@ class AggregateMetrics(ModelBase):
     first_pass_success: FirstPassSuccessMetric
     completed_run_durations: DurationSummary
     usage: UsageSummary
+    performance: PerformanceSummary = Field(default_factory=PerformanceSummary)
 
 
 class MonitoringSnapshot(VersionedModel):
@@ -542,6 +578,7 @@ def build_monitoring_snapshot(
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
     max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
+    scan: RunScanResult | None = None,
 ) -> MonitoringSnapshot:
     """Derive a paginated, read-only monitoring snapshot from ``store``.
 
@@ -581,7 +618,8 @@ def build_monitoring_snapshot(
         raise ValueError("max_scanned_runs must be > 0")
 
     reference_time = _normalize_now(now)
-    scan = _scan_readable_runs(store, max_scanned_runs)
+    if scan is None:
+        scan = scan_readable_runs(store, max_scanned_runs)
 
     counts = _compute_state_counts(scan.readable_runs, reference_time, stale_after)
     attempts_by_role, attempts_by_model = _compute_attempt_tallies(scan.readable_runs)
@@ -688,7 +726,7 @@ def _categorize_load_error(exc: Exception) -> str:
 
 
 @dataclass(frozen=True)
-class _RunScanResult:
+class RunScanResult:
     """The one bounded run-directory scan shared by
     :func:`build_monitoring_snapshot` and :func:`build_operational_health`,
     so both agree on exactly the same readable runs, scan cap, and degraded
@@ -722,7 +760,102 @@ class _RunScanResult:
         return reasons
 
 
-def _scan_readable_runs(store: RunStoreProtocol, max_scanned_runs: int) -> _RunScanResult:
+_RunScanResult = RunScanResult
+
+DEFAULT_SCAN_CACHE_TTL: float = 2.0
+
+
+class RunScanCache:
+    """Thread-safe, bounded, monotonic-TTL cache for readable run scans.
+
+    Designed for read-only observability and dashboard refresh cycles so
+    /api/summary, its health data, and nearby /api/runs reads share a single
+    validated run scan rather than deserializing the same run set multiple
+    times. Uses monotonic time expiry and defensive copies to prevent mutation
+    contamination. Never used as workflow authority.
+    """
+
+    def __init__(
+        self,
+        store: RunStoreProtocol,
+        *,
+        ttl: float = DEFAULT_SCAN_CACHE_TTL,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if ttl <= 0:
+            raise ValueError("ttl must be > 0")
+        self._store = store
+        self._ttl = ttl
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._cached_scan: RunScanResult | None = None
+        self._cached_max_scanned_runs: int | None = None
+        self._cached_at: float = 0.0
+        self._hits: int = 0
+        self._misses: int = 0
+
+    @property
+    def ttl(self) -> float:
+        return self._ttl
+
+    @property
+    def hits(self) -> int:
+        with self._lock:
+            return self._hits
+
+    @property
+    def misses(self) -> int:
+        with self._lock:
+            return self._misses
+
+    def invalidate(self) -> None:
+        """Clear cached scan immediately."""
+        with self._lock:
+            self._cached_scan = None
+            self._cached_max_scanned_runs = None
+            self._cached_at = 0.0
+
+    def get_scan(self, max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS) -> RunScanResult:
+        """Return a validated scan, reusing the cached scan if within TTL.
+
+        Returns a defensive copy of the scan result and its runs so callers
+        cannot mutate the cached state.
+        """
+        if max_scanned_runs <= 0:
+            raise ValueError("max_scanned_runs must be > 0")
+
+        with self._lock:
+            now_mono = self._clock()
+            if (
+                self._cached_scan is not None
+                and self._cached_max_scanned_runs == max_scanned_runs
+                and (now_mono - self._cached_at) < self._ttl
+            ):
+                self._hits += 1
+                return self._copy_scan(self._cached_scan)
+
+            self._misses += 1
+            scan = scan_readable_runs(self._store, max_scanned_runs)
+            self._cached_scan = scan
+            self._cached_max_scanned_runs = max_scanned_runs
+            self._cached_at = now_mono
+            return self._copy_scan(scan)
+
+    @staticmethod
+    def _copy_scan(scan: RunScanResult) -> RunScanResult:
+        return RunScanResult(
+            readable_runs=[run.model_copy(deep=True) for run in scan.readable_runs],
+            total_directories=scan.total_directories,
+            scanned_runs=scan.scanned_runs,
+            scan_truncated=scan.scan_truncated,
+            unreadable_reasons=dict(scan.unreadable_reasons),
+        )
+
+
+def scan_readable_runs(
+    store: RunStoreProtocol,
+    max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
+) -> RunScanResult:
     """Discover run directories (broad, cheap), then open and parse at most
     ``max_scanned_runs`` of the newest ones (bounded, expensive), returning
     every readable ``FactoryRun`` sorted newest-first plus honest scan
@@ -730,6 +863,8 @@ def _scan_readable_runs(store: RunStoreProtocol, max_scanned_runs: int) -> _RunS
     tallied into ``unreadable_reasons`` rather than raised or dropped
     silently.
     """
+    if max_scanned_runs <= 0:
+        raise ValueError("max_scanned_runs must be > 0")
     candidate_run_ids, total_directories, scan_truncated = _select_scan_candidates(
         store, max_scanned_runs
     )
@@ -745,13 +880,16 @@ def _scan_readable_runs(store: RunStoreProtocol, max_scanned_runs: int) -> _RunS
 
     readable_runs.sort(key=lambda run: (run.created_at, run.id), reverse=True)
 
-    return _RunScanResult(
+    return RunScanResult(
         readable_runs=readable_runs,
         total_directories=total_directories,
         scanned_runs=len(candidate_run_ids),
         scan_truncated=scan_truncated,
         unreadable_reasons=unreadable_reasons,
     )
+
+
+_scan_readable_runs = scan_readable_runs
 
 
 def _last_signal_at(run: FactoryRun) -> datetime | None:
@@ -818,6 +956,17 @@ def _compute_attempt_tallies(
     return by_role, by_model
 
 
+def _duration_summary(durations_seconds: list[float]) -> DurationSummary:
+    if not durations_seconds:
+        return DurationSummary(count=0, min_seconds=None, max_seconds=None, average_seconds=None)
+    return DurationSummary(
+        count=len(durations_seconds),
+        min_seconds=min(durations_seconds),
+        max_seconds=max(durations_seconds),
+        average_seconds=sum(durations_seconds) / len(durations_seconds),
+    )
+
+
 def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
     """See :class:`AggregateMetrics` for the exact, deterministic definition
     of each field. Pure function of ``runs`` (the scanned readable subset);
@@ -831,8 +980,20 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
     first_pass_numerator = 0
     durations: list[float] = []
 
+    stage_duration_samples: dict[str, list[float]] = {}
+    operation_duration_samples: dict[str, list[float]] = {}
+    aggregated_counters: dict[str, int] = {}
+    total_prompt_chars = 0
+    total_response_chars = 0
+    total_gate_failures = 0
+    verification_gate_failures = 0
+    review_gate_failures = 0
+    total_rework_attempts = 0
+    runs_with_rework = 0
+
     for run in runs:
         run_implementation_attempts = 0
+        run_ci_repair_attempts = 0
         legacy_scope_replans = 0
         for attempt in run.attempt_records:
             total_attempts += 1
@@ -842,6 +1003,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
                     run_implementation_attempts += 1
             elif attempt.budget is AttemptBudget.CI_REPAIR:
                 ci_repair_attempts += 1
+                run_ci_repair_attempts += 1
             if attempt.triggered_by is AttemptTrigger.SCOPE:
                 legacy_scope_replans += 1
         scope_replans += max(run.scope_replans, legacy_scope_replans)
@@ -854,17 +1016,67 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
             if run_implementation_attempts == 1:
                 first_pass_numerator += 1
 
+        for k, v in run.performance.durations_ms.items():
+            if k.startswith("stage."):
+                stage_name = k.removeprefix("stage.")
+                stage_duration_samples.setdefault(stage_name, []).append(v / 1000.0)
+            elif k.startswith("operation."):
+                op_name = k.removeprefix("operation.")
+                operation_duration_samples.setdefault(op_name, []).append(v / 1000.0)
+
+        for k, v in run.performance.counters.items():
+            aggregated_counters[k] = aggregated_counters.get(k, 0) + v
+
+        total_prompt_chars += run.performance.prompt_chars or 0
+        total_response_chars += run.performance.response_chars or 0
+
+        gate_failures = run.performance.counters.get("gate_failures_total", 0)
+        total_gate_failures += gate_failures
+        verification_gate_failures += run.performance.counters.get(
+            "gate_failure.verification", 0
+        ) + run.performance.counters.get("gate_failure.VERIFYING", 0)
+        review_gate_failures += run.performance.counters.get(
+            "gate_failure.review", 0
+        ) + run.performance.counters.get("gate_failure.REVIEWING", 0)
+        fallback_rework = (
+            max(0, run_implementation_attempts - 1)
+            + run_ci_repair_attempts
+            + max(run.scope_replans, legacy_scope_replans)
+        )
+        run_rework = run.performance.counters.get("rework_total", 0) or fallback_rework
+        total_rework_attempts += run_rework
+        if run_rework > 0:
+            runs_with_rework += 1
+
     average_attempts_per_run = (total_attempts / len(runs)) if runs else None
     first_pass_success = FirstPassSuccessMetric(
         numerator=first_pass_numerator,
         denominator=succeeded_total,
         rate=(first_pass_numerator / succeeded_total) if succeeded_total > 0 else None,
     )
-    completed_run_durations = DurationSummary(
-        count=len(durations),
-        min_seconds=min(durations) if durations else None,
-        max_seconds=max(durations) if durations else None,
-        average_seconds=(sum(durations) / len(durations)) if durations else None,
+    completed_run_durations = _duration_summary(durations)
+    stage_durations = {
+        stage: _duration_summary(samples)
+        for stage, samples in sorted(stage_duration_samples.items())
+    }
+    operation_durations = {
+        op: _duration_summary(samples) for op, samples in sorted(operation_duration_samples.items())
+    }
+    rework = ReworkMetrics(
+        total_gate_failures=total_gate_failures,
+        verification_gate_failures=verification_gate_failures,
+        review_gate_failures=review_gate_failures,
+        total_rework_attempts=total_rework_attempts,
+        runs_with_rework=runs_with_rework,
+        rework_rate=(runs_with_rework / len(runs)) if runs else None,
+    )
+    performance = PerformanceSummary(
+        stage_durations=stage_durations,
+        operation_durations=operation_durations,
+        counters=aggregated_counters,
+        total_prompt_chars=total_prompt_chars,
+        total_response_chars=total_response_chars,
+        rework=rework,
     )
 
     return AggregateMetrics(
@@ -876,6 +1088,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
         first_pass_success=first_pass_success,
         completed_run_durations=completed_run_durations,
         usage=_usage_summary(invocation for run in runs for invocation in run.invocation_records),
+        performance=performance,
     )
 
 
@@ -1026,6 +1239,7 @@ def _build_run_summary(
             if run.review_acceptance is not None
             else None
         ),
+        performance=run.performance,
     )
 
 
@@ -1088,6 +1302,7 @@ def build_run_detail(
                 completed_at=invocation.completed_at,
                 attempt_number=invocation.attempt_number,
                 usage=invocation.usage,
+                performance=invocation.performance,
             )
             for invocation in run.invocation_records
         ],
@@ -1306,6 +1521,7 @@ def build_operational_health(
     now: datetime | None = None,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
+    scan: RunScanResult | None = None,
 ) -> OperationalHealthReport:
     """Derive a read-only operational health report.
 
@@ -1321,7 +1537,7 @@ def build_operational_health(
     explicitly if a caller's store does not follow that convention.
 
     Reuses the exact same bounded run scan as :func:`build_monitoring_snapshot`
-    (:func:`_scan_readable_runs`, capped at ``max_scanned_runs``) for both
+    (:func:`scan_readable_runs`, capped at ``max_scanned_runs``) for both
     stale-run detection and the set of workspace directories considered
     "referenced", so orphan/staleness findings and the metrics snapshot are
     always consistent with each other for the same inputs.
@@ -1339,7 +1555,8 @@ def build_operational_health(
     reference_time = _normalize_now(now)
     root = Path(data_dir).expanduser() if data_dir is not None else store.runs_dir.parent
 
-    scan = _scan_readable_runs(store, max_scanned_runs)
+    if scan is None:
+        scan = scan_readable_runs(store, max_scanned_runs)
 
     stale_runs = [
         StaleRunFinding(

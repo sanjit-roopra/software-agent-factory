@@ -52,82 +52,29 @@ Three conventions hold across every command here:
 
 from __future__ import annotations
 
-import json
+import importlib
 import logging
 import platform
-import signal
-import threading
+import sys
 import webbrowser
-from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
 import typer
-import yaml
-from pydantic import ValidationError
 
-from .agents import (
-    AgentRequest,
-    AgentRuntime,
-    FakeAgentRuntime,
-    runtime_exception_failure_reason,
-)
-from .cli_output import render_doctor_report, render_service_status, render_status_report
-from .config import FactoryConfig, load_config
-from .copilot_runtime import CopilotAgentRuntime
-from .dashboard import LOOPBACK_HOST, DashboardConfig, create_server
-from .doctor import missing_prerequisites, run_doctor
-from .models import (
-    AgentPurpose,
-    AgentRole,
-    ChangeSet,
-    InvocationRecord,
-    ProjectBrief,
-    ProjectState,
-    RepositoryProfile,
-    RepositorySkill,
-    WorkflowState,
-    WorkItem,
-    utc_now,
-)
-from .observability import (
-    DEFAULT_MAX_SCANNED_RUNS,
-    build_active_invocation_summary,
-    build_monitoring_snapshot,
-    build_operational_health,
-    build_run_detail,
-    configure_factory_logging,
-)
-from .projects import FileProjectStore, ProjectError, ProjectRunner
-from .repository_profile import profile_repository
-from .repository_skills import (
-    MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS,
-    RepositorySkillError,
-    RepositorySkillManager,
-    RepositorySkillMergeError,
-    merge_repository_skill,
-    repository_skill_correction_context,
-    repository_skill_exhausted_warning,
-    repository_skill_validation_error,
-)
-from .routing import ModelRouter
-from .service import FactoryService
-from .service_install import (
-    DEFAULT_LABEL,
-    ServiceInstallError,
-    ServiceInstallRequest,
-    ServiceRuntime,
-    default_launch_agents_dir,
-    get_service_status,
-    install_service,
-    resolve_factory_executable,
-    uninstall_service,
-)
-from .store import FileRunStore
-from .version import format_version_line
-from .workflow import WorkflowController
-from .writing_policy import apply_agent_result_writing_policy
+if TYPE_CHECKING:
+    from datetime import timedelta
+
+    from .agents import AgentRuntime
+    from .config import FactoryConfig
+    from .models import (
+        InvocationRecord,
+        RepositoryProfile,
+        RepositorySkill,
+        WorkItem,
+    )
+    from .repository_skills import RepositorySkillManager
 
 app = typer.Typer(help="Local-first autonomous software engineering factory.")
 service_app = typer.Typer(
@@ -142,7 +89,7 @@ app.add_typer(skill_app, name="skill")
 logger = logging.getLogger(__name__)
 
 #: States that mean "the factory finished this work item successfully".
-SUCCESS_STATES = frozenset({WorkflowState.PR_READY, WorkflowState.DONE})
+SUCCESS_STATES: frozenset[str] = frozenset({"PR_READY", "DONE"})
 
 #: Exit code for "you asked for something this environment or configuration
 #: cannot do": invalid/unloadable configuration, a disabled feature, a missing
@@ -161,16 +108,57 @@ DEFAULT_DASHBOARD_PORT = 8765
 #: a terminal; ``--limit``/``--offset`` page through the rest.
 DEFAULT_STATUS_LIMIT = 20
 
+#: Default cap on scanned runs.
+DEFAULT_MAX_SCANNED_RUNS = 1000
+
+#: Reverse-DNS style label for the installed LaunchAgent.
+DEFAULT_LABEL = "com.github.software-agent-factory"
+
 #: Neutral working directory (under the data directory) that ``factory skill
 #: refresh`` runs the skill researcher from. Repository-level guidance is
 #: produced from the normalized profile alone, so the researcher must never
 #: run inside the repository, a worktree or the operator's shell cwd.
 SKILL_GENERATION_DIRNAME = "skill-generation"
 
+_DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
+    "CopilotAgentRuntime": (".copilot_runtime", "CopilotAgentRuntime"),
+    "WorkflowController": (".workflow", "WorkflowController"),
+    "ProjectRunner": (".projects", "ProjectRunner"),
+    "run_doctor": (".doctor", "run_doctor"),
+    "missing_prerequisites": (".doctor", "missing_prerequisites"),
+    "create_server": (".dashboard", "create_server"),
+    "default_launch_agents_dir": (".service_install", "default_launch_agents_dir"),
+    "install_service": (".service_install", "install_service"),
+    "get_service_status": (".service_install", "get_service_status"),
+    "uninstall_service": (".service_install", "uninstall_service"),
+    "FakeAgentRuntime": (".agents", "FakeAgentRuntime"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEFERRED_EXPORTS:
+        module_path, attr_name = _DEFERRED_EXPORTS[name]
+        module = importlib.import_module(module_path, package=__package__)
+        attr = getattr(module, attr_name)
+        globals()[name] = attr
+        return attr
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _seam(name: str) -> Any:
+    """Return a monkeypatchable symbol, looking in this module's globals or
+    triggering deferred resolution via __getattr__."""
+    return getattr(sys.modules[__name__], name)
+
 
 class RuntimeChoice(StrEnum):
     FAKE = "fake"
     COPILOT = "copilot"
+
+
+class PerformanceModeChoice(StrEnum):
+    STANDARD = "standard"
+    FAST = "fast"
 
 
 def _current_system() -> str:
@@ -192,6 +180,7 @@ def _load_config(
     config: Path | None,
     data_dir: Path | None,
     model_profile: str | None = None,
+    performance_mode: PerformanceModeChoice | None = None,
 ) -> FactoryConfig:
     """Load configuration, applying an optional ``--data-dir`` override.
 
@@ -200,6 +189,11 @@ def _load_config(
     and :data:`CONFIG_ERROR_EXIT_CODE`, never a traceback.
     """
     label = str(config) if config is not None else "(packaged default)"
+    import yaml
+    from pydantic import ValidationError
+
+    from .config import load_config
+
     try:
         loaded = load_config(config, model_profile=model_profile)
     except FileNotFoundError:
@@ -217,6 +211,22 @@ def _load_config(
                 "factory": loaded.factory.model_copy(update={"data_dir": data_dir.expanduser()})
             }
         )
+    if performance_mode is not None:
+        loaded = loaded.model_copy(
+            update={
+                "performance": loaded.performance.model_copy(
+                    update={"mode": performance_mode.value}
+                )
+            }
+        )
+        if (
+            loaded.performance.mode == "fast"
+            and loaded.performance.fast_model_profile not in loaded.model_profiles
+        ):
+            raise _fail(
+                "fast performance mode requires performance.fast_model_profile "
+                "to name a configured model profile"
+            )
     return loaded
 
 
@@ -229,7 +239,8 @@ def _require_prerequisites(*, require_gh: bool, require_copilot: bool) -> None:
     code -- the alternative is a traceback from a failed ``git`` exec several
     layers down.
     """
-    missing = missing_prerequisites(require_gh=require_gh, require_copilot=require_copilot)
+    missing_checker = _seam("missing_prerequisites")
+    missing = missing_checker(require_gh=require_gh, require_copilot=require_copilot)
     if not missing:
         return
     raise _fail(
@@ -246,6 +257,8 @@ def _configure_logging(config: FactoryConfig) -> None:
     stop the factory (or the read-only dashboard) from running.
     """
     try:
+        from .observability import configure_factory_logging
+
         configure_factory_logging(config.data_dir)
     except OSError as exc:
         typer.echo(f"warning: could not open the structured log: {exc}", err=True)
@@ -253,8 +266,10 @@ def _configure_logging(config: FactoryConfig) -> None:
 
 def _build_runtime(choice: RuntimeChoice) -> AgentRuntime:
     if choice is RuntimeChoice.COPILOT:
-        return CopilotAgentRuntime()
-    return FakeAgentRuntime()
+        runtime_cls = _seam("CopilotAgentRuntime")
+        return runtime_cls()  # type: ignore[no-any-return]
+    fake_runtime_cls = _seam("FakeAgentRuntime")
+    return fake_runtime_cls()  # type: ignore[no-any-return]
 
 
 def _warn_fake_backlog_claims() -> None:
@@ -281,6 +296,8 @@ def _stale_after(config: FactoryConfig, override_seconds: int | None) -> timedel
     same thing to ``factory status``, the dashboard and the scheduler's own
     stall detection instead of being an independently drifting constant.
     """
+    from datetime import timedelta
+
     seconds = (
         override_seconds
         if override_seconds is not None
@@ -307,6 +324,8 @@ def main_callback(
     frozen bundle, the wheel and a source checkout can never disagree.
     """
     if version:
+        from .version import format_version_line
+
         typer.echo(format_version_line())
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
@@ -350,6 +369,11 @@ def run_command(
         "--model-profile",
         help="Configured model profile to use (default: top-level models block).",
     ),
+    performance_mode: PerformanceModeChoice | None = typer.Option(
+        None,
+        "--performance-mode",
+        help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -358,7 +382,12 @@ def run_command(
     ),
 ) -> None:
     """Run one work item synchronously through the factory workflow."""
-    factory_config = _load_config(config, data_dir, model_profile)
+    from uuid import uuid4
+
+    from .models import ChangeSet, WorkItem
+    from .store import FileRunStore
+
+    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
     # A manual run needs ``gh`` only for the publishing/CI features it would
     # actually reach; the scheduler is irrelevant here, so an offline default
     # run requires nothing but ``git``.
@@ -369,7 +398,8 @@ def run_command(
     _configure_logging(factory_config)
 
     store = FileRunStore(factory_config.data_dir)
-    controller = WorkflowController(factory_config, store, _build_runtime(runtime))
+    controller_cls = _seam("WorkflowController")
+    controller = controller_cls(factory_config, store, _build_runtime(runtime))
 
     work_item = WorkItem(
         id=work_item_id or f"WI-{uuid4().hex[:12]}",
@@ -464,6 +494,11 @@ def project_command(
         "--model-profile",
         help="Configured model profile to use (default: top-level models block).",
     ),
+    performance_mode: PerformanceModeChoice | None = typer.Option(
+        None,
+        "--performance-mode",
+        help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -491,7 +526,7 @@ def project_command(
         if title is None or description is None:
             raise _fail("--title and --description are required unless --resume is used")
 
-    factory_config = _load_config(config, data_dir, model_profile)
+    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
     _require_prerequisites(
         require_gh=(
             github_repo is not None
@@ -503,9 +538,16 @@ def project_command(
     )
     _configure_logging(factory_config)
 
+    from uuid import uuid4
+
+    from .models import ProjectBrief, ProjectState
+    from .projects import FileProjectStore, ProjectError
+    from .store import FileRunStore
+
     run_store = FileRunStore(factory_config.data_dir)
+    runner_cls = _seam("ProjectRunner")
     try:
-        project_runner = ProjectRunner(
+        project_runner = runner_cls(
             factory_config,
             run_store,
             _build_runtime(runtime),
@@ -590,6 +632,11 @@ def start_command(
         "--model-profile",
         help="Configured model profile to use (default: top-level models block).",
     ),
+    performance_mode: PerformanceModeChoice | None = typer.Option(
+        None,
+        "--performance-mode",
+        help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
+    ),
     once: bool = typer.Option(
         False, "--once", help="Run one bounded scheduler tick instead of polling forever."
     ),
@@ -605,7 +652,7 @@ def start_command(
     Refuses to run (and never touches GitHub) unless ``scheduler.enabled`` is
     set in configuration.
     """
-    factory_config = _load_config(config, data_dir, model_profile)
+    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "scheduler is disabled: set 'scheduler.enabled: true' in the factory "
@@ -617,6 +664,12 @@ def start_command(
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
     _configure_logging(factory_config)
+
+    import signal
+    import threading
+
+    from .service import FactoryService
+    from .store import FileRunStore
 
     store = FileRunStore(factory_config.data_dir)
     service = FactoryService(
@@ -681,6 +734,8 @@ def runs_command(
     ),
 ) -> None:
     """List persisted runs, most recently created last."""
+    from .store import FileRunStore
+
     factory_config = _load_config(config, data_dir)
     store = FileRunStore(factory_config.data_dir)
 
@@ -704,6 +759,8 @@ def show_command(
     ),
 ) -> None:
     """Show the persisted details of one run as JSON."""
+    from .store import FileRunStore
+
     factory_config = _load_config(config, data_dir)
     store = FileRunStore(factory_config.data_dir)
 
@@ -712,7 +769,7 @@ def show_command(
     except (FileNotFoundError, ValueError):
         raise _fail(f"no such run: {run_id}", code=FAILURE_EXIT_CODE) from None
 
-    typer.echo(json.dumps(json.loads(run.model_dump_json()), indent=2))
+    typer.echo(run.model_dump_json(indent=2))
 
 
 @app.command("doctor")
@@ -745,7 +802,12 @@ def doctor_command(
     requests, CI observation or the backlog daemon. Exits nonzero if any
     check errored; warnings alone do not fail the report.
     """
-    report = run_doctor(
+    import json
+
+    from .cli_output import render_doctor_report
+
+    doctor_runner = _seam("run_doctor")
+    report = doctor_runner(
         config_path=config,
         data_dir_override=data_dir,
         model_profile=model_profile,
@@ -800,24 +862,37 @@ def status_command(
     reported as ``DEGRADED`` rather than presented as a complete picture.
     """
     factory_config = _load_config(config, data_dir)
+    from .cli_output import render_status_report
+    from .observability import (
+        build_monitoring_snapshot,
+        build_operational_health,
+        scan_readable_runs,
+    )
+    from .store import FileRunStore
+
     store = FileRunStore(factory_config.data_dir)
     stale_after = _stale_after(factory_config, stale_after_seconds)
 
+    scan = scan_readable_runs(store, max_scanned_runs=max_scanned_runs)
     snapshot = build_monitoring_snapshot(
         store,
         stale_after=stale_after,
         limit=limit,
         offset=offset,
         max_scanned_runs=max_scanned_runs,
+        scan=scan,
     )
     health = build_operational_health(
         store,
         data_dir=factory_config.data_dir,
         stale_after=stale_after,
         max_scanned_runs=max_scanned_runs,
+        scan=scan,
     )
 
     if json_output:
+        import json
+
         payload = {
             "data_dir": str(factory_config.data_dir),
             "snapshot": snapshot.model_dump(mode="json"),
@@ -870,8 +945,20 @@ def dashboard_command(
     factory_config = _load_config(config, data_dir)
     _configure_logging(factory_config)
 
+    from .dashboard import LOOPBACK_HOST, DashboardConfig
+    from .observability import (
+        RunScanCache,
+        build_active_invocation_summary,
+        build_monitoring_snapshot,
+        build_operational_health,
+        build_run_detail,
+    )
+    from .projects import FileProjectStore
+    from .store import FileRunStore
+
     store = FileRunStore(factory_config.data_dir)
     stale_after = _stale_after(factory_config, None)
+    scan_cache = RunScanCache(store)
 
     def snapshot_provider(*, limit: int, offset: int) -> object:
         return build_monitoring_snapshot(
@@ -880,6 +967,7 @@ def dashboard_command(
             limit=limit,
             offset=offset,
             max_scanned_runs=max_scanned_runs,
+            scan=scan_cache.get_scan(max_scanned_runs),
         )
 
     def run_detail_provider(run_id: str) -> object | None:
@@ -895,6 +983,7 @@ def dashboard_command(
             data_dir=factory_config.data_dir,
             stale_after=stale_after,
             max_scanned_runs=max_scanned_runs,
+            scan=scan_cache.get_scan(max_scanned_runs),
         )
 
     def project_provider() -> object:
@@ -985,7 +1074,8 @@ def dashboard_command(
         return {"projects": projects}
 
     try:
-        server = create_server(
+        create_server_fn = _seam("create_server")
+        server = create_server_fn(
             DashboardConfig(
                 snapshot_provider=snapshot_provider,
                 run_detail_provider=run_detail_provider,
@@ -1083,16 +1173,27 @@ def service_install_command(
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
 
-    report = run_doctor(
+    run_doctor_fn = _seam("run_doctor")
+    report = run_doctor_fn(
         config_path=config,
         data_dir_override=data_dir,
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
     )
     if not report.success:
+        from .cli_output import render_doctor_report
+
         for line in render_doctor_report(report):
             typer.echo(line, err=True)
         raise _fail("refusing to install a service while 'factory doctor' reports errors.")
+
+    from .cli_output import render_service_status
+    from .service_install import (
+        ServiceInstallError,
+        ServiceInstallRequest,
+        ServiceRuntime,
+        resolve_factory_executable,
+    )
 
     try:
         resolved_executable = resolve_factory_executable(executable)
@@ -1108,11 +1209,15 @@ def service_install_command(
             label=label,
             allow_source_dev=allow_source_dev,
         )
-        status = install_service(request, launch_agents_dir=default_launch_agents_dir())
+        install_service_fn = _seam("install_service")
+        default_launch_agents_dir_fn = _seam("default_launch_agents_dir")
+        status = install_service_fn(request, launch_agents_dir=default_launch_agents_dir_fn())
     except ServiceInstallError as exc:
         raise _fail(f"service install refused: {exc}") from None
 
     if json_output:
+        import json
+
         typer.echo(json.dumps({**status.to_dict(), "runtime": runtime.value}, indent=2))
         return
 
@@ -1130,12 +1235,19 @@ def service_status_command(
 ) -> None:
     """Report whether the LaunchAgent is installed and loaded (read-only)."""
     _require_macos()
+    from .cli_output import render_service_status
+    from .service_install import ServiceInstallError
+
     try:
-        status = get_service_status(label, launch_agents_dir=default_launch_agents_dir())
+        get_service_status_fn = _seam("get_service_status")
+        default_launch_agents_dir_fn = _seam("default_launch_agents_dir")
+        status = get_service_status_fn(label, launch_agents_dir=default_launch_agents_dir_fn())
     except ServiceInstallError as exc:
         raise _fail(f"service status unavailable: {exc}") from None
 
     if json_output:
+        import json
+
         typer.echo(json.dumps(status.to_dict(), indent=2))
         return
     for line in render_service_status(status):
@@ -1153,12 +1265,18 @@ def service_uninstall_command(
     service stops future polling, it does not delete history.
     """
     _require_macos()
+    from .service_install import ServiceInstallError
+
     try:
-        removed = uninstall_service(label, launch_agents_dir=default_launch_agents_dir())
+        uninstall_service_fn = _seam("uninstall_service")
+        default_launch_agents_dir_fn = _seam("default_launch_agents_dir")
+        removed = uninstall_service_fn(label, launch_agents_dir=default_launch_agents_dir_fn())
     except ServiceInstallError as exc:
         raise _fail(f"service uninstall failed: {exc}") from None
 
     if json_output:
+        import json
+
         typer.echo(json.dumps({"label": label, "removed": removed}, indent=2))
         return
     if removed:
@@ -1172,6 +1290,8 @@ def service_uninstall_command(
 
 def _skill_manager(config: FactoryConfig, repo: Path) -> RepositorySkillManager:
     """Resolve the skill storage for ``repo`` without creating anything."""
+    from .repository_skills import RepositorySkillError, RepositorySkillManager
+
     try:
         return RepositorySkillManager.for_repository(config.data_dir, repo.expanduser())
     except RepositorySkillError as exc:
@@ -1184,6 +1304,8 @@ def _skill_profile(repo: Path) -> RepositoryProfile:
     ``profile_repository`` records unreadable files as profile warnings, so
     the only failure it raises is an unusable repository root.
     """
+    from .repository_profile import profile_repository
+
     try:
         return profile_repository(repo.expanduser())
     except ValueError as exc:
@@ -1199,6 +1321,8 @@ def _skill_generation_work_item() -> WorkItem:
     carries one. Repository-level guidance is generated from the profile
     alone: the skill-generation prompt is given no work item, specification,
     plan, diff or changed files, and must not describe any single task."""
+    from .models import WorkItem
+
     return WorkItem(
         id="repository-skill-generation",
         title="Generate repository-level guidance",
@@ -1212,6 +1336,7 @@ def _skill_generation_work_item() -> WorkItem:
 
 def _save_standalone_invocation(path: Path, record: InvocationRecord) -> None:
     """Atomically persist the latest non-run invocation for operator audit."""
+    from uuid import uuid4
 
     temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
@@ -1278,6 +1403,13 @@ def skill_validate_command(
     manager = _skill_manager(factory_config, repo)
     profile = _skill_profile(repo)
     generated_path = manager.generated_path(profile.dependency_fingerprint)
+
+    from .repository_skills import (
+        RepositorySkillError,
+        RepositorySkillMergeError,
+        merge_repository_skill,
+        repository_skill_validation_error,
+    )
 
     typer.echo(f"repository key: {manager.repository_key}")
     typer.echo(f"dependency fingerprint: {profile.dependency_fingerprint}")
@@ -1385,6 +1517,21 @@ def skill_refresh_command(
         neutral_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise _fail(f"cannot create the skill generation directory {neutral_dir}: {exc}") from None
+
+    from .agents import (
+        AgentRequest,
+        runtime_exception_failure_reason,
+    )
+    from .models import AgentPurpose, AgentRole, InvocationRecord, utc_now
+    from .repository_skills import (
+        MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS,
+        RepositorySkillError,
+        repository_skill_correction_context,
+        repository_skill_exhausted_warning,
+        repository_skill_validation_error,
+    )
+    from .routing import ModelRouter
+    from .writing_policy import apply_agent_result_writing_policy
 
     role_model = ModelRouter(factory_config).model_for_researcher()
     agent_runtime = _build_runtime(runtime)

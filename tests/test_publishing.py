@@ -7,6 +7,7 @@ No network access: every ``git``/``gh`` invocation goes through a fake
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,24 @@ from software_agent_factory.publishing import (
     normalize_ci_status,
     resolve_github_token,
 )
+
+_original_scripted_runner_git = ScriptedRunner._git
+
+
+def _patched_scripted_runner_git(self, argv: list[str]) -> FakeCompleted:
+    tail = argv[3:] if argv[1:2] == ["-C"] else argv[1:]
+    if tail[:2] == ["diff", "--cached"] and "--raw" in tail and "-z" in tail:
+        if getattr(self, "clean", False):
+            return FakeCompleted(stdout="")
+        return FakeCompleted(
+            stdout="".join(
+                f":100644 100644 1111111 2222222 M\0{name}\0" for name in self.changed_files
+            )
+        )
+    return _original_scripted_runner_git(self, argv)
+
+
+ScriptedRunner._git = _patched_scripted_runner_git  # type: ignore[method-assign]
 
 # ---------------------------------------------------------------------------
 # Token handling
@@ -351,7 +370,7 @@ class RecoveryRunner(ScriptedRunner):
 
     def _git(self, argv):  # noqa: ANN001 - test double
         tail = argv[3:] if argv[1:2] == ["-C"] else argv[1:]
-        if self.clean and tail[:3] == ["diff", "--cached", "--name-only"]:
+        if self.clean and tail[:2] == ["diff", "--cached"]:
             return FakeCompleted(stdout="")
         if tail[:1] == ["ls-remote"]:
             if not self.remote_branch_sha:
@@ -1299,3 +1318,156 @@ def test_a_protected_path_in_the_reviewed_tree_is_still_refused(tmp_path: Path) 
         )
 
     assert runner.pushed == []
+
+
+def test_protected_to_allowed_rename_in_reviewed_tree_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "factory@example.invalid")
+    git(repo, "config", "user.name", "Factory")
+    (repo / "README.md").write_text("base\n")
+    (repo / ".env").write_text("SECRET=123\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "base with secret")
+    git(repo, "checkout", "-b", "factory/WI-1")
+    parent = git(repo, "rev-parse", "HEAD").strip()
+
+    git(repo, "mv", ".env", "safe.txt")
+    tree = git(repo, "write-tree").strip()
+    runner = LocalGitRunner()
+
+    with pytest.raises(ProtectedFileError, match=r"protected file\(s\): \.env"):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+        )
+
+    assert runner.pushed == []
+
+
+def test_ordinary_rename_in_reviewed_tree_is_published(tmp_path: Path) -> None:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "factory@example.invalid")
+    git(repo, "config", "user.name", "Factory")
+    (repo / "README.md").write_text("base\n")
+    (repo / "old.py").write_text("def hello(): pass\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "base with old.py")
+    git(repo, "checkout", "-b", "factory/WI-1")
+    parent = git(repo, "rev-parse", "HEAD").strip()
+
+    git(repo, "mv", "old.py", "new.py")
+    tree = git(repo, "write-tree").strip()
+    runner = LocalGitRunner()
+
+    result, receipts = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+    )
+
+    assert receipts == [result.commit_sha]
+    assert runner.pushed == [result.commit_sha]
+    assert git(repo, "rev-parse", f"{result.commit_sha}^{{tree}}").strip() == tree
+
+
+def test_protected_to_allowed_copy_in_reviewed_tree_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "factory@example.invalid")
+    git(repo, "config", "user.name", "Factory")
+    (repo / "README.md").write_text("base\n")
+    (repo / ".env").write_text("SECRET=123\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "base with secret")
+    git(repo, "checkout", "-b", "factory/WI-1")
+    parent = git(repo, "rev-parse", "HEAD").strip()
+
+    shutil.copy(repo / ".env", repo / "safe.txt")
+    git(repo, "add", "safe.txt")
+    tree = git(repo, "write-tree").strip()
+    runner = LocalGitRunner()
+
+    with pytest.raises(ProtectedFileError, match=r"protected file\(s\): \.env"):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+        )
+
+    assert runner.pushed == []
+
+
+def test_protected_to_allowed_padded_and_modified_copy_in_reviewed_tree_is_refused(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "factory@example.invalid")
+    git(repo, "config", "user.name", "Factory")
+    (repo / "README.md").write_text("base\n")
+    (repo / ".env").write_text("SECRET=123\nAPI_KEY=xyz\nTOKEN=abc\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "base with secret")
+    git(repo, "checkout", "-b", "factory/WI-1")
+    parent = git(repo, "rev-parse", "HEAD").strip()
+
+    (repo / "safe.txt").write_text(
+        "# Header comments\n" * 10
+        + "SECRET=123\nAPI_KEY=xyz_mod\nTOKEN=abc\n"
+        + "# Footer comments\n" * 10
+    )
+    git(repo, "add", "safe.txt")
+    tree = git(repo, "write-tree").strip()
+    runner = LocalGitRunner()
+
+    with pytest.raises(ProtectedFileError, match=r"protected file\(s\): \.env"):
+        _bound_publish(
+            _publisher(tmp_path, runner),
+            repo,
+            expected_tree_sha=tree,
+            expected_parent_sha=parent,
+        )
+
+    assert runner.pushed == []
+
+
+def test_status_like_filenames_in_reviewed_tree_are_published(tmp_path: Path) -> None:
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.email", "factory@example.invalid")
+    git(repo, "config", "user.name", "Factory")
+    (repo / "README.md").write_text("base\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "base")
+    git(repo, "checkout", "-b", "factory/WI-1")
+    parent = git(repo, "rev-parse", "HEAD").strip()
+
+    (repo / "M").write_text("content M\n")
+    (repo / "A0").write_text("content A0\n")
+    (repo / "R100").write_text("content R100\n")
+    git(repo, "add", "M", "A0", "R100")
+    tree = git(repo, "write-tree").strip()
+    runner = LocalGitRunner()
+
+    result, receipts = _bound_publish(
+        _publisher(tmp_path, runner),
+        repo,
+        expected_tree_sha=tree,
+        expected_parent_sha=parent,
+    )
+
+    assert receipts == [result.commit_sha]
+    assert runner.pushed == [result.commit_sha]
+    tree_ls = git(repo, "ls-tree", "--name-only", f"{result.commit_sha}^{{tree}}")
+    assert set(tree_ls.splitlines()) == {"README.md", "M", "A0", "R100"}

@@ -328,6 +328,55 @@ def test_revalidation_uses_the_freshest_item_for_dispatch() -> None:
     assert dispatched == [fresh_item]
 
 
+def test_revalidation_batches_only_the_available_capacity() -> None:
+    items = [make_item("a"), make_item("b"), make_item("c")]
+    provider = FakeProvider(items)
+    scheduler = Scheduler(provider, lambda _item: FakeHandle(), max_concurrent_tasks=2)
+
+    report = scheduler.tick()
+
+    assert report.dispatched == ("a", "b")
+    assert provider.fetch_by_ids_calls == [["a", "b"]]
+
+
+def test_stale_revalidation_backfills_capacity_in_the_same_tick() -> None:
+    items = [make_item("a"), make_item("b")]
+    provider = FakeProvider(items)
+    provider.by_id["a"] = items[0].model_copy(update={"dispatchable": False})
+    scheduler = Scheduler(provider, lambda _item: FakeHandle(), max_concurrent_tasks=1)
+
+    report = scheduler.tick()
+
+    assert report.skipped_stale == ("a",)
+    assert report.dispatched == ("b",)
+    assert provider.fetch_by_ids_calls == [["a"], ["b"]]
+
+
+def test_tick_uses_one_selection_and_one_claim_run_snapshot(tmp_path: Path) -> None:
+    class CountingStore(FileRunStore):
+        def __init__(self, data_dir: Path) -> None:
+            super().__init__(data_dir)
+            self.list_calls = 0
+
+        def list_runs(self) -> list[FactoryRun]:
+            self.list_calls += 1
+            return super().list_runs()
+
+    store = CountingStore(tmp_path / "data")
+    item = make_item("new")
+    scheduler = Scheduler(
+        FakeProvider([item]),
+        lambda _item: FakeHandle(),
+        store=store,
+        max_runs_per_day=20,
+    )
+
+    report = scheduler.tick()
+
+    assert report.dispatched == ("new",)
+    assert store.list_calls == 2
+
+
 # ---------------------------------------------------------------------------
 # Duplicate prevention
 # ---------------------------------------------------------------------------
@@ -347,7 +396,7 @@ def test_duplicate_opaque_id_in_candidate_list_is_dispatched_once() -> None:
 
     assert dispatched == ["dup"]
     assert report.dispatched == ("dup",)
-    assert report.skipped_stale == ("dup",)
+    assert report.skipped_stale == ()
     assert scheduler.active_count == 1
 
 
@@ -1096,3 +1145,141 @@ def test_daily_quota_uses_the_clocks_utc_calendar_day_not_its_local_offset(
     # count as "today" and this tick would incorrectly dispatch.
     assert report.dispatched == ()
     assert report.rate_limited is True
+
+
+def test_candidate_persisted_active_during_fetch_by_ids_is_skipped(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    item_a = make_item("race-a", created_at=_dt(0))
+    item_b = make_item("race-b", created_at=_dt(1))
+    item_c = make_item("race-c", created_at=_dt(2))
+
+    class RacingProvider(FakeProvider):
+        def fetch_by_ids(self, opaque_ids: Sequence[str]) -> list[TrackerItem]:
+            if "race-a" in opaque_ids:
+                # Simulate a concurrent process persisting an active run for race-a
+                # while the tracker provider was revalidating the first batch.
+                store.save_run(
+                    FactoryRun(
+                        id="run-concurrent-a",
+                        work_item_id=deterministic_work_item_id(item_a),
+                        state=WorkflowState.IMPLEMENTING,
+                    )
+                )
+            return super().fetch_by_ids(opaque_ids)
+
+    provider = RacingProvider([item_a, item_b, item_c])
+    scheduler = Scheduler(
+        provider,
+        lambda _item: FakeHandle(),
+        max_concurrent_tasks=2,
+        store=store,
+    )
+
+    report = scheduler.tick()
+
+    # Candidate discovery found all 3 eligible. Batch 1 selected (race-a, race-b).
+    # During fetch_by_ids, race-a became persisted active, so it was skipped.
+    # race-b was dispatched, and backfill claimed race-c in the same tick.
+    assert report.eligible_count == 3
+    assert report.skipped_stale == ("race-a",)
+    assert report.dispatched == ("race-b", "race-c")
+    assert provider.fetch_by_ids_calls == [["race-a", "race-b"], ["race-c"]]
+    assert scheduler.active_count == 2
+
+
+def test_daily_quota_exhausted_during_fetch_by_ids_prevents_dispatch(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    clock = FakeClock(_dt(0))
+    item_a = make_item("race-quota-a", created_at=_dt(0))
+    item_b = make_item("race-quota-b", created_at=_dt(1))
+
+    class RacingQuotaProvider(FakeProvider):
+        def fetch_by_ids(self, opaque_ids: Sequence[str]) -> list[TrackerItem]:
+            # Simulate a concurrent process persisting a run for today during
+            # revalidation, exhausting the daily quota before dispatch.
+            store.save_run(
+                FactoryRun(
+                    id="run-concurrent-today",
+                    work_item_id="other-item",
+                    state=WorkflowState.IMPLEMENTING,
+                    created_at=clock(),
+                    updated_at=clock(),
+                )
+            )
+            return super().fetch_by_ids(opaque_ids)
+
+    provider = RacingQuotaProvider([item_a, item_b])
+    dispatched: list[str] = []
+
+    def dispatch(i: TrackerItem) -> FakeHandle:
+        dispatched.append(i.opaque_id)
+        return FakeHandle()
+
+    scheduler = Scheduler(
+        provider,
+        dispatch,
+        max_concurrent_tasks=2,
+        clock=clock,
+        store=store,
+        max_runs_per_day=1,
+    )
+
+    report = scheduler.tick()
+
+    assert dispatched == []
+    assert report.eligible_count == 2
+    assert report.dispatched == ()
+    assert report.skipped_stale == ()
+    assert report.rate_limited is True
+    assert scheduler.active_count == 0
+
+
+def test_daily_quota_partially_exhausted_during_fetch_by_ids_bounds_batch_dispatch(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    clock = FakeClock(_dt(0))
+    item_a = make_item("race-partial-a", created_at=_dt(0))
+    item_b = make_item("race-partial-b", created_at=_dt(1))
+
+    class RacingPartialQuotaProvider(FakeProvider):
+        def fetch_by_ids(self, opaque_ids: Sequence[str]) -> list[TrackerItem]:
+            # Another process consumed 1 of the 2 quota slots during revalidation.
+            store.save_run(
+                FactoryRun(
+                    id="run-concurrent-single",
+                    work_item_id="other-item",
+                    state=WorkflowState.IMPLEMENTING,
+                    created_at=clock(),
+                    updated_at=clock(),
+                )
+            )
+            return super().fetch_by_ids(opaque_ids)
+
+    provider = RacingPartialQuotaProvider([item_a, item_b])
+    dispatched: list[str] = []
+
+    def dispatch(i: TrackerItem) -> FakeHandle:
+        dispatched.append(i.opaque_id)
+        return FakeHandle()
+
+    scheduler = Scheduler(
+        provider,
+        dispatch,
+        max_concurrent_tasks=2,
+        clock=clock,
+        store=store,
+        max_runs_per_day=2,
+    )
+
+    report = scheduler.tick()
+
+    # The batch selected both candidates, but recomputed quota only allowed 1.
+    assert dispatched == ["race-partial-a"]
+    assert report.dispatched == ("race-partial-a",)
+    assert report.rate_limited is True
+    assert scheduler.active_count == 1

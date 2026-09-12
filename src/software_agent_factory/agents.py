@@ -45,6 +45,7 @@ from .models import (
     ExecutionPlan,
     ExpectedScope,
     ModelBase,
+    PerformanceRecord,
     PlanStep,
     ProjectBrief,
     ProjectPlan,
@@ -136,6 +137,11 @@ class AgentRequest(ModelBase):
                 raise ValueError("repository skill generation requires the RESEARCHER role")
             if self.repository_profile is None:
                 raise ValueError("repository skill generation requires repository_profile")
+        elif self.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            if self.role is not AgentRole.IMPLEMENTER:
+                raise ValueError("ChangeSet correction requires the IMPLEMENTER role")
+            if self.change_set is None:
+                raise ValueError("ChangeSet correction requires the rejected change_set")
         if self.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL and (
             self.official_documentation_origins or self.practice_reference_urls
         ):
@@ -167,6 +173,7 @@ class AgentResult(ModelBase):
     test_report: TestReport | None = None
     review_report: ReviewReport | None = None
     usage: UsageMetrics | None = None
+    performance: PerformanceRecord | None = None
 
     def model_post_init(self, __context: object) -> None:
         if not self.success and not self.failure_reason:
@@ -269,6 +276,15 @@ class FakeAgentRuntime:
             return self._default_project_plan(request)
         if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
             return self._default_repository_skill(request)
+        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+            assert request.change_set is not None
+            return AgentResult(
+                role=AgentRole.IMPLEMENTER,
+                success=True,
+                change_set=request.change_set.model_copy(
+                    update={"summary": "Corrected the implementation summary."}
+                ),
+            )
         if request.role is AgentRole.TRIAGE:
             return self._default_triage(request)
         if request.role is AgentRole.REFINER:

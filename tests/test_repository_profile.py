@@ -15,7 +15,10 @@ from software_agent_factory.models import (
     RepositoryTestTool,
 )
 from software_agent_factory.repository_profile import (
+    RepositoryProfileReuseDecision,
+    can_reuse_repository_profile,
     generic_repository_profile,
+    is_version_file,
     profile_repository,
 )
 
@@ -582,7 +585,9 @@ def test_setup_cfg_and_tox_ini_pytest_detection(tmp_path: Path) -> None:
     assert setup_cfg_profile.version_files == ("setup.cfg",)
     assert tox_profile.test_tools == (RepositoryTestTool.PYTEST,)
     assert tox_profile.technologies == (RepositoryTechnology.PYTHON,)
+    assert tox_profile.version_files == ("tox.ini",)
     assert plain_profile.test_tools == ()
+    assert plain_profile.version_files == ("tox.ini",)
 
 
 def test_unparsable_python_config_is_reported(tmp_path: Path) -> None:
@@ -1037,3 +1042,487 @@ pydantic = "^2.11"
     assert profile.package_managers == (RepositoryPackageManager.POETRY,)
     assert {item.name for item in profile.dependencies} == {"pydantic"}
     assert profile.warnings == ()
+
+
+def test_is_version_file_recognizes_manifests_and_markers() -> None:
+    assert is_version_file("pyproject.toml")
+    assert is_version_file("uv.lock")
+    assert is_version_file("package.json")
+    assert is_version_file("package-lock.json")
+    assert is_version_file("pnpm-lock.yaml")
+    assert is_version_file("yarn.lock")
+    assert is_version_file("bun.lock")
+    assert is_version_file("bun.lockb")
+    assert is_version_file("poetry.lock")
+    assert is_version_file("pipfile.lock")
+    assert is_version_file("pylock.toml")
+    assert is_version_file("setup.py")
+    assert is_version_file("setup.cfg")
+    assert is_version_file("tox.ini")
+    assert is_version_file("requirements.txt")
+    assert is_version_file("requirements-dev.txt")
+    assert is_version_file("requirements-local.txt")
+    assert not is_version_file("main.py")
+    assert not is_version_file("test_something.py")
+    assert not is_version_file("README.md")
+    assert not is_version_file("Dockerfile")
+
+
+def test_can_reuse_profile_when_repository_is_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\ndependencies = ['pydantic>=2.0']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\n\n[[package]]\nname = "pydantic"\nversion = "2.10.0"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+    decision = can_reuse_repository_profile(tmp_path, profile)
+
+    assert isinstance(decision, RepositoryProfileReuseDecision)
+    assert decision.reusable is True
+    assert bool(decision) is True
+    assert decision.reason is None
+    assert decision.manifest_fingerprint == profile.manifest_fingerprint
+    assert set(decision.version_files) == set(profile.version_files)
+    assert decision.warnings == ()
+
+
+def test_can_reuse_profile_allows_non_manifest_source_changes(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\ndependencies = ['pydantic>=2.0']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\n\n[[package]]\nname = "pydantic"\nversion = "2.10.0"\n',
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("v = 1\n", encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+
+    (src / "app.py").write_text("v = 2\n", encoding="utf-8")
+    (src / "extra.py").write_text("v = 3\n", encoding="utf-8")
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+    assert bool(decision) is True
+    assert decision.reason is None
+    assert decision.manifest_fingerprint == profile.manifest_fingerprint
+
+
+def test_can_reuse_profile_rejects_content_changes_in_pyproject(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\ndependencies = ['pydantic>=2.0']\n",
+        encoding="utf-8",
+    )
+    profile = profile_repository(tmp_path)
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\ndependencies = ['pydantic>=2.1']\n",
+        encoding="utf-8",
+    )
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert bool(decision) is False
+    assert decision.reason is not None
+    assert "manifest fingerprint changed" in decision.reason
+    assert decision.manifest_fingerprint != profile.manifest_fingerprint
+
+
+def test_can_reuse_profile_rejects_content_changes_in_lockfile(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    (tmp_path / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert bool(decision) is False
+    assert decision.reason is not None
+    assert "manifest fingerprint changed" in decision.reason
+
+
+def test_can_reuse_profile_allows_unchanged_tox_ini(tmp_path: Path) -> None:
+    (tmp_path / "tox.ini").write_text("[tox]\nenvlist = py313\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("v = 1\n", encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+    assert profile.version_files == ("tox.ini",)
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+    assert bool(decision) is True
+    assert decision.reason is None
+    assert decision.manifest_fingerprint == profile.manifest_fingerprint
+    assert decision.version_files == ("tox.ini",)
+    assert decision.warnings == ()
+
+
+def test_can_reuse_profile_rejects_content_changes_in_tox_ini(tmp_path: Path) -> None:
+    tox_ini = tmp_path / "tox.ini"
+    tox_ini.write_text("[tox]\nenvlist = py313\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert profile.version_files == ("tox.ini",)
+    assert profile.test_tools == ()
+
+    # Modify tox.ini to introduce a pytest configuration
+    tox_ini.write_text("[tox]\nenvlist = py313\n\n[pytest]\naddopts = -q\n", encoding="utf-8")
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert bool(decision) is False
+    assert decision.reason is not None
+    assert "manifest fingerprint changed" in decision.reason
+    assert decision.manifest_fingerprint != profile.manifest_fingerprint
+
+    # Reprofiling refreshes test_tools and dependency_fingerprint; unchanged refreshed repo reuses
+    refreshed = profile_repository(tmp_path)
+    assert refreshed.test_tools == (RepositoryTestTool.PYTEST,)
+    assert refreshed.dependency_fingerprint != profile.dependency_fingerprint
+    assert refreshed.manifest_fingerprint == decision.manifest_fingerprint
+
+    decision_refreshed = can_reuse_repository_profile(tmp_path, refreshed)
+    assert decision_refreshed.reusable is True
+    assert bool(decision_refreshed) is True
+    assert decision_refreshed.reason is None
+
+
+def test_can_reuse_profile_rejects_adding_and_removing_tox_ini(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    tox_ini = tmp_path / "tox.ini"
+    tox_ini.write_text("[tox]\nenvlist = py313\n", encoding="utf-8")
+
+    decision_added = can_reuse_repository_profile(tmp_path, profile)
+    assert decision_added.reusable is False
+    assert bool(decision_added) is False
+    assert decision_added.reason is not None
+    assert "version files added: tox.ini" in decision_added.reason
+
+    profile_with_tox = profile_repository(tmp_path)
+    tox_ini.unlink()
+
+    decision_removed = can_reuse_repository_profile(tmp_path, profile_with_tox)
+    assert decision_removed.reusable is False
+    assert bool(decision_removed) is False
+    assert decision_removed.reason is not None
+    assert "version files removed: tox.ini" in decision_removed.reason
+
+
+def test_tox_ini_version_files_expected_ordering(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\ndependencies = ['pydantic>=2.0']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tox.ini").write_text("[tox]\nenvlist = py313\n", encoding="utf-8")
+    (tmp_path / "setup.cfg").write_text("[metadata]\nname = demo\n", encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+    assert profile.version_files == ("pyproject.toml", "setup.cfg", "tox.ini")
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+    assert decision.version_files == ("pyproject.toml", "setup.cfg", "tox.ini")
+
+
+def test_can_reuse_profile_rejects_added_manifest(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert bool(decision) is False
+    assert decision.reason is not None
+    assert "version files added: uv.lock" in decision.reason
+
+
+def test_can_reuse_profile_rejects_removed_manifest(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    (tmp_path / "uv.lock").unlink()
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert bool(decision) is False
+    assert decision.reason is not None
+    assert "version files removed: uv.lock" in decision.reason
+
+
+def test_can_reuse_profile_detects_ignored_style_manifest_addition_and_modification(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    req_file = tmp_path / "requirements-local.txt"
+    req_file.write_text("pytest>=9.0\n", encoding="utf-8")
+
+    decision_added = can_reuse_repository_profile(tmp_path, profile)
+    assert decision_added.reusable is False
+    assert decision_added.reason is not None
+    assert "version files added: requirements-local.txt" in decision_added.reason
+
+    profile_with_req = profile_repository(tmp_path)
+    req_file.write_text("pytest>=9.1\n", encoding="utf-8")
+    decision_modified = can_reuse_repository_profile(tmp_path, profile_with_req)
+    assert decision_modified.reusable is False
+    assert decision_modified.reason is not None
+    assert "manifest fingerprint changed" in decision_modified.reason
+
+
+def test_can_reuse_profile_ignores_symlinks_safely(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    external_dir = tmp_path.parent / f"{tmp_path.name}-external"
+    external_dir.mkdir()
+    (external_dir / "package.json").write_text(
+        json.dumps({"name": "external"}),
+        encoding="utf-8",
+    )
+
+    (tmp_path / "symlinked-package.json").symlink_to(external_dir / "package.json")
+    (tmp_path / "symlinked-dir").symlink_to(external_dir)
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+    assert decision.manifest_fingerprint == profile.manifest_fingerprint
+    assert set(decision.version_files) == set(profile.version_files)
+
+
+def test_can_reuse_profile_handles_scan_limit_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text("a = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    monkeypatch.setattr(repository_profile_module, "MAX_SCANNED_FILES", 1)
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "scan limit reached after 1 files" in decision.reason
+    assert any("scan limit reached after 1 files" in w for w in decision.warnings)
+
+
+def test_can_reuse_profile_handles_path_limit_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(repository_profile_module, "MAX_PROFILE_PATHS", 1)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'example'\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps({"name": "example"}), encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+    assert len(profile.version_files) == 1
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "version files added" in decision.reason
+
+
+def test_can_reuse_profile_handles_oversized_file_fingerprinting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(repository_profile_module, "MAX_FINGERPRINT_BYTES", 1_024)
+    content = (
+        'version = 1\n\n[[package]]\nname = "pytest"\nversion = "9.1.1"\n' + "# pad\n" * 20_000
+    )
+    (tmp_path / "uv.lock").write_text(content, encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+    assert any("fingerprinted only the edges" in w for w in profile.warnings)
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+    assert decision.manifest_fingerprint == profile.manifest_fingerprint
+
+    # If the edge of the oversized file changes:
+    (tmp_path / "uv.lock").write_text(content.replace("9.1.1", "9.1.2"), encoding="utf-8")
+    decision_changed = can_reuse_repository_profile(tmp_path, profile)
+    assert decision_changed.reusable is False
+
+
+def test_can_reuse_profile_rejects_non_directory(tmp_path: Path) -> None:
+    profile = generic_repository_profile()
+    non_existent = tmp_path / "missing"
+    with pytest.raises(ValueError, match="repository root is not a directory"):
+        can_reuse_repository_profile(non_existent, profile)
+
+    file_path = tmp_path / "some_file.txt"
+    file_path.write_text("hi", encoding="utf-8")
+    with pytest.raises(ValueError, match="repository root is not a directory"):
+        can_reuse_repository_profile(file_path, profile)
+
+
+def test_can_reuse_profile_rejects_adding_first_python_file(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"name": "demo"}\n', encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert RepositoryTechnology.PYTHON not in profile.technologies
+
+    (tmp_path / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "repository shape changed" in decision.reason
+
+
+def test_can_reuse_profile_rejects_adding_first_typescript_file(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"name": "demo"}\n', encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert RepositoryTechnology.TYPESCRIPT not in profile.technologies
+
+    (tmp_path / "index.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "repository shape changed" in decision.reason
+
+
+def test_can_reuse_profile_rejects_adding_conftest_py(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("x = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert RepositoryTestTool.PYTEST not in profile.test_tools
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "conftest.py").write_text("# fixtures\n", encoding="utf-8")
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "repository shape changed" in decision.reason
+
+
+def test_can_reuse_profile_rejects_adding_vite_or_vitest_markers(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"name": "demo"}\n', encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    (tmp_path / "vite.config.ts").write_text("export default {};\n", encoding="utf-8")
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "repository shape changed" in decision.reason
+
+    (tmp_path / "vite.config.ts").unlink()
+    (tmp_path / "vitest.config.ts").write_text("export default {};\n", encoding="utf-8")
+    decision_vitest = can_reuse_repository_profile(tmp_path, profile)
+    assert decision_vitest.reusable is False
+    assert decision_vitest.reason is not None
+    assert "repository shape changed" in decision_vitest.reason
+
+
+def test_can_reuse_profile_rejects_old_profile_without_shape_evidence(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert profile.shape_fingerprint is not None
+
+    old_profile = profile.model_copy(update={"shape_fingerprint": None})
+    decision = can_reuse_repository_profile(tmp_path, old_profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "missing shape evidence" in decision.reason
+
+
+def test_can_reuse_profile_preserves_symlink_and_scan_limit_shape_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+
+    outside = tmp_path.parent / "outside_py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    (tmp_path / "symlink.py").symlink_to(outside)
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+
+    monkeypatch.setattr(repository_profile_module, "MAX_SCANNED_FILES", 1)
+    decision_limit = can_reuse_repository_profile(tmp_path, profile)
+    assert decision_limit.reusable is False
+    assert decision_limit.reason is not None
+    assert "scan limit reached" in decision_limit.reason
+
+
+def test_can_reuse_profile_rejects_adding_test_file(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("x = 1\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert profile.markers == ("pyproject.toml", "uv.lock")
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_app.py").write_text("def test_x(): pass\n", encoding="utf-8")
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "repository shape changed" in decision.reason
+
+
+def test_can_reuse_profile_rejects_removing_test_file(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    test_file = tests / "test_app.py"
+    test_file.write_text("def test_x(): pass\n", encoding="utf-8")
+    profile = profile_repository(tmp_path)
+    assert "tests/test_app.py" in profile.markers
+
+    test_file.unlink()
+
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is False
+    assert decision.reason is not None
+    assert "repository shape changed" in decision.reason
+
+
+def test_can_reuse_profile_avoids_broad_invalidation_beyond_max_test_markers(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    for i in range(1, repository_profile_module.MAX_TEST_MARKERS + 1):
+        (tests / f"test_{i}.py").write_text("def test_pass(): pass\n", encoding="utf-8")
+
+    profile = profile_repository(tmp_path)
+    for i in range(1, repository_profile_module.MAX_TEST_MARKERS + 1):
+        assert f"tests/test_{i}.py" in profile.markers
+
+    # Adding a 6th test file that sorts after test_5 does not displace the first 5
+    (tests / "test_6.py").write_text("def test_pass(): pass\n", encoding="utf-8")
+    decision = can_reuse_repository_profile(tmp_path, profile)
+    assert decision.reusable is True
+
+    # But adding a test file that sorts before the first 5 displaces one and alters shape
+    (tests / "test_0.py").write_text("def test_pass(): pass\n", encoding="utf-8")
+    decision_displaced = can_reuse_repository_profile(tmp_path, profile)
+    assert decision_displaced.reusable is False
+    assert decision_displaced.reason is not None
+    assert "repository shape changed" in decision_displaced.reason
