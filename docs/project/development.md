@@ -59,6 +59,9 @@ uv run --no-sync python scripts/performance/benchmark.py \
 Pass `--baseline <file>` to compare the result with an earlier JSON report.
 The script does not call a paid model or use the network.
 
+See [Performance](../reference/performance.md) for measured results and fast
+mode limits.
+
 Packaging checks, if you touched anything that ships:
 
 ```bash
