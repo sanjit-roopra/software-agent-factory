@@ -33,6 +33,30 @@ It never creates a replacement run or resets attempt records.
 In this version, only `RISK_APPROVAL` transitions back to `REFINING`.
 Other halt categories remain non-resumable.
 
+When risk requires approval, the notice explains the causal risk chain.
+Triage records this case-specific causal rationale in its typed contract.
+The rationale covers the intended outcome and the sensitive boundary.
+It explains why that operation is necessary for the task.
+It details the credible failure scenario, mitigations, and residual risk.
+
+The controller snapshots this decision context in the escalation record.
+It persists the record before notification.
+The GitHub notice presents explicit SimpleEnglish sections.
+The sections state why approval is required and state the requested decision.
+The notice specifies authorized actions and explicit exclusions.
+Approval authorizes moving the same run to `REFINING`.
+Approval does not change task scope or retry budgets.
+Approval does not bypass quality gates or alter permissions.
+Approval does not change deployment policy or merge policy.
+All verification and review conditions remain in force.
+A risk approval escalation without valid decision context fails closed.
+An oversized notice disables remote resume and closes the reply cursor.
+The operator must inspect local artifacts in those cases.
+
+The approval context fingerprint binds each displayed decision and authority field.
+The accepted reply receipt records this exact fingerprint.
+The controller verifies the receipt fingerprint against the persisted contract before reopening.
+
 Reopened work uses the same executor, concurrency limit, and daily run quota.
 The backlog filter continues to block the source issue from fresh dispatch.
 

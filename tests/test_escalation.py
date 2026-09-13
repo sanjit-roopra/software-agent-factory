@@ -56,6 +56,8 @@ from software_agent_factory.models import (
     FactoryRun,
     ResumeClassification,
     Risk,
+    RiskApprovalContext,
+    RiskRationale,
     TriageResult,
     WorkflowState,
     WorkItem,
@@ -197,6 +199,84 @@ def _make_comment_payload(
         "updated_at": updated_at_str,
         "author_association": author_association,
     }
+
+
+def _make_approval_context(
+    run_id: str = "run-1",
+    episode_id: str = "ep-1",
+    work_item_id: str = "task-1",
+    work_item_title: str = "Task",
+    risk: Risk = Risk.R2,
+    complexity: Complexity = Complexity.L1,
+) -> RiskApprovalContext:
+    from software_agent_factory.escalation import compute_approval_context_fingerprint
+
+    rationale = RiskRationale(
+        intended_outcome="Update production database schema safely.",
+        sensitive_boundary="Production database trust boundary.",
+        necessity="Work item requires migrating production customer records.",
+        credible_scenario="Data migration error could corrupt customer accounts.",
+        known_mitigations=["Run migration inside atomic transaction."],
+        residual_risk="Potential brief transaction lock delay on high-load tables.",
+    )
+    decision_requested = (
+        f"Approve advancing run {run_id} to REFINING under risk policy {risk.value}."
+    )
+    authorized_actions = [
+        "Transition workflow from NEEDS_HUMAN to REFINING.",
+        "Refine requirements into an explicit specification.",
+        "Plan implementation steps within approved scope.",
+        "Execute code changes in an isolated workspace.",
+        "Run deterministic verification, tests, and review.",
+    ]
+    unauthorized_actions = [
+        "Approval does not change task scope.",
+        "Approval does not increase retry budgets.",
+        "Approval does not bypass quality gates.",
+        "Approval does not alter credential or permission policy.",
+        "Approval does not change deployment policy.",
+        "Approval does not override configured merge policy.",
+    ]
+    conditions_in_force = [
+        "The approved scope remains restricted to this task.",
+        "Deterministic verification must pass before review.",
+        "Independent testing and review remain mandatory.",
+        "Quality gates must pass before pull request creation.",
+        "Approval resumes the same run at REFINING.",
+        "Approval does not reset run history or attempt budgets.",
+    ]
+    fp = compute_approval_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        work_item_id=work_item_id,
+        work_item_title=work_item_title,
+        risk=risk.value,
+        complexity=complexity.value,
+        intended_outcome=rationale.intended_outcome,
+        sensitive_boundary=rationale.sensitive_boundary,
+        necessity=rationale.necessity,
+        credible_scenario=rationale.credible_scenario,
+        known_mitigations=rationale.known_mitigations,
+        residual_risk=rationale.residual_risk,
+        decision_requested=decision_requested,
+        next_state=WorkflowState.REFINING.value,
+        authorized_actions=authorized_actions,
+        unauthorized_actions=unauthorized_actions,
+        conditions_in_force=conditions_in_force,
+    )
+    return RiskApprovalContext(
+        risk=risk,
+        complexity=complexity,
+        work_item_id=work_item_id,
+        work_item_title=work_item_title,
+        risk_rationale=rationale,
+        decision_requested=decision_requested,
+        next_state=WorkflowState.REFINING,
+        authorized_actions=authorized_actions,
+        unauthorized_actions=unauthorized_actions,
+        conditions_in_force=conditions_in_force,
+        context_fingerprint=fp,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +766,7 @@ def test_validate_reply_candidate_rejects_stale_episode(tmp_path: Path) -> None:
         target_repository="owner/repo",
         target_number=1,
         created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
     )
     run = FactoryRun(
         id="run-target",
@@ -733,7 +814,10 @@ def test_validate_reply_candidate_rejects_replay(tmp_path: Path) -> None:
         target_repository="owner/repo",
         target_number=1,
         created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
         accepted_replies=[already_accepted],
+        approval_context=_make_approval_context(run_id="r1", episode_id="ep-1"),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="r1",
@@ -772,6 +856,9 @@ def test_validate_reply_candidate_rejects_edited_comment(tmp_path: Path) -> None
         target_repository="owner/repo",
         target_number=1,
         created_at=created_dt - timedelta(hours=1),
+        last_notified_at=created_dt - timedelta(hours=1),
+        approval_context=_make_approval_context(run_id="run-1", episode_id="ep-1"),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="run-1",
@@ -820,6 +907,7 @@ def test_validate_reply_candidate_rejects_expired_window(tmp_path: Path) -> None
         target_repository="owner/repo",
         target_number=1,
         created_at=now - timedelta(hours=25),
+        last_notified_at=now - timedelta(hours=25),
     )
     run = FactoryRun(
         id="run-1",
@@ -860,6 +948,7 @@ def test_validate_reply_candidate_rejects_non_resumable_halt(tmp_path: Path) -> 
         target_repository="owner/repo",
         target_number=1,
         created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
     )
     run = FactoryRun(
         id="run-1",
@@ -904,6 +993,9 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
         target_repository="owner/repo",
         target_number=10,
         created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
+        approval_context=_make_approval_context(run_id="run-poll", episode_id="ep-1234"),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="run-poll",
@@ -966,6 +1058,14 @@ def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: P
             requirements_quality="clear",
             needs_research=False,
             confidence=0.9,
+            risk_rationale=RiskRationale(
+                intended_outcome="Update production database schema.",
+                sensitive_boundary="Production database trust boundary.",
+                necessity="Work item requires migrating production customer records.",
+                credible_scenario="Data migration error could corrupt customer accounts.",
+                known_mitigations=["Run migration inside atomic transaction."],
+                residual_risk="Potential brief transaction lock delay on high-load tables.",
+            ),
         )
         return AgentResult(role=AgentRole.TRIAGE, success=True, triage_result=result)
 
@@ -998,6 +1098,11 @@ def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: P
         command=f"@factory resume v1 run={run.id} episode={run.escalation.episode_id}",
         episode_id=run.escalation.episode_id,
         run_id=run.id,
+        approval_context_fingerprint=(
+            run.escalation.approval_context.context_fingerprint
+            if run.escalation.approval_context
+            else None
+        ),
     )
     run = run.model_copy(
         update={
@@ -1136,6 +1241,14 @@ def test_no_reply_text_in_agent_prompts(source_repo: Path, tmp_path: Path) -> No
                 requirements_quality="clear",
                 needs_research=False,
                 confidence=0.9,
+                risk_rationale=RiskRationale(
+                    intended_outcome="Update production database schema.",
+                    sensitive_boundary="Production database trust boundary.",
+                    necessity="Work item requires migrating production customer records.",
+                    credible_scenario="Data migration error could corrupt customer accounts.",
+                    known_mitigations=["Run migration inside atomic transaction."],
+                    residual_risk="Potential brief transaction lock delay on high-load tables.",
+                ),
             ),
         )
 
@@ -1157,6 +1270,11 @@ def test_no_reply_text_in_agent_prompts(source_repo: Path, tmp_path: Path) -> No
         command=arbitrary_comment_text,
         episode_id=run.escalation.episode_id,
         run_id=run.id,
+        approval_context_fingerprint=(
+            run.escalation.approval_context.context_fingerprint
+            if run.escalation.approval_context
+            else None
+        ),
     )
     run = run.model_copy(
         update={
@@ -1194,14 +1312,6 @@ def test_service_reconciles_and_reopens_within_capacity(source_repo: Path, tmp_p
 
     # Prepare halted run in store
     now = utc_now()
-    escalation = EscalationRecord(
-        episode_id="ep-service-1",
-        status=EscalationStatus.NOTIFIED,
-        resume_classification=ResumeClassification.RISK_APPROVAL,
-        target_repository="owner/repo",
-        target_number=1,
-        created_at=now - timedelta(hours=1),
-    )
     tracker_item = TrackerItem(
         opaque_id="owner/repo#1",
         identifier="owner/repo#1",
@@ -1224,6 +1334,22 @@ def test_service_reconciles_and_reopens_within_capacity(source_repo: Path, tmp_p
     ws.prepare()
     ws.release_lock()
 
+    escalation = EscalationRecord(
+        episode_id="ep-service-1",
+        status=EscalationStatus.NOTIFIED,
+        resume_classification=ResumeClassification.RISK_APPROVAL,
+        target_repository="owner/repo",
+        target_number=1,
+        created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
+        approval_context=_make_approval_context(
+            run_id="run-svc-1",
+            episode_id="ep-service-1",
+            work_item_id=work_item_id,
+        ),
+        remote_resume_enabled=True,
+    )
+
     run = FactoryRun(
         id="run-svc-1",
         work_item_id=work_item_id,
@@ -1241,11 +1367,12 @@ def test_service_reconciles_and_reopens_within_capacity(source_repo: Path, tmp_p
         run.id,
         TriageResult(
             factory_eligible=True,
-            complexity=Complexity.L0,
-            risk=Risk.R0,
+            complexity=Complexity.L1,
+            risk=Risk.R2,
             requirements_quality="good",
             needs_research=False,
             confidence=0.9,
+            risk_rationale=escalation.approval_context.risk_rationale,
         ),
     )
 
@@ -1425,30 +1552,10 @@ def test_service_reconciliation_recovers_stranded_reopened_run(
     config = _make_config(data_dir, max_concurrent_tasks=1)
     store = FileRunStore(data_dir)
 
-    now = utc_now()
-    receipt = AcceptedReplyReceipt(
-        comment_id=777,
-        user_login="lead-dev",
-        author_association="MEMBER",
-        created_at=now,
-        accepted_at=now,
-        command="@factory resume v1 run=run-stranded episode=ep-stranded",
-        episode_id="ep-stranded",
-        run_id="run-stranded",
-    )
-    escalation = EscalationRecord(
-        episode_id="ep-stranded",
-        status=EscalationStatus.REOPENED,  # Stranded before executor dispatch!
-        resume_classification=ResumeClassification.RISK_APPROVAL,
-        target_repository="owner/repo",
-        target_number=5,
-        accepted_replies=[receipt],
-        reopen_count=1,
-    )
-
     from software_agent_factory.scheduler import deterministic_work_item_id
     from software_agent_factory.workspace import GitWorktreeWorkspace
 
+    now = utc_now()
     tracker_item = TrackerItem(
         opaque_id="owner/repo#5",
         identifier="owner/repo#5",
@@ -1466,6 +1573,34 @@ def test_service_reconciliation_recovers_stranded_reopened_run(
     ws.acquire_lock()
     ws.prepare()
     ws.release_lock()
+
+    app_ctx = _make_approval_context(
+        run_id="run-stranded",
+        episode_id="ep-stranded",
+        work_item_id=work_item_id,
+    )
+    receipt = AcceptedReplyReceipt(
+        comment_id=777,
+        user_login="lead-dev",
+        author_association="MEMBER",
+        created_at=now,
+        accepted_at=now,
+        command="@factory resume v1 run=run-stranded episode=ep-stranded",
+        episode_id="ep-stranded",
+        run_id="run-stranded",
+        approval_context_fingerprint=app_ctx.context_fingerprint,
+    )
+    escalation = EscalationRecord(
+        episode_id="ep-stranded",
+        status=EscalationStatus.REOPENED,  # Stranded before executor dispatch!
+        resume_classification=ResumeClassification.RISK_APPROVAL,
+        target_repository="owner/repo",
+        target_number=5,
+        accepted_replies=[receipt],
+        reopen_count=1,
+        approval_context=app_ctx,
+        remote_resume_enabled=True,
+    )
 
     run = FactoryRun(
         id="run-stranded",
@@ -1489,11 +1624,12 @@ def test_service_reconciliation_recovers_stranded_reopened_run(
         run.id,
         TriageResult(
             factory_eligible=True,
-            complexity=Complexity.L0,
-            risk=Risk.R0,
+            complexity=Complexity.L1,
+            risk=Risk.R2,
             requirements_quality="good",
             needs_research=False,
             confidence=0.9,
+            risk_rationale=app_ctx.risk_rationale,
         ),
     )
     from software_agent_factory.repository_profile import generic_repository_profile
@@ -1698,6 +1834,13 @@ def test_poll_escalation_reply_bounded_pagination_across_ticks(tmp_path: Path) -
         target_repository="owner/repo",
         target_number=10,
         created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
+        approval_context=_make_approval_context(
+            run_id="run-pages",
+            episode_id="ep-pages",
+            work_item_id="task-p",
+        ),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="run-pages",
@@ -1775,7 +1918,8 @@ def test_deliver_escalation_notification_reconciles_lost_post_response(tmp_path:
     escalation = EscalationRecord(
         episode_id="ep-lost-post",
         status=EscalationStatus.PENDING_NOTIFICATION,
-        resume_classification=ResumeClassification.RISK_APPROVAL,
+        resume_classification=ResumeClassification.NOT_RESUMABLE,
+        reason_code="MANUAL_INSPECTION",
         delivery_attempts=1,  # previous attempt POSTed comment but connection failed before saving
     )
     run = FactoryRun(
@@ -1790,11 +1934,24 @@ def test_deliver_escalation_notification_reconciles_lost_post_response(tmp_path:
         run.id, WorkItem(id="task-l", title="Task", description="Desc", external_id="owner/repo#1")
     )
 
-    marker = format_escalation_marker("run-lost", "ep-lost-post")
+    expected_notice = build_escalation_comment(
+        run_id="run-lost",
+        episode_id="ep-lost-post",
+        classification=ResumeClassification.NOT_RESUMABLE,
+        reason_code="MANUAL_INSPECTION",
+        summary="The controller stopped at a manual decision boundary.",
+        next_action=(
+            "Inspect the typed run artifacts and decide whether to retry or replace the run."
+        ),
+        attempts_consumed=0,
+        reopen_count=0,
+        max_reopens=config.escalation.max_reopens,
+    )
     existing_comment = _make_comment_payload(
         888,
-        f"{marker}\n### Factory Escalation Notice",
-        login="factory[bot]",
+        str(expected_notice),
+        login="factory-bot",
+        user_id=99999,
     )
 
     pr_resp = FakeCompletedProcess(
@@ -2110,16 +2267,6 @@ def test_crash_recovered_reopened_dispatch_does_not_require_extra_quota_slot(
         episode_id="ep-crash-rec",
         run_id="run-crash-rec",
     )
-    escalation = EscalationRecord(
-        episode_id="ep-crash-rec",
-        status=EscalationStatus.REOPENED,
-        resume_classification=ResumeClassification.RISK_APPROVAL,
-        target_repository="owner/repo",
-        target_number=1,
-        accepted_replies=[receipt],
-        reopen_count=1,
-    )
-
     from software_agent_factory.scheduler import deterministic_work_item_id
     from software_agent_factory.workspace import GitWorktreeWorkspace
 
@@ -2141,6 +2288,34 @@ def test_crash_recovered_reopened_dispatch_does_not_require_extra_quota_slot(
     ws.prepare()
     ws.release_lock()
 
+    app_ctx = _make_approval_context(
+        run_id="run-crash-rec",
+        episode_id="ep-crash-rec",
+        work_item_id=work_item_id,
+    )
+    receipt = AcceptedReplyReceipt(
+        comment_id=505,
+        user_login="lead-dev",
+        author_association="MEMBER",
+        created_at=now,
+        accepted_at=now,
+        command="@factory resume v1 run=run-crash-rec episode=ep-crash-rec",
+        episode_id="ep-crash-rec",
+        run_id="run-crash-rec",
+        approval_context_fingerprint=app_ctx.context_fingerprint,
+    )
+    escalation = EscalationRecord(
+        episode_id="ep-crash-rec",
+        status=EscalationStatus.REOPENED,
+        resume_classification=ResumeClassification.RISK_APPROVAL,
+        target_repository="owner/repo",
+        target_number=1,
+        accepted_replies=[receipt],
+        reopen_count=1,
+        approval_context=app_ctx,
+        remote_resume_enabled=True,
+    )
+
     run = FactoryRun(
         id="run-crash-rec",
         work_item_id=work_item_id,
@@ -2159,11 +2334,12 @@ def test_crash_recovered_reopened_dispatch_does_not_require_extra_quota_slot(
         run.id,
         TriageResult(
             factory_eligible=True,
-            complexity=Complexity.L0,
-            risk=Risk.R0,
+            complexity=Complexity.L1,
+            risk=Risk.R2,
             requirements_quality="good",
             needs_research=False,
             confidence=0.9,
+            risk_rationale=app_ctx.risk_rationale,
         ),
     )
     from software_agent_factory.repository_profile import generic_repository_profile
@@ -2459,6 +2635,9 @@ def test_validate_reply_candidate_distinguishes_transient_failure(tmp_path: Path
         target_number=10,
         resume_classification=ResumeClassification.RISK_APPROVAL,
         created_at=now - timedelta(minutes=5),
+        last_notified_at=now - timedelta(minutes=5),
+        approval_context=_make_approval_context(run_id="run-1", episode_id="ep-1"),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="run-1",
@@ -2532,6 +2711,9 @@ def test_poll_escalation_reply_does_not_advance_cursor_on_transient_failure(
         target_number=10,
         resume_classification=ResumeClassification.RISK_APPROVAL,
         created_at=now - timedelta(minutes=10),
+        last_notified_at=now - timedelta(minutes=10),
+        approval_context=_make_approval_context(run_id="run-cursor-retry", episode_id="ep-1"),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="run-cursor-retry",

@@ -34,6 +34,7 @@ from software_agent_factory.models import (
     ResearchReport,
     ReviewReport,
     Risk,
+    RiskRationale,
     Specification,
     TestReport,
     TriageResult,
@@ -465,6 +466,14 @@ def test_triage_hook_overrides_default_for_scripted_tests() -> None:
                 dependencies=[],
                 unknowns=["unclear scope"],
                 confidence=0.2,
+                risk_rationale=RiskRationale(
+                    intended_outcome="Explore infrastructure migration.",
+                    sensitive_boundary="Cloud infrastructure configuration.",
+                    necessity="Work item requires evaluating cloud migration boundaries.",
+                    credible_scenario="Premature configuration changes could break connectivity.",
+                    known_mitigations=["Perform exploratory analysis only."],
+                    residual_risk="Production scope requires human approval.",
+                ),
             ),
         )
 

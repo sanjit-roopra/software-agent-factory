@@ -22,6 +22,7 @@ from software_agent_factory.models import (
     Complexity,
     RepairContext,
     Risk,
+    RiskRationale,
     TriageResult,
     WorkItem,
 )
@@ -121,6 +122,18 @@ def triage_hook(
     needs_research: bool = False,
 ):
     def hook(request: AgentRequest) -> AgentResult:
+        rationale = (
+            RiskRationale(
+                intended_outcome="Update deployment credentials safely.",
+                sensitive_boundary="Production deployment configuration.",
+                necessity="Task requires modifying production deployment keys.",
+                credible_scenario="Misconfiguration could cause service outage.",
+                known_mitigations=["Validate syntax before deployment."],
+                residual_risk="Manual operator review required before release.",
+            )
+            if risk in {Risk.R2, Risk.R3}
+            else None
+        )
         return AgentResult(
             role=AgentRole.TRIAGE,
             success=True,
@@ -133,6 +146,7 @@ def triage_hook(
                 dependencies=[],
                 unknowns=[],
                 confidence=0.8,
+                risk_rationale=rationale,
             ),
         )
 

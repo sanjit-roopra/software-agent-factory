@@ -461,7 +461,11 @@ class WorkflowController:
         updates["failure_reason"] = failure_reason
 
         if new_state is WorkflowState.NEEDS_HUMAN:
-            from .escalation import classify_halt_reason, generate_episode_id
+            from .escalation import (
+                build_risk_approval_context,
+                classify_halt_reason,
+                generate_episode_id,
+            )
 
             classification, code, summary, action = classify_halt_reason(
                 run.model_copy(update={"state": new_state, "failure_reason": failure_reason}),
@@ -471,14 +475,42 @@ class WorkflowController:
             episode_num = (prev_escalation.episode_number + 1) if prev_escalation else 1
             reopen_count = prev_escalation.reopen_count if prev_escalation else 0
             accepted_replies = prev_escalation.accepted_replies if prev_escalation else []
+            episode_id = generate_episode_id()
+            approval_context = None
+            remote_resume_enabled = False
+            if classification is ResumeClassification.RISK_APPROVAL:
+                approval_context = build_risk_approval_context(
+                    run=run,
+                    store=self._store,
+                    config=self._config,
+                    episode_id=episode_id,
+                )
+                if approval_context is not None:
+                    from .escalation import build_escalation_comment
+
+                    rendered = build_escalation_comment(
+                        run_id=run.id,
+                        episode_id=episode_id,
+                        classification=classification,
+                        reason_code=code,
+                        summary=summary,
+                        next_action=action,
+                        attempts_consumed=len(run.attempt_records),
+                        reopen_count=reopen_count,
+                        max_reopens=self._config.escalation.max_reopens,
+                        approval_context=approval_context,
+                    )
+                    remote_resume_enabled = getattr(rendered, "remote_resume_enabled", False)
             updates["escalation"] = EscalationRecord(
-                episode_id=generate_episode_id(),
+                episode_id=episode_id,
                 episode_number=episode_num,
                 status=EscalationStatus.PENDING_NOTIFICATION,
                 resume_classification=classification,
                 reason_code=code,
                 reopen_count=reopen_count,
                 accepted_replies=accepted_replies,
+                approval_context=approval_context,
+                remote_resume_enabled=remote_resume_enabled,
             )
 
         run = run.model_copy(update=updates)
@@ -824,6 +856,27 @@ class WorkflowController:
             raise ValueError(
                 f"run {run.id} has no accepted reply receipt bound to "
                 f"episode {escalation.episode_id}"
+            )
+
+        if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
+            raise ValueError(
+                f"run {run.id} halt category {escalation.resume_classification} cannot be reopened"
+            )
+        from .escalation import is_valid_risk_approval_context
+
+        if escalation.approval_context is None or not is_valid_risk_approval_context(
+            escalation.approval_context, run.id, escalation.episode_id
+        ):
+            raise ValueError(f"run {run.id} has missing or invalid risk approval decision context")
+
+        import secrets
+
+        if receipt.approval_context_fingerprint is None or not secrets.compare_digest(
+            receipt.approval_context_fingerprint,
+            escalation.approval_context.context_fingerprint,
+        ):
+            raise ValueError(
+                f"run {run.id} receipt fingerprint does not match active approval context"
             )
 
         now = utc_now()
