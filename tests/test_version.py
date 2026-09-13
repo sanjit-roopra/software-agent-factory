@@ -60,3 +60,22 @@ def test_main_prints_version_without_loading_the_cli(monkeypatch) -> None:
 
     assert exit_code == 0
     assert captured.getvalue().strip() == "factory 3.2.1"
+
+
+def test_main_supports_standalone_script_execution() -> None:
+    """PLAN.md Phase 15.2: __main__.py is the entrypoint for both python -m
+    software_agent_factory and frozen builds (which execute __main__.py as a
+    top-level standalone script without package context)."""
+    import subprocess
+
+    main_script = (
+        Path(__file__).resolve().parents[1] / "src" / "software_agent_factory" / "__main__.py"
+    )
+    result = subprocess.run(
+        [sys.executable, str(main_script), "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip().startswith("factory ")
