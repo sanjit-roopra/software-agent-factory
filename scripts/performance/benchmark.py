@@ -45,6 +45,18 @@ def _run_subprocess(
     )
 
 
+def _configure_synthetic_git_repo(repo_dir: Path, env: dict[str, str]) -> None:
+    settings = (
+        ("user.name", "Benchmark Runner"),
+        ("user.email", "benchmark@example.invalid"),
+        ("commit.gpgsign", "false"),
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+    )
+    for key, value in settings:
+        _run_subprocess(["git", "config", key, value], cwd=repo_dir, env_overrides=env)
+
+
 def _percentile(data: list[float], p: float) -> float:
     """Calculate percentile using linear interpolation between closest ranks."""
     if not data:
@@ -505,21 +517,7 @@ def _setup_synthetic_repo(repo_dir: Path, tree_size: str = "small") -> None:
     env["GIT_COMMITTER_EMAIL"] = "benchmark@example.invalid"
 
     _run_subprocess(["git", "init", "-b", "main"], cwd=repo_dir, env_overrides=env)
-    _run_subprocess(
-        ["git", "config", "user.name", "Benchmark Runner"],
-        cwd=repo_dir,
-        env_overrides=env,
-    )
-    _run_subprocess(
-        ["git", "config", "user.email", "benchmark@example.invalid"],
-        cwd=repo_dir,
-        env_overrides=env,
-    )
-    _run_subprocess(
-        ["git", "config", "commit.gpgsign", "false"],
-        cwd=repo_dir,
-        env_overrides=env,
-    )
+    _configure_synthetic_git_repo(repo_dir, env)
 
     pyproject = repo_dir / "pyproject.toml"
     pyproject.write_text(
@@ -636,21 +634,7 @@ def benchmark_git_evidence_collection(
         env["GIT_COMMITTER_EMAIL"] = "benchmark@example.invalid"
 
         _run_subprocess(["git", "init", "-b", "main"], cwd=source_repo, env_overrides=env)
-        _run_subprocess(
-            ["git", "config", "user.name", "Benchmark Runner"],
-            cwd=source_repo,
-            env_overrides=env,
-        )
-        _run_subprocess(
-            ["git", "config", "user.email", "benchmark@example.invalid"],
-            cwd=source_repo,
-            env_overrides=env,
-        )
-        _run_subprocess(
-            ["git", "config", "commit.gpgsign", "false"],
-            cwd=source_repo,
-            env_overrides=env,
-        )
+        _configure_synthetic_git_repo(source_repo, env)
 
         (source_repo / "README.md").write_text("# Bench Repo\n", encoding="utf-8")
         (source_repo / "app.py").write_text("print('init')\n", encoding="utf-8")
@@ -781,21 +765,7 @@ def run_controller_standard_vs_fast(
             env["GIT_COMMITTER_EMAIL"] = "benchmark@example.invalid"
 
             _run_subprocess(["git", "init", "-b", "main"], cwd=source_repo, env_overrides=env)
-            _run_subprocess(
-                ["git", "config", "user.name", "Benchmark Runner"],
-                cwd=source_repo,
-                env_overrides=env,
-            )
-            _run_subprocess(
-                ["git", "config", "user.email", "benchmark@example.invalid"],
-                cwd=source_repo,
-                env_overrides=env,
-            )
-            _run_subprocess(
-                ["git", "config", "commit.gpgsign", "false"],
-                cwd=source_repo,
-                env_overrides=env,
-            )
+            _configure_synthetic_git_repo(source_repo, env)
 
             (source_repo / "app.py").write_text("def run(): return 42\n", encoding="utf-8")
             _run_subprocess(["git", "add", "."], cwd=source_repo, env_overrides=env)

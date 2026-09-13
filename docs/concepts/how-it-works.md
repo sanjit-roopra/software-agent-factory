@@ -1,25 +1,51 @@
 # How it works
 
-A tour of the moving parts. For field-level detail, read
-[Architecture](../architecture.md).
+A run is one execution of a work item.
+The factory takes each run through a controlled sequence of stages.
+The [interactive pipeline](../index.md#the-pipeline) explains these stages in six groups.
+For artifact fields, read [Architecture](../architecture.md).
 
 ## The shape of the system
 
-```mermaid
-flowchart TD
-  CLI[factory CLI] --> WC[WorkflowController]
-  SCHED[Scheduler] --> WC
-  WC --> ROUTER[ModelRouter]
-  WC --> GOV[Governance: verification + scope drift]
-  WC --> PROF[Deterministic repository profiler]
-  WC --> WS[GitWorktreeWorkspace]
-  WC --> STORE[FileRunStore]
-  ROUTER --> RT[AgentRuntime]
-  RT --> FAKE[FakeAgentRuntime]
-  RT --> COP[CopilotAgentRuntime]
-  COP --> COPILOT[copilot CLI]
-  WC --> GH[GitHubClient via gh]
-```
+<div class="saf-boundaries" markdown>
+
+<div class="saf-boundary" markdown>
+
+<span class="saf-small-label">01 / Input</span>
+
+### Submit the work
+
+A work item describes one requested change.
+The command line accepts manual work items.
+The optional scheduler selects eligible GitHub issues.
+
+</div>
+
+<div class="saf-boundary saf-boundary--accent" markdown>
+
+<span class="saf-small-label">02 / Control</span>
+
+### Apply workflow rules
+
+The controller is code that enforces workflow rules.
+It selects models through configuration.
+It controls the stages and required checks.
+
+</div>
+
+<div class="saf-boundary" markdown>
+
+<span class="saf-small-label">03 / Execution</span>
+
+### Produce the evidence
+
+Agents produce changes and findings.
+Repository commands produce verification results.
+The factory retains the evidence in local JSON files.
+
+</div>
+
+</div>
 
 `WorkflowController` is the only thing that transitions a run. Agents return
 artifacts and outcomes. They do not mutate orchestration state. The scheduler
@@ -52,10 +78,10 @@ The allowed transitions are declared as data and enforced on every call:
 CREATED      → TRIAGING
 TRIAGING     → REFINING
 REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING
+RESEARCHING  → PLANNING | IMPLEMENTING
 PLANNING     → IMPLEMENTING
 IMPLEMENTING → VERIFYING
-VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
+VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING | RESEARCHING
 REVIEWING    → PR_READY | IMPLEMENTING
 PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE

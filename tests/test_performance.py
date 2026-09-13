@@ -75,6 +75,25 @@ run_controller_standard_vs_fast = _bench.run_controller_standard_vs_fast
 compare_with_baseline = _bench.compare_with_baseline
 
 
+def test_synthetic_repositories_disable_automatic_git_maintenance(tmp_path: Path) -> None:
+    repo = tmp_path / "synthetic-repo"
+    repo.mkdir()
+
+    _bench._setup_synthetic_repo(repo)
+
+    maintenance_auto = _bench._run_subprocess(
+        ["git", "config", "--get", "maintenance.auto"],
+        cwd=repo,
+    )
+    gc_auto = _bench._run_subprocess(
+        ["git", "config", "--get", "gc.auto"],
+        cwd=repo,
+    )
+
+    assert maintenance_auto.stdout.strip() == "false"
+    assert gc_auto.stdout.strip() == "0"
+
+
 def test_performance_metric_validation() -> None:
     metric = PerformanceMetric(
         name="test.op",
