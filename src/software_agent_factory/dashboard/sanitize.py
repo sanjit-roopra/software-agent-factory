@@ -18,9 +18,17 @@ unenforceable "already redacted" claim.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import urlsplit
 
+from ..store import ARTIFACT_FILENAMES
 from .snapshot import to_json_safe
+
+_GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
+_MODEL_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
+_GITHUB_LOGIN_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}$")
+_SAFE_ARTIFACT_NAMES = frozenset(ARTIFACT_FILENAMES.values())
 
 #: Fields rendered in the paginated run table (``/api/runs``). Includes both
 #: ``run_id`` (the real ``observability.RunSummary`` field name) and ``id``
@@ -30,6 +38,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "run_id",
         "id",
         "work_item_id",
+        "source_external_id",
         "title",
         "state",
         "complexity",
@@ -45,6 +54,10 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "is_stale",
         "stale",
         "review_status",
+        "requested_performance_mode",
+        "effective_performance_mode",
+        "performance_model_profile",
+        "waiting_for_human",
         "performance",
     }
 )
@@ -57,9 +70,37 @@ RUN_DETAIL_FIELDS: frozenset[str] = RUN_SUMMARY_FIELDS | frozenset(
         "completed_at",
         "commit_sha",
         "pull_request_url",
+        "merge_commit_sha",
         "invocation_count",
         "usage",
         "guidance",
+        "verification",
+        "artifacts",
+        "escalation",
+    }
+)
+
+VERIFICATION_FIELDS: frozenset[str] = frozenset(
+    {"passed", "check_count", "failed_check_count", "coverage_change"}
+)
+
+ESCALATION_FIELDS: frozenset[str] = frozenset(
+    {
+        "status",
+        "target_type",
+        "comment_url",
+        "reason_code",
+        "resume_classification",
+        "waiting_for_human",
+        "waiting_since",
+        "episode_number",
+        "reopen_count",
+        "accepted_reply_count",
+        "last_responder",
+        "last_action",
+        "last_response_at",
+        "is_resumed",
+        "resumed_at",
     }
 )
 
@@ -229,6 +270,38 @@ def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
 
 
+def _is_safe_https_url(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) > 2048 or value != value.strip():
+        return False
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def _sanitize_summary_fields(data: dict[str, Any], sanitized: dict[str, Any]) -> None:
+    external_id = sanitized.get("source_external_id")
+    if not isinstance(external_id, str) or not _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(external_id):
+        sanitized.pop("source_external_id", None)
+    for key in ("requested_performance_mode", "effective_performance_mode"):
+        if sanitized.get(key) not in {"standard", "fast"}:
+            sanitized.pop(key, None)
+    model_profile = sanitized.get("performance_model_profile")
+    if model_profile is not None and (
+        not isinstance(model_profile, str) or not _MODEL_PROFILE_PATTERN.fullmatch(model_profile)
+    ):
+        sanitized.pop("performance_model_profile", None)
+    if not isinstance(sanitized.get("waiting_for_human"), bool):
+        sanitized.pop("waiting_for_human", None)
+
+
 def sanitize_performance(raw: Any) -> dict[str, Any]:
     """Reduce one performance record to bounded, safe numeric telemetry."""
     data = to_json_safe(raw)
@@ -266,6 +339,7 @@ def sanitize_run_summary(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("run summary must serialize to a JSON object")
     sanitized = _allowlist(data, RUN_SUMMARY_FIELDS)
+    _sanitize_summary_fields(data, sanitized)
     if "performance" in sanitized:
         sanitized["performance"] = sanitize_performance(sanitized["performance"])
     return sanitized
@@ -317,6 +391,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("run detail must serialize to a JSON object")
     sanitized = _allowlist(data, RUN_DETAIL_FIELDS)
+    _sanitize_summary_fields(data, sanitized)
     if "usage" in sanitized:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
     if "performance" in sanitized:
@@ -335,6 +410,65 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
         sanitized_guidance = _sanitize_guidance(guidance)
         if sanitized_guidance is not None:
             sanitized["guidance"] = sanitized_guidance
+    verification = data.get("verification")
+    if isinstance(verification, dict):
+        safe_verification = _allowlist(verification, VERIFICATION_FIELDS)
+        for key in ("passed",):
+            if not isinstance(safe_verification.get(key), bool):
+                safe_verification.pop(key, None)
+        for key in ("check_count", "failed_check_count"):
+            value = safe_verification.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                safe_verification.pop(key, None)
+        coverage = safe_verification.get("coverage_change")
+        if coverage is not None and (
+            not isinstance(coverage, (int, float)) or isinstance(coverage, bool)
+        ):
+            safe_verification.pop("coverage_change", None)
+        sanitized["verification"] = safe_verification
+    artifacts = data.get("artifacts")
+    if isinstance(artifacts, list):
+        sanitized["artifacts"] = sorted(
+            {item for item in artifacts if isinstance(item, str) and item in _SAFE_ARTIFACT_NAMES}
+        )
+    escalation = data.get("escalation")
+    if isinstance(escalation, dict):
+        safe_escalation = _allowlist(escalation, ESCALATION_FIELDS)
+        if safe_escalation.get("status") not in {
+            "PENDING_NOTIFICATION",
+            "NOTIFIED",
+            "NOTIFICATION_FAILED",
+            "REOPENED",
+            "RESUMED",
+            "EXPIRED",
+        }:
+            safe_escalation.pop("status", None)
+        if safe_escalation.get("target_type") not in {None, "PULL_REQUEST", "ISSUE"}:
+            safe_escalation.pop("target_type", None)
+        if not _is_safe_https_url(safe_escalation.get("comment_url")):
+            safe_escalation.pop("comment_url", None)
+        if safe_escalation.get("reason_code") not in GUIDANCE_COPY:
+            safe_escalation.pop("reason_code", None)
+        if safe_escalation.get("resume_classification") not in {
+            "RISK_APPROVAL",
+            "NOT_RESUMABLE",
+        }:
+            safe_escalation.pop("resume_classification", None)
+        for key in ("waiting_for_human", "is_resumed"):
+            if not isinstance(safe_escalation.get(key), bool):
+                safe_escalation.pop(key, None)
+        for key in ("episode_number", "reopen_count", "accepted_reply_count"):
+            value = safe_escalation.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                safe_escalation.pop(key, None)
+        responder = safe_escalation.get("last_responder")
+        if responder is not None and (
+            not isinstance(responder, str) or not _GITHUB_LOGIN_PATTERN.fullmatch(responder)
+        ):
+            safe_escalation.pop("last_responder", None)
+        if safe_escalation.get("last_action") not in {None, "RESUME"}:
+            safe_escalation.pop("last_action", None)
+        sanitized["escalation"] = safe_escalation
     return sanitized
 
 
@@ -398,4 +532,107 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
             if "usage" in model_data:
                 model_data["usage"] = sanitize_usage(model_data["usage"])
             sanitized["models"].append(model_data)
+    return sanitized
+
+
+HEALTH_ALLOWED_FIELDS: frozenset[str] = frozenset(
+    {
+        "generated_at",
+        "stale_after_seconds",
+        "max_scanned_runs",
+        "total_runs",
+        "scanned_runs",
+        "scan_truncated",
+        "unreadable_runs",
+        "degraded",
+        "degraded_reasons",
+        "lock_check_supported",
+        "locks_checked",
+        "workspaces_checked",
+        "stale_runs",
+        "stale_locks",
+        "orphaned_workspaces",
+        "status",
+        "success",
+        "checks",
+        "error",
+    }
+)
+
+STALE_RUN_ALLOWED_FIELDS: frozenset[str] = frozenset(
+    {
+        "run_id",
+        "work_item_id",
+        "state",
+        "idle_seconds",
+    }
+)
+
+STALE_LOCK_ALLOWED_FIELDS: frozenset[str] = frozenset(
+    {
+        "lock_name",
+        "modified_at",
+    }
+)
+
+ORPHANED_WORKSPACE_ALLOWED_FIELDS: frozenset[str] = frozenset(
+    {
+        "workspace_name",
+        "modified_at",
+    }
+)
+
+
+def sanitize_health(raw: Any) -> dict[str, Any] | None:
+    """Sanitize operational health report for dashboard JSON responses.
+
+    Strictly allowlists fields and strips all absolute workspace paths
+    (such as StaleRunFinding.workspace_path).
+    """
+    if raw is None:
+        return None
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        return None
+
+    sanitized = _allowlist(data, HEALTH_ALLOWED_FIELDS)
+
+    stale_runs = data.get("stale_runs")
+    if isinstance(stale_runs, list):
+        sanitized_stale_runs = []
+        for item in stale_runs:
+            item_safe = to_json_safe(item)
+            if isinstance(item_safe, dict):
+                sanitized_stale_runs.append(_allowlist(item_safe, STALE_RUN_ALLOWED_FIELDS))
+        sanitized["stale_runs"] = sanitized_stale_runs
+
+    stale_locks = data.get("stale_locks")
+    if isinstance(stale_locks, list):
+        sanitized_stale_locks = []
+        for item in stale_locks:
+            item_safe = to_json_safe(item)
+            if isinstance(item_safe, dict):
+                sanitized_stale_locks.append(_allowlist(item_safe, STALE_LOCK_ALLOWED_FIELDS))
+        sanitized["stale_locks"] = sanitized_stale_locks
+
+    orphaned_workspaces = data.get("orphaned_workspaces")
+    if isinstance(orphaned_workspaces, list):
+        sanitized_orphaned = []
+        for item in orphaned_workspaces:
+            item_safe = to_json_safe(item)
+            if isinstance(item_safe, dict):
+                sanitized_orphaned.append(_allowlist(item_safe, ORPHANED_WORKSPACE_ALLOWED_FIELDS))
+        sanitized["orphaned_workspaces"] = sanitized_orphaned
+
+    checks = data.get("checks")
+    if isinstance(checks, list):
+        sanitized_checks = []
+        for check in checks:
+            check_safe = to_json_safe(check)
+            if isinstance(check_safe, dict):
+                sanitized_checks.append(
+                    _allowlist(check_safe, frozenset({"name", "status", "message", "remediation"}))
+                )
+        sanitized["checks"] = sanitized_checks
+
     return sanitized

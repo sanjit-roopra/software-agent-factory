@@ -1,5 +1,41 @@
 # Architecture Decisions
 
+## ADR-024: Controller-owned GitHub escalation and authorized human reply loop
+
+When a run enters `NEEDS_HUMAN`, the factory can notify a human operator on GitHub.
+This behavior is opt-in and disabled by default.
+
+The factory posts a status comment on the open factory pull request when present.
+If no open pull request exists, the factory falls back to the source issue.
+The factory never searches GitHub for arbitrary linked pull requests.
+
+The comment uses only fixed guidance fields.
+The factory never publishes raw failure text, workspace paths, issue descriptions, diffs, or logs.
+Each notification includes an unpredictable episode token and a hidden marker.
+
+An authorized human can reply on the same thread with:
+
+```text
+@factory resume v1 run=<run-id> episode=<episode-id>
+```
+
+The factory polls replies on the exact thread.
+The comment author must be an authorized human user.
+The author must have an allowed association such as `OWNER`, `MEMBER`, or `COLLABORATOR`.
+The factory rejects bots, edits, and its own account.
+
+The controller re-fetches the comment before acceptance to detect edits.
+The factory records an accepted reply receipt before reopening.
+The receipt stores comment metadata and never stores raw reply bodies.
+
+The controller reopens the same run.
+It never creates a replacement run or resets attempt records.
+In this version, only `RISK_APPROVAL` transitions back to `REFINING`.
+Other halt categories remain non-resumable.
+
+Reopened work uses the same executor, concurrency limit, and daily run quota.
+The backlog filter continues to block the source issue from fresh dispatch.
+
 ## ADR-023: Enforce concise controlled writing
 
 All factory-authored prose uses one controller-owned writing policy. This

@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import assets
-from .sanitize import sanitize_project, sanitize_run_detail, sanitize_run_summary
+from .sanitize import (
+    sanitize_health,
+    sanitize_project,
+    sanitize_run_detail,
+    sanitize_run_summary,
+)
 from .security import (
     TOKEN_HEADER,
     TOKEN_QUERY_PARAM,
@@ -227,7 +232,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if provider is None:
             return None
         try:
-            return to_json_safe(provider())
+            return sanitize_health(provider())
         except Exception:  # noqa: BLE001 - a broken health check is itself a
             # finding, not a reason to fail the whole summary response.
             _logger.exception("Health provider failed")

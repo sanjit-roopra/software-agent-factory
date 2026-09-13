@@ -60,7 +60,7 @@ def render_index_html(*, token: str) -> str:
       <thead>
         <tr>
           <th scope="col">Run</th>
-          <th scope="col">Work item</th>
+          <th scope="col">Source</th>
           <th scope="col">State</th>
           <th scope="col">Review</th>
           <th scope="col">Created</th>
@@ -84,6 +84,8 @@ def render_index_html(*, token: str) -> str:
           <th scope="col">#</th>
           <th scope="col">Role</th>
           <th scope="col">Model</th>
+          <th scope="col">Budget</th>
+          <th scope="col">Trigger</th>
           <th scope="col">Outcome</th>
           <th scope="col">Started</th>
           <th scope="col">Completed</th>
@@ -304,7 +306,7 @@ APP_JS = """\
       var row = document.createElement("tr");
       row.setAttribute("data-run-id", runId);
       textCell(row, runId);
-      textCell(row, run.work_item_id);
+      textCell(row, run.source_external_id || run.work_item_id);
       textCell(row, run.state);
       textCell(row, run.review_status);
       textCell(row, run.created_at);
@@ -387,7 +389,9 @@ APP_JS = """\
       var table = document.createElement("table");
       var head = document.createElement("thead");
       var headRow = document.createElement("tr");
-      ["Task", "Title", "State", "Run", "Pull request", "Merged commit"].forEach(function (label) {
+      [
+        "Task", "Title", "State", "Run", "Issue", "Pull request", "Merged commit"
+      ].forEach(function (label) {
         var th = document.createElement("th");
         th.scope = "col";
         th.textContent = label;
@@ -400,7 +404,7 @@ APP_JS = """\
       if (tasks.length === 0) {
         var pendingRow = document.createElement("tr");
         var pendingCell = document.createElement("td");
-        pendingCell.colSpan = 6;
+        pendingCell.colSpan = 7;
         pendingCell.textContent = "Planning is in progress; tasks are not persisted yet.";
         pendingRow.appendChild(pendingCell);
         body.appendChild(pendingRow);
@@ -411,6 +415,7 @@ APP_JS = """\
         textCell(row, task.title);
         textCell(row, task.state);
         textCell(row, task.run_id);
+        appendLinkCell(row, task.issue_url);
         appendLinkCell(row, task.pull_request_url);
         textCell(row, task.merge_commit_sha);
         body.appendChild(row);
@@ -539,10 +544,14 @@ APP_JS = """\
     var fields = [
       ["Run", detail.run_id !== undefined ? detail.run_id : detail.id],
       ["Work item", detail.work_item_id],
+      ["GitHub issue", detail.source_external_id],
       ["Title", detail.title],
       ["State", detail.state],
       ["Complexity", detail.complexity],
       ["Risk", detail.risk],
+      ["Requested performance mode", detail.requested_performance_mode],
+      ["Effective performance mode", detail.effective_performance_mode],
+      ["Performance model profile", detail.performance_model_profile],
       ["Created", detail.created_at],
       ["Updated", detail.updated_at],
       ["Completed", detail.completed_at],
@@ -588,14 +597,57 @@ APP_JS = """\
               .join(", ")
           : null
       ],
+      [
+        "Verification",
+        detail.verification
+          ? (detail.verification.passed ? "passed" : "failed") +
+            " (" + detail.verification.failed_check_count +
+            "/" + detail.verification.check_count + " failed)"
+          : null
+      ],
+      ["Coverage change", detail.verification ? detail.verification.coverage_change : null],
+      ["Artifacts", Array.isArray(detail.artifacts) ? detail.artifacts.join(", ") : null],
+      ["Escalation status", detail.escalation ? detail.escalation.status : null],
+      ["Escalation reason", detail.escalation ? detail.escalation.reason_code : null],
+      [
+        "Resume classification",
+        detail.escalation ? detail.escalation.resume_classification : null
+      ],
+      [
+        "Waiting for human",
+        detail.escalation ? detail.escalation.waiting_for_human : detail.waiting_for_human
+      ],
+      ["Escalation episode", detail.escalation ? detail.escalation.episode_number : null],
+      [
+        "Escalation comment",
+        detail.escalation ? detail.escalation.comment_url : null,
+        true
+      ],
+      [
+        "Last authorized responder",
+        detail.escalation ? detail.escalation.last_responder : null
+      ],
+      ["Last authorized action", detail.escalation ? detail.escalation.last_action : null],
+      ["Resumed", detail.escalation ? detail.escalation.is_resumed : null],
+      ["Resumed at", detail.escalation ? detail.escalation.resumed_at : null],
       ["Commit", detail.commit_sha],
-      ["Pull request", detail.pull_request_url]
+      ["Merged commit", detail.merge_commit_sha],
+      ["Pull request", detail.pull_request_url, true]
     ];
     fields.forEach(function (pair) {
       var dt = document.createElement("dt");
       dt.textContent = pair[0];
       var dd = document.createElement("dd");
-      dd.textContent = displayValue(pair[1]);
+      if (pair[2] && typeof pair[1] === "string" && pair[1].indexOf("https://") === 0) {
+        var link = document.createElement("a");
+        link.href = pair[1];
+        link.textContent = pair[1];
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        dd.appendChild(link);
+      } else {
+        dd.textContent = displayValue(pair[1]);
+      }
       dl.appendChild(dt);
       dl.appendChild(dd);
     });
@@ -608,6 +660,8 @@ APP_JS = """\
       textCell(row, attempt.attempt_number);
       textCell(row, attempt.role);
       textCell(row, attempt.model);
+      textCell(row, attempt.budget);
+      textCell(row, attempt.triggered_by);
       textCell(row, attempt.outcome);
       textCell(row, attempt.started_at);
       textCell(row, attempt.completed_at);

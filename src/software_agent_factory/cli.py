@@ -1137,6 +1137,11 @@ def service_install_command(
         "--model-profile",
         help="Configured model profile the service will use.",
     ),
+    performance_mode: PerformanceModeChoice | None = typer.Option(
+        None,
+        "--performance-mode",
+        help="Override the workflow performance mode for every dispatched run.",
+    ),
     executable: Path = typer.Option(
         None,
         "--executable",
@@ -1164,7 +1169,7 @@ def service_install_command(
     """
     _require_macos()
 
-    factory_config = _load_config(config, data_dir, model_profile)
+    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "refusing to install a service for a disabled scheduler: set "
@@ -1191,6 +1196,7 @@ def service_install_command(
     from .service_install import (
         ServiceInstallError,
         ServiceInstallRequest,
+        ServicePerformanceMode,
         ServiceRuntime,
         resolve_factory_executable,
     )
@@ -1206,6 +1212,11 @@ def service_install_command(
             poll_interval_seconds=factory_config.scheduler.poll_interval_seconds,
             runtime=ServiceRuntime(runtime.value),
             model_profile=model_profile,
+            performance_mode=(
+                ServicePerformanceMode(performance_mode.value)
+                if performance_mode is not None
+                else None
+            ),
             label=label,
             allow_source_dev=allow_source_dev,
         )
@@ -1223,6 +1234,7 @@ def service_install_command(
 
     typer.echo(f"installed service for {resolved_executable}")
     typer.echo(f"runtime: {runtime.value}")
+    typer.echo(f"performance mode: {factory_config.performance.mode}")
     typer.echo(f"poll interval: {factory_config.scheduler.poll_interval_seconds}s")
     for line in render_service_status(status):
         typer.echo(line)

@@ -238,6 +238,20 @@ scheduler:
   # daily cap.
   max_runs_per_day: 20
 
+escalation:
+  enabled: false
+  authorized_identities: []
+  allowed_associations:
+    - "OWNER"
+    - "MEMBER"
+    - "COLLABORATOR"
+  max_reopens: 3
+  reply_window_hours: 168
+  max_reply_polls_per_tick: 10
+  max_notification_attempts: 3
+  allowed_hosts:
+    - "github.com"
+
 risk:
   R0:
     human_approval: false

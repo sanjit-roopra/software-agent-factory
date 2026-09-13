@@ -1,6 +1,6 @@
 # GitHub backlog, PRs and CI
 
-Four separate integrations. All are disabled in the packaged configuration.
+Five separate integrations. All are disabled in the packaged configuration.
 With the defaults, the factory makes no network request at all.
 
 | Setting | Default | What it turns on |
@@ -9,8 +9,9 @@ With the defaults, the factory makes no network request at all.
 | `ci.enabled` | `false` | Poll checks on that PR and repair some failures. |
 | `merge.enabled` | `false` | Merge verified PRs into an explicitly configured target. |
 | `scheduler.enabled` | `false` | Poll GitHub Issues and dispatch work. |
+| `escalation.enabled` | `false` | Post escalation notices on GitHub and poll reply commands. |
 
-All four require `gh` on `PATH` and authenticated. `ci.enabled` also requires
+All require `gh` on `PATH` and authenticated. `ci.enabled` also requires
 `pull_request.enabled`. The configuration loader rejects the combination otherwise.
 
 Automatic merging requires its own explicit policy. There is no autonomous
@@ -160,7 +161,10 @@ scheduler:
 uv run factory start \
   --repo ~/projects/example \
   --github-repo acme/example \
-  --config ~/my-factory.yaml
+  --config ~/my-factory.yaml \
+  --runtime copilot \
+  --model-profile economy \
+  --performance-mode fast
 ```
 
 `factory start` refuses to run, and never contacts GitHub, unless
@@ -201,15 +205,54 @@ money quickly if the backlog is large.
 ### Recovery
 
 The controller transitions a non-terminal run from a dead process to
-`NEEDS_HUMAN`. The factory never resumes this run automatically. No paid retry
-is spent. The persisted budget remains untouched. The workspace and artifacts
-remain on disk for inspection.
+`NEEDS_HUMAN`. Recovery failures cannot resume through a GitHub reply.
+The persisted budget remains untouched. The workspace and artifacts remain
+on disk for inspection.
 
 ### The fake runtime is a real dry run
 
 `--runtime fake` persists completed runs. The scheduler will not dispatch
 those backlog items again. Before you poll real `agent-ready` issues, switch
 to `--runtime copilot` or use a separate `--data-dir` for fake-runtime tests.
+
+## Escalation notices and replies
+
+```yaml
+escalation:
+  enabled: true
+  authorized_identities:
+    - "lead-dev"
+```
+
+When a run enters `NEEDS_HUMAN`, the factory can notify operators on GitHub.
+It posts a concise notice comment on the open pull request if available.
+If no open pull request exists, it comments on the source issue.
+
+The notice contains only fixed guidance fields.
+The factory never publishes raw error messages, file paths, issue text, or code diffs.
+Each comment includes a hidden marker and an unpredictable episode token.
+
+An authorized human can reply on the same thread with:
+
+```text
+@factory resume v1 run=<run-id> episode=<episode-id>
+```
+
+The daemon polls for replies on each cycle.
+The author must be in `authorized_identities`.
+An all-digit entry identifies a numeric GitHub user ID only.
+The author must have an allowed association such as `OWNER`, `MEMBER`, or `COLLABORATOR`.
+The factory rejects bots, edits, and its own account.
+
+In this version, only `RISK_APPROVAL` can be resumed by reply.
+Other halt categories require local manual inspection.
+
+The controller stores the accepted reply before it reopens the same run.
+The reply does not reset the attempt history or retry budget.
+
+Run `factory dashboard` to inspect the loop. The dashboard shows the issue
+reference, models, performance mode, safe artifact names, verification summary,
+pull request, escalation link, and resume state.
 
 ## Next
 

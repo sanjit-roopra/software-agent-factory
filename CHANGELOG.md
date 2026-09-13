@@ -7,6 +7,21 @@ API is still `0.x`.
 
 ## Unreleased
 
+### Added
+
+- GitHub escalation notices for `NEEDS_HUMAN` runs, with pull request priority
+  and source issue fallback.
+- An authorized GitHub reply can resume the same run after an `R2` or `R3`
+  risk approval stop.
+- The dashboard now shows source issues, performance mode, verification
+  summaries, safe artifact names, escalation status, and resume progress.
+- `factory service install` now accepts `--performance-mode`.
+
+### Changed
+
+- Escalation delivery and reply polling now use bounded reconciliation,
+  repository identity checks, durable receipts, and fair polling.
+
 ## 0.5.0 - 2026-09-11
 
 ### Added
