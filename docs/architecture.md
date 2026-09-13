@@ -351,9 +351,12 @@ decision: eligibility, risk, scope, exhausted budget, non-repairable CI) or
 Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
 
 `NEEDS_HUMAN` is normally terminal. The controller can reopen the same run only
-for a persisted `RISK_APPROVAL` escalation. An authorized GitHub reply must match
-the exact run and escalation episode. The reply cannot change scope, models,
-commands, retry limits, or delivery policy.
+for a persisted `RISK_APPROVAL` escalation. The notice explains why approval is
+needed using a typed causal risk rationale from triage. The notice lists the
+requested decision, authorized transition to `REFINING`, and explicit exclusions.
+An authorized GitHub reply must match the exact run and escalation episode.
+The reply cannot change scope, models, commands, retry limits, or delivery policy.
+All verification and quality gates remain in force.
 
 `PR_READY` is *not* terminal. When pull requests are enabled it continues to
 `PR_CREATED`. When they are disabled it is the completed endpoint of the manual

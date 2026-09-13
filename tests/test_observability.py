@@ -53,6 +53,7 @@ from software_agent_factory.models import (
     ReviewLedger,
     ReviewSourceLocation,
     Risk,
+    RiskRationale,
     RunLease,
     TriageResult,
     UsageMetrics,
@@ -797,6 +798,14 @@ def test_complexity_and_risk_prefer_triage_result_over_work_item(tmp_path: Path)
             requirements_quality="good",
             needs_research=False,
             confidence=0.9,
+            risk_rationale=RiskRationale(
+                intended_outcome="Update deployment credentials safely.",
+                sensitive_boundary="Production deployment configuration.",
+                necessity="Task requires modifying production deployment keys.",
+                credible_scenario="Misconfiguration could cause service outage.",
+                known_mitigations=["Validate syntax before deployment."],
+                residual_risk="Manual operator review required before release.",
+            ),
         ),
     )
 

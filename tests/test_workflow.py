@@ -60,6 +60,7 @@ from software_agent_factory.models import (
     ReviewReport,
     ReviewSourceLocation,
     Risk,
+    RiskRationale,
     RunLease,
     SkillGuidance,
     SkillOverlayMode,
@@ -233,6 +234,18 @@ def _resolve_prior(
 
 def _triage_hook(complexity: Complexity, risk: Risk, *, needs_research: bool = False):
     def hook(request: AgentRequest) -> AgentResult:
+        rationale = (
+            RiskRationale(
+                intended_outcome="Update deployment credentials safely.",
+                sensitive_boundary="Production deployment configuration.",
+                necessity="Task requires modifying production deployment keys.",
+                credible_scenario="Misconfiguration could cause service outage.",
+                known_mitigations=["Validate syntax before deployment."],
+                residual_risk="Manual operator review required before release.",
+            )
+            if risk in {Risk.R2, Risk.R3}
+            else None
+        )
         return AgentResult(
             role=AgentRole.TRIAGE,
             success=True,
@@ -245,6 +258,7 @@ def _triage_hook(complexity: Complexity, risk: Risk, *, needs_research: bool = F
                 dependencies=[],
                 unknowns=[],
                 confidence=0.8,
+                risk_rationale=rationale,
             ),
         )
 

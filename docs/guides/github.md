@@ -247,6 +247,19 @@ The factory rejects bots, edits, and its own account.
 In this version, only `RISK_APPROVAL` can be resumed by reply.
 Other halt categories require local manual inspection.
 
+For `RISK_APPROVAL`, the notice explains the causal chain.
+It details the intended outcome and the sensitive boundary.
+It explains necessity, credible failure scenarios, mitigations, and residual risk.
+It lists the decision requested and bounded authorized actions.
+Approval authorizes moving the same run to `REFINING`.
+Approval does not change task scope or retry budgets.
+Approval does not bypass quality gates or alter permissions.
+All quality gates and review checks remain in force.
+If decision context is missing, remote resume fails closed.
+An oversized notice also disables remote resume and closes the reply cursor.
+The accepted receipt records the approval context fingerprint.
+The controller compares this fingerprint before reopening.
+
 The controller stores the accepted reply before it reopens the same run.
 The reply does not reset the attempt history or retry budget.
 

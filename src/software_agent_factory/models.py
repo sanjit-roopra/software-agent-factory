@@ -926,6 +926,59 @@ class AcceptedReplyReceipt(ModelBase):
     command: str = Field(min_length=1)
     episode_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    approval_context_fingerprint: str | None = None
+
+
+class RiskRationale(ModelBase):
+    intended_outcome: str = Field(min_length=1, max_length=300)
+    sensitive_boundary: str = Field(min_length=1, max_length=300)
+    necessity: str = Field(min_length=1, max_length=300)
+    credible_scenario: str = Field(min_length=1, max_length=400)
+    known_mitigations: list[str] = Field(min_length=1, max_length=10)
+    residual_risk: str = Field(min_length=1, max_length=300)
+
+    @field_validator(
+        "intended_outcome",
+        "sensitive_boundary",
+        "necessity",
+        "credible_scenario",
+        "residual_risk",
+    )
+    @classmethod
+    def _validate_prose(cls, value: str) -> str:
+        s = value.strip()
+        if not s:
+            raise ValueError("field must not be blank")
+        return s
+
+    @field_validator("known_mitigations")
+    @classmethod
+    def _validate_known_mitigations(cls, items: list[str]) -> list[str]:
+        if not items:
+            raise ValueError("known_mitigations must contain at least one mitigation")
+        cleaned: list[str] = []
+        for item in items:
+            s = item.strip()
+            if not s:
+                raise ValueError("known_mitigations entries must not be blank")
+            if len(s) > 200:
+                raise ValueError("known_mitigations entries must be 200 characters or fewer")
+            cleaned.append(s)
+        return cleaned
+
+
+class RiskApprovalContext(ModelBase):
+    risk: Risk
+    complexity: Complexity
+    work_item_id: str = Field(min_length=1, max_length=128)
+    work_item_title: str = Field(min_length=1, max_length=256)
+    risk_rationale: RiskRationale
+    decision_requested: str = Field(min_length=1, max_length=300)
+    next_state: WorkflowState = WorkflowState.REFINING
+    authorized_actions: list[str] = Field(min_length=1, max_length=10)
+    unauthorized_actions: list[str] = Field(min_length=1, max_length=10)
+    conditions_in_force: list[str] = Field(min_length=1, max_length=10)
+    context_fingerprint: str = Field(min_length=64, max_length=64)
 
 
 class EscalationRecord(ModelBase):
@@ -947,6 +1000,8 @@ class EscalationRecord(ModelBase):
     reply_cursor: str | None = None
     accepted_replies: list[AcceptedReplyReceipt] = Field(default_factory=list)
     reopen_count: int = Field(default=0, ge=0)
+    approval_context: RiskApprovalContext | None = None
+    remote_resume_enabled: bool = False
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
 
@@ -1010,6 +1065,13 @@ class TriageResult(VersionedModel):
     dependencies: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    risk_rationale: RiskRationale | None = None
+
+    @model_validator(mode="after")
+    def _validate_risk_rationale(self) -> TriageResult:
+        if self.risk in {Risk.R2, Risk.R3} and self.risk_rationale is None:
+            raise ValueError(f"risk_rationale is required when risk is {self.risk}")
+        return self
 
 
 class Specification(VersionedModel):

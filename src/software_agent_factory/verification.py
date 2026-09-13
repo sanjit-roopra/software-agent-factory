@@ -83,12 +83,18 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.DOTALL,
     ),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    # Authorization headers / bearer tokens.
-    re.compile(r"(?i)\b(?:authorization|bearer)\b\s*[:=]?\s*[A-Za-z0-9._\-/+=]{20,}"),
-    # Explicit token/secret/password assignments.
+    # Authorization and proxy-authorization headers (all schemes: Basic, Bearer, Digest, etc.).
+    re.compile(r"(?i)\b(?:authorization|proxy[_-]?authorization)\b\s*[:=]\s*[^\r\n]+"),
+    re.compile(r"(?i)\b(?:bearer)\b\s*[:=]?\s*[A-Za-z0-9._\-/+=]{20,}"),
+    re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"),
+    # Cookie and Set-Cookie headers.
+    re.compile(r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b\s*[:=]\s*[^\r\n]+"),
+    # Standalone JWTs (JSON Web Tokens).
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    # Explicit token/secret/password/session assignments.
     re.compile(
-        r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY))\b\s*[:=]\s*"
-        r"[\"']?[^\s\"']{8,}[\"']?"
+        r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|SESSION[_-]?ID|SESSION[_-]?KEY|SESSION[_-]?TOKEN|JSESSIONID|PHPSESSID))\b\s*[:=]\s*"
+        r"[\"']?[^\s\"';]{8,}[\"']?"
     ),
 )
 

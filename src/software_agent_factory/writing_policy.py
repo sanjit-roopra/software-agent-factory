@@ -81,11 +81,47 @@ def artifact_passages(artifact: ModelBase) -> list[WritingPassage]:
     """Return the agent-authored prose fields for one typed artifact."""
 
     if isinstance(artifact, TriageResult):
-        return [
+        passages = [
             _passage("requirements_quality", artifact.requirements_quality, max_words=12),
             *_items("dependencies", artifact.dependencies, max_words=25, lint_prose=False),
             *_items("unknowns", artifact.unknowns, max_words=25),
         ]
+        if artifact.risk_rationale is not None:
+            passages.extend(
+                [
+                    _passage(
+                        "intended_outcome",
+                        artifact.risk_rationale.intended_outcome,
+                        max_words=30,
+                    ),
+                    _passage(
+                        "sensitive_boundary",
+                        artifact.risk_rationale.sensitive_boundary,
+                        max_words=30,
+                    ),
+                    _passage(
+                        "necessity",
+                        artifact.risk_rationale.necessity,
+                        max_words=30,
+                    ),
+                    _passage(
+                        "credible_scenario",
+                        artifact.risk_rationale.credible_scenario,
+                        max_words=45,
+                    ),
+                    *_items(
+                        "known_mitigations",
+                        artifact.risk_rationale.known_mitigations,
+                        max_words=25,
+                    ),
+                    _passage(
+                        "residual_risk",
+                        artifact.risk_rationale.residual_risk,
+                        max_words=30,
+                    ),
+                ]
+            )
+        return passages
     if isinstance(artifact, Specification):
         return [
             _passage("problem", artifact.problem, max_words=80),

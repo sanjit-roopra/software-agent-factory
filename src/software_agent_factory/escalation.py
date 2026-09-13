@@ -15,6 +15,8 @@ Implements the core escalation and authorized human reply loop:
 
 from __future__ import annotations
 
+import hashlib
+import html
 import json
 import logging
 import re
@@ -40,13 +42,77 @@ from .models import (
     FactoryRun,
     ResumeClassification,
     ReviewImpasse,
+    Risk,
+    RiskApprovalContext,
+    RiskRationale,
+    TriageResult,
     WorkflowState,
     WorkItem,
     utc_now,
 )
 from .store import FileRunStore
+from .verification import redact_secrets
 
 logger = logging.getLogger(__name__)
+
+MAX_ESCALATION_COMMENT_CHARS: int = 4000
+
+
+class EscalationComment(str):
+    """Rendered escalation notice comment bound to an explicit remote-resume outcome."""
+
+    body: str
+    remote_resume_enabled: bool
+
+    def __new__(cls, body: str, *, remote_resume_enabled: bool) -> EscalationComment:
+        instance = super().__new__(cls, body)
+        instance.body = body
+        instance.remote_resume_enabled = remote_resume_enabled
+        return instance
+
+
+# Absolute, network, and system file system paths
+_ABSOLUTE_OR_NETWORK_PATH_PATTERN = re.compile(
+    r"(?i)"
+    r"(?:(?<![A-Za-z0-9.~/@\\<])(?<!&lt;)/(?:[A-Za-z0-9_.-]+)[^\s\"'`>)]*)"
+    r"|(?:(?<![A-Za-z0-9_.-])~[\\/][^\s\"'`>)]+)"
+    r"|(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'`>)]*)"
+    r"|(?:(?<![A-Za-z0-9_.-])\\\\[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
+    r"|(?:(?<![A-Za-z0-9_.:])//[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
+)
+
+# Credentials embedded in URLs
+_URL_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@[^\s/]+"
+    r"|\b[a-z][a-z0-9+.-]*://[^/\s@]+@[^\s/]+"
+)
+
+# Tokens, API keys, credentials, and private keys
+_TOKEN_AND_KEY_PATTERN = re.compile(
+    r"(?i)\bxox[baprse]-[0-9A-Za-z-]{10,}\b"
+    r"|\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,})\b"
+    r"|\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b"
+    r"|\bsk-(?:proj-|ant-)?[0-9a-zA-Z_-]{20,}\b"
+    r"|\b(?:authorization|proxy[_-]?authorization)\s*[:=]\s*[^\r\n]+"
+    r"|\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\s*[:=]\s*[^\r\n]+"
+    r"|\bBearer\s+[A-Za-z0-9_.\-/+=]{20,}"
+    r"|\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"
+    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+    r"|\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|session[_-]?id|session[_-]?token|session[_-]?key)\s*[:=]\s*['\"]?[A-Za-z0-9_.-]{8,}"
+    r"|-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----"
+)
+
+# External URLs (http, https, ftp) and bare www. domains
+_EXTERNAL_URL_PATTERN = re.compile(
+    r"(?i)\b(?:https?|ftp)://[^\s\"'`<>)]+"
+    r"|\bwww\.[A-Za-z0-9_.-]+\.[A-Za-z]{2,}[^\s\"'`<>)]*"
+)
+
+# Raw diagnostics / stack traces / diff output
+_RAW_DIAGNOSTIC_PATTERN = re.compile(
+    r"(?i)(?:traceback \(most recent call last\)|subprocess\.calledprocesserror|"
+    r"file \"[^\"]+\", line \d+|diff --git|@@ -\d+,\d+ \+\d+,\d+ @@|\+[A-Z0-9_]+=[^\s]+)"
+)
 
 _RESUME_COMMAND_PATTERN = re.compile(
     r"^@factory\s+resume\s+v1\s+run=(?P<run>[A-Za-z0-9._-]+)\s+episode=(?P<episode>[A-Za-z0-9._-]+)$"
@@ -77,6 +143,321 @@ def parse_resume_command(body: str) -> tuple[str, str] | None:
     if match is None:
         return None
     return match.group("run"), match.group("episode")
+
+
+def normalize_whitespace(text: str) -> str:
+    """Normalize newlines and multiple whitespace into a single trimmed line."""
+    if not text:
+        return text
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def escape_notice_text(text: str) -> str:
+    """Escape Markdown and HTML control syntax and neutralize mentions for safe GitHub rendering."""
+    if not text:
+        return text
+    # 1. HTML escape (&, <, >, ", ')
+    escaped = html.escape(text, quote=True)
+    # 2. Neutralize HTML comments
+    escaped = escaped.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+    # 3. Protect &#x27; from hash replacement
+    escaped = escaped.replace("&#x27;", "__APOS_PLACEHOLDER__")
+    # 4. Escape literal '#' so issue/PR autolinks (#123) and headings are neutralized
+    escaped = escaped.replace("#", "&#35;")
+    escaped = escaped.replace("__APOS_PLACEHOLDER__", "&#x27;")
+    # 5. Neutralize @-mentions completely
+    escaped = escaped.replace("@", "&#64;")
+    # 6. Escape Markdown control syntax:
+    escaped = escaped.replace("`", "&#96;")
+    escaped = escaped.replace("[", "&#91;").replace("]", "&#93;")
+    escaped = escaped.replace("*", "&#42;")
+    escaped = escaped.replace("_", "&#95;")
+    escaped = escaped.replace("~", "&#126;")
+    escaped = escaped.replace("|", "&#124;")
+    # 7. Neutralize URL scheme and domain prefixes to prevent GFM autolinking
+    escaped = re.sub(r"(?i)\b(https?|ftp)://", r"\1&#58;&#47;&#47;", escaped)
+    escaped = re.sub(r"(?i)\bwww\.", "www&#46;", escaped)
+    return escaped
+
+
+def contains_unsafe_content(text: str) -> tuple[bool, str]:
+    """Check whether text contains paths, embedded credentials, tokens, URLs, or diagnostics."""
+    if not text:
+        return False, ""
+    if _URL_CREDENTIAL_PATTERN.search(text):
+        return True, "contains URL-embedded credentials"
+    if _EXTERNAL_URL_PATTERN.search(text):
+        return True, "contains external URL or link"
+    if _TOKEN_AND_KEY_PATTERN.search(text):
+        return True, "contains token or credential"
+    if _ABSOLUTE_OR_NETWORK_PATH_PATTERN.search(text):
+        return True, "contains local or network file system path"
+    if _RAW_DIAGNOSTIC_PATTERN.search(text):
+        return True, "contains raw diagnostic or diff output"
+    return False, ""
+
+
+def compute_approval_context_fingerprint(
+    *,
+    run_id: str,
+    episode_id: str,
+    work_item_id: str,
+    work_item_title: str,
+    risk: str,
+    complexity: str,
+    intended_outcome: str,
+    sensitive_boundary: str,
+    necessity: str,
+    credible_scenario: str,
+    known_mitigations: Sequence[str],
+    residual_risk: str,
+    decision_requested: str,
+    next_state: str,
+    authorized_actions: Sequence[str],
+    unauthorized_actions: Sequence[str],
+    conditions_in_force: Sequence[str],
+) -> str:
+    """Compute deterministic SHA-256 binding displayed and authority fields to episode."""
+    payload = json.dumps(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "work_item_id": work_item_id,
+            "work_item_title": work_item_title,
+            "risk": risk,
+            "complexity": complexity,
+            "intended_outcome": intended_outcome,
+            "sensitive_boundary": sensitive_boundary,
+            "necessity": necessity,
+            "credible_scenario": credible_scenario,
+            "known_mitigations": list(known_mitigations),
+            "residual_risk": residual_risk,
+            "decision_requested": decision_requested,
+            "next_state": next_state,
+            "authorized_actions": list(authorized_actions),
+            "unauthorized_actions": list(unauthorized_actions),
+            "conditions_in_force": list(conditions_in_force),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_risk_approval_context(
+    run: FactoryRun,
+    store: FileRunStore,
+    *,
+    config: FactoryConfig | None = None,
+    work_item: WorkItem | None = None,
+    triage_result: TriageResult | None = None,
+    episode_id: str | None = None,
+) -> RiskApprovalContext | None:
+    """Snapshot an informed approval context from accepted artifacts and deterministic facts."""
+    if work_item is None:
+        try:
+            work_item = store.load_artifact(run.id, WorkItem)
+        except (FileNotFoundError, ValueError):
+            logger.warning(
+                "run %s missing WorkItem artifact; cannot build approval context", run.id
+            )
+            return None
+
+    if triage_result is None:
+        try:
+            triage_result = store.load_artifact(run.id, TriageResult)
+        except (FileNotFoundError, ValueError):
+            logger.warning(
+                "run %s missing TriageResult artifact; cannot build approval context", run.id
+            )
+            return None
+
+    if triage_result.risk not in {Risk.R2, Risk.R3} or triage_result.risk_rationale is None:
+        logger.warning(
+            "run %s triage risk is %s without rationale; cannot build approval context",
+            run.id,
+            triage_result.risk,
+        )
+        return None
+
+    rationale = triage_result.risk_rationale
+    fields_to_check = [
+        work_item.id,
+        work_item.title,
+        rationale.intended_outcome,
+        rationale.sensitive_boundary,
+        rationale.necessity,
+        rationale.credible_scenario,
+        *rationale.known_mitigations,
+        rationale.residual_risk,
+    ]
+    for field_val in fields_to_check:
+        is_unsafe, reason = contains_unsafe_content(field_val)
+        if is_unsafe:
+            logger.warning("run %s approval context rejected: %s", run.id, reason)
+            return None
+
+    clean_id = escape_notice_text(normalize_whitespace(redact_secrets(work_item.id)))[:128]
+    clean_title = escape_notice_text(normalize_whitespace(redact_secrets(work_item.title)))[:120]
+    clean_outcome = escape_notice_text(
+        normalize_whitespace(redact_secrets(rationale.intended_outcome))
+    )[:240]
+    clean_boundary = escape_notice_text(
+        normalize_whitespace(redact_secrets(rationale.sensitive_boundary))
+    )[:240]
+    clean_necessity = escape_notice_text(normalize_whitespace(redact_secrets(rationale.necessity)))[
+        :240
+    ]
+    clean_scenario = escape_notice_text(
+        normalize_whitespace(redact_secrets(rationale.credible_scenario))
+    )[:300]
+    clean_mitigations = [
+        escape_notice_text(normalize_whitespace(redact_secrets(m)))[:160]
+        for m in rationale.known_mitigations[:5]
+    ]
+    clean_residual = escape_notice_text(
+        normalize_whitespace(redact_secrets(rationale.residual_risk))
+    )[:240]
+
+    if not (
+        clean_id
+        and clean_title
+        and clean_outcome
+        and clean_boundary
+        and clean_necessity
+        and clean_scenario
+        and clean_mitigations
+        and clean_residual
+    ):
+        logger.warning("run %s approval context has empty cleaned fields", run.id)
+        return None
+
+    current_episode_id = episode_id or (run.escalation.episode_id if run.escalation else "")
+
+    decision_requested = (
+        f"Approve advancing run {run.id} to REFINING under risk policy {triage_result.risk.value}."
+    )
+    authorized_actions = [
+        "Transition workflow from NEEDS_HUMAN to REFINING.",
+        "Refine requirements into an explicit specification.",
+        "Plan implementation steps within approved scope.",
+        "Execute code changes in an isolated workspace.",
+        "Run deterministic verification, tests, and review.",
+    ]
+    unauthorized_actions = [
+        "Approval does not change task scope.",
+        "Approval does not increase retry budgets.",
+        "Approval does not bypass quality gates.",
+        "Approval does not alter credential or permission policy.",
+        "Approval does not change deployment policy.",
+        "Approval does not override configured merge policy.",
+    ]
+    conditions_in_force = [
+        "The approved scope remains restricted to this task.",
+        "Deterministic verification must pass before review.",
+        "Independent testing and review remain mandatory.",
+        "Quality gates must pass before pull request creation.",
+        "Approval resumes the same run at REFINING.",
+        "Approval does not reset run history or attempt budgets.",
+    ]
+
+    fingerprint = compute_approval_context_fingerprint(
+        run_id=run.id,
+        episode_id=current_episode_id,
+        work_item_id=clean_id,
+        work_item_title=clean_title,
+        risk=triage_result.risk.value,
+        complexity=triage_result.complexity.value,
+        intended_outcome=clean_outcome,
+        sensitive_boundary=clean_boundary,
+        necessity=clean_necessity,
+        credible_scenario=clean_scenario,
+        known_mitigations=clean_mitigations,
+        residual_risk=clean_residual,
+        decision_requested=decision_requested,
+        next_state=WorkflowState.REFINING.value,
+        authorized_actions=authorized_actions,
+        unauthorized_actions=unauthorized_actions,
+        conditions_in_force=conditions_in_force,
+    )
+
+    clean_rationale = RiskRationale(
+        intended_outcome=clean_outcome,
+        sensitive_boundary=clean_boundary,
+        necessity=clean_necessity,
+        credible_scenario=clean_scenario,
+        known_mitigations=clean_mitigations,
+        residual_risk=clean_residual,
+    )
+
+    return RiskApprovalContext(
+        risk=triage_result.risk,
+        complexity=triage_result.complexity,
+        work_item_id=clean_id,
+        work_item_title=clean_title,
+        risk_rationale=clean_rationale,
+        decision_requested=decision_requested,
+        next_state=WorkflowState.REFINING,
+        authorized_actions=authorized_actions,
+        unauthorized_actions=unauthorized_actions,
+        conditions_in_force=conditions_in_force,
+        context_fingerprint=fingerprint,
+    )
+
+
+def is_valid_risk_approval_context(
+    context: RiskApprovalContext | None,
+    run_id: str,
+    episode_id: str,
+) -> bool:
+    """Verify that an approval context is complete, safe, and bound to this run and episode."""
+    if not isinstance(context, RiskApprovalContext):
+        return False
+    if context.risk not in {Risk.R2, Risk.R3}:
+        return False
+    if context.next_state is not WorkflowState.REFINING:
+        return False
+
+    rationale = context.risk_rationale
+    fields = [
+        context.work_item_id,
+        context.work_item_title,
+        context.decision_requested,
+        rationale.intended_outcome,
+        rationale.sensitive_boundary,
+        rationale.necessity,
+        rationale.credible_scenario,
+        *rationale.known_mitigations,
+        rationale.residual_risk,
+        *context.authorized_actions,
+        *context.unauthorized_actions,
+        *context.conditions_in_force,
+    ]
+    for field_val in fields:
+        is_unsafe, _ = contains_unsafe_content(field_val)
+        if is_unsafe:
+            return False
+
+    expected_fp = compute_approval_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        work_item_id=context.work_item_id,
+        work_item_title=context.work_item_title,
+        risk=context.risk.value,
+        complexity=context.complexity.value,
+        intended_outcome=rationale.intended_outcome,
+        sensitive_boundary=rationale.sensitive_boundary,
+        necessity=rationale.necessity,
+        credible_scenario=rationale.credible_scenario,
+        known_mitigations=rationale.known_mitigations,
+        residual_risk=rationale.residual_risk,
+        decision_requested=context.decision_requested,
+        next_state=context.next_state.value,
+        authorized_actions=context.authorized_actions,
+        unauthorized_actions=context.unauthorized_actions,
+        conditions_in_force=context.conditions_in_force,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected_fp)
 
 
 class ValidationResult(tuple[bool, str]):
@@ -198,13 +579,117 @@ def build_escalation_comment(
     attempts_consumed: int,
     reopen_count: int,
     max_reopens: int,
-) -> str:
+    approval_context: RiskApprovalContext | None = None,
+) -> EscalationComment:
     """Build concise, safe GitHub comment content.
 
     Raw failure_reason, workspace paths, issue body/title, command output,
     diffs, logs, and model reasoning are never published.
     """
     marker = format_escalation_marker(run_id, episode_id)
+    if classification is ResumeClassification.RISK_APPROVAL:
+        if approval_context is not None and is_valid_risk_approval_context(
+            approval_context, run_id, episode_id
+        ):
+            rat = approval_context.risk_rationale
+            mitigations_block = "\n".join(f"  - {m}" for m in rat.known_mitigations)
+            auth_block = "\n".join(f"- {a}" for a in approval_context.authorized_actions)
+            unauth_block = "\n".join(f"- {u}" for u in approval_context.unauthorized_actions)
+            cond_block = "\n".join(f"- {c}" for c in approval_context.conditions_in_force)
+
+            lines = [
+                marker,
+                "### Factory Risk Approval Notice",
+                "",
+                (
+                    f"The run `{run_id}` halted because risk "
+                    f"`{approval_context.risk.value}` requires human approval."
+                ),
+                "",
+                f"- **Reason code**: `{reason_code}`",
+                (
+                    f"- **Work item**: `{approval_context.work_item_id}` - "
+                    f"{approval_context.work_item_title}"
+                ),
+                f"- **Attempts recorded**: {attempts_consumed}",
+                f"- **Reopens**: {reopen_count}/{max_reopens}",
+                "",
+                "#### Why approval is required",
+                f"- Intended outcome: {rat.intended_outcome}",
+                f"- Sensitive boundary: {rat.sensitive_boundary}",
+                f"- Necessity: {rat.necessity}",
+                f"- Credible scenario: {rat.credible_scenario}",
+                "- Known mitigations:",
+                mitigations_block,
+                f"- Residual risk: {rat.residual_risk}",
+                "",
+                "#### Decision requested",
+                approval_context.decision_requested,
+                "",
+                "#### Approval authorizes",
+                auth_block,
+                "",
+                "#### Approval does not authorize",
+                unauth_block,
+                "",
+                "#### Conditions that remain in force",
+                cond_block,
+                "",
+                "#### Residual risk accepted",
+                rat.residual_risk,
+                "",
+                "#### Resume instructions",
+                (
+                    "To approve this request, an authorized contributor must reply "
+                    "on this thread with:"
+                ),
+                "",
+                "```",
+                f"@factory resume v1 run={run_id} episode={episode_id}",
+                "```",
+                "",
+            ]
+            rendered = "\n".join(lines)
+            if len(rendered) <= MAX_ESCALATION_COMMENT_CHARS:
+                return EscalationComment(rendered, remote_resume_enabled=True)
+            logger.warning(
+                "run %s risk approval comment exceeded size limit (%d chars)",
+                run_id,
+                len(rendered),
+            )
+
+        fallback_msg = (
+            "This risk approval escalation notice exceeded the maximum comment size limit. "
+            "Remote resume is disabled. Manual inspection of local artifacts is required."
+            if (
+                approval_context is not None
+                and is_valid_risk_approval_context(approval_context, run_id, episode_id)
+            )
+            else (
+                "This risk approval escalation lacks complete valid decision context. "
+                "Remote resume is disabled. Manual inspection of local artifacts is required."
+            )
+        )
+
+        lines = [
+            marker,
+            "### Factory Escalation Notice",
+            "",
+            f"The run `{run_id}` requires human attention.",
+            "",
+            f"- **Reason code**: `{reason_code}`",
+            f"- **Summary**: {summary}",
+            f"- **Next action**: {next_action}",
+            f"- **Attempts recorded**: {attempts_consumed}",
+            f"- **Reopens**: {reopen_count}/{max_reopens}",
+            "",
+            "#### Resume instructions",
+            "",
+            fallback_msg,
+            "",
+        ]
+        return EscalationComment("\n".join(lines), remote_resume_enabled=False)
+
     lines = [
         marker,
         "### Factory Escalation Notice",
@@ -217,32 +702,13 @@ def build_escalation_comment(
         f"- **Attempts recorded**: {attempts_consumed}",
         f"- **Reopens**: {reopen_count}/{max_reopens}",
         "",
+        "#### Resume instructions",
+        "",
+        "This halt category cannot be resumed automatically via GitHub reply. "
+        "Manual inspection of local artifacts is required.",
+        "",
     ]
-    if classification is ResumeClassification.RISK_APPROVAL:
-        lines.extend(
-            [
-                "#### Resume instructions",
-                "",
-                "To approve and resume this run, an authorized human contributor "
-                "may reply on this thread with:",
-                "",
-                "```",
-                f"@factory resume v1 run={run_id} episode={episode_id}",
-                "```",
-                "",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                "#### Resume instructions",
-                "",
-                "This halt category cannot be resumed automatically via GitHub reply. "
-                "Manual inspection of local artifacts is required.",
-                "",
-            ]
-        )
-    return "\n".join(lines)
+    return EscalationComment("\n".join(lines), remote_resume_enabled=False)
 
 
 def resolve_escalation_target(
@@ -380,6 +846,27 @@ def resolve_escalation_target(
     return None
 
 
+def _is_matching_factory_author(
+    comment: GitHubComment,
+    *,
+    factory_verified: bool,
+    factory_login: str | None,
+    factory_id: int | None,
+) -> bool:
+    """Verify that comment author matches the live authenticated factory account."""
+    if not factory_verified:
+        return False
+    if factory_id is not None and comment.user_id is not None:
+        return comment.user_id == factory_id
+    if (
+        factory_login
+        and comment.user_login
+        and comment.user_login.casefold() == factory_login.casefold()
+    ):
+        return True
+    return False
+
+
 def is_authorized_author(
     comment: GitHubComment,
     *,
@@ -438,12 +925,22 @@ def deliver_escalation_notification(
     escalation = run.escalation
     if escalation is None:
         classification, code, summary, action = classify_halt_reason(run, store)
+        episode_id = generate_episode_id()
+        approval_context = None
+        if classification is ResumeClassification.RISK_APPROVAL:
+            approval_context = build_risk_approval_context(
+                run,
+                store,
+                config=config,
+                episode_id=episode_id,
+            )
         escalation = EscalationRecord(
-            episode_id=generate_episode_id(),
+            episode_id=episode_id,
             episode_number=1,
             status=EscalationStatus.PENDING_NOTIFICATION,
             resume_classification=classification,
             reason_code=code,
+            approval_context=approval_context,
         )
         run = run.model_copy(update={"escalation": escalation})
         store.save_run(run)
@@ -454,7 +951,12 @@ def deliver_escalation_notification(
     if escalation.delivery_attempts >= config.escalation.max_notification_attempts:
         if escalation.status is not EscalationStatus.NOTIFICATION_FAILED:
             escalation = escalation.model_copy(
-                update={"status": EscalationStatus.NOTIFICATION_FAILED}
+                update={
+                    "status": EscalationStatus.NOTIFICATION_FAILED,
+                    "remote_resume_enabled": False,
+                    "reply_cursor": "closed",
+                    "updated_at": utc_now(),
+                }
             )
             run = run.model_copy(update={"escalation": escalation})
             store.save_run(run)
@@ -472,6 +974,8 @@ def deliver_escalation_notification(
                 "delivery_attempts": attempts,
                 "delivery_error": "no valid escalation target resolved",
                 "status": EscalationStatus.NOTIFICATION_FAILED,
+                "remote_resume_enabled": False,
+                "reply_cursor": "closed",
                 "updated_at": utc_now(),
             }
         )
@@ -481,7 +985,13 @@ def deliver_escalation_notification(
 
     repo_ref, target_number, target_type, target_url = target
     classification, code, summary, action = classify_halt_reason(run, store)
-    comment_body = build_escalation_comment(
+    if escalation.resume_classification is not None:
+        classification = escalation.resume_classification
+        if escalation.reason_code:
+            code = escalation.reason_code
+        elif classification is ResumeClassification.RISK_APPROVAL:
+            code = "RISK_APPROVAL"
+    rendered_notice = build_escalation_comment(
         run_id=run.id,
         episode_id=escalation.episode_id,
         classification=classification,
@@ -491,10 +1001,30 @@ def deliver_escalation_notification(
         attempts_consumed=len(run.attempt_records),
         reopen_count=escalation.reopen_count,
         max_reopens=config.escalation.max_reopens,
+        approval_context=escalation.approval_context,
     )
+    comment_body = str(rendered_notice)
+    remote_resume_enabled = getattr(rendered_notice, "remote_resume_enabled", False)
+    reply_cursor = None if remote_resume_enabled else "closed"
+
+    factory_login: str | None = None
+    factory_id: int | None = None
+    factory_verified = False
+    try:
+        identity = client.get_authenticated_user(repo_path, hostname=repo_ref.host)
+        factory_login = identity.login
+        factory_id = identity.id
+        if factory_login or factory_id is not None:
+            factory_verified = True
+    except GitHubError as exc:
+        logger.debug(
+            "could not resolve authenticated factory user on %s for notification check: %s",
+            repo_ref.host,
+            exc,
+        )
 
     marker = format_escalation_marker(run.id, escalation.episode_id)
-    found_existing = None
+    comments_with_marker: list[GitHubComment] = []
     try:
         # Check if already posted before creating a duplicate, bounded up to 3 pages
         since_time = escalation.created_at - timedelta(minutes=2)
@@ -510,16 +1040,27 @@ def deliver_escalation_notification(
             )
             for existing in existing_comments:
                 if marker in existing.body:
-                    found_existing = existing
-                    break
-            if found_existing is not None or len(existing_comments) < 100:
+                    comments_with_marker.append(existing)
+            if comments_with_marker or len(existing_comments) < 100:
                 break
     except GitHubError as exc:
         logger.debug("could not check existing comments for run %s: %s", run.id, exc)
 
-    reply_cursor = "closed" if classification is not ResumeClassification.RISK_APPROVAL else None
+    matching_notice: GitHubComment | None = None
+    for existing in comments_with_marker:
+        body_matches = existing.body.replace("\r\n", "\n") == comment_body.replace("\r\n", "\n")
+        author_matches = _is_matching_factory_author(
+            existing,
+            factory_verified=factory_verified,
+            factory_login=factory_login,
+            factory_id=factory_id,
+        )
+        if body_matches and author_matches:
+            matching_notice = existing
+            break
 
-    if found_existing is not None:
+    if matching_notice is not None:
+        notified_at = escalation.last_notified_at or matching_notice.created_at or utc_now()
         escalation = escalation.model_copy(
             update={
                 "target_type": target_type,
@@ -528,12 +1069,64 @@ def deliver_escalation_notification(
                 "target_number": target_number,
                 "target_url": target_url,
                 "delivery_attempts": attempts,
-                "comment_id": found_existing.id,
-                "comment_url": found_existing.html_url or found_existing.url,
+                "comment_id": matching_notice.id,
+                "comment_url": matching_notice.html_url or matching_notice.url,
                 "status": EscalationStatus.NOTIFIED,
                 "delivery_error": None,
-                "last_notified_at": utc_now(),
+                "last_notified_at": notified_at,
+                "remote_resume_enabled": remote_resume_enabled,
                 "reply_cursor": reply_cursor,
+                "updated_at": utc_now(),
+            }
+        )
+        run = run.model_copy(update={"escalation": escalation})
+        store.save_run(run)
+        return run
+
+    if comments_with_marker:
+        # A comment with the marker exists, but body differs, author differs,
+        # or author cannot be verified. Idempotency does not permit posting a duplicate
+        # marker notice, so fail closed for local inspection.
+        escalation = escalation.model_copy(
+            update={
+                "target_type": target_type,
+                "target_host": repo_ref.host,
+                "target_repository": repo_ref.full_name,
+                "target_number": target_number,
+                "target_url": target_url,
+                "delivery_attempts": attempts,
+                "delivery_error": (
+                    "existing comment with escalation marker has altered body or "
+                    "unverified author; failing closed for local inspection"
+                ),
+                "status": EscalationStatus.NOTIFICATION_FAILED,
+                "remote_resume_enabled": False,
+                "reply_cursor": "closed",
+                "last_notified_at": None,
+                "updated_at": utc_now(),
+            }
+        )
+        run = run.model_copy(update={"escalation": escalation})
+        store.save_run(run)
+        return run
+
+    if not factory_verified:
+        escalation = escalation.model_copy(
+            update={
+                "target_type": target_type,
+                "target_host": repo_ref.host,
+                "target_repository": repo_ref.full_name,
+                "target_number": target_number,
+                "target_url": target_url,
+                "delivery_attempts": attempts,
+                "delivery_error": (
+                    "cannot verify authenticated factory account; "
+                    "failing closed for local inspection"
+                ),
+                "status": EscalationStatus.NOTIFICATION_FAILED,
+                "remote_resume_enabled": False,
+                "reply_cursor": "closed",
+                "last_notified_at": None,
                 "updated_at": utc_now(),
             }
         )
@@ -549,6 +1142,7 @@ def deliver_escalation_notification(
             body=comment_body,
             hostname=repo_ref.host,
         )
+        notified_at = posted.created_at or utc_now()
         escalation = escalation.model_copy(
             update={
                 "target_type": target_type,
@@ -561,7 +1155,8 @@ def deliver_escalation_notification(
                 "comment_url": posted.html_url or posted.url,
                 "status": EscalationStatus.NOTIFIED,
                 "delivery_error": None,
-                "last_notified_at": utc_now(),
+                "last_notified_at": notified_at,
+                "remote_resume_enabled": remote_resume_enabled,
                 "reply_cursor": reply_cursor,
                 "updated_at": utc_now(),
             }
@@ -583,6 +1178,10 @@ def deliver_escalation_notification(
                     if is_terminal
                     else EscalationStatus.PENDING_NOTIFICATION
                 ),
+                "remote_resume_enabled": (
+                    False if is_terminal else escalation.remote_resume_enabled
+                ),
+                "reply_cursor": "closed" if is_terminal else escalation.reply_cursor,
                 "updated_at": utc_now(),
             }
         )
@@ -627,10 +1226,14 @@ def validate_reply_candidate(
             False, f"command episode id {cmd_episode!r} does not match {escalation.episode_id!r}"
         )
 
-    # Timing: must be created after escalation
-    ref_time = escalation.created_at
-    if comment.created_at < ref_time:
-        return ValidationResult(False, "comment was created before escalation episode")
+    # Timing: must be created after the informed notice was successfully posted
+    if escalation.last_notified_at is None:
+        return ValidationResult(False, "escalation has not been successfully notified")
+
+    if comment.created_at < escalation.last_notified_at:
+        return ValidationResult(
+            False, "comment was created before escalation notification was posted"
+        )
 
     # Window check
     current_time = now or utc_now()
@@ -649,6 +1252,20 @@ def validate_reply_candidate(
     if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
         return ValidationResult(
             False, f"halt category {escalation.resume_classification} is not resumable via reply"
+        )
+
+    # Remote resume enabled check
+    if not escalation.remote_resume_enabled:
+        return ValidationResult(
+            False, "remote resume is disabled for this escalation; local inspection required"
+        )
+
+    # Risk approval decision context check
+    if escalation.approval_context is None or not is_valid_risk_approval_context(
+        escalation.approval_context, run.id, escalation.episode_id
+    ):
+        return ValidationResult(
+            False, "missing or invalid risk approval decision context; local inspection required"
         )
 
     # Replay check
@@ -755,6 +1372,10 @@ def poll_escalation_reply(
     if escalation is None or escalation.status is not EscalationStatus.NOTIFIED:
         return None
 
+    if escalation.last_notified_at is None:
+        return None
+    notified_at = escalation.last_notified_at
+
     if escalation.reply_cursor == "closed":
         return None
 
@@ -764,9 +1385,20 @@ def poll_escalation_reply(
         return None
 
     current_time = now or utc_now()
-    if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
+    if (
+        escalation.resume_classification is not ResumeClassification.RISK_APPROVAL
+        or not escalation.remote_resume_enabled
+        or escalation.approval_context is None
+        or not is_valid_risk_approval_context(
+            escalation.approval_context, run.id, escalation.episode_id
+        )
+    ):
         escalation = escalation.model_copy(
-            update={"reply_cursor": "closed", "updated_at": current_time}
+            update={
+                "remote_resume_enabled": False,
+                "reply_cursor": "closed",
+                "updated_at": current_time,
+            }
         )
         run = run.model_copy(update={"escalation": escalation})
         store.save_run(run)
@@ -777,6 +1409,7 @@ def poll_escalation_reply(
         escalation = escalation.model_copy(
             update={
                 "status": EscalationStatus.EXPIRED,
+                "remote_resume_enabled": False,
                 "reply_cursor": "closed",
                 "updated_at": current_time,
             }
@@ -787,7 +1420,11 @@ def poll_escalation_reply(
 
     if escalation.reopen_count >= config.escalation.max_reopens:
         escalation = escalation.model_copy(
-            update={"reply_cursor": "closed", "updated_at": current_time}
+            update={
+                "remote_resume_enabled": False,
+                "reply_cursor": "closed",
+                "updated_at": current_time,
+            }
         )
         run = run.model_copy(update={"escalation": escalation})
         store.save_run(run)
@@ -820,7 +1457,7 @@ def poll_escalation_reply(
             return None
 
     cursor_page = 1
-    cursor_since = escalation.created_at
+    cursor_since: datetime = notified_at
     cursor_last_id: int | None = None
     if escalation.reply_cursor and escalation.reply_cursor != "closed":
         try:
@@ -833,7 +1470,7 @@ def poll_escalation_reply(
                     cursor_last_id = int(cursor_data["last_id"])
         except (ValueError, TypeError, json.JSONDecodeError):
             cursor_page = 1
-            cursor_since = escalation.created_at
+            cursor_since = notified_at
             cursor_last_id = None
 
     max_pages_per_poll = 2
@@ -841,7 +1478,7 @@ def poll_escalation_reply(
     next_cursor = None
     accepted_receipt = None
     latest_id = cursor_last_id
-    latest_timestamp = cursor_since
+    latest_timestamp: datetime = cursor_since
 
     for _ in range(max_pages_per_poll):
         try:
@@ -888,6 +1525,14 @@ def poll_escalation_reply(
                 now=current_time,
             )
             if result.is_valid:
+                app_fp = (
+                    escalation.approval_context.context_fingerprint
+                    if (
+                        escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+                        and escalation.approval_context is not None
+                    )
+                    else None
+                )
                 accepted_receipt = AcceptedReplyReceipt(
                     comment_id=comment.id,
                     user_login=comment.user_login,
@@ -898,6 +1543,7 @@ def poll_escalation_reply(
                     command=f"@factory resume v1 run={run.id} episode={escalation.episode_id}",
                     episode_id=escalation.episode_id,
                     run_id=run.id,
+                    approval_context_fingerprint=app_fp,
                 )
                 break
 

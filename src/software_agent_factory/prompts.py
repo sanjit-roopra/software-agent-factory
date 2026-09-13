@@ -260,6 +260,7 @@ def _role_instructions(
         return """Assess the work item.
 - Decide whether the factory can do the work.
 - Set complexity and risk.
+- If risk is R2 or R3, provide a case-specific causal risk_rationale.
 - List missing information.
 - Request research only when planning needs external evidence."""
     if role == "REFINER":
@@ -341,7 +342,8 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
     if role == "TRIAGE":
         contract = (
             f"{contract} Use exact enum values only: complexity must be one of "
-            "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3."
+            "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3. "
+            "When risk is R2 or R3, risk_rationale is required."
         )
     return (
         f"{contract}\n{model_class.__name__} JSON Schema:\n"
