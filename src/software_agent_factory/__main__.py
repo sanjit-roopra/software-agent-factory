@@ -11,6 +11,13 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from pathlib import Path
+
+if __package__ in (None, ""):
+    package_parent = str(Path(__file__).resolve().parent.parent)
+    if package_parent not in sys.path:
+        sys.path.insert(0, package_parent)
+    __package__ = "software_agent_factory"
 
 from .version import get_program_name, get_version
 

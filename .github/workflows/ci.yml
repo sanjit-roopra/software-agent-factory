@@ -125,7 +125,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Sync development environment
-        run: uv sync --locked --no-default-groups --group distribution
+        run: uv sync --locked --no-default-groups --group distribution --group native
 
       - name: Build and validate wheel and sdist
         run: |
@@ -152,6 +152,43 @@ jobs:
           packaging/venvs/sdist-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/sdist-smoke/bin/factory \
             --workspace-root packaging/sdist-smoke \
+            --expect-version "$VERSION"
+
+      - name: Build and smoke portable frozen executable
+        run: |
+          set -euo pipefail
+          BUILD_INFO=src/software_agent_factory/build-info.json
+          trap 'rm -f "$BUILD_INFO"' EXIT
+          VERSION=$(PYTHONPATH=src uv run --no-sync python - <<'PY'
+          from software_agent_factory.version import get_version
+          print(get_version())
+          PY
+          )
+          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          import platform
+          print(platform.python_version())
+          PY
+          )
+          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
+          import PyInstaller
+          print(PyInstaller.__version__)
+          PY
+          )
+          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+            --output "$BUILD_INFO" \
+            --tag "ci-${GITHUB_SHA:-smoke}" \
+            --commit-sha "${GITHUB_SHA:-HEAD}" \
+            --runner-image "${ImageOS:-unknown}" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --target-architecture "x86_64"
+          uv run --no-sync pyinstaller --clean --noconfirm \
+            --distpath packaging/dist/portable \
+            --workpath packaging/build/portable \
+            packaging/pyinstaller.spec
+          uv run --no-sync python scripts/release/smoke_factory.py \
+            --factory-executable packaging/dist/portable/software-agent-factory/factory \
+            --workspace-root packaging/frozen-smoke/portable \
             --expect-version "$VERSION"
 
   docs:

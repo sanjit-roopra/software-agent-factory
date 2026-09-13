@@ -96,7 +96,7 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "persist-credentials: false" in text
     assert "uv sync --locked --no-default-groups --group quality" in text
     assert "uv sync --locked --no-default-groups --group test" in text
-    assert "uv sync --locked --no-default-groups --group distribution" in text
+    assert "uv sync --locked --no-default-groups --group distribution --group native" in text
     assert "uv sync --locked --no-default-groups --group native --group test" in text
     assert "uv lock --check" not in text
     assert "uv run --no-sync ruff format --check ." in text

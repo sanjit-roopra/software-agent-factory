@@ -166,9 +166,23 @@ def _make_comment_payload(
     user_id: int = 1001,
     user_type: str = "User",
     author_association: str = "MEMBER",
-    created_at: str = "2026-09-13T10:00:00Z",
-    updated_at: str = "2026-09-13T10:00:00Z",
+    created_at: str | datetime | None = None,
+    updated_at: str | datetime | None = None,
 ) -> dict:
+    if created_at is None:
+        created_at_str = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    elif isinstance(created_at, datetime):
+        created_at_str = created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        created_at_str = created_at
+
+    if updated_at is None:
+        updated_at_str = created_at_str
+    elif isinstance(updated_at, datetime):
+        updated_at_str = updated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        updated_at_str = updated_at
+
     return {
         "id": comment_id,
         "url": f"https://api.github.com/repos/owner/repo/issues/comments/{comment_id}",
@@ -179,8 +193,8 @@ def _make_comment_payload(
             "id": user_id,
             "type": user_type,
         },
-        "created_at": created_at,
-        "updated_at": updated_at,
+        "created_at": created_at_str,
+        "updated_at": updated_at_str,
         "author_association": author_association,
     }
 
@@ -1239,10 +1253,13 @@ def test_service_reconciles_and_reopens_within_capacity(source_repo: Path, tmp_p
 
     store.save_artifact(run.id, generic_repository_profile())
 
+    comment_time = escalation.created_at + timedelta(minutes=10)
     comment_data = _make_comment_payload(
         901,
         "@factory resume v1 run=run-svc-1 episode=ep-service-1",
         login="lead-dev",
+        created_at=comment_time,
+        updated_at=comment_time,
     )
     list_resp = FakeCompletedProcess(0, json.dumps([comment_data]))
     get_resp = FakeCompletedProcess(0, json.dumps(comment_data))
@@ -1690,18 +1707,35 @@ def test_poll_escalation_reply_bounded_pagination_across_ticks(tmp_path: Path) -
     )
     store.save_run(run)
 
+    base_time = escalation.created_at + timedelta(minutes=1)
     # 100 irrelevant comments on page 1, 100 irrelevant comments on page 2
     page1_comments = [
-        _make_comment_payload(i, f"comment {i}", login="other") for i in range(1, 101)
+        _make_comment_payload(
+            i,
+            f"comment {i}",
+            login="other",
+            created_at=base_time + timedelta(seconds=i),
+            updated_at=base_time + timedelta(seconds=i),
+        )
+        for i in range(1, 101)
     ]
     page2_comments = [
-        _make_comment_payload(i, f"comment {i}", login="other") for i in range(101, 201)
+        _make_comment_payload(
+            i,
+            f"comment {i}",
+            login="other",
+            created_at=base_time + timedelta(seconds=i),
+            updated_at=base_time + timedelta(seconds=i),
+        )
+        for i in range(101, 201)
     ]
     # Page 3 has the valid reply
     valid_payload = _make_comment_payload(
         205,
         "@factory resume v1 run=run-pages episode=ep-pages",
         login="lead-dev",
+        created_at=base_time + timedelta(seconds=205),
+        updated_at=base_time + timedelta(seconds=205),
     )
     page3_comments = [valid_payload]
 
@@ -1957,10 +1991,13 @@ def test_poll_escalation_reply_fails_closed_when_authenticated_user_fails(tmp_pa
     )
     store.save_run(run)
 
+    comment_time = escalation.created_at + timedelta(minutes=10)
     comment_data = _make_comment_payload(
         555,
         "@factory resume v1 run=run-self-fail episode=ep-self-fail",
         login="lead-dev",
+        created_at=comment_time,
+        updated_at=comment_time,
     )
     list_resp = FakeCompletedProcess(0, json.dumps([comment_data]))
 
