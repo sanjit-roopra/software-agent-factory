@@ -127,6 +127,7 @@ nav:
       - Repository skills and overlays: guides/repository-skills.md
       - Project briefs and generated work: guides/projects.md
       - GitHub backlog, PRs and CI: guides/github.md
+      - Run a GitHub issue listener: guides/issue-listener.md
       - Monitor and run continuously: guides/operations.md
       - Troubleshooting: guides/troubleshooting.md
   - Reference:

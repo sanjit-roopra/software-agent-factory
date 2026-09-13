@@ -17,6 +17,8 @@ All require `gh` on `PATH` and authenticated. `ci.enabled` also requires
 Automatic merging requires its own explicit policy. There is no autonomous
 deployment or permission to execute production migrations.
 
+Use [Run a GitHub issue listener](issue-listener.md) for a short listener setup.
+
 ## Pull requests
 
 ```yaml
