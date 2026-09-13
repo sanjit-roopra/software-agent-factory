@@ -84,12 +84,14 @@ additionally scrubbed with the same token patterns ``copilot_runtime`` uses.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Protocol, Sequence
@@ -105,6 +107,7 @@ from .models import (
     ReviewReport,
     Specification,
     TestReport,
+    UtcDateTime,
     VerificationReport,
     WorkItem,
 )
@@ -117,6 +120,7 @@ DEFAULT_MAX_POLLS = 40
 MAX_GIT_PUSH_ATTEMPTS = 2
 GIT_PUSH_RETRY_DELAY_SECONDS = 2.0
 GIT_PUSH_FINAL_RECONCILE_DELAY_SECONDS = 5.0
+DEFAULT_AUTH_CACHE_TTL_SECONDS: float = 60.0
 
 
 # --------------------------------------------------------------------------
@@ -540,6 +544,50 @@ def parse_pull_request_url(url: str) -> tuple[RepositoryRef, int]:
     if not parts[3].isdigit() or int(parts[3]) <= 0:
         raise ValueError(f"could not parse a pull request number from {url!r}")
     return RepositoryRef(host=parsed.hostname.lower(), owner=owner, name=name), int(parts[3])
+
+
+def parse_issue_reference(ref: str, default_host: str = "github.com") -> tuple[RepositoryRef, int]:
+    """Parse an issue reference (URL or OWNER/NAME#NUMBER) into its exact
+    repository identity and issue number. Raises ``ValueError`` otherwise."""
+    candidate = ref.strip()
+    if candidate.startswith("https://") or candidate.startswith("http://"):
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.port not in {None, 443}
+        ):
+            raise ValueError(f"issue reference URL must be an https URL, got {ref!r}")
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) != 4 or parts[2] not in {"issues", "pull"}:
+            raise ValueError(f"could not parse an issue reference from URL {ref!r}")
+        owner, name = _repository_path_parts("/".join(parts[:2]))
+        if not parts[3].isdigit() or int(parts[3]) <= 0:
+            raise ValueError(f"could not parse an issue number from URL {ref!r}")
+        return RepositoryRef(host=parsed.hostname.lower(), owner=owner, name=name), int(parts[3])
+
+    if "#" in candidate:
+        repo_part, number_part = candidate.split("#", 1)
+        if not number_part.isdigit() or int(number_part) <= 0:
+            raise ValueError(f"could not parse an issue number from {ref!r}")
+        repo_parts = repo_part.split("/")
+        if len(repo_parts) == 2:
+            owner, name = _repository_path_parts(repo_part)
+            host = default_host
+        elif len(repo_parts) == 3:
+            host, owner, name = repo_parts
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host):
+                raise ValueError(f"invalid host in issue reference {ref!r}")
+            owner, name = _repository_path_parts(f"{owner}/{name}")
+        else:
+            raise ValueError(f"invalid repository format in issue reference {ref!r}")
+        return RepositoryRef(host=host.lower(), owner=owner, name=name), int(number_part)
+
+    raise ValueError(f"could not parse an issue reference from {ref!r}")
 
 
 def _is_protected_path(path: str) -> bool:
@@ -1596,6 +1644,85 @@ def parse_pull_request_payload(payload: Mapping[str, object]) -> PullRequestStat
     )
 
 
+class GitHubIdentity(ModelBase):
+    """Normalized authenticated GitHub user identity."""
+
+    id: int = Field(ge=1)
+    login: str = Field(min_length=1)
+
+
+class GitHubComment(ModelBase):
+    """Normalized issue/PR comment payload."""
+
+    id: int = Field(ge=1)
+    url: str = ""
+    html_url: str = ""
+    body: str = ""
+    user_login: str = ""
+    user_id: int | None = None
+    user_type: str = ""
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
+    author_association: str = ""
+
+
+def parse_comment_payload(payload: Mapping[str, object]) -> GitHubComment:
+    """Parse one GitHub issue/PR comment payload."""
+    raw_id = payload.get("id")
+    if not isinstance(raw_id, int) or isinstance(raw_id, bool) or raw_id <= 0:
+        raise GitHubError(f"invalid comment id in payload: {raw_id!r}")
+    user = payload.get("user")
+    user_map = user if isinstance(user, Mapping) else {}
+    raw_user_id = user_map.get("id")
+    user_id = (
+        raw_user_id
+        if isinstance(raw_user_id, int) and not isinstance(raw_user_id, bool) and raw_user_id > 0
+        else None
+    )
+    user_login = str(user_map.get("login") or "").strip()
+    user_type = str(user_map.get("type") or "").strip()
+
+    raw_created = str(payload.get("created_at") or payload.get("createdAt") or "").strip()
+    raw_updated = str(payload.get("updated_at") or payload.get("updatedAt") or "").strip()
+    if not raw_created:
+        raise GitHubError("comment payload missing created_at")
+    try:
+        created_at = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GitHubError(f"invalid created_at in comment payload: {raw_created!r}") from exc
+    if created_at.tzinfo is None or created_at.utcoffset() is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    else:
+        created_at = created_at.astimezone(timezone.utc)
+
+    if raw_updated:
+        try:
+            updated_at = datetime.fromisoformat(raw_updated.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise GitHubError(f"invalid updated_at in comment payload: {raw_updated!r}") from exc
+        if updated_at.tzinfo is None or updated_at.utcoffset() is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        else:
+            updated_at = updated_at.astimezone(timezone.utc)
+    else:
+        updated_at = created_at
+
+    return GitHubComment(
+        id=raw_id,
+        url=str(payload.get("url") or ""),
+        html_url=str(payload.get("html_url") or payload.get("htmlUrl") or ""),
+        body=_redact(str(payload.get("body") or "")),
+        user_login=user_login,
+        user_id=user_id,
+        user_type=user_type,
+        created_at=created_at,
+        updated_at=updated_at,
+        author_association=str(
+            payload.get("author_association") or payload.get("authorAssociation") or ""
+        ).upper(),
+    )
+
+
 # --------------------------------------------------------------------------
 # Failure classification heuristics
 # --------------------------------------------------------------------------
@@ -1796,6 +1923,28 @@ class GitHubClient:
     gh_path: str = "gh"
     token: str | None = field(default=None, repr=False)
     host: str | None = None
+    _authenticated_identities: dict[str, tuple[GitHubIdentity, float, str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
+    def _active_credential_key(self, hostname: str) -> str:
+        token = self.token or resolve_github_token()
+        if token:
+            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+            return f"token:{digest}"
+        gh_config_dir = os.environ.get("GH_CONFIG_DIR")
+        config_path = (
+            Path(gh_config_dir) / "hosts.yml"
+            if gh_config_dir
+            else Path.home() / ".config" / "gh" / "hosts.yml"
+        )
+        try:
+            if config_path.is_file():
+                mtime = config_path.stat().st_mtime_ns
+                return f"ambient-file:{mtime}"
+        except OSError:
+            pass
+        return "ambient-none"
 
     def _env(self) -> Mapping[str, str] | None:
         values: dict[str, str] = {}
@@ -1967,6 +2116,170 @@ class GitHubClient:
             repo_path,
         )
 
+    def create_issue_comment(
+        self,
+        repo_path: Path,
+        *,
+        repository: str,
+        issue_number: int,
+        body: str,
+        hostname: str = "github.com",
+    ) -> GitHubComment:
+        """Post a comment on an issue or pull request conversation."""
+        target = _validate_repository_name(repository)
+        if issue_number <= 0:
+            raise ValueError(f"invalid issue or pull request number: {issue_number}")
+        if not body.strip():
+            raise ValueError("comment body must not be empty")
+        args = [
+            "api",
+            "--hostname",
+            hostname,
+            "--method",
+            "POST",
+            "-H",
+            _GITHUB_API_ACCEPT,
+            f"repos/{target}/issues/{issue_number}/comments",
+            "-f",
+            f"body={body}",
+        ]
+        result = self._run(args, repo_path, check=False)
+        if result.returncode != 0:
+            raise GitHubCommandError((self.gh_path, *args), result.returncode, result.stderr)
+        payload = self._parse_json(args, result)
+        if not isinstance(payload, dict):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                "expected a JSON object from gh api comment creation",
+            )
+        return parse_comment_payload(payload)
+
+    def list_issue_comments(
+        self,
+        repo_path: Path,
+        *,
+        repository: str,
+        issue_number: int,
+        since: datetime | None = None,
+        page: int = 1,
+        per_page: int = 100,
+        hostname: str = "github.com",
+    ) -> list[GitHubComment]:
+        """List comments for an issue or pull request conversation with bounded pagination."""
+        target = _validate_repository_name(repository)
+        if issue_number <= 0:
+            raise ValueError(f"invalid issue or pull request number: {issue_number}")
+        bounded_page = max(1, page)
+        bounded_per_page = max(1, min(per_page, 100))
+        path = (
+            f"repos/{target}/issues/{issue_number}/comments"
+            f"?page={bounded_page}&per_page={bounded_per_page}"
+        )
+        if since is not None:
+            since_utc = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            path += f"&since={since_utc}"
+        args = [
+            "api",
+            "--hostname",
+            hostname,
+            "-H",
+            _GITHUB_API_ACCEPT,
+            path,
+        ]
+        result = self._run(args, repo_path, check=False)
+        if result.returncode != 0:
+            raise GitHubCommandError((self.gh_path, *args), result.returncode, result.stderr)
+        payload = self._parse_json(args, result)
+        if not isinstance(payload, list):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                "expected a JSON array from gh api comment listing",
+            )
+        return [parse_comment_payload(item) for item in payload if isinstance(item, dict)]
+
+    def get_issue_comment(
+        self,
+        repo_path: Path,
+        *,
+        repository: str,
+        comment_id: int,
+        hostname: str = "github.com",
+    ) -> GitHubComment:
+        """Fetch and revalidate a single issue or pull request comment."""
+        target = _validate_repository_name(repository)
+        if comment_id <= 0:
+            raise ValueError(f"invalid comment id: {comment_id}")
+        args = [
+            "api",
+            "--hostname",
+            hostname,
+            "-H",
+            _GITHUB_API_ACCEPT,
+            f"repos/{target}/issues/comments/{comment_id}",
+        ]
+        result = self._run(args, repo_path, check=False)
+        if result.returncode != 0:
+            raise GitHubCommandError((self.gh_path, *args), result.returncode, result.stderr)
+        payload = self._parse_json(args, result)
+        if not isinstance(payload, dict):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                "expected a JSON object from gh api comment retrieval",
+            )
+        return parse_comment_payload(payload)
+
+    def get_authenticated_user(
+        self,
+        repo_path: Path,
+        *,
+        hostname: str = "github.com",
+        force_refresh: bool = False,
+        max_age_seconds: float = DEFAULT_AUTH_CACHE_TTL_SECONDS,
+    ) -> GitHubIdentity:
+        """Resolve and cache the authenticated GitHub user identity for a host.
+
+        Maintains a safe, bounded cache tied to the active credential and TTL
+        to ensure changes to ambient or configured authentication are detected
+        during long-running daemon operations.
+        """
+        now = time.monotonic()
+        cred_key = self._active_credential_key(hostname)
+        if not force_refresh and hostname in self._authenticated_identities:
+            cached_identity, cached_at, cached_key = self._authenticated_identities[hostname]
+            if (now - cached_at) < max_age_seconds and cached_key == cred_key:
+                return cached_identity
+
+        args = [
+            "api",
+            "--hostname",
+            hostname,
+            "-H",
+            _GITHUB_API_ACCEPT,
+            "user",
+        ]
+        result = self._run(args, repo_path, check=False)
+        if result.returncode != 0:
+            raise GitHubCommandError((self.gh_path, *args), result.returncode, result.stderr)
+        payload = self._parse_json(args, result)
+        if not isinstance(payload, dict):
+            raise GitHubCommandError(
+                (self.gh_path, *args),
+                result.returncode,
+                "expected a JSON object from gh api user",
+            )
+        raw_id = payload.get("id")
+        raw_login = payload.get("login")
+        if not isinstance(raw_id, int) or isinstance(raw_id, bool) or raw_id <= 0:
+            raise GitHubError(f"invalid user id in api user payload: {raw_id!r}")
+        if not isinstance(raw_login, str) or not raw_login.strip():
+            raise GitHubError(f"invalid login in api user payload: {raw_login!r}")
+        identity = GitHubIdentity(id=raw_id, login=raw_login.strip())
+        self._authenticated_identities[hostname] = (identity, now, cred_key)
+        return identity
+
     def update_pr(
         self,
         repo_path: Path,
@@ -2038,7 +2351,12 @@ class GitHubClient:
     # -- Pull request state and merging (ADR-022) ------------------------
 
     def get_pull_request(
-        self, repo_path: Path, pr: str, *, repository: str | None = None
+        self,
+        repo_path: Path,
+        pr: str,
+        *,
+        repository: str | None = None,
+        hostname: str | None = None,
     ) -> PullRequestState:
         """Read one pull request's current state via ``gh pr view --json``.
 
@@ -2047,11 +2365,14 @@ class GitHubClient:
         the pull request's *current head commit*, so check evidence cannot
         silently describe an older revision.
         """
+        target_repo = repository
+        if hostname and target_repo and len(target_repo.split("/")) == 2:
+            target_repo = f"{hostname}/{target_repo}"
         args = [
             "pr",
             "view",
             pr,
-            *self._repo_args(repository),
+            *self._repo_args(target_repo),
             "--json",
             ",".join(PULL_REQUEST_VIEW_FIELDS),
         ]

@@ -68,6 +68,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import socket
 import threading
 import time
@@ -75,7 +76,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Iterable, Literal, Protocol
 
 from pydantic import Field, ValidationError
 
@@ -85,6 +86,8 @@ from .models import (
     AttemptTrigger,
     Complexity,
     ContextTier,
+    EscalationRecord,
+    EscalationStatus,
     FactoryRun,
     InvocationRecord,
     ModelBase,
@@ -95,11 +98,13 @@ from .models import (
     TriageResult,
     UsageMetrics,
     UtcDateTime,
+    VerificationReport,
     VersionedModel,
     WorkflowState,
     WorkItem,
     utc_now,
 )
+from .store import ARTIFACT_FILENAMES
 from .verification import redact_secrets
 
 try:
@@ -114,6 +119,7 @@ except ImportError:  # pragma: no cover - macOS/Linux only per AGENTS.md
 #: than raising or silently reporting zero stale locks as if they were
 #: checked.
 _FCNTL_AVAILABLE = fcntl is not None
+_GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
 
 __all__ = [
     "RunStoreProtocol",
@@ -311,6 +317,7 @@ class RunSummary(ModelBase):
 
     run_id: str
     work_item_id: str
+    source_external_id: str | None = None
     title: str | None
     state: WorkflowState
     complexity: Complexity | None
@@ -327,6 +334,10 @@ class RunSummary(ModelBase):
     is_finished: bool
     is_stale: bool
     review_status: str | None = None
+    requested_performance_mode: Literal["standard", "fast"] = "standard"
+    effective_performance_mode: Literal["standard", "fast"] = "standard"
+    performance_model_profile: str | None = None
+    waiting_for_human: bool = False
     performance: PerformanceRecord | None = None
 
 
@@ -406,6 +417,31 @@ class RunGuidance(ModelBase):
     category_counts: dict[ReviewFindingCategory, int] = Field(default_factory=dict)
 
 
+class VerificationSummary(ModelBase):
+    passed: bool
+    check_count: int = Field(ge=0)
+    failed_check_count: int = Field(ge=0)
+    coverage_change: float | None = None
+
+
+class EscalationSummary(ModelBase):
+    status: EscalationStatus
+    target_type: str | None = None
+    comment_url: str | None = None
+    reason_code: str
+    resume_classification: str
+    waiting_for_human: bool
+    waiting_since: UtcDateTime | None = None
+    episode_number: int = Field(ge=1)
+    reopen_count: int = Field(ge=0)
+    accepted_reply_count: int = Field(ge=0)
+    last_responder: str | None = None
+    last_action: Literal["RESUME"] | None = None
+    last_response_at: UtcDateTime | None = None
+    is_resumed: bool = False
+    resumed_at: UtcDateTime | None = None
+
+
 class RunDetail(ModelBase):
     """One run's read-only detail view: a :class:`RunSummary` plus completion
     facts and the attempt history.
@@ -419,6 +455,7 @@ class RunDetail(ModelBase):
 
     run_id: str
     work_item_id: str
+    source_external_id: str | None = None
     title: str | None
     state: WorkflowState
     complexity: Complexity | None
@@ -436,9 +473,17 @@ class RunDetail(ModelBase):
     is_finished: bool
     is_stale: bool
     review_status: str | None = None
+    requested_performance_mode: Literal["standard", "fast"] = "standard"
+    effective_performance_mode: Literal["standard", "fast"] = "standard"
+    performance_model_profile: str | None = None
+    waiting_for_human: bool = False
     performance: PerformanceRecord | None = None
     commit_sha: str | None = None
     pull_request_url: str | None = None
+    merge_commit_sha: str | None = None
+    verification: VerificationSummary | None = None
+    artifacts: list[str] = Field(default_factory=list)
+    escalation: EscalationSummary | None = None
     attempts: list[RunAttemptSummary] = Field(default_factory=list)
     invocations: list[RunInvocationSummary] = Field(default_factory=list)
     active_invocation: ActiveInvocationSummary | None = None
@@ -1188,6 +1233,65 @@ def _load_optional_artifact(
         return None
 
 
+def _safe_external_id(work_item: WorkItem | None) -> str | None:
+    if work_item is None or work_item.external_id is None:
+        return None
+    external_id = work_item.external_id
+    if len(external_id) <= 200 and _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(external_id):
+        return external_id
+    return None
+
+
+def _verification_summary(report: VerificationReport | None) -> VerificationSummary | None:
+    if report is None:
+        return None
+    failed = sum(
+        1 for check in report.deterministic_checks if check.exit_code != 0 or check.timed_out
+    )
+    return VerificationSummary(
+        passed=report.passed,
+        check_count=len(report.deterministic_checks),
+        failed_check_count=failed,
+        coverage_change=report.coverage_change,
+    )
+
+
+def _artifact_inventory(store: RunStoreProtocol, run_id: str) -> list[str]:
+    run_dir = store.runs_dir / run_id
+    if not run_dir.is_dir():
+        return []
+    return sorted(
+        filename for filename in set(ARTIFACT_FILENAMES.values()) if (run_dir / filename).is_file()
+    )
+
+
+def _escalation_summary(
+    run: FactoryRun,
+    escalation: EscalationRecord | None,
+) -> EscalationSummary | None:
+    if escalation is None:
+        return None
+    last_reply = escalation.accepted_replies[-1] if escalation.accepted_replies else None
+    is_resumed = escalation.status in {EscalationStatus.REOPENED, EscalationStatus.RESUMED}
+    return EscalationSummary(
+        status=escalation.status,
+        target_type=escalation.target_type.value if escalation.target_type is not None else None,
+        comment_url=escalation.comment_url,
+        reason_code=escalation.reason_code,
+        resume_classification=escalation.resume_classification.value,
+        waiting_for_human=run.state is WorkflowState.NEEDS_HUMAN,
+        waiting_since=(escalation.created_at if run.state is WorkflowState.NEEDS_HUMAN else None),
+        episode_number=escalation.episode_number,
+        reopen_count=escalation.reopen_count,
+        accepted_reply_count=len(escalation.accepted_replies),
+        last_responder=last_reply.user_login if last_reply is not None else None,
+        last_action="RESUME" if last_reply is not None else None,
+        last_response_at=last_reply.created_at if last_reply is not None else None,
+        is_resumed=is_resumed,
+        resumed_at=escalation.updated_at if is_resumed else None,
+    )
+
+
 def _build_run_summary(
     store: RunStoreProtocol,
     run: FactoryRun,
@@ -1217,6 +1321,7 @@ def _build_run_summary(
     return RunSummary(
         run_id=run.id,
         work_item_id=run.work_item_id,
+        source_external_id=_safe_external_id(work_item),
         title=title,
         state=run.state,
         complexity=complexity,
@@ -1239,6 +1344,10 @@ def _build_run_summary(
             if run.review_acceptance is not None
             else None
         ),
+        requested_performance_mode=run.requested_performance_mode,
+        effective_performance_mode=run.effective_performance_mode,
+        performance_model_profile=run.performance_model_profile,
+        waiting_for_human=run.state is WorkflowState.NEEDS_HUMAN,
         performance=run.performance,
     )
 
@@ -1272,11 +1381,16 @@ def build_run_detail(
         return None
 
     summary = _build_run_summary(store, run, _normalize_now(now), stale_after)
+    verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
         **summary.model_dump(),
         completed_at=run.completed_at,
         commit_sha=run.commit_sha,
         pull_request_url=run.pull_request_url,
+        merge_commit_sha=run.merge_commit_sha,
+        verification=_verification_summary(verification),
+        artifacts=_artifact_inventory(store, run.id),
+        escalation=_escalation_summary(run, run.escalation),
         attempts=[
             RunAttemptSummary(
                 attempt_number=attempt.attempt_number,

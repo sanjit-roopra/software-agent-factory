@@ -40,6 +40,7 @@ from software_agent_factory.observability import (
 from software_agent_factory.service_install import (
     DEFAULT_LABEL,
     ServiceInstallRequest,
+    ServicePerformanceMode,
     ServiceRuntime,
     ServiceStatus,
     build_program_arguments,
@@ -687,6 +688,43 @@ def test_service_install_refuses_when_the_scheduler_is_disabled(
     assert list(launch_agents_dir.iterdir()) == []
 
 
+def test_service_install_validates_fast_mode_before_install(
+    monkeypatch: pytest.MonkeyPatch,
+    macos: None,
+    launch_agents_dir: Path,
+    source_repo: Path,
+    executable: Path,
+    tmp_path: Path,
+    data_dir: Path,
+) -> None:
+    config_path = write_config(
+        tmp_path / "bad-fast.yaml",
+        data_dir,
+        scheduler={"enabled": True},
+        performance={"fast_model_profile": "missing"},
+    )
+    monkeypatch.setattr(
+        cli,
+        "install_service",
+        lambda *_a, **_k: pytest.fail("install must not run with invalid fast mode"),
+    )
+
+    result = runner.invoke(
+        app,
+        install_args(
+            source_repo,
+            config_path,
+            executable,
+            "--performance-mode",
+            "fast",
+        ),
+    )
+
+    assert result.exit_code == 2
+    assert "fast performance mode requires" in result.output
+    assert list(launch_agents_dir.iterdir()) == []
+
+
 def test_service_install_refuses_when_doctor_reports_errors(
     monkeypatch: pytest.MonkeyPatch,
     macos: None,
@@ -790,6 +828,10 @@ def test_service_install_runtime_and_flags_are_forwarded(
             executable,
             "--runtime",
             "copilot",
+            "--model-profile",
+            "economy",
+            "--performance-mode",
+            "fast",
             "--allow-source-dev",
             "--label",
             "com.example.factory-test",
@@ -801,6 +843,8 @@ def test_service_install_runtime_and_flags_are_forwarded(
     assert captured["requested_runtime_copilot"] is True
     request = captured["request"]
     assert request.runtime is ServiceRuntime.COPILOT
+    assert request.model_profile == "economy"
+    assert request.performance_mode is ServicePerformanceMode.FAST
     assert request.allow_source_dev is True
     assert request.label == "com.example.factory-test"
     payload = json.loads(result.output)

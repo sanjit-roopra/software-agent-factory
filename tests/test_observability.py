@@ -33,11 +33,16 @@ from software_agent_factory.models import (
     AttemptBudget,
     AttemptRecord,
     AttemptTrigger,
+    CommandResult,
     Complexity,
+    EscalationRecord,
+    EscalationStatus,
+    EscalationTargetType,
     FactoryRun,
     InvocationRecord,
     ModelUsage,
     PerformanceRecord,
+    ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
     ReviewFinding,
@@ -51,6 +56,7 @@ from software_agent_factory.models import (
     RunLease,
     TriageResult,
     UsageMetrics,
+    VerificationReport,
     WorkflowState,
     WorkItem,
 )
@@ -1476,6 +1482,82 @@ def test_build_run_detail_returns_summary_fields_plus_attempts(tmp_path: Path) -
     assert detail.ci_repair_attempts == 1
     assert [attempt.attempt_number for attempt in detail.attempts] == [1, 2]
     assert detail.attempts[0].role is AgentRole.IMPLEMENTER
+
+
+def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path / "data")
+    run = _run("run-visible", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "requested_performance_mode": "fast",
+            "effective_performance_mode": "standard",
+            "performance_model_profile": "economy",
+            "merge_commit_sha": "a" * 40,
+            "escalation": EscalationRecord(
+                episode_id="ep-safe",
+                episode_number=2,
+                status=EscalationStatus.NOTIFIED,
+                resume_classification=ResumeClassification.RISK_APPROVAL,
+                target_type=EscalationTargetType.ISSUE,
+                target_repository="acme/example",
+                target_number=17,
+                comment_url="https://github.com/acme/example/issues/17#issuecomment-1",
+                reason_code="RISK_APPROVAL",
+            ),
+        }
+    )
+    store.save_run(run)
+    store.save_artifact(
+        run.id,
+        WorkItem(
+            id=run.work_item_id,
+            external_id="acme/example#17",
+            source="GITHUB",
+            title="Safe issue",
+            description="D",
+        ),
+    )
+    store.save_artifact(
+        run.id,
+        VerificationReport(
+            passed=False,
+            deterministic_checks=[
+                CommandResult(
+                    command="pytest",
+                    exit_code=1,
+                    stdout="secret output",
+                    stderr="secret error",
+                    duration_seconds=1,
+                )
+            ],
+            failures=["secret failure"],
+            coverage_change=-1.0,
+            confidence=1.0,
+        ),
+    )
+    store.save_patch(run.id, "secret patch")
+
+    payload = build_run_detail(store, run.id).model_dump(mode="json")
+
+    assert payload["source_external_id"] == "acme/example#17"
+    assert payload["requested_performance_mode"] == "fast"
+    assert payload["effective_performance_mode"] == "standard"
+    assert payload["performance_model_profile"] == "economy"
+    assert payload["waiting_for_human"] is True
+    assert payload["merge_commit_sha"] == "a" * 40
+    assert payload["verification"] == {
+        "passed": False,
+        "check_count": 1,
+        "failed_check_count": 1,
+        "coverage_change": -1.0,
+    }
+    assert payload["artifacts"] == ["verification.json", "work-item.json"]
+    assert payload["escalation"]["comment_url"].endswith("#issuecomment-1")
+    assert payload["escalation"]["waiting_for_human"] is True
+    assert "stdout" not in json.dumps(payload)
+    assert "secret output" not in json.dumps(payload)
+    assert "patch.diff" not in payload["artifacts"]
 
 
 def test_build_run_detail_shows_live_active_invocation(

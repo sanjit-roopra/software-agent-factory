@@ -53,6 +53,7 @@ FIXTURE_RUNS: list[dict[str, Any]] = [
     {
         "run_id": f"run-{index:03d}",
         "work_item_id": f"item-{index:03d}",
+        "source_external_id": f"acme/example#{index}",
         "title": f"Fixture run {index}",
         "state": "DONE" if index % 2 == 0 else "FAILED",
         "complexity": "L1",
@@ -74,6 +75,10 @@ FIXTURE_RUNS: list[dict[str, Any]] = [
         },
         "is_finished": True,
         "is_stale": index == 3,
+        "requested_performance_mode": "fast",
+        "effective_performance_mode": "standard",
+        "performance_model_profile": "economy",
+        "waiting_for_human": False,
     }
     for index in range(1, 6)
 ]
@@ -90,6 +95,8 @@ FIXTURE_DETAILS: dict[str, dict[str, Any]] = {
                 "attempt_number": 1,
                 "role": "IMPLEMENTER",
                 "model": "fake-model",
+                "budget": "IMPLEMENTATION",
+                "triggered_by": "INITIAL",
                 "outcome": "SUCCESS",
                 "started_at": "2024-01-01T00:00:00+00:00",
                 "completed_at": "2024-01-01T00:05:00+00:00",
@@ -123,6 +130,33 @@ FIXTURE_DETAILS: dict[str, dict[str, Any]] = {
             "started_at": "2024-01-01T00:06:00+00:00",
             "attempt_number": 2,
             "prompt": "must-not-be-exposed",
+        },
+        "merge_commit_sha": "a" * 40,
+        "verification": {
+            "passed": True,
+            "check_count": 2,
+            "failed_check_count": 0,
+            "coverage_change": 1.5,
+            "stdout": "must-not-be-exposed",
+        },
+        "artifacts": ["work-item.json", "verification.json", "patch.diff"],
+        "escalation": {
+            "status": "NOTIFIED",
+            "target_type": "ISSUE",
+            "comment_url": "https://github.com/acme/example/issues/1#issuecomment-1",
+            "reason_code": "RISK_APPROVAL",
+            "resume_classification": "RISK_APPROVAL",
+            "waiting_for_human": True,
+            "waiting_since": "2024-01-01T01:00:00+00:00",
+            "episode_number": 1,
+            "reopen_count": 0,
+            "accepted_reply_count": 0,
+            "last_responder": None,
+            "last_action": None,
+            "last_response_at": None,
+            "is_resumed": False,
+            "resumed_at": None,
+            "raw_comment_body": "must-not-be-exposed",
         },
     }
     for run in FIXTURE_RUNS
@@ -945,6 +979,19 @@ def test_valid_run_id_reaches_provider(running_server: RunningServer) -> None:
     assert set(payload["active_invocation"]) <= ACTIVE_INVOCATION_FIELDS
     assert payload["active_invocation"]["status"] == "running"
     assert "prompt" not in payload["active_invocation"]
+    assert payload["source_external_id"] == "acme/example#1"
+    assert payload["requested_performance_mode"] == "fast"
+    assert payload["effective_performance_mode"] == "standard"
+    assert payload["performance_model_profile"] == "economy"
+    assert payload["verification"] == {
+        "passed": True,
+        "check_count": 2,
+        "failed_check_count": 0,
+        "coverage_change": 1.5,
+    }
+    assert payload["artifacts"] == ["verification.json", "work-item.json"]
+    assert payload["escalation"]["reason_code"] == "RISK_APPROVAL"
+    assert "raw_comment_body" not in payload["escalation"]
     # No raw logs, diffs or prompt content are exposed by the fixture detail
     # shape, and the client-side allowlist in app.js never renders such keys
     # even if a future provider were to include them.
@@ -1178,6 +1225,81 @@ def test_failure_reason_is_never_returned_even_when_provider_sets_it() -> None:
         _stop(running)
 
 
+def test_new_dashboard_fields_reject_untrusted_values() -> None:
+    payload = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "source_external_id": SECRET_MARKER,
+            "performance_model_profile": "secret profile/invalid",
+            "verification": {
+                "passed": True,
+                "check_count": 1,
+                "failed_check_count": 0,
+                "stdout": SECRET_MARKER,
+            },
+            "artifacts": ["verification.json", "patch.diff", SECRET_MARKER],
+            "escalation": {
+                "status": "NOTIFIED",
+                "target_type": "ISSUE",
+                "comment_url": "file:///tmp/private",
+                "reason_code": "RISK_APPROVAL",
+                "resume_classification": "RISK_APPROVAL",
+                "waiting_for_human": True,
+                "episode_number": 1,
+                "reopen_count": 0,
+                "accepted_reply_count": 0,
+                "last_responder": "invalid responder/name",
+                "last_action": "RESUME",
+                "is_resumed": False,
+                "raw_comment_body": SECRET_MARKER,
+            },
+        }
+    )
+
+    assert "source_external_id" not in payload
+    assert "performance_model_profile" not in payload
+    assert "stdout" not in payload["verification"]
+    assert payload["artifacts"] == ["verification.json"]
+    assert "comment_url" not in payload["escalation"]
+    assert "last_responder" not in payload["escalation"]
+    assert "raw_comment_body" not in payload["escalation"]
+    assert SECRET_MARKER not in json.dumps(payload)
+
+
+def test_sanitize_run_detail_preserves_resumed_escalation_status() -> None:
+    """Dashboard sanitizer must preserve the valid RESUMED escalation status."""
+    payload = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "escalation": {
+                "status": "RESUMED",
+                "target_type": "PULL_REQUEST",
+                "comment_url": "https://github.com/acme/example/pull/1#issuecomment-1",
+                "reason_code": "RISK_APPROVAL",
+                "resume_classification": "RISK_APPROVAL",
+                "waiting_for_human": False,
+                "episode_number": 1,
+                "reopen_count": 1,
+                "accepted_reply_count": 1,
+                "is_resumed": True,
+            },
+        }
+    )
+    assert payload["escalation"]["status"] == "RESUMED"
+    assert payload["escalation"]["is_resumed"] is True
+
+    # Unknown or invalid status must be dropped
+    invalid_payload = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "escalation": {
+                "status": "NOT_A_VALID_STATUS",
+            },
+        }
+    )
+    assert "status" not in invalid_payload["escalation"]
+
+
 def test_run_guidance_is_reconstructed_from_safe_reason_code() -> None:
     payload = sanitize_run_detail(
         {
@@ -1310,6 +1432,94 @@ def test_to_json_safe_rejects_unsupported_type() -> None:
 
     with pytest.raises(TypeError):
         to_json_safe(Unsupported())
+
+
+def test_dashboard_health_sanitization_omits_workspace_paths() -> None:
+    """Review Finding 5: Dashboard health JSON responses must omit absolute workspace paths."""
+    from software_agent_factory.dashboard.sanitize import sanitize_health
+    from software_agent_factory.models import WorkflowState, utc_now
+    from software_agent_factory.observability import OperationalHealthReport, StaleRunFinding
+
+    report = OperationalHealthReport(
+        generated_at=utc_now(),
+        stale_after_seconds=900.0,
+        max_scanned_runs=100,
+        total_runs=1,
+        scanned_runs=1,
+        scan_truncated=False,
+        unreadable_runs=0,
+        degraded=False,
+        lock_check_supported=True,
+        locks_checked=1,
+        workspaces_checked=1,
+        stale_runs=[
+            StaleRunFinding(
+                run_id="run-secret",
+                work_item_id="task-s",
+                state=WorkflowState.IMPLEMENTING,
+                idle_seconds=1200.0,
+                workspace_path="/Users/secret/path/to/workspaces/ws-secret",
+            )
+        ],
+    )
+    sanitized = sanitize_health(report)
+    assert sanitized is not None
+    assert len(sanitized["stale_runs"]) == 1
+    stale_finding = sanitized["stale_runs"][0]
+    assert stale_finding["run_id"] == "run-secret"
+    assert stale_finding["work_item_id"] == "task-s"
+    assert "workspace_path" not in stale_finding
+    assert "/Users/secret" not in json.dumps(sanitized)
+
+
+def test_dashboard_api_summary_sanitizes_health_response(tmp_path: Path) -> None:
+    """Review Finding 5: /api/summary strips absolute workspace paths from operational health."""
+    from software_agent_factory.models import WorkflowState, utc_now
+    from software_agent_factory.observability import OperationalHealthReport, StaleRunFinding
+
+    def health_with_secret_path() -> Any:
+        return OperationalHealthReport(
+            generated_at=utc_now(),
+            stale_after_seconds=900.0,
+            max_scanned_runs=100,
+            total_runs=1,
+            scanned_runs=1,
+            scan_truncated=False,
+            unreadable_runs=0,
+            degraded=False,
+            lock_check_supported=True,
+            locks_checked=1,
+            workspaces_checked=1,
+            stale_runs=[
+                StaleRunFinding(
+                    run_id="run-secret-2",
+                    work_item_id="task-s2",
+                    state=WorkflowState.IMPLEMENTING,
+                    idle_seconds=1200.0,
+                    workspace_path="/private/var/folders/secret/ws-leak",
+                )
+            ],
+        )
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+        health_provider=health_with_secret_path,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
+        assert response.status == 200
+        payload = _body_json(response)
+        health = payload.get("health")
+        assert health is not None
+        assert len(health["stale_runs"]) == 1
+        assert "workspace_path" not in health["stale_runs"][0]
+        assert "/private/var/folders/secret" not in json.dumps(payload)
+    finally:
+        _stop(running)
 
 
 def test_usage_sanitizer_keeps_only_non_negative_numeric_fields() -> None:

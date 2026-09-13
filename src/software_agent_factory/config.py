@@ -426,6 +426,67 @@ class MergeConfig(ConfigModel):
 #: entirely.
 DEFAULT_MAX_RUNS_PER_DAY = 20
 
+MAX_ESCALATION_REOPENS = 3
+MAX_ESCALATION_REPLY_WINDOW_HOURS = 336
+ALLOWED_GITHUB_AUTHOR_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
+class EscalationConfig(ConfigModel):
+    """Opt-in GitHub escalation notice and authorized human reply policy."""
+
+    enabled: bool = False
+    authorized_identities: list[str] = Field(default_factory=list)
+    allowed_associations: list[str] = Field(
+        default_factory=lambda: ["OWNER", "MEMBER", "COLLABORATOR"]
+    )
+    max_reopens: int = Field(default=3, ge=1, le=MAX_ESCALATION_REOPENS)
+    reply_window_hours: int = Field(default=168, ge=1, le=MAX_ESCALATION_REPLY_WINDOW_HOURS)
+    max_reply_polls_per_tick: PositiveInt = Field(default=10)
+    max_notification_attempts: PositiveInt = Field(default=3)
+    allowed_hosts: list[str] = Field(default_factory=lambda: ["github.com"])
+
+    @field_validator("authorized_identities")
+    @classmethod
+    def _validate_identities(cls, value: list[str]) -> list[str]:
+        for identity in value:
+            if not identity or not identity.strip() or identity != identity.strip():
+                raise ValueError("authorized_identities entries must be non-empty names or IDs")
+            if any(character.isspace() for character in identity):
+                raise ValueError("authorized_identities entries must not contain whitespace")
+        if len(value) != len({identity.casefold() for identity in value}):
+            raise ValueError("authorized_identities entries must be unique")
+        return value
+
+    @field_validator("allowed_associations")
+    @classmethod
+    def _validate_associations(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("allowed_associations must not be empty")
+        for assoc in value:
+            normalized = assoc.strip().upper()
+            if normalized not in ALLOWED_GITHUB_AUTHOR_ASSOCIATIONS:
+                allowed = sorted(ALLOWED_GITHUB_AUTHOR_ASSOCIATIONS)
+                raise ValueError(f"allowed_associations entries must be one of {allowed}")
+        if len(value) != len({assoc.strip().upper() for assoc in value}):
+            raise ValueError("allowed_associations entries must be unique")
+        return [assoc.strip().upper() for assoc in value]
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _validate_hosts(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("allowed_hosts must not be empty")
+        for host in value:
+            if not host.strip() or "/" in host:
+                raise ValueError("allowed_hosts entries must be bare hostnames")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_enabled_requirements(self) -> Self:
+        if self.enabled and not self.authorized_identities:
+            raise ValueError("escalation.enabled requires at least one authorized identity")
+        return self
+
 
 class SchedulerConfig(ConfigModel):
     """Local backlog daemon policy (``PLAN.md`` Phases 13 and 14)."""
@@ -487,6 +548,7 @@ class FactoryConfig(ConfigModel):
     ci: CiConfig = Field(default_factory=CiConfig)
     merge: MergeConfig = Field(default_factory=MergeConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    escalation: EscalationConfig = Field(default_factory=EscalationConfig)
 
     @model_validator(mode="after")
     def _validate_risk_rules(self) -> Self:

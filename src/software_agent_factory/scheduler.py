@@ -115,6 +115,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -548,6 +549,31 @@ class Scheduler:
                 self._repository_locks[repository_path] = lock
             return lock
 
+    def register_active_handle(
+        self,
+        opaque_id: str,
+        handle: RunHandle,
+        item: TrackerItem | None = None,
+    ) -> None:
+        """Register an active handle (e.g. for a reopened run) so it shares the
+        scheduler's concurrency limit, stall detection, and active reconciliation."""
+        tracker_item = item or TrackerItem(
+            opaque_id=opaque_id,
+            identifier=opaque_id,
+            title=f"Reopened run {handle.run_id}",
+            description="",
+            state="OPEN",
+            labels=(),
+            created_at=self.clock(),
+            blockers=(),
+            dispatchable=True,
+            repository_path=str(self.store.runs_dir if self.store else Path.cwd()),
+        )
+        self._active[opaque_id] = _ActiveEntry(
+            item=tracker_item, handle=handle, started_at=self.clock()
+        )
+        self._escalated.discard(opaque_id)
+
     # -- recovery (startup, or any time before/between polling cycles) ----
 
     def recover(self, store: FileRunStore, decide: RecoveryCallback) -> list[RecoveryRecord]:
@@ -649,8 +675,15 @@ class Scheduler:
         # ``UtcDateTime`` always normalizes to UTC) -- convert explicitly so
         # a non-UTC-offset clock can never compute the wrong calendar day.
         today = self.clock().astimezone(timezone.utc).date()
-        created_today = sum(1 for run in runs if run.created_at.date() == today)
-        return max(0, self.max_runs_per_day - created_today)
+        dispatches_today = 0
+        for run in runs:
+            if run.created_at.date() == today:
+                dispatches_today += 1
+            if run.escalation is not None:
+                for receipt in run.escalation.accepted_replies:
+                    if receipt.accepted_at.date() == today:
+                        dispatches_today += 1
+        return max(0, self.max_runs_per_day - dispatches_today)
 
     def _is_eligible(self, item: TrackerItem, persisted_active_ids: frozenset[str]) -> bool:
         if not item.dispatchable:

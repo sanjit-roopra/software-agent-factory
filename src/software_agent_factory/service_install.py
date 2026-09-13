@@ -82,6 +82,7 @@ __all__ = [
     "MIN_THROTTLE_INTERVAL_SECONDS",
     "ServiceInstallError",
     "ServiceInstallRequest",
+    "ServicePerformanceMode",
     "ServiceRuntime",
     "ServiceStatus",
     "build_launch_agent_plist",
@@ -151,6 +152,11 @@ class ServiceRuntime(StrEnum):
     COPILOT = "copilot"
 
 
+class ServicePerformanceMode(StrEnum):
+    STANDARD = "standard"
+    FAST = "fast"
+
+
 @dataclass(frozen=True)
 class ServiceInstallRequest:
     """Everything needed to render one LaunchAgent plist.
@@ -169,6 +175,7 @@ class ServiceInstallRequest:
     poll_interval_seconds: int = 30
     runtime: ServiceRuntime = ServiceRuntime.FAKE
     model_profile: str = "default"
+    performance_mode: ServicePerformanceMode | None = None
     label: str = DEFAULT_LABEL
     allow_source_dev: bool = False
 
@@ -330,6 +337,8 @@ def build_program_arguments(request: ServiceInstallRequest) -> list[str]:
         args += ["--config", str(request.config_path)]
     args += ["--data-dir", str(request.data_dir)]
     args += ["--model-profile", request.model_profile]
+    if request.performance_mode is not None:
+        args += ["--performance-mode", request.performance_mode.value]
     args += ["--runtime", request.runtime.value]
     return args
 

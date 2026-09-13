@@ -72,7 +72,14 @@ from .agents import (
 )
 from .config import FactoryConfig, RoleModelConfig
 from .delivery import DeliveryTarget, fetch_delivery_target
-from .github import SHA_PATTERN, GitHubError, GitPublishError, build_pr_body
+from .github import (
+    SHA_PATTERN,
+    GitHubClient,
+    GitHubError,
+    GitPublishError,
+    build_pr_body,
+    resolve_github_token,
+)
 from .governance import (
     RepositoryVerificationResult,
     RepositoryVerifier,
@@ -93,6 +100,8 @@ from .models import (
     ChangeSet,
     CIReport,
     Complexity,
+    EscalationRecord,
+    EscalationStatus,
     ExecutionPlan,
     FactoryRun,
     InvocationRecord,
@@ -102,6 +111,7 @@ from .models import (
     RepositorySkill,
     RepositorySkillUse,
     ResearchReport,
+    ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
@@ -363,6 +373,7 @@ class WorkflowController:
         merger: PullRequestMerger | None = None,
         delivery_base_resolver: Callable[[Path, str], DeliveryTarget] | None = None,
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
+        github_client: GitHubClient | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -395,6 +406,11 @@ class WorkflowController:
         self._delivery_base_resolver = delivery_base_resolver or (
             lambda repo, expected: fetch_delivery_target(config, repo, expected)
         )
+        self._github = github_client
+        if self._github is None and self._publisher is not None:
+            self._github = getattr(self._publisher, "_client", None)
+        if self._github is None and (config.escalation.enabled or config.pull_request.enabled):
+            self._github = GitHubClient(token=resolve_github_token())
 
     # -- public transition API -----------------------------------------
 
@@ -443,6 +459,27 @@ class WorkflowController:
             if run.lease is not None:
                 updates["lease"] = run.lease.model_copy(update={"heartbeat_at": now})
         updates["failure_reason"] = failure_reason
+
+        if new_state is WorkflowState.NEEDS_HUMAN:
+            from .escalation import classify_halt_reason, generate_episode_id
+
+            classification, code, summary, action = classify_halt_reason(
+                run.model_copy(update={"state": new_state, "failure_reason": failure_reason}),
+                self._store,
+            )
+            prev_escalation = run.escalation
+            episode_num = (prev_escalation.episode_number + 1) if prev_escalation else 1
+            reopen_count = prev_escalation.reopen_count if prev_escalation else 0
+            accepted_replies = prev_escalation.accepted_replies if prev_escalation else []
+            updates["escalation"] = EscalationRecord(
+                episode_id=generate_episode_id(),
+                episode_number=episode_num,
+                status=EscalationStatus.PENDING_NOTIFICATION,
+                resume_classification=classification,
+                reason_code=code,
+                reopen_count=reopen_count,
+                accepted_replies=accepted_replies,
+            )
 
         run = run.model_copy(update=updates)
         self._store.save_run(run)
@@ -519,6 +556,18 @@ class WorkflowController:
                 }
             )
             self._store.save_run(run)
+        if run.state is WorkflowState.NEEDS_HUMAN:
+            now = utc_now()
+            run = run.model_copy(
+                update={
+                    "failure_reason": reason,
+                    "lease": None,
+                    "last_activity_at": now,
+                    "updated_at": now,
+                }
+            )
+            self._store.save_run(run)
+            return run
         return self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason)
 
     # -- entry point ------------------------------------------------------
@@ -744,6 +793,265 @@ class WorkflowController:
         finally:
             workspace.release_lock()
 
+    def _transition_reopened(self, run: FactoryRun) -> FactoryRun:
+        """Controller-internal transition from NEEDS_HUMAN to REFINING.
+
+        Guarantees that the run has a durable resume-pending status (REOPENED)
+        and an accepted receipt bound to the current run and episode before
+        leaving NEEDS_HUMAN, and marks the escalation as RESUMED upon exit.
+        """
+        if run.state is not WorkflowState.NEEDS_HUMAN:
+            raise TransitionError(
+                f"cannot reopen run {run.id} in state {run.state}; must be in NEEDS_HUMAN"
+            )
+        escalation = run.escalation
+        if escalation is None:
+            raise ValueError(f"run {run.id} has no escalation record; cannot reopen")
+        if escalation.status is not EscalationStatus.REOPENED:
+            raise ValueError(
+                f"run {run.id} escalation status is {escalation.status}, "
+                "not REOPENED; cannot reopen"
+            )
+        receipt = next(
+            (
+                r
+                for r in reversed(escalation.accepted_replies)
+                if r.run_id == run.id and r.episode_id == escalation.episode_id
+            ),
+            None,
+        )
+        if receipt is None:
+            raise ValueError(
+                f"run {run.id} has no accepted reply receipt bound to "
+                f"episode {escalation.episode_id}"
+            )
+
+        now = utc_now()
+        stage_name = run.state.value
+        stage_started_at = run.state_started_at or run.updated_at
+        stage_duration_ms = max(0.0, (now - stage_started_at).total_seconds() * 1000.0)
+        run.performance.record_duration(
+            f"stage.{stage_name}",
+            stage_duration_ms,
+            stage=stage_name,
+            operation="stage",
+            accumulate=True,
+        )
+        updated_receipts = [
+            (
+                r.model_copy(update={"dispatched_at": now})
+                if (
+                    r.run_id == run.id
+                    and r.episode_id == escalation.episode_id
+                    and r.dispatched_at is None
+                )
+                else r
+            )
+            for r in escalation.accepted_replies
+        ]
+        updated_escalation = escalation.model_copy(
+            update={
+                "status": EscalationStatus.RESUMED,
+                "accepted_replies": updated_receipts,
+                "updated_at": now,
+            }
+        )
+        updates: dict[str, object] = {
+            "state": WorkflowState.REFINING,
+            "updated_at": now,
+            "state_started_at": now,
+            "last_activity_at": now,
+            "completed_at": None,
+            "failure_reason": None,
+            "escalation": updated_escalation,
+        }
+        if run.lease is not None:
+            updates["lease"] = run.lease.model_copy(update={"heartbeat_at": now})
+
+        run = run.model_copy(update=updates)
+        self._store.save_run(run)
+        logger.info("run %s -> %s (reopened from escalation)", run.id, WorkflowState.REFINING.value)
+        return run
+
+    def _fail_reopen(
+        self,
+        run: FactoryRun,
+        reason: str,
+        *,
+        reason_code: str = "RECOVERY_INTERVENTION",
+    ) -> FactoryRun:
+        """Handle a failure during workspace validation or pre-transition reconciliation in reopen.
+
+        Transitions the run out of the dispatchable REOPENED state by persisting
+        a new non-resumable escalation episode (status PENDING_NOTIFICATION,
+        resume_classification NOT_RESUMABLE, reason_code RECOVERY_INTERVENTION,
+        reply_cursor closed). Preserves failure_reason, increments episode_number,
+        retains accepted_replies and reopen_count, and clears the lease.
+        Prevents tight redispatch loops while safely capturing the failure.
+        """
+        from .escalation import generate_episode_id
+
+        now = utc_now()
+        classification = ResumeClassification.NOT_RESUMABLE
+        code = reason_code
+        prev_escalation = run.escalation
+        episode_num = (prev_escalation.episode_number + 1) if prev_escalation else 1
+        reopen_count = prev_escalation.reopen_count if prev_escalation else 0
+        accepted_replies = prev_escalation.accepted_replies if prev_escalation else []
+
+        new_escalation = EscalationRecord(
+            episode_id=generate_episode_id(),
+            episode_number=episode_num,
+            status=EscalationStatus.PENDING_NOTIFICATION,
+            resume_classification=classification,
+            reason_code=code,
+            reopen_count=reopen_count,
+            accepted_replies=accepted_replies,
+            reply_cursor="closed",
+            created_at=now,
+            updated_at=now,
+        )
+
+        run = run.model_copy(
+            update={
+                "state": WorkflowState.NEEDS_HUMAN,
+                "failure_reason": reason,
+                "escalation": new_escalation,
+                "lease": None,
+                "completed_at": None,
+                "last_activity_at": now,
+                "updated_at": now,
+            }
+        )
+        self._store.save_run(run)
+        logger.warning(
+            "run %s reopen failed: %s; created non-resumable escalation episode %s",
+            run.id,
+            reason,
+            new_escalation.episode_id,
+        )
+        return run
+
+    def reopen(self, run_id: str, source_repo: Path) -> FactoryRun:
+        """Controller-owned API to reopen an eligible run halted in NEEDS_HUMAN.
+
+        This is the single controller-owned path out of NEEDS_HUMAN. Validates
+        workspace identity, reopen limits, durable resume-pending status,
+        accepted reply receipt bound to current run and episode, and the supported
+        resumable class (RISK_APPROVAL -> REFINING) without granting additional attempt budget.
+        """
+        run = self._store.load_run(run_id)
+        if run.state is not WorkflowState.NEEDS_HUMAN:
+            raise ValueError(
+                f"run {run_id} is in state {run.state}, not NEEDS_HUMAN; cannot reopen"
+            )
+
+        escalation = run.escalation
+        if escalation is None:
+            raise ValueError(f"run {run_id} has no escalation record; cannot reopen")
+
+        if escalation.status is not EscalationStatus.REOPENED:
+            raise ValueError(
+                f"run {run_id} escalation status is {escalation.status}, "
+                "not REOPENED; cannot reopen"
+            )
+
+        receipt = next(
+            (
+                r
+                for r in reversed(escalation.accepted_replies)
+                if r.run_id == run.id and r.episode_id == escalation.episode_id
+            ),
+            None,
+        )
+        if receipt is None:
+            return self._fail_reopen(
+                run,
+                f"run {run_id} has no accepted reply receipt bound to "
+                f"episode {escalation.episode_id}",
+                reason_code="RECOVERY_INTERVENTION",
+            )
+
+        if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
+            return self._fail_reopen(
+                run,
+                f"halt category {escalation.resume_classification} is not resumable via reopen",
+                reason_code="MANUAL_INSPECTION",
+            )
+
+        if escalation.reopen_count > self._config.escalation.max_reopens:
+            return self._fail_reopen(
+                run,
+                f"run {run_id} exceeded maximum reopens ({self._config.escalation.max_reopens})",
+                reason_code="ATTEMPT_BUDGET_EXHAUSTED",
+            )
+
+        workspace = GitWorktreeWorkspace(
+            self._config.data_dir,
+            source_repo,
+            run.work_item_id,
+            branch_prefix=self._config.repository.branch_prefix,
+        )
+        workspace.acquire_lock()
+        try:
+            run = self._store.load_run(run_id)
+            if run.state is not WorkflowState.NEEDS_HUMAN:
+                return run
+
+            if run.escalation is None or run.escalation.status is not EscalationStatus.REOPENED:
+                return run
+
+            if (
+                not workspace.path.is_dir()
+                or run.workspace_path is None
+                or Path(run.workspace_path).resolve() != workspace.path.resolve()
+                or run.branch_name != workspace.branch_name
+            ):
+                return self._fail_reopen(run, "workspace identity changed or workspace is missing")
+
+            try:
+                workspace.prepare()
+                if self._config.merge.enabled:
+                    assert self._merger is not None
+                    repository = self._merger.validate_repository(source_repo)
+                    if repository != run.delivery_repository:
+                        raise ValueError("delivery repository changed since this run started")
+
+                now = utc_now()
+                run = run.model_copy(
+                    update={
+                        "lease": RunLease(
+                            host=socket.gethostname(), pid=os.getpid(), heartbeat_at=now
+                        ),
+                        "last_activity_at": now,
+                        "updated_at": now,
+                    }
+                )
+                self._store.save_run(run)
+
+                work_item = self._store.load_artifact(run.id, WorkItem)
+                triage_result = self._store.load_artifact(run.id, TriageResult)
+                repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
+
+                run = self._select_performance_mode(run, triage_result)
+                run = self._transition_reopened(run)
+                return self._drive_from_refining(
+                    run,
+                    work_item,
+                    triage_result,
+                    workspace,
+                    source_repo,
+                    repository_profile,
+                )
+            except _Halt as halt:
+                return halt.run
+            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
+                return self._fail_reopen(
+                    self._store.load_run(run_id), f"could not reconcile reopened run: {exc}"
+                )
+        finally:
+            workspace.release_lock()
+
     def _restore_delivery_context(
         self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
     ) -> _RunContext:
@@ -852,75 +1160,108 @@ class WorkflowController:
                 )
 
             run = self._select_performance_mode(run, triage_result)
-            fast_model_profile = (
-                run.performance_model_profile if run.effective_performance_mode == "fast" else None
-            )
             run = self.transition(run, WorkflowState.REFINING)
-            specification = self._run_refiner(
+            return self._drive_from_refining(
                 run,
                 work_item,
                 triage_result,
-                workspace_path=workspace_path,
-                model_profile=fast_model_profile,
-            )
-
-            research_report: ResearchReport | None = None
-            if triage_result.needs_research:
-                run = self.transition(run, WorkflowState.RESEARCHING)
-                research_report = self._run_researcher(
-                    run,
-                    work_item,
-                    triage_result,
-                    specification,
-                    workspace_path=workspace_path,
-                )
-                run = self.transition(run, WorkflowState.PLANNING)
-            else:
-                run = self.transition(run, WorkflowState.PLANNING)
-
-            execution_plan = self._run_planner(
-                run,
-                work_item,
-                specification,
-                research_report,
-                workspace_path=workspace_path,
-                model_profile=fast_model_profile,
-            )
-            run = self._check_fast_planned_scope(
-                run,
-                execution_plan,
+                workspace,
+                source_repo,
                 repository_profile,
-                risk=triage_result.risk,
             )
-
-            context = _RunContext(
-                work_item=work_item,
-                triage_result=triage_result,
-                specification=specification,
-                research_report=research_report,
-                execution_plan=execution_plan,
-                repository_profile=repository_profile,
-                workspace=workspace,
-                source_repo=source_repo,
-            )
-            context.change_set_correction_used = any(
-                record.purpose == AgentPurpose.CORRECT_CHANGE_SET
-                for record in run.invocation_records
-            )
-
-            run = self.transition(run, WorkflowState.IMPLEMENTING)
-            run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
-
-            if not self._config.pull_request.enabled:
-                return self.finalize_pr_ready(run)
-
-            run = self._publish_and_observe(run, context)
-            return run
         except _Halt as halt:
             return halt.run
 
+    def _drive_from_refining(
+        self,
+        run: FactoryRun,
+        work_item: WorkItem,
+        triage_result: TriageResult,
+        workspace: GitWorktreeWorkspace,
+        source_repo: Path,
+        repository_profile: RepositoryProfile,
+    ) -> FactoryRun:
+        workspace_path = str(workspace.path)
+        fast_model_profile = (
+            run.performance_model_profile if run.effective_performance_mode == "fast" else None
+        )
+        specification = self._run_refiner(
+            run,
+            work_item,
+            triage_result,
+            workspace_path=workspace_path,
+            model_profile=fast_model_profile,
+        )
+
+        research_report: ResearchReport | None = None
+        if triage_result.needs_research:
+            run = self.transition(run, WorkflowState.RESEARCHING)
+            research_report = self._run_researcher(
+                run,
+                work_item,
+                triage_result,
+                specification,
+                workspace_path=workspace_path,
+            )
+            run = self.transition(run, WorkflowState.PLANNING)
+        else:
+            run = self.transition(run, WorkflowState.PLANNING)
+
+        execution_plan = self._run_planner(
+            run,
+            work_item,
+            specification,
+            research_report,
+            workspace_path=workspace_path,
+            model_profile=fast_model_profile,
+        )
+        run = self._check_fast_planned_scope(
+            run,
+            execution_plan,
+            repository_profile,
+            risk=triage_result.risk,
+        )
+
+        context = _RunContext(
+            work_item=work_item,
+            triage_result=triage_result,
+            specification=specification,
+            research_report=research_report,
+            execution_plan=execution_plan,
+            repository_profile=repository_profile,
+            workspace=workspace,
+            source_repo=source_repo,
+        )
+        context.change_set_correction_used = any(
+            record.purpose == AgentPurpose.CORRECT_CHANGE_SET for record in run.invocation_records
+        )
+
+        run = self.transition(run, WorkflowState.IMPLEMENTING)
+        run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
+
+        if not self._config.pull_request.enabled:
+            return self.finalize_pr_ready(run)
+
+        return self._publish_and_observe(run, context)
+
     def _halt(self, run: FactoryRun, state: WorkflowState, reason: str) -> _Halt:
         run = self.transition(run, state, failure_reason=reason)
+        if (
+            state is WorkflowState.NEEDS_HUMAN
+            and self._config.escalation.enabled
+            and self._github is not None
+        ):
+            try:
+                from .escalation import deliver_escalation_notification
+
+                workspace_path = (
+                    Path(run.workspace_path) if run.workspace_path else Path(self._config.data_dir)
+                )
+                run = deliver_escalation_notification(
+                    run, self._store, self._config, self._github, workspace_path
+                )
+            except Exception as exc:
+                logger.debug("escalation notice delivery failed: %s", exc)
         return _Halt(run)
 
     def _select_performance_mode(

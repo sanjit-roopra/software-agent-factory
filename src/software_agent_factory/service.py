@@ -39,6 +39,8 @@ without any workflow change.
 
 from __future__ import annotations
 
+import bisect
+import json
 import logging
 import threading
 import time
@@ -51,9 +53,16 @@ from uuid import uuid4
 
 from .agents import AgentRuntime
 from .config import FactoryConfig
-from .github import GitHubCommandError
+from .github import GitHubClient, GitHubCommandError, resolve_github_token
 from .github_tracker import GitHubIssueProvider
-from .models import FactoryRun, WorkflowState, WorkItem, utc_now
+from .models import (
+    EscalationStatus,
+    FactoryRun,
+    ResumeClassification,
+    WorkflowState,
+    WorkItem,
+    utc_now,
+)
 from .observability import log_run_event
 from .scheduler import (
     DispatchOutcome,
@@ -65,6 +74,7 @@ from .scheduler import (
     TrackerProvider,
     Waiter,
     deterministic_work_item_id,
+    opaque_id_from_work_item_id,
 )
 from .store import FileRunStore
 from .workflow import WorkflowController, is_run_finished
@@ -217,6 +227,7 @@ class FactoryService:
     github_repo: str
     provider: TrackerProvider | None = None
     controller: WorkflowController | None = None
+    github_client: GitHubClient | None = None
 
     def __post_init__(self) -> None:
         if not self.config.scheduler.enabled:
@@ -225,7 +236,18 @@ class FactoryService:
                 "set scheduler.enabled in the factory configuration"
             )
         if self.controller is None:
-            self.controller = WorkflowController(self.config, self.store, self.runtime)
+            self.controller = WorkflowController(
+                self.config,
+                self.store,
+                self.runtime,
+                github_client=self.github_client,
+            )
+        if self.github_client is None:
+            self.github_client = (
+                self.controller._github
+                if self.controller and self.controller._github
+                else GitHubClient(token=resolve_github_token())
+            )
         if self.provider is None:
             self.provider = GitHubIssueProvider(
                 repository=self.github_repo,
@@ -238,6 +260,7 @@ class FactoryService:
         )
         self._completion_event = threading.Event()
         self._handles: dict[str, ThreadPoolRunHandle] = {}
+        self._reply_poll_cursor_id: str | None = self._load_reply_poll_cursor()
         self.scheduler = Scheduler(
             self.provider,
             self._dispatch,
@@ -247,6 +270,30 @@ class FactoryService:
             max_runs_per_day=self.config.scheduler.max_runs_per_day,
             exclude_any_persisted_run=True,
         )
+
+    @property
+    def _reply_poll_cursor_file(self) -> Path:
+        return self.config.data_dir / "reply_poll_cursor.json"
+
+    def _load_reply_poll_cursor(self) -> str | None:
+        try:
+            if self._reply_poll_cursor_file.is_file():
+                data = json.loads(self._reply_poll_cursor_file.read_text("utf-8"))
+                if isinstance(data, dict):
+                    return data.get("last_polled_run_id")
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _save_reply_poll_cursor(self, run_id: str | None) -> None:
+        try:
+            self.config.data_dir.mkdir(parents=True, exist_ok=True)
+            self._reply_poll_cursor_file.write_text(
+                json.dumps({"last_polled_run_id": run_id, "updated_at": utc_now().isoformat()}),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.debug("could not persist reply poll cursor: %s", exc)
 
     # -- dispatch ---------------------------------------------------------
 
@@ -278,6 +325,33 @@ class FactoryService:
         )
         return run
 
+    def _dispatch_reopen(self, run_id: str, work_item_id: str) -> ThreadPoolRunHandle:
+        handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
+        future = self._executor.submit(self._execute_reopen, run_id, self.source_repo)
+        handle.attach(future)
+        future.add_done_callback(lambda _future: self._completion_event.set())
+        self._handles[run_id] = handle
+        opaque_id = opaque_id_from_work_item_id(work_item_id) or work_item_id
+        self.scheduler.register_active_handle(opaque_id, handle)
+        return handle
+
+    def _execute_reopen(self, run_id: str, repository: Path) -> FactoryRun:
+        assert self.controller is not None
+        log_run_event(
+            logger,
+            f"reopening run {run_id}",
+            run_id=run_id,
+            state=WorkflowState.REFINING,
+        )
+        run = self.controller.reopen(run_id, repository)
+        log_run_event(
+            logger,
+            f"reopened run {run_id} finished",
+            run_id=run_id,
+            state=run.state,
+        )
+        return run
+
     # -- lifecycle --------------------------------------------------------
 
     def recover(self) -> list[RecoveryRecord]:
@@ -298,9 +372,165 @@ class FactoryService:
             )
         return records
 
+    def reconcile_escalation(self) -> None:
+        """Deliver undelivered escalation notices and poll authorized replies."""
+        if not self.config.escalation.enabled:
+            return
+
+        assert self.controller is not None
+        client = self.github_client or self.controller._github
+        if client is None:
+            return
+
+        from .escalation import poll_escalation_reply, reconcile_undelivered_notifications
+
+        # 1. Reconcile undelivered escalation notices, bound to authoritative repository
+        reconcile_undelivered_notifications(
+            self.store,
+            self.config,
+            client,
+            self.source_repo,
+            max_runs=self.config.escalation.max_reply_polls_per_tick,
+            expected_repository=self.github_repo,
+        )
+
+        active_count = len([h for h in self._handles.values() if not h.is_done()])
+        runs = self.store.list_runs()
+        remaining_quota = self.scheduler._remaining_daily_quota(runs)
+
+        # 2. Reconcile durable resume-pending runs (NEEDS_HUMAN + REOPENED)
+        # Crash-recovered REOPENED receipt is already a durable quota reservation.
+        # Dispatching that pending reopen must not require another quota slot.
+        for run in runs:
+            if run.state is not WorkflowState.NEEDS_HUMAN:
+                continue
+            if run.escalation is None or run.escalation.status is not EscalationStatus.REOPENED:
+                continue
+
+            # Fail closed immediately if configuration changed after persistence
+            if run.escalation.reopen_count > self.config.escalation.max_reopens:
+                logger.warning(
+                    "run %s reopen limit reduced below reopen_count (%s > %s); failing reopen",
+                    run.id,
+                    run.escalation.reopen_count,
+                    self.config.escalation.max_reopens,
+                )
+                if self.controller is not None:
+                    max_limit = self.config.escalation.max_reopens
+                    self.controller._fail_reopen(
+                        run,
+                        f"run {run.id} exceeded maximum reopens ({max_limit})",
+                        reason_code="ATTEMPT_BUDGET_EXHAUSTED",
+                    )
+                continue
+
+            if active_count >= self.config.scheduler.max_concurrent_tasks:
+                logger.debug("escalation resume dispatch skipped: at capacity")
+                break
+
+            handle = self._handles.get(run.id)
+            if handle is not None and not handle.is_done():
+                continue
+
+            logger.info("reconciling and dispatching resume-pending run %s", run.id)
+            self._dispatch_reopen(run.id, run.work_item_id)
+            active_count += 1
+
+        # 3. Poll reply commands for runs in NEEDS_HUMAN with NOTIFIED status
+        # Reopened work must use the same executor, concurrency limit, and daily quota.
+        if active_count >= self.config.scheduler.max_concurrent_tasks:
+            logger.debug("escalation reply polling skipped: at capacity")
+            return
+
+        if remaining_quota is not None and remaining_quota <= 0:
+            logger.debug("escalation reply polling skipped: daily run limit reached")
+            return
+
+        # Close reply cursors for non-resumable NOTIFIED runs
+        for run in runs:
+            if run.state is not WorkflowState.NEEDS_HUMAN or run.escalation is None:
+                continue
+            if run.escalation.status is EscalationStatus.NOTIFIED:
+                if (
+                    run.escalation.resume_classification is not ResumeClassification.RISK_APPROVAL
+                    or run.escalation.reply_cursor == "closed"
+                ):
+                    if run.escalation.reply_cursor != "closed":
+                        escalation = run.escalation.model_copy(
+                            update={"reply_cursor": "closed", "updated_at": utc_now()}
+                        )
+                        self.store.save_run(run.model_copy(update={"escalation": escalation}))
+
+        # Collect eligible runs for reply polling
+        eligible_runs: list[FactoryRun] = [
+            r
+            for r in runs
+            if r.state is WorkflowState.NEEDS_HUMAN
+            and r.escalation is not None
+            and r.escalation.status is EscalationStatus.NOTIFIED
+            and r.escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+            and r.escalation.reply_cursor != "closed"
+        ]
+
+        if not eligible_runs:
+            return
+
+        # Deterministic sorting
+        eligible_runs.sort(
+            key=lambda r: (r.escalation.created_at if r.escalation is not None else utc_now(), r.id)
+        )
+
+        max_polls = self.config.escalation.max_reply_polls_per_tick
+        if len(eligible_runs) <= max_polls:
+            runs_to_poll = list(eligible_runs)
+            self._reply_poll_cursor_id = eligible_runs[-1].id
+            self._save_reply_poll_cursor(self._reply_poll_cursor_id)
+        else:
+            # Deterministic rotating cursor to prevent starvation
+            start_idx = 0
+            if self._reply_poll_cursor_id is not None:
+                run_ids = [r.id for r in eligible_runs]
+                if self._reply_poll_cursor_id in run_ids:
+                    start_idx = (run_ids.index(self._reply_poll_cursor_id) + 1) % len(eligible_runs)
+                else:
+                    start_idx = bisect.bisect_right(run_ids, self._reply_poll_cursor_id) % len(
+                        eligible_runs
+                    )
+
+            runs_to_poll = [
+                eligible_runs[(start_idx + i) % len(eligible_runs)] for i in range(max_polls)
+            ]
+            self._reply_poll_cursor_id = runs_to_poll[-1].id
+            self._save_reply_poll_cursor(self._reply_poll_cursor_id)
+
+        for run in runs_to_poll:
+            if active_count >= self.config.scheduler.max_concurrent_tasks:
+                break
+            if remaining_quota is not None and remaining_quota <= 0:
+                break
+
+            receipt = poll_escalation_reply(
+                run,
+                self.store,
+                self.config,
+                client,
+                self.source_repo,
+            )
+            if receipt is not None:
+                logger.info(
+                    "accepted authorized reply for run %s from @%s",
+                    run.id,
+                    receipt.user_login,
+                )
+                self._dispatch_reopen(run.id, run.work_item_id)
+                active_count += 1
+                if remaining_quota is not None:
+                    remaining_quota -= 1
+
     def run_once(self, drain_timeout_seconds: float = DEFAULT_DRAIN_TIMEOUT_SECONDS) -> TickReport:
-        """One bounded cycle: recover, tick once, wait for dispatched work."""
+        """One bounded cycle: recover, reconcile escalation, tick once, wait for dispatched work."""
         self.recover()
+        self.reconcile_escalation()
         report = self.scheduler.tick()
         self._log_tick(report)
         self.drain(drain_timeout_seconds)
@@ -343,6 +573,7 @@ class FactoryService:
                 # immediate follow-up tick instead of being lost.
                 self._completion_event.clear()
                 try:
+                    self.reconcile_escalation()
                     report = self.scheduler.tick()
                 except GitHubCommandError:
                     logger.exception(

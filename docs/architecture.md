@@ -325,15 +325,15 @@ transition, not a new role. If research or validation fails, the run stays on
 its green path. The reason is recorded as a profile warning, and the
 controller transitions to `REVIEWING`.
 
-The workflow controller owns every transition. The full table is declared as
-data in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
+The workflow controller owns every transition. Normal transitions are declared
+in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
 
 ```text
 CREATED      → TRIAGING
 TRIAGING     → REFINING
 REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING | IMPLEMENTING
-PLANNING     → IMPLEMENTING
+RESEARCHING  → PLANNING | IMPLEMENTING | REVIEWING
+PLANNING     → IMPLEMENTING | VERIFYING
 IMPLEMENTING → VERIFYING
 VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING | RESEARCHING
 REVIEWING    → PR_READY | IMPLEMENTING
@@ -341,6 +341,7 @@ PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE
 CI_RUNNING   → DONE | CI_DIAGNOSIS
 CI_DIAGNOSIS → IMPLEMENTING
+NEEDS_HUMAN  → REFINING (authorized risk approval only)
 ```
 
 Every non-terminal state can additionally escalate to `NEEDS_HUMAN` (a business
@@ -348,6 +349,11 @@ decision: eligibility, risk, scope, exhausted budget, non-repairable CI) or
 `FAILED` (an operational agent/infrastructure failure).
 
 Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
+
+`NEEDS_HUMAN` is normally terminal. The controller can reopen the same run only
+for a persisted `RISK_APPROVAL` escalation. An authorized GitHub reply must match
+the exact run and escalation episode. The reply cannot change scope, models,
+commands, retry limits, or delivery policy.
 
 `PR_READY` is *not* terminal. When pull requests are enabled it continues to
 `PR_CREATED`. When they are disabled it is the completed endpoint of the manual

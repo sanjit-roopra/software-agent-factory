@@ -84,10 +84,10 @@ This is the only thing in the factory that ever opens a socket. Nothing in
   stdout once and never written to the log.
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
 
-It shows project state and task/PR/merge progress, plus the run list, run
-detail, workflow state, attempt history and derived metrics. It shows no
-command logs, diffs, prompts, or raw artifacts. Those items can leak repository
-content and private material into a browser.
+It shows project state, issue references, pull requests, merge progress, and
+workflow state. Run details show model use, performance mode, retries, safe
+artifact names, verification summaries, and escalation status. The dashboard
+does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
 It cannot approve, retry, cancel or reconfigure anything. Authority stays with
 the workflow controller.
@@ -103,7 +103,10 @@ An opt-in per-user launchd agent that runs `factory start`.
 factory service install \
   --repo ~/projects/example \
   --github-repo acme/example \
-  --config ~/my-factory.yaml
+  --config ~/my-factory.yaml \
+  --runtime copilot \
+  --model-profile economy \
+  --performance-mode fast
 
 factory service status --json
 factory service uninstall
@@ -129,6 +132,9 @@ selection in arguments for the LaunchAgent.
 
 When a security-sensitive backlog needs the higher-cost route, use
 `--model-profile security`. This route uses the Astra Tester and Sol Reviewer.
+
+Use `--performance-mode fast` for eligible low-risk work. The controller keeps
+all verification and review gates. It falls back to standard mode when required.
 
 Useful flags:
 

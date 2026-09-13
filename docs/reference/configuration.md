@@ -467,6 +467,37 @@ rate the backlog allows.
 
 Requires `gh`.
 
+## escalation
+
+```yaml
+escalation:
+  enabled: false
+  authorized_identities: []
+  allowed_associations:
+    - "OWNER"
+    - "MEMBER"
+    - "COLLABORATOR"
+  max_reopens: 3
+  reply_window_hours: 168
+  max_reply_polls_per_tick: 10
+  max_notification_attempts: 3
+  allowed_hosts:
+    - "github.com"
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Whether GitHub escalation notices and replies are active. |
+| `authorized_identities` | list of string | `[]` | Allowed GitHub logins or numeric user IDs. All-digit entries match user IDs only. |
+| `allowed_associations` | list of string | `["OWNER", "MEMBER", "COLLABORATOR"]` | Allowed author association values. |
+| `max_reopens` | int between 1 and 3 | `3` | Maximum reopens per run. |
+| `reply_window_hours` | int between 1 and 336 | `168` | Hours before an escalation episode expires. |
+| `max_reply_polls_per_tick` | int > 0 | `10` | Maximum escalated runs polled per cycle. |
+| `max_notification_attempts` | int > 0 | `3` | Delivery retry ceiling for notice comments. |
+| `allowed_hosts` | list of string | `["github.com"]` | Allowed hostnames for GitHub issues and pull requests. |
+
+When enabled, `authorized_identities` must contain at least one entry.
+
 ## risk
 
 ```yaml
@@ -492,5 +523,6 @@ The loader rejects a configuration when:
 - `models.reviewer`'s model family matches any worker's model family
 - `risk` does not define exactly `R0`, `R1`, `R2` and `R3`
 - `ci.enabled` is true while `pull_request.enabled` is false
+- `escalation.enabled` is true while `escalation.authorized_identities` is empty
 - `scheduler.max_concurrent_tasks` is greater than `2`
 - any key is not recognized

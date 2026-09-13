@@ -896,6 +896,61 @@ class ReviewAcceptance(VersionedModel):
     findings: list[ReviewFinding] = Field(min_length=1, max_length=MAX_OPEN_REVIEW_FINDINGS)
 
 
+class EscalationStatus(StrEnum):
+    PENDING_NOTIFICATION = "PENDING_NOTIFICATION"
+    NOTIFIED = "NOTIFIED"
+    NOTIFICATION_FAILED = "NOTIFICATION_FAILED"
+    REOPENED = "REOPENED"
+    RESUMED = "RESUMED"
+    EXPIRED = "EXPIRED"
+
+
+class ResumeClassification(StrEnum):
+    RISK_APPROVAL = "RISK_APPROVAL"
+    NOT_RESUMABLE = "NOT_RESUMABLE"
+
+
+class EscalationTargetType(StrEnum):
+    PULL_REQUEST = "PULL_REQUEST"
+    ISSUE = "ISSUE"
+
+
+class AcceptedReplyReceipt(ModelBase):
+    comment_id: int = Field(ge=1)
+    user_login: str = Field(min_length=1)
+    user_id: int | None = None
+    author_association: str = ""
+    created_at: UtcDateTime
+    accepted_at: UtcDateTime = Field(default_factory=utc_now)
+    dispatched_at: UtcDateTime | None = None
+    command: str = Field(min_length=1)
+    episode_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+
+class EscalationRecord(ModelBase):
+    episode_id: str = Field(min_length=1)
+    episode_number: int = Field(default=1, ge=1)
+    status: EscalationStatus = EscalationStatus.PENDING_NOTIFICATION
+    resume_classification: ResumeClassification = ResumeClassification.NOT_RESUMABLE
+    target_type: EscalationTargetType | None = None
+    target_host: str | None = None
+    target_repository: str | None = None
+    target_number: int | None = Field(default=None, ge=1)
+    target_url: str | None = None
+    comment_id: int | None = Field(default=None, ge=1)
+    comment_url: str | None = None
+    reason_code: str = ""
+    delivery_attempts: int = Field(default=0, ge=0)
+    delivery_error: str | None = None
+    last_notified_at: UtcDateTime | None = None
+    reply_cursor: str | None = None
+    accepted_replies: list[AcceptedReplyReceipt] = Field(default_factory=list)
+    reopen_count: int = Field(default=0, ge=0)
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+    updated_at: UtcDateTime = Field(default_factory=utc_now)
+
+
 class FactoryRun(VersionedModel):
     id: str = Field(min_length=1)
     work_item_id: str = Field(min_length=1)
@@ -931,6 +986,7 @@ class FactoryRun(VersionedModel):
     review_ledger: ReviewLedger = Field(default_factory=ReviewLedger)
     review_acceptance: ReviewAcceptance | None = None
     performance: PerformanceRecord = Field(default_factory=PerformanceRecord)
+    escalation: EscalationRecord | None = None
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:

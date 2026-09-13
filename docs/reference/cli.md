@@ -363,9 +363,9 @@ factory dashboard --port 0 --open-browser
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
-The dashboard shows active and completed projects, task progress, and models
-used by invocations. It also displays workflow runs, attempts, active
-invocations, usage totals, and operational health.
+The dashboard shows active and completed projects, issue references, pull
+requests, and merge progress. Run details show performance mode, models,
+verification summaries, safe artifact names, retries, and escalation status.
 The factory persists an active invocation before Copilot starts.
 The run lease labels it `running`, `stale`, `crashed`, or `abandoned`.
 The previous completed attempt does not determine this label.
@@ -396,7 +396,10 @@ Manage the opt-in per-user macOS launchd service. macOS only.
 factory service install \
   --repo ~/projects/example \
   --github-repo acme/example \
-  --config ~/my-factory.yaml
+  --config ~/my-factory.yaml \
+  --runtime copilot \
+  --model-profile economy \
+  --performance-mode fast
 ```
 
 | Option | Required | Default | Effect |
@@ -407,6 +410,7 @@ factory service install \
 | `--data-dir <path>` | no | configured | Data directory for the service. |
 | `--runtime <fake\|copilot>` | no | `fake` | Runtime the service runs with. |
 | `--model-profile <name>` | no | `default` | Profile retained in the installed `factory start` arguments. |
+| `--performance-mode <standard\|fast>` | no | configured | Performance mode retained in the installed `factory start` arguments. |
 | `--executable <path>` | no | this build | Explicit `factory` executable to run. |
 | `--label <str>` | no | `com.github.software-agent-factory` | LaunchAgent label. |
 | `--allow-source-dev` | no | off | Permit an executable in an otherwise-refused location, such as a source checkout. |
