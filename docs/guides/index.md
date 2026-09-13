@@ -13,6 +13,9 @@ Task guides for common workflows. Read [Get started](../get-started/index.md) fi
 [GitHub backlog, PRs and CI](github.md)
 : Poll `agent-ready` issues, open draft pull requests, watch CI, and repair failures.
 
+[Run a GitHub issue listener](issue-listener.md)
+: Configure, label, start, approve, and inspect one local issue listener.
+
 [Monitor and run continuously](operations.md)
 : Use `factory status`, structured logs, the read-only local dashboard, and the
   macOS launchd service.
