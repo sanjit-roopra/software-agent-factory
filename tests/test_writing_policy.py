@@ -144,3 +144,40 @@ def test_paragraph_boundaries_end_sentences() -> None:
         )
         == ()
     )
+
+
+def test_clean_unresolved_decision_prose_passes_writing_policy() -> None:
+    plan = ExecutionPlan(
+        summary="Implement required interface changes.",
+        steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        test_strategy=["Run existing unit tests."],
+        risks=["The change may affect parser performance."],
+        unresolved_decisions=[
+            "The data layer requires a human choice between SQLite and PostgreSQL.",
+        ],
+    )
+    assert validate_artifact_writing(plan) == ()
+
+
+def test_invalid_unresolved_decision_prose_fails_writing_policy() -> None:
+    # Test word count limit (>30 words)
+    long_decision = " ".join(["word"] * 31)
+    plan_long = ExecutionPlan(
+        summary="Implement required interface changes.",
+        steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=[long_decision],
+    )
+    findings_long = validate_artifact_writing(plan_long)
+    assert any("unresolved_decisions[0] has 31 words. The limit is 30." in f for f in findings_long)
+
+    # Test prohibited style (e.g. semicolon, latin abbrev, filler)
+    plan_bad_style = ExecutionPlan(
+        summary="Implement required interface changes.",
+        steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=["We need a robust solution; e.g. for gRPC."],
+    )
+    findings_bad = validate_artifact_writing(plan_bad_style)
+    assert len(findings_bad) > 0

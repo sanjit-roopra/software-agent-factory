@@ -1320,9 +1320,73 @@ def test_run_guidance_is_reconstructed_from_safe_reason_code() -> None:
     guidance = payload["guidance"]
     assert guidance["status"] == "ACTION_REQUIRED"
     assert guidance["artifact"] == "review-impasse.json"
+    assert guidance["finding_count"] == 1
+    assert "decision_count" not in guidance
     assert guidance["finding_ids"] == ["review-correctness-1234"]
     assert guidance["category_counts"] == {"CORRECTNESS": 1}
     assert SECRET_MARKER not in json.dumps(guidance)
+
+
+def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count() -> None:
+    secret_decision = "Choice between SQLite and PostgreSQL"
+    payload = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "guidance": {
+                "status": SECRET_MARKER,
+                "reason_code": "UNRESOLVED_DECISIONS",
+                "summary": f"{secret_decision}; {SECRET_MARKER}",
+                "next_action": SECRET_MARKER,
+                "artifact": SECRET_MARKER,
+                "finding_count": 0,
+                "decision_count": 2,
+            },
+        }
+    )
+
+    guidance = payload["guidance"]
+    assert guidance["status"] == "ACTION_REQUIRED"
+    assert guidance["reason_code"] == "UNRESOLVED_DECISIONS"
+    assert guidance["summary"] == "The execution plan has unresolved architectural decisions."
+    assert (
+        guidance["next_action"] == "Inspect execution-plan.json, resolve the decisions, then retry."
+    )
+    assert guidance["artifact"] == "execution-plan.json"
+    assert guidance["decision_count"] == 2
+    assert "finding_count" not in guidance
+    assert secret_decision not in json.dumps(guidance)
+    assert SECRET_MARKER not in json.dumps(guidance)
+
+    # Test out-of-bounds decision count
+    out_of_bounds = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "guidance": {
+                "reason_code": "UNRESOLVED_DECISIONS",
+                "decision_count": 999,
+            },
+        }
+    )
+    assert "decision_count" not in out_of_bounds["guidance"]
+
+
+def test_dashboard_ui_labeling_for_unresolved_decisions_and_finding_count() -> None:
+    normalized_js = " ".join(dashboard_assets.APP_JS.split())
+
+    expected_expression = (
+        '[ detail.guidance && (detail.guidance.reason_code === "UNRESOLVED_DECISIONS" || '
+        'detail.guidance.decision_count !== undefined) ? "Decision count" : "Finding count", '
+        'detail.guidance ? detail.guidance.reason_code === "UNRESOLVED_DECISIONS" || '
+        "detail.guidance.decision_count !== undefined ? detail.guidance.decision_count "
+        ": detail.guidance.finding_count : null ]"
+    )
+    assert expected_expression in normalized_js
+
+    # Structural guard: verify label and value branches cannot be swapped or reversed
+    assert '? "Decision count" : "Finding count"' in normalized_js
+    assert '? "Finding count" : "Decision count"' not in normalized_js
+    assert "? detail.guidance.decision_count : detail.guidance.finding_count" in normalized_js
+    assert "? detail.guidance.finding_count : detail.guidance.decision_count" not in normalized_js
 
 
 # --------------------------------------------------------------------------

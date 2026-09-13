@@ -46,6 +46,7 @@ from software_agent_factory.models import (
     RepositorySkillOverlay,
     RepositorySkillUse,
     ResearchReport,
+    ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
@@ -80,6 +81,7 @@ from software_agent_factory.store import ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
+    UNRESOLVED_DECISIONS_HALT_REASON,
     TransitionError,
     WorkflowController,
     _RunContext,
@@ -4850,3 +4852,252 @@ def test_fast_planned_scope_fallback_does_not_rerun_planner(
     assert run.performance_fallback_reason == "scope includes protected files: README.md"
     persisted_plan = store.load_artifact(run.id, ExecutionPlan)
     assert persisted_plan.summary == "Plan with protected file."
+
+
+def test_unready_first_plan_then_ready_clarification_proceeds(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    planner_requests: list[AgentRequest] = []
+    call_count = 0
+
+    def planner_hook(request: AgentRequest) -> AgentResult:
+        nonlocal call_count
+        call_count += 1
+        planner_requests.append(request)
+        if call_count == 1:
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=True,
+                execution_plan=ExecutionPlan(
+                    summary="First attempt with unready decisions",
+                    steps=[
+                        PlanStep(
+                            id="step-1",
+                            goal="Implement core parser",
+                            likely_files=["FACTORY_NOTES.md"],
+                            validation=["Run tests"],
+                        )
+                    ],
+                    expected_scope=ExpectedScope(
+                        modules=["FACTORY_NOTES.md"],
+                        estimated_files_min=1,
+                        estimated_files_max=2,
+                    ),
+                    test_strategy=["Run verification"],
+                    unresolved_decisions=[
+                        "Need choice between SQLite and PostgreSQL for persistence layer.",
+                    ],
+                ),
+            )
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Clarified ready execution plan",
+                steps=[
+                    PlanStep(
+                        id="step-1",
+                        goal="Implement core parser",
+                        likely_files=["FACTORY_NOTES.md"],
+                        validation=["Run tests"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+                test_strategy=["Run verification"],
+                unresolved_decisions=[],
+            ),
+        )
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(planner=planner_hook),
+    )
+    run = controller.run(_work_item("WI-clarify-ready"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert call_count == 2
+    assert isinstance(planner_requests[1].repair_context, str)
+    assert "Need choice between SQLite and PostgreSQL" in planner_requests[1].repair_context
+    assert (
+        "Resolve any item that repository evidence or existing constraints answer"
+        in planner_requests[1].repair_context
+    )
+    assert "Retain only genuinely human-owned choices" in planner_requests[1].repair_context
+
+    planner_invocations = [r for r in run.invocation_records if r.role is AgentRole.PLANNER]
+    assert len(planner_invocations) == 2
+
+    implementer_invocations = [r for r in run.invocation_records if r.role is AgentRole.IMPLEMENTER]
+    assert len(implementer_invocations) >= 1
+
+
+def test_unresolved_first_and_clarification_plans_end_needs_human(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    planner_calls = 0
+
+    def planner_hook(request: AgentRequest) -> AgentResult:
+        nonlocal planner_calls
+        planner_calls += 1
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan with persistent unresolved decisions",
+                steps=[
+                    PlanStep(
+                        id="step-1",
+                        goal="Implement parser",
+                        likely_files=["FACTORY_NOTES.md"],
+                        validation=["Run tests"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+                test_strategy=["Run verification"],
+                unresolved_decisions=[
+                    "Choice between SQLite and PostgreSQL requires human architecture input.",
+                    "Delivery protocol requires human choice between gRPC and REST.",
+                ],
+            ),
+        )
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(planner=planner_hook),
+    )
+    run = controller.run(_work_item("WI-unresolved-halt"), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.failure_reason == UNRESOLVED_DECISIONS_HALT_REASON
+    assert planner_calls == 2
+
+    assert run.escalation is not None
+    assert run.escalation.reason_code == "UNRESOLVED_DECISIONS"
+    assert run.escalation.resume_classification == ResumeClassification.NOT_RESUMABLE
+
+    persisted_plan = store.load_artifact(run.id, ExecutionPlan)
+    assert len(persisted_plan.unresolved_decisions) == 2
+    assert persisted_plan.is_ready is False
+
+    implementer_invocations = [r for r in run.invocation_records if r.role is AgentRole.IMPLEMENTER]
+    assert len(implementer_invocations) == 0
+
+
+def test_scope_replan_with_unresolved_decisions_does_not_halt_verified_change(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    planner_calls = 0
+
+    def planner_hook(request: AgentRequest) -> AgentResult:
+        nonlocal planner_calls
+        planner_calls += 1
+        if request.repair_context is not None and isinstance(request.repair_context, RepairContext):
+            return AgentResult(
+                role=AgentRole.PLANNER,
+                success=True,
+                execution_plan=ExecutionPlan(
+                    summary="Scope replan with unresolved decisions",
+                    steps=[
+                        PlanStep(
+                            id="step-1",
+                            goal="Implement core parser",
+                            likely_files=["IMPLEMENTATION_NOTES.md"],
+                            validation=["Run tests"],
+                        )
+                    ],
+                    expected_scope=ExpectedScope(
+                        modules=["IMPLEMENTATION_NOTES.md"],
+                        estimated_files_min=1,
+                        estimated_files_max=2,
+                    ),
+                    test_strategy=["Run verification"],
+                    unresolved_decisions=["Uncertainty about extra file long term retention."],
+                ),
+            )
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Initial ready plan",
+                steps=[
+                    PlanStep(
+                        id="step-1",
+                        goal="Implement core parser",
+                        likely_files=["FACTORY_NOTES.md"],
+                        validation=["Run tests"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+                test_strategy=["Run verification"],
+                unresolved_decisions=[],
+            ),
+        )
+
+    def implementer_touching_extra_file(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        ws = Path(request.workspace_path)
+        (ws / "IMPLEMENTATION_NOTES.md").write_text("extra content\n", encoding="utf-8")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(
+                summary="Touched extra file",
+                changed_files=["IMPLEMENTATION_NOTES.md"],
+            ),
+        )
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(
+            planner=planner_hook,
+            implementer=implementer_touching_extra_file,
+        ),
+    )
+    run = controller.run(_work_item("WI-scope-replan-unresolved"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.scope_replans == 1
+    assert planner_calls == 2
+
+
+def test_default_fake_planner_regression(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(),
+    )
+    run = controller.run(_work_item("WI-default-fake"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    plan = store.load_artifact(run.id, ExecutionPlan)
+    assert plan.unresolved_decisions == []
+    assert plan.is_ready is True
+    assert plan.ready is True
+
+    planner_invocations = [r for r in run.invocation_records if r.role is AgentRole.PLANNER]
+    assert len(planner_invocations) == 1

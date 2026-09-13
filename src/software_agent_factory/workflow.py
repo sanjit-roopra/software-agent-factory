@@ -57,9 +57,9 @@ import os
 import re
 import socket
 import subprocess
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable
 from uuid import uuid4
 
 from .agents import (
@@ -290,10 +290,24 @@ def is_run_finished(run: FactoryRun) -> bool:
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
+UNRESOLVED_DECISIONS_HALT_REASON = "execution plan has unresolved decisions"
+
+
+def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:
+    decisions_list = "\n".join(f"- {decision}" for decision in unresolved_decisions)
+    return (
+        "The previous execution plan listed these unresolved decisions:\n"
+        f"{decisions_list}\n\n"
+        "Resolve any item that repository evidence or existing constraints answer. "
+        "Retain only genuinely human-owned choices. "
+        "Return a complete ExecutionPlan JSON object."
+    )
+
+
 def _typed_artifact_repair_context(
     failure_reason: str,
     artifact_name: str,
-    prior_context: RepairContext | None = None,
+    prior_context: RepairContext | str | None = None,
     rejected_artifact: ModelBase | None = None,
 ) -> str:
     validation_error = failure_reason.split(" stdout=", 1)[0].strip()
@@ -313,6 +327,8 @@ def _typed_artifact_repair_context(
         )
     if prior_context is None:
         return correction
+    if isinstance(prior_context, str):
+        return f"{prior_context}\n\n{correction}"
     return f"{prior_context.model_dump_json()}\n\n{correction}"
 
 
@@ -1268,6 +1284,26 @@ class WorkflowController:
             workspace_path=workspace_path,
             model_profile=fast_model_profile,
         )
+        if execution_plan.unresolved_decisions:
+            clarification_context = _planner_clarification_context(
+                execution_plan.unresolved_decisions
+            )
+            execution_plan = self._run_planner(
+                run,
+                work_item,
+                specification,
+                research_report,
+                workspace_path=workspace_path,
+                repair_context=clarification_context,
+                model_profile=fast_model_profile,
+            )
+            if execution_plan.unresolved_decisions:
+                self._store.save_artifact(run.id, execution_plan)
+                raise self._halt(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    UNRESOLVED_DECISIONS_HALT_REASON,
+                )
         run = self._check_fast_planned_scope(
             run,
             execution_plan,
@@ -1864,7 +1900,7 @@ class WorkflowController:
         research_report: ResearchReport | None,
         *,
         workspace_path: str,
-        repair_context: RepairContext | None = None,
+        repair_context: RepairContext | str | None = None,
         diff: str | None = None,
         changed_files: list[str] | None = None,
         model_profile: str | None = None,

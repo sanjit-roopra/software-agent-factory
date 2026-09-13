@@ -221,6 +221,12 @@ GUIDANCE_COPY: dict[str, tuple[str, str, str, str | None]] = {
         "Inspect review-impasse.json, resolve or accept the listed findings, then retry.",
         "review-impasse.json",
     ),
+    "UNRESOLVED_DECISIONS": (
+        "ACTION_REQUIRED",
+        "The execution plan has unresolved architectural decisions.",
+        "Inspect execution-plan.json, resolve the decisions, then retry.",
+        "execution-plan.json",
+    ),
     "RISK_APPROVAL": (
         "ACTION_REQUIRED",
         "The run requires approval under the configured risk policy.",
@@ -485,29 +491,38 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
     }
     if artifact is not None:
         result["artifact"] = artifact
-    count = data.get("finding_count")
-    if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 12:
-        result["finding_count"] = count
-    finding_ids = data.get("finding_ids")
-    if isinstance(finding_ids, list):
-        result["finding_ids"] = [
-            item
-            for item in finding_ids[:12]
-            if isinstance(item, str)
-            and item.startswith("review-")
-            and len(item) <= 64
-            and item.replace("-", "").isalnum()
-        ]
-    category_counts = data.get("category_counts")
-    if isinstance(category_counts, dict):
-        result["category_counts"] = {
-            key: value
-            for key, value in category_counts.items()
-            if key in {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"}
-            and isinstance(value, int)
-            and not isinstance(value, bool)
-            and 0 <= value <= 12
-        }
+    if reason_code != "UNRESOLVED_DECISIONS":
+        count = data.get("finding_count")
+        if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 12:
+            result["finding_count"] = count
+        finding_ids = data.get("finding_ids")
+        if isinstance(finding_ids, list):
+            result["finding_ids"] = [
+                item
+                for item in finding_ids[:12]
+                if isinstance(item, str)
+                and item.startswith("review-")
+                and len(item) <= 64
+                and item.replace("-", "").isalnum()
+            ]
+        category_counts = data.get("category_counts")
+        if isinstance(category_counts, dict):
+            result["category_counts"] = {
+                key: value
+                for key, value in category_counts.items()
+                if key in {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"}
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and 0 <= value <= 12
+            }
+    else:
+        decision_count = data.get("decision_count")
+        if (
+            isinstance(decision_count, int)
+            and not isinstance(decision_count, bool)
+            and 0 <= decision_count <= 24
+        ):
+            result["decision_count"] = decision_count
     return result
 
 

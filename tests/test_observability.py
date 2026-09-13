@@ -38,10 +38,13 @@ from software_agent_factory.models import (
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
+    ExecutionPlan,
+    ExpectedScope,
     FactoryRun,
     InvocationRecord,
     ModelUsage,
     PerformanceRecord,
+    PlanStep,
     ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
@@ -1736,6 +1739,44 @@ def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -
         "category_counts": {"CORRECTNESS": 1},
     }
     assert finding.message not in json.dumps(payload)
+
+
+def test_build_run_detail_unresolved_decisions_exposes_decision_count_without_leaking_prose(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    secret_decision_1 = "Choose between SQLite and PostgreSQL for database"
+    secret_decision_2 = "Choose between REST and gRPC for client delivery"
+    plan = ExecutionPlan(
+        summary="Plan with architectural uncertainties",
+        steps=[PlanStep(id="step-1", goal="Implement parser", likely_files=["src/app.py"])],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=[secret_decision_1, secret_decision_2],
+    )
+    run = _run(
+        "run-unresolved",
+        state=WorkflowState.NEEDS_HUMAN,
+    ).model_copy(update={"failure_reason": "execution plan has unresolved decisions"})
+
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+    store.add_artifact(run.id, plan)
+
+    detail = build_run_detail(store, run.id)
+    assert detail is not None
+    assert detail.guidance is not None
+    assert detail.guidance.reason_code == "UNRESOLVED_DECISIONS"
+    assert detail.guidance.decision_count == 2
+    assert detail.guidance.artifact == "execution-plan.json"
+
+    dumped = detail.model_dump(mode="json")
+    assert dumped["guidance"]["decision_count"] == 2
+    assert "finding_count" not in dumped["guidance"]
+    assert "SQLite" not in json.dumps(dumped)
+    assert "PostgreSQL" not in json.dumps(dumped)
+    assert "REST" not in json.dumps(dumped)
+    assert "gRPC" not in json.dumps(dumped)
 
 
 def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(

@@ -22,6 +22,7 @@ from software_agent_factory.models import (
     ProjectState,
     ProjectTask,
     ProjectTaskExecution,
+    ProjectTaskState,
     Risk,
     WorkflowState,
     WorkItem,
@@ -905,3 +906,50 @@ def test_project_commits_use_factory_identity_without_ambient_git_identity(
         "Software Agent Factory <software-agent-factory@example.invalid>|"
         "Software Agent Factory <software-agent-factory@example.invalid>"
     )
+
+
+def test_project_task_with_unresolved_decisions_preserves_needs_human_and_rejects_resume(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = build_config(factory_data_dir)
+    store = FileRunStore(factory_data_dir)
+
+    def planner_with_unresolved(request: AgentRequest) -> AgentResult:
+        if request.purpose is AgentPurpose.DECOMPOSE_PROJECT:
+            return _project_planner(request)
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Child task with unresolved architectural decisions",
+                steps=[PlanStep(id="step-1", goal="Goal", likely_files=["FACTORY_NOTES.md"])],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+                unresolved_decisions=["Need architecture decision on schema."],
+            ),
+        )
+
+    runner = ProjectRunner(
+        config,
+        store,
+        FakeAgentRuntime(planner=planner_with_unresolved),
+    )
+    brief = ProjectBrief(
+        id="project-unresolved",
+        title="Project with unresolvable child task",
+        description="Verify NEEDS_HUMAN preservation and resume refusal.",
+        repository_path=str(factory_source_repo),
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.NEEDS_HUMAN
+    assert execution.tasks[0].state is ProjectTaskState.NEEDS_HUMAN
+    assert "execution plan has unresolved decisions" in (execution.tasks[0].failure_reason or "")
+
+    with pytest.raises(ProjectError, match="rejection"):
+        runner.resume(brief.id, factory_source_repo)

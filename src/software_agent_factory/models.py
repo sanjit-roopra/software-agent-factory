@@ -1181,6 +1181,15 @@ class ExecutionPlan(VersionedModel):
     expected_scope: ExpectedScope
     test_strategy: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+    unresolved_decisions: list[str] = Field(default_factory=list)
+
+    @property
+    def is_ready(self) -> bool:
+        return not self.unresolved_decisions
+
+    @property
+    def ready(self) -> bool:
+        return self.is_ready
 
 
 class ChangeSet(VersionedModel):

@@ -155,6 +155,7 @@ def artifact_passages(artifact: ModelBase) -> list[WritingPassage]:
                 max_words=20,
             ),
             *_items("risks", artifact.risks, max_words=30),
+            *_items("unresolved_decisions", artifact.unresolved_decisions, max_words=30),
         ]
         for index, step in enumerate(artifact.steps):
             passages.append(

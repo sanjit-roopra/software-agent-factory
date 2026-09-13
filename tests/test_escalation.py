@@ -30,6 +30,8 @@ import pytest
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
+    UNRESOLVED_DECISIONS_HALT_PREFIX,
+    UNRESOLVED_DECISIONS_REASON_CODE,
     ValidationResult,
     build_escalation_comment,
     classify_halt_reason,
@@ -53,6 +55,8 @@ from software_agent_factory.models import (
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
+    ExecutionPlan,
+    ExpectedScope,
     FactoryRun,
     ResumeClassification,
     Risk,
@@ -348,6 +352,7 @@ def test_classify_halt_reason_risk_approval() -> None:
         ("could not publish the pull request: permission denied", "DELIVERY_INTERVENTION"),
         ("workspace identity changed or was abandoned", "RECOVERY_INTERVENTION"),
         ("unexpected manual boundary", "MANUAL_INSPECTION"),
+        ("execution plan has unresolved decisions", UNRESOLVED_DECISIONS_REASON_CODE),
     ],
 )
 def test_classify_halt_reason_not_resumable(reason: str, expected_code: str) -> None:
@@ -362,6 +367,64 @@ def test_classify_halt_reason_not_resumable(reason: str, expected_code: str) -> 
     assert code == expected_code
     assert summary
     assert action
+
+
+def test_classify_halt_reason_unresolved_decisions_stable_prefix_wins(tmp_path: Path) -> None:
+    # Suffixes with "scope" and "merge" must still classify as UNRESOLVED_DECISIONS
+    for suffix in (
+        "",
+        ": scope boundary review needed",
+        ": merge conflict with main",
+        " (scope and merge choices)",
+        ": attempt budget exceeded",
+    ):
+        run = FactoryRun(
+            id="run-test-prefix",
+            work_item_id="task-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            failure_reason=f"{UNRESOLVED_DECISIONS_HALT_PREFIX}{suffix}",
+        )
+        classification, code, summary, action = classify_halt_reason(run)
+        assert classification is ResumeClassification.NOT_RESUMABLE
+        assert code == UNRESOLVED_DECISIONS_REASON_CODE
+        assert "execution-plan.json" in action
+
+
+def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = FactoryRun(
+        id="run-unresolved-count",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+    )
+    store.save_run(run)
+
+    # 1. Without store or without ExecutionPlan: safe count is omitted, no model prose
+    _, code, summary_no_plan, action = classify_halt_reason(run)
+    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert "execution-plan.json" in action
+    assert "The execution plan has unresolved architectural decisions." in summary_no_plan
+
+    # 2. With persisted ExecutionPlan containing 2 decisions: safe count is included
+    plan = ExecutionPlan(
+        summary="Implement feature",
+        steps=[],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=[
+            "Need choice between SQLite and PostgreSQL.",
+            "Need choice between REST and gRPC.",
+        ],
+    )
+    store.save_artifact(run.id, plan)
+
+    _, code, summary_with_plan, action = classify_halt_reason(run, store)
+    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert "2 unresolved architectural decisions" in summary_with_plan
+    assert "execution-plan.json" in action
+    # Verify no model prose in summary or action
+    assert "SQLite" not in summary_with_plan
+    assert "PostgreSQL" not in summary_with_plan
 
 
 def test_build_escalation_comment_data_minimization() -> None:

@@ -78,7 +78,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal, Protocol
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_serializer
 
 from .models import (
     AgentRole,
@@ -88,6 +88,7 @@ from .models import (
     ContextTier,
     EscalationRecord,
     EscalationStatus,
+    ExecutionPlan,
     FactoryRun,
     InvocationRecord,
     ModelBase,
@@ -413,8 +414,20 @@ class RunGuidance(ModelBase):
     next_action: str
     artifact: str | None = None
     finding_count: int = Field(default=0, ge=0)
+    decision_count: int | None = Field(default=None, ge=0)
     finding_ids: list[str] = Field(default_factory=list, max_length=12)
     category_counts: dict[ReviewFindingCategory, int] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = dict(handler(self))
+        if self.decision_count is None:
+            data.pop("decision_count", None)
+        if self.reason_code == "UNRESOLVED_DECISIONS":
+            data.pop("finding_count", None)
+            data.pop("finding_ids", None)
+            data.pop("category_counts", None)
+        return data
 
 
 class VerificationSummary(ModelBase):
@@ -1460,6 +1473,34 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
         )
 
     reason = (run.failure_reason or "").lower()
+    if reason.startswith("execution plan has unresolved decisions"):
+        plan = _load_optional_artifact(store, run.id, ExecutionPlan)
+        unresolved_count: int | None = None
+        if plan is not None and plan.unresolved_decisions:
+            unresolved_count = len(plan.unresolved_decisions)
+        if unresolved_count is None:
+            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
+                r"\((\d+)\)", reason
+            )
+            if count_match:
+                unresolved_count = int(count_match.group(1))
+        if unresolved_count is not None:
+            decisions_label = "decision" if unresolved_count == 1 else "decisions"
+            summary = (
+                f"The execution plan has {unresolved_count} unresolved architectural "
+                f"{decisions_label}."
+            )
+        else:
+            summary = "The execution plan has unresolved architectural decisions."
+        action = "Inspect execution-plan.json, resolve the decisions, then retry."
+        return RunGuidance(
+            status="ACTION_REQUIRED",
+            reason_code="UNRESOLVED_DECISIONS",
+            summary=summary,
+            next_action=action,
+            artifact="execution-plan.json",
+            decision_count=unresolved_count,
+        )
     if "risk" in reason or "approval" in reason:
         code = "RISK_APPROVAL"
         summary = "The run requires approval under the configured risk policy."

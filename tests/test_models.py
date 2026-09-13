@@ -772,3 +772,42 @@ def test_repository_skill_use_records_bounded_consistent_provenance() -> None:
         _use(generated_skill_hash="not-a-hash", effective_skill_hash="not-a-hash")
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         _use(guidance="prose")
+
+
+def test_legacy_execution_plan_payload_validates_without_unresolved_decisions() -> None:
+    legacy_json = (
+        '{"schema_version": 1, "summary": "Implement feature", "steps": [], '
+        '"expected_scope": {"modules": ["src"], "estimated_files_min": 1, '
+        '"estimated_files_max": 2}, "test_strategy": ["pytest"], "risks": ["none"]}'
+    )
+    plan = ExecutionPlan.model_validate_json(legacy_json)
+    assert plan.unresolved_decisions == []
+    assert plan.is_ready is True
+    assert plan.ready is True
+
+
+def test_execution_plan_derived_readiness_behavior() -> None:
+    ready_plan = ExecutionPlan(
+        summary="Implement feature",
+        steps=[],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=[],
+    )
+    assert ready_plan.is_ready is True
+    assert ready_plan.ready is True
+
+    unready_plan = ExecutionPlan(
+        summary="Implement feature",
+        steps=[],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=["Need choice between sqlite and postgres."],
+    )
+    assert unready_plan.is_ready is False
+    assert unready_plan.ready is False
+
+    # Readiness is a derived property and must not appear in serialized payloads.
+    dumped = ready_plan.model_dump()
+    assert "is_ready" not in dumped
+    assert "ready" not in dumped
+    assert "is_ready" not in ready_plan.model_dump_json()
+    assert "ready" not in ready_plan.model_dump_json()

@@ -39,6 +39,7 @@ from .models import (
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
+    ExecutionPlan,
     FactoryRun,
     ResumeClassification,
     ReviewImpasse,
@@ -56,6 +57,8 @@ from .verification import redact_secrets
 logger = logging.getLogger(__name__)
 
 MAX_ESCALATION_COMMENT_CHARS: int = 4000
+UNRESOLVED_DECISIONS_REASON_CODE: str = "UNRESOLVED_DECISIONS"
+UNRESOLVED_DECISIONS_HALT_PREFIX: str = "execution plan has unresolved decisions"
 
 
 class EscalationComment(str):
@@ -518,6 +521,35 @@ def classify_halt_reason(
             )
 
     reason = (run.failure_reason or "").lower()
+    if reason.startswith(UNRESOLVED_DECISIONS_HALT_PREFIX):
+        unresolved_count: int | None = None
+        if store is not None:
+            try:
+                plan = store.load_artifact(run.id, ExecutionPlan)
+                if plan is not None and plan.unresolved_decisions:
+                    unresolved_count = len(plan.unresolved_decisions)
+            except (FileNotFoundError, ValueError):
+                pass
+        if unresolved_count is None:
+            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
+                r"\((\d+)\)", reason
+            )
+            if count_match:
+                unresolved_count = int(count_match.group(1))
+        if unresolved_count is not None:
+            decisions_label = "decision" if unresolved_count == 1 else "decisions"
+            summary = (
+                f"The execution plan has {unresolved_count} unresolved architectural "
+                f"{decisions_label}."
+            )
+        else:
+            summary = "The execution plan has unresolved architectural decisions."
+        return (
+            ResumeClassification.NOT_RESUMABLE,
+            UNRESOLVED_DECISIONS_REASON_CODE,
+            summary,
+            "Inspect execution-plan.json, resolve the decisions, then retry.",
+        )
     if "scope" in reason:
         return (
             ResumeClassification.NOT_RESUMABLE,

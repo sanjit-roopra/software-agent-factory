@@ -703,7 +703,26 @@ expected_scope:
 test_strategy
 
 risks
+
+unresolved_decisions
 ```
+
+The optional `unresolved_decisions` collection is a list of concise strings.
+It records only material choices.
+These choices cannot be derived from task intent, Specification, repository evidence, or existing constraints.
+
+The controller evaluates the initial plan before implementation begins.
+If unresolved decisions exist, the controller asks the Planner once more to resolve evidence-answerable items.
+If material choices remain after this retry, the controller persists the final plan.
+The controller halts before implementation in `NEEDS_HUMAN`.
+It records a dedicated escalation that points to `execution-plan.json`.
+
+This gate applies only to the initial pre-implementation plan.
+It does not reject the metadata-only scope replan after deterministic verification.
+
+This halt is not resumable in the current workflow.
+In project mode, it preserves the existing project `NEEDS_HUMAN` behavior.
+The factory states this limitation clearly rather than implying that an answer can be fed back today.
 
 ### ChangeSet
 
@@ -924,6 +943,9 @@ Permissions:
 No source modifications.
 
 Output: `ExecutionPlan`
+
+If the initial plan contains unresolved decisions that evidence can answer, the Planner receives one bounded correction attempt.
+If material choices remain, the controller halts before implementation in `NEEDS_HUMAN`.
 
 ### Implementer
 Model selected by complexity.

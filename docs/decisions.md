@@ -1,5 +1,40 @@
 # Architecture Decisions
 
+## ADR-025: Pre-implementation readiness gate for unresolved decisions
+
+Autonomous software development can fail when an agent guesses answers to missing decisions.
+To evaluate patterns for scaling delivery by uncertainty, we inspected external evidence from [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD).
+We reviewed commit `94b6727b00c8316557828c8a8ff2a48ff60d60cc` from 2026-09-11 and newest observed tag `v6.12.0`.
+
+The factory adds an optional `unresolved_decisions` list of concise strings to `ExecutionPlan`.
+It records only material choices.
+These choices cannot be derived from task intent, Specification, repository evidence, or existing constraints.
+
+The controller evaluates the initial plan before implementation begins.
+If unresolved decisions exist, the controller asks the Planner once more to resolve evidence-answerable items.
+If material choices remain after this single retry, the controller persists the final plan.
+The controller then halts before implementation in `NEEDS_HUMAN`.
+It records a dedicated escalation record that points to `execution-plan.json`.
+
+This gate applies only to the initial pre-implementation plan.
+It does not reject the metadata-only scope replan after deterministic verification.
+
+This halt is not resumable in the current workflow.
+In project mode, it preserves the existing project `NEEDS_HUMAN` behavior.
+The factory states this limitation clearly rather than implying that an answer can be fed back today.
+
+We defer a project-level architecture decision registry and acceptance-to-test mapping.
+Existing dependency graphs, typed artifacts, repository skills, deterministic verification, independent testing, and bounded review already provide equivalent value.
+
+We reject model-owned workflow state and agent-owned Git commits, reverts, or retries.
+We reject linear story scheduling instead of dependency graphs.
+We reject same-workflow self-approval.
+We reject synchronous all-agent coordination and interactive persona workflows on the autonomous path.
+We reject mutable-main update checks, large Markdown artifact sets, plugin architectures, and prose-only governance.
+
+BMAD is licensed under the MIT License, but its trademarks are excluded.
+This factory uses independently expressed concepts and copies no BMAD code, templates, or prose.
+
 ## ADR-024: Controller-owned GitHub escalation and authorized human reply loop
 
 When a run enters `NEEDS_HUMAN`, the factory can notify a human operator on GitHub.

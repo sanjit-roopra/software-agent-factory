@@ -242,6 +242,8 @@ def _role_instructions(
 - Make each task coherent and deterministically verifiable.
 - Add a dependency only when the predecessor must be integrated or merged first.
 - Omit dependencies for work that is safe in parallel worktrees.
+- Persist or isolate a shared architectural choice only when independent tasks could
+  otherwise make incompatible choices.
 - Reuse repository capabilities. Do not add speculative work.
 - Use contiguous task ids from 1. Reference earlier task ids only.
 - Explain the task split, parallel waves, and merge gates in delivery_approach.
@@ -281,6 +283,12 @@ def _role_instructions(
 - Use repository-relative path prefixes in expected_scope.modules.
 - Do not use concepts, descriptions, or glob patterns as module paths.
 - Treat sibling-task constraints as hard scope boundaries.
+- Report an unresolved decision only for a material requirement, interface, data, safety,
+  delivery, or architecture choice.
+- Report it only when existing artifacts, repository evidence, and constraints cannot
+  determine the choice without inventing intent.
+- Do not report ordinary implementation choices.
+- Leave unresolved_decisions empty when existing evidence is sufficient.
 - A replan describes the existing verified diff. It does not change the diff.
 - Keep sibling outcomes outside the expected scope.
 - File-count estimates are advisory. The controller enforces the hard limit."""
@@ -492,7 +500,12 @@ def _artifact_sections(
         if research_report is not None:
             sections.append(("Research report", research_report))
         if repair_context is not None:
-            sections.append(("Replan context", repair_context))
+            title = (
+                "Clarification context"
+                if isinstance(repair_context, str) and "unresolved decisions" in repair_context
+                else "Replan context"
+            )
+            sections.append((title, repair_context))
         if changed_files:
             sections.append(("Changed files so far", changed_files))
         if diff:
