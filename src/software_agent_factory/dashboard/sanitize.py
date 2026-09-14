@@ -224,7 +224,7 @@ GUIDANCE_COPY: dict[str, tuple[str, str, str, str | None]] = {
     "UNRESOLVED_DECISIONS": (
         "ACTION_REQUIRED",
         "The execution plan has unresolved architectural decisions.",
-        "Inspect execution-plan.json, resolve the decisions, then retry.",
+        "Reply with complete numbered decisions on the escalation thread.",
         "execution-plan.json",
     ),
     "RISK_APPROVAL": (
@@ -457,6 +457,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
             safe_escalation.pop("reason_code", None)
         if safe_escalation.get("resume_classification") not in {
             "RISK_APPROVAL",
+            "PLAN_DECISION",
             "NOT_RESUMABLE",
         }:
             safe_escalation.pop("resume_classification", None)
@@ -472,7 +473,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
             not isinstance(responder, str) or not _GITHUB_LOGIN_PATTERN.fullmatch(responder)
         ):
             safe_escalation.pop("last_responder", None)
-        if safe_escalation.get("last_action") not in {None, "RESUME"}:
+        if safe_escalation.get("last_action") not in {None, "ANSWER", "RESUME"}:
             safe_escalation.pop("last_action", None)
         sanitized["escalation"] = safe_escalation
     return sanitized
@@ -483,6 +484,13 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(reason_code, str) or reason_code not in GUIDANCE_COPY:
         return None
     status, summary, next_action, artifact = GUIDANCE_COPY[reason_code]
+    plan_reply_action = "Reply with complete numbered decisions on the escalation thread."
+    if reason_code == "UNRESOLVED_DECISIONS" and data.get("next_action") == plan_reply_action:
+        next_action = plan_reply_action
+    elif reason_code == "UNRESOLVED_DECISIONS":
+        next_action = (
+            "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
+        )
     result: dict[str, Any] = {
         "status": status,
         "reason_code": reason_code,

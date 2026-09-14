@@ -503,7 +503,12 @@ def _artifact_sections(
             title = (
                 "Clarification context"
                 if isinstance(repair_context, str) and "unresolved decisions" in repair_context
-                else "Replan context"
+                else (
+                    "Human decision context"
+                    if isinstance(repair_context, str)
+                    and repair_context.startswith("An authorized human resolved")
+                    else "Replan context"
+                )
             )
             sections.append((title, repair_context))
         if changed_files:

@@ -139,7 +139,7 @@ Press Ctrl-C to stop after the current scheduler cycle.
 
 Use `--once` to run one scheduler cycle instead of continuous polling.
 
-## 8. Reply to an approval request
+## 8. Reply to a human request
 
 Copy the run and episode values from the factory notice. Reply on the same
 GitHub thread.
@@ -148,8 +148,20 @@ GitHub thread.
 @factory resume v1 run=<run-id> episode=<episode-id>
 ```
 
-Only an authorized user can send this reply. Only `RISK_APPROVAL` requests can
-resume through GitHub.
+Only an authorized user can send this approval reply. It resumes only
+`RISK_APPROVAL` requests.
+
+For a `PLAN_DECISION` request, copy the header from the notice. Answer every
+numbered decision in order.
+
+```text
+@factory answer v1 run=<run-id> episode=<episode-id>
+1. First decision answer.
+2. Second decision answer.
+```
+
+The controller validates and saves the answers. It returns the same run to
+planning. It checks the new plan before implementation starts.
 
 ## 9. Inspect the listener
 

@@ -4987,7 +4987,7 @@ def test_unresolved_first_and_clarification_plans_end_needs_human(
 
     assert run.escalation is not None
     assert run.escalation.reason_code == "UNRESOLVED_DECISIONS"
-    assert run.escalation.resume_classification == ResumeClassification.NOT_RESUMABLE
+    assert run.escalation.resume_classification == ResumeClassification.PLAN_DECISION
 
     persisted_plan = store.load_artifact(run.id, ExecutionPlan)
     assert len(persisted_plan.unresolved_decisions) == 2

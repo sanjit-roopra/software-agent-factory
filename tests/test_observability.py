@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from software_agent_factory.models import (
+    AcceptedReplyReceipt,
     ActiveInvocation,
     AgentRole,
     AttemptBudget,
@@ -1777,6 +1778,38 @@ def test_build_run_detail_unresolved_decisions_exposes_decision_count_without_le
     assert "PostgreSQL" not in json.dumps(dumped)
     assert "REST" not in json.dumps(dumped)
     assert "gRPC" not in json.dumps(dumped)
+
+
+def test_build_run_detail_labels_plan_decision_answer_action(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    run = _run("run-plan-answer", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "escalation": EscalationRecord(
+                episode_id="ep-plan-answer",
+                status=EscalationStatus.REOPENED,
+                resume_classification=ResumeClassification.PLAN_DECISION,
+                accepted_replies=[
+                    AcceptedReplyReceipt(
+                        comment_id=1,
+                        user_login="lead-dev",
+                        created_at=T0,
+                        command=("@factory answer v1 run=run-plan-answer episode=ep-plan-answer"),
+                        episode_id="ep-plan-answer",
+                        run_id="run-plan-answer",
+                    )
+                ],
+            )
+        }
+    )
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None
+    assert detail.escalation is not None
+    assert detail.escalation.last_action == "ANSWER"
 
 
 def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(

@@ -68,13 +68,15 @@ If unresolved decisions exist, the controller asks the Planner once more to reso
 If material choices remain after this single retry, the controller persists the final plan.
 The controller halts before implementation in `NEEDS_HUMAN`.
 It records a dedicated escalation record pointing to `execution-plan.json`.
+When GitHub escalation is enabled, an authorized contributor can answer the
+numbered decisions. The controller stores typed answers and returns to planning.
 
 This gate applies only to the initial pre-implementation plan.
 It does not reject the metadata-only scope replan after deterministic verification.
 
-This halt is not resumable in the current workflow.
-In project mode, it preserves the existing project `NEEDS_HUMAN` behavior.
-The factory states this limitation clearly rather than implying that an answer can be fed back today.
+The Planner receives only validated answer fields. It creates a new plan.
+The controller checks that plan before implementation starts. The reply does
+not reset budgets or change project-child behavior.
 
 ## Deferred items
 

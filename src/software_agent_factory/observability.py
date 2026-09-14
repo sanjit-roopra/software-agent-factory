@@ -93,6 +93,7 @@ from .models import (
     InvocationRecord,
     ModelBase,
     PerformanceRecord,
+    ResumeClassification,
     ReviewFindingCategory,
     ReviewImpasse,
     Risk,
@@ -449,7 +450,7 @@ class EscalationSummary(ModelBase):
     reopen_count: int = Field(ge=0)
     accepted_reply_count: int = Field(ge=0)
     last_responder: str | None = None
-    last_action: Literal["RESUME"] | None = None
+    last_action: Literal["ANSWER", "RESUME"] | None = None
     last_response_at: UtcDateTime | None = None
     is_resumed: bool = False
     resumed_at: UtcDateTime | None = None
@@ -1298,7 +1299,13 @@ def _escalation_summary(
         reopen_count=escalation.reopen_count,
         accepted_reply_count=len(escalation.accepted_replies),
         last_responder=last_reply.user_login if last_reply is not None else None,
-        last_action="RESUME" if last_reply is not None else None,
+        last_action=(
+            "ANSWER"
+            if last_reply is not None and last_reply.command.startswith("@factory answer ")
+            else "RESUME"
+            if last_reply is not None
+            else None
+        ),
         last_response_at=last_reply.created_at if last_reply is not None else None,
         is_resumed=is_resumed,
         resumed_at=escalation.updated_at if is_resumed else None,
@@ -1492,7 +1499,19 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
             )
         else:
             summary = "The execution plan has unresolved architectural decisions."
-        action = "Inspect execution-plan.json, resolve the decisions, then retry."
+        reply_enabled = (
+            run.escalation is not None
+            and run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
+            and run.escalation.status is EscalationStatus.NOTIFIED
+            and run.escalation.remote_resume_enabled
+        )
+        action = (
+            "Reply with complete numbered decisions on the escalation thread."
+            if reply_enabled
+            else (
+                "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
+            )
+        )
         return RunGuidance(
             status="ACTION_REQUIRED",
             reason_code="UNRESOLVED_DECISIONS",

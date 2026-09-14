@@ -490,9 +490,11 @@ These signals must be authoritative where applicable.
 ## Explicit trust boundary
 
 The controller owns tracker and future GitHub credentials. Agent processes
-receive only credentials required for their assigned role. Approval or input
-requests do not wait indefinitely. They terminate the active invocation,
-preserve workspace evidence and move the run to `NEEDS_HUMAN`.
+receive only credentials required for their assigned role. Approval or input requests do not wait indefinitely. They terminate the active
+invocation, preserve workspace evidence, and move the run to `NEEDS_HUMAN`.
+An authorized GitHub reply can reopen a risk approval at `REFINING`. It can
+reopen complete plan decision answers at `PLANNING`. The controller validates
+and persists the reply before it resumes work.
 
 ## Adopted Symphony concepts
 

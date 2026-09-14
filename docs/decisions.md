@@ -1,5 +1,35 @@
 # Architecture Decisions
 
+## ADR-026: Authorized answers for unresolved plan decisions
+
+ADR-025 stops work before an agent guesses a material decision.
+Stopping permanently makes that gate hard to use.
+
+When GitHub escalation is enabled, the factory lists each unresolved decision
+with a number. An authorized contributor can reply with every numbered answer.
+
+```text
+@factory answer v1 run=<run-id> episode=<episode-id>
+1. First decision answer.
+2. Second decision answer.
+```
+
+The controller checks the author, target, run, episode, reply window, comment
+edit state, and response order. It stores the typed answer artifact before it
+reopens the run.
+
+The controller is the only component that can reopen work. It returns a valid
+plan-decision reply to `PLANNING`. The Planner receives only validated answer
+fields. It creates a replacement plan. The controller checks readiness before
+it starts implementation.
+
+This flow does not rerun triage, refinement, or research. It does not change
+scope, models, commands, quality gates, or retry budgets. Existing reopen
+limits bound the number of accepted answer cycles.
+
+`RISK_APPROVAL` keeps the separate `@factory resume` reply and returns to
+`REFINING`. Project child runs keep their current `NEEDS_HUMAN` behavior.
+
 ## ADR-025: Pre-implementation readiness gate for unresolved decisions
 
 Autonomous software development can fail when an agent guesses answers to missing decisions.
@@ -19,9 +49,9 @@ It records a dedicated escalation record that points to `execution-plan.json`.
 This gate applies only to the initial pre-implementation plan.
 It does not reject the metadata-only scope replan after deterministic verification.
 
-This halt is not resumable in the current workflow.
-In project mode, it preserves the existing project `NEEDS_HUMAN` behavior.
-The factory states this limitation clearly rather than implying that an answer can be fed back today.
+ADR-026 allows an authorized contributor to answer these decisions through
+GitHub escalation. The controller then returns the same run to planning.
+Project child runs preserve their existing `NEEDS_HUMAN` behavior.
 
 We defer a project-level architecture decision registry and acceptance-to-test mapping.
 Existing dependency graphs, typed artifacts, repository skills, deterministic verification, independent testing, and bounded review already provide equivalent value.
@@ -48,7 +78,7 @@ The comment uses only fixed guidance fields.
 The factory never publishes raw failure text, workspace paths, issue descriptions, diffs, or logs.
 Each notification includes an unpredictable episode token and a hidden marker.
 
-An authorized human can reply on the same thread with:
+For a risk approval, an authorized human can reply on the same thread with:
 
 ```text
 @factory resume v1 run=<run-id> episode=<episode-id>
@@ -63,10 +93,10 @@ The controller re-fetches the comment before acceptance to detect edits.
 The factory records an accepted reply receipt before reopening.
 The receipt stores comment metadata and never stores raw reply bodies.
 
-The controller reopens the same run.
-It never creates a replacement run or resets attempt records.
-In this version, only `RISK_APPROVAL` transitions back to `REFINING`.
-Other halt categories remain non-resumable.
+The controller reopens the same run. It never creates a replacement run or
+resets attempt records. `RISK_APPROVAL` transitions to `REFINING`.
+ADR-026 adds a separate complete numbered-answer reply for `PLAN_DECISION`.
+It transitions to `PLANNING`. Other halt categories remain non-resumable.
 
 When risk requires approval, the notice explains the causal risk chain.
 Triage records this case-specific causal rationale in its typed contract.

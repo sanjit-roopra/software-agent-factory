@@ -268,6 +268,11 @@ A persisted, non-terminal run left behind by a dead process is transitioned to
 `NEEDS_HUMAN` through the controller. It is never auto-resumed. No paid retry is
 spent, the budget is untouched, and the workspace and artifacts stay on disk.
 
+An authorized GitHub reply can reopen only a supported escalation. The
+controller validates the exact run, escalation episode, author, and reply
+content. It stores a typed plan-decision answer artifact before it resumes
+planning. The raw GitHub reply never enters an agent prompt.
+
 The explicit project `--resume` path is a narrow exception: it reconciles
 persisted task identities and safe PR delivery checkpoints under the original
 policy. It does not replay ambiguous in-flight implementation, reopen an

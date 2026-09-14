@@ -341,7 +341,8 @@ PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE
 CI_RUNNING   → DONE | CI_DIAGNOSIS
 CI_DIAGNOSIS → IMPLEMENTING
-NEEDS_HUMAN  → REFINING (authorized risk approval only)
+NEEDS_HUMAN  → REFINING (authorized risk approval)
+NEEDS_HUMAN  → PLANNING (authorized plan decision answers)
 ```
 
 Every non-terminal state can additionally escalate to `NEEDS_HUMAN` (a business
@@ -350,13 +351,18 @@ decision: eligibility, risk, scope, exhausted budget, non-repairable CI) or
 
 Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
 
-`NEEDS_HUMAN` is normally terminal. The controller can reopen the same run only
-for a persisted `RISK_APPROVAL` escalation. The notice explains why approval is
-needed using a typed causal risk rationale from triage. The notice lists the
-requested decision, authorized transition to `REFINING`, and explicit exclusions.
-An authorized GitHub reply must match the exact run and escalation episode.
-The reply cannot change scope, models, commands, retry limits, or delivery policy.
-All verification and quality gates remain in force.
+`NEEDS_HUMAN` is normally terminal. The controller can reopen the same run for
+a persisted `RISK_APPROVAL` escalation or a `PLAN_DECISION` escalation.
+
+A risk approval reply authorizes `REFINING`. A plan decision reply authorizes
+`PLANNING`. The notice lists numbered questions and the required answer format.
+The controller accepts only complete, ordered answers from an authorized user.
+It stores typed answers before it reopens the run. It gives the Planner only
+the validated answer fields. It never gives the Planner the raw GitHub comment.
+
+An authorized reply must match the exact run and escalation episode. The reply
+cannot change scope, models, commands, retry limits, or delivery policy. All
+verification and quality gates remain in force.
 
 `PR_READY` is *not* terminal. When pull requests are enabled it continues to
 `PR_CREATED`. When they are disabled it is the completed endpoint of the manual
@@ -717,12 +723,19 @@ If material choices remain after this retry, the controller persists the final p
 The controller halts before implementation in `NEEDS_HUMAN`.
 It records a dedicated escalation that points to `execution-plan.json`.
 
+When GitHub escalation is enabled, the notice lists the numbered decisions.
+An authorized contributor can reply with a complete numbered answer set.
+The controller stores `plan-decision-answers.json`, returns to `PLANNING`, and
+asks the Planner to make a replacement plan. It checks readiness again before
+it enters `IMPLEMENTING`.
+
 This gate applies only to the initial pre-implementation plan.
 It does not reject the metadata-only scope replan after deterministic verification.
 
-This halt is not resumable in the current workflow.
-In project mode, it preserves the existing project `NEEDS_HUMAN` behavior.
-The factory states this limitation clearly rather than implying that an answer can be fed back today.
+The reply does not rerun triage, refinement, or research. It does not reset
+attempt budgets. Existing escalation reply and reopen limits bound this flow.
+In project mode, a halted child still preserves the existing project
+`NEEDS_HUMAN` behavior.
 
 ### ChangeSet
 

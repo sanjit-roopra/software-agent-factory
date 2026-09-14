@@ -246,8 +246,21 @@ An all-digit entry identifies a numeric GitHub user ID only.
 The author must have an allowed association such as `OWNER`, `MEMBER`, or `COLLABORATOR`.
 The factory rejects bots, edits, and its own account.
 
-In this version, only `RISK_APPROVAL` can be resumed by reply.
-Other halt categories require local manual inspection.
+For `RISK_APPROVAL`, reply with the approval command shown above. It resumes
+the same run at `REFINING`.
+
+For `PLAN_DECISION`, the notice lists numbered questions. Reply with every
+numbered answer:
+
+```text
+@factory answer v1 run=<run-id> episode=<episode-id>
+1. First decision answer.
+2. Second decision answer.
+```
+
+The answers must be complete and in order. The controller stores validated
+answers, returns the run to `PLANNING`, and checks the new plan before code
+changes begin. Other halt categories require local manual inspection.
 
 For `RISK_APPROVAL`, the notice explains the causal chain.
 It details the intended outcome and the sensitive boundary.

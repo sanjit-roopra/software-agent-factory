@@ -71,6 +71,15 @@ Use one mandatory writing policy for all factory-authored prose.
 - Include the pinned SimpleEnglish linter subset and its MIT license.
 - Do not claim formal ASD-STE100 compliance.
 
+## Plan decision reply continuation
+
+Status: done.
+
+The factory can stop before implementation when a plan needs a human decision.
+An authorized GitHub reply can answer the numbered decisions. The controller
+saves typed answers and returns to planning. It checks the replacement plan
+before implementation. The reply does not reset budgets or change scope.
+
 ## Principle
 
 Build a complete but extremely small vertical slice first.

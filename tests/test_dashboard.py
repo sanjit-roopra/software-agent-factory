@@ -1349,7 +1349,8 @@ def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count
     assert guidance["reason_code"] == "UNRESOLVED_DECISIONS"
     assert guidance["summary"] == "The execution plan has unresolved architectural decisions."
     assert (
-        guidance["next_action"] == "Inspect execution-plan.json, resolve the decisions, then retry."
+        guidance["next_action"]
+        == "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
     )
     assert guidance["artifact"] == "execution-plan.json"
     assert guidance["decision_count"] == 2
@@ -1368,6 +1369,21 @@ def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count
         }
     )
     assert "decision_count" not in out_of_bounds["guidance"]
+
+    reply_enabled = sanitize_run_detail(
+        {
+            **FIXTURE_DETAILS["run-001"],
+            "guidance": {
+                "reason_code": "UNRESOLVED_DECISIONS",
+                "decision_count": 1,
+                "next_action": "Reply with complete numbered decisions on the escalation thread.",
+            },
+        }
+    )
+    assert (
+        reply_enabled["guidance"]["next_action"]
+        == "Reply with complete numbered decisions on the escalation thread."
+    )
 
 
 def test_dashboard_ui_labeling_for_unresolved_decisions_and_finding_count() -> None:

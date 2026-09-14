@@ -106,6 +106,7 @@ from .models import (
     FactoryRun,
     InvocationRecord,
     ModelBase,
+    PlanDecisionAnswers,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -304,6 +305,28 @@ def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:
     )
 
 
+def _planner_human_decision_context(
+    previous_plan: ExecutionPlan,
+    decision_answers: PlanDecisionAnswers,
+) -> str:
+    """Format only durable, validated answers for the replacement planning call."""
+    decisions = [
+        {
+            "decision_number": answer.decision_number,
+            "question": previous_plan.unresolved_decisions[answer.decision_number - 1],
+            "answer": answer.answer,
+        }
+        for answer in decision_answers.answers
+    ]
+    return (
+        "An authorized human resolved these previous plan decisions. "
+        "Treat each answer as a hard planning constraint. Do not change scope, policy, "
+        "budgets, or delivery settings.\n\n"
+        f"{json.dumps(decisions, ensure_ascii=True)}\n\n"
+        "Return a complete ExecutionPlan JSON object."
+    )
+
+
 def _typed_artifact_repair_context(
     failure_reason: str,
     artifact_name: str,
@@ -478,6 +501,7 @@ class WorkflowController:
 
         if new_state is WorkflowState.NEEDS_HUMAN:
             from .escalation import (
+                build_plan_decision_context,
                 build_risk_approval_context,
                 classify_halt_reason,
                 generate_episode_id,
@@ -493,6 +517,7 @@ class WorkflowController:
             accepted_replies = prev_escalation.accepted_replies if prev_escalation else []
             episode_id = generate_episode_id()
             approval_context = None
+            plan_decision_context = None
             remote_resume_enabled = False
             if classification is ResumeClassification.RISK_APPROVAL:
                 approval_context = build_risk_approval_context(
@@ -517,6 +542,28 @@ class WorkflowController:
                         approval_context=approval_context,
                     )
                     remote_resume_enabled = getattr(rendered, "remote_resume_enabled", False)
+            elif classification is ResumeClassification.PLAN_DECISION:
+                plan_decision_context = build_plan_decision_context(
+                    run=run,
+                    store=self._store,
+                    episode_id=episode_id,
+                )
+                if plan_decision_context is not None:
+                    from .escalation import build_escalation_comment
+
+                    rendered = build_escalation_comment(
+                        run_id=run.id,
+                        episode_id=episode_id,
+                        classification=classification,
+                        reason_code=code,
+                        summary=summary,
+                        next_action=action,
+                        attempts_consumed=len(run.attempt_records),
+                        reopen_count=reopen_count,
+                        max_reopens=self._config.escalation.max_reopens,
+                        plan_decision_context=plan_decision_context,
+                    )
+                    remote_resume_enabled = getattr(rendered, "remote_resume_enabled", False)
             updates["escalation"] = EscalationRecord(
                 episode_id=episode_id,
                 episode_number=episode_num,
@@ -526,6 +573,7 @@ class WorkflowController:
                 reopen_count=reopen_count,
                 accepted_replies=accepted_replies,
                 approval_context=approval_context,
+                plan_decision_context=plan_decision_context,
                 remote_resume_enabled=remote_resume_enabled,
             )
 
@@ -842,7 +890,7 @@ class WorkflowController:
             workspace.release_lock()
 
     def _transition_reopened(self, run: FactoryRun) -> FactoryRun:
-        """Controller-internal transition from NEEDS_HUMAN to REFINING.
+        """Controller-internal transition from NEEDS_HUMAN to its guarded resume state.
 
         Guarantees that the run has a durable resume-pending status (REOPENED)
         and an accepted receipt bound to the current run and episode before
@@ -874,25 +922,54 @@ class WorkflowController:
                 f"episode {escalation.episode_id}"
             )
 
-        if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
-            raise ValueError(
-                f"run {run.id} halt category {escalation.resume_classification} cannot be reopened"
-            )
-        from .escalation import is_valid_risk_approval_context
-
-        if escalation.approval_context is None or not is_valid_risk_approval_context(
-            escalation.approval_context, run.id, escalation.episode_id
-        ):
-            raise ValueError(f"run {run.id} has missing or invalid risk approval decision context")
-
         import secrets
 
-        if receipt.approval_context_fingerprint is None or not secrets.compare_digest(
-            receipt.approval_context_fingerprint,
-            escalation.approval_context.context_fingerprint,
-        ):
+        target_state: WorkflowState
+        if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
+            from .escalation import is_valid_risk_approval_context
+
+            if escalation.approval_context is None or not is_valid_risk_approval_context(
+                escalation.approval_context, run.id, escalation.episode_id
+            ):
+                raise ValueError(
+                    f"run {run.id} has missing or invalid risk approval decision context"
+                )
+            if receipt.approval_context_fingerprint is None or not secrets.compare_digest(
+                receipt.approval_context_fingerprint,
+                escalation.approval_context.context_fingerprint,
+            ):
+                raise ValueError(
+                    f"run {run.id} receipt fingerprint does not match active approval context"
+                )
+            target_state = WorkflowState.REFINING
+        elif escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+            from .escalation import is_valid_plan_decision_answers, is_valid_plan_decision_context
+
+            context = escalation.plan_decision_context
+            if context is None or not is_valid_plan_decision_context(
+                context, run.id, escalation.episode_id
+            ):
+                raise ValueError(f"run {run.id} has missing or invalid plan decision context")
+            answers = self._store.load_artifact(run.id, PlanDecisionAnswers)
+            if not is_valid_plan_decision_answers(
+                answers,
+                context,
+                run_id=run.id,
+                episode_id=escalation.episode_id,
+                receipt=receipt,
+            ):
+                raise ValueError(f"run {run.id} has missing or invalid plan decision answers")
+            plan = self._store.load_artifact(run.id, ExecutionPlan)
+            plan_payload = json.dumps(
+                plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+            )
+            plan_fingerprint = hashlib.sha256(plan_payload.encode("utf-8")).hexdigest()
+            if not secrets.compare_digest(plan_fingerprint, context.plan_fingerprint):
+                raise ValueError(f"run {run.id} execution plan no longer matches decision context")
+            target_state = WorkflowState.PLANNING
+        else:
             raise ValueError(
-                f"run {run.id} receipt fingerprint does not match active approval context"
+                f"run {run.id} halt category {escalation.resume_classification} cannot be reopened"
             )
 
         now = utc_now()
@@ -926,7 +1003,7 @@ class WorkflowController:
             }
         )
         updates: dict[str, object] = {
-            "state": WorkflowState.REFINING,
+            "state": target_state,
             "updated_at": now,
             "state_started_at": now,
             "last_activity_at": now,
@@ -939,7 +1016,7 @@ class WorkflowController:
 
         run = run.model_copy(update=updates)
         self._store.save_run(run)
-        logger.info("run %s -> %s (reopened from escalation)", run.id, WorkflowState.REFINING.value)
+        logger.info("run %s -> %s (reopened from escalation)", run.id, target_state.value)
         return run
 
     def _fail_reopen(
@@ -1041,7 +1118,10 @@ class WorkflowController:
                 reason_code="RECOVERY_INTERVENTION",
             )
 
-        if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
+        if escalation.resume_classification not in {
+            ResumeClassification.RISK_APPROVAL,
+            ResumeClassification.PLAN_DECISION,
+        }:
             return self._fail_reopen(
                 run,
                 f"halt category {escalation.resume_classification} is not resumable via reopen",
@@ -1103,7 +1183,32 @@ class WorkflowController:
                 repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
 
                 run = self._select_performance_mode(run, triage_result)
+                if run.escalation is None:
+                    return self._fail_reopen(run, "reopened run is missing its escalation record")
+                resume_classification = run.escalation.resume_classification
                 run = self._transition_reopened(run)
+                if resume_classification is ResumeClassification.PLAN_DECISION:
+                    previous_plan = self._store.load_artifact(run.id, ExecutionPlan)
+                    decision_answers = self._store.load_artifact(run.id, PlanDecisionAnswers)
+                    specification = self._store.load_artifact(run.id, Specification)
+                    research_report = (
+                        self._store.load_artifact(run.id, ResearchReport)
+                        if triage_result.needs_research
+                        else None
+                    )
+                    return self._drive_from_planning(
+                        run,
+                        work_item,
+                        triage_result,
+                        specification,
+                        research_report,
+                        workspace,
+                        source_repo,
+                        repository_profile,
+                        planner_context=_planner_human_decision_context(
+                            previous_plan, decision_answers
+                        ),
+                    )
                 return self._drive_from_refining(
                     run,
                     work_item,
@@ -1276,18 +1381,52 @@ class WorkflowController:
         else:
             run = self.transition(run, WorkflowState.PLANNING)
 
+        return self._drive_from_planning(
+            run,
+            work_item,
+            triage_result,
+            specification,
+            research_report,
+            workspace,
+            source_repo,
+            repository_profile,
+        )
+
+    def _drive_from_planning(
+        self,
+        run: FactoryRun,
+        work_item: WorkItem,
+        triage_result: TriageResult,
+        specification: Specification,
+        research_report: ResearchReport | None,
+        workspace: GitWorktreeWorkspace,
+        source_repo: Path,
+        repository_profile: RepositoryProfile,
+        *,
+        planner_context: str | None = None,
+    ) -> FactoryRun:
+        """Plan and continue from a controller-owned PLANNING state."""
+        if run.state is not WorkflowState.PLANNING:
+            raise TransitionError(f"run {run.id} must be PLANNING before plan execution")
+        workspace_path = str(workspace.path)
+        fast_model_profile = (
+            run.performance_model_profile if run.effective_performance_mode == "fast" else None
+        )
         execution_plan = self._run_planner(
             run,
             work_item,
             specification,
             research_report,
             workspace_path=workspace_path,
+            repair_context=planner_context,
             model_profile=fast_model_profile,
         )
         if execution_plan.unresolved_decisions:
             clarification_context = _planner_clarification_context(
                 execution_plan.unresolved_decisions
             )
+            if planner_context is not None:
+                clarification_context = f"{planner_context}\n\n{clarification_context}"
             execution_plan = self._run_planner(
                 run,
                 work_item,

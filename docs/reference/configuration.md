@@ -36,6 +36,9 @@ a run a fresh budget.
 The writing policy is mandatory and has no configuration switch. See
 [Writing policy](writing-policy.md).
 
+Plan decision answers use the existing `escalation` settings. They do not add
+a command-line parameter or a configuration key.
+
 ## models
 
 ```yaml
