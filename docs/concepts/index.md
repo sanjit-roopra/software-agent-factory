@@ -11,6 +11,10 @@
 [Symphony alignment](../symphony-alignment.md)
 : Which OpenAI Symphony ideas this project reuses, extends, or does not adopt.
 
+[BMAD research assessment](bmad-assessment.md)
+: Research findings from BMAD-METHOD, including the pre-implementation readiness
+  gate, rejected ideas, and deferred items.
+
 [Decisions](../decisions.md)
 : Architecture decision records, ADR-001 onward, with reasons and consequences.
 

@@ -495,6 +495,7 @@ class FakeAgentRuntime:
             ),
             test_strategy=["Run the repository's configured verification commands."],
             risks=[],
+            unresolved_decisions=[],
         )
         return AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=execution_plan)
 

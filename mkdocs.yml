@@ -143,6 +143,7 @@ nav:
       - How it works: concepts/how-it-works.md
       - Architecture: architecture.md
       - Symphony alignment: symphony-alignment.md
+      - BMAD research assessment: concepts/bmad-assessment.md
       - Decisions: decisions.md
   - Project:
       - project/index.md

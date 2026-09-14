@@ -452,7 +452,11 @@ class FactoryService:
                 continue
             if run.escalation.status is EscalationStatus.NOTIFIED:
                 if (
-                    run.escalation.resume_classification is not ResumeClassification.RISK_APPROVAL
+                    run.escalation.resume_classification
+                    not in {
+                        ResumeClassification.RISK_APPROVAL,
+                        ResumeClassification.PLAN_DECISION,
+                    }
                     or run.escalation.reply_cursor == "closed"
                 ):
                     if run.escalation.reply_cursor != "closed":
@@ -468,7 +472,11 @@ class FactoryService:
             if r.state is WorkflowState.NEEDS_HUMAN
             and r.escalation is not None
             and r.escalation.status is EscalationStatus.NOTIFIED
-            and r.escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+            and r.escalation.resume_classification
+            in {
+                ResumeClassification.RISK_APPROVAL,
+                ResumeClassification.PLAN_DECISION,
+            }
             and r.escalation.reply_cursor != "closed"
         ]
 

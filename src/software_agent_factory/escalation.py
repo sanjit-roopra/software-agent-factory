@@ -8,7 +8,8 @@ Implements the core escalation and authorized human reply loop:
   ``@factory resume v1 run=<run-id> episode=<opaque-id>``
 - The controller validates the comment, author, timing, target, and episode,
   records a durable decision receipt, and reopens the run when the halt category
-  is supported (``RISK_APPROVAL`` -> ``REFINING``).
+  is supported (``RISK_APPROVAL`` -> ``REFINING`` or
+  ``PLAN_DECISION`` -> ``PLANNING``).
 - Comment text never enters agent prompts and cannot alter models, commands,
   paths, URLs, retry policy, or arbitrary workflow state.
 """
@@ -39,7 +40,11 @@ from .models import (
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
+    ExecutionPlan,
     FactoryRun,
+    PlanDecisionAnswer,
+    PlanDecisionAnswers,
+    PlanDecisionContext,
     ResumeClassification,
     ReviewImpasse,
     Risk,
@@ -56,6 +61,8 @@ from .verification import redact_secrets
 logger = logging.getLogger(__name__)
 
 MAX_ESCALATION_COMMENT_CHARS: int = 4000
+UNRESOLVED_DECISIONS_REASON_CODE: str = "UNRESOLVED_DECISIONS"
+UNRESOLVED_DECISIONS_HALT_PREFIX: str = "execution plan has unresolved decisions"
 
 
 class EscalationComment(str):
@@ -117,6 +124,11 @@ _RAW_DIAGNOSTIC_PATTERN = re.compile(
 _RESUME_COMMAND_PATTERN = re.compile(
     r"^@factory\s+resume\s+v1\s+run=(?P<run>[A-Za-z0-9._-]+)\s+episode=(?P<episode>[A-Za-z0-9._-]+)$"
 )
+_ANSWER_COMMAND_PATTERN = re.compile(
+    r"^@factory answer v1 run=(?P<run>[A-Za-z0-9._-]+) episode=(?P<episode>[A-Za-z0-9._-]+)$"
+)
+_NUMBERED_ANSWER_PATTERN = re.compile(r"^(?P<number>[1-9][0-9]?)\.\s+(?P<answer>\S.*)$")
+MAX_PLAN_DECISION_ANSWER_CHARS = 500
 
 _ESCALATION_MARKER_TEMPLATE = (
     "<!-- software-agent-factory:escalation run={run_id} episode={episode_id} -->"
@@ -143,6 +155,36 @@ def parse_resume_command(body: str) -> tuple[str, str] | None:
     if match is None:
         return None
     return match.group("run"), match.group("episode")
+
+
+def parse_plan_decision_answers(
+    body: str, *, decision_count: int
+) -> tuple[str, str, list[PlanDecisionAnswer]] | None:
+    """Parse a strict, complete numbered response to a plan-decision notice."""
+    if not 1 <= decision_count <= 24:
+        return None
+    normalized_body = body.replace("\r\n", "\n")
+    if normalized_body != normalized_body.strip():
+        return None
+    lines = normalized_body.split("\n")
+    if len(lines) != decision_count + 1:
+        return None
+    header = _ANSWER_COMMAND_PATTERN.fullmatch(lines[0])
+    if header is None:
+        return None
+    answers: list[PlanDecisionAnswer] = []
+    for expected_number, line in enumerate(lines[1:], start=1):
+        match = _NUMBERED_ANSWER_PATTERN.fullmatch(line)
+        if match is None or int(match.group("number")) != expected_number:
+            return None
+        answer = match.group("answer").strip()
+        if len(answer) > MAX_PLAN_DECISION_ANSWER_CHARS:
+            return None
+        is_unsafe, _ = contains_unsafe_content(answer)
+        if is_unsafe:
+            return None
+        answers.append(PlanDecisionAnswer(decision_number=expected_number, answer=answer))
+    return header.group("run"), header.group("episode"), answers
 
 
 def normalize_whitespace(text: str) -> str:
@@ -487,6 +529,124 @@ class ValidationResult(tuple[bool, str]):
         return instance
 
 
+def _execution_plan_fingerprint(plan: ExecutionPlan) -> str:
+    payload = json.dumps(plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def compute_plan_decision_context_fingerprint(
+    *,
+    run_id: str,
+    episode_id: str,
+    plan_fingerprint: str,
+    decisions: Sequence[str],
+) -> str:
+    """Bind a numbered decision set to one run and escalation episode."""
+    payload = json.dumps(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "plan_fingerprint": plan_fingerprint,
+            "decisions": list(decisions),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_plan_decision_context(
+    run: FactoryRun,
+    store: FileRunStore,
+    *,
+    episode_id: str,
+) -> PlanDecisionContext | None:
+    """Snapshot safe unanswered plan decisions before asking for human input."""
+    try:
+        plan = store.load_artifact(run.id, ExecutionPlan)
+    except (FileNotFoundError, ValueError):
+        logger.warning("run %s has no valid execution plan for decision escalation", run.id)
+        return None
+    if not plan.unresolved_decisions or len(plan.unresolved_decisions) > 24:
+        logger.warning("run %s has an invalid unresolved decision count", run.id)
+        return None
+    decisions = [normalize_whitespace(redact_secrets(value)) for value in plan.unresolved_decisions]
+    if any(not decision or contains_unsafe_content(decision)[0] for decision in decisions):
+        logger.warning("run %s has unsafe unresolved decision content", run.id)
+        return None
+    plan_fingerprint = _execution_plan_fingerprint(plan)
+    return PlanDecisionContext(
+        plan_fingerprint=plan_fingerprint,
+        decisions=decisions,
+        context_fingerprint=compute_plan_decision_context_fingerprint(
+            run_id=run.id,
+            episode_id=episode_id,
+            plan_fingerprint=plan_fingerprint,
+            decisions=decisions,
+        ),
+    )
+
+
+def is_valid_plan_decision_context(
+    context: PlanDecisionContext | None,
+    run_id: str,
+    episode_id: str,
+) -> bool:
+    """Verify an answerable decision context is safe and bound to its episode."""
+    if not isinstance(context, PlanDecisionContext):
+        return False
+    if not 1 <= len(context.decisions) <= 24:
+        return False
+    if any(not value or contains_unsafe_content(value)[0] for value in context.decisions):
+        return False
+    expected = compute_plan_decision_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        plan_fingerprint=context.plan_fingerprint,
+        decisions=context.decisions,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected)
+
+
+def is_valid_plan_decision_answers(
+    answers: PlanDecisionAnswers | None,
+    context: PlanDecisionContext,
+    *,
+    run_id: str,
+    episode_id: str,
+    receipt: AcceptedReplyReceipt,
+) -> bool:
+    """Verify persisted human answers still bind to the active decision episode."""
+    if not isinstance(answers, PlanDecisionAnswers):
+        return False
+    if (
+        answers.run_id != run_id
+        or answers.episode_id != episode_id
+        or answers.comment_id != receipt.comment_id
+        or answers.user_login != receipt.user_login
+        or answers.user_id != receipt.user_id
+        or answers.author_association != receipt.author_association
+    ):
+        return False
+    if not (
+        secrets.compare_digest(answers.plan_fingerprint, context.plan_fingerprint)
+        and secrets.compare_digest(answers.context_fingerprint, context.context_fingerprint)
+        and receipt.plan_decision_context_fingerprint is not None
+        and secrets.compare_digest(
+            receipt.plan_decision_context_fingerprint, context.context_fingerprint
+        )
+    ):
+        return False
+    if len(answers.answers) != len(context.decisions):
+        return False
+    return all(
+        answer.decision_number == index
+        and bool(answer.answer)
+        and not contains_unsafe_content(answer.answer)[0]
+        for index, answer in enumerate(answers.answers, start=1)
+    )
+
+
 def classify_halt_reason(
     run: FactoryRun,
     store: FileRunStore | None = None,
@@ -518,6 +678,35 @@ def classify_halt_reason(
             )
 
     reason = (run.failure_reason or "").lower()
+    if reason.startswith(UNRESOLVED_DECISIONS_HALT_PREFIX):
+        unresolved_count: int | None = None
+        if store is not None:
+            try:
+                plan = store.load_artifact(run.id, ExecutionPlan)
+                if plan is not None and plan.unresolved_decisions:
+                    unresolved_count = len(plan.unresolved_decisions)
+            except (FileNotFoundError, ValueError):
+                pass
+        if unresolved_count is None:
+            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
+                r"\((\d+)\)", reason
+            )
+            if count_match:
+                unresolved_count = int(count_match.group(1))
+        if unresolved_count is not None:
+            decisions_label = "decision" if unresolved_count == 1 else "decisions"
+            summary = (
+                f"The execution plan has {unresolved_count} unresolved architectural "
+                f"{decisions_label}."
+            )
+        else:
+            summary = "The execution plan has unresolved architectural decisions."
+        return (
+            ResumeClassification.PLAN_DECISION,
+            UNRESOLVED_DECISIONS_REASON_CODE,
+            summary,
+            "Reply with complete numbered decisions on this GitHub thread.",
+        )
     if "scope" in reason:
         return (
             ResumeClassification.NOT_RESUMABLE,
@@ -580,6 +769,7 @@ def build_escalation_comment(
     reopen_count: int,
     max_reopens: int,
     approval_context: RiskApprovalContext | None = None,
+    plan_decision_context: PlanDecisionContext | None = None,
 ) -> EscalationComment:
     """Build concise, safe GitHub comment content.
 
@@ -686,6 +876,70 @@ def build_escalation_comment(
             "#### Resume instructions",
             "",
             fallback_msg,
+            "",
+        ]
+        return EscalationComment("\n".join(lines), remote_resume_enabled=False)
+
+    if classification is ResumeClassification.PLAN_DECISION:
+        if plan_decision_context is not None and is_valid_plan_decision_context(
+            plan_decision_context, run_id, episode_id
+        ):
+            decision_lines = [
+                f"{index}. {escape_notice_text(decision)}"
+                for index, decision in enumerate(plan_decision_context.decisions, start=1)
+            ]
+            answer_lines = [
+                f"{index}. <answer>" for index in range(1, len(plan_decision_context.decisions) + 1)
+            ]
+            lines = [
+                marker,
+                "### Factory Plan Decision Notice",
+                "",
+                f"The run `{run_id}` needs {len(plan_decision_context.decisions)} decision(s).",
+                "",
+                f"- **Reason code**: `{reason_code}`",
+                f"- **Attempts recorded**: {attempts_consumed}",
+                f"- **Reopens**: {reopen_count}/{max_reopens}",
+                "",
+                "#### Decisions",
+                *decision_lines,
+                "",
+                "#### Reply instructions",
+                "An authorized contributor must reply with every numbered answer:",
+                "",
+                "```",
+                f"@factory answer v1 run={run_id} episode={episode_id}",
+                *answer_lines,
+                "```",
+                "",
+                "The factory will replan with these answers before it changes code.",
+                "",
+            ]
+            rendered = "\n".join(lines)
+            if len(rendered) <= MAX_ESCALATION_COMMENT_CHARS:
+                return EscalationComment(rendered, remote_resume_enabled=True)
+            logger.warning(
+                "run %s plan decision comment exceeded size limit (%d chars)",
+                run_id,
+                len(rendered),
+            )
+
+        lines = [
+            marker,
+            "### Factory Escalation Notice",
+            "",
+            f"The run `{run_id}` requires human attention.",
+            "",
+            f"- **Reason code**: `{reason_code}`",
+            f"- **Summary**: {summary}",
+            f"- **Next action**: {next_action}",
+            f"- **Attempts recorded**: {attempts_consumed}",
+            f"- **Reopens**: {reopen_count}/{max_reopens}",
+            "",
+            "#### Reply instructions",
+            "",
+            "The plan decision context cannot be safely resumed from GitHub. "
+            "Inspect local artifacts and start a replacement run.",
             "",
         ]
         return EscalationComment("\n".join(lines), remote_resume_enabled=False)
@@ -934,6 +1188,13 @@ def deliver_escalation_notification(
                 config=config,
                 episode_id=episode_id,
             )
+        plan_decision_context = None
+        if classification is ResumeClassification.PLAN_DECISION:
+            plan_decision_context = build_plan_decision_context(
+                run,
+                store,
+                episode_id=episode_id,
+            )
         escalation = EscalationRecord(
             episode_id=episode_id,
             episode_number=1,
@@ -941,6 +1202,7 @@ def deliver_escalation_notification(
             resume_classification=classification,
             reason_code=code,
             approval_context=approval_context,
+            plan_decision_context=plan_decision_context,
         )
         run = run.model_copy(update={"escalation": escalation})
         store.save_run(run)
@@ -1002,6 +1264,7 @@ def deliver_escalation_notification(
         reopen_count=escalation.reopen_count,
         max_reopens=config.escalation.max_reopens,
         approval_context=escalation.approval_context,
+        plan_decision_context=escalation.plan_decision_context,
     )
     comment_body = str(rendered_notice)
     remote_resume_enabled = getattr(rendered_notice, "remote_resume_enabled", False)
@@ -1213,9 +1476,30 @@ def validate_reply_candidate(
         return ValidationResult(False, "run escalation target is incomplete")
 
     # Check command grammar
-    parsed = parse_resume_command(comment.body)
-    if parsed is None:
-        return ValidationResult(False, "command does not match exact resume grammar")
+    parsed_answers: list[PlanDecisionAnswer] | None = None
+    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
+        parsed = parse_resume_command(comment.body)
+        if parsed is None:
+            return ValidationResult(False, "command does not match exact resume grammar")
+    elif escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+        context = escalation.plan_decision_context
+        if context is None or not is_valid_plan_decision_context(
+            context, run.id, escalation.episode_id
+        ):
+            return ValidationResult(
+                False, "missing or invalid plan decision context; local inspection required"
+            )
+        parsed_answer_command = parse_plan_decision_answers(
+            comment.body, decision_count=len(context.decisions)
+        )
+        if parsed_answer_command is None:
+            return ValidationResult(False, "command does not contain complete numbered answers")
+        cmd_run, cmd_episode, parsed_answers = parsed_answer_command
+        parsed = (cmd_run, cmd_episode)
+    else:
+        return ValidationResult(
+            False, f"halt category {escalation.resume_classification} is not resumable via reply"
+        )
 
     cmd_run, cmd_episode = parsed
     if cmd_run != run.id:
@@ -1248,25 +1532,23 @@ def validate_reply_candidate(
             f"reopen limit reached ({escalation.reopen_count}/{config.escalation.max_reopens})",
         )
 
-    # Resumable class check
-    if escalation.resume_classification is not ResumeClassification.RISK_APPROVAL:
-        return ValidationResult(
-            False, f"halt category {escalation.resume_classification} is not resumable via reply"
-        )
-
     # Remote resume enabled check
     if not escalation.remote_resume_enabled:
         return ValidationResult(
             False, "remote resume is disabled for this escalation; local inspection required"
         )
 
-    # Risk approval decision context check
-    if escalation.approval_context is None or not is_valid_risk_approval_context(
-        escalation.approval_context, run.id, escalation.episode_id
-    ):
-        return ValidationResult(
-            False, "missing or invalid risk approval decision context; local inspection required"
-        )
+    # Decision context check
+    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
+        if escalation.approval_context is None or not is_valid_risk_approval_context(
+            escalation.approval_context, run.id, escalation.episode_id
+        ):
+            return ValidationResult(
+                False,
+                "missing or invalid risk approval decision context; local inspection required",
+            )
+    elif parsed_answers is None:
+        return ValidationResult(False, "plan decision reply is missing validated answers")
 
     # Replay check
     if any(receipt.comment_id == comment.id for receipt in escalation.accepted_replies):
@@ -1329,9 +1611,25 @@ def validate_reply_candidate(
     if fresh.updated_at != fresh.created_at:
         return ValidationResult(False, "comment was edited after creation")
 
-    fresh_parsed = parse_resume_command(fresh.body)
-    if fresh_parsed != parsed:
-        return ValidationResult(False, "re-fetched comment body no longer matches resume command")
+    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
+        fresh_parsed = parse_resume_command(fresh.body)
+        if fresh_parsed != parsed:
+            return ValidationResult(
+                False, "re-fetched comment body no longer matches resume command"
+            )
+    else:
+        context = escalation.plan_decision_context
+        assert context is not None
+        fresh_answer_command = parse_plan_decision_answers(
+            fresh.body, decision_count=len(context.decisions)
+        )
+        original_answer_command = parse_plan_decision_answers(
+            comment.body, decision_count=len(context.decisions)
+        )
+        if fresh_answer_command is None or fresh_answer_command != original_answer_command:
+            return ValidationResult(
+                False, "re-fetched comment body no longer matches complete numbered answers"
+            )
 
     if not is_authorized_author(
         fresh,
@@ -1385,14 +1683,20 @@ def poll_escalation_reply(
         return None
 
     current_time = now or utc_now()
-    if (
-        escalation.resume_classification is not ResumeClassification.RISK_APPROVAL
-        or not escalation.remote_resume_enabled
-        or escalation.approval_context is None
-        or not is_valid_risk_approval_context(
+    valid_resume_context = (
+        escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+        and escalation.approval_context is not None
+        and is_valid_risk_approval_context(
             escalation.approval_context, run.id, escalation.episode_id
         )
-    ):
+    ) or (
+        escalation.resume_classification is ResumeClassification.PLAN_DECISION
+        and escalation.plan_decision_context is not None
+        and is_valid_plan_decision_context(
+            escalation.plan_decision_context, run.id, escalation.episode_id
+        )
+    )
+    if not escalation.remote_resume_enabled or not valid_resume_context:
         escalation = escalation.model_copy(
             update={
                 "remote_resume_enabled": False,
@@ -1525,11 +1829,29 @@ def poll_escalation_reply(
                 now=current_time,
             )
             if result.is_valid:
+                plan_answers: list[PlanDecisionAnswer] | None = None
+                if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+                    context = escalation.plan_decision_context
+                    assert context is not None
+                    parsed_plan_reply = parse_plan_decision_answers(
+                        comment.body, decision_count=len(context.decisions)
+                    )
+                    if parsed_plan_reply is None:
+                        raise ValueError("validated plan decision reply could not be parsed")
+                    _, _, plan_answers = parsed_plan_reply
                 app_fp = (
                     escalation.approval_context.context_fingerprint
                     if (
                         escalation.resume_classification is ResumeClassification.RISK_APPROVAL
                         and escalation.approval_context is not None
+                    )
+                    else None
+                )
+                plan_decision_fp = (
+                    escalation.plan_decision_context.context_fingerprint
+                    if (
+                        escalation.resume_classification is ResumeClassification.PLAN_DECISION
+                        and escalation.plan_decision_context is not None
                     )
                     else None
                 )
@@ -1540,11 +1862,34 @@ def poll_escalation_reply(
                     author_association=comment.author_association,
                     created_at=comment.created_at,
                     accepted_at=current_time,
-                    command=f"@factory resume v1 run={run.id} episode={escalation.episode_id}",
+                    command=(
+                        f"@factory resume v1 run={run.id} episode={escalation.episode_id}"
+                        if escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+                        else f"@factory answer v1 run={run.id} episode={escalation.episode_id}"
+                    ),
                     episode_id=escalation.episode_id,
                     run_id=run.id,
                     approval_context_fingerprint=app_fp,
+                    plan_decision_context_fingerprint=plan_decision_fp,
                 )
+                if plan_answers is not None:
+                    context = escalation.plan_decision_context
+                    assert context is not None
+                    store.save_artifact(
+                        run.id,
+                        PlanDecisionAnswers(
+                            run_id=run.id,
+                            episode_id=escalation.episode_id,
+                            plan_fingerprint=context.plan_fingerprint,
+                            context_fingerprint=context.context_fingerprint,
+                            comment_id=comment.id,
+                            user_login=comment.user_login,
+                            user_id=comment.user_id,
+                            author_association=comment.author_association,
+                            answers=plan_answers,
+                            accepted_at=current_time,
+                        ),
+                    )
                 break
 
             if getattr(result, "retryable", False):

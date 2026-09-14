@@ -580,7 +580,19 @@ APP_JS = """\
       ["What happened", detail.guidance ? detail.guidance.summary : null],
       ["Next action", detail.guidance ? detail.guidance.next_action : null],
       ["Evidence artifact", detail.guidance ? detail.guidance.artifact : null],
-      ["Finding count", detail.guidance ? detail.guidance.finding_count : null],
+      [
+        detail.guidance &&
+        (detail.guidance.reason_code === "UNRESOLVED_DECISIONS" ||
+          detail.guidance.decision_count !== undefined)
+          ? "Decision count"
+          : "Finding count",
+        detail.guidance
+          ? detail.guidance.reason_code === "UNRESOLVED_DECISIONS" ||
+            detail.guidance.decision_count !== undefined
+            ? detail.guidance.decision_count
+            : detail.guidance.finding_count
+          : null
+      ],
       [
         "Finding IDs",
         detail.guidance && Array.isArray(detail.guidance.finding_ids)

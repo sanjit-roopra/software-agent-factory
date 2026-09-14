@@ -907,6 +907,7 @@ class EscalationStatus(StrEnum):
 
 class ResumeClassification(StrEnum):
     RISK_APPROVAL = "RISK_APPROVAL"
+    PLAN_DECISION = "PLAN_DECISION"
     NOT_RESUMABLE = "NOT_RESUMABLE"
 
 
@@ -927,6 +928,7 @@ class AcceptedReplyReceipt(ModelBase):
     episode_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     approval_context_fingerprint: str | None = None
+    plan_decision_context_fingerprint: str | None = None
 
 
 class RiskRationale(ModelBase):
@@ -981,6 +983,64 @@ class RiskApprovalContext(ModelBase):
     context_fingerprint: str = Field(min_length=64, max_length=64)
 
 
+class PlanDecisionContext(ModelBase):
+    """Immutable decision questions that an authorized human may answer."""
+
+    plan_fingerprint: str = Field(min_length=64, max_length=64)
+    decisions: list[str] = Field(min_length=1, max_length=24)
+    context_fingerprint: str = Field(min_length=64, max_length=64)
+
+    @field_validator("decisions")
+    @classmethod
+    def _validate_decisions(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("decision questions must not be blank")
+        if any(len(value) > 500 for value in cleaned):
+            raise ValueError("decision questions must be 500 characters or fewer")
+        return cleaned
+
+
+class PlanDecisionAnswer(ModelBase):
+    """One validated answer to a numbered plan decision."""
+
+    decision_number: int = Field(ge=1, le=24)
+    answer: str = Field(min_length=1, max_length=500)
+
+    @field_validator("answer")
+    @classmethod
+    def _validate_answer(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("answer must not be blank")
+        if "\r" in cleaned or "\n" in cleaned:
+            raise ValueError("answer must be a single line")
+        return cleaned
+
+
+class PlanDecisionAnswers(VersionedModel):
+    """Durable authorized answers bound to one unresolved-plan escalation."""
+
+    run_id: str = Field(min_length=1)
+    episode_id: str = Field(min_length=1)
+    plan_fingerprint: str = Field(min_length=64, max_length=64)
+    context_fingerprint: str = Field(min_length=64, max_length=64)
+    comment_id: int = Field(ge=1)
+    user_login: str = Field(min_length=1)
+    user_id: int | None = None
+    author_association: str = ""
+    answers: list[PlanDecisionAnswer] = Field(min_length=1, max_length=24)
+    accepted_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def _require_ordered_answers(self) -> PlanDecisionAnswers:
+        expected = list(range(1, len(self.answers) + 1))
+        actual = [answer.decision_number for answer in self.answers]
+        if actual != expected:
+            raise ValueError("answers must use contiguous decision numbers in order")
+        return self
+
+
 class EscalationRecord(ModelBase):
     episode_id: str = Field(min_length=1)
     episode_number: int = Field(default=1, ge=1)
@@ -1001,6 +1061,7 @@ class EscalationRecord(ModelBase):
     accepted_replies: list[AcceptedReplyReceipt] = Field(default_factory=list)
     reopen_count: int = Field(default=0, ge=0)
     approval_context: RiskApprovalContext | None = None
+    plan_decision_context: PlanDecisionContext | None = None
     remote_resume_enabled: bool = False
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
@@ -1181,6 +1242,15 @@ class ExecutionPlan(VersionedModel):
     expected_scope: ExpectedScope
     test_strategy: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+    unresolved_decisions: list[str] = Field(default_factory=list)
+
+    @property
+    def is_ready(self) -> bool:
+        return not self.unresolved_decisions
+
+    @property
+    def ready(self) -> bool:
+        return self.is_ready
 
 
 class ChangeSet(VersionedModel):

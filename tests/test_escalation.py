@@ -30,12 +30,16 @@ import pytest
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
+    UNRESOLVED_DECISIONS_HALT_PREFIX,
+    UNRESOLVED_DECISIONS_REASON_CODE,
     ValidationResult,
     build_escalation_comment,
+    build_plan_decision_context,
     classify_halt_reason,
     deliver_escalation_notification,
     format_escalation_marker,
     is_authorized_author,
+    parse_plan_decision_answers,
     parse_resume_command,
     poll_escalation_reply,
     resolve_escalation_target,
@@ -53,7 +57,10 @@ from software_agent_factory.models import (
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
+    ExecutionPlan,
+    ExpectedScope,
     FactoryRun,
+    PlanDecisionAnswers,
     ResumeClassification,
     Risk,
     RiskApprovalContext,
@@ -316,6 +323,51 @@ def test_parse_resume_command_invalid(invalid_cmd: str) -> None:
     assert parse_resume_command(invalid_cmd) is None
 
 
+def test_parse_plan_decision_answers_requires_exact_ordered_responses() -> None:
+    parsed = parse_plan_decision_answers(
+        "@factory answer v1 run=run-1 episode=ep-1\n"
+        "1. Use SQLite for the local-first store.\n"
+        "2. Keep the current public API.",
+        decision_count=2,
+    )
+
+    assert parsed is not None
+    assert parsed[:2] == ("run-1", "ep-1")
+    assert [answer.answer for answer in parsed[2]] == [
+        "Use SQLite for the local-first store.",
+        "Keep the current public API.",
+    ]
+
+    assert (
+        parse_plan_decision_answers(
+            "@factory answer v1 run=run-1 episode=ep-1\n1. Use SQLite.\n3. Keep the API.",
+            decision_count=2,
+        )
+        is None
+    )
+    assert (
+        parse_plan_decision_answers(
+            " @factory answer v1 run=run-1 episode=ep-1\n1. Use SQLite.",
+            decision_count=1,
+        )
+        is None
+    )
+    assert (
+        parse_plan_decision_answers(
+            "@factory\tanswer v1 run=run-1 episode=ep-1\n1. Use SQLite.",
+            decision_count=1,
+        )
+        is None
+    )
+    assert (
+        parse_plan_decision_answers(
+            "@factory answer v1 run=run-1 episode=ep-1\n1. Use SQLite.",
+            decision_count=2,
+        )
+        is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Halt Category Classification & Data Minimization
 # ---------------------------------------------------------------------------
@@ -362,6 +414,64 @@ def test_classify_halt_reason_not_resumable(reason: str, expected_code: str) -> 
     assert code == expected_code
     assert summary
     assert action
+
+
+def test_classify_halt_reason_unresolved_decisions_stable_prefix_wins(tmp_path: Path) -> None:
+    # Suffixes with "scope" and "merge" must still classify as UNRESOLVED_DECISIONS
+    for suffix in (
+        "",
+        ": scope boundary review needed",
+        ": merge conflict with main",
+        " (scope and merge choices)",
+        ": attempt budget exceeded",
+    ):
+        run = FactoryRun(
+            id="run-test-prefix",
+            work_item_id="task-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            failure_reason=f"{UNRESOLVED_DECISIONS_HALT_PREFIX}{suffix}",
+        )
+        classification, code, summary, action = classify_halt_reason(run)
+        assert classification is ResumeClassification.PLAN_DECISION
+        assert code == UNRESOLVED_DECISIONS_REASON_CODE
+        assert "Reply with complete numbered decisions" in action
+
+
+def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = FactoryRun(
+        id="run-unresolved-count",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+    )
+    store.save_run(run)
+
+    # 1. Without store or without ExecutionPlan: safe count is omitted, no model prose
+    _, code, summary_no_plan, action = classify_halt_reason(run)
+    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert "Reply with complete numbered decisions" in action
+    assert "The execution plan has unresolved architectural decisions." in summary_no_plan
+
+    # 2. With persisted ExecutionPlan containing 2 decisions: safe count is included
+    plan = ExecutionPlan(
+        summary="Implement feature",
+        steps=[],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=[
+            "Need choice between SQLite and PostgreSQL.",
+            "Need choice between REST and gRPC.",
+        ],
+    )
+    store.save_artifact(run.id, plan)
+
+    _, code, summary_with_plan, action = classify_halt_reason(run, store)
+    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert "2 unresolved architectural decisions" in summary_with_plan
+    assert "Reply with complete numbered decisions" in action
+    # Verify no model prose in summary or action
+    assert "SQLite" not in summary_with_plan
+    assert "PostgreSQL" not in summary_with_plan
 
 
 def test_build_escalation_comment_data_minimization() -> None:
@@ -1038,6 +1148,74 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
     assert persisted_receipt.command == "@factory resume v1 run=run-poll episode=ep-1234"
 
 
+def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    store = FileRunStore(tmp_path)
+    now = utc_now()
+    run = FactoryRun(
+        id="run-plan-poll",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+    )
+    store.save_run(run)
+    store.save_artifact(
+        run.id,
+        ExecutionPlan(
+            summary="Plan needs a decision.",
+            expected_scope=ExpectedScope(
+                modules=["src"],
+                estimated_files_min=1,
+                estimated_files_max=2,
+            ),
+            unresolved_decisions=["Select the local persistence format."],
+        ),
+    )
+    context = build_plan_decision_context(run, store, episode_id="ep-plan-poll")
+    assert context is not None
+    escalation = EscalationRecord(
+        episode_id="ep-plan-poll",
+        status=EscalationStatus.NOTIFIED,
+        resume_classification=ResumeClassification.PLAN_DECISION,
+        target_repository="owner/repo",
+        target_number=10,
+        created_at=now - timedelta(hours=1),
+        last_notified_at=now - timedelta(hours=1),
+        plan_decision_context=context,
+        remote_resume_enabled=True,
+    )
+    run = run.model_copy(update={"escalation": escalation})
+    store.save_run(run)
+    body = (
+        "@factory answer v1 run=run-plan-poll episode=ep-plan-poll\n"
+        "1. Use JSON files in the configured data directory."
+    )
+    comment_data = _make_comment_payload(
+        556,
+        body,
+        login="lead-dev",
+        created_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        updated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    client = GitHubClient(
+        runner=FakeRunner(
+            [
+                FakeCompletedProcess(0, json.dumps([comment_data])),
+                FakeCompletedProcess(0, json.dumps(comment_data)),
+            ]
+        )
+    )
+
+    receipt = poll_escalation_reply(run, store, config, client, tmp_path, now=now)
+
+    assert receipt is not None
+    assert receipt.plan_decision_context_fingerprint == context.context_fingerprint
+    persisted = store.load_artifact(run.id, PlanDecisionAnswers)
+    assert persisted.comment_id == receipt.comment_id
+    assert persisted.context_fingerprint == context.context_fingerprint
+    assert persisted.answers[0].answer == "Use JSON files in the configured data directory."
+
+
 # ---------------------------------------------------------------------------
 # 8. Controller Reopen API & Same-Run Resume
 # ---------------------------------------------------------------------------
@@ -1124,6 +1302,110 @@ def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: P
     assert reopened.state is WorkflowState.PR_READY  # Ran successfully to completion!
     assert len(reopened.attempt_records) >= 1  # Spent normal implementation budget
     assert reopened.escalation.status is EscalationStatus.RESUMED
+
+
+def test_workflow_controller_reopens_plan_decision_at_planning(
+    source_repo: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    config = _make_config(data_dir)
+    store = FileRunStore(data_dir)
+    planner_contexts: list[str | None] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        planner_contexts.append(request.repair_context)
+        unresolved = ExecutionPlan(
+            summary="Plan requires one human decision",
+            steps=[],
+            expected_scope=ExpectedScope(
+                modules=["FACTORY_NOTES.md"],
+                estimated_files_min=1,
+                estimated_files_max=1,
+            ),
+            unresolved_decisions=["Choose the local persistence format."],
+        )
+        if len(planner_contexts) < 3:
+            return AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=unresolved)
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Implement the documented decision.",
+                steps=[],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=1,
+                ),
+            ),
+        )
+
+    controller = WorkflowController(config, store, FakeAgentRuntime(planner=planner))
+    run = controller.run(
+        WorkItem(id="task-plan-answer", title="Plan answer", description="Use a local store."),
+        source_repo,
+        run_id="run-plan-answer",
+    )
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.escalation is not None
+    assert run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
+    context = run.escalation.plan_decision_context
+    assert context is not None
+    parsed = parse_plan_decision_answers(
+        f"@factory answer v1 run={run.id} episode={run.escalation.episode_id}\n"
+        "1. Use JSON files in the configured data directory.",
+        decision_count=1,
+    )
+    assert parsed is not None
+    _, _, answers = parsed
+    store.save_artifact(
+        run.id,
+        PlanDecisionAnswers(
+            run_id=run.id,
+            episode_id=run.escalation.episode_id,
+            plan_fingerprint=context.plan_fingerprint,
+            context_fingerprint=context.context_fingerprint,
+            comment_id=101,
+            user_login="lead-dev",
+            user_id=1001,
+            author_association="MEMBER",
+            answers=answers,
+        ),
+    )
+    receipt = AcceptedReplyReceipt(
+        comment_id=101,
+        user_login="lead-dev",
+        user_id=1001,
+        author_association="MEMBER",
+        created_at=utc_now(),
+        command=f"@factory answer v1 run={run.id} episode={run.escalation.episode_id}",
+        episode_id=run.escalation.episode_id,
+        run_id=run.id,
+        plan_decision_context_fingerprint=context.context_fingerprint,
+    )
+    run = run.model_copy(
+        update={
+            "escalation": run.escalation.model_copy(
+                update={
+                    "status": EscalationStatus.REOPENED,
+                    "reopen_count": 1,
+                    "accepted_replies": [receipt],
+                }
+            )
+        }
+    )
+    store.save_run(run)
+
+    reopened = controller.reopen(run.id, source_repo)
+
+    assert reopened.state is WorkflowState.PR_READY
+    assert reopened.escalation is not None
+    assert reopened.escalation.status is EscalationStatus.RESUMED
+    assert reopened.attempt_records[0].triggered_by.value == "INITIAL"
+    assert len(planner_contexts) == 3
+    assert planner_contexts[-1] is not None
+    assert "Use JSON files in the configured data directory." in planner_contexts[-1]
 
 
 def test_workflow_controller_reopen_rejects_non_resumable(

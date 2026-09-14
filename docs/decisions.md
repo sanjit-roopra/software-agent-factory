@@ -1,5 +1,70 @@
 # Architecture Decisions
 
+## ADR-026: Authorized answers for unresolved plan decisions
+
+ADR-025 stops work before an agent guesses a material decision.
+Stopping permanently makes that gate hard to use.
+
+When GitHub escalation is enabled, the factory lists each unresolved decision
+with a number. An authorized contributor can reply with every numbered answer.
+
+```text
+@factory answer v1 run=<run-id> episode=<episode-id>
+1. First decision answer.
+2. Second decision answer.
+```
+
+The controller checks the author, target, run, episode, reply window, comment
+edit state, and response order. It stores the typed answer artifact before it
+reopens the run.
+
+The controller is the only component that can reopen work. It returns a valid
+plan-decision reply to `PLANNING`. The Planner receives only validated answer
+fields. It creates a replacement plan. The controller checks readiness before
+it starts implementation.
+
+This flow does not rerun triage, refinement, or research. It does not change
+scope, models, commands, quality gates, or retry budgets. Existing reopen
+limits bound the number of accepted answer cycles.
+
+`RISK_APPROVAL` keeps the separate `@factory resume` reply and returns to
+`REFINING`. Project child runs keep their current `NEEDS_HUMAN` behavior.
+
+## ADR-025: Pre-implementation readiness gate for unresolved decisions
+
+Autonomous software development can fail when an agent guesses answers to missing decisions.
+To evaluate patterns for scaling delivery by uncertainty, we inspected external evidence from [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD).
+We reviewed commit `94b6727b00c8316557828c8a8ff2a48ff60d60cc` from 2026-09-11 and newest observed tag `v6.12.0`.
+
+The factory adds an optional `unresolved_decisions` list of concise strings to `ExecutionPlan`.
+It records only material choices.
+These choices cannot be derived from task intent, Specification, repository evidence, or existing constraints.
+
+The controller evaluates the initial plan before implementation begins.
+If unresolved decisions exist, the controller asks the Planner once more to resolve evidence-answerable items.
+If material choices remain after this single retry, the controller persists the final plan.
+The controller then halts before implementation in `NEEDS_HUMAN`.
+It records a dedicated escalation record that points to `execution-plan.json`.
+
+This gate applies only to the initial pre-implementation plan.
+It does not reject the metadata-only scope replan after deterministic verification.
+
+ADR-026 allows an authorized contributor to answer these decisions through
+GitHub escalation. The controller then returns the same run to planning.
+Project child runs preserve their existing `NEEDS_HUMAN` behavior.
+
+We defer a project-level architecture decision registry and acceptance-to-test mapping.
+Existing dependency graphs, typed artifacts, repository skills, deterministic verification, independent testing, and bounded review already provide equivalent value.
+
+We reject model-owned workflow state and agent-owned Git commits, reverts, or retries.
+We reject linear story scheduling instead of dependency graphs.
+We reject same-workflow self-approval.
+We reject synchronous all-agent coordination and interactive persona workflows on the autonomous path.
+We reject mutable-main update checks, large Markdown artifact sets, plugin architectures, and prose-only governance.
+
+BMAD is licensed under the MIT License, but its trademarks are excluded.
+This factory uses independently expressed concepts and copies no BMAD code, templates, or prose.
+
 ## ADR-024: Controller-owned GitHub escalation and authorized human reply loop
 
 When a run enters `NEEDS_HUMAN`, the factory can notify a human operator on GitHub.
@@ -13,7 +78,7 @@ The comment uses only fixed guidance fields.
 The factory never publishes raw failure text, workspace paths, issue descriptions, diffs, or logs.
 Each notification includes an unpredictable episode token and a hidden marker.
 
-An authorized human can reply on the same thread with:
+For a risk approval, an authorized human can reply on the same thread with:
 
 ```text
 @factory resume v1 run=<run-id> episode=<episode-id>
@@ -28,10 +93,10 @@ The controller re-fetches the comment before acceptance to detect edits.
 The factory records an accepted reply receipt before reopening.
 The receipt stores comment metadata and never stores raw reply bodies.
 
-The controller reopens the same run.
-It never creates a replacement run or resets attempt records.
-In this version, only `RISK_APPROVAL` transitions back to `REFINING`.
-Other halt categories remain non-resumable.
+The controller reopens the same run. It never creates a replacement run or
+resets attempt records. `RISK_APPROVAL` transitions to `REFINING`.
+ADR-026 adds a separate complete numbered-answer reply for `PLAN_DECISION`.
+It transitions to `PLANNING`. Other halt categories remain non-resumable.
 
 When risk requires approval, the notice explains the causal risk chain.
 Triage records this case-specific causal rationale in its typed contract.

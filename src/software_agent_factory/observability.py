@@ -78,7 +78,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal, Protocol
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_serializer
 
 from .models import (
     AgentRole,
@@ -88,10 +88,12 @@ from .models import (
     ContextTier,
     EscalationRecord,
     EscalationStatus,
+    ExecutionPlan,
     FactoryRun,
     InvocationRecord,
     ModelBase,
     PerformanceRecord,
+    ResumeClassification,
     ReviewFindingCategory,
     ReviewImpasse,
     Risk,
@@ -413,8 +415,20 @@ class RunGuidance(ModelBase):
     next_action: str
     artifact: str | None = None
     finding_count: int = Field(default=0, ge=0)
+    decision_count: int | None = Field(default=None, ge=0)
     finding_ids: list[str] = Field(default_factory=list, max_length=12)
     category_counts: dict[ReviewFindingCategory, int] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = dict(handler(self))
+        if self.decision_count is None:
+            data.pop("decision_count", None)
+        if self.reason_code == "UNRESOLVED_DECISIONS":
+            data.pop("finding_count", None)
+            data.pop("finding_ids", None)
+            data.pop("category_counts", None)
+        return data
 
 
 class VerificationSummary(ModelBase):
@@ -436,7 +450,7 @@ class EscalationSummary(ModelBase):
     reopen_count: int = Field(ge=0)
     accepted_reply_count: int = Field(ge=0)
     last_responder: str | None = None
-    last_action: Literal["RESUME"] | None = None
+    last_action: Literal["ANSWER", "RESUME"] | None = None
     last_response_at: UtcDateTime | None = None
     is_resumed: bool = False
     resumed_at: UtcDateTime | None = None
@@ -1285,7 +1299,13 @@ def _escalation_summary(
         reopen_count=escalation.reopen_count,
         accepted_reply_count=len(escalation.accepted_replies),
         last_responder=last_reply.user_login if last_reply is not None else None,
-        last_action="RESUME" if last_reply is not None else None,
+        last_action=(
+            "ANSWER"
+            if last_reply is not None and last_reply.command.startswith("@factory answer ")
+            else "RESUME"
+            if last_reply is not None
+            else None
+        ),
         last_response_at=last_reply.created_at if last_reply is not None else None,
         is_resumed=is_resumed,
         resumed_at=escalation.updated_at if is_resumed else None,
@@ -1460,6 +1480,46 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
         )
 
     reason = (run.failure_reason or "").lower()
+    if reason.startswith("execution plan has unresolved decisions"):
+        plan = _load_optional_artifact(store, run.id, ExecutionPlan)
+        unresolved_count: int | None = None
+        if plan is not None and plan.unresolved_decisions:
+            unresolved_count = len(plan.unresolved_decisions)
+        if unresolved_count is None:
+            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
+                r"\((\d+)\)", reason
+            )
+            if count_match:
+                unresolved_count = int(count_match.group(1))
+        if unresolved_count is not None:
+            decisions_label = "decision" if unresolved_count == 1 else "decisions"
+            summary = (
+                f"The execution plan has {unresolved_count} unresolved architectural "
+                f"{decisions_label}."
+            )
+        else:
+            summary = "The execution plan has unresolved architectural decisions."
+        reply_enabled = (
+            run.escalation is not None
+            and run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
+            and run.escalation.status is EscalationStatus.NOTIFIED
+            and run.escalation.remote_resume_enabled
+        )
+        action = (
+            "Reply with complete numbered decisions on the escalation thread."
+            if reply_enabled
+            else (
+                "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
+            )
+        )
+        return RunGuidance(
+            status="ACTION_REQUIRED",
+            reason_code="UNRESOLVED_DECISIONS",
+            summary=summary,
+            next_action=action,
+            artifact="execution-plan.json",
+            decision_count=unresolved_count,
+        )
     if "risk" in reason or "approval" in reason:
         code = "RISK_APPROVAL"
         summary = "The run requires approval under the configured risk policy."
