@@ -1,6 +1,16 @@
-# Copilot CLI-style subagent fleet for VS Code
+# Subagent fleet for Copilot custom agents
 
-This directory models the seven Copilot CLI subagent roles in VS Code.
+This directory contains a coordinator agent and seven specialist agents.
+
+The specialists copy the role split that Copilot CLI uses for its built-in
+subagents. The files work in VS Code, on GitHub.com, and in JetBrains IDEs.
+
+This directory is standalone. It contains only GitHub Copilot custom agents, and
+it does not depend on the rest of this repository.
+
+Read [USAGE.md](USAGE.md) for the guide you can share with engineers.
+
+## Install
 
 Copy `AGENTS.md` and `.github` into the root of your repository.
 
@@ -11,93 +21,126 @@ your-repository/
     ├── copilot-instructions.md
     └── agents/
         ├── subagent-fleet.agent.md
-        ├── explore.agent.md
-        ├── task.agent.md
-        ├── general-purpose.agent.md
-        ├── rubber-duck.agent.md
-        ├── code-review.agent.md
-        ├── research.agent.md
-        └── security-review.agent.md
+        ├── fleet-explore.agent.md
+        ├── fleet-task.agent.md
+        ├── fleet-general-purpose.agent.md
+        ├── fleet-rubber-duck.agent.md
+        ├── fleet-code-review.agent.md
+        ├── fleet-research.agent.md
+        └── fleet-security-review.agent.md
 ```
 
-Customize `AGENTS.md` and `copilot-instructions.md` for your repository.
+Edit `AGENTS.md` and `copilot-instructions.md` for your repository.
 
-## Start the fleet in VS Code
+Commit the files, because GitHub.com reads agent profiles from the branch.
 
-Install GitHub Copilot and sign in.
+## Roles and models
+
+| Agent name | Model | Use it for |
+| --- | --- | --- |
+| Subagent Fleet | picker model | Coordination and delegation |
+| Fleet Explore | Gemini 3.8 Flash | Fast read-only investigation |
+| Fleet Task | Gemini 3.8 Flash | One command and its output |
+| Fleet General Purpose | Gemini 3.8 Flash | Complex multi-step work |
+| Fleet Rubber Duck | Claude Opus 5 | Independent second opinion |
+| Fleet Code Review | GPT-5.6 Sol | High-confidence defect review |
+| Fleet Research | GPT-5.6 Terra | Cited research |
+| Fleet Security Review | GPT-6 Astra | Exploitable vulnerability review |
+
+The coordinator sets no model, so it uses the model in the chat model picker.
+
+## Use the fleet in VS Code
+
+Install GitHub Copilot, then sign in.
 
 Open the repository in VS Code.
 
-Run **Chat: Open Customizations** from the Command Palette.
+Select **Subagent Fleet** in the agent dropdown in the Chat view.
 
-Confirm that **Subagent Fleet** appears in the custom agent list.
+Send a focused request.
 
-Select **Subagent Fleet** in the Chat view.
+VS Code runs each specialist in a separate context window, and the specialist
+returns only its final result.
 
-Give it a focused request.
+The coordinator can start independent specialists in parallel.
 
-The coordinator can delegate only to the seven hidden specialists.
+## Use the fleet on GitHub.com and in JetBrains IDEs
 
-Each specialist has the model selected in the supplied CLI screenshot.
+No file sets the `target` property, so each agent is available in both the
+VS Code environment and the GitHub.com environment.
 
-VS Code uses a model only when your account and organization permit it.
+To assign work to Copilot, select the agent by name.
 
-The main session model must meet each subagent's cost tier.
+Custom agents are in public preview for JetBrains IDEs, Eclipse, and Xcode.
 
-When a named model is unavailable, change or remove that profile's `model` value.
+When a surface does not delegate to subagents, select a specialist directly.
 
-## Roles and configured models
+## Limits you must know
 
-| Role | Model | Purpose |
-| --- | --- | --- |
-| Explore | Gemini 3.8 Flash | Fast read-only investigation |
-| Task | Gemini 3.8 Flash | Run one development command |
-| General Purpose | Gemini 3.8 Flash | Complex multi-step work |
-| Rubber Duck | Claude Opus 5 | Independent constructive critique |
-| Code Review | GPT-5.6 Sol | High-confidence code review |
-| Research | GPT-5.6 Terra | Cited explicit research |
-| Security Review | GPT-6 Astra | Exploitable vulnerability review |
+The subagent model cannot exceed the cost tier of the main session model. A more
+expensive subagent does not run, and it reports the available models instead.
 
-## Important difference from Copilot CLI
+Select a strong model in the picker before you start the fleet.
 
-These are VS Code custom-agent profiles.
+A model name must be available to your account and your organization. When a
+name is not available to you, edit or remove the `model` line.
 
-They apply documented role responsibilities and your model choices.
+Each subagent call is stateless, and the coordinator cannot send a follow-up
+message to the same subagent.
 
-They do not copy the private Copilot CLI implementation or its internal prompts.
+The `agents` allowlist is a VS Code property. GitHub.com ignores it, so the
+coordinator there can call any custom agent that the repository defines.
 
-GitHub publishes behavior and broad permissions for all seven roles.
+A subagent does not see the main conversation. It receives the task prompt, the
+instruction files, and its own configuration.
 
-The Copilot CLI license does not allow modified derivative copies.
+## Design decisions
 
-VS Code custom agents also cannot force delegation, retries, ordering, or fleet concurrency.
+The file names use a `fleet-` prefix. The prefix keeps these profiles separate
+from the built-in Copilot CLI agents, which use the names `explore`, `task`,
+`general-purpose`, `code-review`, `research`, `rubber-duck`, and
+`security-review`.
 
-The model decides when to invoke an allowed subagent.
+No specialist sets `disable-model-invocation`. In VS Code that property blocks
+subagent use, and only an explicit `agents` entry overrides it. GitHub.com has
+no `agents` allowlist, so the property can hide the specialist there.
 
-Subagents return summaries and do not retain a writable conversation.
+No specialist sets `user-invocable: false`. You can therefore select a
+specialist directly, which matters on surfaces that do not delegate.
 
-The native CLI selects Rubber Duck from a complementary model family.
+`Fleet General Purpose` sets no `tools` property, because an absent `tools`
+property enables all tools. Every other role lists the tools that it needs.
 
-This sample fixes Rubber Duck to Claude Opus 5, as in your CLI settings.
+`Fleet Code Review` and `Fleet Security Review` include the `execute` alias,
+because a diff review needs `git diff`. Their prompts allow read-only commands
+only.
 
 ## Copilot CLI
 
-Your existing CLI configuration already controls the native built-in roles.
+Copilot CLI already ships equivalent built-in agents.
 
-Use `/subagents` to select models for those roles.
+Use `/subagents` to pick the model for each built-in role.
 
-Use `/fleet` for parallel subagent execution.
+Do not expect these files to replace the built-in CLI roles.
 
-Use `/tasks` to view or stop subagent work.
+## Differences from the built-in Copilot CLI agents
 
-Do not copy these VS Code profiles into the CLI as replacements.
+These profiles apply the published role responsibilities. They do not copy the
+private Copilot CLI prompts, because the Copilot CLI license does not allow
+modified derivative copies.
 
-They use `target: vscode` to avoid shadowing the native CLI agents.
+The built-in CLI Rubber Duck runs on a model family that differs from the
+session model. This example fixes the model instead.
+
+The built-in CLI Explore role can also run shell commands. `Fleet Explore` reads
+and searches only.
+
+A custom agent profile cannot force delegation, retries, ordering, or
+concurrency. The main model decides when to call an allowed subagent.
 
 ## Sources
 
+- [Custom agents configuration](https://docs.github.com/en/copilot/reference/custom-agents-configuration)
 - [Copilot CLI built-in agents](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-custom-agents)
-- [Copilot CLI model settings](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference#configuration-file-settings)
-- [VS Code custom agents](https://code.visualstudio.com/docs/agent-customization/custom-agents)
-- [VS Code subagents](https://code.visualstudio.com/docs/agents/run/subagents)
-- [Custom agent tool aliases](https://docs.github.com/en/copilot/reference/custom-agents-configuration#tool-aliases)
+- [Custom agents in VS Code](https://code.visualstudio.com/docs/agent-customization/custom-agents)
+- [Subagents in VS Code](https://code.visualstudio.com/docs/agents/run/subagents)
