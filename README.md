@@ -145,7 +145,7 @@ The system works end to end. Packaging, CI, and the release process are real.
   tested or supported.
 - External tools: `git` is always required. `gh` is required only for GitHub
   integrations. `copilot` is required only for `--runtime copilot`.
-- Implemented: phases 0 to 14, plus 15.0, 15.1, 15.2, 15.5, 15.11, 16, and 17.
+- Implemented: phases 0 to 14, plus 15.0, 15.1, 15.2, 15.5, 15.11, 16, 17, 18, 19, and 20.
 - Deferred: staging, deployment, Docker and Kubernetes sandboxes, remote
   workers, Postgres, Temporal, and non-GitHub trackers.
 

@@ -321,7 +321,8 @@ The implementer's success claim is not a quality gate.
 
 Use deterministic validation first.
 
-Then use an independent Tester and Reviewer.
+Deterministic verification can accept `SINGLE` route execution only when every configured sufficiency condition holds.
+All other work requires independent model review.
 
 Prefer a different model family for final review.
 
@@ -343,6 +344,40 @@ Risk selects governance and required validation.
 A trivial change may be high risk.
 
 A difficult change may be low operational risk.
+
+### Execution routing
+Route controls workflow stages.
+Model profile controls worker strength.
+
+The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
+`FULL_REVIEW` is a controller-only post-implementation route.
+`SINGLE` runs the Implementer and deterministic verification.
+`CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
+`FULL` runs the complete multi-agent pipeline.
+It retains triage, refinement, optional research, planning, implementation, verification, optional polish attempt, Tester, and Reviewer.
+`MANUAL_TRIAGE` stops safely before implementation.
+
+When enabled, Jev acts as the single semantic router.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+It selects one controller-offered Choice option with probabilities and confidence.
+
+The controller enforces deterministic safety floors before calling Jev.
+The factory does not treat governance categories as an intrinsic truth.
+Governance categories are human-owned configuration in `routing.full_only_terms`.
+Jev does not invent that policy.
+Jev classifies provisional risk by selecting a configured route option.
+The configured risk policy decides which routes are legal.
+Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
+Worker model escalation is the existing cascade behavior in the factory.
+We do not add a duplicate cascade route.
+
+Deterministic ratchets protect execution after implementation.
+When verification fails, the controller upgrades `SINGLE` to `CRITIQUE`.
+Post-implementation ratchets upgrade `SINGLE` or `CRITIQUE` to `FULL_REVIEW`.
+`FULL_REVIEW` runs full independent Tester and Reviewer gates without restarting earlier stages.
+The controller never downgrades a route.
 
 ### 6. Prefer deterministic checks
 If something can be checked programmatically, check it programmatically.

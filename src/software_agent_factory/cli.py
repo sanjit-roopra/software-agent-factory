@@ -413,6 +413,8 @@ def run_command(
 
     typer.echo(f"run id: {run.id}")
     typer.echo(f"state: {run.state}")
+    if run.effective_route is not None:
+        typer.echo(f"route: {run.effective_route}")
     if run.workspace_path is not None:
         typer.echo(f"workspace: {run.workspace_path}")
     if run.commit_sha is not None:

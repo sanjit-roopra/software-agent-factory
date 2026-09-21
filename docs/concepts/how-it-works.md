@@ -294,6 +294,24 @@ to `retries.max_total_attempts` total. The chosen model and the attempt number
 are persisted on every attempt record, so routing can be calibrated later
 against real success and cost data.
 
+## Adaptive execution routing
+
+Simple tasks do not always need the full pipeline.
+When enabled, Jev acts as an external classifier.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
+`FULL_REVIEW` is a controller-only post-implementation route.
+
+`SINGLE` runs the Implementer and deterministic verification.
+`CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
+`FULL` runs the complete multi-agent pipeline.
+`MANUAL_TRIAGE` halts safely before implementation for human inspection.
+`FULL_REVIEW` is a post-implementation upgrade that runs full independent review gates without restarting earlier stages.
+
+Read the [adaptive routing guide](../guides/adaptive-routing.md) for configuration and usage.
+
 ## Deterministic gates
 
 Before any model judges the change, the factory computes:

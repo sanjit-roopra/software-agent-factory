@@ -34,6 +34,7 @@ because a prompt is not what enforces it.
 | `ci.enabled` | `false` |
 | `merge.enabled` | `false` |
 | `scheduler.enabled` | `false` |
+| `routing.enabled` | `false` |
 | Dashboard | not running |
 | launchd service | not installed |
 
@@ -56,6 +57,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | `ci.enabled` | GitHub, through `gh`. |
 | `merge.enabled` | GitHub, through `gh`, with a separate repository and check allowlist. |
 | `scheduler.enabled` | GitHub Issues, through `gh`. |
+| `routing.enabled` | TypeSafe System One (`api.typesafe.ai`) over HTTPS. Makes one POST call to Jev with no retries and no redirects. |
 | An eligible `polish.enabled` attempt with no stored guidance for the repository's current dependency fingerprint, or `factory skill refresh --runtime copilot` | The configured Researcher fetches only `polish.official_documentation_origins` and the exact, commit-pinned `polish.practice_reference_urls` to generate a `RepositorySkill`. `web_fetch` is its only tool for that call, and it runs outside the worktree. A run that reuses stored guidance fetches nothing. |
 | Your own `repository.commands` | Whatever they contact. `uv sync` hits a package index. |
 
@@ -231,6 +233,46 @@ spend retry budget, widen permissions, change dependencies or widen scope.
 `factory skill refresh` is the only command that writes guidance, it writes
 generated files only, and the dashboard has no skill or overlay write path.
 
+## Adaptive routing data boundary
+
+When `routing.enabled` is true, the factory calls Jev over HTTPS.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+The call sends a sanitized summary of the work item to `api.typesafe.ai`.
+
+The sanitizer strips these elements before sending prompt text:
+
+- Fenced code blocks and tilde blocks.
+- Unified diff blocks and diff headers.
+- Stack traces from Python, JavaScript, and Java.
+- Detected credentials and secrets.
+- Remote URLs.
+- Absolute local filesystem paths.
+- Selected prompt injection patterns.
+
+The factory sends these metadata fields to Jev:
+
+- Task title.
+- Task description.
+- Acceptance criteria.
+- Constraints.
+- Labels.
+- Repository technologies.
+- Package managers.
+- Presence of verify commands.
+- Configured option identifiers and descriptions.
+
+Sanitization reduces accidental exposure of code and secrets.
+Sanitization is not data classification or zero-retention guarantee.
+Some proprietary task text leaves the machine.
+Read the [TypeSafe Legal Terms](https://docs.typesafe.ai/legal.md) and
+the [TypeSafe Privacy Policy](https://typesafe.ai/legal/privacy-policy).
+
+The call uses one HTTPS request with no retries.
+If the call fails or times out, the controller falls back to the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
+Read the [adaptive routing guide](../guides/adaptive-routing.md).
+
 ## Bounded everything
 
 There is no unlimited retry loop anywhere.
@@ -240,6 +282,10 @@ There is no unlimited retry loop anywhere.
 | `retries.same_model_attempts` | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
 | `polish.enabled` | `true` packaged, `false` if omitted | At most one post-green implementation attempt. |
+| `routing.timeout_seconds` | `5.0` | Total deadline for the HTTPS call to Jev. |
+| `routing.max_prompt_chars` | `4000` | Maximum prompt characters sent to Jev. |
+| `routing.max_response_bytes` | `65536` | Maximum response bytes read from Jev. |
+| `routing.single_max_changed_files` | `5` | File change limit before SINGLE and CRITIQUE ratchet to FULL_REVIEW. |
 | `review.max_rounds` | `3` | Absolute logical review rounds. Eligible low-risk findings can be accepted, otherwise the run stops for a human. |
 | `review.max_accepted_findings` | `5` | Maximum findings in one controller acceptance. |
 | `review.accepted_risks` | `[R0, R1]` | Risk levels eligible for bounded acceptance. |

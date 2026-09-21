@@ -2,7 +2,7 @@
 
 ## Status
 
-Phases 0-14 and Phases 16-17 are implemented and integrated.
+Phases 0-14 and Phases 16-20 are implemented and integrated.
 
 Five Phase 15 sub-phases were explicitly requested and are now implemented:
 15.0 factory CI, 15.1 tag-driven release/CD, 15.2 macOS runtime packaging and
@@ -49,6 +49,7 @@ tested here; the first real tag is what exercises them end to end.
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 | 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
 | 19 | Mandatory controlled writing policy | implemented (ADR-023) |
+| 20 | Adaptive Jev-driven execution routing | implemented (ADR-027) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -79,6 +80,26 @@ The factory can stop before implementation when a plan needs a human decision.
 An authorized GitHub reply can answer the numbered decisions. The controller
 saves typed answers and returns to planning. It checks the replacement plan
 before implementation. The reply does not reset budgets or change scope.
+
+## Phase 20. Adaptive execution routing
+
+Status: done.
+
+Provide adaptive Jev-driven execution routing.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+It selects one controller-offered Choice option with probabilities and confidence.
+
+- Four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`; `FULL_REVIEW` is a controller-only post-implementation route.
+- Route controls workflow stages and model profile controls worker strength.
+- Single semantic if/else router using Jev over HTTPS when enabled.
+- Deterministic safety floors constrain offered options before invoking Jev.
+- Deterministic fallback to full pipeline without network access when disabled or failed.
+- Synthesize typed triage, specification, and execution plan artifacts for `SINGLE` and `CRITIQUE`.
+- Narrow the independent review rule: deterministic verification accepts `SINGLE` only when all sufficiency conditions pass.
+- Monotonic ratchets upgrade `SINGLE` to `CRITIQUE` on verification failure, and post-implementation ratchets upgrade `SINGLE` or `CRITIQUE` to `FULL_REVIEW`.
+- Reused worker model escalation is the existing cascade behavior.
 
 ## Principle
 

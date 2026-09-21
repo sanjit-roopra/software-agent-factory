@@ -1,5 +1,52 @@
 # Architecture Decisions
 
+## ADR-027: Adaptive Jev-driven execution routing
+
+Simple tasks do not always need the full factory pipeline.
+When enabled, Jev acts as the single semantic if/else router.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+It selects one controller-offered Choice option with probabilities and confidence.
+
+The controller keeps exclusive authority over validation, safety floors, state transitions, and route execution.
+
+The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
+`FULL_REVIEW` is a controller-only post-implementation route.
+Route controls workflow stages.
+Model profile controls worker strength.
+Worker model escalation is the existing cascade behavior in the factory.
+We do not add a duplicate cascade route.
+
+Deterministic safety floors constrain offered options before the factory calls Jev.
+The controller enforces floors for risk, missing acceptance criteria, missing verify commands, required research, protected files, and high complexity.
+When only one legal option exists, the controller skips Jev.
+
+When routing is enabled, the controller makes one HTTPS request to Jev.
+Jev chooses one controller-created option identifier.
+Strict validation checks the model identifier, choice answer, option membership, probabilities, and confidence thresholds.
+When routing is disabled, unavailable, or invalid, the controller falls back to the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
+The packaged default disables routing and makes no network call.
+
+For `SINGLE` and `CRITIQUE` routes, the controller synthesizes triage, specification, and execution plan artifacts.
+These artifacts record explicit `SYNTHESIZED` provenance.
+`SINGLE` runs the Implementer and deterministic verification.
+`CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
+`FULL` runs the complete multi-agent pipeline.
+It retains triage, refinement, optional research, planning, implementation, verification, optional polish attempt, Tester, and Reviewer.
+
+We amend the independent review rule narrowly.
+Deterministic verification can accept `SINGLE` only when every configured sufficiency condition holds.
+All other work requires independent model review.
+
+Monotonic ratchets protect execution safety.
+When verification fails, the controller upgrades `SINGLE` to `CRITIQUE`.
+Post-implementation ratchets upgrade `SINGLE` or `CRITIQUE` to `FULL_REVIEW`.
+`FULL_REVIEW` runs full independent Tester and Reviewer gates without restarting earlier stages.
+The controller never downgrades a route.
+
+Read the [adaptive routing guide](guides/adaptive-routing.md) for setup details.
+
 ## ADR-026: Authorized answers for unresolved plan decisions
 
 ADR-025 stops work before an agent guesses a material decision.

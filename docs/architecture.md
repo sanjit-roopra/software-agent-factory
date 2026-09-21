@@ -1071,6 +1071,60 @@ L2 → Claude Sonnet 5
 
 Do not let arbitrary agent output choose arbitrary models.
 
+## Adaptive execution routing
+
+Simple tasks do not always need the full multi-agent pipeline.
+The factory provides three execution routes: `SINGLE`, `CRITIQUE`, and `FULL`.
+An optional `MANUAL_TRIAGE` outcome stops safely before implementation.
+
+Route controls workflow stages.
+Model profile controls worker strength.
+Worker model escalation is the existing cascade behavior in the factory.
+We do not add a duplicate cascade route.
+
+When enabled, Jev acts as the single semantic router.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+It selects one controller-offered Choice option with probabilities and confidence.
+
+The controller evaluates deterministic safety floors before calling Jev.
+The factory does not treat governance categories as an intrinsic truth.
+Governance categories are human-owned configuration in `routing.full_only_terms`.
+Jev does not invent that policy.
+Jev classifies provisional risk by selecting a configured route option.
+The configured risk policy decides which routes are legal.
+Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
+When only one legal option exists, the controller skips Jev.
+
+When routing is enabled, the controller makes one HTTPS request to Jev.
+Jev chooses one controller-created option identifier.
+Strict validation checks the model identifier, choice answer, option membership, probabilities, and confidence thresholds.
+When routing is disabled, unavailable, or invalid, the controller falls back to the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
+The packaged default disables routing and makes no network call.
+
+The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
+`FULL_REVIEW` is a controller-only post-implementation route.
+
+For `SINGLE` and `CRITIQUE` routes, the controller synthesizes triage, specification, and execution plan artifacts.
+These artifacts record explicit `SYNTHESIZED` provenance.
+`SINGLE` runs the Implementer and deterministic verification.
+`CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
+`FULL` runs the complete multi-agent pipeline.
+It retains triage, refinement, optional research, planning, implementation, deterministic verification, optional polish attempt, Tester, and Reviewer.
+
+We amend the independent review rule narrowly.
+Deterministic verification can accept `SINGLE` only when every configured sufficiency condition holds.
+All other work requires independent model review.
+
+Monotonic ratchets protect execution safety.
+When verification fails, the controller upgrades `SINGLE` to `CRITIQUE`.
+Post-implementation ratchets upgrade `SINGLE` or `CRITIQUE` to `FULL_REVIEW`.
+`FULL_REVIEW` runs full independent Tester and Reviewer gates without restarting earlier stages.
+The controller never downgrades a route.
+
+Read the [adaptive routing guide](guides/adaptive-routing.md) for setup details.
+
 ## Policy engine
 
 Do not build a large policy framework in V1.

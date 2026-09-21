@@ -41,6 +41,11 @@ Key facts an assistant should know before answering questions about this project
   contradictory blockers stop with `review-impasse.json`.
 - The reviewer's model family must differ from every worker's; configuration
   rejects it otherwise.
+- Adaptive execution routing is opt-in (`routing.enabled` is `false` by default).
+  Jev is a classifier from TypeSafe. The factory calls it over HTTPS.
+  System One is the TypeSafe product that serves Jev. It selects one of four
+  configured routes (`SINGLE`, `CRITIQUE`, `FULL`, `MANUAL_TRIAGE`).
+  `FULL_REVIEW` is a controller-only post-implementation route.
 
 ## Docs
 
@@ -50,6 +55,7 @@ Key facts an assistant should know before answering questions about this project
 - [Real Copilot runs](https://sanjit-roopra.github.io/software-agent-factory/get-started/copilot/): `--runtime copilot`, per-role model defaults, agent tool permissions, environment scrubbing, the typed-artifact contract and cost behaviour.
 - [Configure a repository](https://sanjit-roopra.github.io/software-agent-factory/guides/configure-repository/): `repository.commands` (no shell, environment allowlist, bounded output), protected files, changed-file limits, scope drift, risk and retry budgets.
 - [Repository skills and overlays](https://sanjit-roopra.github.io/software-agent-factory/guides/repository-skills/): reusable generated guidance keyed by repository and dependency fingerprint, stored outside the target repository under `factory.data_dir`; the human-owned `repository-skill-overlay.yaml` the factory never edits; `factory skill path|validate|refresh`.
+- [Adaptive execution routing](https://sanjit-roopra.github.io/software-agent-factory/guides/adaptive-routing/): opt-in Jev execution routing, safety floors, route options, and post-implementation ratchets.
 - [GitHub backlog, PRs and CI](https://sanjit-roopra.github.io/software-agent-factory/guides/github/): the four opt-in integrations, publish and merge guards, CI failure categories and which ones may trigger repair, scheduler bounds and recovery.
 - [Monitor and run continuously](https://sanjit-roopra.github.io/software-agent-factory/guides/operations/): `factory status`, structured logs, the loopback token-protected read-only dashboard, and the opt-in macOS launchd service.
 - [Troubleshooting](https://sanjit-roopra.github.io/software-agent-factory/guides/troubleshooting/): exit codes, refusals, `NEEDS_HUMAN` versus `FAILED`, verification failures and service problems.

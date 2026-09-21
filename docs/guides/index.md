@@ -10,6 +10,10 @@ Task guides for common workflows. Read [Get started](../get-started/index.md) fi
 : Understand reusable generated guidance. Edit your own
   `repository-skill-overlay.yaml` file outside the target repository.
 
+[Adaptive execution routing](adaptive-routing.md)
+: Configure Jev to select fast execution routes for eligible work items.
+  Understand routes, safety floors, and post-implementation ratchets.
+
 [GitHub backlog, PRs and CI](github.md)
 : Poll `agent-ready` issues, open draft pull requests, watch CI, and repair failures.
 

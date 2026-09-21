@@ -501,6 +501,126 @@ escalation:
 
 When enabled, `authorized_identities` must contain at least one entry.
 
+## routing
+
+Policy for adaptive execution routing with Jev.
+Jev is a classifier from TypeSafe.
+The factory calls it over HTTPS.
+System One is the TypeSafe product that serves Jev.
+It chooses one controller-offered Choice option with probabilities and confidence.
+
+Read the [adaptive routing guide](../guides/adaptive-routing.md) for complete setup instructions.
+
+```yaml
+routing:
+  enabled: false
+  api_url: "https://api.typesafe.ai/v1/systemone"
+  model: "jev-1.13.0"
+  api_key_env_var: "JEV_API_KEY"
+  timeout_seconds: 5.0
+  min_confidence: 0.7
+  min_probability: 0.5
+  max_prompt_chars: 4000
+  max_response_bytes: 65536
+  single_max_changed_files: 5
+  rubric_version: "1.0"
+  full_only_terms:
+    - "auth"
+    - "authentication"
+    - "authorization"
+    - "permission"
+    - "permissions"
+    - "encrypt"
+    - "encryption"
+    - "credential"
+    - "credentials"
+    - "secret"
+    - "secrets"
+    - "migration"
+    - "migrations"
+    - "deploy"
+    - "deployment"
+    - "production"
+    - "prod"
+    - "billing"
+    - "payment"
+    - "payments"
+  options:
+    - id: "single_l0"
+      route: "SINGLE"
+      complexity: "L0"
+      risk: "R0"
+      description: "Single-pass execution with L0 worker"
+    - id: "single_l1"
+      route: "SINGLE"
+      complexity: "L1"
+      risk: "R0"
+      description: "Single-pass execution with L1 worker"
+    - id: "critique_l1"
+      route: "CRITIQUE"
+      complexity: "L1"
+      risk: "R1"
+      description: "Execution with L1 worker and independent review"
+    - id: "critique_l2"
+      route: "CRITIQUE"
+      complexity: "L2"
+      risk: "R1"
+      description: "Execution with L2 worker and independent review"
+    - id: "full_l2"
+      route: "FULL"
+      complexity: "L2"
+      description: "Full SDLC factory pipeline with L2 worker"
+    - id: "full_l3"
+      route: "FULL"
+      complexity: "L3"
+      description: "Full SDLC factory pipeline with L3 worker"
+    - id: "manual_triage"
+      route: "MANUAL_TRIAGE"
+      description: "Escalate for human manual triage"
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Whether adaptive routing with Jev is active. |
+| `api_url` | string | `"https://api.typesafe.ai/v1/systemone"` | TypeSafe System One API endpoint. |
+| `model` | string | `"jev-1.13.0"` | Pinned Jev model version string. |
+| `api_key_env_var` | string | `"JEV_API_KEY"` | Environment variable holding the TypeSafe API key. |
+| `timeout_seconds` | float between 0 and 60 | `5.0` | Maximum seconds for the HTTPS request. |
+| `min_confidence` | float between 0 and 1 | `0.7` | Minimum classifier confidence score. |
+| `min_probability` | float between 0 and 1 | `0.5` | Minimum probability for the selected option. |
+| `max_prompt_chars` | int between 500 and 16000 | `4000` | Maximum characters in outbound prompt text. |
+| `max_response_bytes` | int between 1024 and 1048576 | `65536` | Maximum response bytes accepted from Jev. |
+| `single_max_changed_files` | int between 1 and 50 | `5` | File change ceiling for SINGLE and CRITIQUE routes before ratcheting to FULL_REVIEW. |
+| `rubric_version` | string | `"1.0"` | Version tag for the routing rubric. |
+| `full_only_terms` | list of string | list of 20 terms | Terms that disallow short routes when matched. |
+| `options` | list of option objects | list of 7 options | Route options offered to the classifier. |
+
+### Option contract
+
+The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
+`FULL_REVIEW` is a controller-only post-implementation route.
+You cannot configure `FULL_REVIEW` in `options`.
+
+Each entry in `options` defines a route candidate:
+
+| Field | Type | Required | Effect |
+| --- | --- | --- | --- |
+| `id` | string (1-64 chars) | yes | Unique option identifier. |
+| `route` | `SINGLE`, `CRITIQUE`, `FULL`, `MANUAL_TRIAGE` | yes | Execution route for this option. |
+| `complexity` | `L0`, `L1`, `L2`, `L3` | varies | Worker complexity for implementation. |
+| `risk` | `R0`, `R1`, `R2`, `R3` | varies | Provisional risk level for short routes. |
+| `model_profile` | string | no | Named model profile override. |
+| `description` | string (0-200 chars) | no | Description passed to Jev. |
+
+The configuration loader enforces these option rules:
+
+- For `MANUAL_TRIAGE` options, omit `complexity` and `risk`.
+- For `SINGLE` and `CRITIQUE` options, provide both `complexity` and `risk`.
+- For `FULL` options, provide `complexity`. You can omit `risk`.
+
+TypeSafe Choice questions support at most 255 options.
+The factory enforces this limit at configuration load.
+
 ## risk
 
 ```yaml
@@ -528,4 +648,12 @@ The loader rejects a configuration when:
 - `ci.enabled` is true while `pull_request.enabled` is false
 - `escalation.enabled` is true while `escalation.authorized_identities` is empty
 - `scheduler.max_concurrent_tasks` is greater than `2`
+- `routing.model` does not match the pinned pattern `^jev-\d+\.\d+\.\d+$`
+- `routing.api_url` is not an HTTPS URL
+- `routing.options` is empty
+- `routing.options` contains duplicate identifiers
+- `routing.options` does not contain an option with `route: FULL`
+- `routing.options` contains more than 255 options
+- `routing.options` defines an invalid option contract
+- `routing.options` references an unknown model profile
 - any key is not recognized
