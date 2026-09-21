@@ -67,7 +67,7 @@ distribution = [
   "twine>=6.0,<8.0",
 ]
 native = [
-  "pyinstaller==6.22.2",
+  "pyinstaller==6.22.3",
 ]
 quality = [
   "mypy>=1.15,<3.0",
