@@ -999,7 +999,12 @@ def test_validate_reply_candidate_rejects_edited_comment(tmp_path: Path) -> None
     client = GitHubClient(runner=runner)
 
     is_valid, reason = validate_reply_candidate(
-        comment, run=run, config=config, client=client, repo_path=tmp_path
+        comment,
+        run=run,
+        config=config,
+        client=client,
+        repo_path=tmp_path,
+        now=created_dt,
     )
     assert not is_valid
     assert "edited" in reason
