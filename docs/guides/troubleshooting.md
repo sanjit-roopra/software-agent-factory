@@ -60,6 +60,7 @@ Examine the configuration for typos against
 - Independent review did not converge after repeated repairs.
 - CI failed in an unrepairable category: flaky test, infrastructure, dependency, or unknown.
 - The scheduler found an incomplete run left behind by a stopped process.
+- Adaptive routing selected `MANUAL_TRIAGE` or fell back to it when no legal `FULL` option survived safety floors.
 
 Look at the run:
 
@@ -77,6 +78,14 @@ For a review convergence stop, inspect:
 ```text
 <data_dir>/runs/RUN_ID/review-impasse.json
 ```
+
+For an adaptive routing stop, inspect:
+
+```text
+<data_dir>/runs/RUN_ID/route-decision.json
+```
+
+Check `selected_option`, `offered_options`, and `fallback_reason`.
 
 It records the blocking paths and finding identifiers.
 Examine the matching per-attempt `review.json`, `patch.diff`, and reviewed tree identifiers.

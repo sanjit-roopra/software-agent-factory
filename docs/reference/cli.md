@@ -67,14 +67,16 @@ factory run \
 | `--acceptance-criterion <str>` | no | none | Required outcome. Repeat as needed. |
 | `--constraint <str>` | no | none | Work item constraint. Repeat as needed. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
-| `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
+| `--runtime <fake\|copilot>` | no | `fake` | `fake` avoids Copilot calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode. Fast mode applies only to eligible low-risk work. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
 Prints the run id, final state, workspace path and the controller-derived
-changed files. Creates an isolated Git worktree under the data directory.
+changed files.
+If routing is active, the command also prints the effective execution route.
+Creates an isolated Git worktree under the data directory.
 
 Refuses with exit code `2` if a prerequisite for the enabled feature set is
 missing.
@@ -207,6 +209,13 @@ factory show run-9bb36bbbdf114f53bd9599a103122976
 
 Options: `--config`, `--data-dir`.
 
+The JSON output includes the initial route, effective route, and route decision details.
+You can also inspect the typed `route-decision.json` artifact in the run directory:
+
+```bash
+cat <data_dir>/runs/<run-id>/route-decision.json
+```
+
 Prints the work item text, so redact before sharing.
 
 ---
@@ -236,6 +245,7 @@ or the scheduler.
 
 Never makes a paid model call. The only `copilot` interaction is a bounded
 `copilot --version` probe.
+`factory doctor` does not verify the Jev key or Jev network connectivity.
 
 Exits nonzero if any check errored. Warnings alone do not fail it.
 

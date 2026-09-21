@@ -79,6 +79,10 @@ Select it with `--model-profile economy` on `run`, `project`, `start`,
 `doctor`, `skill refresh` or `service install`. Profiles are complete routing
 tables, not partial overlays.
 
+Adaptive execution routing can also select a profile per route option with `routing.options[].model_profile`.
+When an option specifies a profile name from `model_profiles`, implementation attempts use the workers from that profile.
+If omitted or set to `default`, implementation attempts use the default models.
+
 Gemini 3.8 Flash is intentional here. In the illustrative pricing comparison,
 its call costs 5.63 credits versus 15.00 for Sonnet 5 and 16.00 for Terra.
 Sonnet has stronger directly reported research evidence, but that evidence used

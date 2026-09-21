@@ -1099,6 +1099,10 @@ class RouteOption(ModelBase):
 
     @model_validator(mode="after")
     def _validate_option_contract(self) -> Self:
+        if self.route is ExecutionRoute.FULL_REVIEW:
+            raise ValueError(
+                "FULL_REVIEW is a controller-only execution route and cannot be configured"
+            )
         if self.route is ExecutionRoute.MANUAL_TRIAGE:
             if self.complexity is not None:
                 raise ValueError("complexity must be absent for MANUAL_TRIAGE route options")

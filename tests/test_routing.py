@@ -1280,6 +1280,55 @@ def test_finding7_model_profile_validation_and_application(
     assert recorded_worker_req.model == "custom-l0-model"
 
 
+def test_routing_option_config_rejects_full_review() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="FULL_REVIEW is a controller-only execution route and cannot be configured",
+    ):
+        RoutingOptionConfig(
+            id="full_review_opt",
+            route=ExecutionRoute.FULL_REVIEW,
+            complexity=Complexity.L2,
+        )
+
+
+def test_routing_config_enforces_max_options_limit() -> None:
+    valid_options = [
+        RoutingOptionConfig(
+            id="full_default",
+            route=ExecutionRoute.FULL,
+            complexity=Complexity.L2,
+        ),
+        *(
+            RoutingOptionConfig(
+                id=f"single_{i}",
+                route=ExecutionRoute.SINGLE,
+                complexity=Complexity.L0,
+                risk=Risk.R0,
+            )
+            for i in range(254)
+        ),
+    ]
+    assert len(valid_options) == 255
+    config = RoutingConfig(options=valid_options)
+    assert len(config.options) == 255
+
+    too_many_options = [
+        *valid_options,
+        RoutingOptionConfig(
+            id="single_overflow",
+            route=ExecutionRoute.SINGLE,
+            complexity=Complexity.L0,
+            risk=Risk.R0,
+        ),
+    ]
+    with pytest.raises(
+        ValidationError,
+        match=r"routing\.options must contain at most 255 options",
+    ):
+        RoutingConfig(options=too_many_options)
+
+
 def test_final_review_item1_sanitize_outbound_state() -> None:
     captured_req: urllib.request.Request | None = None
 

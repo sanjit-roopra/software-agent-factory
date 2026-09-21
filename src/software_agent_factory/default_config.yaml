@@ -182,9 +182,10 @@ routing:
   max_response_bytes: 65536
   single_max_changed_files: 5
   rubric_version: "1.0"
-  # Editable controller policy of obvious-sensitive terms that require the FULL route.
+  # Editable human policy of sensitive terms that disable short routes.
   # The factory does not treat governance categories as an intrinsic truth.
-  # Matching terms in task text or labels disallow short routes (SINGLE, CRITIQUE).
+  # Matching terms in task text or labels disable short routes (SINGLE and CRITIQUE).
+  # Matching terms still permit MANUAL_TRIAGE and FULL options.
   full_only_terms:
     - "auth"
     - "authentication"

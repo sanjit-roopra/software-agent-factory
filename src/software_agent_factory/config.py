@@ -551,6 +551,10 @@ class RoutingOptionConfig(ConfigModel):
 
     @model_validator(mode="after")
     def _validate_option_contract(self) -> Self:
+        if self.route is ExecutionRoute.FULL_REVIEW:
+            raise ValueError(
+                "FULL_REVIEW is a controller-only execution route and cannot be configured"
+            )
         if self.route is ExecutionRoute.MANUAL_TRIAGE:
             if self.complexity is not None:
                 raise ValueError("complexity must be absent for MANUAL_TRIAGE route options")
@@ -565,6 +569,10 @@ class RoutingOptionConfig(ConfigModel):
             if self.complexity is None:
                 raise ValueError(f"complexity is required for {self.route.value} route options")
         return self
+
+
+#: TypeSafe Choice supports at most 255 options per question.
+MAX_ROUTING_OPTIONS = 255
 
 
 class RoutingConfig(ConfigModel):
@@ -681,6 +689,8 @@ class RoutingConfig(ConfigModel):
     def _validate_options(cls, value: list[RoutingOptionConfig]) -> list[RoutingOptionConfig]:
         if not value:
             raise ValueError("routing.options must not be empty")
+        if len(value) > MAX_ROUTING_OPTIONS:
+            raise ValueError(f"routing.options must contain at most {MAX_ROUTING_OPTIONS} options")
         ids = [opt.id for opt in value]
         if len(ids) != len(set(ids)):
             raise ValueError("routing.options IDs must be unique")
