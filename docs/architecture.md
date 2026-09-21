@@ -1071,6 +1071,46 @@ L2 → Claude Sonnet 5
 
 Do not let arbitrary agent output choose arbitrary models.
 
+## Adaptive execution routing
+
+Simple tasks do not always need the full multi-agent pipeline.
+The factory provides three execution routes: `SINGLE`, `CRITIQUE`, and `FULL`.
+An optional `MANUAL_TRIAGE` outcome stops safely before implementation.
+
+Route controls workflow stages.
+Model profile controls worker strength.
+Worker model escalation is the existing cascade behavior in the factory.
+We do not add a duplicate cascade route.
+
+When enabled, Jev acts as the single semantic router.
+The controller evaluates deterministic safety floors before calling Jev.
+The factory does not treat governance categories as an intrinsic truth.
+Jev classifies provisional risk by selecting a configured route option.
+The configured risk policy decides which routes are legal.
+Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
+When only one legal option exists, the controller skips Jev.
+
+When routing is enabled, the controller makes one HTTPS request to Jev.
+Jev chooses one controller-created option identifier.
+Strict validation checks the model identifier, choice answer, option membership, probabilities, and confidence thresholds.
+When routing is disabled, unavailable, or invalid, the controller falls back to the full pipeline.
+The packaged default disables routing and makes no network call.
+
+For `SINGLE` and `CRITIQUE` routes, the controller synthesizes triage, specification, and execution plan artifacts.
+These artifacts record explicit `SYNTHESIZED` provenance.
+`SINGLE` runs the implementer and deterministic verification.
+`CRITIQUE` runs the implementer, deterministic verification, and the independent reviewer.
+`FULL` runs the complete multi-agent pipeline.
+
+We amend the independent review rule narrowly.
+Deterministic verification can accept `SINGLE` only when every configured sufficiency condition holds.
+All other work requires independent model review.
+
+Monotonic ratchets protect execution safety.
+When verification fails or edits exceed thresholds, `SINGLE` ratchets to `CRITIQUE` or `FULL`.
+`CRITIQUE` can ratchet to `FULL`.
+The controller never downgrades a route.
+
 ## Policy engine
 
 Do not build a large policy framework in V1.

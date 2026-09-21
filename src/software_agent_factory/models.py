@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -44,6 +44,14 @@ class WorkflowState(StrEnum):
     DONE = "DONE"
     NEEDS_HUMAN = "NEEDS_HUMAN"
     FAILED = "FAILED"
+
+
+class ExecutionRoute(StrEnum):
+    SINGLE = "SINGLE"
+    CRITIQUE = "CRITIQUE"
+    FULL = "FULL"
+    MANUAL_TRIAGE = "MANUAL_TRIAGE"
+    FULL_REVIEW = "FULL_REVIEW"
 
 
 class Complexity(StrEnum):
@@ -1067,6 +1075,90 @@ class EscalationRecord(ModelBase):
     updated_at: UtcDateTime = Field(default_factory=utc_now)
 
 
+class RouteAdjustment(ModelBase):
+    from_route: ExecutionRoute
+    to_route: ExecutionRoute
+    reason: str = Field(min_length=1, max_length=500)
+    triggered_at: UtcDateTime = Field(default_factory=utc_now)
+
+
+class RouteOption(ModelBase):
+    id: str = Field(min_length=1, max_length=64)
+    route: ExecutionRoute
+    complexity: Complexity | None = None
+    risk: Risk | None = None
+    model_profile: str | None = None
+    description: str = Field(default="", max_length=500)
+
+    @field_validator("model_profile", mode="after")
+    @classmethod
+    def _normalize_default_profile(cls, v: str | None) -> str | None:
+        if v == "default":
+            return None
+        return v
+
+    @model_validator(mode="after")
+    def _validate_option_contract(self) -> Self:
+        if self.route is ExecutionRoute.MANUAL_TRIAGE:
+            if self.complexity is not None:
+                raise ValueError("complexity must be absent for MANUAL_TRIAGE route options")
+            if self.risk is not None:
+                raise ValueError("risk must be absent for MANUAL_TRIAGE route options")
+        elif self.route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}:
+            if self.complexity is None:
+                raise ValueError(f"complexity is required for {self.route.value} route options")
+            if self.risk is None:
+                raise ValueError(f"risk is required for {self.route.value} route options")
+        elif self.route is ExecutionRoute.FULL:
+            if self.complexity is None:
+                raise ValueError(f"complexity is required for {self.route.value} route options")
+        return self
+
+
+class RouteDecision(VersionedModel):
+    """Auditable route decision made for one run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    work_item_id: str = Field(min_length=1)
+    offered_options: list[RouteOption]
+    selected_option: str = Field(min_length=1)
+    initial_route: ExecutionRoute
+    effective_route: ExecutionRoute
+    selected_worker_complexity: Complexity | None = None
+    selected_risk: Risk | None = None
+    selected_model_profile: str | None = None
+    source: str = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    probabilities: dict[str, float] | None = None
+    model_id: str | None = None
+    protocol_version: str = "1.0"
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    usage: dict[str, Any] | None = None
+    request_hash: str = Field(min_length=1, max_length=128)
+    fallback_reason: str | None = None
+    abstention_reason: str | None = None
+    adjustments: list[RouteAdjustment] = Field(default_factory=list)
+    decided_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @field_validator("selected_model_profile", mode="after")
+    @classmethod
+    def _normalize_default_profile(cls, v: str | None) -> str | None:
+        if v == "default":
+            return None
+        return v
+
+    def record_adjustment(self, to_route: ExecutionRoute, reason: str) -> None:
+        self.adjustments.append(
+            RouteAdjustment(
+                from_route=self.effective_route,
+                to_route=to_route,
+                reason=reason,
+            )
+        )
+        self.effective_route = to_route
+
+
 class FactoryRun(VersionedModel):
     id: str = Field(min_length=1)
     work_item_id: str = Field(min_length=1)
@@ -1099,6 +1191,9 @@ class FactoryRun(VersionedModel):
     effective_performance_mode: Literal["standard", "fast"] = "standard"
     performance_model_profile: str | None = None
     performance_fallback_reason: str | None = None
+    initial_route: ExecutionRoute | None = None
+    effective_route: ExecutionRoute | None = None
+    route_decision: RouteDecision | None = None
     review_ledger: ReviewLedger = Field(default_factory=ReviewLedger)
     review_acceptance: ReviewAcceptance | None = None
     performance: PerformanceRecord = Field(default_factory=PerformanceRecord)
@@ -1127,6 +1222,7 @@ class TriageResult(VersionedModel):
     unknowns: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     risk_rationale: RiskRationale | None = None
+    provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
 
     @model_validator(mode="after")
     def _validate_risk_rationale(self) -> TriageResult:
@@ -1144,6 +1240,7 @@ class Specification(VersionedModel):
     dependencies: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
 
 
 class ResearchReport(VersionedModel):
@@ -1243,6 +1340,7 @@ class ExecutionPlan(VersionedModel):
     test_strategy: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     unresolved_decisions: list[str] = Field(default_factory=list)
+    provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
 
     @property
     def is_ready(self) -> bool:
@@ -1299,6 +1397,9 @@ class TestReport(VersionedModel):
     findings: list[str] = Field(default_factory=list)
     suggested_tests: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    skipped: bool = False
+    provenance: Literal["AGENT", "SKIPPED"] = "AGENT"
+    skip_reason: str | None = None
 
     # Not a pytest test class despite the ``Test`` prefix.
     __test__ = False
@@ -1338,6 +1439,9 @@ class ReviewReport(VersionedModel):
         default_factory=list,
         max_length=MAX_OPEN_REVIEW_FINDINGS,
     )
+    skipped: bool = False
+    provenance: Literal["AGENT", "SKIPPED"] = "AGENT"
+    skip_reason: str | None = None
 
 
 class ReviewImpasse(VersionedModel):

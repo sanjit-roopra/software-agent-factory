@@ -170,6 +170,75 @@ repository:
     - "**/.aws/**"
     - "**/.ssh/**"
 
+routing:
+  enabled: false
+  api_url: "https://api.typesafe.ai/v1/systemone"
+  model: "jev-1.13.0"
+  api_key_env_var: "JEV_API_KEY"
+  timeout_seconds: 5.0
+  min_confidence: 0.7
+  min_probability: 0.5
+  max_prompt_chars: 4000
+  max_response_bytes: 65536
+  single_max_changed_files: 5
+  rubric_version: "1.0"
+  # Editable controller policy of obvious-sensitive terms that require the FULL route.
+  # The factory does not treat governance categories as an intrinsic truth.
+  # Matching terms in task text or labels disallow short routes (SINGLE, CRITIQUE).
+  full_only_terms:
+    - "auth"
+    - "authentication"
+    - "authorization"
+    - "permission"
+    - "permissions"
+    - "encrypt"
+    - "encryption"
+    - "credential"
+    - "credentials"
+    - "secret"
+    - "secrets"
+    - "migration"
+    - "migrations"
+    - "deploy"
+    - "deployment"
+    - "production"
+    - "prod"
+    - "billing"
+    - "payment"
+    - "payments"
+  options:
+    - id: "single_l0"
+      route: "SINGLE"
+      complexity: "L0"
+      risk: "R0"
+      description: "Single-pass execution with L0 worker"
+    - id: "single_l1"
+      route: "SINGLE"
+      complexity: "L1"
+      risk: "R0"
+      description: "Single-pass execution with L1 worker"
+    - id: "critique_l1"
+      route: "CRITIQUE"
+      complexity: "L1"
+      risk: "R1"
+      description: "Execution with L1 worker and independent review"
+    - id: "critique_l2"
+      route: "CRITIQUE"
+      complexity: "L2"
+      risk: "R1"
+      description: "Execution with L2 worker and independent review"
+    - id: "full_l2"
+      route: "FULL"
+      complexity: "L2"
+      description: "Full SDLC factory pipeline with L2 worker"
+    - id: "full_l3"
+      route: "FULL"
+      complexity: "L3"
+      description: "Full SDLC factory pipeline with L3 worker"
+    - id: "manual_triage"
+      route: "MANUAL_TRIAGE"
+      description: "Escalate for human manual triage"
+
 scope_drift:
   max_replans: 1
   # Exact files must also appear in the execution plan; no glob exemptions.

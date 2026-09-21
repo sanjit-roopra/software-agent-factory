@@ -89,6 +89,7 @@ from .models import (
     EscalationRecord,
     EscalationStatus,
     ExecutionPlan,
+    ExecutionRoute,
     FactoryRun,
     InvocationRecord,
     ModelBase,
@@ -339,6 +340,8 @@ class RunSummary(ModelBase):
     requested_performance_mode: Literal["standard", "fast"] = "standard"
     effective_performance_mode: Literal["standard", "fast"] = "standard"
     performance_model_profile: str | None = None
+    initial_route: ExecutionRoute | None = None
+    effective_route: ExecutionRoute | None = None
     waiting_for_human: bool = False
     performance: PerformanceRecord | None = None
 
@@ -490,6 +493,8 @@ class RunDetail(ModelBase):
     requested_performance_mode: Literal["standard", "fast"] = "standard"
     effective_performance_mode: Literal["standard", "fast"] = "standard"
     performance_model_profile: str | None = None
+    initial_route: ExecutionRoute | None = None
+    effective_route: ExecutionRoute | None = None
     waiting_for_human: bool = False
     performance: PerformanceRecord | None = None
     commit_sha: str | None = None
@@ -1367,6 +1372,8 @@ def _build_run_summary(
         requested_performance_mode=run.requested_performance_mode,
         effective_performance_mode=run.effective_performance_mode,
         performance_model_profile=run.performance_model_profile,
+        initial_route=run.initial_route,
+        effective_route=run.effective_route,
         waiting_for_human=run.state is WorkflowState.NEEDS_HUMAN,
         performance=run.performance,
     )

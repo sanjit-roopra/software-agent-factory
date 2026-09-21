@@ -321,7 +321,8 @@ The implementer's success claim is not a quality gate.
 
 Use deterministic validation first.
 
-Then use an independent Tester and Reviewer.
+Deterministic verification can accept `SINGLE` route execution only when every configured sufficiency condition holds.
+All other work requires independent model review.
 
 Prefer a different model family for final review.
 
@@ -343,6 +344,29 @@ Risk selects governance and required validation.
 A trivial change may be high risk.
 
 A difficult change may be low operational risk.
+
+### Execution routing
+Route controls workflow stages.
+Model profile controls worker strength.
+
+The factory defines three execution routes: `SINGLE`, `CRITIQUE`, and `FULL`.
+`SINGLE` runs the implementer and deterministic verification.
+`CRITIQUE` runs the implementer, deterministic verification, and the independent reviewer.
+`FULL` runs the complete multi-agent pipeline.
+
+When enabled, Jev acts as the single semantic router.
+The controller enforces deterministic safety floors before calling Jev.
+The factory does not treat governance categories as an intrinsic truth.
+Jev classifies provisional risk by selecting a configured route option.
+The configured risk policy decides which routes are legal.
+Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
+Worker model escalation is the existing cascade behavior in the factory.
+We do not add a duplicate cascade route.
+
+Deterministic ratchets protect execution.
+When verification fails or edits exceed thresholds, the controller upgrades `SINGLE` to `CRITIQUE` or `FULL`.
+`CRITIQUE` can ratchet to `FULL`.
+The controller never downgrades a route.
 
 ### 6. Prefer deterministic checks
 If something can be checked programmatically, check it programmatically.

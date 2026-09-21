@@ -49,6 +49,7 @@ tested here; the first real tag is what exercises them end to end.
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 | 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
 | 19 | Mandatory controlled writing policy | implemented (ADR-023) |
+| 20 | Adaptive Jev-driven execution routing | implemented (ADR-027) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -79,6 +80,22 @@ The factory can stop before implementation when a plan needs a human decision.
 An authorized GitHub reply can answer the numbered decisions. The controller
 saves typed answers and returns to planning. It checks the replacement plan
 before implementation. The reply does not reset budgets or change scope.
+
+## Phase 20. Adaptive execution routing
+
+Status: done.
+
+Provide adaptive Jev-driven execution routing.
+
+- Route controls workflow stages and model profile controls worker strength.
+- Bounded route palette: `SINGLE`, `CRITIQUE`, and `FULL`.
+- Single semantic if/else router using Jev over HTTPS when enabled.
+- Deterministic safety floors constrain offered options before invoking Jev.
+- Deterministic fallback to full pipeline without network access when disabled or failed.
+- Synthesize typed triage, specification, and execution plan artifacts for `SINGLE` and `CRITIQUE`.
+- Narrow the independent review rule: deterministic verification accepts `SINGLE` only when all sufficiency conditions pass.
+- Monotonic post-implementation ratchets upgrade `SINGLE` to `CRITIQUE` or `FULL`, and `CRITIQUE` to `FULL`.
+- Reused worker model escalation is the existing cascade behavior.
 
 ## Principle
 

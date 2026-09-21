@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from .models import Complexity, ContextTier, ReviewFindingCategory, Risk
+from .models import Complexity, ContextTier, ExecutionRoute, ReviewFindingCategory, Risk
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
 
@@ -534,12 +534,170 @@ class PerformanceConfig(ConfigModel):
     fast_model_profile: str = Field(default="economy", min_length=1, max_length=32)
 
 
+class RoutingOptionConfig(ConfigModel):
+    id: str = Field(min_length=1, max_length=64)
+    route: ExecutionRoute
+    complexity: Complexity | None = None
+    risk: Risk | None = None
+    model_profile: str | None = None
+    description: str = Field(default="", max_length=200)
+
+    @field_validator("model_profile", mode="after")
+    @classmethod
+    def _normalize_default_profile(cls, v: str | None) -> str | None:
+        if v == "default":
+            return None
+        return v
+
+    @model_validator(mode="after")
+    def _validate_option_contract(self) -> Self:
+        if self.route is ExecutionRoute.MANUAL_TRIAGE:
+            if self.complexity is not None:
+                raise ValueError("complexity must be absent for MANUAL_TRIAGE route options")
+            if self.risk is not None:
+                raise ValueError("risk must be absent for MANUAL_TRIAGE route options")
+        elif self.route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}:
+            if self.complexity is None:
+                raise ValueError(f"complexity is required for {self.route.value} route options")
+            if self.risk is None:
+                raise ValueError(f"risk is required for {self.route.value} route options")
+        elif self.route is ExecutionRoute.FULL:
+            if self.complexity is None:
+                raise ValueError(f"complexity is required for {self.route.value} route options")
+        return self
+
+
+class RoutingConfig(ConfigModel):
+    """Opt-in policy for adaptive Jev-driven execution routing."""
+
+    enabled: bool = False
+    api_url: str = Field(default="https://api.typesafe.ai/v1/systemone")
+    model: str = Field(default="jev-1.13.0", min_length=1)
+    api_key_env_var: str = Field(default="JEV_API_KEY", min_length=1)
+    timeout_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
+    min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_probability: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_prompt_chars: int = Field(default=4000, ge=500, le=16000)
+    max_response_bytes: int = Field(default=65536, ge=1024, le=1048576)
+    single_max_changed_files: int = Field(default=5, ge=1, le=50)
+    rubric_version: str = Field(default="1.0", min_length=1)
+    full_only_terms: list[str] = Field(
+        default_factory=lambda: [
+            "auth",
+            "authentication",
+            "authorization",
+            "permission",
+            "permissions",
+            "encrypt",
+            "encryption",
+            "credential",
+            "credentials",
+            "secret",
+            "secrets",
+            "migration",
+            "migrations",
+            "deploy",
+            "deployment",
+            "production",
+            "prod",
+            "billing",
+            "payment",
+            "payments",
+        ]
+    )
+    options: list[RoutingOptionConfig] = Field(
+        default_factory=lambda: [
+            RoutingOptionConfig(
+                id="single_l0",
+                route=ExecutionRoute.SINGLE,
+                complexity=Complexity.L0,
+                risk=Risk.R0,
+                description="Single-pass execution with L0 worker",
+            ),
+            RoutingOptionConfig(
+                id="single_l1",
+                route=ExecutionRoute.SINGLE,
+                complexity=Complexity.L1,
+                risk=Risk.R0,
+                description="Single-pass execution with L1 worker",
+            ),
+            RoutingOptionConfig(
+                id="critique_l1",
+                route=ExecutionRoute.CRITIQUE,
+                complexity=Complexity.L1,
+                risk=Risk.R1,
+                description="Execution with L1 worker and independent review",
+            ),
+            RoutingOptionConfig(
+                id="critique_l2",
+                route=ExecutionRoute.CRITIQUE,
+                complexity=Complexity.L2,
+                risk=Risk.R1,
+                description="Execution with L2 worker and independent review",
+            ),
+            RoutingOptionConfig(
+                id="full_l2",
+                route=ExecutionRoute.FULL,
+                complexity=Complexity.L2,
+                risk=None,
+                description="Full SDLC factory pipeline with L2 worker",
+            ),
+            RoutingOptionConfig(
+                id="full_l3",
+                route=ExecutionRoute.FULL,
+                complexity=Complexity.L3,
+                risk=None,
+                description="Full SDLC factory pipeline with L3 worker",
+            ),
+            RoutingOptionConfig(
+                id="manual_triage",
+                route=ExecutionRoute.MANUAL_TRIAGE,
+                complexity=None,
+                risk=None,
+                description="Escalate for human manual triage",
+            ),
+        ]
+    )
+
+    @field_validator("model")
+    @classmethod
+    def _validate_model(cls, value: str) -> str:
+        if not re.match(r"^jev-\d+\.\d+\.\d+$", value):
+            raise ValueError(
+                f"routing.model must be a pinned version like 'jev-1.13.0', got {value!r}"
+            )
+        return value
+
+    @field_validator("api_url")
+    @classmethod
+    def _validate_api_url(cls, value: str) -> str:
+        parsed = _parse_safe_https_url(value)
+        if parsed is None or parsed.scheme != "https":
+            raise ValueError("routing.api_url must be an HTTPS URL")
+        return value
+
+    @field_validator("options")
+    @classmethod
+    def _validate_options(cls, value: list[RoutingOptionConfig]) -> list[RoutingOptionConfig]:
+        if not value:
+            raise ValueError("routing.options must not be empty")
+        ids = [opt.id for opt in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("routing.options IDs must be unique")
+        if not any(opt.route is ExecutionRoute.FULL for opt in value):
+            raise ValueError(
+                "routing.options must contain at least one option with route=ExecutionRoute.FULL"
+            )
+        return value
+
+
 class FactoryConfig(ConfigModel):
     factory: FactorySettings
     models: ModelsConfig
     model_profiles: dict[str, ModelsConfig] = Field(default_factory=dict)
     repository: RepositoryConfig
     risk: dict[Risk, RiskRuleConfig]
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     polish: PolishConfig = Field(default_factory=PolishConfig)
@@ -598,6 +756,14 @@ class FactoryConfig(ConfigModel):
                 "performance.fast_model_profile must name a configured model profile "
                 "when performance.mode is 'fast'"
             )
+        available_profiles = {"default", *self.model_profiles}
+        for opt in self.routing.options:
+            if opt.model_profile is not None and opt.model_profile not in available_profiles:
+                available = ", ".join(["default", *sorted(self.model_profiles)])
+                raise ValueError(
+                    f"route option {opt.id!r} references unknown model profile "
+                    f"{opt.model_profile!r}; available profiles: {available}"
+                )
         return self
 
     @property

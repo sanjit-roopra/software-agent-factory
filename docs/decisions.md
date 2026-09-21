@@ -1,5 +1,43 @@
 # Architecture Decisions
 
+## ADR-027: Adaptive Jev-driven execution routing
+
+Simple tasks do not always need the full factory pipeline.
+When enabled, Jev acts as the single semantic if/else router.
+The controller keeps exclusive authority over validation, safety floors, state transitions, and route execution.
+
+The route palette provides three execution routes: `SINGLE`, `CRITIQUE`, and `FULL`.
+An optional `MANUAL_TRIAGE` outcome stops safely before implementation.
+Route controls workflow stages.
+Model profile controls worker strength.
+Worker model escalation is the existing cascade behavior in the factory.
+We do not add a duplicate cascade route.
+
+Deterministic safety floors constrain offered options before the factory calls Jev.
+The controller enforces floors for risk, missing acceptance criteria, missing verify commands, required research, protected files, and high complexity.
+When only one legal option exists, the controller skips Jev.
+
+When routing is enabled, the controller makes one HTTPS request to Jev.
+Jev chooses one controller-created option identifier.
+Strict validation checks the model identifier, choice answer, option membership, probabilities, and confidence thresholds.
+When routing is disabled, unavailable, or invalid, the controller falls back to the full pipeline.
+The packaged default disables routing and makes no network call.
+
+For `SINGLE` and `CRITIQUE` routes, the controller synthesizes triage, specification, and execution plan artifacts.
+These artifacts record explicit `SYNTHESIZED` provenance.
+`SINGLE` runs the implementer and deterministic verification.
+`CRITIQUE` runs the implementer, deterministic verification, and the independent reviewer.
+`FULL` runs the complete multi-agent pipeline.
+
+We amend the independent review rule narrowly.
+Deterministic verification can accept `SINGLE` only when every configured sufficiency condition holds.
+All other work requires independent model review.
+
+Monotonic ratchets protect execution safety.
+When verification fails or changes exceed thresholds, `SINGLE` ratchets to `CRITIQUE` or `FULL`.
+`CRITIQUE` can ratchet to `FULL`.
+The controller never downgrades a route.
+
 ## ADR-026: Authorized answers for unresolved plan decisions
 
 ADR-025 stops work before an agent guesses a material decision.

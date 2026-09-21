@@ -2874,20 +2874,26 @@ def build_pr_body(
 
     if test_report is not None:
         lines.append("## Independent tester")
-        lines.append(f"Passed: {test_report.passed}")
-        if test_report.findings:
-            lines.extend(f"- {finding}" for finding in test_report.findings)
-        if test_report.suggested_tests:
-            lines.append("")
-            lines.append("Suggested tests:")
-            lines.extend(f"- {suggested}" for suggested in test_report.suggested_tests)
+        if test_report.skipped:
+            lines.append(f"Skipped: {test_report.skip_reason or 'Tester skipped'}")
+        else:
+            lines.append(f"Passed: {test_report.passed}")
+            if test_report.findings:
+                lines.extend(f"- {finding}" for finding in test_report.findings)
+            if test_report.suggested_tests:
+                lines.append("")
+                lines.append("Suggested tests:")
+                lines.extend(f"- {suggested}" for suggested in test_report.suggested_tests)
         lines.append("")
 
     if review is not None:
         lines.append("## Review")
-        lines.append(f"Approved: {review.approved}")
-        if review.findings:
-            lines.extend(f"- {finding}" for finding in review.findings)
+        if review.skipped:
+            lines.append(f"Skipped: {review.skip_reason or 'Reviewer skipped'}")
+        else:
+            lines.append(f"Approved: {review.approved}")
+            if review.findings:
+                lines.extend(f"- {finding}" for finding in review.findings)
         lines.append("")
 
     if review_acceptance is not None:

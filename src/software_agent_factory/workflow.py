@@ -103,10 +103,13 @@ from .models import (
     EscalationRecord,
     EscalationStatus,
     ExecutionPlan,
+    ExecutionRoute,
+    ExpectedScope,
     FactoryRun,
     InvocationRecord,
     ModelBase,
     PlanDecisionAnswers,
+    PlanStep,
     RepairContext,
     RepositoryProfile,
     RepositorySkill,
@@ -124,6 +127,7 @@ from .models import (
     ReviewReport,
     ReviewSourceLocation,
     Risk,
+    RouteDecision,
     RunLease,
     SkillSelectionSource,
     Specification,
@@ -151,7 +155,14 @@ from .repository_skills import (
     repository_skill_exhausted_warning,
     repository_skill_validation_error,
 )
-from .routing import ModelRouter
+from .routing import (
+    COMPLEXITY_ORDER,
+    JevRouteAdvisor,
+    ModelRouter,
+    RouteAdvisor,
+    derive_named_paths,
+    determine_route,
+)
 from .store import FileRunStore
 from .telemetry import (
     count_operation,
@@ -413,11 +424,17 @@ class WorkflowController:
         delivery_base_resolver: Callable[[Path, str], DeliveryTarget] | None = None,
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
         github_client: GitHubClient | None = None,
+        route_advisor: RouteAdvisor | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._runtime = runtime
         self._router = router if router is not None else ModelRouter(config)
+        self._route_advisor = (
+            route_advisor
+            if route_advisor is not None
+            else (JevRouteAdvisor(config.routing) if config.routing.enabled else None)
+        )
         self._verifier = (
             repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
         )
@@ -1181,6 +1198,22 @@ class WorkflowController:
                 work_item = self._store.load_artifact(run.id, WorkItem)
                 triage_result = self._store.load_artifact(run.id, TriageResult)
                 repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
+                try:
+                    route_decision = run.route_decision or self._store.load_artifact(
+                        run.id, RouteDecision
+                    )
+                except FileNotFoundError:
+                    route_decision = None
+
+                if route_decision is not None and run.route_decision is None:
+                    run = run.model_copy(
+                        update={
+                            "route_decision": route_decision,
+                            "initial_route": route_decision.initial_route,
+                            "effective_route": route_decision.effective_route,
+                        }
+                    )
+                    self._store.save_run(run)
 
                 run = self._select_performance_mode(run, triage_result)
                 if run.escalation is None:
@@ -1208,6 +1241,7 @@ class WorkflowController:
                         planner_context=_planner_human_decision_context(
                             previous_plan, decision_answers
                         ),
+                        route_decision=route_decision,
                     )
                 return self._drive_from_refining(
                     run,
@@ -1216,6 +1250,7 @@ class WorkflowController:
                     workspace,
                     source_repo,
                     repository_profile,
+                    route_decision=route_decision,
                 )
             except _Halt as halt:
                 return halt.run
@@ -1235,6 +1270,11 @@ class WorkflowController:
         triage = self._store.load_artifact(run.id, TriageResult)
         if not triage.factory_eligible or self._router.requires_human_approval(triage.risk):
             raise ValueError("persisted triage does not authorize delivery")
+        route_decision: RouteDecision | None = None
+        try:
+            route_decision = self._store.load_artifact(run.id, RouteDecision)
+        except FileNotFoundError:
+            pass
         context = _RunContext(
             work_item=work_item,
             triage_result=triage,
@@ -1246,6 +1286,7 @@ class WorkflowController:
             repository_profile=self._store.load_artifact(run.id, RepositoryProfile),
             workspace=workspace,
             source_repo=source_repo,
+            route_decision=route_decision,
         )
         context.change_set_correction_used = any(
             record.purpose == AgentPurpose.CORRECT_CHANGE_SET for record in run.invocation_records
@@ -1309,6 +1350,118 @@ class WorkflowController:
 
     # -- internal orchestration --------------------------------------------
 
+    def _synthesize_triage_result(
+        self, work_item: WorkItem, route_decision: RouteDecision
+    ) -> TriageResult:
+        if route_decision.selected_worker_complexity is None:
+            raise ValueError(
+                f"Route {route_decision.effective_route.value} requires selected worker complexity"
+            )
+        if route_decision.selected_risk is None:
+            raise ValueError(
+                f"Route {route_decision.effective_route.value} requires a selected risk"
+            )
+        return TriageResult(
+            factory_eligible=True,
+            complexity=route_decision.selected_worker_complexity,
+            risk=route_decision.selected_risk,
+            requirements_quality="SYNTHESIZED: Direct execution from work item acceptance criteria",
+            needs_research=False,
+            dependencies=[],
+            unknowns=[],
+            confidence=route_decision.confidence if route_decision.confidence is not None else 1.0,
+            risk_rationale=None,
+            provenance="SYNTHESIZED",
+        )
+
+    def _synthesize_specification(self, work_item: WorkItem) -> Specification:
+        return Specification(
+            problem=f"SYNTHESIZED: {work_item.description}",
+            acceptance_criteria=list(work_item.acceptance_criteria),
+            constraints=list(work_item.constraints),
+            assumptions=["SYNTHESIZED: Direct single-pass execution without refiner"],
+            unknowns=[],
+            dependencies=[],
+            risk_flags=[],
+            confidence=1.0,
+            provenance="SYNTHESIZED",
+        )
+
+    def _synthesize_execution_plan(
+        self, work_item: WorkItem, workspace: GitWorktreeWorkspace
+    ) -> ExecutionPlan:
+        # Synthesized plan scope cannot whitelist every repository root.
+        # Derive only validated repository-relative paths explicitly named in the work item.
+        modules = derive_named_paths(work_item)
+        if "FACTORY_NOTES.md" not in modules:
+            modules.append("FACTORY_NOTES.md")
+
+        return ExecutionPlan(
+            summary=f"SYNTHESIZED: {work_item.title}",
+            steps=[
+                PlanStep(
+                    id="step-1",
+                    goal=f"Implement: {work_item.title}",
+                    likely_files=modules[:10],
+                    validation=list(work_item.acceptance_criteria),
+                )
+            ],
+            expected_scope=ExpectedScope(
+                modules=modules,
+                estimated_files_min=1,
+                estimated_files_max=self._config.routing.single_max_changed_files,
+            ),
+            test_strategy=list(self._config.repository.commands.verify),
+            risks=[],
+            unresolved_decisions=[],
+            provenance="SYNTHESIZED",
+        )
+
+    def _ratchet_route(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        to_route: ExecutionRoute,
+        reason: str,
+    ) -> FactoryRun:
+        """Monotonically upgrade the effective route and record the adjustment."""
+        current = context.effective_route
+        route_precedence = {
+            ExecutionRoute.MANUAL_TRIAGE: 0,
+            ExecutionRoute.SINGLE: 1,
+            ExecutionRoute.CRITIQUE: 2,
+            ExecutionRoute.FULL_REVIEW: 3,
+            ExecutionRoute.FULL: 4,
+        }
+        if route_precedence.get(to_route, 0) <= route_precedence.get(current, 0):
+            return run  # Monotonic: never downgrade
+
+        logger.info(
+            "Ratcheting route for run %s: %s -> %s (reason: %s)",
+            run.id,
+            current,
+            to_route,
+            reason,
+        )
+        if context.route_decision is not None:
+            context.route_decision.record_adjustment(to_route, reason)
+            self._store.save_artifact(run.id, context.route_decision)
+        context.effective_route = to_route
+        run = run.model_copy(
+            update={
+                "effective_route": to_route,
+                "route_decision": context.route_decision,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.save_run(run)
+        record_rework(
+            run.performance,
+            f"route_ratchet.{to_route.value}",
+            stage=run.state.value,
+        )
+        return run
+
     def _execute(
         self,
         run: FactoryRun,
@@ -1320,29 +1473,130 @@ class WorkflowController:
         try:
             workspace_path = str(workspace.path)
             run = self.transition(run, WorkflowState.TRIAGING)
-            triage_result = self._run_triage(run, work_item, workspace_path=workspace_path)
 
-            if not triage_result.factory_eligible:
-                raise self._halt(
-                    run, WorkflowState.NEEDS_HUMAN, "triage marked this work item ineligible"
-                )
-            if self._router.requires_human_approval(triage_result.risk):
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    f"risk {triage_result.risk} requires human approval",
-                )
-
-            run = self._select_performance_mode(run, triage_result)
-            run = self.transition(run, WorkflowState.REFINING)
-            return self._drive_from_refining(
-                run,
-                work_item,
-                triage_result,
-                workspace,
-                source_repo,
-                repository_profile,
+            # Route decision right after profiling while in TRIAGING, before triage agent
+            route_decision = determine_route(
+                work_item, repository_profile, self._config, self._route_advisor
             )
+            self._store.save_artifact(run.id, route_decision)
+            run = run.model_copy(
+                update={
+                    "initial_route": route_decision.initial_route,
+                    "effective_route": route_decision.effective_route,
+                    "route_decision": route_decision,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._store.save_run(run)
+
+            # Record observability
+            run.performance.record_counter(
+                f"route.{route_decision.effective_route.value}",
+                1,
+                stage=WorkflowState.TRIAGING.value,
+                operation="routing",
+            )
+            if route_decision.source == "fallback":
+                run.performance.record_counter(
+                    "route.fallback",
+                    1,
+                    stage=WorkflowState.TRIAGING.value,
+                    operation="routing",
+                )
+            if route_decision.latency_ms is not None and route_decision.latency_ms > 0:
+                run.performance.record_duration(
+                    "route.advisor_latency",
+                    route_decision.latency_ms,
+                    stage=WorkflowState.TRIAGING.value,
+                    operation="routing",
+                )
+
+            # 1. Manual / Abstain route
+            if route_decision.effective_route is ExecutionRoute.MANUAL_TRIAGE:
+                reason = (
+                    route_decision.fallback_reason
+                    or f"route advisor recommended manual triage: {route_decision.selected_option}"
+                )
+                raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
+
+            # 2. FULL route
+            if route_decision.effective_route is ExecutionRoute.FULL:
+                triage_result = self._run_triage(run, work_item, workspace_path=workspace_path)
+                if (
+                    route_decision.source != "disabled"
+                    and route_decision.selected_worker_complexity is not None
+                ):
+                    if COMPLEXITY_ORDER.index(
+                        route_decision.selected_worker_complexity
+                    ) > COMPLEXITY_ORDER.index(triage_result.complexity):
+                        triage_result = triage_result.model_copy(
+                            update={"complexity": route_decision.selected_worker_complexity}
+                        )
+                        self._store.save_artifact(run.id, triage_result)
+
+                if not triage_result.factory_eligible:
+                    raise self._halt(
+                        run, WorkflowState.NEEDS_HUMAN, "triage marked this work item ineligible"
+                    )
+                if self._router.requires_human_approval(triage_result.risk):
+                    raise self._halt(
+                        run,
+                        WorkflowState.NEEDS_HUMAN,
+                        f"risk {triage_result.risk} requires human approval",
+                    )
+
+                run = self._select_performance_mode(run, triage_result)
+                run = self.transition(run, WorkflowState.REFINING)
+                return self._drive_from_refining(
+                    run,
+                    work_item,
+                    triage_result,
+                    workspace,
+                    source_repo,
+                    repository_profile,
+                    route_decision=route_decision,
+                )
+
+            # 3. SINGLE or CRITIQUE route
+            saved_calls = 5 if route_decision.effective_route is ExecutionRoute.SINGLE else 4
+            run.performance.record_counter(
+                "route.saved_calls",
+                saved_calls,
+                stage=WorkflowState.TRIAGING.value,
+                operation="routing",
+            )
+
+            triage_result = self._synthesize_triage_result(work_item, route_decision)
+            self._store.save_artifact(run.id, triage_result)
+
+            run = self.transition(run, WorkflowState.REFINING)
+            specification = self._synthesize_specification(work_item)
+            self._store.save_artifact(run.id, specification)
+
+            run = self.transition(run, WorkflowState.PLANNING)
+            execution_plan = self._synthesize_execution_plan(work_item, workspace)
+            self._store.save_artifact(run.id, execution_plan)
+
+            context = _RunContext(
+                work_item=work_item,
+                triage_result=triage_result,
+                specification=specification,
+                research_report=None,
+                execution_plan=execution_plan,
+                repository_profile=repository_profile,
+                workspace=workspace,
+                source_repo=source_repo,
+                route_decision=route_decision,
+                original_synthesized_scope=tuple(execution_plan.expected_scope.modules),
+            )
+
+            run = self.transition(run, WorkflowState.IMPLEMENTING)
+            run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
+
+            if not self._config.pull_request.enabled:
+                return self.finalize_pr_ready(run)
+
+            return self._publish_and_observe(run, context)
         except _Halt as halt:
             return halt.run
 
@@ -1354,6 +1608,8 @@ class WorkflowController:
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
         repository_profile: RepositoryProfile,
+        *,
+        route_decision: RouteDecision | None = None,
     ) -> FactoryRun:
         workspace_path = str(workspace.path)
         fast_model_profile = (
@@ -1390,6 +1646,7 @@ class WorkflowController:
             workspace,
             source_repo,
             repository_profile,
+            route_decision=route_decision,
         )
 
     def _drive_from_planning(
@@ -1404,6 +1661,7 @@ class WorkflowController:
         repository_profile: RepositoryProfile,
         *,
         planner_context: str | None = None,
+        route_decision: RouteDecision | None = None,
     ) -> FactoryRun:
         """Plan and continue from a controller-owned PLANNING state."""
         if run.state is not WorkflowState.PLANNING:
@@ -1459,6 +1717,7 @@ class WorkflowController:
             repository_profile=repository_profile,
             workspace=workspace,
             source_repo=source_repo,
+            route_decision=route_decision,
         )
         context.change_set_correction_used = any(
             record.purpose == AgentPurpose.CORRECT_CHANGE_SET for record in run.invocation_records
@@ -2126,6 +2385,13 @@ class WorkflowController:
                 request.model_copy(update={"repair_context": repair_context}),
             )
             if result.success and result.test_report is not None:
+                if result.test_report.skipped or result.test_report.provenance == "SKIPPED":
+                    raise self._halt(
+                        run,
+                        WorkflowState.FAILED,
+                        "agent returned TestReport claiming skipped/provenance SKIPPED; "
+                        "only controller may synthesize skipped reports",
+                    )
                 self._store.save_artifact(run.id, result.test_report, attempt=snapshot)
                 return result.test_report
             if not is_retryable_typed_artifact_failure(result, TestReport):
@@ -2153,7 +2419,7 @@ class WorkflowController:
         context: _RunContext,
         evidence: WorkspaceEvidence,
         verification_report: VerificationReport,
-        test_report: TestReport,
+        test_report: TestReport | None,
         snapshot: int,
         repair_diff: str | None,
     ) -> ReviewReport:
@@ -2184,6 +2450,13 @@ class WorkflowController:
                 request.model_copy(update={"repair_context": repair_context}),
             )
             if result.success and result.review_report is not None:
+                if result.review_report.skipped or result.review_report.provenance == "SKIPPED":
+                    raise self._halt(
+                        run,
+                        WorkflowState.FAILED,
+                        "agent returned ReviewReport claiming skipped/provenance SKIPPED; "
+                        "only controller may synthesize skipped reports",
+                    )
                 semantic_failure = self._review_contract_failure(
                     result.review_report,
                     prior_findings,
@@ -2478,6 +2751,17 @@ class WorkflowController:
     ) -> tuple[RoleModelConfig | None, int]:
         used = self._attempts_used(run, budget)
         attempt_number = used + 1
+        model_profile = (
+            context.route_decision.selected_model_profile
+            if context.route_decision is not None
+            and context.route_decision.selected_model_profile is not None
+            and budget is AttemptBudget.IMPLEMENTATION
+            else (
+                run.performance_model_profile if run.effective_performance_mode == "fast" else None
+            )
+        )
+        if model_profile == "default":
+            model_profile = None
         if budget is AttemptBudget.CI_REPAIR:
             if used >= self._config.ci.repair_attempts:
                 return None, attempt_number
@@ -2489,7 +2773,11 @@ class WorkflowController:
                 attempt_number,
             )
         return (
-            self._router.model_for_implementer(context.triage_result.complexity, attempt_number),
+            self._router.model_for_implementer(
+                context.triage_result.complexity,
+                attempt_number,
+                model_profile=model_profile,
+            ),
             attempt_number,
         )
 
@@ -2525,7 +2813,14 @@ class WorkflowController:
         """
         verification_generated_paths: set[str] = set()
         while True:
-            role_model, attempt_number = self._select_worker(run, context, budget)
+            try:
+                role_model, attempt_number = self._select_worker(run, context, budget)
+            except Exception as exc:
+                raise self._halt(
+                    run,
+                    WorkflowState.FAILED,
+                    f"worker model selection failed: {exc}",
+                ) from exc
             if role_model is None:
                 raise self._halt(
                     run,
@@ -2610,6 +2905,13 @@ class WorkflowController:
                     stage=WorkflowState.VERIFYING.value,
                     operation="rework",
                 )
+                if context.effective_route is ExecutionRoute.SINGLE:
+                    run = self._ratchet_route(
+                        run,
+                        context,
+                        to_route=ExecutionRoute.CRITIQUE,
+                        reason="verification failure: deterministic verification did not pass",
+                    )
                 repair_context = self._verification_repair_context(verification)
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
@@ -2639,6 +2941,29 @@ class WorkflowController:
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
             evidence = verified_evidence
+
+            # Monotonic post-implementation ratchets
+            # 1. Evaluate unexpected scope against original synthesized scope
+            # before any scope replan
+            if context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}:
+                original_scope = (
+                    context.original_synthesized_scope
+                    if context.original_synthesized_scope is not None
+                    else tuple(context.execution_plan.expected_scope.modules)
+                )
+                unexpected_changes = [
+                    f
+                    for f in evidence.changed_files
+                    if not any(f == m or f.startswith(f"{m}/") for m in original_scope)
+                ]
+                if unexpected_changes:
+                    unrelated_desc = ", ".join(unexpected_changes)
+                    run = self._ratchet_route(
+                        run,
+                        context,
+                        to_route=ExecutionRoute.FULL_REVIEW,
+                        reason=f"unrelated changes outside synthesized scope: {unrelated_desc}",
+                    )
 
             scope = self._scope_policy.assess(
                 context.execution_plan,
@@ -2677,6 +3002,76 @@ class WorkflowController:
                     "scope drift requires human review: " + _describe_scope(scope),
                 )
 
+            # Monotonic post-implementation ratchets (continued)
+            # 2. Excessive changed files
+            if len(evidence.changed_files) > self._config.routing.single_max_changed_files:
+                if context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}:
+                    run = self._ratchet_route(
+                        run,
+                        context,
+                        to_route=ExecutionRoute.FULL_REVIEW,
+                        reason=(
+                            f"excessive changed-file count: {len(evidence.changed_files)} files "
+                            f"exceeds threshold {self._config.routing.single_max_changed_files}"
+                        ),
+                    )
+
+            # 3. Protected/sensitive/manifest/version paths
+            protected_reason = self._fast_scope_fallback_reason(
+                list(evidence.changed_files),
+                execution_plan=context.execution_plan,
+                risk=context.triage_result.risk,
+                repository_profile=context.repository_profile,
+                scope=scope,
+            )
+            if protected_reason is not None and context.effective_route in {
+                ExecutionRoute.SINGLE,
+                ExecutionRoute.CRITIQUE,
+            }:
+                run = self._ratchet_route(
+                    run,
+                    context,
+                    to_route=ExecutionRoute.FULL_REVIEW,
+                    reason=protected_reason,
+                )
+
+            # 4. Dependency fingerprint change
+            if context.effective_route in {
+                ExecutionRoute.SINGLE,
+                ExecutionRoute.CRITIQUE,
+            }:
+                try:
+                    current_profile = self._repository_profiler(context.workspace.path)
+                    if (
+                        current_profile.dependency_fingerprint
+                        != context.repository_profile.dependency_fingerprint
+                    ):
+                        run = self._ratchet_route(
+                            run,
+                            context,
+                            to_route=ExecutionRoute.FULL_REVIEW,
+                            reason="dependency fingerprint changed during implementation",
+                        )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    run = self._ratchet_route(
+                        run,
+                        context,
+                        to_route=ExecutionRoute.FULL_REVIEW,
+                        reason=f"dependency fingerprint validation failed: {exc}",
+                    )
+
+            # 5. Scope drift findings
+            if scope.decision is not ScopeDecision.CONTINUE and context.effective_route in {
+                ExecutionRoute.SINGLE,
+                ExecutionRoute.CRITIQUE,
+            }:
+                run = self._ratchet_route(
+                    run,
+                    context,
+                    to_route=ExecutionRoute.FULL_REVIEW,
+                    reason=f"scope decision was {scope.decision.value}",
+                )
+
             if self._should_polish(run, budget, context):
                 context.polish_attempted = True
                 run = self._prepare_polish(run, context)
@@ -2710,21 +3105,79 @@ class WorkflowController:
                     self._publish_profile(run, context, current_profile, *staleness)
 
             run = self.transition(run, WorkflowState.REVIEWING)
+
+            # If CI repair, always use FULL review semantics via recorded ratchet
+            if budget is AttemptBudget.CI_REPAIR and context.effective_route in {
+                ExecutionRoute.SINGLE,
+                ExecutionRoute.CRITIQUE,
+            }:
+                run = self._ratchet_route(
+                    run,
+                    context,
+                    to_route=ExecutionRoute.FULL_REVIEW,
+                    reason="CI repair requires full review semantics",
+                )
+
+            # SINGLE route: deterministic verification accepted under sufficiency conditions
+            if context.effective_route is ExecutionRoute.SINGLE:
+                test_report = TestReport(
+                    passed=True,
+                    confidence=1.0,
+                    findings=[],
+                    suggested_tests=[],
+                    skipped=True,
+                    provenance="SKIPPED",
+                    skip_reason="Tester agent skipped by SINGLE route",
+                )
+                self._store.save_artifact(run.id, test_report, attempt=snapshot)
+
+                review_report = ReviewReport(
+                    approved=True,
+                    findings=[],
+                    skipped=True,
+                    provenance="SKIPPED",
+                    skip_reason="Reviewer skipped: accepted by deterministic verification",
+                )
+                self._store.save_artifact(run.id, review_report, attempt=snapshot)
+                run = self._record_reviewed_tree(run, snapshot, evidence.tree_sha)
+                context.latest_evidence = evidence
+                context.latest_verification = verification.report
+                context.latest_test_report = test_report
+                context.latest_review = review_report
+                return self.transition(run, WorkflowState.PR_READY)
+
             repair_diff = self._repair_review_diff(run, context.workspace, evidence)
-            test_report = self._run_tester(
-                run,
-                context,
-                evidence,
-                verification.report,
-                snapshot,
-                repair_diff,
-            )
+
+            # CRITIQUE route: tester agent skipped, independent reviewer active
+            if context.effective_route is ExecutionRoute.CRITIQUE:
+                test_report = TestReport(
+                    passed=True,
+                    confidence=1.0,
+                    findings=[],
+                    suggested_tests=[],
+                    skipped=True,
+                    provenance="SKIPPED",
+                    skip_reason="Tester agent skipped by CRITIQUE route",
+                )
+                self._store.save_artifact(run.id, test_report, attempt=snapshot)
+                reviewer_test_report = None
+            else:
+                test_report = self._run_tester(
+                    run,
+                    context,
+                    evidence,
+                    verification.report,
+                    snapshot,
+                    repair_diff,
+                )
+                reviewer_test_report = test_report
+
             review_report = self._run_reviewer(
                 run,
                 context,
                 evidence,
                 verification.report,
-                test_report,
+                reviewer_test_report,
                 snapshot,
                 repair_diff,
             )
@@ -3316,6 +3769,7 @@ class WorkflowController:
             budget is not AttemptBudget.IMPLEMENTATION
             or not self._config.polish.enabled
             or run.effective_performance_mode == "fast"
+            or context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}
         ):
             return False
         if context.polish_attempted:
@@ -3782,6 +4236,18 @@ class WorkflowController:
         review: ReviewReport,
         risk: Risk,
     ) -> bool:
+        if review.skipped or review.provenance == "SKIPPED":
+            if run.effective_route is not ExecutionRoute.SINGLE:
+                return False
+            latest_verification = self._store.load_artifact(
+                run.id, VerificationReport, attempt=len(run.attempt_records)
+            )
+            if latest_verification is None or not latest_verification.passed:
+                return False
+            if run.reviewed_tree_sha is None:
+                return False
+            return True
+
         acceptance = run.review_acceptance
         if acceptance is None:
             return review.approved
@@ -4129,6 +4595,9 @@ class _RunContext:
         repository_profile: RepositoryProfile,
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
+        route_decision: RouteDecision | None = None,
+        effective_route: ExecutionRoute = ExecutionRoute.FULL,
+        original_synthesized_scope: tuple[str, ...] | None = None,
     ) -> None:
         self.work_item = work_item
         self.triage_result = triage_result
@@ -4136,6 +4605,11 @@ class _RunContext:
         self.research_report = research_report
         self.execution_plan = execution_plan
         self.repository_profile = repository_profile
+        self.route_decision = route_decision
+        self.effective_route = (
+            route_decision.effective_route if route_decision is not None else effective_route
+        )
+        self.original_synthesized_scope = original_synthesized_scope
         self.profile_warnings: tuple[str, ...] = ()
         self.repository_skill: RepositorySkill | None = None
         self.polish_attempted = False
