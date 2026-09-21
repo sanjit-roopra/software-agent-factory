@@ -1735,7 +1735,12 @@ def test_reply_candidate_valid_post_notification_command_accepted(tmp_path: Path
     client = GitHubClient(runner=runner)
 
     is_valid, reason = validate_reply_candidate(
-        comment, run=run, config=config, client=client, repo_path=tmp_path
+        comment,
+        run=run,
+        config=config,
+        client=client,
+        repo_path=tmp_path,
+        now=t_comment,
     )
     assert is_valid is True
     assert reason == "valid"
@@ -1778,7 +1783,12 @@ def test_reply_candidate_at_exact_notification_timestamp_accepted(tmp_path: Path
 
     # comment.created_at >= last_notified_at must pass
     is_valid, reason = validate_reply_candidate(
-        comment, run=run, config=config, client=client, repo_path=tmp_path
+        comment,
+        run=run,
+        config=config,
+        client=client,
+        repo_path=tmp_path,
+        now=t_notified,
     )
     assert is_valid is True
     assert reason == "valid"
