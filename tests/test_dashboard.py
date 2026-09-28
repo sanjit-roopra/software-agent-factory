@@ -32,6 +32,7 @@ from software_agent_factory.dashboard import (
 )
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.handler import (
+    _MAX_LOGGED_METHOD_LENGTH,
     _MAX_LOGGED_PATH_LENGTH,
     _log_safe_method,
     _log_safe_path,
@@ -1872,20 +1873,27 @@ def test_log_safe_path_strips_query_control_chars_and_bounds_length(
 def test_forged_request_path_reaches_log_as_one_sanitised_record(
     running_server: RunningServer, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # End-to-end: the wiring in log_message, not just the helper. A CRLF in
-    # the request line must not split the access log into two records.
+    # End-to-end: the wiring in log_message, not just the helper. A bare CR/LF
+    # cannot survive an HTTP request line, but ESC can, and self.path is logged
+    # before any unquote, so the raw byte must be sent over a socket.
+    request = (
+        b"GET /api/runs\x1b[2Jforged?token=x HTTP/1.1\r\n"
+        + f"Host: 127.0.0.1:{running_server.port}\r\n".encode()
+        + f"{TOKEN_HEADER}: {running_server.token}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+    )
     with caplog.at_level(logging.INFO, logger="software_agent_factory.dashboard"):
-        response = running_server.request(
-            "GET", "/api/runs%0D%0AINFO%20forged?token=x", headers=running_server.authed_headers()
-        )
-        response.read_body  # type: ignore[attr-defined]
+        with socket.create_connection(("127.0.0.1", running_server.port), timeout=5) as sock:
+            sock.sendall(request)
+            while sock.recv(4096):
+                pass
     records = [r for r in caplog.records if r.name == "software_agent_factory.dashboard"]
     access = [r for r in records if r.getMessage().startswith("GET ")]
     assert len(access) == 1
     message = access[0].getMessage()
-    assert "\r" not in message and "\n" not in message
+    assert "\x1b" not in message
     assert "token=" not in message
-    assert "/api/runs" in message
+    assert "/api/runs?[2Jforged" in message
 
 
 @pytest.mark.parametrize(
@@ -1894,7 +1902,7 @@ def test_forged_request_path_reaches_log_as_one_sanitised_record(
         ("GET", "GET"),
         (None, ""),
         ("\x1b[2JGET", "?[2JGET"),
-        ("A" * 40, "A" * 16),
+        ("A" * 40, ("A" * 40)[:_MAX_LOGGED_METHOD_LENGTH]),
     ],
     ids=["plain", "none", "strips-escape", "bounds-length"],
 )
