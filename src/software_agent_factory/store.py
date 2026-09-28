@@ -127,7 +127,7 @@ def validate_run_id(run_id: str) -> str:
     would therefore need that allowlist widened too, or the dashboard's run
     detail route would answer 404 for a perfectly valid run.
     """
-    if not isinstance(run_id, str) or not _RUN_ID_PATTERN.match(run_id):
+    if not isinstance(run_id, str) or not _RUN_ID_PATTERN.fullmatch(run_id):
         raise InvalidRunIdError(
             "run_id must be 1-128 ASCII letters, digits, '.', '_' or '-' characters; "
             f"got {run_id!r}"

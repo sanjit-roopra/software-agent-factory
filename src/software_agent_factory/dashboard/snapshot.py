@@ -55,7 +55,7 @@ def is_valid_run_id(candidate: str) -> bool:
     once decoded, embedded null bytes, etc.) is rejected without ever
     reaching a detail provider or store.
     """
-    return bool(_RUN_ID_PATTERN.match(candidate))
+    return bool(_RUN_ID_PATTERN.fullmatch(candidate))
 
 
 class SnapshotProvider(Protocol):

@@ -65,6 +65,38 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 )
 
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
+_LOG_UNSAFE_PATTERN = re.compile(r"[^\x20-\x7e]")
+_MAX_LOGGED_PATH_LENGTH = 200
+_MAX_LOGGED_METHOD_LENGTH = 16
+
+
+def _log_safe_text(raw: object, limit: int) -> str:
+    """Client-influenced text made safe for a log line.
+
+    Replaces every control or non-ASCII character so a client cannot forge log
+    records with embedded newlines or terminal escapes, and bounds the length.
+    """
+    cleaned = _LOG_UNSAFE_PATTERN.sub("?", "" if raw is None else str(raw))
+    return cleaned[:limit]
+
+
+def _log_safe_path(raw_path: str) -> str:
+    """Request path made safe for a log line.
+
+    Drops the query string first: it may carry the dashboard token, and that
+    must never reach a log.
+    """
+    return _log_safe_text(raw_path.split("?", 1)[0], _MAX_LOGGED_PATH_LENGTH)
+
+
+def _log_safe_method(raw_method: str | None) -> str:
+    """Request method made safe for a log line.
+
+    ``BaseHTTPRequestHandler`` takes the method from the request line before
+    any check runs, so an unknown method such as ``\\x1b[2J`` reaches
+    ``log_message`` verbatim.
+    """
+    return _log_safe_text(raw_method, _MAX_LOGGED_METHOD_LENGTH)
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
@@ -100,8 +132,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         """Log method + path only. Never the query string: it may carry the
         dashboard token, and that must never reach a log."""
-        path_without_query = self.path.split("?", 1)[0]
-        _logger.info("%s %s -> %s", self.command, path_without_query, args[-1] if args else "")
+        _logger.info(
+            "%s %s -> %s",
+            _log_safe_method(getattr(self, "command", None)),
+            # parse_request sets path only after the request line parses; on a
+            # malformed line this hook still runs, via send_error.
+            _log_safe_path(getattr(self, "path", "")),
+            _log_safe_text(args[-1], _MAX_LOGGED_PATH_LENGTH) if args else "",
+        )
 
     # -- dispatch -------------------------------------------------------------
 
@@ -137,7 +175,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         try:
             self._route(path, query, send_body)
         except Exception:  # noqa: BLE001 - never leak internals to the client
-            _logger.exception("Unhandled dashboard error for path %s", path.split("?", 1)[0])
+            _logger.exception("Unhandled dashboard error for path %s", _log_safe_path(path))
             self._respond_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {"error": "internal error"},

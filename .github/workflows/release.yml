@@ -20,7 +20,7 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-  UV_VERSION: "0.9.17"
+  UV_VERSION: "0.12.19"
 
 jobs:
   validate-tag:
@@ -51,16 +51,16 @@ jobs:
       - name: Run the release quality gate
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups \
+          uv sync --locked --no-build --no-default-groups \
             --group docs --group quality --group security --group test
-          uv run --no-sync ruff format --check .
-          uv run --no-sync ruff check .
-          uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
-          uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch
-          uv run --no-sync pip-audit --skip-editable
-          uv run --no-sync mkdocs build --strict
-          uv run --no-sync python scripts/docs/check_simple_english.py
-          uv run --no-sync python scripts/docs/check_rendered_links.py site
+          uv run --no-sync --no-build ruff format --check .
+          uv run --no-sync --no-build ruff check .
+          uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release
+          uv run --no-sync --no-build pytest -q --cov=software_agent_factory --cov-branch
+          uv run --no-sync --no-build pip-audit --skip-editable
+          uv run --no-sync --no-build mkdocs build --strict
+          uv run --no-sync --no-build python scripts/docs/check_simple_english.py
+          uv run --no-sync --no-build python scripts/docs/check_rendered_links.py site
 
       - name: Validate the tag matches the packaged version
         run: |
@@ -70,7 +70,7 @@ jobs:
           print(platform.python_version())
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output packaging/validate/build-info.json \
             --tag "$RELEASE_TAG" \
             --validate-tag-match \
@@ -83,7 +83,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(PYTHONPATH=src uv run --no-sync python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
@@ -117,15 +117,15 @@ jobs:
       - name: Build wheel and sdist
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups --group distribution
+          uv sync --locked --no-build --no-default-groups --group distribution
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          PYTHON_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import platform
           print(platform.python_version())
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "$RELEASE_TAG" \
             --validate-tag-match \
@@ -135,15 +135,15 @@ jobs:
             --target-architecture "py3-none-any"
           cp "$BUILD_INFO" packaging/build-info-py3-none-any.json
           uv build --no-sources
-          uv run --no-sync twine check dist/*
-          uv run --no-sync check-wheel-contents dist/*.whl
-          uv run --no-sync python -m venv packaging/venvs/release-wheel-smoke
+          uv run --no-sync --no-build twine check dist/*
+          uv run --no-sync --no-build check-wheel-contents dist/*.whl
+          uv run --no-sync --no-build python -m venv packaging/venvs/release-wheel-smoke
           packaging/venvs/release-wheel-smoke/bin/pip install dist/*.whl
           packaging/venvs/release-wheel-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/release-wheel-smoke/bin/factory \
             --workspace-root packaging/release-wheel-smoke \
             --expect-version "${{ needs.validate-tag.outputs.version }}"
-          uv run --no-sync python -m venv packaging/venvs/release-sdist-smoke
+          uv run --no-sync --no-build python -m venv packaging/venvs/release-sdist-smoke
           packaging/venvs/release-sdist-smoke/bin/pip install dist/*.tar.gz
           packaging/venvs/release-sdist-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/release-sdist-smoke/bin/factory \
@@ -187,20 +187,20 @@ jobs:
       - name: Build, archive, and smoke the native arm64 bundle
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups --group native
+          uv sync --locked --no-build --no-default-groups --group native
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          PYTHON_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import platform
           print(platform.python_version())
           PY
           )
-          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
+          PYINSTALLER_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import PyInstaller
           print(PyInstaller.__version__)
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "$RELEASE_TAG" \
             --validate-tag-match \
@@ -209,18 +209,18 @@ jobs:
             --python-version "$PYTHON_VERSION" \
             --pyinstaller-version "$PYINSTALLER_VERSION" \
             --target-architecture "arm64"
-          uv run --no-sync pyinstaller --clean --noconfirm \
+          uv run --no-sync --no-build pyinstaller --clean --noconfirm \
             --distpath packaging/dist/arm64 \
             --workpath packaging/build/arm64 \
             packaging/pyinstaller.spec
           ARCHIVE=packaging/artifacts/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-arm64.tar.gz
           mkdir -p packaging/artifacts
-          uv run --no-sync python scripts/release/prepare_frozen_bundle.py \
+          uv run --no-sync --no-build python scripts/release/prepare_frozen_bundle.py \
             --bundle-dir packaging/dist/arm64/software-agent-factory \
             --version "${{ needs.validate-tag.outputs.version }}" \
             --architecture "arm64"
           COPYFILE_DISABLE=1 tar -C packaging/dist/arm64 -czf "$ARCHIVE" software-agent-factory
-          uv run --no-sync python scripts/release/smoke_factory.py \
+          uv run --no-sync --no-build python scripts/release/smoke_factory.py \
             --archive "$ARCHIVE" \
             --workspace-root packaging/archive-smoke/arm64 \
             --expect-architecture "arm64" \
@@ -263,20 +263,20 @@ jobs:
       - name: Build, archive, and smoke the native x86_64 bundle
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups --group native
+          uv sync --locked --no-build --no-default-groups --group native
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          PYTHON_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import platform
           print(platform.python_version())
           PY
           )
-          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
+          PYINSTALLER_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import PyInstaller
           print(PyInstaller.__version__)
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "$RELEASE_TAG" \
             --validate-tag-match \
@@ -285,18 +285,18 @@ jobs:
             --python-version "$PYTHON_VERSION" \
             --pyinstaller-version "$PYINSTALLER_VERSION" \
             --target-architecture "x86_64"
-          uv run --no-sync pyinstaller --clean --noconfirm \
+          uv run --no-sync --no-build pyinstaller --clean --noconfirm \
             --distpath packaging/dist/x86_64 \
             --workpath packaging/build/x86_64 \
             packaging/pyinstaller.spec
           ARCHIVE=packaging/artifacts/software-agent-factory-${{ needs.validate-tag.outputs.version }}-macos-x86_64.tar.gz
           mkdir -p packaging/artifacts
-          uv run --no-sync python scripts/release/prepare_frozen_bundle.py \
+          uv run --no-sync --no-build python scripts/release/prepare_frozen_bundle.py \
             --bundle-dir packaging/dist/x86_64/software-agent-factory \
             --version "${{ needs.validate-tag.outputs.version }}" \
             --architecture "x86_64"
           COPYFILE_DISABLE=1 tar -C packaging/dist/x86_64 -czf "$ARCHIVE" software-agent-factory
-          uv run --no-sync python scripts/release/smoke_factory.py \
+          uv run --no-sync --no-build python scripts/release/smoke_factory.py \
             --archive "$ARCHIVE" \
             --workspace-root packaging/archive-smoke/x86_64 \
             --expect-architecture "x86_64" \
