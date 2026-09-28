@@ -717,7 +717,6 @@ Scope:
 - pull-request and scheduled locked-environment dependency auditing, plus CodeQL
 - CodeQL findings enforced from retained SARIF artifacts when GitHub Advanced
   Security is unavailable for the private repository
-- weekly Python 3.15 prerelease compatibility coverage
 - Dependabot updates for uv dependencies and SHA-pinned Actions, grouping only
   minor and patch updates while keeping major upgrades isolated
 - native macOS runners for both target architectures: `macos-15` (arm64) and

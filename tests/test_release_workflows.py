@@ -166,15 +166,6 @@ def test_security_workflow_has_pull_request_audit_codeql_and_locked_audit() -> N
     assert "uv run --no-sync --no-build pip-audit --skip-editable" in text
 
 
-def test_future_python_compatibility_runs_only_on_schedule_or_manual_dispatch() -> None:
-    text, workflow = _load_workflow("compatibility.yml")
-    assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
-    assert workflow["jobs"]["python-prerelease"]["name"] == "Python 3.15 prerelease"
-    assert 'python-version: "3.15"' in text
-    assert "allow-prereleases: true" in text
-
-
 def test_docs_workflow_builds_strictly_and_deploys_only_from_main() -> None:
     text, workflow = _load_workflow("docs.yml")
     assert workflow["permissions"] == {"contents": "read"}

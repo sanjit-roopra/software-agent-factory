@@ -42,7 +42,7 @@ uv run --no-sync python scripts/docs/check_simple_english.py   # after README/do
 - `tests/` — pytest suite; fakes for `AgentRuntime` and other boundaries (no paid LLM calls)
 - `scripts/docs/`, `scripts/release/` — type-checked helper scripts
 - `docs/` — mkdocs site; `docs/decisions.md` is the ADR log (single file, newest first)
-- `.github/workflows/` — `ci.yml`, `compatibility.yml`, `docs.yml`, `release.yml`, `security.yml`
+- `.github/workflows/` — `ci.yml`, `docs.yml`, `release.yml`, `security.yml`
 
 ## dev-team plugin
 
