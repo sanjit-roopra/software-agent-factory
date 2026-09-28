@@ -48,8 +48,6 @@ from software_agent_factory.routing import (
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, _RunContext
 
-pytest_plugins = ["test_workflow"]
-
 
 def _config_dict(max_total_attempts: int = 6) -> dict[str, object]:
     return {

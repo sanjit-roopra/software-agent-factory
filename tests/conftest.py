@@ -42,6 +42,8 @@ from typing import Sequence
 import pytest
 from factory_testing import git
 
+pytest_plugins = ["test_workflow"]
+
 _ALLOW_NETWORK_ENV = "FACTORY_TEST_ALLOW_NETWORK"
 _ALLOW_REAL_BINARIES_ENV = "FACTORY_TEST_ALLOW_REAL_BINARIES"
 _ALLOW_NETWORK_MARKER = "allow_network"

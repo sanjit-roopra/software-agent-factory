@@ -3943,7 +3943,7 @@ class WorkflowController:
                     "last_reviewed_tree_sha": tree_sha if open_findings else None,
                     "late_adoption_rounds": 0,
                     "consecutive_replacement_rounds": 0,
-                    "path_streaks": {path: 1 for path in _review_finding_paths(open_findings)},
+                    "path_streaks": dict.fromkeys(_review_finding_paths(open_findings), 1),
                     "unresolved_streaks": {finding.id: 1 for finding in open_findings},
                 }
             )
@@ -4770,13 +4770,14 @@ def _overlay_warnings(
     as written, generated guidance still applies, and the reason is recorded
     where an operator will see it.
     """
-    if selection.overlay_error is None:
-        return ()
-    return (
-        f"repository skill overlay at {manager.overlay_path} was not applied and was left "
-        f"unchanged; the run used generated repository guidance only: "
-        f"{selection.overlay_error}",
-    )
+    warnings: list[str] = []
+    if selection.overlay_error is not None:
+        warnings.append(
+            f"repository skill overlay at {manager.overlay_path} was not applied and was left "
+            f"unchanged; the run used generated repository guidance only: "
+            f"{selection.overlay_error}"
+        )
+    return tuple(warnings)
 
 
 def _commit_message(context: _RunContext, run_id: str) -> str:

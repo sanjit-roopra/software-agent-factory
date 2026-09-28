@@ -90,7 +90,7 @@ jobs:
           GITHUB_TOKEN: ""
         run: |
           uv run --no-sync --no-build pytest -q \
-            --cov=software_agent_factory \
+            --cov=src/software_agent_factory \
             --cov-branch \
             --cov-report=term-missing \
             --cov-report=xml

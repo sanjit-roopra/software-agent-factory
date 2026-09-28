@@ -605,8 +605,8 @@ _PROHIBITED_INSTRUCTION_PATTERNS = [
     re.compile(r"(?i)\bsystem prompt\b"),
 ]
 
-_CODE_FENCE_PATTERN = re.compile(r"```[\w\s]*\n[\s\S]*?```", re.MULTILINE)
-_TILDE_FENCE_PATTERN = re.compile(r"~~~[\w\s]*\n[\s\S]*?~~~", re.MULTILINE)
+_CODE_FENCE_PATTERN = re.compile(r"```[\w \t]*\n[\s\S]*?```", re.MULTILINE)
+_TILDE_FENCE_PATTERN = re.compile(r"~~~[\w \t]*\n[\s\S]*?~~~", re.MULTILINE)
 _DIFF_BLOCK_PATTERN = re.compile(
     r"(?m)(?:^(?:diff --git|--- [ab]/|\+\+\+ [ab]/|@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)[^\n]*\n?)"
     r"(?:^[ +-][^\n]*\n?)*"

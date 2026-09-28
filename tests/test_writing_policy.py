@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from software_agent_factory._vendor.simple_english.lint import lint
 from software_agent_factory.agents import AgentResult, is_retryable_typed_artifact_failure
 from software_agent_factory.models import (
     AgentPurpose,
@@ -181,3 +182,16 @@ def test_invalid_unresolved_decision_prose_fails_writing_policy() -> None:
     )
     findings_bad = validate_artifact_writing(plan_bad_style)
     assert len(findings_bad) > 0
+
+
+def test_lint_reads_each_list_item_as_one_sentence() -> None:
+    report = lint(
+        "- Run the unit tests first\n"
+        "1. Check the log output!\n"
+        "* Open the report page\n"
+        "Not a list line here.",
+        "procedural",
+    )
+
+    assert report["sentences"] == 4
+    assert report["longest_sentence_words"] == 5

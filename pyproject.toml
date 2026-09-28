@@ -106,7 +106,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["software_agent_factory"]
+source = ["src/software_agent_factory"]
 
 [tool.coverage.report]
 fail_under = 90

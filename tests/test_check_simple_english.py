@@ -28,6 +28,7 @@ check_file = _script.check_file
 find_documentation_files = _script.find_documentation_files
 is_procedural_sentence = _script.is_procedural_sentence
 main = _script.main
+mask_markdown = _script.mask_markdown
 resolve_target_files = _script.resolve_target_files
 
 
@@ -100,6 +101,21 @@ def test_wrapped_inline_code_protects_flags() -> None:
     markdown = "Use `factory run --may-skip\nverify` for this operation.\n"
 
     assert check_content(markdown, Path("docs/example.md")) == []
+
+
+def test_inline_code_pairs_backtick_runs_of_equal_width() -> None:
+    masked = mask_markdown("Use ``a ` b`` and `c` here.\n")
+
+    assert masked == "Use " + " " * len("``a ` b``") + " and " + " " * len("`c`") + " here.\n"
+
+
+def test_unclosed_backticks_are_scanned_in_linear_time() -> None:
+    source = "word ` " * 20_000 + "``done``\n"
+
+    masked = mask_markdown(source)
+
+    assert masked.endswith("        \n")
+    assert masked.startswith("word")
 
 
 def test_admonition_prose_is_checked() -> None:

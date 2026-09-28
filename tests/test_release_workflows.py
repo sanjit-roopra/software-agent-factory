@@ -102,7 +102,7 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
         "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release"
         in text
     )
-    assert "--cov=software_agent_factory" in text
+    assert "--cov=src/software_agent_factory" in text
     assert '"3.13"' in text
     assert '"3.14"' in text
     assert "uv build --no-sources" in text
@@ -415,7 +415,10 @@ def test_release_workflow_has_safe_publish_shape() -> None:
         "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release"
         in text
     )
-    assert "uv run --no-sync --no-build pytest -q --cov=software_agent_factory --cov-branch" in text
+    assert (
+        "uv run --no-sync --no-build pytest -q --cov=src/software_agent_factory --cov-branch"
+        in text
+    )
     assert "uv run --no-sync --no-build pip-audit --skip-editable" in text
     assert "uv run --no-sync --no-build python scripts/docs/check_simple_english.py" in text
     assert "uv run --no-sync --no-build mkdocs build --strict" in text

@@ -69,6 +69,34 @@ class Violation:
         return f"{display_path}:{self.line}: {self.rule}: {self.message}"
 
 
+def _inline_code_spans(text: str) -> list[tuple[int, int]]:
+    """Pair each backtick run with the next run of the same length.
+
+    A linear scan of the runs replaces a backtracking regular expression, so
+    a document with many unclosed backticks cannot make the check slow.
+    """
+    runs = [(m.start(), m.end()) for m in re.finditer(r"`+", text)]
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(runs):
+        start, end = runs[index]
+        width = end - start
+        closer = next(
+            (
+                later
+                for later in range(index + 1, len(runs))
+                if runs[later][1] - runs[later][0] == width
+            ),
+            None,
+        )
+        if closer is None:
+            index += 1
+            continue
+        spans.append((start, runs[closer][1]))
+        index = closer + 1
+    return spans
+
+
 def mask_markdown(source: str) -> str:
     """Mask non-prose and protected technical spans while preserving newlines."""
     masked = list(source)
@@ -90,7 +118,7 @@ def mask_markdown(source: str) -> str:
 
     s = "".join(masked)
 
-    for m in re.finditer(r"(?ms)^[ \t]*(```+|~~~+)[^\n]*\n.*?\n[ \t]*\1[ \t]*$", s):
+    for m in re.finditer(r"(?ms)^[ \t]*(`{3,}+|~{3,}+)[^\n]*\n.*?\n[ \t]*\1[ \t]*$", s):
         mask_span(m.start(), m.end())
 
     s = "".join(masked)
@@ -142,13 +170,13 @@ def mask_markdown(source: str) -> str:
 
     s = "".join(masked)
 
-    for m in re.finditer(r"(?m)^[ \t]*\[[^\]\n]+\]:[ \t]+[^\n]*$", s):
+    for m in re.finditer(r"(?m)^[ \t]*\[[^\]\n]+\]:[ \t][^\n]*$", s):
         mask_span(m.start(), m.end())
 
     s = "".join(masked)
 
-    for m in re.finditer(r"(?s)(?<!`)(`+)(?!`).*?\1(?!`)", s):
-        mask_span(m.start(), m.end())
+    for start, end in _inline_code_spans(s):
+        mask_span(start, end)
 
     s = "".join(masked)
 
@@ -366,8 +394,10 @@ def is_procedural_sentence(sentence: str) -> bool:
     prose = sentence.lstrip(" *_0123456789.)")
     if INSTRUCTION_START.match(prose) is not None:
         return True
-    condition = re.match(r"^(?:if|when)\b[^,]*,\s*(.*)$", prose, re.I)
-    return condition is not None and INSTRUCTION_START.match(condition.group(1)) is not None
+    condition = re.match(r"^(?:if|when)\b[^,]*,(.*)$", prose, re.I)
+    return (
+        condition is not None and INSTRUCTION_START.match(condition.group(1).lstrip()) is not None
+    )
 
 
 def trailing_condition(sentence: str) -> re.Match[str] | None:

@@ -56,7 +56,7 @@ jobs:
           uv run --no-sync --no-build ruff format --check .
           uv run --no-sync --no-build ruff check .
           uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release
-          uv run --no-sync --no-build pytest -q --cov=software_agent_factory --cov-branch
+          uv run --no-sync --no-build pytest -q --cov=src/software_agent_factory --cov-branch
           uv run --no-sync --no-build pip-audit --skip-editable
           uv run --no-sync --no-build mkdocs build --strict
           uv run --no-sync --no-build python scripts/docs/check_simple_english.py

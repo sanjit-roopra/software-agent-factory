@@ -13,7 +13,7 @@ Link the issue or explain the problem.
 - [ ] `uv run --no-sync ruff format --check .`
 - [ ] `uv run --no-sync ruff check .`
 - [ ] `uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release`
-- [ ] `uv run --no-sync pytest -q --cov=software_agent_factory --cov-branch`
+- [ ] `uv run --no-sync pytest -q --cov=src/software_agent_factory --cov-branch`
 - [ ] `uv run --no-sync python scripts/docs/check_simple_english.py`
 - [ ] `uv run --no-sync mkdocs build --strict`
 
