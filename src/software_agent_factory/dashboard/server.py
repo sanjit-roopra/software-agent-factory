@@ -75,7 +75,7 @@ class DashboardServer(ThreadingHTTPServer):
     @property
     def base_url(self) -> str:
         host, port = self.address
-        return f"http://{host}:{port}"
+        return f"http://{host}:{port}"  # NOSONAR - loopback-only bind, TLS not applicable
 
     @property
     def dashboard_url(self) -> str:

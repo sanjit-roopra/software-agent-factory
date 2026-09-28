@@ -621,3 +621,17 @@ def test_benchmark_baseline_comparison() -> None:
     assert "REGRESSED" in comparison_text
     assert "IMPROVED" in comparison_text
     assert "OK" in comparison_text
+
+
+def test_benchmark_main_refuses_output_outside_working_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    exit_code = _bench.main(["--output", str(tmp_path / "report.json")])
+
+    assert exit_code == 2
+    assert "outside the working directory" in capsys.readouterr().err
+    assert not (tmp_path / "report.json").exists()

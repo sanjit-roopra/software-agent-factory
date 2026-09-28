@@ -288,8 +288,9 @@ def test_resolve_target_files_supports_explicit_paths_and_dirs(tmp_path: Path) -
 
 
 def test_main_exit_status_zero_on_clean_prose(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     doc = tmp_path / "README.md"
     doc.write_text("# Title\n\nShort clean sentence.\n", encoding="utf-8")
 
@@ -302,8 +303,9 @@ def test_main_exit_status_zero_on_clean_prose(
 
 
 def test_main_exit_status_nonzero_on_violations(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     doc = tmp_path / "README.md"
     doc.write_text("# Title\n\nSentence with a semicolon; violation.\n", encoding="utf-8")
 
@@ -321,3 +323,18 @@ def test_main_exit_status_two_on_missing_file(capsys: pytest.CaptureFixture[str]
 
     captured = capsys.readouterr()
     assert "Error: Documentation file or directory not found" in captured.err
+
+
+def test_main_refuses_paths_outside_working_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Title\n", encoding="utf-8")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    exit_code = main(["--root", str(workdir), str(outside)])
+
+    assert exit_code == 2
+    assert "outside the working directory" in capsys.readouterr().err

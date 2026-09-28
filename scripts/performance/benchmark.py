@@ -1134,6 +1134,15 @@ def compare_with_baseline(
     return lines, has_regression
 
 
+def _within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory."""
+    resolved = os.path.realpath(path)
+    base_dir = os.path.realpath(os.getcwd())
+    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+        raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
+    return Path(resolved)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run local standard-library performance benchmarks for Software Agent Factory."
@@ -1188,6 +1197,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    try:
+        for name in ("output", "baseline", "controller_output"):
+            value = getattr(args, name)
+            if value is not None:
+                setattr(args, name, _within_cwd(value))
+    except ValueError as err:
+        print(f"Error: {err}", file=sys.stderr)
+        return 2
 
     repo_root = args.repo_root.resolve() if args.repo_root else Path(__file__).resolve().parents[2]
 

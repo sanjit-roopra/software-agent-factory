@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -379,9 +380,18 @@ def trailing_condition(sentence: str) -> re.Match[str] | None:
     return None
 
 
+def _within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory."""
+    resolved = os.path.realpath(path)
+    base_dir = os.path.realpath(os.getcwd())
+    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+        raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
+    return Path(resolved)
+
+
 def check_file(path: Path, root: Path | None = None) -> list[Violation]:
     """Check one Markdown file on disk."""
-    content = path.read_text(encoding="utf-8")
+    content = _within_cwd(path).read_text(encoding="utf-8")
     return check_content(content, path, root=root)
 
 
@@ -434,11 +444,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    root = args.root.resolve() if args.root else _ROOT
+    root = args.root if args.root else _ROOT
 
     try:
-        files = resolve_target_files(args.paths, root)
-    except FileNotFoundError as err:
+        root = _within_cwd(root)
+        files = [_within_cwd(path) for path in resolve_target_files(args.paths, root)]
+    except (FileNotFoundError, ValueError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2
 

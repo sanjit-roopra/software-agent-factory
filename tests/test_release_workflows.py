@@ -300,6 +300,24 @@ def test_combine_build_info_requires_consistent_release_identity() -> None:
         module._consistent_value(entries, "commit_sha")
 
 
+def test_combine_build_info_refuses_paths_outside_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module("combine_build_info", "scripts/release/combine_build_info.py")
+    outside = tmp_path / "build-info.json"
+    outside.write_text("{}", encoding="utf-8")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    with pytest.raises(ValueError, match="outside the working directory"):
+        module._load(outside)
+    with pytest.raises(ValueError, match="outside the working directory"):
+        module._load(Path("../build-info.json"))
+    (workdir / "ok.json").write_text('{"project": "x"}', encoding="utf-8")
+    assert module._load(Path("ok.json")) == {"project": "x"}
+
+
 def test_prepare_frozen_bundle_writes_install_instructions_and_optional_notices(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
