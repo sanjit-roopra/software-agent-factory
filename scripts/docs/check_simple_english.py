@@ -437,7 +437,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "paths",
         nargs="*",
         type=Path,
-        help="Specific Markdown files to check (defaults to README.md and docs/**/*.md).",
+        help=(
+            "Specific Markdown files to check, relative to the working directory "
+            "(defaults to README.md and docs/**/*.md)."
+        ),
     )
     parser.add_argument(
         "--root",
@@ -453,9 +456,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         root = _resolve_within_cwd(args.root) if args.root else _ROOT
-        files = resolve_target_files(args.paths, root)
-        if args.paths:
-            files = [_resolve_within_cwd(path) for path in files]
+        paths = [_resolve_within_cwd(path) for path in args.paths]
+        files = resolve_target_files(paths, root)
     except (FileNotFoundError, ValueError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2

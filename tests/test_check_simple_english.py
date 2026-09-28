@@ -341,8 +341,23 @@ def test_main_refuses_paths_outside_working_directory(
 
 
 def test_main_default_root_works_from_any_working_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
     assert main([]) != 2
+    assert "outside the working directory" not in capsys.readouterr().err
+
+
+def test_main_resolves_relative_paths_against_working_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Title\n\nShort clean sentence.\n", encoding="utf-8")
+    monkeypatch.chdir(docs)
+
+    exit_code = main(["guide.md"])
+
+    assert exit_code == 0
+    assert "Checked 1 file(s)" in capsys.readouterr().out
