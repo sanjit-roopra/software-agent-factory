@@ -338,3 +338,11 @@ def test_main_refuses_paths_outside_working_directory(
 
     assert exit_code == 2
     assert "outside the working directory" in capsys.readouterr().err
+
+
+def test_main_default_root_works_from_any_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert main([]) != 2

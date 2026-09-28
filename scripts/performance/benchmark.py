@@ -1134,11 +1134,17 @@ def compare_with_baseline(
     return lines, has_regression
 
 
-def _within_cwd(path: Path) -> Path:
-    """Resolve a CLI-supplied path and refuse it if it escapes the working directory."""
+def _resolve_within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory.
+
+    Guards against path traversal when an agent drives this CLI (Sonar
+    pythonsecurity:S8707). Kept as an identical copy in each script under
+    scripts/ because they run standalone and share no importable module.
+    """
     resolved = os.path.realpath(path)
     base_dir = os.path.realpath(os.getcwd())
-    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+    base_prefix = base_dir if base_dir.endswith(os.sep) else base_dir + os.sep
+    if resolved != base_dir and not resolved.startswith(base_prefix):
         raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
     return Path(resolved)
 
@@ -1201,7 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
         for name in ("output", "baseline", "controller_output"):
             value = getattr(args, name)
             if value is not None:
-                setattr(args, name, _within_cwd(value))
+                setattr(args, name, _resolve_within_cwd(value))
     except ValueError as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2

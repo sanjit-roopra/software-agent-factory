@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import stat
+import sys
 import tarfile
 from pathlib import Path
 from types import ModuleType
@@ -300,22 +303,94 @@ def test_combine_build_info_requires_consistent_release_identity() -> None:
         module._consistent_value(entries, "commit_sha")
 
 
-def test_combine_build_info_refuses_paths_outside_working_directory(
+@pytest.fixture
+def combine_build_info_in_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+) -> tuple[ModuleType, Path]:
     module = _load_script_module("combine_build_info", "scripts/release/combine_build_info.py")
-    outside = tmp_path / "build-info.json"
-    outside.write_text("{}", encoding="utf-8")
     workdir = tmp_path / "work"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
+    return module, workdir
+
+
+def test_combine_build_info_refuses_absolute_path_outside_working_directory(
+    combine_build_info_in_workdir: tuple[ModuleType, Path],
+) -> None:
+    module, workdir = combine_build_info_in_workdir
+    outside = workdir.parent / "build-info.json"
+    outside.write_text("{}", encoding="utf-8")
 
     with pytest.raises(ValueError, match="outside the working directory"):
         module._load(outside)
+
+
+def test_combine_build_info_refuses_relative_traversal(
+    combine_build_info_in_workdir: tuple[ModuleType, Path],
+) -> None:
+    module, workdir = combine_build_info_in_workdir
+    (workdir.parent / "build-info.json").write_text("{}", encoding="utf-8")
+
     with pytest.raises(ValueError, match="outside the working directory"):
         module._load(Path("../build-info.json"))
+
+
+def test_combine_build_info_refuses_sibling_sharing_cwd_prefix(
+    combine_build_info_in_workdir: tuple[ModuleType, Path],
+) -> None:
+    module, workdir = combine_build_info_in_workdir
+    sibling = workdir.parent / "work-evil"
+    sibling.mkdir()
+    (sibling / "build-info.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="outside the working directory"):
+        module._load(sibling / "build-info.json")
+
+
+def test_combine_build_info_refuses_symlink_escaping_working_directory(
+    combine_build_info_in_workdir: tuple[ModuleType, Path],
+) -> None:
+    module, workdir = combine_build_info_in_workdir
+    outside = workdir.parent / "secret.json"
+    outside.write_text("{}", encoding="utf-8")
+    (workdir / "link.json").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="outside the working directory"):
+        module._load(Path("link.json"))
+
+
+def test_combine_build_info_loads_path_within_working_directory(
+    combine_build_info_in_workdir: tuple[ModuleType, Path],
+) -> None:
+    module, workdir = combine_build_info_in_workdir
     (workdir / "ok.json").write_text('{"project": "x"}', encoding="utf-8")
+
     assert module._load(Path("ok.json")) == {"project": "x"}
+
+
+def test_combine_build_info_accepts_any_path_when_cwd_is_filesystem_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script_module("combine_build_info", "scripts/release/combine_build_info.py")
+    monkeypatch.chdir("/")
+
+    assert module._resolve_within_cwd(Path("/usr")) == Path(os.path.realpath("/usr"))
+
+
+def test_combine_build_info_main_refuses_output_outside_working_directory(
+    combine_build_info_in_workdir: tuple[ModuleType, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, workdir = combine_build_info_in_workdir
+    entry = {"project": "p", "version": "1", "tag": "v1", "commit_sha": "abc"}
+    (workdir / "info.json").write_text(json.dumps(entry), encoding="utf-8")
+    outside = workdir.parent / "build-info.json"
+    monkeypatch.setattr(
+        sys, "argv", ["combine_build_info.py", "--output", str(outside), "info.json"]
+    )
+
+    with pytest.raises(ValueError, match="outside the working directory"):
+        module.main()
+    assert not outside.exists()
 
 
 def test_prepare_frozen_bundle_writes_install_instructions_and_optional_notices(

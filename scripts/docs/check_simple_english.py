@@ -380,18 +380,24 @@ def trailing_condition(sentence: str) -> re.Match[str] | None:
     return None
 
 
-def _within_cwd(path: Path) -> Path:
-    """Resolve a CLI-supplied path and refuse it if it escapes the working directory."""
+def _resolve_within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory.
+
+    Guards against path traversal when an agent drives this CLI (Sonar
+    pythonsecurity:S8707). Kept as an identical copy in each script under
+    scripts/ because they run standalone and share no importable module.
+    """
     resolved = os.path.realpath(path)
     base_dir = os.path.realpath(os.getcwd())
-    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+    base_prefix = base_dir if base_dir.endswith(os.sep) else base_dir + os.sep
+    if resolved != base_dir and not resolved.startswith(base_prefix):
         raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
     return Path(resolved)
 
 
 def check_file(path: Path, root: Path | None = None) -> list[Violation]:
     """Check one Markdown file on disk."""
-    content = _within_cwd(path).read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8")
     return check_content(content, path, root=root)
 
 
@@ -444,11 +450,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    root = args.root if args.root else _ROOT
 
     try:
-        root = _within_cwd(root)
-        files = [_within_cwd(path) for path in resolve_target_files(args.paths, root)]
+        root = _resolve_within_cwd(args.root) if args.root else _ROOT
+        files = resolve_target_files(args.paths, root)
+        if args.paths:
+            files = [_resolve_within_cwd(path) for path in files]
     except (FileNotFoundError, ValueError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2
