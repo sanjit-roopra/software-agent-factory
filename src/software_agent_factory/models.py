@@ -604,11 +604,13 @@ class ModelUsage(ModelBase):
 
 
 class UsageMetrics(ModelBase):
-    """Optional aggregate usage reported by the Copilot runtime.
+    """Optional aggregate usage reported by the Copilot or pi runtime.
 
-    Values are persisted exactly as reported. They are not converted to AI
-    Credits or USD, and missing values remain unknown rather than becoming
-    zero.
+    Values are persisted exactly as reported by whichever runtime produced
+    them, never coerced and never zero-filled for a missing value. Copilot's
+    ``total_nano_aiu``/premium-request units are Copilot-specific and are
+    not converted to AI Credits or USD. ``list_price_estimate_usd`` is pi's
+    own list-price estimate in USD -- never what a provider actually billed.
     """
 
     current_model: str | None = None

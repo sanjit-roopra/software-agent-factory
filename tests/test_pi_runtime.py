@@ -798,6 +798,41 @@ def test_run_timeout_sends_abort_then_kills_process_group(
     assert result.usage is None
 
 
+def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed value (e.g. a negative token count) in the settled call's
+    own ``get_messages`` read must not raise out of ``run()`` before it
+    reaches the timeout path -- it is treated as unreported usage instead,
+    and ``self._abort_and_kill(...)`` still runs when the subsequent
+    ``get_last_assistant_text`` call times out."""
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(usage={"input": -5}, model="claude-sonnet-5"),
+    )
+    # No response ever arrives for get_last_assistant_text (c3), and the
+    # process never exits on its own.
+    killed: list[Any] = []
+    monkeypatch.setattr(
+        "software_agent_factory.pi_runtime.kill_process_group",
+        lambda proc: killed.append(proc),
+    )
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE, timeout_seconds=1)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi timed out after 1 seconds"
+    assert result.usage is not None
+    assert result.usage.input_tokens is None
+    sent_types = [command.get("type") for command in process.sent_commands()]
+    assert "abort" in sent_types
+    assert killed == [process]
+
+
 def test_abort_and_kill_does_not_kill_a_process_that_exits_on_stdin_eof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1035,3 +1070,63 @@ def test_usage_from_pi_messages_non_numeric_field_value_stays_unknown() -> None:
     assert usage is not None
     assert usage.input_tokens is None
     assert usage.output_tokens == 5
+
+
+def test_usage_from_pi_messages_negative_field_value_stays_unknown() -> None:
+    """A negative token count is malformed -- pi never legitimately reports
+    one, and :class:`~software_agent_factory.models.ModelUsage`/
+    :class:`~software_agent_factory.models.UsageMetrics` reject it outright
+    -- so it must be treated as not reported, not crash the mapping."""
+    messages = [_assistant_message({"input": -5, "output": 5})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.input_tokens is None
+    assert usage.output_tokens == 5
+
+
+def test_usage_from_pi_messages_nan_field_value_stays_unknown() -> None:
+    messages = [_assistant_message({"input": float("nan"), "output": 5})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.input_tokens is None
+    assert usage.output_tokens == 5
+
+
+def test_usage_from_pi_messages_infinite_field_value_stays_unknown() -> None:
+    messages = [_assistant_message({"input": float("inf"), "output": 5})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.input_tokens is None
+    assert usage.output_tokens == 5
+
+
+def test_usage_from_pi_messages_negative_cost_stays_unknown() -> None:
+    messages = [_assistant_message({"input": 5, "cost": {"total": -0.5}})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.list_price_estimate_usd is None
+    assert usage.input_tokens == 5
+
+
+def test_usage_from_pi_messages_current_model_is_last_assistant_messages_own_model() -> None:
+    """``current_model`` is the *last* assistant message's own ``model`` --
+    ``None`` when that specific message did not report one, even when an
+    earlier assistant message did (matches the corrected docstring; the
+    prior implementation incorrectly kept the earlier model)."""
+    messages = [
+        _assistant_message({"input": 100}, model="claude-sonnet-5"),
+        {"role": "assistant", "usage": {"input": 5}},
+    ]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.current_model is None

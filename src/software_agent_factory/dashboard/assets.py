@@ -294,6 +294,19 @@ APP_JS = """\
         totals[key] = summary[key];
       }
     });
+    // "metrics.usage" is itself nested two levels deep, past what the
+    // generic one-level flattening below descends into, so surface its
+    // "unknown" fallback (consistent with the detail/invocation views)
+    // directly on "metrics" as its own row; every other totals field is
+    // untouched.
+    if (totals.metrics && typeof totals.metrics === "object") {
+      var listPriceEstimate = totals.metrics.usage
+        ? totals.metrics.usage.list_price_estimate_usd
+        : null;
+      totals.metrics = Object.assign({}, totals.metrics, {
+        list_price_estimate_usd: displayListPriceEstimate(listPriceEstimate)
+      });
+    }
     renderKeyValueList(container, totals, { emptyMessage: "No totals available." });
   }
 

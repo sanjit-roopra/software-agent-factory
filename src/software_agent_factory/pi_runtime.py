@@ -39,6 +39,7 @@ workflow/project/CLI layers convert them with
 from __future__ import annotations
 
 import logging
+import math
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -185,17 +186,29 @@ def _stop_reason_from_messages(
 
 
 def _numeric(value: object) -> int | float | None:
-    """Return ``value`` unchanged when it is a reported numeric field.
+    """Return ``value`` unchanged when it is a finite, non-negative reported numeric field.
 
     ``bool`` is excluded even though it is an ``int`` subclass -- pi never
     reports a token count or cost as ``true``/``false``, so treating one as
-    ``1``/``0`` would be a parsing bug, not a real field.
+    ``1``/``0`` would be a parsing bug, not a real field. A negative value,
+    ``NaN``, or an infinity is likewise treated as not reported: pi never
+    legitimately reports a negative token count or cost, and
+    :class:`~software_agent_factory.models.UsageMetrics`/
+    :class:`~software_agent_factory.models.ModelUsage` fields reject
+    negative values outright -- letting one reach the aggregate sum would
+    raise instead of degrading to "unknown" (see
+    :func:`_safe_usage_from_pi_messages` for the second, defense-in-depth
+    layer against that).
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return value
-    return None
+    if not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if value < 0:
+        return None
+    return value
 
 
 def _sum_usage_field(usages: Sequence[Mapping[str, Any]], key: str) -> int | None:
@@ -258,7 +271,7 @@ def _model_usage(model: str, usages: Sequence[Mapping[str, Any]]) -> ModelUsage:
     )
 
 
-def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | None:
+def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics:
     """Map one call's ``get_messages`` records to :class:`UsageMetrics`.
 
     An assistant message is one whose ``usage`` field is itself a mapping --
@@ -272,12 +285,17 @@ def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | Non
     always reports it in practice, so a message without one contributes to
     the aggregate totals but not to any ``model_usage`` entry (there is no
     request-supplied fallback in this pure function's signature).
-    ``current_model`` is the last assistant message's model.
+    ``current_model`` is the *last* assistant message's own ``model`` field,
+    ``None`` when that specific message did not report one -- even if an
+    earlier assistant message did.
     ``premium_request_cost``/``total_nano_aiu`` are Copilot-only units and
     stay ``None`` on every :class:`ModelUsage` this builds. No assistant
     messages yields ``requests=0`` and every token field ``None`` -- a call
     that produced no assistant messages is a fact worth recording, not an
-    unknown.
+    unknown. Callers that must never propagate a ``ValueError``/
+    :class:`~pydantic.ValidationError` from a still-malformed record (e.g.
+    one whose numeric fields overflow past what :func:`_numeric` filters)
+    should call :func:`_safe_usage_from_pi_messages` instead.
     """
     assistant_messages = [
         message
@@ -287,10 +305,8 @@ def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | Non
 
     usages_by_model: dict[str, list[Mapping[str, Any]]] = {}
     model_order: list[str] = []
-    last_model: str | None = None
     for message in assistant_messages:
         model = message.get("model")
-        last_model = model if isinstance(model, str) and model else last_model
         if not isinstance(model, str) or not model:
             continue
         if model not in usages_by_model:
@@ -298,11 +314,16 @@ def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | Non
             model_order.append(model)
         usages_by_model[model].append(message["usage"])
 
+    current_model: str | None = None
+    if assistant_messages:
+        last_model = assistant_messages[-1].get("model")
+        current_model = last_model if isinstance(last_model, str) and last_model else None
+
     all_usages = [message["usage"] for message in assistant_messages]
     model_usage = tuple(_model_usage(model, usages_by_model[model]) for model in model_order)
 
     return UsageMetrics(
-        current_model=last_model,
+        current_model=current_model,
         total_user_requests=len(assistant_messages),
         input_tokens=_sum_usage_field(all_usages, "input"),
         output_tokens=_sum_usage_field(all_usages, "output"),
@@ -312,6 +333,25 @@ def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | Non
         list_price_estimate_usd=_sum_cost_field(all_usages),
         model_usage=model_usage,
     )
+
+
+def _safe_usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | None:
+    """:func:`usage_from_pi_messages`, treating a malformed record as unknown usage.
+
+    :func:`_numeric` already filters out non-finite/negative numeric fields
+    before they ever reach a :class:`~software_agent_factory.models.UsageMetrics`/
+    :class:`~software_agent_factory.models.ModelUsage` validator, but this is
+    a second, defense-in-depth layer: any ``ValueError`` a still-invalid
+    record trips there (:class:`pydantic.ValidationError` is itself a
+    ``ValueError`` subclass) is caught here and logged at debug, rather than
+    escaping :meth:`PiAgentRuntime.run` -- which, on the timeout path, would
+    skip the ``self._abort_and_kill(...)`` call that must still run.
+    """
+    try:
+        return usage_from_pi_messages(messages)
+    except ValueError:
+        logger.debug("pi reported malformed usage data; treating usage as unknown", exc_info=True)
+        return None
 
 
 class PiAgentRuntime(AgentRuntime):
@@ -366,7 +406,7 @@ class PiAgentRuntime(AgentRuntime):
                 client.request({"type": "prompt", "message": prompt}, deadline=deadline)
                 client.wait_for_settled(deadline=deadline)
                 messages = self._get_messages(client, deadline=deadline)
-                usage = usage_from_pi_messages(messages)
+                usage = _safe_usage_from_pi_messages(messages)
                 stop_reason, error_message = _stop_reason_from_messages(messages)
                 if stop_reason == "error":
                     return self._failed(
@@ -635,7 +675,7 @@ class PiAgentRuntime(AgentRuntime):
             )
         except (PiRpcError, _UnexpectedResponse):
             return None
-        return usage_from_pi_messages(messages)
+        return _safe_usage_from_pi_messages(messages)
 
     def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
         """Best-effort abort, close stdin, then escalate to killing pi's process group.

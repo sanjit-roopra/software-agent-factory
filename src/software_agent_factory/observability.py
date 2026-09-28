@@ -72,11 +72,11 @@ import re
 import socket
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal, Protocol
+from typing import Any, Iterable, Literal, Protocol, TypeVar
 
 from pydantic import Field, ValidationError, model_serializer
 
@@ -1159,6 +1159,30 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
     )
 
 
+_UsageNumber = TypeVar("_UsageNumber", int, float)
+
+
+def _reported_or_model_sum(
+    reported: _UsageNumber | None, model_values: Sequence[_UsageNumber]
+) -> _UsageNumber | None:
+    """Return ``reported`` when the aggregate itself reported the field, else
+    the sum of ``model_values`` when any per-model entry reported it, else
+    ``None``.
+
+    Shared by every :class:`~software_agent_factory.models.UsageMetrics`
+    field that also has a
+    :class:`~software_agent_factory.models.ModelUsage` per-model
+    counterpart -- callers still build ``model_values`` themselves (it must
+    already exclude entries the model did not report) so this only factors
+    out the "aggregate, else per-model sum, else unknown" decision.
+    """
+    if reported is not None:
+        return reported
+    if model_values:
+        return sum(model_values)
+    return None
+
+
 def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
     records = list(invocations)
     reported = [record for record in records if record.usage is not None]
@@ -1180,20 +1204,21 @@ def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
             premium_requests.append(usage.premium_requests)
         if usage.total_premium_request_cost is not None:
             premium_request_costs.append(usage.total_premium_request_cost)
-        if usage.total_nano_aiu is not None:
-            total_nano_aiu.append(usage.total_nano_aiu)
-        elif model_nano := [
+        model_nano = [
             item.total_nano_aiu for item in usage.model_usage if item.total_nano_aiu is not None
-        ]:
-            total_nano_aiu.append(sum(model_nano))
-        if usage.list_price_estimate_usd is not None:
-            list_price_estimate.append(usage.list_price_estimate_usd)
-        elif model_estimate := [
+        ]
+        nano_value = _reported_or_model_sum(usage.total_nano_aiu, model_nano)
+        if nano_value is not None:
+            total_nano_aiu.append(nano_value)
+
+        model_estimate = [
             item.list_price_estimate_usd
             for item in usage.model_usage
             if item.list_price_estimate_usd is not None
-        ]:
-            list_price_estimate.append(sum(model_estimate))
+        ]
+        estimate_value = _reported_or_model_sum(usage.list_price_estimate_usd, model_estimate)
+        if estimate_value is not None:
+            list_price_estimate.append(estimate_value)
 
         model_input = [
             item.input_tokens for item in usage.model_usage if item.input_tokens is not None
@@ -1214,26 +1239,21 @@ def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
             for item in usage.model_usage
             if item.cache_write_tokens is not None
         ]
-        if usage.input_tokens is not None:
-            input_tokens.append(usage.input_tokens)
-        elif model_input:
-            input_tokens.append(sum(model_input))
-        if usage.output_tokens is not None:
-            output_tokens.append(usage.output_tokens)
-        elif model_output:
-            output_tokens.append(sum(model_output))
-        if usage.reasoning_tokens is not None:
-            reasoning_tokens.append(usage.reasoning_tokens)
-        elif model_reasoning:
-            reasoning_tokens.append(sum(model_reasoning))
-        if usage.cache_read_tokens is not None:
-            cache_read_tokens.append(usage.cache_read_tokens)
-        elif model_cache_read:
-            cache_read_tokens.append(sum(model_cache_read))
-        if usage.cache_write_tokens is not None:
-            cache_write_tokens.append(usage.cache_write_tokens)
-        elif model_cache_write:
-            cache_write_tokens.append(sum(model_cache_write))
+        input_value = _reported_or_model_sum(usage.input_tokens, model_input)
+        if input_value is not None:
+            input_tokens.append(input_value)
+        output_value = _reported_or_model_sum(usage.output_tokens, model_output)
+        if output_value is not None:
+            output_tokens.append(output_value)
+        reasoning_value = _reported_or_model_sum(usage.reasoning_tokens, model_reasoning)
+        if reasoning_value is not None:
+            reasoning_tokens.append(reasoning_value)
+        cache_read_value = _reported_or_model_sum(usage.cache_read_tokens, model_cache_read)
+        if cache_read_value is not None:
+            cache_read_tokens.append(cache_read_value)
+        cache_write_value = _reported_or_model_sum(usage.cache_write_tokens, model_cache_write)
+        if cache_write_value is not None:
+            cache_write_tokens.append(cache_write_value)
 
         for item in usage.model_usage:
             if usage.total_premium_request_cost is None and item.premium_request_cost is not None:

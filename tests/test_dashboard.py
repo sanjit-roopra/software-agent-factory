@@ -1700,6 +1700,17 @@ def test_dashboard_renders_list_price_estimate_as_a_labelled_figure_with_unknown
     )
 
 
+def test_dashboard_renders_totals_list_price_estimate_with_unknown_fallback() -> None:
+    """renderTotals surfaces the List-price estimate row with the same
+    ``displayListPriceEstimate`` "unknown" fallback the detail/invocation
+    views use, rather than the generic renderer's ``[object Object]`` for a
+    field nested two levels deep (``metrics.usage.list_price_estimate_usd``)."""
+    js = dashboard_assets.APP_JS
+
+    assert "displayListPriceEstimate(listPriceEstimate)" in js
+    assert "totals.metrics.usage.list_price_estimate_usd" in js
+
+
 # --------------------------------------------------------------------------
 # Live loopback smoke test: full page-load-style flow, real sockets
 # --------------------------------------------------------------------------
