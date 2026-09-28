@@ -17,6 +17,7 @@ from software_agent_factory.agents import (
     AgentResult,
     FakeAgentRuntime,
     runtime_exception_failure_reason,
+    validate_runtime_request,
     workspace_cwd,
 )
 from software_agent_factory.models import (
@@ -627,3 +628,62 @@ def test_workspace_cwd_skill_generation_requires_workspace_path() -> None:
 
     with pytest.raises(ValueError, match="neutral run directory"):
         workspace_cwd(request)
+
+
+# ---------------------------------------------------------------------------
+# validate_runtime_request: shared request guard for the Copilot and pi
+# runtimes
+# ---------------------------------------------------------------------------
+
+
+def test_validate_runtime_request_rejects_implementer_without_workspace_path() -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="IMPLEMENTER requests require workspace_path"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_allows_implementer_with_workspace_path(
+    tmp_path: Path,
+) -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        workspace_path=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    validate_runtime_request(request)
+
+
+def test_validate_runtime_request_rejects_timeout_below_one() -> None:
+    request = AgentRequest(
+        role=AgentRole.TRIAGE,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=0,
+    )
+
+    with pytest.raises(ValueError, match="timeout_seconds must be at least 1"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_allows_read_only_role_without_workspace_path() -> None:
+    request = AgentRequest(
+        role=AgentRole.TRIAGE,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=30,
+    )
+
+    validate_runtime_request(request)

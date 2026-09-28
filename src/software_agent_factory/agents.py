@@ -176,6 +176,26 @@ def workspace_cwd(request: AgentRequest) -> Path:
     return Path(os.getcwd()).expanduser().resolve()
 
 
+def validate_runtime_request(request: AgentRequest) -> None:
+    """Reject a request no ``AgentRuntime`` should ever start a process for.
+
+    Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
+    and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
+    enforce the same two runtime-neutral checks, in the same order, before
+    either builds a command or starts a subprocess: an
+    :attr:`AgentRole.IMPLEMENTER` request always needs a ``workspace_path``
+    (there is no "current directory" an implementer should ever write to),
+    and ``timeout_seconds`` must be positive (a runtime cannot bound a
+    subprocess call against a non-positive deadline). Raises ``ValueError``
+    with the exact wording each runtime raised inline before this was
+    extracted, so callers matching against that wording are unaffected.
+    """
+    if request.role is AgentRole.IMPLEMENTER and not request.workspace_path:
+        raise ValueError("IMPLEMENTER requests require workspace_path")
+    if request.timeout_seconds < 1:
+        raise ValueError("timeout_seconds must be at least 1")
+
+
 class AgentResult(ModelBase):
     """An explicit success/failure outcome carrying at most one artifact.
 

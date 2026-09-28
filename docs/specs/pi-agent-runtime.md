@@ -59,8 +59,9 @@ tracked as a follow-up.
   is unchanged.
 - An assistant message with `stopReason` `error` or `aborted` yields a failed
   `AgentResult` with a sanitized `failure_reason`.
-- Timeout (`request.timeout_seconds`): send `abort`, wait a short grace period, then
-  kill the process group. Partial usage is still recorded.
+- Timeout (`request.timeout_seconds`): send `abort`, close stdin (pi exits on stdin
+  EOF, not necessarily in response to `abort`), wait a short grace period, then kill
+  the process group. Partial usage is still recorded.
 - The child environment is scrubbed like the Copilot runtime, except for the
   variables pi needs for the configured provider.
 

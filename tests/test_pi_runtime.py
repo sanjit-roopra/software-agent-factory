@@ -20,6 +20,7 @@ from software_agent_factory.models import (
     TriageResult,
     WorkItem,
 )
+from software_agent_factory.pi_rpc import PiRpcClient
 from software_agent_factory.pi_runtime import (
     PiAgentRuntime,
     ProcessFactory,
@@ -153,6 +154,28 @@ class FakeProcess:
         except BlockingIOError:
             pass
         return commands
+
+
+class StdinEofExitProcess(FakeProcess):
+    """A pi-like fake that exits when its stdin is closed, not in response to abort.
+
+    Real ``pi`` shuts down on stdin EOF, independent of whether it ever
+    receives or acts on an RPC ``abort`` command. Wraps ``self.stdin``'s
+    ``close`` so closing it (as :meth:`PiAgentRuntime._abort_and_kill` now
+    does) flips this fake to "exited", the same way a real pi process would
+    without needing to model actual EOF detection over the pipe.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        assert self.stdin is not None
+        real_close = self.stdin.close
+
+        def _close_and_exit() -> None:
+            real_close()
+            self.exit(0)
+
+        self.stdin.close = _close_and_exit  # type: ignore[method-assign]
 
 
 def _get_messages_response(
@@ -363,6 +386,77 @@ def test_child_env_defaults_pi_cache_retention_to_long() -> None:
     assert env["PI_CACHE_RETENTION"] == "long"
 
 
+def test_child_env_scrubs_copilot_github_token_for_non_copilot_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
+    runtime = _runtime(provider="anthropic")
+
+    env = runtime._child_env()
+
+    assert "COPILOT_GITHUB_TOKEN" not in env
+
+
+def test_child_env_and_scrubbed_adds_copilot_github_token_value_when_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat-secret")
+    runtime = _runtime()  # default provider: github-copilot
+
+    env, scrubbed_values = runtime._child_env_and_scrubbed()
+
+    assert env["COPILOT_GITHUB_TOKEN"] == "copilot-pat-secret"
+    assert "copilot-pat-secret" in scrubbed_values
+
+
+def test_child_env_and_scrubbed_adds_copilot_github_token_value_when_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat-secret")
+    runtime = _runtime(provider="anthropic")
+
+    env, scrubbed_values = runtime._child_env_and_scrubbed()
+
+    assert "COPILOT_GITHUB_TOKEN" not in env
+    assert "copilot-pat-secret" in scrubbed_values
+
+
+def test_child_env_and_scrubbed_retains_and_scrubs_provider_api_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fake-key")
+    runtime = _runtime()
+
+    env, scrubbed_values = runtime._child_env_and_scrubbed()
+
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-fake-key"
+    assert env["OPENAI_API_KEY"] == "sk-openai-fake-key"
+    assert "sk-ant-fake-key" in scrubbed_values
+    assert "sk-openai-fake-key" in scrubbed_values
+
+
+# ---------------------------------------------------------------------------
+# run: request validation shared with Copilot (validate_runtime_request)
+# ---------------------------------------------------------------------------
+
+
+def test_run_implementer_without_workspace_path_raises() -> None:
+    runtime = _runtime()
+    request = _request(AgentRole.IMPLEMENTER)
+
+    with pytest.raises(ValueError, match="IMPLEMENTER requests require workspace_path"):
+        runtime.run(request)
+
+
+def test_run_timeout_seconds_below_one_raises() -> None:
+    runtime = _runtime()
+    request = _request(AgentRole.TRIAGE, timeout_seconds=0)
+
+    with pytest.raises(ValueError, match="timeout_seconds must be at least 1"):
+        runtime.run(request)
+
+
 # ---------------------------------------------------------------------------
 # run: happy path against a scripted process (Step 3.3)
 # ---------------------------------------------------------------------------
@@ -479,6 +573,23 @@ def test_run_assistant_error_yields_failed_result() -> None:
     assert result.failure_reason == "pi assistant error: boom"
 
 
+def test_run_assistant_error_without_error_message_uses_default_wording() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(stop_reason="error"),
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi assistant error: (no error message)"
+
+
 def test_run_assistant_aborted_yields_failed_result() -> None:
     process = FakeProcess()
     process.write_records(
@@ -545,6 +656,62 @@ def test_run_command_error_yields_failed_result() -> None:
     assert "not supported" in result.failure_reason
 
 
+def test_run_get_messages_non_mapping_data_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        {"type": "response", "id": "c2", "success": True, "data": ["oops"]},
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi returned an unexpected response for get_messages"
+
+
+def test_run_get_last_assistant_text_non_mapping_data_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(),
+        {"type": "response", "id": "c3", "success": True, "data": "not-a-mapping"},
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi returned an unexpected response for get_last_assistant_text"
+
+
+def test_run_get_last_assistant_text_null_text_is_treated_as_empty() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(),
+        {"type": "response", "id": "c3", "success": True, "data": {"text": None}},
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    # A ``null`` text must be treated as empty text (``response_chars == 0``),
+    # not stringified into the four-character literal "None".
+    assert result.success is False
+    assert result.performance is not None
+    assert result.performance.response_chars == 0
+
+
 def test_run_missing_executable_yields_failed_result() -> None:
     def factory(command: list[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
         raise FileNotFoundError(command[0])
@@ -576,6 +743,25 @@ def test_run_sanitizes_credential_value_from_failure_reason(
     assert result.success is False
     assert result.failure_reason is not None
     assert "ghp_supersecrettoken1234" not in result.failure_reason
+
+
+def test_run_sanitizes_provider_api_key_from_failure_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake1234567890")
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.write_stderr("auth failed for sk-ant-fake1234567890")
+    process.close_stdout()
+    process.exit(1)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "sk-ant-fake1234567890" not in result.failure_reason
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +796,31 @@ def test_run_timeout_sends_abort_then_kills_process_group(
     # but also gets nothing back -- usage stays unknown, not zeroed out.
     assert "get_messages" in sent_types
     assert result.usage is None
+
+
+def test_abort_and_kill_does_not_kill_a_process_that_exits_on_stdin_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pi shuts down on stdin EOF, not necessarily in response to ``abort``.
+
+    :meth:`PiAgentRuntime._abort_and_kill` must close stdin after sending the
+    best-effort ``abort`` -- a fake that only exits once its stdin is closed
+    (:class:`StdinEofExitProcess`) must not be escalated to
+    ``kill_process_group``.
+    """
+    process = StdinEofExitProcess()
+    client = PiRpcClient(process)
+    killed: list[Any] = []
+    monkeypatch.setattr(
+        "software_agent_factory.pi_runtime.kill_process_group",
+        lambda proc: killed.append(proc),
+    )
+    runtime = _runtime()
+
+    runtime._abort_and_kill(client, process)
+
+    assert killed == []
+    assert process.poll() == 0
 
 
 def test_run_process_exits_before_settling_reports_unknown_usage() -> None:

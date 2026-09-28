@@ -20,13 +20,16 @@ ends ``error`` or ``aborted``, a non-zero exit or EOF before settling
 (``PiRpcProcessExited``), an unparsable protocol line
 (``PiRpcProtocolError``), a command pi rejected (``PiRpcCommandError``), a
 missing executable (``OSError`` starting the process), and a timeout
-(``PiRpcTimeout``) -- which sends a best-effort ``abort``, waits a 1 second
-grace period, then escalates to
+(``PiRpcTimeout``) -- which sends a best-effort ``abort`` and closes pi's
+stdin (the trigger pi actually exits on), waits a 1 second grace period,
+then escalates to
 :func:`~software_agent_factory.subprocess_utils.kill_process_group` if pi is
 still alive. Every failure reason is sanitized with
 :func:`~software_agent_factory.subprocess_utils.sanitize_output` against the
-credential values :meth:`PiAgentRuntime._child_env_and_scrubbed` removed
-from the child environment, so no credential can appear in a failure reason.
+credential values :meth:`PiAgentRuntime._child_env_and_scrubbed` collects --
+whether it removed them from the child environment or a provider still needs
+them and they were merely recorded for redaction -- so no credential can
+appear in a failure reason.
 Unexpected exceptions from starting or driving the process still propagate
 to the caller, exactly as they do from the Copilot runtime (the
 workflow/project/CLI layers convert them with
@@ -44,7 +47,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .agent_artifact import build_success_result, parse_agent_artifact
 from .agent_capabilities import AgentCapability, capability_for
-from .agents import AgentRequest, AgentResult, AgentRuntime, workspace_cwd
+from .agents import (
+    AgentRequest,
+    AgentResult,
+    AgentRuntime,
+    validate_runtime_request,
+    workspace_cwd,
+)
 from .models import ModelUsage, PerformanceRecord, UsageMetrics
 from .pi_rpc import (
     PiProcessHandle,
@@ -72,6 +81,15 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.READ_ONLY: ("--tools", "read,grep,find,ls"),
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
+
+#: Provider API key env vars a non-``github-copilot`` pi provider (e.g.
+#: ``anthropic``, ``openai``) authenticates from. Never removed from the
+#: child environment by :meth:`PiAgentRuntime._child_env_and_scrubbed` -- pi
+#: needs them to authenticate -- but their values are added to
+#: ``scrubbed_values`` there so :func:`~software_agent_factory.subprocess_utils.sanitize_output`
+#: still redacts them out of a failure reason built from pi's stderr or
+#: protocol output.
+_PROVIDER_API_KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 
 #: Grace period :meth:`PiAgentRuntime._abort_and_kill` waits for pi to exit on
 #: its own after a best-effort ``abort`` command, before escalating to
@@ -109,6 +127,22 @@ def _default_process_factory(
         text=True,
         start_new_session=True,
     )
+
+
+class _UnexpectedResponse(Exception):
+    """Raised when a pi RPC response's ``data`` field is not a mapping.
+
+    ``get_messages``/``get_last_assistant_text`` responses are documented as
+    carrying an object ``data``; a response that instead carries a
+    non-mapping ``data`` (a string, list, number, ...) is a protocol surprise
+    -- not the caller's bug -- so this is a distinct type from
+    :class:`~software_agent_factory.pi_rpc.PiRpcError`, mapped to a failed
+    ``AgentResult`` rather than an ``AttributeError`` from calling ``.get()``
+    on a non-mapping.
+    """
+
+    def __init__(self, command: str) -> None:
+        super().__init__(f"pi returned an unexpected response for {command}")
 
 
 def _failure_reason_for(exc: PiRpcError) -> str:
@@ -301,6 +335,7 @@ class PiAgentRuntime(AgentRuntime):
         self._process_factory = process_factory
 
     def run(self, request: AgentRequest) -> AgentResult:
+        validate_runtime_request(request)
         command = self._build_command(request, session_arg=["--no-session"])
         cwd = workspace_cwd(request)
         env, scrubbed_values = self._child_env_and_scrubbed()
@@ -339,7 +374,7 @@ class PiAgentRuntime(AgentRuntime):
                         prompt_chars=prompt_chars,
                         boot_ms=boot_ms,
                         scrubbed_values=scrubbed_values,
-                        message=f"pi assistant error: {error_message}",
+                        message=f"pi assistant error: {error_message or '(no error message)'}",
                         usage=usage,
                     )
                 if stop_reason == "aborted":
@@ -384,9 +419,28 @@ class PiAgentRuntime(AgentRuntime):
                     message=_failure_reason_for(exc),
                     usage=usage,
                 )
+            except _UnexpectedResponse as exc:
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=str(exc),
+                    usage=usage,
+                )
 
-            data = response.get("data") or {}
-            text = str(data.get("text", ""))
+            data = response.get("data")
+            if data is not None and not isinstance(data, Mapping):
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=str(_UnexpectedResponse("get_last_assistant_text")),
+                    usage=usage,
+                )
+            data = data or {}
+            text = str(data.get("text") or "")
 
             performance = PerformanceRecord(
                 prompt_chars=prompt_chars,
@@ -459,10 +513,14 @@ class PiAgentRuntime(AgentRuntime):
         """Build the scrubbed environment pi's child process runs in.
 
         ``build_child_env`` scrubs :data:`subprocess_utils.GITHUB_CREDENTIAL_ENV_VARS`;
-        ``COPILOT_GITHUB_TOKEN`` is not in that set, so it survives when set --
-        pi's ``github-copilot`` provider uses ``~/.pi/agent/auth.json`` for an
-        interactive login, but authenticates headless from that variable when
-        present.
+        ``COPILOT_GITHUB_TOKEN`` is not in that set, so it survives -- but only
+        when ``self._config.provider`` is ``"github-copilot"``, the provider
+        that authenticates headless from that variable when
+        ``~/.pi/agent/auth.json`` has no interactive login. For any other
+        provider it is removed: it is not the credential that provider reads,
+        and a stray copy would otherwise sit in the child environment for no
+        reason. See :meth:`_child_env_and_scrubbed` for the corresponding
+        ``scrubbed_values``.
         """
         env, _scrubbed_values = self._child_env_and_scrubbed()
         return env
@@ -474,9 +532,27 @@ class PiAgentRuntime(AgentRuntime):
         failure reason built from pi's stderr or protocol output (mirroring
         ``copilot_runtime.py``'s ``_format_failure_reason``, which sanitizes
         against ``build_child_env``'s ``scrubbed_values`` the same way).
+        ``COPILOT_GITHUB_TOKEN`` and the provider API keys in
+        :data:`_PROVIDER_API_KEY_ENV_VARS` are credentials ``build_child_env``
+        never scrubs (pi needs them to authenticate), so their *values* are
+        added to ``scrubbed_values`` here even when the variable itself stays
+        in ``env`` -- a credential surviving in the child's environment must
+        still never be able to leak into a sanitized failure reason.
         """
         env, scrubbed_values = build_child_env()
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
+
+        copilot_token = env.get("COPILOT_GITHUB_TOKEN")
+        if copilot_token:
+            scrubbed_values.add(copilot_token)
+            if self._config.provider != "github-copilot":
+                del env["COPILOT_GITHUB_TOKEN"]
+
+        for name in _PROVIDER_API_KEY_ENV_VARS:
+            value = env.get(name)
+            if value:
+                scrubbed_values.add(value)
+
         return env, scrubbed_values
 
     def _failed(
@@ -524,9 +600,16 @@ class PiAgentRuntime(AgentRuntime):
         (:func:`_stop_reason_from_messages`) and its usage
         (:func:`usage_from_pi_messages`) from the same result, rather than
         issuing two RPC round trips for one already-settled conversation.
+
+        Raises :class:`_UnexpectedResponse` when the response's ``data`` is
+        present but not a mapping, instead of letting a bare ``.get()`` call
+        raise ``AttributeError``.
         """
         response = client.request({"type": "get_messages"}, deadline=deadline)
-        data = response.get("data") or {}
+        data = response.get("data")
+        if data is not None and not isinstance(data, Mapping):
+            raise _UnexpectedResponse("get_messages")
+        data = data or {}
         messages = data.get("messages") or []
         return [message for message in messages if isinstance(message, dict)]
 
@@ -541,7 +624,8 @@ class PiAgentRuntime(AgentRuntime):
         the request's own (already-elapsed) deadline, so a call that already
         timed out still gets one bounded chance to report the tokens pi
         spent before it stopped responding (AC6). Any further failure (the
-        process is unresponsive, already gone, or answers something else) is
+        process is unresponsive, already gone, answers something else, or
+        answers with a non-mapping ``data`` (:class:`_UnexpectedResponse`) is
         swallowed and reported as ``None`` usage -- this is a best-effort
         nicety, never a reason to fail differently or block longer.
         """
@@ -549,17 +633,20 @@ class PiAgentRuntime(AgentRuntime):
             messages = self._get_messages(
                 client, deadline=time.monotonic() + _BEST_EFFORT_USAGE_DEADLINE_SECONDS
             )
-        except PiRpcError:
+        except (PiRpcError, _UnexpectedResponse):
             return None
         return usage_from_pi_messages(messages)
 
     def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
-        """Best-effort abort, then escalate to killing pi's process group.
+        """Best-effort abort, close stdin, then escalate to killing pi's process group.
 
-        Sends ``{"type": "abort"}`` without waiting for a response -- pi may
-        already be wedged, so a failed send (``PiRpcError``, e.g. a broken
-        pipe) is not itself an error here. Gives pi
-        :data:`_ABORT_GRACE_SECONDS` to exit on its own before escalating to
+        pi exits when its stdin reaches EOF -- not necessarily in direct
+        response to the RPC ``abort`` command itself, which is why this both
+        sends a best-effort ``{"type": "abort"}`` (pi may already be wedged,
+        so a failed send -- ``PiRpcError``, e.g. a broken pipe -- is not
+        itself an error here) and closes pi's stdin, the actual shutdown
+        trigger. Gives pi :data:`_ABORT_GRACE_SECONDS` to exit on its own
+        after that before escalating to
         :func:`~software_agent_factory.subprocess_utils.kill_process_group`.
         """
         # Unlike the Copilot runtime's timeout path (which has no RPC channel
@@ -570,6 +657,11 @@ class PiAgentRuntime(AgentRuntime):
             client.send({"type": "abort"})
         except PiRpcError:
             pass
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
         try:
             process.wait(timeout=_ABORT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:

@@ -27,7 +27,13 @@ from .agent_artifact import (
     parse_artifact_from_candidates,
 )
 from .agent_capabilities import AgentCapability, capability_for
-from .agents import AgentRequest, AgentResult, AgentRuntime, workspace_cwd
+from .agents import (
+    AgentRequest,
+    AgentResult,
+    AgentRuntime,
+    validate_runtime_request,
+    workspace_cwd,
+)
 from .models import (
     AgentPurpose,
     AgentRole,
@@ -72,10 +78,7 @@ class CopilotAgentRuntime(AgentRuntime):
     def run(self, request: AgentRequest) -> AgentResult:
         if request.purpose is AgentPurpose.CORRECT_CHANGE_SET and not request.workspace_path:
             raise ValueError("ChangeSet correction requires workspace_path")
-        if request.role is AgentRole.IMPLEMENTER and not request.workspace_path:
-            raise ValueError("IMPLEMENTER requests require workspace_path")
-        if request.timeout_seconds < 1:
-            raise ValueError("timeout_seconds must be at least 1")
+        validate_runtime_request(request)
 
         cwd = workspace_cwd(request)
         prompt = build_prompt(request)
