@@ -1150,7 +1150,12 @@ def _resolve_within_cwd(path: Path) -> Path:
 
 
 def _confine_cli_paths(args: argparse.Namespace) -> None:
-    """Replace each file-path argument with its cwd-confined, resolved form."""
+    """Replace each file-path argument with its cwd-confined, resolved form.
+
+    This fails fast before any benchmark runs. Each file read and write
+    resolves its path again at the call, because Sonar's taint analysis does
+    not follow the getattr/setattr loop below.
+    """
     for name in ("output", "baseline", "controller_output"):
         value = getattr(args, name)
         if value is not None:
@@ -1240,8 +1245,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")
+        output = _resolve_within_cwd(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")
         print(f"\nSaved benchmark results to {args.output}")
 
     if args.controller_comparison or args.controller_output:
@@ -1267,8 +1273,9 @@ def main(argv: list[str] | None = None) -> int:
             f"tester={gf.get('tester_verified')} reviewer={gf.get('reviewer_verified')}"
         )
         if args.controller_output:
-            args.controller_output.parent.mkdir(parents=True, exist_ok=True)
-            args.controller_output.write_text(json.dumps(ctrl_results, indent=2), encoding="utf-8")
+            controller_output = _resolve_within_cwd(args.controller_output)
+            controller_output.parent.mkdir(parents=True, exist_ok=True)
+            controller_output.write_text(json.dumps(ctrl_results, indent=2), encoding="utf-8")
             print(f"Saved controller comparison to {args.controller_output}")
 
     has_regression = False
@@ -1276,7 +1283,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.baseline.exists():
             print(f"\nError: baseline file not found: {args.baseline}", file=sys.stderr)
             return 2
-        baseline_data = json.loads(args.baseline.read_text(encoding="utf-8"))
+        baseline_data = json.loads(_resolve_within_cwd(args.baseline).read_text(encoding="utf-8"))
         print("\nComparison with Baseline:")
         comparison_lines, has_regression = compare_with_baseline(
             current=current_results,
