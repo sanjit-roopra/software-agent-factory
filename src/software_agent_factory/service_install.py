@@ -157,6 +157,7 @@ class ServiceRuntime(StrEnum):
 
     FAKE = "fake"
     COPILOT = "copilot"
+    PI = "pi"
 
 
 class ServicePerformanceMode(StrEnum):

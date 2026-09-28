@@ -137,7 +137,7 @@ def _config_file(path: Path, data_dir: Path, *, polish_enabled: bool = True) -> 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, runtime: FakeAgentRuntime) -> None:
     """Replace only the external model boundary the command would build."""
-    monkeypatch.setattr(cli, "_build_runtime", lambda _choice: runtime)
+    monkeypatch.setattr(cli, "_build_runtime", lambda _choice, _config: runtime)
 
 
 def _refresh(repo: Path, data_dir: Path, *extra: str):
@@ -388,6 +388,24 @@ def test_validate_reports_a_corrupt_generated_file_as_invalid(
 
 
 # -- factory skill refresh -------------------------------------------------
+
+
+def test_refresh_rejects_pi_before_any_agent_call(
+    skill_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``plans/pi-agent-runtime.md`` AC13: pi has no repository-skill
+    researcher support, so this fails fast rather than building a runtime."""
+    data_dir = tmp_path / "data"
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("skill refresh --runtime pi must not build an agent runtime")
+
+    monkeypatch.setattr(cli, "_build_runtime", _explode)
+
+    result = _refresh(skill_repo, data_dir, "--runtime", "pi")
+
+    assert result.exit_code != 0
+    assert "not supported on pi; use --runtime copilot" in result.output
 
 
 def test_refresh_creates_the_generated_skill_without_a_run_or_a_worktree(

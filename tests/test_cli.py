@@ -665,6 +665,173 @@ def test_run_rejects_an_unknown_runtime(source_repo: Path, data_dir: Path) -> No
     )
 
     assert result.exit_code != 0
+    assert "'fake'" in result.output
+    assert "'copilot'" in result.output
+    assert "'pi'" in result.output
+
+
+def test_run_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--runtime pi`` opts in. The pi runtime is stubbed here so the test
+    still makes zero paid calls."""
+    from software_agent_factory.agents import AgentResult, FakeAgentRuntime
+    from software_agent_factory.models import AgentRole
+
+    built: list[str] = []
+    delegate = FakeAgentRuntime()
+
+    class StubPiRuntime:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            built.append("pi")
+
+        def run(self, request: object) -> AgentResult:
+            assert getattr(request, "role") in set(AgentRole)
+            return delegate.run(request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert built == ["pi"]
+    assert "state: PR_READY" in result.output
+
+
+def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC19: selecting pi logs a warning naming the unrestricted shell tool
+    and linking the follow-up issue (AC18, #70), before the run happens."""
+    from software_agent_factory.agents import FakeAgentRuntime
+
+    delegate = FakeAgentRuntime()
+
+    class StubPiRuntime:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def run(self, request: object) -> object:
+            return delegate.run(request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+
+    warnings: list[str] = []
+
+    class _RecordingLogger:
+        def warning(self, msg: str, *args: object) -> None:
+            warnings.append(msg % args if args else msg)
+
+    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert any(
+        "unrestricted" in warning
+        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
+        for warning in warnings
+    ), warnings
+
+
+def test_pi_agent_runtime_stub_returns_a_failed_result(tmp_path: Path) -> None:
+    """Step 2.2's stub: ``run()`` always fails, naming itself so Slice 3's
+    real implementation is easy to tell apart from a genuine pi failure."""
+    from software_agent_factory.agents import AgentRequest
+    from software_agent_factory.config import PiConfig
+    from software_agent_factory.models import AgentRole, WorkItem
+    from software_agent_factory.pi_runtime import PiAgentRuntime
+
+    pi_config = PiConfig()
+    data_dir = tmp_path / "data"
+    pi_runtime = PiAgentRuntime(pi_config, data_dir)
+
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        work_item=WorkItem(id="WI-1", title="T", description="D"),
+        timeout_seconds=60,
+    )
+
+    result = pi_runtime.run(request)
+
+    assert result.success is False
+    assert result.role is AgentRole.IMPLEMENTER
+    assert result.failure_reason == "pi runtime not yet implemented"
+
+
+def test_project_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from software_agent_factory.agents import AgentResult, FakeAgentRuntime
+
+    built: list[str] = []
+    delegate = FakeAgentRuntime()
+
+    class StubPiRuntime:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            built.append("pi")
+
+        def run(self, request: object) -> AgentResult:
+            return delegate.run(request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+
+    result = runner.invoke(
+        app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Build customer validation",
+            "--description",
+            "Reject blank customer names.",
+            "--acceptance-criterion",
+            "Blank names return HTTP 400.",
+            "--project-id",
+            "project-pi",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert built == ["pi"]
+    assert "state: DONE" in result.output
 
 
 def test_explicit_work_item_id_is_used_for_deduplication(source_repo: Path, data_dir: Path) -> None:
@@ -819,6 +986,53 @@ def test_start_once_runs_one_bounded_tick_without_touching_github(
     runs_result = runner.invoke(app, ["runs", "--data-dir", str(data_dir)])
     assert "PR_READY" in runs_result.output
     assert "tracker-acme/repo#11" in runs_result.output
+
+
+def test_start_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_with,
+) -> None:
+    from software_agent_factory.agents import AgentResult, FakeAgentRuntime
+
+    path_with("gh")  # start's prerequisite gate; the tracker itself is stubbed
+    _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
+
+    built: list[str] = []
+    delegate = FakeAgentRuntime()
+
+    class StubPiRuntime:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            built.append("pi")
+
+        def run(self, request: object) -> AgentResult:
+            return delegate.run(request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "start",
+            "--repo",
+            str(source_repo),
+            "--github-repo",
+            "acme/repo",
+            "--once",
+            "--runtime",
+            "pi",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert built == ["pi"]
+    assert "dispatched: acme/repo#11" in result.output
 
 
 def test_start_accepts_fast_performance_mode(

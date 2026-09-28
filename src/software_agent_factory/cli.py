@@ -120,6 +120,21 @@ DEFAULT_LABEL = "com.github.software-agent-factory"
 #: run inside the repository, a worktree or the operator's shell cwd.
 SKILL_GENERATION_DIRNAME = "skill-generation"
 
+#: Tracks the missing tool-call restriction/sandboxing the pi runtime does
+#: not yet have (``plans/pi-agent-runtime.md`` Build-time decisions, AC18/19).
+PI_UNRESTRICTED_SHELL_FOLLOWUP_URL = (
+    "https://github.com/sanjit-roopra/software-agent-factory/issues/70"
+)
+
+#: Shared ``--runtime`` help text for every command whose runtime choice
+#: builds an :class:`~software_agent_factory.agents.AgentRuntime` (``run``,
+#: ``project``, ``start``, ``skill refresh``). One source keeps the three
+#: runtime names here from drifting out of sync with :class:`RuntimeChoice`.
+RUNTIME_OPTION_HELP = (
+    "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or "
+    "'pi' (paid; unrestricted shell tool)."
+)
+
 _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
     "CopilotAgentRuntime": (".copilot_runtime", "CopilotAgentRuntime"),
     "WorkflowController": (".workflow", "WorkflowController"),
@@ -132,6 +147,7 @@ _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
     "get_service_status": (".service_install", "get_service_status"),
     "uninstall_service": (".service_install", "uninstall_service"),
     "FakeAgentRuntime": (".agents", "FakeAgentRuntime"),
+    "PiAgentRuntime": (".pi_runtime", "PiAgentRuntime"),
 }
 
 
@@ -154,6 +170,7 @@ def _seam(name: str) -> Any:
 class RuntimeChoice(StrEnum):
     FAKE = "fake"
     COPILOT = "copilot"
+    PI = "pi"
 
 
 class PerformanceModeChoice(StrEnum):
@@ -264,12 +281,25 @@ def _configure_logging(config: FactoryConfig) -> None:
         typer.echo(f"warning: could not open the structured log: {exc}", err=True)
 
 
-def _build_runtime(choice: RuntimeChoice) -> AgentRuntime:
+def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime:
     if choice is RuntimeChoice.COPILOT:
         runtime_cls = _seam("CopilotAgentRuntime")
         return runtime_cls()  # type: ignore[no-any-return]
+    if choice is RuntimeChoice.PI:
+        _warn_pi_unrestricted_shell()
+        pi_runtime_cls = _seam("PiAgentRuntime")
+        return pi_runtime_cls(config.pi, config.data_dir)  # type: ignore[no-any-return]
     fake_runtime_cls = _seam("FakeAgentRuntime")
     return fake_runtime_cls()  # type: ignore[no-any-return]
+
+
+def _warn_pi_unrestricted_shell() -> None:
+    """The pi shell tool has no approval layer yet (follow-up: AC18/#70)."""
+    logger.warning(
+        "the pi runtime's shell tool is unrestricted: git push and gh can run "
+        "without approval. Follow-up: %s",
+        PI_UNRESTRICTED_SHELL_FOLLOWUP_URL,
+    )
 
 
 def _warn_fake_backlog_claims() -> None:
@@ -362,7 +392,7 @@ def run_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -399,7 +429,7 @@ def run_command(
 
     store = FileRunStore(factory_config.data_dir)
     controller_cls = _seam("WorkflowController")
-    controller = controller_cls(factory_config, store, _build_runtime(runtime))
+    controller = controller_cls(factory_config, store, _build_runtime(runtime, factory_config))
 
     work_item = WorkItem(
         id=work_item_id or f"WI-{uuid4().hex[:12]}",
@@ -489,7 +519,7 @@ def project_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -552,7 +582,7 @@ def project_command(
         project_runner = runner_cls(
             factory_config,
             run_store,
-            _build_runtime(runtime),
+            _build_runtime(runtime, factory_config),
         )
         if resume:
             assert project_id is not None
@@ -627,7 +657,7 @@ def start_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -677,7 +707,7 @@ def start_command(
     service = FactoryService(
         config=factory_config,
         store=store,
-        runtime=_build_runtime(runtime),
+        runtime=_build_runtime(runtime, factory_config),
         source_repo=repo,
         github_repo=github_repo,
     )
@@ -1487,7 +1517,7 @@ def skill_refresh_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -1515,6 +1545,8 @@ def skill_refresh_command(
     refused and the previously stored file is left byte-for-byte unchanged.
     """
     factory_config = _load_config(config, data_dir, model_profile)
+    if runtime is RuntimeChoice.PI:
+        raise _fail("not supported on pi; use --runtime copilot")
     if not factory_config.polish.enabled:
         raise _fail(
             "repository skill generation is disabled: set 'polish.enabled: true' in the "
@@ -1548,7 +1580,7 @@ def skill_refresh_command(
     from .writing_policy import apply_agent_result_writing_policy
 
     role_model = ModelRouter(factory_config).model_for_researcher()
-    agent_runtime = _build_runtime(runtime)
+    agent_runtime = _build_runtime(runtime, factory_config)
     skill: RepositorySkill | None = None
     rejection: str | None = None
     initial_rejection: str | None = None

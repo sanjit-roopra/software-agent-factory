@@ -147,6 +147,15 @@ def test_explicit_copilot_opt_in(tmp_path: Path) -> None:
     assert args[-2:] == ["--runtime", "copilot"]
 
 
+def test_explicit_pi_opt_in(tmp_path: Path) -> None:
+    """``plans/pi-agent-runtime.md`` Slice 2: the rendered service definition
+    records ``--runtime pi`` so the service starts the factory with it."""
+    request = make_request(tmp_path, runtime=ServiceRuntime.PI)
+    assert request.runtime is ServiceRuntime.PI
+    args = build_program_arguments(request)
+    assert args[-2:] == ["--runtime", "pi"]
+
+
 # -- ProgramArguments / plist exactness --------------------------------------
 
 
