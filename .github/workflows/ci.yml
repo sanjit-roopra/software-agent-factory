@@ -220,6 +220,65 @@ jobs:
           uv run --no-sync --no-build python scripts/docs/check_simple_english.py
           uv run --no-sync --no-build python scripts/docs/check_rendered_links.py site
 
+  sonar-new-issues:
+    name: sonar-new-issues
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}
+    env:
+      PROJECT_KEY: sanjit-roopra_software-agent-factory
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      # See ADR-028: the built-in "Sonar way" gate passes a PR that adds
+      # issues while ratings stay at A, and the free plan cannot assign a
+      # custom gate. This job enforces zero open issues on every PR.
+      - name: Wait for SonarCloud to analyse the PR head commit
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            analysed_sha=$(curl -fsS --max-time 30 --get \
+              "https://sonarcloud.io/api/project_pull_requests/list" \
+              --data-urlencode "project=$PROJECT_KEY" \
+              | jq -r --arg pr "$PR_NUMBER" \
+                '.pullRequests[] | select(.key == $pr) | .commit.sha // empty') \
+              || analysed_sha=""
+            echo "SonarCloud analysed commit: ${analysed_sha:-none}, want $HEAD_SHA"
+            if [ "$analysed_sha" = "$HEAD_SHA" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::SonarCloud did not analyse $HEAD_SHA for PR #$PR_NUMBER in time"
+          exit 1
+
+      - name: Require zero open SonarCloud issues on this PR
+        run: |
+          set -euo pipefail
+          response=$(curl -fsS --max-time 30 --get "https://sonarcloud.io/api/issues/search" \
+            --data-urlencode "componentKeys=$PROJECT_KEY" \
+            --data-urlencode "pullRequest=$PR_NUMBER" \
+            --data-urlencode "issueStatuses=OPEN,CONFIRMED" \
+            --data-urlencode "ps=100")
+          total=$(printf '%s' "$response" | jq -e '.paging.total')
+          if ! [[ "$total" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unexpected SonarCloud response: paging.total=$total"
+            exit 1
+          fi
+          # Escape Sonar-supplied text so a crafted path or message cannot
+          # inject a workflow command.
+          printf '%s' "$response" | jq -r '
+            def data: gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def prop: data | gsub(":"; "%3A") | gsub(","; "%2C");
+            .issues[]
+            | "::error file=\(.component | sub("^[^:]*:"; "") | prop),line=\(.line // 1)::\(.rule | data) \(.message | data)"'
+          if [ "$total" -ne 0 ]; then
+            echo "::error::SonarCloud reports $total open issue(s) on PR #$PR_NUMBER"
+            exit 1
+          fi
+          echo "SonarCloud reports 0 open issues on PR #$PR_NUMBER"
+
   ci-gate:
     name: ci-gate
     if: always()
@@ -230,13 +289,22 @@ jobs:
       - tests
       - package
       - docs
+      - sonar-new-issues
     steps:
-      - name: Require all portable checks
+      - name: Require all gating checks
+        env:
+          SONAR_RESULT: ${{ needs.sonar-new-issues.result }}
         run: |
           test "${{ needs.quality.result }}" = "success"
           test "${{ needs.tests.result }}" = "success"
           test "${{ needs.package.result }}" = "success"
           test "${{ needs.docs.result }}" = "success"
+          # sonar-new-issues runs on pull requests only. Every ref except
+          # main must pass it, so a manual run on a PR branch cannot post a
+          # green ci-gate that skips SonarCloud.
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            test "$SONAR_RESULT" = "success"
+          fi
 
   macos-arm64:
     name: macos-arm64
