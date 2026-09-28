@@ -108,6 +108,7 @@ def render_index_html(*, token: str) -> str:
           <th scope="col">Session duration (ms)</th>
           <th scope="col">AI usage value (USD)</th>
           <th scope="col">Premium-request cost</th>
+          <th scope="col">List-price estimate</th>
         </tr>
       </thead>
       <tbody id="invocations-body"></tbody>
@@ -362,6 +363,13 @@ APP_JS = """\
     return "$" + value.toFixed(6);
   }
 
+  function displayListPriceEstimate(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return "unknown";
+    }
+    return displayUsd(value);
+  }
+
   function renderProjects(payload) {
     var container = document.getElementById("projects-body");
     clearChildren(container);
@@ -463,7 +471,8 @@ APP_JS = """\
           "Reported input tokens",
           "Reported output tokens",
           "AI usage value (USD)",
-          "Premium-request units"
+          "Premium-request units",
+          "List-price estimate"
         ].forEach(function (label) {
           var th = document.createElement("th");
           th.scope = "col";
@@ -490,6 +499,7 @@ APP_JS = """\
           textCell(row, usage.output_tokens);
           textCell(row, displayUsd(usage.usage_value_usd));
           textCell(row, usage.total_premium_request_cost);
+          textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));
           modelsBody.appendChild(row);
         });
         modelsTable.appendChild(modelsBody);
@@ -576,6 +586,10 @@ APP_JS = """\
       ],
       ["Premium-request cost", detail.usage ? detail.usage.premium_request_cost : null],
       ["Nano AIU", detail.usage ? detail.usage.total_nano_aiu : null],
+      [
+        "List-price estimate",
+        displayListPriceEstimate(detail.usage ? detail.usage.list_price_estimate_usd : null)
+      ],
       ["Decision status", detail.guidance ? detail.guidance.status : detail.review_status],
       ["What happened", detail.guidance ? detail.guidance.summary : null],
       ["Next action", detail.guidance ? detail.guidance.next_action : null],
@@ -697,6 +711,7 @@ APP_JS = """\
       textCell(row, usage.session_duration_ms);
       textCell(row, displayUsd(usage.usage_value_usd));
       textCell(row, usage.total_premium_request_cost);
+      textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));
       invocationsBody.appendChild(row);
     });
     if (detail.active_invocation) {
@@ -708,6 +723,7 @@ APP_JS = """\
       textCell(activeRow, active.model);
       textCell(activeRow, active.context_tier);
       textCell(activeRow, active.status);
+      textCell(activeRow, "\u2014");
       textCell(activeRow, "\u2014");
       textCell(activeRow, "\u2014");
       textCell(activeRow, "\u2014");

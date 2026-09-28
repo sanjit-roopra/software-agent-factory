@@ -1013,6 +1013,27 @@ def test_unknown_but_valid_run_id_is_404(running_server: RunningServer) -> None:
     assert response.status == 404
 
 
+def test_sanitize_run_detail_keeps_copilot_usage_value_and_pi_estimate_separate() -> None:
+    payload = sanitize_run_detail(
+        {
+            "run_id": "run-001",
+            "usage": {
+                "total_nano_aiu": 38_483_200_000,
+                "list_price_estimate_usd": 0.42,
+            },
+        }
+    )
+
+    assert payload["usage"]["usage_value_usd"] == pytest.approx(0.384832)
+    assert payload["usage"]["list_price_estimate_usd"] == pytest.approx(0.42)
+
+
+def test_sanitize_run_detail_omits_list_price_estimate_when_not_reported() -> None:
+    payload = sanitize_run_detail({"run_id": "run-001", "usage": {"total_nano_aiu": 1}})
+
+    assert "list_price_estimate_usd" not in payload["usage"]
+
+
 def test_non_object_active_invocation_is_dropped() -> None:
     sanitized = sanitize_run_detail(
         {
@@ -1642,12 +1663,41 @@ def test_usage_sanitizer_converts_nano_aiu_to_usd_value() -> None:
     }
 
 
+def test_usage_sanitizer_passes_through_list_price_estimate_as_a_separate_field() -> None:
+    sanitized = sanitize_usage({"total_nano_aiu": 38_483_200_000, "list_price_estimate_usd": 0.42})
+
+    assert sanitized == {
+        "total_nano_aiu": 38_483_200_000,
+        "usage_value_usd": pytest.approx(0.384832),
+        "list_price_estimate_usd": pytest.approx(0.42),
+    }
+
+
+def test_usage_sanitizer_omits_list_price_estimate_when_not_reported() -> None:
+    sanitized = sanitize_usage({"input_tokens": 10})
+
+    assert "list_price_estimate_usd" not in sanitized
+
+
 def test_dashboard_explains_and_renders_usage_value() -> None:
     js = dashboard_assets.APP_JS
 
     assert "1 AI credit = $0.01" in js
     assert "Your invoice charge may be lower or zero" in js
     assert "AI usage value (USD)" in js
+
+
+def test_dashboard_renders_list_price_estimate_as_a_labelled_figure_with_unknown_fallback() -> None:
+    js = dashboard_assets.APP_JS
+    html = dashboard_assets.render_index_html(token="tok")
+
+    assert "List-price estimate" in js
+    assert "List-price estimate" in html
+    assert '"unknown"' in js
+    assert "displayListPriceEstimate(usage.list_price_estimate_usd)" in js
+    assert (
+        "displayListPriceEstimate(detail.usage ? detail.usage.list_price_estimate_usd : null)" in js
+    )
 
 
 # --------------------------------------------------------------------------

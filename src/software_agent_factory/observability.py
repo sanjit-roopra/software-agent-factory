@@ -380,6 +380,9 @@ class UsageSummary(ModelBase):
     premium_requests: float | None = Field(default=None, ge=0.0)
     premium_request_cost: float | None = Field(default=None, ge=0.0)
     total_nano_aiu: int | None = Field(default=None, ge=0)
+    list_price_estimate_usd: float | None = Field(default=None, ge=0.0)
+    """Summed pi list-price estimate (never spend). ``None`` when no
+    invocation reported one."""
 
 
 class RunInvocationSummary(ModelBase):
@@ -1168,6 +1171,7 @@ def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
     premium_requests: list[float] = []
     premium_request_costs: list[float] = []
     total_nano_aiu: list[int] = []
+    list_price_estimate: list[float] = []
 
     for record in reported:
         usage = record.usage
@@ -1182,6 +1186,14 @@ def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
             item.total_nano_aiu for item in usage.model_usage if item.total_nano_aiu is not None
         ]:
             total_nano_aiu.append(sum(model_nano))
+        if usage.list_price_estimate_usd is not None:
+            list_price_estimate.append(usage.list_price_estimate_usd)
+        elif model_estimate := [
+            item.list_price_estimate_usd
+            for item in usage.model_usage
+            if item.list_price_estimate_usd is not None
+        ]:
+            list_price_estimate.append(sum(model_estimate))
 
         model_input = [
             item.input_tokens for item in usage.model_usage if item.input_tokens is not None
@@ -1238,6 +1250,7 @@ def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
         premium_requests=sum(premium_requests) if premium_requests else None,
         premium_request_cost=(sum(premium_request_costs) if premium_request_costs else None),
         total_nano_aiu=sum(total_nano_aiu) if total_nano_aiu else None,
+        list_price_estimate_usd=(sum(list_price_estimate) if list_price_estimate else None),
     )
 
 
