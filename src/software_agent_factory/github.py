@@ -99,7 +99,6 @@ from urllib.parse import quote, urlparse
 
 from pydantic import Field
 
-from .copilot_runtime import TOKEN_PATTERNS
 from .models import (
     ExecutionPlan,
     ModelBase,
@@ -111,6 +110,7 @@ from .models import (
     VerificationReport,
     WorkItem,
 )
+from .subprocess_utils import TOKEN_PATTERNS
 
 COPILOT_CO_AUTHOR_TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 

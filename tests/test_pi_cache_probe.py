@@ -327,3 +327,37 @@ def test_subprocess_pi_process_read_line_times_out_and_close_reaps_child() -> No
         process.close(timeout=0.2)
 
     assert popen.poll() is not None
+
+
+def test_subprocess_pi_process_read_line_returns_both_lines_from_one_buffered_write() -> None:
+    """A child that writes two JSON lines in a single flush, then sleeps,
+    must yield both lines from ``read_line`` without a spurious timeout on
+    the second call. ``select()`` only reports the fd ready once; a second
+    line already pulled into a buffered reader's internal buffer (rather
+    than read via the raw fd) would otherwise be missed by a second
+    ``select()`` wait while the child sleeps."""
+    script = (
+        "import json, sys, time\n"
+        "sys.stdout.write(json.dumps({'n': 1}) + '\\n' + json.dumps({'n': 2}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(5)\n"
+    )
+    popen = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    process = probe._SubprocessPiProcess(popen)
+    try:
+        deadline = time.monotonic() + 5.0
+        first = process.read_line(deadline)
+        second = process.read_line(deadline)
+    finally:
+        process.close(timeout=0.2)
+
+    assert first is not None and json.loads(first) == {"n": 1}
+    assert second is not None and json.loads(second) == {"n": 2}

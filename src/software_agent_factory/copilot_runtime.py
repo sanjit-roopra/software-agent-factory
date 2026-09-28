@@ -13,7 +13,6 @@ import json
 import logging
 import math
 import os
-import re
 import subprocess
 import tempfile
 import time
@@ -43,7 +42,7 @@ from .prompts import (
     RoleName,
     build_prompt,
 )
-from .subprocess_utils import GITHUB_CREDENTIAL_ENV_VARS
+from .subprocess_utils import build_child_env, sanitize_output
 from .subprocess_utils import kill_process_group as _kill_process_group
 
 logger = logging.getLogger(__name__)
@@ -56,10 +55,6 @@ SKILL_RESEARCH_TOOLS = ("web_fetch",)
 #: were widened, shell (and therefore Git) and filesystem writes stay denied.
 SKILL_RESEARCH_DENIED_PERMISSIONS = ("shell", "write")
 IMPLEMENTER_TOOLS = ("glob", "grep", "view", "create", "edit", "bash")
-TOKEN_PATTERNS = (
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-)
 
 
 @dataclass(frozen=True)
@@ -86,7 +81,7 @@ class CopilotAgentRuntime(AgentRuntime):
         cwd = self._cwd_for(request)
         prompt = build_prompt(request)
         prompt_chars = len(prompt)
-        child_env, scrubbed_values = _build_child_env()
+        child_env, scrubbed_values = build_child_env()
         started_at = utc_now()
 
         with tempfile.TemporaryDirectory(
@@ -655,16 +650,6 @@ def _validate_skill_research_url(url: str) -> None:
         raise ValueError(f"repository skill research URLs must not carry credentials: {url!r}")
 
 
-def _build_child_env() -> tuple[dict[str, str], set[str]]:
-    env = dict(os.environ)
-    scrubbed_values: set[str] = set()
-    for name in GITHUB_CREDENTIAL_ENV_VARS:
-        value = env.pop(name, None)
-        if value:
-            scrubbed_values.add(value)
-    return env, scrubbed_values
-
-
 def _decode_timeout_text(value: object) -> str:
     if value is None:
         return ""
@@ -804,8 +789,8 @@ def _format_failure_reason(
     limit: int,
 ) -> str:
     sections: list[str] = [f"{role.value}: {message}."]
-    cleaned_stdout = _sanitize_output(stdout, scrubbed_values)
-    cleaned_stderr = _sanitize_output(stderr, scrubbed_values)
+    cleaned_stdout = sanitize_output(stdout, scrubbed_values)
+    cleaned_stderr = sanitize_output(stderr, scrubbed_values)
     if cleaned_stdout:
         sections.append(f"stdout={cleaned_stdout}")
     if cleaned_stderr:
@@ -814,16 +799,3 @@ def _format_failure_reason(
     if len(combined) <= limit:
         return combined
     return f"{combined[: limit - 12].rstrip()}...[truncated]"
-
-
-def _sanitize_output(text: str, scrubbed_values: set[str]) -> str:
-    sanitized = text
-    for value in sorted(scrubbed_values, key=len, reverse=True):
-        if len(value) >= 4:
-            sanitized = sanitized.replace(value, "[REDACTED]")
-    for pattern in TOKEN_PATTERNS:
-        sanitized = pattern.sub("[REDACTED]", sanitized)
-    sanitized = " ".join(sanitized.split())
-    if len(sanitized) <= 600:
-        return sanitized
-    return f"{sanitized[:597].rstrip()}..."

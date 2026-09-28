@@ -1,9 +1,11 @@
 """Runtime-neutral subprocess helpers shared by agent runtimes.
 
-Process-group termination and the GitHub-credential env-var scrub set are
-used by more than one ``AgentRuntime`` implementation (Copilot today, pi
-from Slice 3 of ``plans/pi-agent-runtime.md``), so neither runtime owns
-them. Tolerant dotted-version parsing is shared by the runtime
+Process-group termination, the GitHub-credential env-var scrub set, and the
+credential-hygiene helpers built on it (:data:`TOKEN_PATTERNS`,
+:func:`build_child_env`, :func:`sanitize_output`) are used by more than one
+``AgentRuntime`` implementation (Copilot, pi from Slice 3 of
+``plans/pi-agent-runtime.md``, and the pi cache probe script), so no single
+runtime owns them. Tolerant dotted-version parsing is shared by the runtime
 prerequisite checks (Step 2.3 of ``plans/pi-agent-runtime.md``).
 """
 
@@ -29,6 +31,14 @@ GITHUB_CREDENTIAL_ENV_VARS = frozenset(
         "GITHUB_PAT",
         "GITHUB_TOKEN",
     }
+)
+
+#: Patterns matching GitHub token literals, used to scrub tokens that reach a
+#: child process's output even when they were not sourced from one of
+#: :data:`GITHUB_CREDENTIAL_ENV_VARS` (e.g. embedded in a URL or error body).
+TOKEN_PATTERNS = (
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
 )
 
 _VERSION_PATTERN = re.compile(r"(\d+(?:\.\d+)*)")
@@ -67,6 +77,40 @@ def kill_process_group(
         except ProcessLookupError:
             pass
         return process.communicate()
+
+
+def build_child_env() -> tuple[dict[str, str], set[str]]:
+    """Copy the current environment with GitHub credentials scrubbed.
+
+    Returns the scrubbed environment mapping alongside the set of credential
+    values removed, so callers can also redact those values from process
+    output (see :func:`sanitize_output`).
+    """
+    env = dict(os.environ)
+    scrubbed_values: set[str] = set()
+    for name in GITHUB_CREDENTIAL_ENV_VARS:
+        value = env.pop(name, None)
+        if value:
+            scrubbed_values.add(value)
+    return env, scrubbed_values
+
+
+def sanitize_output(text: str, scrubbed_values: set[str]) -> str:
+    """Redact scrubbed credential values and token-shaped substrings from text.
+
+    Collapses whitespace and truncates to 600 characters, matching the
+    excerpt length used in failure-reason and log messages.
+    """
+    sanitized = text
+    for value in sorted(scrubbed_values, key=len, reverse=True):
+        if len(value) >= 4:
+            sanitized = sanitized.replace(value, "[REDACTED]")
+    for pattern in TOKEN_PATTERNS:
+        sanitized = pattern.sub("[REDACTED]", sanitized)
+    sanitized = " ".join(sanitized.split())
+    if len(sanitized) <= 600:
+        return sanitized
+    return f"{sanitized[:597].rstrip()}..."
 
 
 def parse_version(text: str) -> tuple[int, ...] | None:

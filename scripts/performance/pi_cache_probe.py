@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
 import select
 import subprocess
 import sys
@@ -38,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from software_agent_factory.subprocess_utils import kill_process_group
+from software_agent_factory.subprocess_utils import build_child_env, kill_process_group
 
 #: Bound on how long :meth:`_SubprocessPiProcess.close` waits for the child
 #: to exit on its own before escalating to :func:`kill_process_group`.
@@ -137,6 +138,15 @@ class _SubprocessPiProcess:
 
     def __init__(self, popen: subprocess.Popen[str]) -> None:
         self._popen = popen
+        #: Raw bytes read from the stdout fd but not yet returned as a line.
+        #: ``select()`` reports readiness at the OS pipe level, but the
+        #: buffered ``TextIOWrapper`` can pull more than one line into its
+        #: own internal buffer on a single read; polling ``select()`` again
+        #: for a line already sitting in that buffer would spuriously time
+        #: out. Reading the raw fd directly and keeping our own buffer
+        #: avoids that: we only block on ``select()`` when our buffer holds
+        #: no complete line yet.
+        self._buffer = b""
 
     def send(self, command: Mapping[str, Any]) -> None:
         assert self._popen.stdin is not None
@@ -145,14 +155,23 @@ class _SubprocessPiProcess:
 
     def read_line(self, deadline: float) -> str | None:
         assert self._popen.stdout is not None
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("timed out waiting for pi output")
-        ready, _, _ = select.select([self._popen.stdout], [], [], remaining)
-        if not ready:
-            raise TimeoutError("timed out waiting for pi output")
-        line = self._popen.stdout.readline()
-        return line if line else None
+        fd = self._popen.stdout.fileno()
+        while b"\n" not in self._buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for pi output")
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                raise TimeoutError("timed out waiting for pi output")
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                if self._buffer:
+                    line, self._buffer = self._buffer, b""
+                    return line.decode("utf-8")
+                return None
+            self._buffer += chunk
+        line, _, self._buffer = self._buffer.partition(b"\n")
+        return line.decode("utf-8") + "\n"
 
     def close(self, *, timeout: float = _CLOSE_TIMEOUT_SECONDS) -> None:
         """Close stdin and reap the child, killing its process group if it hangs."""
@@ -165,6 +184,11 @@ class _SubprocessPiProcess:
 
 
 def _default_process_factory(cmd: Sequence[str]) -> PiProcessProtocol:
+    # pi's github-copilot auth is read from ~/.pi/agent/auth.json, not these
+    # env vars, so dropping them cannot break auth -- it only keeps a GitHub
+    # credential in the factory's own environment from leaking into the
+    # child's environment or transcript.
+    env, _ = build_child_env()
     try:
         popen = subprocess.Popen(
             list(cmd),
@@ -174,6 +198,7 @@ def _default_process_factory(cmd: Sequence[str]) -> PiProcessProtocol:
             text=True,
             bufsize=1,
             start_new_session=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise PiExecutableNotFoundError(cmd[0]) from exc
