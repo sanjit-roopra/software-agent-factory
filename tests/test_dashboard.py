@@ -1932,3 +1932,18 @@ def test_run_id_with_trailing_newline_is_rejected() -> None:
 
     assert is_valid_run_id("abc")
     assert not is_valid_run_id("abc\n")
+
+
+def test_malformed_request_line_gets_400_and_logs_without_crashing(
+    running_server: RunningServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    # parse_request rejects the line before self.path exists; the logging hook
+    # runs on that error path and must not raise.
+    with caplog.at_level(logging.INFO, logger="software_agent_factory.dashboard"):
+        with socket.create_connection(("127.0.0.1", running_server.port), timeout=5) as sock:
+            sock.sendall(b"GET / HTTP/x\r\n\r\n")
+            chunks = []
+            while chunk := sock.recv(4096):
+                chunks.append(chunk)
+    raw = b"".join(chunks)
+    assert b"400" in raw and b"Bad request" in raw

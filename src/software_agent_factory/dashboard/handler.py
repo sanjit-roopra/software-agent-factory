@@ -134,8 +134,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         dashboard token, and that must never reach a log."""
         _logger.info(
             "%s %s -> %s",
-            _log_safe_method(self.command),
-            _log_safe_path(self.path),
+            _log_safe_method(getattr(self, "command", None)),
+            # parse_request sets path only after the request line parses; on a
+            # malformed line this hook still runs, via send_error.
+            _log_safe_path(getattr(self, "path", "")),
             _log_safe_text(args[-1], _MAX_LOGGED_PATH_LENGTH) if args else "",
         )
 
