@@ -48,7 +48,7 @@ tracked as a follow-up.
 - One `pi --mode rpc` subprocess per `run()` call. The call starts pi, sends commands
   as JSONL on stdin, reads JSONL records from stdout, then closes stdin and reaps the
   process. The runtime holds no live processes between calls.
-- Working directory is `request.workspace_path` (same rule as `_cwd_for` today).
+- Working directory is `request.workspace_path` (same rule as `agents.workspace_cwd`).
 - Flags always passed: `--mode rpc`, `--provider <pi.provider>`, `--model <id>`,
   `--thinking <level>`, `--tools <role allowlist>` (or `--no-tools`), `--no-extensions`,
   `--no-skills`, `--no-prompt-templates`, `--no-context-files`, `--no-approve`, and
