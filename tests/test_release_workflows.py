@@ -139,28 +139,45 @@ def _sonar_job_steps() -> dict[str, str]:
 
 
 def _run_step(
-    script: str, tmp_path: Path, env: dict[str, str], curl_body: str | None
+    script: str,
+    tmp_path: Path,
+    env: dict[str, str],
+    curl_body: str | None,
+    curl_failures: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """Execute a workflow ``run:`` script with ``curl`` and ``sleep`` stubbed.
 
-    ``curl_body`` is what the stub prints; ``None`` makes the stub fail like
-    ``curl -f`` on an HTTP error.
+    The ``curl`` stub fails like ``curl -f`` on an HTTP error for its first
+    ``curl_failures`` calls, and always when ``curl_body`` is ``None``;
+    otherwise it prints ``curl_body``. Calls are counted in ``curl-calls``.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     body_file = tmp_path / "curl-body"
+    calls_file = tmp_path / "curl-calls"
+    calls_file.write_text("0", encoding="utf-8")
     if curl_body is None:
-        curl = "#!/bin/sh\nexit 22\n"
+        curl_failures = 1_000_000
     else:
         body_file.write_text(curl_body, encoding="utf-8")
-        curl = f"#!/bin/sh\ncat '{body_file}'\n"
+    curl = (
+        "#!/bin/sh\n"
+        f"n=$(($(cat '{calls_file}') + 1)); echo $n > '{calls_file}'\n"
+        f"[ $n -le {curl_failures} ] && exit 22\n"
+        f"cat '{body_file}'\n"
+    )
     for name, content in (("curl", curl), ("sleep", "#!/bin/sh\nexit 0\n")):
         stub = bin_dir / name
         stub.write_text(content, encoding="utf-8")
         stub.chmod(0o755)
     full_env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", **env}
     return subprocess.run(
-        ["bash", "-c", script], env=full_env, capture_output=True, text=True, check=False
+        # GitHub runs a run: step with no shell: set as ``bash -e {0}``.
+        ["bash", "-e", "-c", script],
+        env=full_env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -191,6 +208,16 @@ def test_ci_sonar_wait_passes_once_head_commit_is_analysed(tmp_path: Path) -> No
     result = _run_step(wait, tmp_path, SONAR_ENV, _pr_list("abc123"))
 
     assert result.returncode == 0
+
+
+@requires_jq
+def test_ci_sonar_wait_recovers_after_transient_sonarcloud_errors(tmp_path: Path) -> None:
+    wait = _sonar_job_steps()["Wait for SonarCloud to analyse the PR head commit"]
+
+    result = _run_step(wait, tmp_path, SONAR_ENV, _pr_list("abc123"), curl_failures=2)
+
+    assert result.returncode == 0
+    assert (tmp_path / "curl-calls").read_text(encoding="utf-8").strip() == "3"
 
 
 @requires_jq
