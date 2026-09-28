@@ -179,6 +179,20 @@ def test_parse_copilot_usage_preserves_only_reported_values() -> None:
     assert not hasattr(usage, "unknown")
 
 
+def test_parse_copilot_usage_drops_models_without_reported_values() -> None:
+    usage = parse_copilot_usage(
+        {
+            "modelMetrics": {
+                "empty-model": {},
+                "counted-model": {"requests": {"count": 1}},
+            },
+        }
+    )
+
+    assert usage is not None
+    assert [entry.model for entry in usage.model_usage] == ["counted-model"]
+
+
 @pytest.mark.parametrize("payload", [None, [], {"totalNanoAiu": -1}, {"totalUserRequests": True}])
 def test_parse_copilot_usage_returns_none_without_valid_reported_values(payload: object) -> None:
     assert parse_copilot_usage(payload) is None

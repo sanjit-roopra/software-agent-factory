@@ -44,9 +44,25 @@ from software_agent_factory.routing import (
     derive_named_paths,
     determine_route,
     get_configured_full_fallback,
+    strip_pasted_code_and_diffs,
 )
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, _RunContext
+
+
+@pytest.fixture(autouse=True)
+def _routing_git_env(factory_git_env: None) -> None:
+    """Keep every routing test independent of the developer's Git config."""
+
+
+@pytest.fixture
+def source_repo(factory_source_repo: Path) -> Path:
+    return factory_source_repo
+
+
+@pytest.fixture
+def data_dir(factory_data_dir: Path) -> Path:
+    return factory_data_dir
 
 
 def _config_dict(max_total_attempts: int = 6) -> dict[str, object]:
@@ -2252,3 +2268,14 @@ def test_default_https_transport_pins_tls_floor(monkeypatch: pytest.MonkeyPatch)
     context = captured["context"]
     assert isinstance(context, ssl.SSLContext)
     assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_strip_pasted_code_removes_crlf_fenced_blocks(fence: str) -> None:
+    text = f"Before.\r\n{fence}python\r\nsecret_code()\r\n{fence}\r\nAfter."
+
+    stripped = strip_pasted_code_and_diffs(text)
+
+    assert "secret_code" not in stripped
+    assert stripped.startswith("Before.")
+    assert stripped.endswith("After.")

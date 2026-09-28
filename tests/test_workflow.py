@@ -13,6 +13,7 @@ import itertools
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 import pytest
@@ -84,6 +85,7 @@ from software_agent_factory.workflow import (
     UNRESOLVED_DECISIONS_HALT_REASON,
     TransitionError,
     WorkflowController,
+    _overlay_warnings,
     _RunContext,
     is_run_finished,
 )
@@ -5101,3 +5103,17 @@ def test_default_fake_planner_regression(
 
     planner_invocations = [r for r in run.invocation_records if r.role is AgentRole.PLANNER]
     assert len(planner_invocations) == 1
+
+
+def test_overlay_warnings_names_the_unapplied_overlay_file() -> None:
+    manager = SimpleNamespace(overlay_path=Path("/repo/.factory/skill-overlay.md"))
+
+    assert _overlay_warnings(manager, SimpleNamespace(overlay_error=None)) == ()  # type: ignore[arg-type]
+    warnings = _overlay_warnings(
+        manager,  # type: ignore[arg-type]
+        SimpleNamespace(overlay_error="overlay is not valid YAML"),  # type: ignore[arg-type]
+    )
+
+    assert len(warnings) == 1
+    assert "/repo/.factory/skill-overlay.md was not applied and was left unchanged" in warnings[0]
+    assert warnings[0].endswith("overlay is not valid YAML")

@@ -194,4 +194,4 @@ def test_lint_reads_each_list_item_as_one_sentence() -> None:
     )
 
     assert report["sentences"] == 4
-    assert report["longest_sentence_words"] == 5
+    assert report["longest_sentence_words"] == len("Run the unit tests first.".split())

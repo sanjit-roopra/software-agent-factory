@@ -4,6 +4,10 @@ This file keeps the deterministic checks that fit factory artifacts. The
 factory does not use the upstream benchmark runner, chat reply rules, modal
 rules, tense rules, trailing-condition rule, or synonym-rotation rule.
 
+Local change: list items become sentences through a line scan, not the
+upstream multiline regular expression, so long lines cannot cause
+backtracking. Keep this change when you update from upstream.
+
 The checks cannot prove ASD-STE100 compliance.
 """
 

@@ -76,23 +76,20 @@ def _inline_code_spans(text: str) -> list[tuple[int, int]]:
     a document with many unclosed backticks cannot make the check slow.
     """
     runs = [(m.start(), m.end()) for m in re.finditer(r"`+", text)]
+    next_same_width: list[int | None] = [None] * len(runs)
+    latest_by_width: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        width = runs[index][1] - runs[index][0]
+        next_same_width[index] = latest_by_width.get(width)
+        latest_by_width[width] = index
     spans: list[tuple[int, int]] = []
     index = 0
     while index < len(runs):
-        start, end = runs[index]
-        width = end - start
-        closer = next(
-            (
-                later
-                for later in range(index + 1, len(runs))
-                if runs[later][1] - runs[later][0] == width
-            ),
-            None,
-        )
+        closer = next_same_width[index]
         if closer is None:
             index += 1
             continue
-        spans.append((start, runs[closer][1]))
+        spans.append((runs[index][0], runs[closer][1]))
         index = closer + 1
     return spans
 
@@ -394,10 +391,8 @@ def is_procedural_sentence(sentence: str) -> bool:
     prose = sentence.lstrip(" *_0123456789.)")
     if INSTRUCTION_START.match(prose) is not None:
         return True
-    condition = re.match(r"^(?:if|when)\b[^,]*,(.*)$", prose, re.I)
-    return (
-        condition is not None and INSTRUCTION_START.match(condition.group(1).lstrip()) is not None
-    )
+    condition = re.match(r"^(?:if|when)\b[^,]*,\s*+(.*)$", prose, re.I)
+    return condition is not None and INSTRUCTION_START.match(condition.group(1)) is not None
 
 
 def trailing_condition(sentence: str) -> re.Match[str] | None:

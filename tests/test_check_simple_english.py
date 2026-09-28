@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -112,10 +113,24 @@ def test_inline_code_pairs_backtick_runs_of_equal_width() -> None:
 def test_unclosed_backticks_are_scanned_in_linear_time() -> None:
     source = "word ` " * 20_000 + "``done``\n"
 
+    started = time.perf_counter()
     masked = mask_markdown(source)
+    elapsed = time.perf_counter() - started
 
-    assert masked.endswith("        \n")
+    assert elapsed < 5.0
+    assert masked.endswith(" " * len("``done``") + "\n")
     assert masked.startswith("word")
+
+
+def test_backtick_runs_of_distinct_widths_are_scanned_in_linear_time() -> None:
+    source = "".join("`" * width + " x " for width in range(1, 2_000))
+
+    started = time.perf_counter()
+    masked = mask_markdown(source)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 5.0
+    assert "`" in masked
 
 
 def test_admonition_prose_is_checked() -> None:
@@ -198,6 +213,10 @@ def test_violation_reporting_reports_actionable_path_and_lines() -> None:
 
     formatted_with_root = v_semi.format(root=Path.cwd())
     assert "docs/guides/example.md:2: semicolon" in formatted_with_root
+
+
+def test_condition_wrapped_after_its_comma_is_still_procedural() -> None:
+    assert is_procedural_sentence("When the build fails,\nrun the tests again.")
 
 
 def test_procedural_sentences_use_the_twenty_word_limit() -> None:
