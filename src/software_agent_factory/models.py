@@ -597,6 +597,10 @@ class ModelUsage(ModelBase):
     cache_read_tokens: int | None = Field(default=None, ge=0)
     cache_write_tokens: int | None = Field(default=None, ge=0)
     total_nano_aiu: int | None = Field(default=None, ge=0)
+    list_price_estimate_usd: float | None = Field(default=None, ge=0.0)
+    """List-price USD estimate the runtime computed from its own price
+    catalog (pi), never what the provider actually billed. ``None`` when the
+    runtime did not report one."""
 
 
 class UsageMetrics(ModelBase):
@@ -622,6 +626,11 @@ class UsageMetrics(ModelBase):
     last_call_input_tokens: int | None = Field(default=None, ge=0)
     last_call_output_tokens: int | None = Field(default=None, ge=0)
     model_usage: tuple[ModelUsage, ...] = ()
+    list_price_estimate_usd: float | None = Field(default=None, ge=0.0)
+    """List-price USD estimate the runtime computed from its own price
+    catalog (pi), never what the provider actually billed. ``None`` when the
+    runtime did not report one (including every run persisted before this
+    field existed)."""
 
 
 class PerformanceMetric(ModelBase):
