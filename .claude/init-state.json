@@ -5,8 +5,10 @@
   },
   "graphify": {
     "install_accepted": true,
-    "enrichment_skipped_no_key": true,
-    "code_only_build": true
+    "code_only_build": false,
+    "backend": "claude-cli",
+    "full_extraction": true,
+    "labeled": true
   },
   "mcp_hygiene": {
     "gitignore": "added",
