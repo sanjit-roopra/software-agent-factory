@@ -85,12 +85,18 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "persist-credentials: false" in text
     assert "uv sync --locked --no-build --no-default-groups --group quality" in text
     assert "uv sync --locked --no-build --no-default-groups --group test" in text
-    assert "uv sync --locked --no-build --no-default-groups --group distribution --group native" in text
+    assert (
+        "uv sync --locked --no-build --no-default-groups --group distribution --group native"
+        in text
+    )
     assert "uv sync --locked --no-build --no-default-groups --group native --group test" in text
     assert "uv lock --check" not in text
     assert "uv run --no-sync --no-build ruff format --check ." in text
     assert "uv run --no-sync --no-build ruff check --output-format=github ." in text
-    assert "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release" in text
+    assert (
+        "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release"
+        in text
+    )
     assert "--cov=software_agent_factory" in text
     assert '"3.13"' in text
     assert '"3.14"' in text
@@ -141,7 +147,9 @@ def test_security_workflow_has_pull_request_audit_codeql_and_locked_audit() -> N
     assert "github.event.repository.visibility == 'public'" in text
     dependency_review = workflow["jobs"]["dependency-review"]
     assert dependency_review["if"] == "github.event_name == 'pull_request'"
-    assert "uv sync --locked --no-build --no-default-groups --group security" in str(dependency_review)
+    assert "uv sync --locked --no-build --no-default-groups --group security" in str(
+        dependency_review
+    )
     assert "uv run --no-sync --no-build pip-audit --skip-editable" in str(dependency_review)
     assert {"python", "actions"} == set(
         workflow["jobs"]["codeql"]["strategy"]["matrix"]["language"]
@@ -226,7 +234,10 @@ def test_release_workflow_has_safe_publish_shape() -> None:
     assert "gh release view" in text
     assert "uv run --no-sync --no-build ruff format --check ." in text
     assert "uv run --no-sync --no-build ruff check ." in text
-    assert "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release" in text
+    assert (
+        "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release"
+        in text
+    )
     assert "uv run --no-sync --no-build pytest -q --cov=software_agent_factory --cov-branch" in text
     assert "uv run --no-sync --no-build pip-audit --skip-editable" in text
     assert "uv run --no-sync --no-build python scripts/docs/check_simple_english.py" in text
@@ -234,7 +245,10 @@ def test_release_workflow_has_safe_publish_shape() -> None:
     assert "python scripts/docs/check_rendered_links.py site" in text
     assert "uv run --no-sync --no-build twine check dist/*" in text
     assert "uv run --no-sync --no-build check-wheel-contents dist/*.whl" in text
-    assert "PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py" in text
+    assert (
+        "PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py"
+        in text
+    )
     assert "VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python" in text
     assert "shasum -a 256 -c SHA256SUMS" in text
     assert "macos-15" in text

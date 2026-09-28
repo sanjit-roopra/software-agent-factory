@@ -2217,3 +2217,40 @@ def test_final_finding6_max_response_bytes_and_transport_boundaries(
     bad_req = urllib.request.Request("http://insecure.typesafe.ai/v1/systemone")
     with pytest.raises(ValueError, match="HTTPS required"):
         default_https_transport(bad_req, 5.0, 65536)
+
+
+def test_default_https_transport_pins_tls_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ssl
+
+    from software_agent_factory import routing
+
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self, n: int) -> bytes:
+            return b""
+
+    class FakeConnection:
+        sock = None
+        timeout = 0.0
+
+        def __init__(self, host: str, port: int, timeout: float, context: ssl.SSLContext) -> None:
+            captured["context"] = context
+
+        def request(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(routing.http.client, "HTTPSConnection", FakeConnection)
+    req = urllib.request.Request("https://api.example.test/v1", data=b"{}", method="POST")
+    routing.default_https_transport(req, 5.0, 65536)
+    context = captured["context"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2

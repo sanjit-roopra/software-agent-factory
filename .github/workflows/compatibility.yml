@@ -43,6 +43,10 @@ jobs:
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
+        # No --no-build here, unlike every other workflow: on a prerelease
+        # interpreter, pydantic-core and pyyaml ship no wheel yet, so the
+        # sdists must be built or the job fails at install instead of
+        # reporting a real 3.15 incompatibility.
         run: |
-          uv sync --locked --no-build --no-default-groups --group test
-          uv run --no-sync --no-build pytest -q
+          uv sync --locked --no-default-groups --group test
+          uv run --no-sync pytest -q

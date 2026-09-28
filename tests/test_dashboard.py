@@ -14,6 +14,7 @@ import http.client
 import io
 import json
 import logging
+import socket
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -30,6 +31,11 @@ from software_agent_factory.dashboard import (
     create_server,
 )
 from software_agent_factory.dashboard import assets as dashboard_assets
+from software_agent_factory.dashboard.handler import (
+    _MAX_LOGGED_PATH_LENGTH,
+    _log_safe_method,
+    _log_safe_path,
+)
 from software_agent_factory.dashboard.sanitize import (
     ACTIVE_INVOCATION_FIELDS,
     ATTEMPT_FIELDS,
@@ -1847,12 +1853,82 @@ def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> No
         ("/api/runs\r\nINFO forged line", "/api/runs??INFO forged line"),
         ("/api/\x00bin\x1b[31m", "/api/?bin?[31m"),
         ("/über", "/?ber"),
-        ("/" + "a" * 500, "/" + "a" * 199),
+        ("/" + "a" * 500, ("/" + "a" * 500)[:_MAX_LOGGED_PATH_LENGTH]),
+    ],
+    ids=[
+        "strips-query",
+        "strips-crlf",
+        "strips-control-chars",
+        "strips-non-ascii",
+        "bounds-length",
     ],
 )
 def test_log_safe_path_strips_query_control_chars_and_bounds_length(
     raw: str, expected: str
 ) -> None:
-    from software_agent_factory.dashboard.handler import _log_safe_path
-
     assert _log_safe_path(raw) == expected
+
+
+def test_forged_request_path_reaches_log_as_one_sanitised_record(
+    running_server: RunningServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    # End-to-end: the wiring in log_message, not just the helper. A CRLF in
+    # the request line must not split the access log into two records.
+    with caplog.at_level(logging.INFO, logger="software_agent_factory.dashboard"):
+        response = running_server.request(
+            "GET", "/api/runs%0D%0AINFO%20forged?token=x", headers=running_server.authed_headers()
+        )
+        response.read_body  # type: ignore[attr-defined]
+    records = [r for r in caplog.records if r.name == "software_agent_factory.dashboard"]
+    access = [r for r in records if r.getMessage().startswith("GET ")]
+    assert len(access) == 1
+    message = access[0].getMessage()
+    assert "\r" not in message and "\n" not in message
+    assert "token=" not in message
+    assert "/api/runs" in message
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("GET", "GET"),
+        (None, ""),
+        ("\x1b[2JGET", "?[2JGET"),
+        ("A" * 40, "A" * 16),
+    ],
+    ids=["plain", "none", "strips-escape", "bounds-length"],
+)
+def test_log_safe_method_strips_control_chars_and_bounds_length(
+    raw: str | None, expected: str
+) -> None:
+    assert _log_safe_method(raw) == expected
+
+
+def test_unknown_method_with_escape_reaches_log_sanitised(
+    running_server: RunningServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    # An unknown method is rejected by BaseHTTPRequestHandler before any token
+    # check, and logged through log_message on the way out.
+    # http.client refuses control characters in the method, so speak raw HTTP.
+    request = (
+        b"\x1b[2JGET /api/health HTTP/1.1\r\n"
+        + f"Host: 127.0.0.1:{running_server.port}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+    )
+    with caplog.at_level(logging.INFO, logger="software_agent_factory.dashboard"):
+        with socket.create_connection(("127.0.0.1", running_server.port), timeout=5) as sock:
+            sock.sendall(request)
+            while sock.recv(4096):
+                pass
+    messages = [
+        r.getMessage() for r in caplog.records if r.name == "software_agent_factory.dashboard"
+    ]
+    assert messages
+    assert all("\x1b" not in m for m in messages)
+
+
+def test_run_id_with_trailing_newline_is_rejected() -> None:
+    from software_agent_factory.dashboard.snapshot import is_valid_run_id
+
+    assert is_valid_run_id("abc")
+    assert not is_valid_run_id("abc\n")

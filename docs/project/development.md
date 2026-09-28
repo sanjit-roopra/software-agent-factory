@@ -136,6 +136,11 @@ On every pull request:
   `main` and manual workflow runs
 - **ci-gate**: requires all portable checks to pass
 
+Every CI job installs the locked dependencies with `uv sync --no-build`. That
+means wheels only: no third-party build script runs on a CI runner. The one
+exception is the Python prerelease job, where wheels do not exist yet. Local
+commands do not need the flag.
+
 Security workflows run dependency review on pull requests, CodeQL, and a weekly
 audit of the locked environment. Scheduled workflows also test the next Python
 prerelease.
