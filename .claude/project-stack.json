@@ -1,0 +1,15 @@
+{
+  "detected": "2026-09-28",
+  "stacks": ["python"],
+  "frameworks": ["pydantic", "typer", "pytest"],
+  "packageManager": "uv",
+  "hasDocker": false,
+  "indicators": {
+    "pyproject.toml": true,
+    "uv.lock": true,
+    "requirements.txt": false,
+    "package.json": false,
+    "tsconfig.json": false,
+    "Dockerfile": false
+  }
+}
