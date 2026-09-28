@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 
 from .handler import DashboardRequestHandler
-from .security import generate_token, validate_bind_host
+from .security import expected_origin, generate_token, validate_bind_host
 from .snapshot import HealthProvider, ProjectProvider, RunDetailProvider, SnapshotProvider
 
 #: Binding to port 0 asks the OS for an ephemeral free port, which is the
@@ -75,7 +75,7 @@ class DashboardServer(ThreadingHTTPServer):
     @property
     def base_url(self) -> str:
         host, port = self.address
-        return f"http://{host}:{port}"
+        return expected_origin(host, port)
 
     @property
     def dashboard_url(self) -> str:

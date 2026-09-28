@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory.
+
+    Guards against path traversal when an agent drives this CLI (Sonar
+    pythonsecurity:S8707). Kept as an identical copy in each script under
+    scripts/ because they run standalone and share no importable module.
+    """
+    resolved = os.path.realpath(path)
+    base_dir = os.path.realpath(os.getcwd())
+    base_prefix = base_dir if base_dir.endswith(os.sep) else base_dir + os.sep
+    if resolved != base_dir and not resolved.startswith(base_prefix):
+        raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
+    return Path(resolved)
+
+
 def _load(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(_resolve_within_cwd(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Build info must be a JSON object: {path}")
     return payload
@@ -46,8 +62,9 @@ def main() -> int:
             str(entry.get("runner_image", "")),
         ),
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output = _resolve_within_cwd(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
 

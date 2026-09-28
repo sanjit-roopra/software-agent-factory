@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -379,6 +380,21 @@ def trailing_condition(sentence: str) -> re.Match[str] | None:
     return None
 
 
+def _resolve_within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory.
+
+    Guards against path traversal when an agent drives this CLI (Sonar
+    pythonsecurity:S8707). Kept as an identical copy in each script under
+    scripts/ because they run standalone and share no importable module.
+    """
+    resolved = os.path.realpath(path)
+    base_dir = os.path.realpath(os.getcwd())
+    base_prefix = base_dir if base_dir.endswith(os.sep) else base_dir + os.sep
+    if resolved != base_dir and not resolved.startswith(base_prefix):
+        raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
+    return Path(resolved)
+
+
 def check_file(path: Path, root: Path | None = None) -> list[Violation]:
     """Check one Markdown file on disk."""
     content = path.read_text(encoding="utf-8")
@@ -421,7 +437,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "paths",
         nargs="*",
         type=Path,
-        help="Specific Markdown files to check (defaults to README.md and docs/**/*.md).",
+        help=(
+            "Specific Markdown files to check, relative to the working directory "
+            "(defaults to README.md and docs/**/*.md)."
+        ),
     )
     parser.add_argument(
         "--root",
@@ -434,11 +453,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    root = args.root.resolve() if args.root else _ROOT
 
     try:
-        files = resolve_target_files(args.paths, root)
-    except FileNotFoundError as err:
+        root = _resolve_within_cwd(args.root) if args.root else _ROOT
+        paths = [_resolve_within_cwd(path) for path in args.paths]
+        files = resolve_target_files(paths, root)
+    except (FileNotFoundError, ValueError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2
 
