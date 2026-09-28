@@ -43,6 +43,7 @@ from software_agent_factory.repository_skills import (
     validate_dependency_fingerprint,
     validate_repository_key,
 )
+from software_agent_factory.workflow import _overlay_warnings
 
 FINGERPRINT_A = "a" * 64
 FINGERPRINT_B = "b" * 64
@@ -989,8 +990,6 @@ def test_validation_accepts_a_profile_with_no_dependencies_and_no_targets() -> N
 
 
 def test_overlay_warnings_names_the_unapplied_overlay_file() -> None:
-    from software_agent_factory.workflow import _overlay_warnings
-
     manager = SimpleNamespace(overlay_path=Path("/repo/.factory/skill-overlay.md"))
 
     assert _overlay_warnings(manager, SimpleNamespace(overlay_error=None)) == ()  # type: ignore[arg-type]
