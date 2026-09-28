@@ -283,3 +283,9 @@ def test_main_exits_non_zero_naming_missing_executable(capsys: pytest.CaptureFix
     assert exit_code != 0
     captured = capsys.readouterr()
     assert "definitely-not-a-real-pi-executable" in captured.err
+
+
+def test_first_prompt_exceeds_provider_cache_minimum() -> None:
+    # Providers cache only prefixes of about 1,024 tokens or more; roughly four
+    # characters per token means the prompt must be well above 4,096 characters.
+    assert len(probe._FIRST_PROMPT) > 8_000

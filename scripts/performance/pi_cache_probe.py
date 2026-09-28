@@ -38,10 +38,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+#: Providers only cache prompts above a minimum length (about 1,024 tokens
+#: for Anthropic and OpenAI models), so the shared prefix is padded well past
+#: that floor. A short prefix would report zero cache reads even when caching
+#: works.
+_CACHE_PAD = " ".join(f"Probe padding line {index}." for index in range(900))
 #: Shared prefix used for both prompts in a probe run. The second prompt
 #: extends this prefix so a provider with prompt caching has a matching
 #: prefix to serve from cache.
-_FIRST_PROMPT = "Reply with the single word: ack."
+_FIRST_PROMPT = f"{_CACHE_PAD}\n\nIgnore the padding above. Reply with the single word: ack."
 _SECOND_PROMPT_SUFFIX = " Then reply with the single word: ack-again."
 
 _BASE_RPC_FLAGS = (
