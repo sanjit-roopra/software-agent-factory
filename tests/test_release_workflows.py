@@ -109,7 +109,13 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "uv run --no-sync --no-build mkdocs build --strict" in text
     assert "uv run --no-sync --no-build python scripts/docs/check_simple_english.py" in text
     assert "python scripts/docs/check_rendered_links.py site" in text
-    assert workflow["jobs"]["ci-gate"]["needs"] == ["quality", "tests", "package", "docs"]
+    assert workflow["jobs"]["ci-gate"]["needs"] == [
+        "quality",
+        "tests",
+        "package",
+        "docs",
+        "sonar-new-issues",
+    ]
     assert "scripts/release/prepare_frozen_bundle.py" in text
     assert "scripts/release/smoke_factory.py" in text
     assert '--archive "$ARCHIVE"' in text
@@ -122,6 +128,16 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert workflow["env"]["UV_VERSION"] == "0.12.19"
     for job in workflow["jobs"].values():
         assert "timeout-minutes" in job
+
+
+def test_ci_workflow_blocks_pull_requests_with_open_sonar_issues() -> None:
+    text, workflow = _load_workflow("ci.yml")
+    job = workflow["jobs"]["sonar-new-issues"]
+    assert job["if"] == "github.event_name == 'pull_request'"
+    assert job["permissions"] == {"checks": "read"}
+    assert 'select(.name == "SonarCloud Code Analysis")' in text
+    assert "issueStatuses=OPEN,CONFIRMED" in text
+    assert 'test "$SONAR_RESULT" = "success"' in text
 
 
 def test_ci_workflow_limits_native_macos_to_main_and_manual_dispatch() -> None:
