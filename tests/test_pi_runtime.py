@@ -294,45 +294,6 @@ def test_build_command_appends_session_arg_for_resumed_session() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _cwd_for: same rule as the Copilot runtime
-# ---------------------------------------------------------------------------
-
-
-def test_cwd_for_uses_workspace_path_when_supplied(tmp_path: Path) -> None:
-    runtime = _runtime()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
-
-    assert runtime._cwd_for(request) == workspace.resolve()
-
-
-def test_cwd_for_falls_back_to_process_cwd_for_read_only_role(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    runtime = _runtime()
-
-    assert runtime._cwd_for(_request(AgentRole.TRIAGE)) == tmp_path.resolve()
-
-
-def test_cwd_for_change_set_correction_requires_workspace_path() -> None:
-    runtime = _runtime()
-    request = _correction_request(workspace_path=None)
-
-    with pytest.raises(ValueError, match="workspace_path"):
-        runtime._cwd_for(request)
-
-
-def test_cwd_for_skill_generation_requires_workspace_path() -> None:
-    runtime = _runtime()
-    request = _skill_request(workspace_path=None)
-
-    with pytest.raises(ValueError, match="neutral run directory"):
-        runtime._cwd_for(request)
-
-
-# ---------------------------------------------------------------------------
 # _child_env: GitHub credential scrub, COPILOT_GITHUB_TOKEN kept, cache retention
 # ---------------------------------------------------------------------------
 

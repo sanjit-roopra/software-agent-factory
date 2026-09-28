@@ -1,7 +1,8 @@
 """``pi`` (``@earendil-works/pi-coding-agent``) agent runtime.
 
 :meth:`PiAgentRuntime.run` drives one ``pi --mode rpc`` subprocess per call
-(built by ``_build_command``/``_cwd_for``/``_child_env``, Step 3.2) over
+(built by ``_build_command``/:func:`~software_agent_factory.agents.workspace_cwd`/
+``_child_env``, Step 3.2) over
 :class:`~software_agent_factory.pi_rpc.PiRpcClient` (Step 3.1): a ``prompt``
 command, ``wait_for_settled``, a ``get_messages`` check of the final
 assistant message's ``stopReason`` (Step 3.4 -- the same ``get_messages``
@@ -34,7 +35,6 @@ workflow/project/CLI layers convert them with
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -43,8 +43,8 @@ from typing import TYPE_CHECKING, Callable
 
 from .agent_artifact import build_success_result, parse_agent_artifact
 from .agent_capabilities import AgentCapability, capability_for
-from .agents import AgentRequest, AgentResult, AgentRuntime
-from .models import AgentPurpose, PerformanceRecord
+from .agents import AgentRequest, AgentResult, AgentRuntime, workspace_cwd
+from .models import PerformanceRecord
 from .pi_rpc import (
     PiProcessHandle,
     PiRpcClient,
@@ -101,6 +101,23 @@ def _default_process_factory(
     )
 
 
+def _failure_reason_for(exc: PiRpcError) -> str:
+    """Map one non-timeout ``PiRpcError`` to its failure-reason wording.
+
+    ``PiRpcTimeout`` is handled separately in :meth:`PiAgentRuntime.run`
+    because, unlike the other ``PiRpcError`` subtypes, it also needs
+    :meth:`PiAgentRuntime._abort_and_kill` before building the failure
+    result.
+    """
+    if isinstance(exc, PiRpcProcessExited):
+        return f"pi process exited with code {exc.returncode} before settling: {exc.stderr_tail}"
+    if isinstance(exc, PiRpcProtocolError):
+        return f"pi wrote an invalid protocol record: {exc.line_excerpt}"
+    if isinstance(exc, PiRpcCommandError):
+        return f"pi command {exc.command.get('type')!r} failed: {exc.error}"
+    return f"pi RPC error: {exc}"
+
+
 class PiAgentRuntime(AgentRuntime):
     """Production ``AgentRuntime`` backed by the ``pi`` CLI.
 
@@ -123,7 +140,7 @@ class PiAgentRuntime(AgentRuntime):
 
     def run(self, request: AgentRequest) -> AgentResult:
         command = self._build_command(request, session_arg=["--no-session"])
-        cwd = self._cwd_for(request)
+        cwd = workspace_cwd(request)
         env, scrubbed_values = self._child_env_and_scrubbed()
         prompt = build_prompt(request)
         prompt_chars = len(prompt)
@@ -179,32 +196,13 @@ class PiAgentRuntime(AgentRuntime):
                     scrubbed_values=scrubbed_values,
                     message=f"pi timed out after {request.timeout_seconds} seconds",
                 )
-            except PiRpcProcessExited as exc:
+            except PiRpcError as exc:
                 return self._failed(
                     request,
                     prompt_chars=prompt_chars,
                     boot_ms=boot_ms,
                     scrubbed_values=scrubbed_values,
-                    message=(
-                        f"pi process exited with code {exc.returncode} before settling: "
-                        f"{exc.stderr_tail}"
-                    ),
-                )
-            except PiRpcProtocolError as exc:
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=f"pi wrote an invalid protocol record: {exc.line_excerpt}",
-                )
-            except PiRpcCommandError as exc:
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=(f"pi command {exc.command.get('type')!r} failed: {exc.error}"),
+                    message=_failure_reason_for(exc),
                 )
 
             data = response.get("data") or {}
@@ -219,11 +217,13 @@ class PiAgentRuntime(AgentRuntime):
             try:
                 artifact = parse_agent_artifact(request.role, text=text, purpose=request.purpose)
             except ValueError as exc:
-                return AgentResult(
-                    role=request.role,
-                    success=False,
-                    failure_reason=str(exc),
-                    performance=performance,
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=str(exc),
+                    response_chars=len(text),
                 )
 
             return build_success_result(
@@ -273,24 +273,6 @@ class PiAgentRuntime(AgentRuntime):
             *session_arg,
         ]
 
-    def _cwd_for(self, request: AgentRequest) -> Path:
-        """Resolve the working directory for one pi call.
-
-        Same rule as the Copilot runtime's ``_cwd_for``
-        (``copilot_runtime.py``): the request's workspace when supplied,
-        otherwise the process cwd -- except ``CORRECT_CHANGE_SET`` and
-        ``GENERATE_REPOSITORY_SKILL`` always require an explicit workspace.
-        """
-        if request.workspace_path:
-            return Path(request.workspace_path).expanduser().resolve()
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            raise ValueError("ChangeSet correction requires workspace_path")
-        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-            raise ValueError(
-                "repository skill generation requires workspace_path (the neutral run directory)"
-            )
-        return Path(os.getcwd()).expanduser().resolve()
-
     def _child_env(self) -> dict[str, str]:
         """Build the scrubbed environment pi's child process runs in.
 
@@ -323,6 +305,7 @@ class PiAgentRuntime(AgentRuntime):
         boot_ms: float,
         scrubbed_values: set[str],
         message: str,
+        response_chars: int = 0,
     ) -> AgentResult:
         """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
 
@@ -330,7 +313,9 @@ class PiAgentRuntime(AgentRuntime):
         :func:`~software_agent_factory.subprocess_utils.sanitize_output`
         against ``scrubbed_values`` so a credential embedded in pi's stderr,
         an error message, or a protocol excerpt can never reach the stored
-        ``failure_reason``.
+        ``failure_reason``. ``response_chars`` defaults to ``0`` (no assistant
+        text was produced); the malformed-artifact path passes the actual
+        length of the text pi did produce.
         """
         return AgentResult(
             role=request.role,
@@ -338,7 +323,7 @@ class PiAgentRuntime(AgentRuntime):
             failure_reason=sanitize_output(message, scrubbed_values),
             performance=PerformanceRecord(
                 prompt_chars=prompt_chars,
-                response_chars=0,
+                response_chars=response_chars,
                 process_boot_ms=boot_ms,
             ),
         )
@@ -378,6 +363,10 @@ class PiAgentRuntime(AgentRuntime):
         :data:`_ABORT_GRACE_SECONDS` to exit on its own before escalating to
         :func:`~software_agent_factory.subprocess_utils.kill_process_group`.
         """
+        # Unlike the Copilot runtime's timeout path (which has no RPC channel
+        # and goes straight to kill_process_group), pi is driven over an RPC
+        # connection it can still hear on even mid-timeout, so we ask it to
+        # abort cleanly first and only escalate to a hard kill if it doesn't.
         try:
             client.send({"type": "abort"})
         except PiRpcError:

@@ -363,40 +363,6 @@ def test_build_command_requires_at_least_one_allowed_skill_research_url() -> Non
         runtime._build_command(request, prompt="research", cwd=Path("/runs/RUN-1"))
 
 
-def test_cwd_for_skill_request_uses_neutral_run_directory_not_operator_cwd(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    run_dir = tmp_path / "runs" / "RUN-1"
-    run_dir.mkdir(parents=True)
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    monkeypatch.chdir(repository)
-
-    runtime = CopilotAgentRuntime()
-    cwd = runtime._cwd_for(_skill_request(workspace_path=str(run_dir)))
-
-    assert cwd == run_dir.resolve()
-    assert cwd != repository.resolve()
-
-
-def test_cwd_for_skill_request_refuses_to_fall_back_to_process_cwd() -> None:
-    runtime = CopilotAgentRuntime()
-
-    with pytest.raises(ValueError, match="neutral run directory"):
-        runtime._cwd_for(_skill_request(workspace_path=None))
-
-
-def test_cwd_for_read_only_role_still_falls_back_to_process_cwd(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    runtime = CopilotAgentRuntime()
-
-    assert runtime._cwd_for(_request(AgentRole.TRIAGE)) == tmp_path.resolve()
-
-
 def test_run_for_skill_request_uses_run_directory_and_neutral_permissions(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1000,7 +966,7 @@ def test_timeout_kills_process_group_and_returns_failure(
         killed.append((pid, sig))
 
     monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("software_agent_factory.copilot_runtime.os.killpg", fake_killpg)
+    monkeypatch.setattr("software_agent_factory.subprocess_utils.os.killpg", fake_killpg)
 
     runtime = CopilotAgentRuntime()
     result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=5))
@@ -1032,7 +998,7 @@ def test_timeout_uncooperative_process_escalates_to_sigkill(
         killed.append((pid, sig))
 
     monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("software_agent_factory.copilot_runtime.os.killpg", fake_killpg)
+    monkeypatch.setattr("software_agent_factory.subprocess_utils.os.killpg", fake_killpg)
 
     runtime = CopilotAgentRuntime()
     result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=5))
@@ -1138,9 +1104,6 @@ def test_correct_change_set_requires_workspace_path() -> None:
     with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
         runtime.run(request)
 
-    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
-        runtime._cwd_for(request)
-
     request_empty = _request(
         AgentRole.IMPLEMENTER,
         purpose=AgentPurpose.CORRECT_CHANGE_SET,
@@ -1149,17 +1112,6 @@ def test_correct_change_set_requires_workspace_path() -> None:
     )
     with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
         runtime.run(request_empty)
-
-    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
-        runtime._cwd_for(request_empty)
-
-    request_valid = _request(
-        AgentRole.IMPLEMENTER,
-        purpose=AgentPurpose.CORRECT_CHANGE_SET,
-        change_set=change_set,
-        workspace_path="/tmp/explicit-workspace",
-    )
-    assert runtime._cwd_for(request_valid) == Path("/tmp/explicit-workspace").resolve()
 
 
 def test_parse_copilot_artifact_recovers_nested_envelope_object() -> None:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import subprocess
 import tempfile
 import time
@@ -28,7 +27,7 @@ from .agent_artifact import (
     parse_artifact_from_candidates,
 )
 from .agent_capabilities import AgentCapability, capability_for
-from .agents import AgentRequest, AgentResult, AgentRuntime
+from .agents import AgentRequest, AgentResult, AgentRuntime, workspace_cwd
 from .models import (
     AgentPurpose,
     AgentRole,
@@ -78,7 +77,7 @@ class CopilotAgentRuntime(AgentRuntime):
         if request.timeout_seconds < 1:
             raise ValueError("timeout_seconds must be at least 1")
 
-        cwd = self._cwd_for(request)
+        cwd = workspace_cwd(request)
         prompt = build_prompt(request)
         prompt_chars = len(prompt)
         child_env, scrubbed_values = build_child_env()
@@ -219,19 +218,6 @@ class CopilotAgentRuntime(AgentRuntime):
                 usage=usage,
                 performance=perf,
             )
-
-    def _cwd_for(self, request: AgentRequest) -> Path:
-        if request.workspace_path:
-            return Path(request.workspace_path).expanduser().resolve()
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            raise ValueError("ChangeSet correction requires workspace_path")
-        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-            # The skill researcher must run in the neutral run directory the
-            # workflow passes, never in the operator's or repository's cwd.
-            raise ValueError(
-                "repository skill generation requires workspace_path (the neutral run directory)"
-            )
-        return Path(os.getcwd()).expanduser().resolve()
 
     def _build_command(
         self,

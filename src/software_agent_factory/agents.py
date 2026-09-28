@@ -30,6 +30,7 @@ happy-path tests do not need to configure every role.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -149,6 +150,30 @@ class AgentRequest(ModelBase):
                 "research URL configuration is only valid for repository skill generation"
             )
         return self
+
+
+def workspace_cwd(request: AgentRequest) -> Path:
+    """Resolve the working directory one agent runtime should run in.
+
+    Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
+    and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
+    apply the exact same rule: the request's workspace when supplied,
+    otherwise the process's current working directory -- except
+    ``CORRECT_CHANGE_SET`` and ``GENERATE_REPOSITORY_SKILL``, which always
+    require an explicit workspace (a rejected ``ChangeSet`` must be corrected
+    in the workspace it was produced in, and the skill researcher must run in
+    the neutral run directory the workflow passes, never the operator's or
+    repository's cwd).
+    """
+    if request.workspace_path:
+        return Path(request.workspace_path).expanduser().resolve()
+    if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        raise ValueError("ChangeSet correction requires workspace_path")
+    if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+        raise ValueError(
+            "repository skill generation requires workspace_path (the neutral run directory)"
+        )
+    return Path(os.getcwd()).expanduser().resolve()
 
 
 class AgentResult(ModelBase):
