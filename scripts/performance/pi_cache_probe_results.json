@@ -1,0 +1,14 @@
+{
+  "recorded_at": "2026-09-28",
+  "pi_version": "0.84.4",
+  "package": "@earendil-works/pi-coding-agent",
+  "provider": "github-copilot",
+  "note": "Prefix padded to about 5,000 tokens. Resume mode starts a second pi process on the same session file.",
+  "results": [
+    {"model": "claude-sonnet-5", "mode": "same-process", "cache": "available", "cache_read_tokens": 8848, "cache_write_tokens": 16989, "input_tokens": 4},
+    {"model": "claude-sonnet-5", "mode": "resume", "cache": "available", "cache_read_tokens": 25837, "cache_write_tokens": 0, "input_tokens": 4},
+    {"model": "gpt-5.5", "mode": "same-process", "cache": "available", "cache_read_tokens": 4864, "cache_write_tokens": 0, "input_tokens": 12333},
+    {"model": "gpt-5.5", "mode": "resume", "cache": "available", "cache_read_tokens": 15872, "cache_write_tokens": 0, "input_tokens": 1325}
+  ],
+  "verdict": "Copilot through pi reports cache reads for Claude and OpenAI models, within one process and after a resume. Cache writes are reported for Claude only. PR2 gate passes."
+}
