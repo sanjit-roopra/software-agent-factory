@@ -186,6 +186,12 @@ class ServiceInstallRequest:
     performance_mode: ServicePerformanceMode | None = None
     label: str = DEFAULT_LABEL
     allow_source_dev: bool = False
+    #: The operator's ``PI_CODING_AGENT_DIR`` at install time, or ``None`` if
+    #: unset. A path, not a secret, so it is safe to carry into the plist's
+    #: ``EnvironmentVariables`` -- the launchd job otherwise only inherits
+    #: ``PATH``, so a custom ``~/.pi/agent`` override the operator relies on
+    #: (auth.json location) would silently stop applying under the service.
+    pi_coding_agent_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -355,10 +361,13 @@ def build_launch_agent_plist(request: ServiceInstallRequest, path_value: str) ->
     """The full plist payload as a plain dict, ready for ``plistlib.dumps``."""
     validate_label(request.label)
     throttle = max(MIN_THROTTLE_INTERVAL_SECONDS, int(request.poll_interval_seconds))
+    environment_variables: dict[str, str] = {"PATH": path_value}
+    if request.pi_coding_agent_dir is not None:
+        environment_variables["PI_CODING_AGENT_DIR"] = request.pi_coding_agent_dir
     return {
         "Label": request.label,
         "ProgramArguments": build_program_arguments(request),
-        "EnvironmentVariables": {"PATH": path_value},
+        "EnvironmentVariables": environment_variables,
         "RunAtLoad": True,
         # See module docstring: "SuccessfulExit" is deliberately omitted so
         # exit code is never the restart trigger (a clean exit -- 0, the

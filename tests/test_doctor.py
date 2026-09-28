@@ -319,6 +319,34 @@ def test_check_pi_credential_via_provider_env_var_passes() -> None:
     assert result.status is CheckStatus.OK
 
 
+def test_check_pi_env_credential_rejected_when_env_credentials_not_accepted() -> None:
+    """Service-install preflight (``accept_env_credentials=False``): an
+    operator-shell env var must not satisfy the credential check, since a
+    launchd job never inherits it -- only auth.json does."""
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    result = check_pi(env, PiConfig(), required=True, accept_env_credentials=False)
+    assert result.status is CheckStatus.ERROR
+    assert "credential" in result.message
+    assert "do not reach the service" in result.message
+
+
+def test_check_pi_auth_json_still_passes_when_env_credentials_not_accepted() -> None:
+    home = Path("/fake-home")
+    auth_path = home / ".pi" / "agent" / "auth.json"
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        home_dir=home,
+        read_text=make_read_text({auth_path: '{"github-copilot": {"token": "x"}}'}),
+    )
+    result = check_pi(env, PiConfig(), required=True, accept_env_credentials=False)
+    assert result.status is CheckStatus.OK
+
+
 def test_check_pi_credential_via_auth_json_passes() -> None:
     home = Path("/fake-home")
     auth_path = home / ".pi" / "agent" / "auth.json"
@@ -708,6 +736,27 @@ def test_run_doctor_requires_pi_when_runtime_requested() -> None:
     assert pi_check.status is CheckStatus.ERROR
 
 
+def test_run_doctor_forwards_accept_pi_env_credentials_to_check_pi() -> None:
+    """``accept_pi_env_credentials=False`` (the service-install preflight)
+    must make ``run_doctor`` reject an env-var pi credential too, not just
+    ``check_pi`` called directly."""
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    report = run_doctor(
+        config_path=None,
+        requested_runtime_pi=True,
+        accept_pi_env_credentials=False,
+        environment=env,
+    )
+    assert report.success is False
+    pi_check = next(c for c in report.checks if c.name == "pi")
+    assert pi_check.status is CheckStatus.ERROR
+    assert "do not reach the service" in pi_check.message
+
+
 def test_run_doctor_default_runtime_never_requires_pi() -> None:
     env, _ = make_env(available={"git": "/usr/bin/git"})  # pi missing, but not requested
     report = run_doctor(config_path=None, environment=env)
@@ -864,6 +913,21 @@ def test_missing_prerequisites_always_requires_git() -> None:
     assert missing_prerequisites(environment=env) == ["git"]
     # A PATH lookup only: nothing is executed by this gate.
     assert runner.calls == []
+
+
+def test_missing_prerequisites_uses_the_configured_pi_executable_name() -> None:
+    """``pi_executable`` names the executable to look up, so a custom
+    ``config.pi.executable`` is honored instead of a literal ``"pi"`` -- and
+    a shim literally named ``"pi"`` must not satisfy a differently-named
+    requirement."""
+    from software_agent_factory.doctor import missing_prerequisites
+
+    env, _ = make_env(available={"git": "/usr/bin/git", "pi": "/usr/local/bin/pi"})
+
+    assert missing_prerequisites(
+        require_pi=True, pi_executable="custom-pi-agent", environment=env
+    ) == ["custom-pi-agent"]
+    assert missing_prerequisites(require_pi=True, pi_executable="pi", environment=env) == []
 
 
 def test_missing_prerequisites_reports_only_requested_tools() -> None:

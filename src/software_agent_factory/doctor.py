@@ -358,10 +358,20 @@ def _pi_auth_dir(env: DoctorEnvironment) -> Path:
     return env.home_dir / ".pi" / "agent"
 
 
-def _pi_provider_credential_present(env: DoctorEnvironment, provider: str) -> bool:
-    """A credential for ``provider``: an ``auth.json`` entry, or (for the
-    providers pi's headless login supports) the matching API-token
-    environment variable."""
+def _pi_provider_credential_present(
+    env: DoctorEnvironment, provider: str, *, accept_env_credentials: bool = True
+) -> bool:
+    """A credential for ``provider``: an ``auth.json`` entry, or -- when
+    ``accept_env_credentials`` is true (the default) -- the matching
+    API-token environment variable for the providers pi's headless login
+    supports.
+
+    ``accept_env_credentials=False`` is for the service-install preflight
+    (:func:`run_doctor`'s ``accept_pi_env_credentials``): an environment
+    variable set in the operator's interactive shell never reaches a launchd
+    service (only the plist's own ``EnvironmentVariables`` does), so it must
+    not satisfy the check there -- only a persisted ``auth.json`` entry can.
+    """
     auth_text = env.read_text(_pi_auth_dir(env) / "auth.json")
     if auth_text is not None:
         try:
@@ -370,6 +380,8 @@ def _pi_provider_credential_present(env: DoctorEnvironment, provider: str) -> bo
             auth_data = None
         if isinstance(auth_data, dict) and provider in auth_data:
             return True
+    if not accept_env_credentials:
+        return False
     env_var = _PI_PROVIDER_CREDENTIAL_ENV_VARS.get(provider)
     return env_var is not None and bool(env.getenv(env_var))
 
@@ -436,7 +448,13 @@ def _check_pi_component_version(
     return None
 
 
-def check_pi(env: DoctorEnvironment, config: PiConfig, *, required: bool) -> CheckResult:
+def check_pi(
+    env: DoctorEnvironment,
+    config: PiConfig,
+    *,
+    required: bool,
+    accept_env_credentials: bool = True,
+) -> CheckResult:
     """``pi`` is only required when ``--runtime pi`` is requested.
 
     Checks, in fixed order, first failure wins (``plans/pi-agent-runtime.md``
@@ -450,7 +468,10 @@ def check_pi(env: DoctorEnvironment, config: PiConfig, *, required: bool) -> Che
     Every failure message names what was found (where applicable) and what
     is required, plus a fix. Not required (``--runtime pi`` was not
     requested) short-circuits to ``OK`` before any of that runs -- the same
-    way an offline default run never probes ``copilot``.
+    way an offline default run never probes ``copilot``. ``accept_env_credentials``
+    (default ``True``) is forwarded to :func:`_pi_provider_credential_present`;
+    the service-install preflight passes ``False`` since a launchd job never
+    inherits the operator's shell environment variables.
     """
     if not required:
         return CheckResult(
@@ -500,11 +521,16 @@ def check_pi(env: DoctorEnvironment, config: PiConfig, *, required: bool) -> Che
     if node_version_failure is not None:
         return node_version_failure
 
-    if not _pi_provider_credential_present(env, config.provider):
+    if not _pi_provider_credential_present(
+        env, config.provider, accept_env_credentials=accept_env_credentials
+    ):
+        message = f"no credential found for pi provider '{config.provider}'"
+        if not accept_env_credentials:
+            message += " in auth.json (environment-variable credentials do not reach the service)"
         return CheckResult(
             name="pi",
             status=CheckStatus.ERROR,
-            message=f"no credential found for pi provider '{config.provider}'",
+            message=message,
             remediation=f"Run 'pi' then '/login' and choose {config.provider}.",
         )
 
@@ -711,6 +737,7 @@ def run_doctor(
     model_profile: str | None = None,
     requested_runtime_copilot: bool = False,
     requested_runtime_pi: bool = False,
+    accept_pi_env_credentials: bool = True,
     environment: DoctorEnvironment | None = None,
 ) -> DoctorReport:
     """Run every preflight check and return one :class:`DoctorReport`.
@@ -724,6 +751,9 @@ def run_doctor(
     so a default ``fake`` run never demands ``copilot`` or ``pi``.
     ``requested_runtime_pi`` is checked against ``config.pi`` when
     configuration loaded, or the default :class:`PiConfig` otherwise.
+    ``accept_pi_env_credentials`` (default ``True``) is forwarded to
+    :func:`check_pi`; ``factory service install`` passes ``False`` since a
+    launchd job never inherits the operator's shell environment variables.
     """
     env = environment if environment is not None else DoctorEnvironment()
     checks: list[CheckResult] = [
@@ -752,7 +782,14 @@ def run_doctor(
 
     checks.append(check_gh(env, required=gh_required))
     checks.append(check_copilot(env, required=requested_runtime_copilot))
-    checks.append(check_pi(env, pi_config, required=requested_runtime_pi))
+    checks.append(
+        check_pi(
+            env,
+            pi_config,
+            required=requested_runtime_pi,
+            accept_env_credentials=accept_pi_env_credentials,
+        )
+    )
     checks.extend(check_verification_commands(env, verification_commands))
 
     if data_dir is not None:
@@ -766,6 +803,7 @@ def missing_prerequisites(
     require_gh: bool = False,
     require_copilot: bool = False,
     require_pi: bool = False,
+    pi_executable: str = "pi",
     environment: DoctorEnvironment | None = None,
 ) -> list[str]:
     """Names of required external executables missing from ``PATH``.
@@ -777,9 +815,13 @@ def missing_prerequisites(
     instead of a traceback from deep inside the workspace or tracker code.
     ``git`` is always required; ``gh``, ``copilot`` and ``pi`` only when the
     caller says the requested feature set needs them. ``pi`` here is a bare
-    ``PATH`` lookup for the default ``pi`` executable name -- it does not
-    validate the pi/Node version or provider credential; those live in
-    :func:`check_pi`, inside the fuller ``factory doctor`` report.
+    ``PATH`` lookup for ``pi_executable`` (the configured
+    ``factory_config.pi.executable`` when a caller has one, else the default
+    ``"pi"``) -- it does not validate the pi/Node version or provider
+    credential; those live in :func:`check_pi`, inside the fuller ``factory
+    doctor`` report. Callers must pass the same configured executable name
+    here as they do to ``check_pi`` (via ``run_doctor``), so preflight and
+    doctor never disagree about which name they are checking.
     """
     env = environment if environment is not None else DoctorEnvironment()
     wanted: list[str] = ["git"]
@@ -788,5 +830,5 @@ def missing_prerequisites(
     if require_copilot:
         wanted.append("copilot")
     if require_pi:
-        wanted.append("pi")
+        wanted.append(pi_executable)
     return [executable for executable in wanted if env.which(executable) is None]

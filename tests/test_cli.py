@@ -287,6 +287,49 @@ def test_run_with_pi_runtime_requires_pi(source_repo: Path, data_dir: Path, path
     assert "missing required executable(s) on PATH: pi" in result.output
 
 
+def test_run_with_pi_runtime_checks_the_configured_executable_name(
+    source_repo: Path, data_dir: Path, tmp_path: Path, path_without
+) -> None:
+    """The prerequisite gate must look up ``config.pi.executable`` instead of
+    a literal ``"pi"``, so ``factory doctor`` and ``factory run`` can never
+    disagree about which executable name a custom ``pi.executable`` config
+    requires. A shim literally named ``pi`` on PATH must not satisfy it."""
+    import yaml
+
+    from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
+
+    packaged = Path(__import__("software_agent_factory").__file__).parent / DEFAULT_CONFIG_FILENAME
+    payload = yaml.safe_load(packaged.read_text(encoding="utf-8"))
+    payload["factory"]["data_dir"] = str(data_dir)
+    payload["pi"] = {"executable": "custom-pi-agent"}
+    config_path = tmp_path / "factory.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    path_without("git", "pi")  # literal "pi" present, "custom-pi-agent" is not
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--config",
+            str(config_path),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "missing required executable(s) on PATH: custom-pi-agent" in result.output
+
+
 def test_invalid_config_fails_with_one_line_and_no_traceback(
     source_repo: Path, tmp_path: Path
 ) -> None:
@@ -793,6 +836,10 @@ def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
         and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
         for warning in warnings
     ), warnings
+    # AC19: the warning must also reach the operator's terminal, not just the
+    # structured file log.
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
 
 
 def test_pi_agent_runtime_stub_returns_a_failed_result(tmp_path: Path) -> None:
@@ -877,6 +924,8 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
         and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
         for warning in warnings
     ), warnings
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
     assert built == ["pi"]
     assert "state: DONE" in result.output
 
@@ -1094,6 +1143,8 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
         and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
         for warning in warnings
     ), warnings
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
 
 
 def test_start_accepts_fast_performance_mode(

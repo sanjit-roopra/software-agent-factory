@@ -260,7 +260,11 @@ def _load_config(
 
 
 def _require_prerequisites(
-    *, require_gh: bool, require_copilot: bool, require_pi: bool = False
+    *,
+    require_gh: bool,
+    require_copilot: bool,
+    require_pi: bool = False,
+    pi_executable: str = "pi",
 ) -> None:
     """Refuse to start work when a required external executable is absent.
 
@@ -268,11 +272,16 @@ def _require_prerequisites(
     (:func:`~software_agent_factory.doctor.missing_prerequisites`), so the
     two can never disagree, and runs before any workspace, tracker or agent
     code -- the alternative is a traceback from a failed ``git`` exec several
-    layers down.
+    layers down. ``pi_executable`` should be the configured
+    ``factory_config.pi.executable`` whenever a loaded config is available, so
+    a custom executable name is looked up instead of the literal ``"pi"``.
     """
     missing_checker = _seam("missing_prerequisites")
     missing = missing_checker(
-        require_gh=require_gh, require_copilot=require_copilot, require_pi=require_pi
+        require_gh=require_gh,
+        require_copilot=require_copilot,
+        require_pi=require_pi,
+        pi_executable=pi_executable,
     )
     if not missing:
         return
@@ -310,12 +319,19 @@ def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime
 
 
 def _warn_pi_unrestricted_shell() -> None:
-    """The pi shell tool has no approval layer yet (follow-up: AC18/#70)."""
-    logger.warning(
+    """The pi shell tool has no approval layer yet (follow-up: AC18/#70).
+
+    Written to both the structured file log (``logger.warning``) and stderr
+    (``typer.echo``, mirroring :func:`_warn_fake_backlog_claims`) so the
+    warning reaches the operator's terminal even when nobody is tailing the
+    log file.
+    """
+    message = (
         "the pi runtime's shell tool is unrestricted: git push and gh can run "
-        "without approval. Follow-up: %s",
-        PI_UNRESTRICTED_SHELL_FOLLOWUP_URL,
+        f"without approval. Follow-up: {PI_UNRESTRICTED_SHELL_FOLLOWUP_URL}"
     )
+    logger.warning(message)
+    typer.echo(f"warning: {message}", err=True)
 
 
 def _warn_fake_backlog_claims() -> None:
@@ -441,6 +457,7 @@ def run_command(
         require_gh=factory_config.pull_request.enabled or factory_config.ci.enabled,
         require_copilot=runtime is RuntimeChoice.COPILOT,
         require_pi=runtime is RuntimeChoice.PI,
+        pi_executable=factory_config.pi.executable,
     )
     _configure_logging(factory_config)
 
@@ -585,6 +602,7 @@ def project_command(
         ),
         require_copilot=runtime is RuntimeChoice.COPILOT,
         require_pi=runtime is RuntimeChoice.PI,
+        pi_executable=factory_config.pi.executable,
     )
     _configure_logging(factory_config)
 
@@ -714,6 +732,7 @@ def start_command(
         require_gh=True,
         require_copilot=runtime is RuntimeChoice.COPILOT,
         require_pi=runtime is RuntimeChoice.PI,
+        pi_executable=factory_config.pi.executable,
     )
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
@@ -1235,6 +1254,8 @@ def service_install_command(
         )
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
+    if runtime is RuntimeChoice.PI:
+        _warn_pi_unrestricted_shell()
 
     run_doctor_fn = _seam("run_doctor")
     report = run_doctor_fn(
@@ -1243,6 +1264,10 @@ def service_install_command(
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
         requested_runtime_pi=runtime is RuntimeChoice.PI,
+        # An env-var pi credential lives in the operator's shell and never
+        # reaches the launchd service (only the plist's own
+        # EnvironmentVariables does), so it must not satisfy this preflight.
+        accept_pi_env_credentials=False,
     )
     if not report.success:
         from .cli_output import render_doctor_report
@@ -1261,6 +1286,8 @@ def service_install_command(
     )
 
     try:
+        import os
+
         resolved_executable = resolve_factory_executable(executable)
         request = ServiceInstallRequest(
             executable=resolved_executable,
@@ -1278,6 +1305,10 @@ def service_install_command(
             ),
             label=label,
             allow_source_dev=allow_source_dev,
+            # A path, not a secret: carried into the plist so the service can
+            # find the same ~/.pi/agent override the operator's shell uses
+            # (the launchd environment otherwise only inherits PATH).
+            pi_coding_agent_dir=os.environ.get("PI_CODING_AGENT_DIR"),
         )
         install_service_fn = _seam("install_service")
         default_launch_agents_dir_fn = _seam("default_launch_agents_dir")

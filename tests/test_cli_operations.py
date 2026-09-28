@@ -895,7 +895,9 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     """``factory service install --runtime pi`` must forward the pi runtime
     into both the doctor preflight and the install request, mirroring
     ``test_service_install_runtime_and_flags_are_forwarded``'s coverage of
-    ``--runtime copilot``."""
+    ``--runtime copilot``. It must also warn about the unrestricted shell tool
+    on stderr (AC19) and tell the doctor preflight to reject env-var
+    credentials, since a launchd job never inherits the operator's shell."""
     captured: dict[str, object] = {}
 
     def fake_run_doctor(**kwargs: object) -> DoctorReport:
@@ -929,9 +931,80 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     assert result.exit_code == 0, result.output
     assert captured["requested_runtime_pi"] is True
     assert captured["requested_runtime_copilot"] is False
+    assert captured["accept_pi_env_credentials"] is False
     request = captured["request"]
     assert request.runtime is ServiceRuntime.PI
     assert "runtime: pi" in result.output
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
+
+
+def test_service_install_carries_pi_coding_agent_dir_into_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+    macos: None,
+    launch_agents_dir: Path,
+    source_repo: Path,
+    executable: Path,
+    scheduler_config: Path,
+) -> None:
+    """A ``PI_CODING_AGENT_DIR`` set in the operator's shell at install time
+    must be carried into the ``ServiceInstallRequest`` (and so into the
+    plist's own ``EnvironmentVariables``) -- it is a path, not a secret, and
+    the launchd job otherwise only inherits ``PATH``."""
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", "/custom/pi-agent-dir")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "run_doctor", lambda **_kwargs: passing_report())
+
+    def fake_install(request: ServiceInstallRequest, **_kwargs: object) -> ServiceStatus:
+        captured["request"] = request
+        return ServiceStatus(
+            label=request.label,
+            plist_path=launch_agents_dir / f"{request.label}.plist",
+            installed=True,
+            loaded=True,
+            detail="loaded",
+        )
+
+    monkeypatch.setattr(cli, "install_service", fake_install)
+
+    result = runner.invoke(app, install_args(source_repo, scheduler_config, executable))
+
+    assert result.exit_code == 0, result.output
+    request = captured["request"]
+    assert isinstance(request, ServiceInstallRequest)
+    assert request.pi_coding_agent_dir == "/custom/pi-agent-dir"
+
+
+def test_service_install_leaves_pi_coding_agent_dir_unset_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    macos: None,
+    launch_agents_dir: Path,
+    source_repo: Path,
+    executable: Path,
+    scheduler_config: Path,
+) -> None:
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "run_doctor", lambda **_kwargs: passing_report())
+
+    def fake_install(request: ServiceInstallRequest, **_kwargs: object) -> ServiceStatus:
+        captured["request"] = request
+        return ServiceStatus(
+            label=request.label,
+            plist_path=launch_agents_dir / f"{request.label}.plist",
+            installed=True,
+            loaded=True,
+            detail="loaded",
+        )
+
+    monkeypatch.setattr(cli, "install_service", fake_install)
+
+    result = runner.invoke(app, install_args(source_repo, scheduler_config, executable))
+
+    assert result.exit_code == 0, result.output
+    request = captured["request"]
+    assert isinstance(request, ServiceInstallRequest)
+    assert request.pi_coding_agent_dir is None
 
 
 def test_service_install_defaults_to_the_fake_runtime(
