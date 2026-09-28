@@ -4,12 +4,13 @@
 (built by ``_build_command``/:func:`~software_agent_factory.agents.workspace_cwd`/
 ``_child_env``, Step 3.2) over
 :class:`~software_agent_factory.pi_rpc.PiRpcClient` (Step 3.1): a ``prompt``
-command, ``wait_for_settled``, a ``get_messages`` check of the final
-assistant message's ``stopReason`` (Step 3.4 -- the same ``get_messages``
-call ``scripts/performance/pi_cache_probe.py`` already uses to read
-per-message usage), then ``get_last_assistant_text`` parsed with
-:func:`~software_agent_factory.agent_artifact.parse_agent_artifact` -- the
-same runtime-neutral parser the Copilot runtime uses, so a malformed
+command, ``wait_for_settled``, one ``get_messages`` call read for both the
+final assistant message's ``stopReason`` (Step 3.4) and its per-model
+``usage`` (Step 4.2, mapped by :func:`usage_from_pi_messages` -- the same
+``get_messages`` shape ``scripts/performance/pi_cache_probe.py`` already
+reads for its cache-reporting verdict), then ``get_last_assistant_text``
+parsed with :func:`~software_agent_factory.agent_artifact.parse_agent_artifact`
+-- the same runtime-neutral parser the Copilot runtime uses, so a malformed
 response fails with byte-identical wording (Step 3.3).
 
 Step 3.4 maps every other pi failure mode to a failed, sanitized
@@ -39,12 +40,12 @@ import subprocess
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .agent_artifact import build_success_result, parse_agent_artifact
 from .agent_capabilities import AgentCapability, capability_for
 from .agents import AgentRequest, AgentResult, AgentRuntime, workspace_cwd
-from .models import PerformanceRecord
+from .models import ModelUsage, PerformanceRecord, UsageMetrics
 from .pi_rpc import (
     PiProcessHandle,
     PiRpcClient,
@@ -79,6 +80,15 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
 #: decision, ``plans/pi-agent-runtime.md``: "Abort grace before kill: 1
 #: second, same as the Copilot runtime's ``_kill_process_group``").
 _ABORT_GRACE_SECONDS = 1.0
+
+#: Bound on the best-effort ``get_messages`` call :meth:`PiAgentRuntime.run`
+#: makes when a ``PiRpcTimeout``/``PiRpcProcessExited`` struck before the
+#: settled call's own ``get_messages`` read ever ran, so a timed-out or
+#: exited call still gets one bounded chance to report the usage pi spent
+#: before it stopped responding (AC6, build-time decision: "a short deadline
+#: (<= 2 s)"). Independent of ``request.timeout_seconds``, which has already
+#: elapsed by the time this runs.
+_BEST_EFFORT_USAGE_DEADLINE_SECONDS = 2.0
 
 #: Starts one already-configured ``pi`` subprocess: ``(command, cwd, env) ->
 #: PiProcessHandle``. Injectable so tests drive :meth:`PiAgentRuntime.run`
@@ -116,6 +126,158 @@ def _failure_reason_for(exc: PiRpcError) -> str:
     if isinstance(exc, PiRpcCommandError):
         return f"pi command {exc.command.get('type')!r} failed: {exc.error}"
     return f"pi RPC error: {exc}"
+
+
+def _stop_reason_from_messages(
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[str | None, str | None]:
+    """Return ``(stopReason, errorMessage)`` off the settled call's final message.
+
+    ``messages`` is one ``get_messages`` call's message list; returns the
+    ``stopReason``/``errorMessage`` of the last message that carries a
+    ``stopReason`` at all (an assistant message; user/tool messages don't).
+    ``(None, None)`` when no message carries one, so a successful call falls
+    through to ``get_last_assistant_text`` unaffected.
+    """
+    for message in reversed(messages):
+        if isinstance(message, Mapping) and "stopReason" in message:
+            stop_reason = message.get("stopReason")
+            error_message = message.get("errorMessage")
+            return (
+                None if stop_reason is None else str(stop_reason),
+                None if error_message is None else str(error_message),
+            )
+    return None, None
+
+
+def _numeric(value: object) -> int | float | None:
+    """Return ``value`` unchanged when it is a reported numeric field.
+
+    ``bool`` is excluded even though it is an ``int`` subclass -- pi never
+    reports a token count or cost as ``true``/``false``, so treating one as
+    ``1``/``0`` would be a parsing bug, not a real field.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
+def _sum_usage_field(usages: Sequence[Mapping[str, Any]], key: str) -> int | None:
+    """Sum ``usages[*][key]`` over the messages that reported it.
+
+    A message that never carries ``key`` contributes nothing -- not a ``0``
+    -- so the field stays ``None`` only when *no* message in ``usages``
+    reported it at all; a message reporting ``0`` still makes the field
+    "known" (spec: "A field pi did not report stays ``None``, never zero.").
+    """
+    reported = [numeric for usage in usages if (numeric := _numeric(usage.get(key))) is not None]
+    if not reported:
+        return None
+    return int(sum(reported))
+
+
+def _sum_cache_write_field(usages: Sequence[Mapping[str, Any]]) -> int | None:
+    """Sum ``cacheWrite`` plus ``cacheWrite1h`` (when present) over ``usages``.
+
+    Per the "Usage mapping" table: ``cacheWrite`` (+ ``cacheWrite1h``) ->
+    ``cache_write_tokens``. Either key reported on a message is enough to
+    make the field "known"; a message reporting neither contributes nothing.
+    """
+    total: int | float = 0
+    reported = False
+    for usage in usages:
+        for key in ("cacheWrite", "cacheWrite1h"):
+            numeric = _numeric(usage.get(key))
+            if numeric is not None:
+                total += numeric
+                reported = True
+    return int(total) if reported else None
+
+
+def _sum_cost_field(usages: Sequence[Mapping[str, Any]]) -> float | None:
+    """Sum ``cost.total`` over ``usages`` -- pi's own list-price estimate."""
+    reported = []
+    for usage in usages:
+        cost = usage.get("cost")
+        if isinstance(cost, Mapping):
+            numeric = _numeric(cost.get("total"))
+            if numeric is not None:
+                reported.append(float(numeric))
+    if not reported:
+        return None
+    return sum(reported)
+
+
+def _model_usage(model: str, usages: Sequence[Mapping[str, Any]]) -> ModelUsage:
+    """Build one model's :class:`ModelUsage` entry from its assistant messages' usage."""
+    return ModelUsage(
+        model=model,
+        requests=len(usages),
+        input_tokens=_sum_usage_field(usages, "input"),
+        output_tokens=_sum_usage_field(usages, "output"),
+        reasoning_tokens=_sum_usage_field(usages, "reasoning"),
+        cache_read_tokens=_sum_usage_field(usages, "cacheRead"),
+        cache_write_tokens=_sum_cache_write_field(usages),
+        list_price_estimate_usd=_sum_cost_field(usages),
+    )
+
+
+def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | None:
+    """Map one call's ``get_messages`` records to :class:`UsageMetrics`.
+
+    An assistant message is one whose ``usage`` field is itself a mapping --
+    the same rule ``pi_cache_probe.verdict_from_messages`` uses to find
+    reportable usage. Each field is summed per the "Usage mapping" table in
+    ``docs/specs/pi-agent-runtime.md`` (see :func:`_sum_usage_field`,
+    :func:`_sum_cache_write_field`, :func:`_sum_cost_field`); a field no
+    message reported stays ``None``, never ``0``.
+    :attr:`ModelUsage.model`/:attr:`UsageMetrics.model_usage` group messages
+    by their own ``model`` field, per the spec's "summed per model"; pi
+    always reports it in practice, so a message without one contributes to
+    the aggregate totals but not to any ``model_usage`` entry (there is no
+    request-supplied fallback in this pure function's signature).
+    ``current_model`` is the last assistant message's model.
+    ``premium_request_cost``/``total_nano_aiu`` are Copilot-only units and
+    stay ``None`` on every :class:`ModelUsage` this builds. No assistant
+    messages yields ``requests=0`` and every token field ``None`` -- a call
+    that produced no assistant messages is a fact worth recording, not an
+    unknown.
+    """
+    assistant_messages = [
+        message
+        for message in messages
+        if isinstance(message, Mapping) and isinstance(message.get("usage"), Mapping)
+    ]
+
+    usages_by_model: dict[str, list[Mapping[str, Any]]] = {}
+    model_order: list[str] = []
+    last_model: str | None = None
+    for message in assistant_messages:
+        model = message.get("model")
+        last_model = model if isinstance(model, str) and model else last_model
+        if not isinstance(model, str) or not model:
+            continue
+        if model not in usages_by_model:
+            usages_by_model[model] = []
+            model_order.append(model)
+        usages_by_model[model].append(message["usage"])
+
+    all_usages = [message["usage"] for message in assistant_messages]
+    model_usage = tuple(_model_usage(model, usages_by_model[model]) for model in model_order)
+
+    return UsageMetrics(
+        current_model=last_model,
+        total_user_requests=len(assistant_messages),
+        input_tokens=_sum_usage_field(all_usages, "input"),
+        output_tokens=_sum_usage_field(all_usages, "output"),
+        reasoning_tokens=_sum_usage_field(all_usages, "reasoning"),
+        cache_read_tokens=_sum_usage_field(all_usages, "cacheRead"),
+        cache_write_tokens=_sum_cache_write_field(all_usages),
+        list_price_estimate_usd=_sum_cost_field(all_usages),
+        model_usage=model_usage,
+    )
 
 
 class PiAgentRuntime(AgentRuntime):
@@ -162,14 +324,15 @@ class PiAgentRuntime(AgentRuntime):
         boot_ms = (time.perf_counter() - boot_start) * 1000.0
 
         client = PiRpcClient(process)
+        usage: UsageMetrics | None = None
         try:
             deadline = time.monotonic() + request.timeout_seconds
             try:
                 client.request({"type": "prompt", "message": prompt}, deadline=deadline)
                 client.wait_for_settled(deadline=deadline)
-                stop_reason, error_message = self._final_assistant_stop_reason(
-                    client, deadline=deadline
-                )
+                messages = self._get_messages(client, deadline=deadline)
+                usage = usage_from_pi_messages(messages)
+                stop_reason, error_message = _stop_reason_from_messages(messages)
                 if stop_reason == "error":
                     return self._failed(
                         request,
@@ -177,6 +340,7 @@ class PiAgentRuntime(AgentRuntime):
                         boot_ms=boot_ms,
                         scrubbed_values=scrubbed_values,
                         message=f"pi assistant error: {error_message}",
+                        usage=usage,
                     )
                 if stop_reason == "aborted":
                     return self._failed(
@@ -185,9 +349,12 @@ class PiAgentRuntime(AgentRuntime):
                         boot_ms=boot_ms,
                         scrubbed_values=scrubbed_values,
                         message="pi assistant call was aborted",
+                        usage=usage,
                     )
                 response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
             except PiRpcTimeout:
+                if usage is None:
+                    usage = self._best_effort_usage(client)
                 self._abort_and_kill(client, process)
                 return self._failed(
                     request,
@@ -195,6 +362,18 @@ class PiAgentRuntime(AgentRuntime):
                     boot_ms=boot_ms,
                     scrubbed_values=scrubbed_values,
                     message=f"pi timed out after {request.timeout_seconds} seconds",
+                    usage=usage,
+                )
+            except PiRpcProcessExited as exc:
+                if usage is None:
+                    usage = self._best_effort_usage(client)
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=_failure_reason_for(exc),
+                    usage=usage,
                 )
             except PiRpcError as exc:
                 return self._failed(
@@ -203,6 +382,7 @@ class PiAgentRuntime(AgentRuntime):
                     boot_ms=boot_ms,
                     scrubbed_values=scrubbed_values,
                     message=_failure_reason_for(exc),
+                    usage=usage,
                 )
 
             data = response.get("data") or {}
@@ -224,6 +404,7 @@ class PiAgentRuntime(AgentRuntime):
                     scrubbed_values=scrubbed_values,
                     message=str(exc),
                     response_chars=len(text),
+                    usage=usage,
                 )
 
             return build_success_result(
@@ -231,6 +412,7 @@ class PiAgentRuntime(AgentRuntime):
                 purpose=request.purpose,
                 artifact=artifact,
                 performance=performance,
+                usage=usage,
             )
         finally:
             client.close()
@@ -306,6 +488,7 @@ class PiAgentRuntime(AgentRuntime):
         scrubbed_values: set[str],
         message: str,
         response_chars: int = 0,
+        usage: UsageMetrics | None = None,
     ) -> AgentResult:
         """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
 
@@ -315,12 +498,16 @@ class PiAgentRuntime(AgentRuntime):
         an error message, or a protocol excerpt can never reach the stored
         ``failure_reason``. ``response_chars`` defaults to ``0`` (no assistant
         text was produced); the malformed-artifact path passes the actual
-        length of the text pi did produce.
+        length of the text pi did produce. ``usage`` defaults to ``None``
+        (nothing reported yet); a failure that struck after a successful
+        ``get_messages`` read, or after :meth:`_best_effort_usage`, passes
+        the usage recorded so far (AC6).
         """
         return AgentResult(
             role=request.role,
             success=False,
             failure_reason=sanitize_output(message, scrubbed_values),
+            usage=usage,
             performance=PerformanceRecord(
                 prompt_chars=prompt_chars,
                 response_chars=response_chars,
@@ -328,31 +515,43 @@ class PiAgentRuntime(AgentRuntime):
             ),
         )
 
-    def _final_assistant_stop_reason(
-        self, client: PiRpcClient, *, deadline: float
-    ) -> tuple[str | None, str | None]:
-        """Return ``(stopReason, errorMessage)`` off the settled call's final message.
+    def _get_messages(self, client: PiRpcClient, *, deadline: float) -> list[dict[str, Any]]:
+        """Read the settled call's full message list via ``get_messages``.
 
-        Reads ``get_messages`` -- the same command
-        ``scripts/performance/pi_cache_probe.py`` already uses to read
-        per-message ``usage`` -- and returns the ``stopReason``/``errorMessage``
-        of the last message that carries a ``stopReason`` at all (an assistant
-        message; user/tool messages don't). ``(None, None)`` when no message
-        carries one, so a successful call falls through to
-        ``get_last_assistant_text`` unaffected.
+        The same command ``scripts/performance/pi_cache_probe.py`` already
+        uses to read per-message ``usage``. :meth:`run` reads this once per
+        call and derives both the final assistant message's ``stopReason``
+        (:func:`_stop_reason_from_messages`) and its usage
+        (:func:`usage_from_pi_messages`) from the same result, rather than
+        issuing two RPC round trips for one already-settled conversation.
         """
         response = client.request({"type": "get_messages"}, deadline=deadline)
         data = response.get("data") or {}
         messages = data.get("messages") or []
-        for message in reversed(messages):
-            if isinstance(message, Mapping) and "stopReason" in message:
-                stop_reason = message.get("stopReason")
-                error_message = message.get("errorMessage")
-                return (
-                    None if stop_reason is None else str(stop_reason),
-                    None if error_message is None else str(error_message),
-                )
-        return None, None
+        return [message for message in messages if isinstance(message, dict)]
+
+    def _best_effort_usage(self, client: PiRpcClient) -> UsageMetrics | None:
+        """Best-effort ``get_messages`` after pi failed to settle in time.
+
+        Only called when :meth:`run` never reached its own ``get_messages``
+        read (a ``PiRpcTimeout``/``PiRpcProcessExited`` struck before or
+        during ``wait_for_settled``) -- so there is a real chance pi still
+        has something to report, and a real chance it does not. Uses its own
+        :data:`_BEST_EFFORT_USAGE_DEADLINE_SECONDS` deadline, independent of
+        the request's own (already-elapsed) deadline, so a call that already
+        timed out still gets one bounded chance to report the tokens pi
+        spent before it stopped responding (AC6). Any further failure (the
+        process is unresponsive, already gone, or answers something else) is
+        swallowed and reported as ``None`` usage -- this is a best-effort
+        nicety, never a reason to fail differently or block longer.
+        """
+        try:
+            messages = self._get_messages(
+                client, deadline=time.monotonic() + _BEST_EFFORT_USAGE_DEADLINE_SECONDS
+            )
+        except PiRpcError:
+            return None
+        return usage_from_pi_messages(messages)
 
     def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
         """Best-effort abort, then escalate to killing pi's process group.

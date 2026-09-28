@@ -20,7 +20,11 @@ from software_agent_factory.models import (
     TriageResult,
     WorkItem,
 )
-from software_agent_factory.pi_runtime import PiAgentRuntime, ProcessFactory
+from software_agent_factory.pi_runtime import (
+    PiAgentRuntime,
+    ProcessFactory,
+    usage_from_pi_messages,
+)
 
 
 def _work_item() -> WorkItem:
@@ -152,34 +156,55 @@ class FakeProcess:
 
 
 def _get_messages_response(
-    stop_reason: str | None = None, error_message: str | None = None
+    stop_reason: str | None = None,
+    error_message: str | None = None,
+    *,
+    usage: dict[str, Any] | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """The ``get_messages`` response :meth:`PiAgentRuntime.run` reads for ``c2``.
 
     ``stop_reason=None`` mirrors a message that settled normally (no
-    ``stopReason`` field carried at all).
+    ``stopReason`` field carried at all). ``usage``/``model`` attach a
+    per-message ``usage`` mapping and a ``model`` id, the shape
+    :func:`~software_agent_factory.pi_runtime.usage_from_pi_messages` reads;
+    passing either includes the message in the response even when
+    ``stop_reason`` is ``None`` (a settled call still has a message pi
+    reports usage against).
     """
     message: dict[str, Any] = {"role": "assistant"}
     if stop_reason is not None:
         message["stopReason"] = stop_reason
     if error_message is not None:
         message["errorMessage"] = error_message
+    if usage is not None:
+        message["usage"] = usage
+    if model is not None:
+        message["model"] = model
+    include_message = stop_reason is not None or usage is not None
     return {
         "type": "response",
         "id": "c2",
         "success": True,
-        "data": {"messages": [message] if stop_reason is not None else []},
+        "data": {"messages": [message] if include_message else []},
     }
 
 
-def _scripted_process(final_assistant_text: str, *, stop_reason: str | None = None) -> FakeProcess:
+def _scripted_process(
+    final_assistant_text: str,
+    *,
+    stop_reason: str | None = None,
+    usage: dict[str, Any] | None = None,
+    model: str | None = None,
+) -> FakeProcess:
     """A ``FakeProcess`` that answers ``prompt``, ``get_messages``, then
     ``get_last_assistant_text``.
 
     Matches the exchange :meth:`PiAgentRuntime.run` drives: a ``prompt``
     command (id ``c1``), settling via one ``agent_settled`` event, a
     ``get_messages`` command (id ``c2``) whose final message carries
-    ``stop_reason`` (``None`` by default -- a normally-settled call), then a
+    ``stop_reason``/``usage``/``model`` (all ``None`` by default -- a
+    normally-settled call with no usage to report), then a
     ``get_last_assistant_text`` command (id ``c3``) answering with
     ``final_assistant_text``.
     """
@@ -187,7 +212,7 @@ def _scripted_process(final_assistant_text: str, *, stop_reason: str | None = No
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
-        _get_messages_response(stop_reason=stop_reason),
+        _get_messages_response(stop_reason=stop_reason, usage=usage, model=model),
         {
             "type": "response",
             "id": "c3",
@@ -580,3 +605,222 @@ def test_run_timeout_sends_abort_then_kills_process_group(
     sent_types = [command.get("type") for command in process.sent_commands()]
     assert "abort" in sent_types
     assert killed == [process]
+    # No get_messages call ever completed (wait_for_settled itself never
+    # settled), so the best-effort get_messages retry (Step 4.2) is attempted
+    # but also gets nothing back -- usage stays unknown, not zeroed out.
+    assert "get_messages" in sent_types
+    assert result.usage is None
+
+
+def test_run_process_exits_before_settling_reports_unknown_usage() -> None:
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.close_stdout()
+    process.exit(7)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.usage is None
+
+
+# ---------------------------------------------------------------------------
+# run: usage recorded per model (Step 4.2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_success_carries_usage_from_get_messages(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    final_text = json.dumps({"summary": "Reject empty customer names."})
+    process = _scripted_process(
+        final_text,
+        usage={
+            "input": 100,
+            "output": 20,
+            "cacheRead": 80,
+            "cacheWrite": 5,
+            "cost": {"total": 0.05},
+        },
+        model="claude-sonnet-5",
+    )
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+
+    result = runtime.run(request)
+
+    assert result.success is True
+    assert result.usage is not None
+    assert result.usage.input_tokens == 100
+    assert result.usage.output_tokens == 20
+    assert result.usage.cache_read_tokens == 80
+    assert result.usage.cache_write_tokens == 5
+    assert result.usage.list_price_estimate_usd == pytest.approx(0.05)
+    assert result.usage.total_user_requests == 1
+    assert result.usage.current_model == "claude-sonnet-5"
+
+
+def test_run_timeout_after_settling_keeps_partial_usage() -> None:
+    """AC6: a timeout after the call settled still records usage read so far.
+
+    The settled call's own ``get_messages`` read already captured usage
+    before ``get_last_assistant_text`` stalls past the timeout -- no
+    best-effort retry is needed (or attempted) here.
+    """
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(usage={"input": 40, "output": 10}, model="claude-sonnet-5"),
+    )
+    # No response ever arrives for get_last_assistant_text (c3).
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE, timeout_seconds=1)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi timed out after 1 seconds"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 40
+    assert result.usage.output_tokens == 10
+
+
+# ---------------------------------------------------------------------------
+# usage_from_pi_messages: pure per-model usage mapping (Step 4.2)
+# ---------------------------------------------------------------------------
+
+
+def _assistant_message(usage: dict[str, Any], *, model: str = "claude-sonnet-5") -> dict[str, Any]:
+    return {"role": "assistant", "model": model, "usage": usage}
+
+
+def test_usage_from_pi_messages_sums_per_model() -> None:
+    messages = [
+        _assistant_message(
+            {"input": 100, "output": 20, "cacheRead": 80, "cacheWrite": 5, "cost": {"total": 0.03}}
+        ),
+        _assistant_message(
+            {"input": 50, "output": 10, "cacheRead": 40, "cacheWrite": 2, "cost": {"total": 0.02}}
+        ),
+    ]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.total_user_requests == 2
+    assert usage.input_tokens == 150
+    assert usage.output_tokens == 30
+    assert usage.cache_read_tokens == 120
+    assert usage.cache_write_tokens == 7
+    assert usage.list_price_estimate_usd == pytest.approx(0.05)
+    assert usage.current_model == "claude-sonnet-5"
+    assert len(usage.model_usage) == 1
+    model_usage = usage.model_usage[0]
+    assert model_usage.model == "claude-sonnet-5"
+    assert model_usage.requests == 2
+    assert model_usage.input_tokens == 150
+    assert model_usage.output_tokens == 30
+    assert model_usage.cache_read_tokens == 120
+    assert model_usage.cache_write_tokens == 7
+    assert model_usage.list_price_estimate_usd == pytest.approx(0.05)
+
+
+def test_usage_from_pi_messages_unreported_fields_stay_unknown() -> None:
+    messages = [_assistant_message({"input": 100, "output": 20})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.cache_write_tokens is None
+    assert usage.reasoning_tokens is None
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 20
+
+
+def test_usage_from_pi_messages_reported_zero_stays_zero_not_unknown() -> None:
+    messages = [_assistant_message({"input": 10, "cacheRead": 0})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.cache_read_tokens == 0
+
+
+def test_usage_from_pi_messages_sums_cache_write_1h_with_cache_write() -> None:
+    messages = [_assistant_message({"input": 10, "cacheWrite": 3, "cacheWrite1h": 4})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.cache_write_tokens == 7
+
+
+def test_usage_from_pi_messages_copilot_only_units_stay_unknown() -> None:
+    messages = [_assistant_message({"input": 10, "output": 5})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.total_premium_request_cost is None
+    assert usage.total_nano_aiu is None
+    assert usage.model_usage[0].premium_request_cost is None
+    assert usage.model_usage[0].total_nano_aiu is None
+
+
+def test_usage_from_pi_messages_no_assistant_messages_reports_zero_requests() -> None:
+    usage = usage_from_pi_messages([])
+
+    assert usage is not None
+    assert usage.total_user_requests == 0
+    assert usage.input_tokens is None
+    assert usage.output_tokens is None
+    assert usage.reasoning_tokens is None
+    assert usage.cache_read_tokens is None
+    assert usage.cache_write_tokens is None
+    assert usage.list_price_estimate_usd is None
+    assert usage.current_model is None
+    assert usage.model_usage == ()
+
+
+def test_usage_from_pi_messages_ignores_non_assistant_messages() -> None:
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "usage": "not-a-mapping"},
+        _assistant_message({"input": 5}),
+    ]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.total_user_requests == 1
+    assert usage.input_tokens == 5
+
+
+def test_usage_from_pi_messages_message_without_model_skips_model_usage_entry() -> None:
+    """A modelless assistant message counts toward the aggregate but gets no
+    ``model_usage`` entry -- this pure function has no request-supplied model
+    to fall back on (see its docstring)."""
+    messages = [{"role": "assistant", "usage": {"input": 5}}]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.total_user_requests == 1
+    assert usage.input_tokens == 5
+    assert usage.current_model is None
+    assert usage.model_usage == ()
+
+
+def test_usage_from_pi_messages_non_numeric_field_value_stays_unknown() -> None:
+    """A ``usage`` field carrying a non-numeric value (a malformed record) is
+    treated as not reported, not coerced or crashed on."""
+    messages = [_assistant_message({"input": "not-a-number", "output": 5})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.input_tokens is None
+    assert usage.output_tokens == 5
