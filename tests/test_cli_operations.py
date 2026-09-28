@@ -884,6 +884,56 @@ def test_service_install_runtime_and_flags_are_forwarded(
     assert payload["runtime"] == "copilot"
 
 
+def test_service_install_pi_runtime_requests_pi_doctor_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    macos: None,
+    launch_agents_dir: Path,
+    source_repo: Path,
+    executable: Path,
+    scheduler_config: Path,
+) -> None:
+    """``factory service install --runtime pi`` must forward the pi runtime
+    into both the doctor preflight and the install request, mirroring
+    ``test_service_install_runtime_and_flags_are_forwarded``'s coverage of
+    ``--runtime copilot``."""
+    captured: dict[str, object] = {}
+
+    def fake_run_doctor(**kwargs: object) -> DoctorReport:
+        captured.update(kwargs)
+        return passing_report()
+
+    def fake_install(request: ServiceInstallRequest, **_kwargs: object) -> ServiceStatus:
+        captured["request"] = request
+        return ServiceStatus(
+            label=request.label,
+            plist_path=launch_agents_dir / f"{request.label}.plist",
+            installed=True,
+            loaded=True,
+            detail="loaded",
+        )
+
+    monkeypatch.setattr(cli, "run_doctor", fake_run_doctor)
+    monkeypatch.setattr(cli, "install_service", fake_install)
+
+    result = runner.invoke(
+        app,
+        install_args(
+            source_repo,
+            scheduler_config,
+            executable,
+            "--runtime",
+            "pi",
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["requested_runtime_pi"] is True
+    assert captured["requested_runtime_copilot"] is False
+    request = captured["request"]
+    assert request.runtime is ServiceRuntime.PI
+    assert "runtime: pi" in result.output
+
+
 def test_service_install_defaults_to_the_fake_runtime(
     monkeypatch: pytest.MonkeyPatch,
     macos: None,

@@ -2,12 +2,12 @@
 
 ```bash
 factory --version
-factory run --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
-factory project --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
+factory run --repo PATH --title TEXT --description TEXT [--runtime fake|copilot|pi]
+factory project --repo PATH --title TEXT --description TEXT [--runtime fake|copilot|pi]
 factory runs
 factory show RUN_ID
-factory start --repo PATH --github-repo OWNER/NAME [--once]
-factory doctor [--json]
+factory start --repo PATH --github-repo OWNER/NAME [--once] [--runtime fake|copilot|pi]
+factory doctor [--runtime fake|copilot|pi] [--json]
 factory status [--json]
 factory dashboard [--port 8765] [--open-browser]
 factory service install|status|uninstall
@@ -16,7 +16,10 @@ factory skill path|validate|refresh --repo PATH [--runtime fake|copilot]
 
 ``--runtime`` defaults to ``fake`` so no command ever makes a paid model call
 by accident; ``--runtime copilot`` opts in to the real
-:class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`.
+:class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`, and
+``--runtime pi`` opts in to the pi agent runtime (requires ``pi``, Node and a
+provider credential -- see ``factory doctor --runtime pi``). ``factory skill
+refresh`` does not support ``pi``.
 
 Pull request creation, CI observation, the backlog daemon, the dashboard and
 the launchd service are all strictly opt-in (``pull_request.enabled``,
@@ -37,9 +40,10 @@ file.
 Three conventions hold across every command here:
 
 - **Fail before you work.** Configuration problems and missing external
-  prerequisites (``git``, and ``gh``/``copilot`` only when the requested
-  feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE` and one
-  explicit line, never a traceback from deep inside a workspace or tracker.
+  prerequisites (``git``, and ``gh``/``copilot``/``pi`` only when the
+  requested feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE`
+  and one explicit line, never a traceback from deep inside a workspace or
+  tracker.
 - **Read-only stays read-only.** ``runs``, ``show``, ``status``, ``skill
   path`` and ``skill validate`` derive everything from persisted artifacts
   and never create or mutate a run, a workspace or configuration -- not even
@@ -133,6 +137,14 @@ PI_UNRESTRICTED_SHELL_FOLLOWUP_URL = (
 RUNTIME_OPTION_HELP = (
     "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or "
     "'pi' (paid; unrestricted shell tool)."
+)
+
+#: ``--runtime`` help text for ``skill refresh``, which rejects ``pi``
+#: outright (see ``skill_refresh_command``) -- so it advertises only the
+#: runtimes it actually accepts instead of :data:`RUNTIME_OPTION_HELP`.
+SKILL_REFRESH_RUNTIME_OPTION_HELP = (
+    "Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid); "
+    "'pi' is not supported for skill refresh."
 )
 
 _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
@@ -1230,6 +1242,7 @@ def service_install_command(
         data_dir_override=data_dir,
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
+        requested_runtime_pi=runtime is RuntimeChoice.PI,
     )
     if not report.success:
         from .cli_output import render_doctor_report
@@ -1531,7 +1544,7 @@ def skill_refresh_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help=RUNTIME_OPTION_HELP,
+        help=SKILL_REFRESH_RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",

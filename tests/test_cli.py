@@ -634,6 +634,7 @@ def test_run_with_copilot_runtime_selects_the_real_runtime(
     built: list[str] = []
     delegate = FakeAgentRuntime()
 
+    # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubCopilotRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
             built.append("copilot")
@@ -707,6 +708,7 @@ def test_run_with_pi_runtime_selects_the_real_runtime(
     built: list[str] = []
     delegate = FakeAgentRuntime()
 
+    # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubPiRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
             built.append("pi")
@@ -750,6 +752,7 @@ def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
 
     delegate = FakeAgentRuntime()
 
+    # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubPiRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
@@ -829,6 +832,7 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
     built: list[str] = []
     delegate = FakeAgentRuntime()
 
+    # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubPiRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
             built.append("pi")
@@ -837,6 +841,14 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
             return delegate.run(request)  # type: ignore[arg-type]
 
     monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+
+    warnings: list[str] = []
+
+    class _RecordingLogger:
+        def warning(self, msg: str, *args: object) -> None:
+            warnings.append(msg % args if args else msg)
+
+    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
 
     result = runner.invoke(
         app,
@@ -860,6 +872,11 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
     )
 
     assert result.exit_code == 0, result.output
+    assert any(
+        "unrestricted" in warning
+        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
+        for warning in warnings
+    ), warnings
     assert built == ["pi"]
     assert "state: DONE" in result.output
 
@@ -1033,6 +1050,7 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     built: list[str] = []
     delegate = FakeAgentRuntime()
 
+    # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubPiRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
             built.append("pi")
@@ -1041,6 +1059,14 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
             return delegate.run(request)  # type: ignore[arg-type]
 
     monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+
+    warnings: list[str] = []
+
+    class _RecordingLogger:
+        def warning(self, msg: str, *args: object) -> None:
+            warnings.append(msg % args if args else msg)
+
+    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
 
     config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
 
@@ -1063,6 +1089,11 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     assert result.exit_code == 0, result.output
     assert built == ["pi"]
     assert "dispatched: acme/repo#11" in result.output
+    assert any(
+        "unrestricted" in warning
+        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
+        for warning in warnings
+    ), warnings
 
 
 def test_start_accepts_fast_performance_mode(

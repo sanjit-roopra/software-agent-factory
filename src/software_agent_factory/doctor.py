@@ -96,14 +96,18 @@ SUPPORTED_MACHINES: frozenset[str] = frozenset({"arm64", "x86_64"})
 #: locally with 0.84.4). Pi's package moves fast, so this is pinned here as
 #: a single source ``check_pi`` compares against.
 PI_MIN_VERSION = "0.84.0"
-_PI_MIN_VERSION_TUPLE: tuple[int, ...] = (0, 84, 0)
+_parsed_pi_min_version = parse_version(PI_MIN_VERSION)
+assert _parsed_pi_min_version is not None, f"unparseable PI_MIN_VERSION: {PI_MIN_VERSION!r}"
+_PI_MIN_VERSION_TUPLE: tuple[int, ...] = _parsed_pi_min_version
 
 #: The npm package ``check_pi`` tells an operator to install.
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
 
 #: Minimum supported Node version for running ``pi``.
 NODE_MIN_VERSION = "22.19.0"
-_NODE_MIN_VERSION_TUPLE: tuple[int, ...] = (22, 19, 0)
+_parsed_node_min_version = parse_version(NODE_MIN_VERSION)
+assert _parsed_node_min_version is not None, f"unparseable NODE_MIN_VERSION: {NODE_MIN_VERSION!r}"
+_NODE_MIN_VERSION_TUPLE: tuple[int, ...] = _parsed_node_min_version
 
 #: Remediation for a missing/too-old ``pi`` executable.
 _PI_INSTALL_FIX = f"npm install -g {PI_PACKAGE}"

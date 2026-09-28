@@ -364,6 +364,50 @@ def test_check_pi_several_failures_names_the_executable_first() -> None:
     assert "was not found on PATH" in result.message
 
 
+def test_check_pi_minimum_pi_version_is_ok() -> None:
+    """Exact boundary: ``PI_MIN_VERSION`` itself (``"0.84.0"``) must pass, not
+    just versions strictly above it."""
+    runner = FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.0\n", stderr=""
+            ),
+            "/usr/local/bin/node": subprocess.CompletedProcess(
+                ["/usr/local/bin/node", "--version"], 0, stdout="v22.19.0\n", stderr=""
+            ),
+        }
+    )
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=runner,
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.OK
+
+
+def test_check_pi_minimum_node_version_is_ok() -> None:
+    """Exact boundary: ``NODE_MIN_VERSION`` itself (``"v22.19.0"``) must
+    pass, not just versions strictly above it."""
+    runner = FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+            ),
+            "/usr/local/bin/node": subprocess.CompletedProcess(
+                ["/usr/local/bin/node", "--version"], 0, stdout="v22.19.0\n", stderr=""
+            ),
+        }
+    )
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=runner,
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.OK
+
+
 def test_check_pi_all_prerequisites_present_is_ok() -> None:
     env, _ = make_env(
         available=_pi_ready_available(),
