@@ -1149,6 +1149,14 @@ def _resolve_within_cwd(path: Path) -> Path:
     return Path(resolved)
 
 
+def _confine_cli_paths(args: argparse.Namespace) -> None:
+    """Replace each file-path argument with its cwd-confined, resolved form."""
+    for name in ("output", "baseline", "controller_output"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, _resolve_within_cwd(value))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run local standard-library performance benchmarks for Software Agent Factory."
@@ -1204,10 +1212,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
-        for name in ("output", "baseline", "controller_output"):
-            value = getattr(args, name)
-            if value is not None:
-                setattr(args, name, _resolve_within_cwd(value))
+        _confine_cli_paths(args)
     except ValueError as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2

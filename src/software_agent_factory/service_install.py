@@ -128,8 +128,14 @@ DEFAULT_LAUNCHCTL_TIMEOUT_SECONDS = 10.0
 DEFAULT_PATH_CAPTURE_TIMEOUT_SECONDS = 5.0
 
 #: Roots that are never a stable home for a long-running frozen executable.
-#: Deny-list only: these paths are rejected, never written to (hence NOSONAR S5443).
-_TEMP_ROOTS: tuple[str, ...] = ("/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp")  # NOSONAR
+#: Deny-list only: these paths are rejected, never written to, so Sonar's
+#: publicly-writable-directory rule does not apply.
+_TEMP_ROOTS: tuple[str, ...] = (
+    "/tmp",  # NOSONAR(S5443)
+    "/var/tmp",  # NOSONAR(S5443)
+    "/private/tmp",  # NOSONAR(S5443)
+    "/private/var/tmp",  # NOSONAR(S5443)
+)
 
 #: Bound and character-whitelist for a LaunchAgent label. Reverse-DNS style,
 #: ASCII only, ``.``-separated segments, each non-empty -- so it can never

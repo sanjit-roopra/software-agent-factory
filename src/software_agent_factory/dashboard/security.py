@@ -76,7 +76,8 @@ def validate_bind_host(requested_host: str) -> str:
 
 def expected_origin(bound_host: str, port: int) -> str:
     """The exact origin this server serves, given what it actually bound to."""
-    return f"http://{bound_host}:{port}"  # NOSONAR - loopback-only bind, TLS not applicable
+    # Loopback-only bind (see validate_bind_host), so TLS does not apply.
+    return f"http://{bound_host}:{port}"  # NOSONAR(S5332)
 
 
 def host_header_is_valid(host_header: str | None, bound_host: str, port: int) -> bool:
