@@ -186,7 +186,38 @@ def test_doctor_passes_config_data_dir_and_runtime_through(
         "data_dir_override": data_dir,
         "model_profile": "default",
         "requested_runtime_copilot": True,
+        "requested_runtime_pi": False,
     }
+
+
+def test_doctor_passes_runtime_pi_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, data_dir: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_doctor(**kwargs: object) -> DoctorReport:
+        captured.update(kwargs)
+        return passing_report()
+
+    monkeypatch.setattr(cli, "run_doctor", fake_run_doctor)
+    config_path = write_config(tmp_path / "factory.yaml", data_dir)
+
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--data-dir",
+            str(data_dir),
+            "--runtime",
+            "pi",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["requested_runtime_copilot"] is False
+    assert captured["requested_runtime_pi"] is True
 
 
 def test_doctor_default_runtime_never_requests_copilot(
@@ -202,6 +233,7 @@ def test_doctor_default_runtime_never_requests_copilot(
 
     assert runner.invoke(app, ["doctor"]).exit_code == 0
     assert captured["requested_runtime_copilot"] is False
+    assert captured["requested_runtime_pi"] is False
 
 
 @pytest.mark.allow_real_binaries

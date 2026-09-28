@@ -1,9 +1,10 @@
 """Tests for software_agent_factory.doctor.
 
 Every external boundary (subprocess execution, ``PATH`` lookup, platform
-info, frozen-executable detection) is injected through ``DoctorEnvironment``;
-no test spawns a real ``git``/``gh``/``copilot`` process or reads the real
-host's ``PATH``/platform.
+info, frozen-executable detection, environment variables, home directory and
+file reads) is injected through ``DoctorEnvironment``; no test spawns a real
+``git``/``gh``/``copilot``/``pi``/``node`` process, reads the real host's
+``PATH``/platform, or touches a real ``~/.pi/agent/auth.json``.
 
 Coverage:
 
@@ -12,15 +13,20 @@ Coverage:
   is a warning, never a silent success.
 - ``check_copilot`` never invokes anything but a bounded ``--version`` probe
   (no paid agent call is possible through this module).
+- ``check_pi``: fixed order, first failure wins (executable, pi version,
+  Node version, provider credential); not required short-circuits before any
+  probe; every failure names what was found and what is required, plus a
+  fix.
 - ``check_verification_commands``: safe ``shlex`` first-token parsing, no
   shell, malformed-command handling, and de-duplication.
 - ``check_config``: missing file, unreadable file, invalid YAML, failed
   validation, and success.
 - ``check_data_dir``: writable and not-writable.
 - ``check_platform``/``check_executable``/``check_launchctl``.
-- ``run_doctor``: the offline default never requires ``gh``/``copilot``, and
-  each becomes required only when the corresponding feature is enabled or
-  requested.
+- ``run_doctor``: the offline default never requires ``gh``/``copilot``/
+  ``pi``, and each becomes required only when the corresponding feature is
+  enabled or requested.
+- ``missing_prerequisites``: the cheap ``PATH``-only gate, including ``pi``.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from typing import Callable, Sequence
 import pytest
 from factory_testing import build_config
 
+from software_agent_factory.config import PiConfig
 from software_agent_factory.doctor import (
     CheckStatus,
     DoctorEnvironment,
@@ -44,6 +51,7 @@ from software_agent_factory.doctor import (
     check_gh,
     check_git,
     check_launchctl,
+    check_pi,
     check_platform,
     check_verification_commands,
     default_command_runner,
@@ -79,6 +87,26 @@ def make_which(available: dict[str, str]) -> Callable[[str], str | None]:
     return _which
 
 
+def make_getenv(values: dict[str, str] | None = None) -> Callable[[str], str | None]:
+    """A ``DoctorEnvironment.getenv`` double: no real process environment is
+    ever read by a test."""
+
+    def _getenv(name: str) -> str | None:
+        return (values or {}).get(name)
+
+    return _getenv
+
+
+def make_read_text(files: dict[Path, str] | None = None) -> Callable[[Path], str | None]:
+    """A ``DoctorEnvironment.read_text`` double: no real filesystem read (in
+    particular no real ``~/.pi/agent/auth.json``) happens in a test."""
+
+    def _read_text(path: Path) -> str | None:
+        return (files or {}).get(path)
+
+    return _read_text
+
+
 def make_env(
     *,
     available: dict[str, str] | None = None,
@@ -87,6 +115,9 @@ def make_env(
     machine: str = "arm64",
     is_frozen: bool = False,
     executable_path: Path = Path("/usr/bin/factory"),
+    getenv: Callable[[str], str | None] | None = None,
+    home_dir: Path = Path("/fake-home"),
+    read_text: Callable[[Path], str | None] | None = None,
 ) -> tuple[DoctorEnvironment, FakeRunner]:
     fake_runner = runner if runner is not None else FakeRunner()
     env = DoctorEnvironment(
@@ -96,6 +127,9 @@ def make_env(
         machine=machine,
         is_frozen=is_frozen,
         executable_path=executable_path,
+        getenv=getenv if getenv is not None else make_getenv(),
+        home_dir=home_dir,
+        read_text=read_text if read_text is not None else make_read_text(),
     )
     return env, fake_runner
 
@@ -158,6 +192,187 @@ def test_check_copilot_never_calls_anything_but_bounded_version_probe() -> None:
     result = check_copilot(env, required=True)
     assert result.status is CheckStatus.OK
     assert runner.calls == [("/usr/local/bin/copilot", "--version")]
+
+
+# -- pi runtime prerequisite checks ------------------------------------------
+#
+# Fixed order, first failure wins: executable -> pi version -> Node version
+# -> provider credential (plans/pi-agent-runtime.md Step 2.3).
+
+
+def _pi_ready_available() -> dict[str, str]:
+    return {"pi": "/usr/local/bin/pi", "node": "/usr/local/bin/node"}
+
+
+def _pi_ready_runner() -> FakeRunner:
+    return FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+            ),
+            "/usr/local/bin/node": subprocess.CompletedProcess(
+                ["/usr/local/bin/node", "--version"], 0, stdout="v22.19.0\n", stderr=""
+            ),
+        }
+    )
+
+
+def test_check_pi_not_required_short_circuits_before_any_probe() -> None:
+    """Mirrors ``check_copilot``: not required (``--runtime pi`` was not
+    requested) is OK before anything -- including a resolved executable -- is
+    probed."""
+    env, runner = make_env(available={})
+    result = check_pi(env, PiConfig(), required=False)
+    assert result.status is CheckStatus.OK
+    assert runner.calls == []
+
+
+def test_check_pi_missing_executable_is_error_naming_the_npm_install_fix() -> None:
+    env, _ = make_env(available={})
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "pi" in result.message
+    assert result.remediation is not None
+    assert "npm install -g @earendil-works/pi-coding-agent" in result.remediation
+
+
+def test_check_pi_old_pi_version_is_error_naming_found_and_required() -> None:
+    runner = FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.80.0\n", stderr=""
+            )
+        }
+    )
+    env, _ = make_env(available={"pi": "/usr/local/bin/pi"}, runner=runner)
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "0.80.0" in result.message
+    assert "0.84.0" in result.message
+    assert "npm install -g @earendil-works/pi-coding-agent" in (result.remediation or "")
+    # Node/credential are unreachable once the pi version check fails first.
+    assert runner.calls == [("/usr/local/bin/pi", "--version")]
+
+
+def test_check_pi_unparseable_pi_version_is_error_naming_the_raw_output() -> None:
+    runner = FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="not a version\n", stderr=""
+            )
+        }
+    )
+    env, _ = make_env(available={"pi": "/usr/local/bin/pi"}, runner=runner)
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "not a version" in result.message
+
+
+def test_check_pi_missing_node_is_error() -> None:
+    runner = FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+            )
+        }
+    )
+    env, _ = make_env(available={"pi": "/usr/local/bin/pi"}, runner=runner)
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "node" in result.message.lower()
+
+
+def test_check_pi_old_node_version_is_error_naming_found_and_required() -> None:
+    runner = FakeRunner(
+        responses={
+            "/usr/local/bin/pi": subprocess.CompletedProcess(
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+            ),
+            "/usr/local/bin/node": subprocess.CompletedProcess(
+                ["/usr/local/bin/node", "--version"], 0, stdout="v18.2.0\n", stderr=""
+            ),
+        }
+    )
+    env, _ = make_env(available=_pi_ready_available(), runner=runner)
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "v18.2.0" in result.message
+    assert "22.19" in result.message
+
+
+def test_check_pi_missing_credential_is_error() -> None:
+    env, _ = make_env(available=_pi_ready_available(), runner=_pi_ready_runner())
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "credential" in result.message
+    assert "github-copilot" in result.message
+    assert result.remediation == "Run 'pi' then '/login' and choose github-copilot."
+
+
+def test_check_pi_credential_via_provider_env_var_passes() -> None:
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.OK
+
+
+def test_check_pi_credential_via_auth_json_passes() -> None:
+    home = Path("/fake-home")
+    auth_path = home / ".pi" / "agent" / "auth.json"
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        home_dir=home,
+        read_text=make_read_text({auth_path: '{"github-copilot": {"token": "x"}}'}),
+    )
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.OK
+
+
+def test_check_pi_credential_respects_pi_coding_agent_dir_override() -> None:
+    override_dir = Path("/custom/pi-agent-dir")
+    auth_path = override_dir / "auth.json"
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"PI_CODING_AGENT_DIR": str(override_dir)}),
+        read_text=make_read_text({auth_path: '{"github-copilot": {}}'}),
+    )
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.OK
+
+
+def test_check_pi_different_provider_uses_its_own_env_var() -> None:
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"ANTHROPIC_API_KEY": "secret"}),
+    )
+    result = check_pi(env, PiConfig(provider="anthropic"), required=True)
+    assert result.status is CheckStatus.OK
+
+
+def test_check_pi_several_failures_names_the_executable_first() -> None:
+    """No executable and no credential both apply; the executable check runs
+    first in the fixed order, so its message wins."""
+    env, _ = make_env(available={})
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.ERROR
+    assert "was not found on PATH" in result.message
+
+
+def test_check_pi_all_prerequisites_present_is_ok() -> None:
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    result = check_pi(env, PiConfig(), required=True)
+    assert result.status is CheckStatus.OK
+    assert result.remediation is None
 
 
 def test_version_check_timeout_for_required_tool_is_error() -> None:
@@ -437,6 +652,25 @@ def test_run_doctor_requires_copilot_when_runtime_requested(tmp_path: Path) -> N
     assert copilot_check.status is CheckStatus.ERROR
 
 
+def test_run_doctor_requires_pi_when_runtime_requested() -> None:
+    env, _ = make_env(available={"git": "/usr/bin/git"})  # pi missing
+    report = run_doctor(
+        config_path=None,
+        requested_runtime_pi=True,
+        environment=env,
+    )
+    assert report.success is False
+    pi_check = next(c for c in report.checks if c.name == "pi")
+    assert pi_check.status is CheckStatus.ERROR
+
+
+def test_run_doctor_default_runtime_never_requires_pi() -> None:
+    env, _ = make_env(available={"git": "/usr/bin/git"})  # pi missing, but not requested
+    report = run_doctor(config_path=None, environment=env)
+    pi_check = next(c for c in report.checks if c.name == "pi")
+    assert pi_check.status is CheckStatus.OK
+
+
 def test_run_doctor_uses_config_data_dir_when_not_overridden(tmp_path: Path) -> None:
     data_dir = tmp_path / "configured-data"
     factory_config = build_config(data_dir)
@@ -596,10 +830,14 @@ def test_missing_prerequisites_reports_only_requested_tools() -> None:
     assert missing_prerequisites(environment=env) == []
     assert missing_prerequisites(require_gh=True, environment=env) == ["gh"]
     assert missing_prerequisites(require_copilot=True, environment=env) == ["copilot"]
+    assert missing_prerequisites(require_pi=True, environment=env) == ["pi"]
     assert missing_prerequisites(require_gh=True, require_copilot=True, environment=env) == [
         "gh",
         "copilot",
     ]
+    assert missing_prerequisites(
+        require_gh=True, require_copilot=True, require_pi=True, environment=env
+    ) == ["gh", "copilot", "pi"]
 
 
 def test_missing_prerequisites_is_empty_when_everything_is_present() -> None:
@@ -610,7 +848,13 @@ def test_missing_prerequisites_is_empty_when_everything_is_present() -> None:
             "git": "/usr/bin/git",
             "gh": "/usr/bin/gh",
             "copilot": "/usr/bin/copilot",
+            "pi": "/usr/local/bin/pi",
         }
     )
 
-    assert missing_prerequisites(require_gh=True, require_copilot=True, environment=env) == []
+    assert (
+        missing_prerequisites(
+            require_gh=True, require_copilot=True, require_pi=True, environment=env
+        )
+        == []
+    )

@@ -263,6 +263,30 @@ def test_run_with_copilot_runtime_requires_copilot(
     assert "missing required executable(s) on PATH: copilot" in result.output
 
 
+def test_run_with_pi_runtime_requires_pi(source_repo: Path, data_dir: Path, path_without) -> None:
+    path_without("git")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "missing required executable(s) on PATH: pi" in result.output
+
+
 def test_invalid_config_fails_with_one_line_and_no_traceback(
     source_repo: Path, tmp_path: Path
 ) -> None:
@@ -671,12 +695,14 @@ def test_run_rejects_an_unknown_runtime(source_repo: Path, data_dir: Path) -> No
 
 
 def test_run_with_pi_runtime_selects_the_real_runtime(
-    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
 ) -> None:
     """``--runtime pi`` opts in. The pi runtime is stubbed here so the test
     still makes zero paid calls."""
     from software_agent_factory.agents import AgentResult, FakeAgentRuntime
     from software_agent_factory.models import AgentRole
+
+    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
 
     built: list[str] = []
     delegate = FakeAgentRuntime()
@@ -714,11 +740,13 @@ def test_run_with_pi_runtime_selects_the_real_runtime(
 
 
 def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
-    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
 ) -> None:
     """AC19: selecting pi logs a warning naming the unrestricted shell tool
     and linking the follow-up issue (AC18, #70), before the run happens."""
     from software_agent_factory.agents import FakeAgentRuntime
+
+    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
 
     delegate = FakeAgentRuntime()
 
@@ -792,9 +820,11 @@ def test_pi_agent_runtime_stub_returns_a_failed_result(tmp_path: Path) -> None:
 
 
 def test_project_with_pi_runtime_selects_the_real_runtime(
-    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
 ) -> None:
     from software_agent_factory.agents import AgentResult, FakeAgentRuntime
+
+    path_with("pi")  # project's prerequisite gate; the pi runtime itself is stubbed
 
     built: list[str] = []
     delegate = FakeAgentRuntime()
@@ -997,7 +1027,7 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
 ) -> None:
     from software_agent_factory.agents import AgentResult, FakeAgentRuntime
 
-    path_with("gh")  # start's prerequisite gate; the tracker itself is stubbed
+    path_with("gh", "pi")  # start's prerequisite gate; the tracker itself is stubbed
     _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
 
     built: list[str] = []

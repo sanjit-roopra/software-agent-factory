@@ -247,7 +247,9 @@ def _load_config(
     return loaded
 
 
-def _require_prerequisites(*, require_gh: bool, require_copilot: bool) -> None:
+def _require_prerequisites(
+    *, require_gh: bool, require_copilot: bool, require_pi: bool = False
+) -> None:
     """Refuse to start work when a required external executable is absent.
 
     Uses the same ``PATH`` lookup ``factory doctor`` uses
@@ -257,7 +259,9 @@ def _require_prerequisites(*, require_gh: bool, require_copilot: bool) -> None:
     layers down.
     """
     missing_checker = _seam("missing_prerequisites")
-    missing = missing_checker(require_gh=require_gh, require_copilot=require_copilot)
+    missing = missing_checker(
+        require_gh=require_gh, require_copilot=require_copilot, require_pi=require_pi
+    )
     if not missing:
         return
     raise _fail(
@@ -424,6 +428,7 @@ def run_command(
     _require_prerequisites(
         require_gh=factory_config.pull_request.enabled or factory_config.ci.enabled,
         require_copilot=runtime is RuntimeChoice.COPILOT,
+        require_pi=runtime is RuntimeChoice.PI,
     )
     _configure_logging(factory_config)
 
@@ -567,6 +572,7 @@ def project_command(
             or factory_config.merge.enabled
         ),
         require_copilot=runtime is RuntimeChoice.COPILOT,
+        require_pi=runtime is RuntimeChoice.PI,
     )
     _configure_logging(factory_config)
 
@@ -692,7 +698,11 @@ def start_command(
         )
     # Polling the backlog is a GitHub operation, so ``gh`` is required here
     # even when publishing and CI observation are both disabled.
-    _require_prerequisites(require_gh=True, require_copilot=runtime is RuntimeChoice.COPILOT)
+    _require_prerequisites(
+        require_gh=True,
+        require_copilot=runtime is RuntimeChoice.COPILOT,
+        require_pi=runtime is RuntimeChoice.PI,
+    )
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
     _configure_logging(factory_config)
@@ -815,7 +825,10 @@ def doctor_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Check prerequisites for this runtime ('copilot' additionally requires copilot).",
+        help=(
+            "Check prerequisites for this runtime ('copilot' additionally requires copilot; "
+            "'pi' additionally requires pi, Node and a provider credential)."
+        ),
     ),
     model_profile: str = typer.Option(
         "default",
@@ -844,6 +857,7 @@ def doctor_command(
         data_dir_override=data_dir,
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
+        requested_runtime_pi=runtime is RuntimeChoice.PI,
     )
 
     if json_output:
