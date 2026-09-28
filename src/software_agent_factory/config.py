@@ -512,6 +512,15 @@ class SchedulerConfig(ConfigModel):
         return self
 
 
+class PiConfig(ConfigModel):
+    """``pi`` agent runtime policy (``plans/pi-agent-runtime.md`` Step 2.1)."""
+
+    executable: str = Field(default="pi", min_length=1)
+    provider: str = Field(default="github-copilot", min_length=1)
+    session_reuse_max_age_seconds: PositiveInt = 3600
+    cache_retention: Literal["short", "long"] = "long"
+
+
 class RiskRuleConfig(ConfigModel):
     human_approval: bool
 
@@ -717,6 +726,7 @@ class FactoryConfig(ConfigModel):
     merge: MergeConfig = Field(default_factory=MergeConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    pi: PiConfig = Field(default_factory=PiConfig)
 
     @model_validator(mode="after")
     def _validate_risk_rules(self) -> Self:
