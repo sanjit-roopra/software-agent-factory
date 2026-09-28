@@ -301,7 +301,8 @@ def test_read_line_raises_protocol_error_when_line_exceeds_max_line_bytes() -> N
     with pytest.raises(PiRpcProtocolError) as excinfo:
         client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
 
-    assert "16" in str(excinfo.value)
+    assert "exceeded 16 bytes without a newline" in str(excinfo.value)
+    assert excinfo.value.line_excerpt.startswith("x")
 
 
 def test_two_lines_in_one_write_are_both_read_without_timeout() -> None:
@@ -372,6 +373,49 @@ def test_wait_for_settled_returns_immediately_if_already_buffered() -> None:
     events = client.wait_for_settled(deadline=_deadline())
 
     assert events == [{"type": "agent_settled"}]
+
+
+def test_wait_for_settled_keeps_records_after_the_settle_for_the_next_wait() -> None:
+    process = FakeProcess()
+    client = PiRpcClient(process)
+
+    process.write_records(
+        {"type": "agent_settled"},
+        {"type": "event", "name": "next_turn_started"},
+        {"type": "agent_settled"},
+        {"type": "response", "id": "c1", "success": True},
+    )
+    client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    first = client.wait_for_settled(deadline=_deadline())
+    second = client.wait_for_settled(deadline=_deadline(0.5))
+
+    assert first == [{"type": "agent_settled"}]
+    assert second == [{"type": "event", "name": "next_turn_started"}, {"type": "agent_settled"}]
+
+
+def test_request_raises_protocol_error_on_invalid_utf8_line() -> None:
+    process = FakeProcess()
+    client = PiRpcClient(process)
+
+    os.write(process._stdout_write.fileno(), b"\xff\xfe not utf-8\n")
+
+    with pytest.raises(PiRpcProtocolError) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert "not valid UTF-8" in str(excinfo.value)
+
+
+def test_send_raises_process_exited_when_pi_stdin_is_gone() -> None:
+    process = FakeProcess()
+    client = PiRpcClient(process)
+    process.exit(3)
+    process._stdin_read.close()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.send({"type": "prompt", "message": "hi"})
+
+    assert excinfo.value.returncode == 3
 
 
 # ---------------------------------------------------------------------------

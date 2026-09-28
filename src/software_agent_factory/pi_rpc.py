@@ -90,8 +90,8 @@ class PiRpcCommandError(PiRpcError):
 class PiRpcProtocolError(PiRpcError):
     """Raised when a line pi wrote cannot be parsed as a JSON object record."""
 
-    def __init__(self, line_excerpt: str) -> None:
-        super().__init__(f"pi wrote a line that is not a JSON object: {line_excerpt!r}")
+    def __init__(self, line_excerpt: str, *, reason: str = "is not a JSON object") -> None:
+        super().__init__(f"pi wrote a line that {reason}: {line_excerpt!r}")
         self.line_excerpt = line_excerpt
 
 
@@ -141,8 +141,13 @@ class PiRpcClient:
         payload = dict(command)
         payload["id"] = command_id
         assert self._process.stdin is not None
-        self._process.stdin.write(json.dumps(payload) + "\n")
-        self._process.stdin.flush()
+        try:
+            self._process.stdin.write(json.dumps(payload) + "\n")
+            self._process.stdin.flush()
+        except OSError as exc:
+            # pi already exited: report it like the read path does, with the
+            # return code and stderr tail, instead of a bare BrokenPipeError.
+            raise PiRpcProcessExited(self._returncode(), self.stderr_tail) from exc
         return command_id
 
     def request(self, command: dict[str, Any], *, deadline: float) -> dict[str, Any]:
@@ -171,9 +176,11 @@ class PiRpcClient:
         """
         events = self._pending_events
         self._pending_events = []
-        for event in events:
+        for index, event in enumerate(events):
             if event.get("type") == "agent_settled":
-                return events
+                # Records buffered after this settle belong to the next wait.
+                self._pending_events = events[index + 1 :]
+                return events[: index + 1]
         while True:
             record = self._read_record(deadline)
             events.append(record)
@@ -241,13 +248,19 @@ class PiRpcClient:
                         and b"\n" not in self._stdout_buffer
                     ):
                         raise PiRpcProtocolError(
-                            f"line exceeded {self._max_line_bytes} bytes without a newline"
+                            self._stdout_buffer[:200].decode("utf-8", errors="replace"),
+                            reason=f"exceeded {self._max_line_bytes} bytes without a newline",
                         )
                 else:
                     self._stdout_eof = True
 
         line, _, self._stdout_buffer = self._stdout_buffer.partition(b"\n")
-        return line.decode("utf-8")
+        try:
+            return line.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PiRpcProtocolError(
+                line[:200].decode("utf-8", errors="replace"), reason="is not valid UTF-8"
+            ) from exc
 
     def _returncode(self) -> int | None:
         code = self._process.poll()
