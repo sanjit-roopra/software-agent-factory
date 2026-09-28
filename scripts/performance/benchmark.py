@@ -1250,7 +1250,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")
+        # The path is confined above; Sonar's taint here is the CLI-derived report
+        # content (e.g. --iterations), which cannot traverse paths.
+        output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")  # NOSONAR(S8707)
         print(f"\nSaved benchmark results to {output}")
 
     if args.controller_comparison or controller_output:
@@ -1277,7 +1279,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         if controller_output:
             controller_output.parent.mkdir(parents=True, exist_ok=True)
-            controller_output.write_text(json.dumps(ctrl_results, indent=2), encoding="utf-8")
+            # Path confined above; only the report content derives from CLI input.
+            controller_output.write_text(  # NOSONAR(S8707)
+                json.dumps(ctrl_results, indent=2), encoding="utf-8"
+            )
             print(f"Saved controller comparison to {controller_output}")
 
     has_regression = False
