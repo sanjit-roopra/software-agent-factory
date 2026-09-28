@@ -1152,9 +1152,10 @@ def _resolve_within_cwd(path: Path) -> Path:
 def _confine_cli_paths(args: argparse.Namespace) -> None:
     """Replace each file-path argument with its cwd-confined, resolved form.
 
-    This fails fast before any benchmark runs. Each file read and write
-    resolves its path again at the call, because Sonar's taint analysis does
-    not follow the getattr/setattr loop below.
+    This fails fast before any benchmark runs. Each file access in main()
+    resolves its path again at the call: with only this loop, SonarCloud kept
+    reporting pythonsecurity:S8707 on the controller-output write (after
+    PR #55), since it does not trace the sanitizer through getattr/setattr.
     """
     for name in ("output", "baseline", "controller_output"):
         value = getattr(args, name)
@@ -1280,10 +1281,11 @@ def main(argv: list[str] | None = None) -> int:
 
     has_regression = False
     if args.baseline:
-        if not args.baseline.exists():
+        baseline = _resolve_within_cwd(args.baseline)
+        if not baseline.exists():
             print(f"\nError: baseline file not found: {args.baseline}", file=sys.stderr)
             return 2
-        baseline_data = json.loads(_resolve_within_cwd(args.baseline).read_text(encoding="utf-8"))
+        baseline_data = json.loads(baseline.read_text(encoding="utf-8"))
         print("\nComparison with Baseline:")
         comparison_lines, has_regression = compare_with_baseline(
             current=current_results,
