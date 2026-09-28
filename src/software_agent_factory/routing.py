@@ -279,6 +279,9 @@ def default_https_transport(
         return rem
 
     ssl_ctx = ssl.create_default_context()
+    # Explicit floor: the default is already TLS 1.2+ on Python 3.10+, but stating it
+    # keeps the guarantee independent of interpreter defaults and static-analysis rules.
+    ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     conn = http.client.HTTPSConnection(
         host,
         port=port,

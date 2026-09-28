@@ -1833,3 +1833,26 @@ def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> No
         assert scan_cache.hits == 2
     finally:
         _stop(running)
+
+
+# ---------------------------------------------------------------------------
+# Log injection: request paths reach the log only after sanitisation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("/api/runs?token=secret", "/api/runs"),
+        ("/api/runs\r\nINFO forged line", "/api/runs??INFO forged line"),
+        ("/api/\x00bin\x1b[31m", "/api/?bin?[31m"),
+        ("/über", "/?ber"),
+        ("/" + "a" * 500, "/" + "a" * 199),
+    ],
+)
+def test_log_safe_path_strips_query_control_chars_and_bounds_length(
+    raw: str, expected: str
+) -> None:
+    from software_agent_factory.dashboard.handler import _log_safe_path
+
+    assert _log_safe_path(raw) == expected

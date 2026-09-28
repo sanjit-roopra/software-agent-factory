@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_VERSION: "0.9.17"
+  UV_VERSION: "0.12.19"
 
 jobs:
   dependency-review:
@@ -51,8 +51,8 @@ jobs:
 
       - name: Audit pull request dependencies
         run: |
-          uv sync --locked --no-default-groups --group security
-          uv run --no-sync pip-audit --skip-editable
+          uv sync --locked --no-build --no-default-groups --group security
+          uv run --no-sync --no-build pip-audit --skip-editable
 
   codeql:
     name: codeql (${{ matrix.language }})
@@ -150,5 +150,5 @@ jobs:
 
       - name: Audit locked dependencies
         run: |
-          uv sync --locked --no-default-groups --group security
-          uv run --no-sync pip-audit --skip-editable
+          uv sync --locked --no-build --no-default-groups --group security
+          uv run --no-sync --no-build pip-audit --skip-editable

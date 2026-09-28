@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UV_VERSION: "0.9.17"
+  UV_VERSION: "0.12.19"
 
 jobs:
   build:
@@ -52,10 +52,10 @@ jobs:
 
       - name: Build site
         run: |
-          uv sync --locked --no-default-groups --group docs
-          uv run --no-sync mkdocs build --strict
-          uv run --no-sync python scripts/docs/check_simple_english.py
-          uv run --no-sync python scripts/docs/check_rendered_links.py site
+          uv sync --locked --no-build --no-default-groups --group docs
+          uv run --no-sync --no-build mkdocs build --strict
+          uv run --no-sync --no-build python scripts/docs/check_simple_english.py
+          uv run --no-sync --no-build python scripts/docs/check_rendered_links.py site
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_VERSION: "0.9.17"
+  UV_VERSION: "0.12.19"
 
 jobs:
   python-prerelease:
@@ -44,5 +44,5 @@ jobs:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
         run: |
-          uv sync --locked --no-default-groups --group test
-          uv run --no-sync pytest -q
+          uv sync --locked --no-build --no-default-groups --group test
+          uv run --no-sync --no-build pytest -q

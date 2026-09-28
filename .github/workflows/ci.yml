@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_VERSION: "0.9.17"
+  UV_VERSION: "0.12.19"
 
 jobs:
   quality:
@@ -41,16 +41,16 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Sync development environment
-        run: uv sync --locked --no-default-groups --group quality
+        run: uv sync --locked --no-build --no-default-groups --group quality
 
       - name: Check formatting
-        run: uv run --no-sync ruff format --check .
+        run: uv run --no-sync --no-build ruff format --check .
 
       - name: Lint
-        run: uv run --no-sync ruff check --output-format=github .
+        run: uv run --no-sync --no-build ruff check --output-format=github .
 
       - name: Type check
-        run: uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
+        run: uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release
 
   tests:
     name: tests (Python ${{ matrix.python-version }})
@@ -81,7 +81,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Sync development environment
-        run: uv sync --locked --no-default-groups --group test
+        run: uv sync --locked --no-build --no-default-groups --group test
 
       - name: Test with branch coverage
         if: matrix.python-version == '3.13'
@@ -89,7 +89,7 @@ jobs:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
         run: |
-          uv run --no-sync pytest -q \
+          uv run --no-sync --no-build pytest -q \
             --cov=software_agent_factory \
             --cov-branch \
             --cov-report=term-missing \
@@ -100,7 +100,7 @@ jobs:
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync --no-build pytest -q
 
   package:
     name: package
@@ -125,29 +125,29 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Sync development environment
-        run: uv sync --locked --no-default-groups --group distribution --group native
+        run: uv sync --locked --no-build --no-default-groups --group distribution --group native
 
       - name: Build and validate wheel and sdist
         run: |
           uv build --no-sources
-          uv run --no-sync twine check dist/*
-          uv run --no-sync check-wheel-contents dist/*.whl
+          uv run --no-sync --no-build twine check dist/*
+          uv run --no-sync --no-build check-wheel-contents dist/*.whl
 
       - name: Smoke installed distributions in clean virtualenvs
         run: |
           set -euo pipefail
-          VERSION=$(PYTHONPATH=src uv run --no-sync python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
           )
-          uv run --no-sync python -m venv packaging/venvs/wheel-smoke
+          uv run --no-sync --no-build python -m venv packaging/venvs/wheel-smoke
           packaging/venvs/wheel-smoke/bin/pip install dist/*.whl
           packaging/venvs/wheel-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/wheel-smoke/bin/factory \
             --workspace-root packaging/wheel-smoke \
             --expect-version "$VERSION"
-          uv run --no-sync python -m venv packaging/venvs/sdist-smoke
+          uv run --no-sync --no-build python -m venv packaging/venvs/sdist-smoke
           packaging/venvs/sdist-smoke/bin/pip install dist/*.tar.gz
           packaging/venvs/sdist-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/sdist-smoke/bin/factory \
@@ -159,22 +159,22 @@ jobs:
           set -euo pipefail
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          VERSION=$(PYTHONPATH=src uv run --no-sync python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
           )
-          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          PYTHON_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import platform
           print(platform.python_version())
           PY
           )
-          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
+          PYINSTALLER_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import PyInstaller
           print(PyInstaller.__version__)
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "ci-${GITHUB_SHA:-smoke}" \
             --commit-sha "${GITHUB_SHA:-HEAD}" \
@@ -182,11 +182,11 @@ jobs:
             --python-version "$PYTHON_VERSION" \
             --pyinstaller-version "$PYINSTALLER_VERSION" \
             --target-architecture "x86_64"
-          uv run --no-sync pyinstaller --clean --noconfirm \
+          uv run --no-sync --no-build pyinstaller --clean --noconfirm \
             --distpath packaging/dist/portable \
             --workpath packaging/build/portable \
             packaging/pyinstaller.spec
-          uv run --no-sync python scripts/release/smoke_factory.py \
+          uv run --no-sync --no-build python scripts/release/smoke_factory.py \
             --factory-executable packaging/dist/portable/software-agent-factory/factory \
             --workspace-root packaging/frozen-smoke/portable \
             --expect-version "$VERSION"
@@ -215,10 +215,10 @@ jobs:
 
       - name: Build documentation
         run: |
-          uv sync --locked --no-default-groups --group docs
-          uv run --no-sync mkdocs build --strict
-          uv run --no-sync python scripts/docs/check_simple_english.py
-          uv run --no-sync python scripts/docs/check_rendered_links.py site
+          uv sync --locked --no-build --no-default-groups --group docs
+          uv run --no-sync --no-build mkdocs build --strict
+          uv run --no-sync --no-build python scripts/docs/check_simple_english.py
+          uv run --no-sync --no-build python scripts/docs/check_rendered_links.py site
 
   ci-gate:
     name: ci-gate
@@ -269,8 +269,8 @@ jobs:
           GITHUB_TOKEN: ""
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups --group native --group test
-          uv run --no-sync pytest -q \
+          uv sync --locked --no-build --no-default-groups --group native --group test
+          uv run --no-sync --no-build pytest -q \
             tests/test_cli.py \
             tests/test_cli_operations.py \
             tests/test_doctor.py \
@@ -284,22 +284,22 @@ jobs:
           set -euo pipefail
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          VERSION=$(PYTHONPATH=src uv run --no-sync python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
           )
-          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          PYTHON_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import platform
           print(platform.python_version())
           PY
           )
-          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
+          PYINSTALLER_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import PyInstaller
           print(PyInstaller.__version__)
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "ci-$GITHUB_SHA" \
             --commit-sha "$GITHUB_SHA" \
@@ -307,18 +307,18 @@ jobs:
             --python-version "$PYTHON_VERSION" \
             --pyinstaller-version "$PYINSTALLER_VERSION" \
             --target-architecture "arm64"
-          uv run --no-sync pyinstaller --clean --noconfirm \
+          uv run --no-sync --no-build pyinstaller --clean --noconfirm \
             --distpath packaging/dist/arm64 \
             --workpath packaging/build/arm64 \
             packaging/pyinstaller.spec
-          uv run --no-sync python scripts/release/prepare_frozen_bundle.py \
+          uv run --no-sync --no-build python scripts/release/prepare_frozen_bundle.py \
             --bundle-dir packaging/dist/arm64/software-agent-factory \
             --version "$VERSION" \
             --architecture "arm64"
           ARCHIVE=packaging/artifacts/software-agent-factory-${VERSION}-macos-arm64.tar.gz
           mkdir -p packaging/artifacts
           COPYFILE_DISABLE=1 tar -C packaging/dist/arm64 -czf "$ARCHIVE" software-agent-factory
-          uv run --no-sync python scripts/release/smoke_factory.py \
+          uv run --no-sync --no-build python scripts/release/smoke_factory.py \
             --archive "$ARCHIVE" \
             --workspace-root packaging/frozen-smoke/arm64 \
             --expect-architecture "arm64" \
@@ -355,8 +355,8 @@ jobs:
           GITHUB_TOKEN: ""
         run: |
           set -euo pipefail
-          uv sync --locked --no-default-groups --group native --group test
-          uv run --no-sync pytest -q \
+          uv sync --locked --no-build --no-default-groups --group native --group test
+          uv run --no-sync --no-build pytest -q \
             tests/test_cli.py \
             tests/test_cli_operations.py \
             tests/test_doctor.py \
@@ -370,22 +370,22 @@ jobs:
           set -euo pipefail
           BUILD_INFO=src/software_agent_factory/build-info.json
           trap 'rm -f "$BUILD_INFO"' EXIT
-          VERSION=$(PYTHONPATH=src uv run --no-sync python - <<'PY'
+          VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python - <<'PY'
           from software_agent_factory.version import get_version
           print(get_version())
           PY
           )
-          PYTHON_VERSION=$(uv run --no-sync python - <<'PY'
+          PYTHON_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import platform
           print(platform.python_version())
           PY
           )
-          PYINSTALLER_VERSION=$(uv run --no-sync python - <<'PY'
+          PYINSTALLER_VERSION=$(uv run --no-sync --no-build python - <<'PY'
           import PyInstaller
           print(PyInstaller.__version__)
           PY
           )
-          PYTHONPATH=src uv run --no-sync python scripts/release/generate_build_info.py \
+          PYTHONPATH=src uv run --no-sync --no-build python scripts/release/generate_build_info.py \
             --output "$BUILD_INFO" \
             --tag "ci-$GITHUB_SHA" \
             --commit-sha "$GITHUB_SHA" \
@@ -393,18 +393,18 @@ jobs:
             --python-version "$PYTHON_VERSION" \
             --pyinstaller-version "$PYINSTALLER_VERSION" \
             --target-architecture "x86_64"
-          uv run --no-sync pyinstaller --clean --noconfirm \
+          uv run --no-sync --no-build pyinstaller --clean --noconfirm \
             --distpath packaging/dist/x86_64 \
             --workpath packaging/build/x86_64 \
             packaging/pyinstaller.spec
-          uv run --no-sync python scripts/release/prepare_frozen_bundle.py \
+          uv run --no-sync --no-build python scripts/release/prepare_frozen_bundle.py \
             --bundle-dir packaging/dist/x86_64/software-agent-factory \
             --version "$VERSION" \
             --architecture "x86_64"
           ARCHIVE=packaging/artifacts/software-agent-factory-${VERSION}-macos-x86_64.tar.gz
           mkdir -p packaging/artifacts
           COPYFILE_DISABLE=1 tar -C packaging/dist/x86_64 -czf "$ARCHIVE" software-agent-factory
-          uv run --no-sync python scripts/release/smoke_factory.py \
+          uv run --no-sync --no-build python scripts/release/smoke_factory.py \
             --archive "$ARCHIVE" \
             --workspace-root packaging/frozen-smoke/x86_64 \
             --expect-architecture "x86_64" \
