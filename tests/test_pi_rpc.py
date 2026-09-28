@@ -1,10 +1,12 @@
 """Tests for :mod:`software_agent_factory.pi_rpc`.
 
-No real ``pi`` subprocess is spawned. ``FakeProcess`` wraps three
-``os.pipe()`` pairs so ``PiRpcClient``'s raw-fd ``select``/``os.read`` loop
-runs against real, deterministic file descriptors -- the test writes
-scripted JSONL records into the read end ``PiRpcClient`` consumes, exactly
-as a real pi process would.
+Most tests use ``FakeProcess``, which wraps ``os.pipe()`` pairs so
+``PiRpcClient``'s raw-fd ``select``/``os.read`` loop runs against real,
+deterministic file descriptors -- the test writes scripted JSONL records
+into the read end ``PiRpcClient`` consumes, exactly as a real pi process
+would. One test drives a real short-lived Python child instead, to prove
+the stderr-draining ``select()`` loop can't deadlock against a full OS pipe
+buffer -- a scenario ``FakeProcess``'s unbounded pipes can't reproduce.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from typing import IO, Any
 
@@ -39,17 +42,25 @@ class FakeProcess:
     to simulate the process exiting.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, stderr: bool = True) -> None:
         stdin_read_fd, stdin_write_fd = os.pipe()
         stdout_read_fd, stdout_write_fd = os.pipe()
-        stderr_read_fd, stderr_write_fd = os.pipe()
 
         self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
         self._stdin_read = os.fdopen(stdin_read_fd, "r")
         self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
         self._stdout_write = os.fdopen(stdout_write_fd, "w")
-        self.stderr: IO[str] | None = os.fdopen(stderr_read_fd, "r")
-        self._stderr_write = os.fdopen(stderr_write_fd, "w")
+
+        if stderr:
+            stderr_read_fd, stderr_write_fd = os.pipe()
+            self.stderr: IO[str] | None = os.fdopen(stderr_read_fd, "r")
+            self._stderr_write: IO[str] | None = os.fdopen(stderr_write_fd, "w")
+        else:
+            # Mirrors a real ``Popen(stderr=subprocess.DEVNULL)`` handle, as
+            # used by ``scripts/performance/pi_cache_probe.py``'s process
+            # factory: ``.stderr`` is ``None`` rather than an open pipe.
+            self.stderr = None
+            self._stderr_write = None
 
         self.pid = 999_999
         self._returncode: int | None = None
@@ -65,6 +76,7 @@ class FakeProcess:
         self._stdout_write.flush()
 
     def write_stderr(self, text: str) -> None:
+        assert self._stderr_write is not None
         self._stderr_write.write(text)
         self._stderr_write.flush()
 
@@ -230,6 +242,68 @@ def test_process_exited_returncode_falls_back_to_wait_when_not_yet_polled() -> N
     assert excinfo.value.returncode == 3
 
 
+def test_process_exited_returncode_is_none_when_process_still_running() -> None:
+    """EOF on stdout with ``poll()`` reporting ``None`` and ``wait()`` timing
+    out (the process is genuinely still running) reports ``returncode`` as
+    ``None`` rather than raising or hanging."""
+    process = FakeProcess()
+    client = PiRpcClient(process)
+    process.close_stdout()  # EOF, but exit()/exit_pending_reap() never called
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert excinfo.value.returncode is None
+
+
+def test_stderr_tail_keeps_trailing_window_when_it_exceeds_the_cap() -> None:
+    """``stderr_tail`` is bounded to the last ~4 KB (``_STDERR_TAIL_BYTES``)
+    -- the trailing window, not the front, since the most recent output is
+    what's useful in a failure reason."""
+    process = FakeProcess()
+    client = PiRpcClient(process)
+    process.exit(1)
+    process.write_stderr(("a" * 5000) + "TAIL_MARKER")
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    tail = excinfo.value.stderr_tail
+    assert "TAIL_MARKER" in tail
+    assert len(tail.encode("utf-8")) <= 4096
+    assert "a" * 5000 not in tail
+
+
+def test_request_succeeds_when_stderr_handle_is_none() -> None:
+    """A process constructed like a real ``Popen(stderr=subprocess.DEVNULL)``
+    handle (``.stderr is None``) must not be selected on -- ``PiRpcClient``
+    reads stdout alone rather than raising on the missing fd."""
+    process = FakeProcess(stderr=False)
+    client = PiRpcClient(process)
+    assert process.stderr is None
+
+    process.write_records({"type": "response", "id": "c1", "success": True})
+
+    result = client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert result["id"] == "c1"
+
+
+def test_read_line_raises_protocol_error_when_line_exceeds_max_line_bytes() -> None:
+    """A line that keeps growing without ever completing with a newline must
+    fail fast once it exceeds the configured byte cap, naming the limit,
+    rather than letting ``_stdout_buffer`` grow without bound."""
+    process = FakeProcess()
+    client = PiRpcClient(process, max_line_bytes=16)
+    process.write_raw_stdout("x" * 17)  # no newline: buffer grows past the 16-byte cap
+
+    with pytest.raises(PiRpcProtocolError) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert "16" in str(excinfo.value)
+
+
 def test_two_lines_in_one_write_are_both_read_without_timeout() -> None:
     """Both lines land in one flush, then the write end closes -- no further
     data ever arrives. A correct implementation reads both already-buffered
@@ -332,3 +406,48 @@ def test_close_kills_process_group_on_timeout(monkeypatch: pytest.MonkeyPatch) -
 
     assert process.stdin is not None and process.stdin.closed
     assert killed == [(process.pid, signal.SIGTERM)]
+
+
+# ---------------------------------------------------------------------------
+# stderr draining: a full stderr pipe must never block a stdout-only wait
+# ---------------------------------------------------------------------------
+
+
+def test_read_line_drains_stderr_while_waiting_for_stdout_avoiding_deadlock() -> None:
+    """A real child that writes well past the OS pipe buffer to stderr
+    *before* its single stdout response line must not deadlock ``request()``.
+
+    If the ``select()`` loop only drained stderr because it was jointly
+    ready with stdout (rather than including the stderr fd on every
+    iteration), the child's ``stderr.write`` would block once the pipe
+    buffer fills, it would never reach the stdout write, and ``request()``
+    would hang until the deadline instead of returning promptly.
+    """
+    script = (
+        "import json, sys\n"
+        "command = json.loads(sys.stdin.readline())\n"
+        "sys.stderr.write('e' * 200_000)\n"  # far past any OS pipe buffer size
+        "sys.stderr.flush()\n"
+        "sys.stdout.write(json.dumps({'type': 'response', 'id': command['id'], "
+        "'success': True}) + chr(10))\n"
+        "sys.stdout.flush()\n"
+    )
+    popen = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    client = PiRpcClient(popen)
+    try:
+        started = time.monotonic()
+        result = client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(5.0))
+        elapsed = time.monotonic() - started
+    finally:
+        client.close(timeout=1.0)
+
+    assert result["success"] is True
+    assert elapsed < 5.0

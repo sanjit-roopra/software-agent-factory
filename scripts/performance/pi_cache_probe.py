@@ -20,16 +20,16 @@ Copilot-runtime convention that "unknown" and zero are distinct.
 
 The process transport is injectable (``ProcessFactory``) so tests can drive
 the whole two-process orchestration against a fake process, with no real pi
-subprocess involved.
+subprocess involved. The JSONL protocol exchange itself (line buffering,
+response matching, event collection) is delegated to
+:class:`software_agent_factory.pi_rpc.PiRpcClient` rather than reimplemented
+here.
 """
 
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
-import os
-import select
 import subprocess
 import sys
 import tempfile
@@ -37,12 +37,14 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
-from software_agent_factory.subprocess_utils import build_child_env, kill_process_group
+from software_agent_factory.pi_rpc import PiProcessHandle, PiRpcClient
+from software_agent_factory.subprocess_utils import build_child_env
 
-#: Bound on how long :meth:`_SubprocessPiProcess.close` waits for the child
-#: to exit on its own before escalating to :func:`kill_process_group`.
+#: Bound on how long :meth:`~software_agent_factory.pi_rpc.PiRpcClient.close`
+#: waits for a probe child to exit on its own before escalating to killing
+#: its process group.
 _CLOSE_TIMEOUT_SECONDS = 10.0
 
 #: Providers only cache prompts above a minimum length (about 1,024 tokens
@@ -72,10 +74,6 @@ class PiExecutableNotFoundError(RuntimeError):
     def __init__(self, executable: str) -> None:
         super().__init__(f"pi executable not found: {executable!r}")
         self.executable = executable
-
-
-class PiProtocolError(RuntimeError):
-    """Raised when pi's JSONL stream cannot be parsed as expected."""
 
 
 @dataclass(frozen=True)
@@ -112,85 +110,17 @@ def verdict_from_messages(messages: Sequence[Mapping[str, Any]]) -> CacheVerdict
     )
 
 
-class PiProcessProtocol(Protocol):
-    """Minimal transport a pi RPC process (real or faked) must provide."""
-
-    def send(self, command: Mapping[str, Any]) -> None: ...
-
-    def read_line(self, deadline: float) -> str | None:
-        """Return the next stdout line, or ``None`` at EOF.
-
-        ``deadline`` is an absolute ``time.monotonic()`` value; implementations
-        must raise :class:`TimeoutError` if no line arrives before it.
-        """
-        ...
-
-    def close(self) -> None:
-        """Close stdin and reap the process, killing it if it will not exit."""
-        ...
+ProcessFactory = Callable[[Sequence[str]], PiProcessHandle]
 
 
-ProcessFactory = Callable[[Sequence[str]], PiProcessProtocol]
-
-
-class _SubprocessPiProcess:
-    """Wraps a real ``pi --mode rpc`` subprocess as a :class:`PiProcessProtocol`."""
-
-    def __init__(self, popen: subprocess.Popen[str]) -> None:
-        self._popen = popen
-        #: Raw bytes read from the stdout fd but not yet returned as a line.
-        #: ``select()`` reports readiness at the OS pipe level, but the
-        #: buffered ``TextIOWrapper`` can pull more than one line into its
-        #: own internal buffer on a single read; polling ``select()`` again
-        #: for a line already sitting in that buffer would spuriously time
-        #: out. Reading the raw fd directly and keeping our own buffer
-        #: avoids that: we only block on ``select()`` when our buffer holds
-        #: no complete line yet.
-        self._buffer = b""
-
-    def send(self, command: Mapping[str, Any]) -> None:
-        assert self._popen.stdin is not None
-        self._popen.stdin.write(json.dumps(command) + "\n")
-        self._popen.stdin.flush()
-
-    def read_line(self, deadline: float) -> str | None:
-        assert self._popen.stdout is not None
-        fd = self._popen.stdout.fileno()
-        while b"\n" not in self._buffer:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("timed out waiting for pi output")
-            ready, _, _ = select.select([fd], [], [], remaining)
-            if not ready:
-                raise TimeoutError("timed out waiting for pi output")
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                if self._buffer:
-                    line, self._buffer = self._buffer, b""
-                    return line.decode("utf-8")
-                return None
-            self._buffer += chunk
-        line, _, self._buffer = self._buffer.partition(b"\n")
-        return line.decode("utf-8") + "\n"
-
-    def close(self, *, timeout: float = _CLOSE_TIMEOUT_SECONDS) -> None:
-        """Close stdin and reap the child, killing its process group if it hangs."""
-        if self._popen.stdin is not None and not self._popen.stdin.closed:
-            self._popen.stdin.close()
-        try:
-            self._popen.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            kill_process_group(self._popen)
-
-
-def _default_process_factory(cmd: Sequence[str]) -> PiProcessProtocol:
+def _default_process_factory(cmd: Sequence[str]) -> PiProcessHandle:
     # pi's github-copilot auth is read from ~/.pi/agent/auth.json, not these
     # env vars, so dropping them cannot break auth -- it only keeps a GitHub
     # credential in the factory's own environment from leaking into the
     # child's environment or transcript.
     env, _ = build_child_env()
     try:
-        popen = subprocess.Popen(
+        return subprocess.Popen(
             list(cmd),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -202,52 +132,23 @@ def _default_process_factory(cmd: Sequence[str]) -> PiProcessProtocol:
         )
     except FileNotFoundError as exc:
         raise PiExecutableNotFoundError(cmd[0]) from exc
-    return _SubprocessPiProcess(popen)
 
 
 class _PiConversation:
-    """Sequential JSONL command/response exchange with one pi RPC process."""
+    """Sequential JSONL command/response exchange with one pi RPC client."""
 
-    def __init__(self, process: PiProcessProtocol, deadline: float) -> None:
-        self._process = process
+    def __init__(self, client: PiRpcClient, deadline: float) -> None:
+        self._client = client
         self._deadline = deadline
-        self._next_id = itertools.count(1)
 
     def send_prompt_and_wait(self, message: str) -> None:
-        command_id = next(self._next_id)
-        self._process.send({"id": command_id, "type": "prompt", "message": message})
-        while True:
-            record = self._read_record()
-            if record.get("type") == "agent_settled":
-                return
+        self._client.request({"type": "prompt", "message": message}, deadline=self._deadline)
+        self._client.wait_for_settled(deadline=self._deadline)
 
     def get_messages(self) -> list[Mapping[str, Any]]:
-        command_id = next(self._next_id)
-        self._process.send({"id": command_id, "type": "get_messages"})
-        while True:
-            record = self._read_record()
-            if record.get("type") == "response" and record.get("id") == command_id:
-                if not record.get("success", False):
-                    raise PiProtocolError(f"get_messages failed: {record.get('error')!r}")
-                data = record.get("data") or {}
-                messages = data.get("messages", [])
-                return list(messages)
-
-    def _read_record(self) -> dict[str, Any]:
-        while True:
-            line = self._process.read_line(self._deadline)
-            if line is None:
-                raise PiProtocolError("pi process closed its output before responding")
-            stripped = line.strip()
-            if stripped:
-                break
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise PiProtocolError(f"pi wrote a non-JSON line: {stripped!r}") from exc
-        if not isinstance(record, dict):
-            raise PiProtocolError(f"pi wrote a JSON line that is not an object: {stripped!r}")
-        return record
+        record = self._client.request({"type": "get_messages"}, deadline=self._deadline)
+        data = record.get("data") or {}
+        return list(data.get("messages", []))
 
 
 def _build_command(
@@ -278,13 +179,14 @@ def run_same_process(
     deadline = time.monotonic() + timeout
     cmd = _build_command(executable, provider, model, ("--no-session",))
     process = process_factory(cmd)
+    client = PiRpcClient(process)
     try:
-        conversation = _PiConversation(process, deadline)
+        conversation = _PiConversation(client, deadline)
         conversation.send_prompt_and_wait(_FIRST_PROMPT)
         conversation.send_prompt_and_wait(_FIRST_PROMPT + _SECOND_PROMPT_SUFFIX)
         messages = conversation.get_messages()
     finally:
-        process.close()
+        client.close(timeout=_CLOSE_TIMEOUT_SECONDS)
     return verdict_from_messages(messages)
 
 
@@ -306,19 +208,21 @@ def run_resume(
 
     first_cmd = _build_command(executable, provider, model, session_args)
     first_process = process_factory(first_cmd)
+    first_client = PiRpcClient(first_process)
     try:
-        _PiConversation(first_process, deadline).send_prompt_and_wait(_FIRST_PROMPT)
+        _PiConversation(first_client, deadline).send_prompt_and_wait(_FIRST_PROMPT)
     finally:
-        first_process.close()
+        first_client.close(timeout=_CLOSE_TIMEOUT_SECONDS)
 
     second_cmd = _build_command(executable, provider, model, session_args)
     second_process = process_factory(second_cmd)
+    second_client = PiRpcClient(second_process)
     try:
-        conversation = _PiConversation(second_process, deadline)
+        conversation = _PiConversation(second_client, deadline)
         conversation.send_prompt_and_wait(_FIRST_PROMPT + _SECOND_PROMPT_SUFFIX)
         messages = conversation.get_messages()
     finally:
-        second_process.close()
+        second_client.close(timeout=_CLOSE_TIMEOUT_SECONDS)
     return verdict_from_messages(messages)
 
 

@@ -33,6 +33,13 @@ _READ_CHUNK_BYTES = 65536
 #: :func:`kill_process_group`.
 _DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
 
+#: Default cap on how large ``_stdout_buffer`` may grow while accumulating a
+#: single line with no newline yet. ``get_messages`` responses carry a
+#: session's full message history, so this is generous by design -- it is a
+#: safety bound against an unbounded read (a protocol break or a runaway
+#: response), not a realistic per-line size.
+_MAX_LINE_BYTES = 64 * 1024 * 1024
+
 
 class PiProcessHandle(Protocol):
     """Minimal handle :class:`PiRpcClient` needs over an already-started pi process.
@@ -108,8 +115,9 @@ class PiRpcClient:
     runtime's concern (see :class:`PiProcessHandle`).
     """
 
-    def __init__(self, process: PiProcessHandle) -> None:
+    def __init__(self, process: PiProcessHandle, *, max_line_bytes: int = _MAX_LINE_BYTES) -> None:
         self._process = process
+        self._max_line_bytes = max_line_bytes
         self._next_id = itertools.count(1)
         self._stdout_buffer = b""
         self._stdout_eof = False
@@ -202,9 +210,7 @@ class PiRpcClient:
         the buffer holds no complete line yet. ``select()`` on a buffered
         text stream can miss a line already pulled into that stream's own
         internal buffer by an earlier read; reading the raw fd directly with
-        ``os.read`` and tracking our own buffer avoids that (see
-        ``scripts/performance/pi_cache_probe.py``'s
-        ``_SubprocessPiProcess.read_line`` for the same pattern).
+        ``os.read`` and tracking our own buffer avoids that.
         """
         assert self._process.stdout is not None
         stdout_fd = self._process.stdout.fileno()
@@ -230,6 +236,13 @@ class PiRpcClient:
                 chunk = os.read(stdout_fd, _READ_CHUNK_BYTES)
                 if chunk:
                     self._stdout_buffer += chunk
+                    if (
+                        len(self._stdout_buffer) > self._max_line_bytes
+                        and b"\n" not in self._stdout_buffer
+                    ):
+                        raise PiRpcProtocolError(
+                            f"line exceeded {self._max_line_bytes} bytes without a newline"
+                        )
                 else:
                     self._stdout_eof = True
 

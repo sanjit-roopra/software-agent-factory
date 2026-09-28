@@ -1,24 +1,25 @@
 """Tests for the offline-testable pi prompt-cache probe.
 
 No real ``pi`` subprocess is spawned: the process transport is faked via
-``PiProcessProtocol``, and the missing-executable scenario relies on
-``subprocess.Popen`` raising ``FileNotFoundError`` for a nonexistent path
-without ever starting a process. The ``_SubprocessPiProcess`` reaping test is
-the one exception: it drives that class against a real short-lived Python
-child (not ``pi``) to prove the timeout and reap behavior work end to end.
+``FakePiProcess``, a ``PiProcessHandle``-shaped double backed by real
+``os.pipe()`` fds (mirroring ``tests/test_pi_rpc.py``'s own double, since the
+probe now drives its process through
+:class:`software_agent_factory.pi_rpc.PiRpcClient` rather than its own
+buffering). The missing-executable scenario relies on ``subprocess.Popen``
+raising ``FileNotFoundError`` for a nonexistent path without ever starting a
+process.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
+import os
 import sys
-import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import IO, Any
 
 import pytest
 
@@ -38,18 +39,17 @@ def _load_script_module(name: str, relative_path: str) -> ModuleType:
 probe = _load_script_module("pi_cache_probe", "scripts/performance/pi_cache_probe.py")
 
 
-def _settled_response(record_id: int) -> list[dict[str, Any]]:
+def _settled_response(command_id: str) -> list[dict[str, Any]]:
     return [
-        {"id": record_id, "type": "response", "command": "prompt", "success": True},
+        {"id": command_id, "type": "response", "success": True},
         {"type": "agent_settled"},
     ]
 
 
-def _get_messages_response(record_id: int, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _get_messages_response(command_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "id": record_id,
+        "id": command_id,
         "type": "response",
-        "command": "get_messages",
         "success": True,
         "data": {"messages": messages},
     }
@@ -57,25 +57,50 @@ def _get_messages_response(record_id: int, messages: list[dict[str, Any]]) -> di
 
 # double-waiver: B1 — out-of-process pi subprocess handle
 class FakePiProcess:
-    """Scripted stand-in for a pi RPC process: a fixed queue of JSONL records."""
+    """``PiProcessHandle``-shaped double: a scripted queue of JSONL records
+    delivered over a real ``os.pipe()`` pair, with no stderr pipe (mirroring
+    a real ``Popen(stderr=subprocess.DEVNULL)`` handle, as the probe's own
+    ``_default_process_factory`` constructs)."""
 
     def __init__(self, records: Sequence[Mapping[str, Any]]) -> None:
-        self._lines = [json.dumps(record) for record in records]
-        self.sent: list[dict[str, Any]] = []
-        self.stdin_closed = False
-        self.closed = False
+        stdin_read_fd, stdin_write_fd = os.pipe()
+        stdout_read_fd, stdout_write_fd = os.pipe()
 
-    def send(self, command: Mapping[str, Any]) -> None:
-        self.sent.append(dict(command))
+        self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
+        self._stdin_read = os.fdopen(stdin_read_fd, "r")
+        self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
+        self.stderr: IO[str] | None = None
 
-    def read_line(self, deadline: float) -> str | None:
-        if not self._lines:
-            return None
-        return self._lines.pop(0)
+        self.pid = 999_999
+        self._returncode: int | None = None
 
-    def close(self) -> None:
-        self.stdin_closed = True
-        self.closed = True
+        stdout_write = os.fdopen(stdout_write_fd, "w")
+        for record in records:
+            stdout_write.write(json.dumps(record) + "\n")
+        stdout_write.close()
+
+    def sent_commands(self) -> list[dict[str, Any]]:
+        """Read back what ``PiRpcClient`` wrote to stdin so far (non-blocking)."""
+        os.set_blocking(self._stdin_read.fileno(), False)
+        commands: list[dict[str, Any]] = []
+        try:
+            for line in self._stdin_read:
+                stripped = line.strip()
+                if stripped:
+                    commands.append(json.loads(stripped))
+        except BlockingIOError:
+            pass
+        return commands
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        self._returncode = 0
+        return 0
+
+    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
+        return ("", "")
 
 
 # double-waiver: B1 — out-of-process pi subprocess handle
@@ -165,10 +190,10 @@ def test_verdict_sums_across_multiple_assistant_messages() -> None:
 
 def test_run_same_process_reports_verdict_from_get_messages() -> None:
     records = [
-        *_settled_response(1),
-        *_settled_response(2),
+        *_settled_response("c1"),
+        *_settled_response("c2"),
         _get_messages_response(
-            3,
+            "c3",
             [{"role": "assistant", "usage": {"input": 10, "cacheRead": 7}}],
         ),
     ]
@@ -185,7 +210,7 @@ def test_run_same_process_reports_verdict_from_get_messages() -> None:
 
     assert verdict.cache == "available"
     assert verdict.cache_read_tokens == 7
-    assert process.stdin_closed is True
+    assert process.stdin is not None and process.stdin.closed
     assert len(factory.commands) == 1
     cmd = factory.commands[0]
     assert cmd[0] == "pi"
@@ -193,7 +218,7 @@ def test_run_same_process_reports_verdict_from_get_messages() -> None:
     assert "--provider" in cmd and "github-copilot" in cmd
     assert "--model" in cmd and "claude-sonnet-5" in cmd
     # Two prompt commands sent, second sharing the first's prefix.
-    prompt_commands = [c for c in process.sent if c.get("type") == "prompt"]
+    prompt_commands = [c for c in process.sent_commands() if c.get("type") == "prompt"]
     assert len(prompt_commands) == 2
     assert prompt_commands[1]["message"].startswith(prompt_commands[0]["message"])
 
@@ -205,12 +230,12 @@ def test_run_same_process_reports_verdict_from_get_messages() -> None:
 
 def test_run_resume_second_process_uses_same_session_file(tmp_path: Path) -> None:
     session_path = tmp_path / "session.jsonl"
-    first_process = FakePiProcess(_settled_response(1))
+    first_process = FakePiProcess(_settled_response("c1"))
     second_process = FakePiProcess(
         [
-            *_settled_response(1),
+            *_settled_response("c1"),
             _get_messages_response(
-                2,
+                "c2",
                 [{"role": "assistant", "usage": {"input": 5, "cacheRead": 4}}],
             ),
         ]
@@ -228,8 +253,8 @@ def test_run_resume_second_process_uses_same_session_file(tmp_path: Path) -> Non
 
     assert verdict.cache == "available"
     assert verdict.cache_read_tokens == 4
-    assert first_process.stdin_closed is True
-    assert second_process.stdin_closed is True
+    assert first_process.stdin is not None and first_process.stdin.closed
+    assert second_process.stdin is not None and second_process.stdin.closed
 
     assert len(factory.commands) == 2
     first_cmd, second_cmd = factory.commands
@@ -240,19 +265,19 @@ def test_run_resume_second_process_uses_same_session_file(tmp_path: Path) -> Non
     assert first_session_arg == second_session_arg == str(session_path)
 
     # Only the second process was asked for messages; verdict reflects it alone.
-    assert not any(c.get("type") == "get_messages" for c in first_process.sent)
-    assert any(c.get("type") == "get_messages" for c in second_process.sent)
+    assert not any(c.get("type") == "get_messages" for c in first_process.sent_commands())
+    assert any(c.get("type") == "get_messages" for c in second_process.sent_commands())
 
 
 def test_run_resume_reports_unavailable_when_second_process_lacks_cache_fields(
     tmp_path: Path,
 ) -> None:
     session_path = tmp_path / "session.jsonl"
-    first_process = FakePiProcess(_settled_response(1))
+    first_process = FakePiProcess(_settled_response("c1"))
     second_process = FakePiProcess(
         [
-            *_settled_response(1),
-            _get_messages_response(2, [{"role": "assistant", "usage": {"input": 5}}]),
+            *_settled_response("c1"),
+            _get_messages_response("c2", [{"role": "assistant", "usage": {"input": 5}}]),
         ]
     )
     factory = RecordingFactory([first_process, second_process])
@@ -297,67 +322,3 @@ def test_first_prompt_exceeds_provider_cache_minimum() -> None:
     # Providers cache only prefixes of about 1,024 tokens or more; roughly four
     # characters per token means the prompt must be well above 4,096 characters.
     assert len(probe._FIRST_PROMPT) > 8_000
-
-
-# ---------------------------------------------------------------------------
-# _SubprocessPiProcess: real (short-lived) child process, no pi involved
-# ---------------------------------------------------------------------------
-
-
-def test_subprocess_pi_process_read_line_times_out_and_close_reaps_child() -> None:
-    """A real child that never writes to stdout should time out ``read_line``,
-    and ``close`` must still reap it (kill its process group) rather than
-    leaving it running or zombied."""
-    popen = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(5)"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-    )
-    process = probe._SubprocessPiProcess(popen)
-    try:
-        with pytest.raises(TimeoutError):
-            process.read_line(time.monotonic() + 0.2)
-    finally:
-        # A short close timeout forces the kill-process-group escalation path
-        # instead of waiting out the child's full 5-second sleep.
-        process.close(timeout=0.2)
-
-    assert popen.poll() is not None
-
-
-def test_subprocess_pi_process_read_line_returns_both_lines_from_one_buffered_write() -> None:
-    """A child that writes two JSON lines in a single flush, then sleeps,
-    must yield both lines from ``read_line`` without a spurious timeout on
-    the second call. ``select()`` only reports the fd ready once; a second
-    line already pulled into a buffered reader's internal buffer (rather
-    than read via the raw fd) would otherwise be missed by a second
-    ``select()`` wait while the child sleeps."""
-    script = (
-        "import json, sys, time\n"
-        "sys.stdout.write(json.dumps({'n': 1}) + '\\n' + json.dumps({'n': 2}) + '\\n')\n"
-        "sys.stdout.flush()\n"
-        "time.sleep(5)\n"
-    )
-    popen = subprocess.Popen(
-        [sys.executable, "-c", script],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-    )
-    process = probe._SubprocessPiProcess(popen)
-    try:
-        deadline = time.monotonic() + 5.0
-        first = process.read_line(deadline)
-        second = process.read_line(deadline)
-    finally:
-        process.close(timeout=0.2)
-
-    assert first is not None and json.loads(first) == {"n": 1}
-    assert second is not None and json.loads(second) == {"n": 2}
