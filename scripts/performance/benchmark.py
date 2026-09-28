@@ -1149,12 +1149,21 @@ def _resolve_within_cwd(path: Path) -> Path:
     return Path(resolved)
 
 
-def _confine_cli_paths(args: argparse.Namespace) -> None:
-    """Replace each file-path argument with its cwd-confined, resolved form."""
-    for name in ("output", "baseline", "controller_output"):
-        value = getattr(args, name)
-        if value is not None:
-            setattr(args, name, _resolve_within_cwd(value))
+def _confine_cli_paths(
+    args: argparse.Namespace,
+) -> tuple[Path | None, Path | None, Path | None]:
+    """Resolve the output, baseline and controller-output paths inside cwd.
+
+    Returns new values instead of mutating ``args``: SonarCloud did not
+    trace the check through a getattr/setattr loop and kept reporting
+    pythonsecurity:S8707 (after PR #55).
+    """
+    output = _resolve_within_cwd(args.output) if args.output else None
+    baseline = _resolve_within_cwd(args.baseline) if args.baseline else None
+    controller_output = (
+        _resolve_within_cwd(args.controller_output) if args.controller_output else None
+    )
+    return output, baseline, controller_output
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1212,7 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
-        _confine_cli_paths(args)
+        output, baseline, controller_output = _confine_cli_paths(args)
     except ValueError as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2
@@ -1239,12 +1248,14 @@ def main(argv: list[str] | None = None) -> int:
             f"stddev={data['stddev_ms']:>6.3f})"
         )
 
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")
-        print(f"\nSaved benchmark results to {args.output}")
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # The path is confined above; Sonar's taint here is the CLI-derived report
+        # content (e.g. --iterations), which cannot traverse paths.
+        output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")  # NOSONAR(S8707)
+        print(f"\nSaved benchmark results to {output}")
 
-    if args.controller_comparison or args.controller_output:
+    if args.controller_comparison or controller_output:
         print("\nRunning Standard vs Fast Controller Comparison...")
         ctrl_results = run_controller_standard_vs_fast(repo_root)
         std_sum = ctrl_results["standard"]
@@ -1266,17 +1277,20 @@ def main(argv: list[str] | None = None) -> int:
             f"  Gates Breakdown:   verification={gf.get('deterministic_verification_passed')} "
             f"tester={gf.get('tester_verified')} reviewer={gf.get('reviewer_verified')}"
         )
-        if args.controller_output:
-            args.controller_output.parent.mkdir(parents=True, exist_ok=True)
-            args.controller_output.write_text(json.dumps(ctrl_results, indent=2), encoding="utf-8")
-            print(f"Saved controller comparison to {args.controller_output}")
+        if controller_output:
+            controller_output.parent.mkdir(parents=True, exist_ok=True)
+            # Path confined above; only the report content derives from CLI input.
+            controller_output.write_text(  # NOSONAR(S8707)
+                json.dumps(ctrl_results, indent=2), encoding="utf-8"
+            )
+            print(f"Saved controller comparison to {controller_output}")
 
     has_regression = False
-    if args.baseline:
-        if not args.baseline.exists():
-            print(f"\nError: baseline file not found: {args.baseline}", file=sys.stderr)
+    if baseline:
+        if not baseline.exists():
+            print(f"\nError: baseline file not found: {baseline}", file=sys.stderr)
             return 2
-        baseline_data = json.loads(args.baseline.read_text(encoding="utf-8"))
+        baseline_data = json.loads(baseline.read_text(encoding="utf-8"))
         print("\nComparison with Baseline:")
         comparison_lines, has_regression = compare_with_baseline(
             current=current_results,
