@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -28,6 +29,7 @@ check_file = _script.check_file
 find_documentation_files = _script.find_documentation_files
 is_procedural_sentence = _script.is_procedural_sentence
 main = _script.main
+mask_markdown = _script.mask_markdown
 resolve_target_files = _script.resolve_target_files
 
 
@@ -100,6 +102,35 @@ def test_wrapped_inline_code_protects_flags() -> None:
     markdown = "Use `factory run --may-skip\nverify` for this operation.\n"
 
     assert check_content(markdown, Path("docs/example.md")) == []
+
+
+def test_inline_code_pairs_backtick_runs_of_equal_width() -> None:
+    masked = mask_markdown("Use ``a ` b`` and `c` here.\n")
+
+    assert masked == "Use " + " " * len("``a ` b``") + " and " + " " * len("`c`") + " here.\n"
+
+
+def test_unclosed_backticks_are_scanned_in_linear_time() -> None:
+    source = "word ` " * 20_000 + "``done``\n"
+
+    started = time.perf_counter()
+    masked = mask_markdown(source)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 5.0
+    assert masked.endswith(" " * len("``done``") + "\n")
+    assert masked.startswith("word")
+
+
+def test_backtick_runs_of_distinct_widths_are_scanned_in_linear_time() -> None:
+    source = "".join("`" * width + " x " for width in range(1, 2_000))
+
+    started = time.perf_counter()
+    masked = mask_markdown(source)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 5.0
+    assert "`" in masked
 
 
 def test_admonition_prose_is_checked() -> None:
@@ -182,6 +213,11 @@ def test_violation_reporting_reports_actionable_path_and_lines() -> None:
 
     formatted_with_root = v_semi.format(root=Path.cwd())
     assert "docs/guides/example.md:2: semicolon" in formatted_with_root
+
+
+def test_condition_wrapped_after_its_comma_is_still_procedural() -> None:
+    assert is_procedural_sentence("When the build fails,\nrun the tests again.")
+    assert is_procedural_sentence("If the build fails, run the unit\ntests again.")
 
 
 def test_procedural_sentences_use_the_twenty_word_limit() -> None:

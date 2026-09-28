@@ -4,6 +4,10 @@ This file keeps the deterministic checks that fit factory artifacts. The
 factory does not use the upstream benchmark runner, chat reply rules, modal
 rules, tense rules, trailing-condition rule, or synonym-rotation rule.
 
+Local change: list items become sentences through a line scan, not the
+upstream multiline regular expression, so long lines cannot cause
+backtracking. Keep this change when you update from upstream.
+
 The checks cannot prove ASD-STE100 compliance.
 """
 
@@ -84,13 +88,16 @@ def prose_word_count(text: str) -> int:
     return len(_strip_protected_text(text).split())
 
 
+def _bullet_as_sentence(line: str) -> str:
+    marker = re.match(r"[ \t]*(?:[-*]|\d+\.)[ \t]+", line)
+    if marker is None:
+        return line
+    item = line[marker.end() :].rstrip()
+    return item + ("" if item.endswith((".", "!", "?", ":")) else ".") + " "
+
+
 def _sentences(text: str) -> list[str]:
-    text = re.sub(
-        r"^\s*([-*]|\d+\.)\s+(.*?)([.!?:])?\s*$",
-        lambda match: match.group(2) + (match.group(3) or ".") + " ",
-        text,
-        flags=re.M,
-    )
+    text = "\n".join(_bullet_as_sentence(line) for line in text.split("\n"))
     text = re.sub(r"\n+", ". ", text)
     parts = re.split(r"(?<=[.!?:])\s+", text)
     return [part.strip() for part in parts if len(part.strip().split()) >= 2]

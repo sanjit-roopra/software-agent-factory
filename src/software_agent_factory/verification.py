@@ -85,7 +85,7 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     # Authorization and proxy-authorization headers (all schemes: Basic, Bearer, Digest, etc.).
     re.compile(r"(?i)\b(?:authorization|proxy[_-]?authorization)\b\s*[:=]\s*[^\r\n]+"),
-    re.compile(r"(?i)\b(?:bearer)\b\s*[:=]?\s*[A-Za-z0-9._\-/+=]{20,}"),
+    re.compile(r"(?i)\bbearer\b\s*(?:[:=]\s*)?[a-z0-9._\-/+=]{20,}"),
     re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"),
     # Cookie and Set-Cookie headers.
     re.compile(r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b\s*[:=]\s*[^\r\n]+"),

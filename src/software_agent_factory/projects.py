@@ -604,9 +604,9 @@ class ProjectRunner:
         exc: Exception,
     ) -> ProjectExecution:
         try:
-            execution = self._project_store.load_execution(project_id)
+            existing = self._project_store.load_execution(project_id)
         except FileNotFoundError:
-            pass
+            existing = execution
         now = utc_now()
         tasks = tuple(
             record.model_copy(
@@ -617,9 +617,9 @@ class ProjectRunner:
             )
             if record.state is ProjectTaskState.RUNNING
             else record
-            for record in execution.tasks
+            for record in existing.tasks
         )
-        execution = execution.model_copy(
+        failed = existing.model_copy(
             update={
                 "state": ProjectState.FAILED,
                 "tasks": tasks,
@@ -628,8 +628,8 @@ class ProjectRunner:
                 "completed_at": now,
             }
         )
-        self._project_store.save_execution(execution)
-        return execution
+        self._project_store.save_execution(failed)
+        return failed
 
     def _plan(
         self,

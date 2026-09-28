@@ -445,7 +445,7 @@ def parse_copilot_usage(payload: object) -> UsageMetrics | None:
                 cache_write_tokens=_non_negative_int(usage.get("cacheWriteTokens")),
                 total_nano_aiu=_non_negative_int(raw_metrics.get("totalNanoAiu")),
             )
-            if any(value is not None for name, value in parsed if name != "model"):
+            if any(value is not None for value in parsed.model_dump(exclude={"model"}).values()):
                 model_usage.append(parsed)
 
     current_model = payload.get("currentModel")

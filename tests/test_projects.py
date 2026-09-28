@@ -433,6 +433,37 @@ def test_project_persists_failed_planner_invocation_when_runtime_raises(
     assert store.load_execution(brief.id) == execution
 
 
+def test_project_failure_falls_back_to_the_given_execution_when_none_is_stored(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    def unavailable_planner(request: AgentRequest) -> AgentResult:
+        raise RuntimeError("planner runtime unavailable")
+
+    brief = ProjectBrief(
+        id="unstored-failure",
+        title="Record unstored failures",
+        description="Fail before anything was stored.",
+        repository_path=str(factory_source_repo),
+    )
+    store = FileProjectStore(factory_data_dir)
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=unavailable_planner),
+        project_store=store,
+    )
+    given = runner.run(brief, factory_source_repo)
+
+    failed = runner._record_project_failure("never-stored", given, RuntimeError("late failure"))
+
+    assert failed.project_id == given.project_id
+    assert failed.state is ProjectState.FAILED
+    assert failed.failure_reason == "late failure"
+    assert failed.invocation_records == given.invocation_records
+    assert store.load_execution(given.project_id) == failed
+
+
 def test_project_stops_when_a_required_task_needs_human(
     factory_source_repo: Path,
     factory_data_dir: Path,

@@ -8,6 +8,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,6 +43,7 @@ from software_agent_factory.repository_skills import (
     validate_dependency_fingerprint,
     validate_repository_key,
 )
+from software_agent_factory.workflow import _overlay_warnings
 
 FINGERPRINT_A = "a" * 64
 FINGERPRINT_B = "b" * 64
@@ -985,3 +987,17 @@ def test_validation_confines_practice_sources_to_the_configured_allowlist() -> N
 
 def test_validation_accepts_a_profile_with_no_dependencies_and_no_targets() -> None:
     assert _validate(_grounded_skill(), _profile()) is None
+
+
+def test_overlay_warnings_names_the_unapplied_overlay_file() -> None:
+    manager = SimpleNamespace(overlay_path=Path("/repo/.factory/skill-overlay.md"))
+
+    assert _overlay_warnings(manager, SimpleNamespace(overlay_error=None)) == ()  # type: ignore[arg-type]
+    warnings = _overlay_warnings(
+        manager,  # type: ignore[arg-type]
+        SimpleNamespace(overlay_error="overlay is not valid YAML"),  # type: ignore[arg-type]
+    )
+
+    assert len(warnings) == 1
+    assert "/repo/.factory/skill-overlay.md was not applied and was left unchanged" in warnings[0]
+    assert warnings[0].endswith("overlay is not valid YAML")
