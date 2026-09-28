@@ -24,15 +24,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .agent_artifact import (
-    ScanStats as ScanStats,
-)
-from .agent_artifact import (
-    _artifact_spec,
-    _candidate_texts,
-    _parse_artifact_from_candidates,
-)
-from .agent_artifact import (
-    _iter_json_objects as _iter_json_objects,
+    artifact_spec,
+    candidate_texts,
+    parse_artifact_from_candidates,
 )
 from .agent_capabilities import AgentCapability, capability_for
 from .agents import AgentRequest, AgentResult, AgentRuntime
@@ -223,7 +217,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     performance=perf,
                 )
 
-            result_field = _artifact_spec(request.role, request.purpose).result_field
+            result_field = artifact_spec(request.role, request.purpose).result_field
             return AgentResult.model_validate(
                 {
                     "role": request.role,
@@ -546,8 +540,8 @@ def parse_copilot_artifact(
 
     candidates = _assistant_response_candidates(stdout)
     if not candidates:
-        candidates = _candidate_texts(extract_assistant_text(stdout))
-    return _parse_artifact_from_candidates(role, candidates, purpose=purpose)
+        candidates = candidate_texts(extract_assistant_text(stdout))
+    return parse_artifact_from_candidates(role, candidates, purpose=purpose)
 
 
 def extract_assistant_text(stdout: str) -> str:

@@ -38,6 +38,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from software_agent_factory.subprocess_utils import kill_process_group
+
+#: Bound on how long :meth:`_SubprocessPiProcess.close` waits for the child
+#: to exit on its own before escalating to :func:`kill_process_group`.
+_CLOSE_TIMEOUT_SECONDS = 10.0
+
 #: Providers only cache prompts above a minimum length (about 1,024 tokens
 #: for Anthropic and OpenAI models), so the shared prefix is padded well past
 #: that floor. A short prefix would report zero cache reads even when caching
@@ -118,7 +124,9 @@ class PiProcessProtocol(Protocol):
         """
         ...
 
-    def close_stdin(self) -> None: ...
+    def close(self) -> None:
+        """Close stdin and reap the process, killing it if it will not exit."""
+        ...
 
 
 ProcessFactory = Callable[[Sequence[str]], PiProcessProtocol]
@@ -146,9 +154,14 @@ class _SubprocessPiProcess:
         line = self._popen.stdout.readline()
         return line if line else None
 
-    def close_stdin(self) -> None:
+    def close(self, *, timeout: float = _CLOSE_TIMEOUT_SECONDS) -> None:
+        """Close stdin and reap the child, killing its process group if it hangs."""
         if self._popen.stdin is not None and not self._popen.stdin.closed:
             self._popen.stdin.close()
+        try:
+            self._popen.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_process_group(self._popen)
 
 
 def _default_process_factory(cmd: Sequence[str]) -> PiProcessProtocol:
@@ -160,6 +173,7 @@ def _default_process_factory(cmd: Sequence[str]) -> PiProcessProtocol:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         raise PiExecutableNotFoundError(cmd[0]) from exc
@@ -245,7 +259,7 @@ def run_same_process(
         conversation.send_prompt_and_wait(_FIRST_PROMPT + _SECOND_PROMPT_SUFFIX)
         messages = conversation.get_messages()
     finally:
-        process.close_stdin()
+        process.close()
     return verdict_from_messages(messages)
 
 
@@ -270,7 +284,7 @@ def run_resume(
     try:
         _PiConversation(first_process, deadline).send_prompt_and_wait(_FIRST_PROMPT)
     finally:
-        first_process.close_stdin()
+        first_process.close()
 
     second_cmd = _build_command(executable, provider, model, session_args)
     second_process = process_factory(second_cmd)
@@ -279,7 +293,7 @@ def run_resume(
         conversation.send_prompt_and_wait(_FIRST_PROMPT + _SECOND_PROMPT_SUFFIX)
         messages = conversation.get_messages()
     finally:
-        second_process.close_stdin()
+        second_process.close()
     return verdict_from_messages(messages)
 
 

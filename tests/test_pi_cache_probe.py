@@ -1,16 +1,20 @@
 """Tests for the offline-testable pi prompt-cache probe.
 
-No real pi subprocess is spawned: the process transport is faked via
+No real ``pi`` subprocess is spawned: the process transport is faked via
 ``PiProcessProtocol``, and the missing-executable scenario relies on
 ``subprocess.Popen`` raising ``FileNotFoundError`` for a nonexistent path
-without ever starting a process.
+without ever starting a process. The ``_SubprocessPiProcess`` reaping test is
+the one exception: it drives that class against a real short-lived Python
+child (not ``pi``) to prove the timeout and reap behavior work end to end.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -51,6 +55,7 @@ def _get_messages_response(record_id: int, messages: list[dict[str, Any]]) -> di
     }
 
 
+# double-waiver: B1 — out-of-process pi subprocess handle
 class FakePiProcess:
     """Scripted stand-in for a pi RPC process: a fixed queue of JSONL records."""
 
@@ -58,6 +63,7 @@ class FakePiProcess:
         self._lines = [json.dumps(record) for record in records]
         self.sent: list[dict[str, Any]] = []
         self.stdin_closed = False
+        self.closed = False
 
     def send(self, command: Mapping[str, Any]) -> None:
         self.sent.append(dict(command))
@@ -67,10 +73,12 @@ class FakePiProcess:
             return None
         return self._lines.pop(0)
 
-    def close_stdin(self) -> None:
+    def close(self) -> None:
         self.stdin_closed = True
+        self.closed = True
 
 
+# double-waiver: B1 — out-of-process pi subprocess handle
 class RecordingFactory:
     """Process factory that records every command it was called with."""
 
@@ -289,3 +297,33 @@ def test_first_prompt_exceeds_provider_cache_minimum() -> None:
     # Providers cache only prefixes of about 1,024 tokens or more; roughly four
     # characters per token means the prompt must be well above 4,096 characters.
     assert len(probe._FIRST_PROMPT) > 8_000
+
+
+# ---------------------------------------------------------------------------
+# _SubprocessPiProcess: real (short-lived) child process, no pi involved
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_pi_process_read_line_times_out_and_close_reaps_child() -> None:
+    """A real child that never writes to stdout should time out ``read_line``,
+    and ``close`` must still reap it (kill its process group) rather than
+    leaving it running or zombied."""
+    popen = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    process = probe._SubprocessPiProcess(popen)
+    try:
+        with pytest.raises(TimeoutError):
+            process.read_line(time.monotonic() + 0.2)
+    finally:
+        # A short close timeout forces the kill-process-group escalation path
+        # instead of waiting out the child's full 5-second sleep.
+        process.close(timeout=0.2)
+
+    assert popen.poll() is not None

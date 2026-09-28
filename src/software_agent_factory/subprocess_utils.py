@@ -1,9 +1,10 @@
 """Runtime-neutral subprocess helpers shared by agent runtimes.
 
-Process-group termination, the GitHub-credential env-var scrub set, and
-tolerant dotted-version parsing are used by more than one ``AgentRuntime``
-implementation (Copilot today, pi from Slice 3 of
-``plans/pi-agent-runtime.md``), so neither runtime owns them.
+Process-group termination and the GitHub-credential env-var scrub set are
+used by more than one ``AgentRuntime`` implementation (Copilot today, pi
+from Slice 3 of ``plans/pi-agent-runtime.md``), so neither runtime owns
+them. Tolerant dotted-version parsing is shared by the runtime
+prerequisite checks (Step 2.3 of ``plans/pi-agent-runtime.md``).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import os
 import re
 import signal
 import subprocess
+from typing import Protocol
 
 #: Environment variables scrubbed from a child agent process's environment so
 #: a GitHub credential in the factory's own environment cannot leak into a
@@ -32,8 +34,22 @@ GITHUB_CREDENTIAL_ENV_VARS = frozenset(
 _VERSION_PATTERN = re.compile(r"(\d+(?:\.\d+)*)")
 
 
+class TerminableProcess(Protocol):
+    """The minimal process handle :func:`kill_process_group` needs.
+
+    Narrower than ``subprocess.Popen`` so any process wrapper exposing a
+    ``pid`` and a ``communicate`` -- real ``Popen``, a test double, or a
+    runtime-specific wrapper -- can be passed without an unsafe cast.
+    """
+
+    @property
+    def pid(self) -> int: ...
+
+    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]: ...
+
+
 def kill_process_group(
-    process: subprocess.Popen[str],
+    process: TerminableProcess,
     *,
     grace_seconds: float = 1.0,
 ) -> tuple[str, str]:
@@ -59,8 +75,8 @@ def parse_version(text: str) -> tuple[int, ...] | None:
     Tolerant of a leading ``"v"``/``"V"`` (``"v22.19.0"``) and of trailing
     non-numeric text after the dotted version (``"22.19.0 (arm64)"``).
     Returns ``None`` when no leading dotted-integer version can be found, so
-    callers (e.g. ``doctor``) can distinguish "older than required" from
-    "version could not be determined".
+    callers can distinguish "older than required" from "version could not
+    be determined".
     """
 
     stripped = text.strip()

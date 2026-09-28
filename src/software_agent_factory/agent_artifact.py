@@ -15,6 +15,7 @@ reached, not inside it.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import Literal, TypeAlias
@@ -84,7 +85,7 @@ ARTIFACT_SPECS: dict[str, _ArtifactSpec] = {
 }
 
 
-def _artifact_spec(
+def artifact_spec(
     role: RoleName,
     purpose: AgentPurpose = AgentPurpose.STANDARD,
 ) -> _ArtifactSpec:
@@ -116,7 +117,7 @@ def _artifact_spec(
         raise ValueError(f"unsupported agent role: {role!r}") from exc
 
 
-def _candidate_texts(assistant_text: str) -> list[str]:
+def candidate_texts(assistant_text: str) -> list[str]:
     text = assistant_text.strip()
     return [text] if text else []
 
@@ -127,6 +128,65 @@ class ScanStats:
 
     chars_scanned: int = 0
     candidates_tested: int = 0
+
+
+def _scan_matching_brace(
+    text: str,
+    start: int,
+    length: int,
+    *,
+    matched_pairs: dict[int, int],
+    stats: ScanStats,
+    work_limit: int,
+) -> tuple[int, list[int]]:
+    """Scan forward from an opening ``{`` at ``start`` for its matching ``}``.
+
+    Tracks nesting depth (ignoring braces inside strings) and records every
+    open-brace index whose matching close is discovered along the way into
+    ``matched_pairs``, so a caller scanning an enclosing object can skip
+    re-scanning braces already resolved here. Returns ``(found_end,
+    open_stack)``: ``found_end`` is the index of the matching ``}``, or
+    ``-1`` if the scan ran out of text or hit ``work_limit`` first;
+    ``open_stack`` holds any braces still open when the scan stopped (only
+    meaningful when ``found_end`` is ``-1``).
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    k = start
+    found_end = -1
+    open_stack: list[int] = []
+
+    while k < length:
+        stats.chars_scanned += 1
+        if stats.chars_scanned >= work_limit:
+            break
+
+        char = text[k]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+                open_stack.append(k)
+            elif char == "}":
+                if open_stack:
+                    popped = open_stack.pop()
+                    matched_pairs[popped] = k
+                depth -= 1
+                if depth == 0:
+                    found_end = k
+                    break
+        k += 1
+
+    return found_end, open_stack
 
 
 def _iter_json_objects(
@@ -172,41 +232,14 @@ def _iter_json_objects(
         if start in matched_pairs:
             found_end = matched_pairs[start]
         else:
-            depth = 0
-            in_string = False
-            escape = False
-            k = start
-            found_end = -1
-            open_stack: list[int] = []
-
-            while k < length:
-                stats.chars_scanned += 1
-                if stats.chars_scanned >= work_limit:
-                    break
-
-                char = text[k]
-                if in_string:
-                    if escape:
-                        escape = False
-                    elif char == "\\":
-                        escape = True
-                    elif char == '"':
-                        in_string = False
-                else:
-                    if char == '"':
-                        in_string = True
-                    elif char == "{":
-                        depth += 1
-                        open_stack.append(k)
-                    elif char == "}":
-                        if open_stack:
-                            popped = open_stack.pop()
-                            matched_pairs[popped] = k
-                        depth -= 1
-                        if depth == 0:
-                            found_end = k
-                            break
-                k += 1
+            found_end, open_stack = _scan_matching_brace(
+                text,
+                start,
+                length,
+                matched_pairs=matched_pairs,
+                stats=stats,
+                work_limit=work_limit,
+            )
 
             if stats.chars_scanned >= work_limit:
                 break
@@ -244,6 +277,29 @@ def _iter_json_objects(
     return objects
 
 
+def _queue_nested_candidates(
+    values: Iterable[object],
+    *,
+    candidates: list[dict[str, object]],
+    queue: list[object],
+    seen_ids: set[int],
+) -> None:
+    """Add each not-yet-seen dict in ``values`` to ``candidates``/``queue``.
+
+    A bare list value is queued for its own later traversal without being a
+    candidate itself (only dicts are). Shared by both the dict-values and
+    list-items branches of :func:`_iter_nested_dicts`.
+    """
+    for value in values:
+        if isinstance(value, dict):
+            if id(value) not in seen_ids:
+                seen_ids.add(id(value))
+                candidates.append(value)
+                queue.append(value)
+        elif isinstance(value, list):
+            queue.append(value)
+
+
 def _iter_nested_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
     """Yield payload first, then any nested dictionaries breadth-first."""
     candidates: list[dict[str, object]] = [payload]
@@ -253,25 +309,19 @@ def _iter_nested_dicts(payload: dict[str, object]) -> list[dict[str, object]]:
     while queue:
         current = queue.pop(0)
         if isinstance(current, dict):
-            for value in current.values():
-                if isinstance(value, dict):
-                    if id(value) not in seen_ids:
-                        seen_ids.add(id(value))
-                        candidates.append(value)
-                        queue.append(value)
-                elif isinstance(value, list):
-                    queue.append(value)
+            _queue_nested_candidates(
+                current.values(), candidates=candidates, queue=queue, seen_ids=seen_ids
+            )
         elif isinstance(current, list):
-            for item in current:
-                if isinstance(item, dict):
-                    if id(item) not in seen_ids:
-                        seen_ids.add(id(item))
-                        candidates.append(item)
-                        queue.append(item)
-                elif isinstance(item, list):
-                    queue.append(item)
+            _queue_nested_candidates(current, candidates=candidates, queue=queue, seen_ids=seen_ids)
 
     return candidates
+
+
+#: Cap on how many individual field errors a failed-validation message
+#: lists before summarizing the rest as a count, so one artifact with many
+#: missing fields doesn't produce an unbounded failure message.
+_MAX_VALIDATION_ERROR_SUMMARIES = 8
 
 
 def _summarize_validation_error(error: ValidationError) -> str:
@@ -279,7 +329,7 @@ def _summarize_validation_error(error: ValidationError) -> str:
     if not details:
         return str(error)
     summaries: list[str] = []
-    for detail in details[:8]:
+    for detail in details[:_MAX_VALIDATION_ERROR_SUMMARIES]:
         location = ".".join(str(part) for part in detail.get("loc", ()))
         message = str(detail.get("msg", "validation error"))
         summaries.append(f"{location}: {message}" if location else message)
@@ -288,7 +338,7 @@ def _summarize_validation_error(error: ValidationError) -> str:
     return "; ".join(summaries)
 
 
-def _parse_artifact_from_candidates(
+def parse_artifact_from_candidates(
     role: RoleName,
     candidates: list[str],
     *,
@@ -302,7 +352,7 @@ def _parse_artifact_from_candidates(
     raise byte-identical failure wording.
     """
 
-    spec = _artifact_spec(role, purpose)
+    spec = artifact_spec(role, purpose)
 
     found_object = False
     first_validation_error: ValidationError | None = None
@@ -344,4 +394,4 @@ def parse_agent_artifact(
     agent call, independent of which runtime produced it.
     """
 
-    return _parse_artifact_from_candidates(role, _candidate_texts(text), purpose=purpose)
+    return parse_artifact_from_candidates(role, candidate_texts(text), purpose=purpose)

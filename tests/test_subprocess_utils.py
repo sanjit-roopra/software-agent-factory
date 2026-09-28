@@ -36,7 +36,7 @@ def test_kill_process_group_sends_sigterm_and_returns_output(
         lambda pid, sig: killed.append((pid, sig)),
     )
 
-    stdout, stderr = kill_process_group(_FakeProcess())  # type: ignore[arg-type]
+    stdout, stderr = kill_process_group(_FakeProcess())
 
     assert stdout == "out"
     assert stderr == "err"
@@ -86,7 +86,7 @@ def test_kill_process_group_handles_process_already_gone(
 
     monkeypatch.setattr("software_agent_factory.subprocess_utils.os.killpg", fail_killpg)
 
-    stdout, stderr = kill_process_group(_FakeProcess())  # type: ignore[arg-type]
+    stdout, stderr = kill_process_group(_FakeProcess())
 
     assert stdout == "out"
     assert stderr == "err"
