@@ -110,6 +110,18 @@ class FakeProcess:
             self._stdout_write.write(json.dumps(record) + "\n")
         self._stdout_write.flush()
 
+    def write_raw_stdout(self, text: str) -> None:
+        self._stdout_write.write(text)
+        self._stdout_write.flush()
+
+    def write_stderr(self, text: str) -> None:
+        assert self._stderr_write is not None
+        self._stderr_write.write(text)
+        self._stderr_write.flush()
+
+    def close_stdout(self) -> None:
+        self._stdout_write.close()
+
     def exit(self, returncode: int) -> None:
         self._returncode = returncode
         self._wait_returncode = returncode
@@ -125,22 +137,60 @@ class FakeProcess:
     def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
         return ("", "")
 
+    def sent_commands(self) -> list[dict[str, Any]]:
+        """Read back what ``PiRpcClient`` wrote to stdin so far (non-blocking)."""
+        os.set_blocking(self._stdin_read.fileno(), False)
+        commands: list[dict[str, Any]] = []
+        try:
+            for line in self._stdin_read:
+                stripped = line.strip()
+                if stripped:
+                    commands.append(json.loads(stripped))
+        except BlockingIOError:
+            pass
+        return commands
 
-def _scripted_process(final_assistant_text: str) -> FakeProcess:
-    """A ``FakeProcess`` that answers ``prompt`` then ``get_last_assistant_text``.
 
-    Matches the one exchange :meth:`PiAgentRuntime.run` drives: a ``prompt``
-    command (id ``c1``), settling via one ``agent_settled`` event, then a
-    ``get_last_assistant_text`` command (id ``c2``) answering with
+def _get_messages_response(
+    stop_reason: str | None = None, error_message: str | None = None
+) -> dict[str, Any]:
+    """The ``get_messages`` response :meth:`PiAgentRuntime.run` reads for ``c2``.
+
+    ``stop_reason=None`` mirrors a message that settled normally (no
+    ``stopReason`` field carried at all).
+    """
+    message: dict[str, Any] = {"role": "assistant"}
+    if stop_reason is not None:
+        message["stopReason"] = stop_reason
+    if error_message is not None:
+        message["errorMessage"] = error_message
+    return {
+        "type": "response",
+        "id": "c2",
+        "success": True,
+        "data": {"messages": [message] if stop_reason is not None else []},
+    }
+
+
+def _scripted_process(final_assistant_text: str, *, stop_reason: str | None = None) -> FakeProcess:
+    """A ``FakeProcess`` that answers ``prompt``, ``get_messages``, then
+    ``get_last_assistant_text``.
+
+    Matches the exchange :meth:`PiAgentRuntime.run` drives: a ``prompt``
+    command (id ``c1``), settling via one ``agent_settled`` event, a
+    ``get_messages`` command (id ``c2``) whose final message carries
+    ``stop_reason`` (``None`` by default -- a normally-settled call), then a
+    ``get_last_assistant_text`` command (id ``c3``) answering with
     ``final_assistant_text``.
     """
     process = FakeProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
+        _get_messages_response(stop_reason=stop_reason),
         {
             "type": "response",
-            "id": "c2",
+            "id": "c3",
             "success": True,
             "data": {"text": final_assistant_text},
         },
@@ -419,3 +469,153 @@ def test_run_malformed_output_is_retryable_like_copilot(tmp_path: Path) -> None:
 
     assert result.success is False
     assert is_retryable_typed_artifact_failure(result, ChangeSet) is True
+
+
+# ---------------------------------------------------------------------------
+# run: pi failures yield sanitized failed results (Step 3.4)
+# ---------------------------------------------------------------------------
+
+
+def test_run_assistant_error_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(stop_reason="error", error_message="boom"),
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi assistant error: boom"
+
+
+def test_run_assistant_aborted_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(stop_reason="aborted"),
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi assistant call was aborted"
+
+
+def test_run_process_exits_before_settling_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.close_stdout()
+    process.exit(7)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "7" in result.failure_reason
+
+
+def test_run_invalid_protocol_line_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.write_raw_stdout("not json at all\n")
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "invalid protocol record" in result.failure_reason
+
+
+def test_run_command_error_yields_failed_result() -> None:
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        {"type": "response", "id": "c2", "success": False, "error": "not supported"},
+    )
+    process.exit(0)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "get_messages" in result.failure_reason
+    assert "not supported" in result.failure_reason
+
+
+def test_run_missing_executable_yields_failed_result() -> None:
+    def factory(command: list[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
+        raise FileNotFoundError(command[0])
+
+    runtime = _runtime(process_factory=factory, executable="pi-missing")
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "pi-missing" in result.failure_reason
+
+
+def test_run_sanitizes_credential_value_from_failure_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ghp_supersecrettoken1234")
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.write_stderr("auth failed for ghp_supersecrettoken1234")
+    process.close_stdout()
+    process.exit(1)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert "ghp_supersecrettoken1234" not in result.failure_reason
+
+
+# ---------------------------------------------------------------------------
+# run: timeout aborts, then kills if still alive (Step 3.4)
+# ---------------------------------------------------------------------------
+
+
+def test_run_timeout_sends_abort_then_kills_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    # No agent_settled event is ever written, and the process never exits --
+    # simulates pi not settling within the request timeout.
+    killed: list[Any] = []
+    monkeypatch.setattr(
+        "software_agent_factory.pi_runtime.kill_process_group",
+        lambda proc: killed.append(proc),
+    )
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE, timeout_seconds=1)
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert result.failure_reason == "pi timed out after 1 seconds"
+    sent_types = [command.get("type") for command in process.sent_commands()]
+    assert "abort" in sent_types
+    assert killed == [process]

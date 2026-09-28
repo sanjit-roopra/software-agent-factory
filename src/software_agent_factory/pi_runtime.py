@@ -1,18 +1,33 @@
 """``pi`` (``@earendil-works/pi-coding-agent``) agent runtime.
 
-Step 3.3 of ``plans/pi-agent-runtime.md`` wires :meth:`PiAgentRuntime.run` to
-a real ``pi --mode rpc`` subprocess: it starts one process per call (built by
-``_build_command``/``_cwd_for``/``_child_env``, added in Step 3.2), drives it
-over :class:`~software_agent_factory.pi_rpc.PiRpcClient` (Step 3.1) with a
-``prompt`` command followed by ``wait_for_settled`` and
-``get_last_assistant_text``, then parses the final assistant text with
+:meth:`PiAgentRuntime.run` drives one ``pi --mode rpc`` subprocess per call
+(built by ``_build_command``/``_cwd_for``/``_child_env``, Step 3.2) over
+:class:`~software_agent_factory.pi_rpc.PiRpcClient` (Step 3.1): a ``prompt``
+command, ``wait_for_settled``, a ``get_messages`` check of the final
+assistant message's ``stopReason`` (Step 3.4 -- the same ``get_messages``
+call ``scripts/performance/pi_cache_probe.py`` already uses to read
+per-message usage), then ``get_last_assistant_text`` parsed with
 :func:`~software_agent_factory.agent_artifact.parse_agent_artifact` -- the
 same runtime-neutral parser the Copilot runtime uses, so a malformed
-response fails with byte-identical wording. Failure and timeout handling
-beyond a parse failure (assistant error/abort, non-zero exit, timeout) is
-Step 3.4; unexpected exceptions from starting or driving the process
-propagate to the caller today, exactly as they do from the Copilot runtime
-(the workflow/project/CLI layers convert them with
+response fails with byte-identical wording (Step 3.3).
+
+Step 3.4 maps every other pi failure mode to a failed, sanitized
+``AgentResult``, mirroring how ``copilot_runtime.py``'s
+``_format_failure_reason`` and timeout path do it: an assistant message that
+ends ``error`` or ``aborted``, a non-zero exit or EOF before settling
+(``PiRpcProcessExited``), an unparsable protocol line
+(``PiRpcProtocolError``), a command pi rejected (``PiRpcCommandError``), a
+missing executable (``OSError`` starting the process), and a timeout
+(``PiRpcTimeout``) -- which sends a best-effort ``abort``, waits a 1 second
+grace period, then escalates to
+:func:`~software_agent_factory.subprocess_utils.kill_process_group` if pi is
+still alive. Every failure reason is sanitized with
+:func:`~software_agent_factory.subprocess_utils.sanitize_output` against the
+credential values :meth:`PiAgentRuntime._child_env_and_scrubbed` removed
+from the child environment, so no credential can appear in a failure reason.
+Unexpected exceptions from starting or driving the process still propagate
+to the caller, exactly as they do from the Copilot runtime (the
+workflow/project/CLI layers convert them with
 ``agents.runtime_exception_failure_reason``).
 """
 
@@ -22,7 +37,7 @@ import logging
 import os
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -30,9 +45,17 @@ from .agent_artifact import build_success_result, parse_agent_artifact
 from .agent_capabilities import AgentCapability, capability_for
 from .agents import AgentRequest, AgentResult, AgentRuntime
 from .models import AgentPurpose, PerformanceRecord
-from .pi_rpc import PiProcessHandle, PiRpcClient
+from .pi_rpc import (
+    PiProcessHandle,
+    PiRpcClient,
+    PiRpcCommandError,
+    PiRpcError,
+    PiRpcProcessExited,
+    PiRpcProtocolError,
+    PiRpcTimeout,
+)
 from .prompts import build_prompt
-from .subprocess_utils import build_child_env
+from .subprocess_utils import build_child_env, kill_process_group, sanitize_output
 
 if TYPE_CHECKING:
     from .config import PiConfig
@@ -48,6 +71,14 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.READ_ONLY: ("--tools", "read,grep,find,ls"),
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
+
+#: Grace period :meth:`PiAgentRuntime._abort_and_kill` waits for pi to exit on
+#: its own after a best-effort ``abort`` command, before escalating to
+#: :func:`~software_agent_factory.subprocess_utils.kill_process_group` --
+#: matching that function's own default ``grace_seconds`` (build-time
+#: decision, ``plans/pi-agent-runtime.md``: "Abort grace before kill: 1
+#: second, same as the Copilot runtime's ``_kill_process_group``").
+_ABORT_GRACE_SECONDS = 1.0
 
 #: Starts one already-configured ``pi`` subprocess: ``(command, cwd, env) ->
 #: PiProcessHandle``. Injectable so tests drive :meth:`PiAgentRuntime.run`
@@ -93,20 +124,89 @@ class PiAgentRuntime(AgentRuntime):
     def run(self, request: AgentRequest) -> AgentResult:
         command = self._build_command(request, session_arg=["--no-session"])
         cwd = self._cwd_for(request)
-        env = self._child_env()
+        env, scrubbed_values = self._child_env_and_scrubbed()
         prompt = build_prompt(request)
         prompt_chars = len(prompt)
 
         boot_start = time.perf_counter()
-        process = self._process_factory(command, cwd, env)
+        try:
+            process = self._process_factory(command, cwd, env)
+        except OSError as exc:
+            boot_ms = (time.perf_counter() - boot_start) * 1000.0
+            return self._failed(
+                request,
+                prompt_chars=prompt_chars,
+                boot_ms=boot_ms,
+                scrubbed_values=scrubbed_values,
+                message=(
+                    f"pi could not be started ({type(exc).__name__}): {self._config.executable}"
+                ),
+            )
         boot_ms = (time.perf_counter() - boot_start) * 1000.0
 
         client = PiRpcClient(process)
         try:
             deadline = time.monotonic() + request.timeout_seconds
-            client.request({"type": "prompt", "message": prompt}, deadline=deadline)
-            client.wait_for_settled(deadline=deadline)
-            response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
+            try:
+                client.request({"type": "prompt", "message": prompt}, deadline=deadline)
+                client.wait_for_settled(deadline=deadline)
+                stop_reason, error_message = self._final_assistant_stop_reason(
+                    client, deadline=deadline
+                )
+                if stop_reason == "error":
+                    return self._failed(
+                        request,
+                        prompt_chars=prompt_chars,
+                        boot_ms=boot_ms,
+                        scrubbed_values=scrubbed_values,
+                        message=f"pi assistant error: {error_message}",
+                    )
+                if stop_reason == "aborted":
+                    return self._failed(
+                        request,
+                        prompt_chars=prompt_chars,
+                        boot_ms=boot_ms,
+                        scrubbed_values=scrubbed_values,
+                        message="pi assistant call was aborted",
+                    )
+                response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
+            except PiRpcTimeout:
+                self._abort_and_kill(client, process)
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=f"pi timed out after {request.timeout_seconds} seconds",
+                )
+            except PiRpcProcessExited as exc:
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=(
+                        f"pi process exited with code {exc.returncode} before settling: "
+                        f"{exc.stderr_tail}"
+                    ),
+                )
+            except PiRpcProtocolError as exc:
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=f"pi wrote an invalid protocol record: {exc.line_excerpt}",
+                )
+            except PiRpcCommandError as exc:
+                return self._failed(
+                    request,
+                    prompt_chars=prompt_chars,
+                    boot_ms=boot_ms,
+                    scrubbed_values=scrubbed_values,
+                    message=(f"pi command {exc.command.get('type')!r} failed: {exc.error}"),
+                )
+
             data = response.get("data") or {}
             text = str(data.get("text", ""))
 
@@ -200,6 +300,89 @@ class PiAgentRuntime(AgentRuntime):
         interactive login, but authenticates headless from that variable when
         present.
         """
-        env, _scrubbed_values = build_child_env()
-        env["PI_CACHE_RETENTION"] = self._config.cache_retention
+        env, _scrubbed_values = self._child_env_and_scrubbed()
         return env
+
+    def _child_env_and_scrubbed(self) -> tuple[dict[str, str], set[str]]:
+        """Same as :meth:`_child_env`, plus the credential values it scrubbed.
+
+        :meth:`run` needs the scrubbed values too, to sanitize them out of any
+        failure reason built from pi's stderr or protocol output (mirroring
+        ``copilot_runtime.py``'s ``_format_failure_reason``, which sanitizes
+        against ``build_child_env``'s ``scrubbed_values`` the same way).
+        """
+        env, scrubbed_values = build_child_env()
+        env["PI_CACHE_RETENTION"] = self._config.cache_retention
+        return env, scrubbed_values
+
+    def _failed(
+        self,
+        request: AgentRequest,
+        *,
+        prompt_chars: int,
+        boot_ms: float,
+        scrubbed_values: set[str],
+        message: str,
+    ) -> AgentResult:
+        """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
+
+        ``message`` is sanitized with
+        :func:`~software_agent_factory.subprocess_utils.sanitize_output`
+        against ``scrubbed_values`` so a credential embedded in pi's stderr,
+        an error message, or a protocol excerpt can never reach the stored
+        ``failure_reason``.
+        """
+        return AgentResult(
+            role=request.role,
+            success=False,
+            failure_reason=sanitize_output(message, scrubbed_values),
+            performance=PerformanceRecord(
+                prompt_chars=prompt_chars,
+                response_chars=0,
+                process_boot_ms=boot_ms,
+            ),
+        )
+
+    def _final_assistant_stop_reason(
+        self, client: PiRpcClient, *, deadline: float
+    ) -> tuple[str | None, str | None]:
+        """Return ``(stopReason, errorMessage)`` off the settled call's final message.
+
+        Reads ``get_messages`` -- the same command
+        ``scripts/performance/pi_cache_probe.py`` already uses to read
+        per-message ``usage`` -- and returns the ``stopReason``/``errorMessage``
+        of the last message that carries a ``stopReason`` at all (an assistant
+        message; user/tool messages don't). ``(None, None)`` when no message
+        carries one, so a successful call falls through to
+        ``get_last_assistant_text`` unaffected.
+        """
+        response = client.request({"type": "get_messages"}, deadline=deadline)
+        data = response.get("data") or {}
+        messages = data.get("messages") or []
+        for message in reversed(messages):
+            if isinstance(message, Mapping) and "stopReason" in message:
+                stop_reason = message.get("stopReason")
+                error_message = message.get("errorMessage")
+                return (
+                    None if stop_reason is None else str(stop_reason),
+                    None if error_message is None else str(error_message),
+                )
+        return None, None
+
+    def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
+        """Best-effort abort, then escalate to killing pi's process group.
+
+        Sends ``{"type": "abort"}`` without waiting for a response -- pi may
+        already be wedged, so a failed send (``PiRpcError``, e.g. a broken
+        pipe) is not itself an error here. Gives pi
+        :data:`_ABORT_GRACE_SECONDS` to exit on its own before escalating to
+        :func:`~software_agent_factory.subprocess_utils.kill_process_group`.
+        """
+        try:
+            client.send({"type": "abort"})
+        except PiRpcError:
+            pass
+        try:
+            process.wait(timeout=_ABORT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            kill_process_group(process)
