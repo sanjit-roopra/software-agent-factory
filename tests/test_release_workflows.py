@@ -130,14 +130,44 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
         assert "timeout-minutes" in job
 
 
-def test_ci_workflow_blocks_pull_requests_with_open_sonar_issues() -> None:
-    text, workflow = _load_workflow("ci.yml")
+def _sonar_job_steps() -> dict[str, str]:
+    _text, workflow = _load_workflow("ci.yml")
+    steps = workflow["jobs"]["sonar-new-issues"]["steps"]
+    return {step["name"]: step["run"] for step in steps}
+
+
+def test_ci_sonar_job_runs_only_on_pull_requests_without_permissions() -> None:
+    _text, workflow = _load_workflow("ci.yml")
     job = workflow["jobs"]["sonar-new-issues"]
+
     assert job["if"] == "github.event_name == 'pull_request'"
-    assert job["permissions"] == {"checks": "read"}
-    assert 'select(.name == "SonarCloud Code Analysis")' in text
-    assert "issueStatuses=OPEN,CONFIRMED" in text
-    assert 'test "$SONAR_RESULT" = "success"' in text
+    assert job["permissions"] == {}
+
+
+def test_ci_sonar_job_waits_for_analysis_of_the_pr_head_commit() -> None:
+    wait = _sonar_job_steps()["Wait for SonarCloud to analyse the PR head commit"]
+
+    assert "api/project_pull_requests/list" in wait
+    assert '[ "$analysed_sha" = "$HEAD_SHA" ]' in wait
+    assert "seq 1 90" in wait
+    assert wait.rstrip().endswith("exit 1"), "timeout must fail the job, not pass it"
+
+
+def test_ci_sonar_job_fails_on_open_issues_and_on_unexpected_responses() -> None:
+    check = _sonar_job_steps()["Require zero open SonarCloud issues on this PR"]
+
+    assert "issueStatuses=OPEN,CONFIRMED" in check
+    assert "jq -e '.paging.total'" in check
+    assert '[[ "$total" =~ ^[0-9]+$ ]]' in check
+    assert '[ "$total" -ne 0 ]' in check
+
+
+def test_ci_gate_requires_sonar_job_on_pull_requests_only() -> None:
+    _text, workflow = _load_workflow("ci.yml")
+    gate = workflow["jobs"]["ci-gate"]["steps"][0]["run"]
+
+    guarded = 'if [ "$EVENT_NAME" = "pull_request" ]; then\n  test "$SONAR_RESULT" = "success"\nfi'
+    assert guarded in gate
 
 
 def test_ci_workflow_limits_native_macos_to_main_and_manual_dispatch() -> None:

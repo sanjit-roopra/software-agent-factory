@@ -225,43 +225,47 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      checks: read
+    permissions: {}
+    env:
+      PROJECT_KEY: sanjit-roopra_software-agent-factory
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      # SonarCloud's free plan cannot assign a custom quality gate, and the
-      # built-in "Sonar way" gate passes PRs that add new issues as long as
-      # ratings stay at A. This job enforces zero open issues on every PR.
-      - name: Wait for SonarCloud analysis of this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # See ADR-028: the built-in "Sonar way" gate passes a PR that adds
+      # issues while ratings stay at A, and the free plan cannot assign a
+      # custom gate. This job enforces zero open issues on every PR.
+      - name: Wait for SonarCloud to analyse the PR head commit
         run: |
           set -euo pipefail
           for _ in $(seq 1 90); do
-            status=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '[.check_runs[] | select(.name == "SonarCloud Code Analysis")][0].status // "missing"')
-            echo "SonarCloud Code Analysis: $status"
-            if [ "$status" = "completed" ]; then
+            analysed_sha=$(curl -fsS --max-time 30 --get \
+              "https://sonarcloud.io/api/project_pull_requests/list" \
+              --data-urlencode "project=$PROJECT_KEY" \
+              | jq -r --arg pr "$PR_NUMBER" \
+                '.pullRequests[] | select(.key == $pr) | .commit.sha // empty') \
+              || analysed_sha=""
+            echo "SonarCloud analysed commit: ${analysed_sha:-none}, want $HEAD_SHA"
+            if [ "$analysed_sha" = "$HEAD_SHA" ]; then
               exit 0
             fi
             sleep 10
           done
-          echo "::error::SonarCloud analysis did not complete for $HEAD_SHA"
+          echo "::error::SonarCloud did not analyse $HEAD_SHA for PR #$PR_NUMBER in time"
           exit 1
 
       - name: Require zero open SonarCloud issues on this PR
-        env:
-          PROJECT_KEY: sanjit-roopra_software-agent-factory
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          response=$(curl -fsS --get "https://sonarcloud.io/api/issues/search" \
+          response=$(curl -fsS --max-time 30 --get "https://sonarcloud.io/api/issues/search" \
             --data-urlencode "componentKeys=$PROJECT_KEY" \
             --data-urlencode "pullRequest=$PR_NUMBER" \
             --data-urlencode "issueStatuses=OPEN,CONFIRMED" \
             --data-urlencode "ps=100")
-          total=$(printf '%s' "$response" | jq '.total')
+          total=$(printf '%s' "$response" | jq -e '.paging.total')
+          if ! [[ "$total" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unexpected SonarCloud response: paging.total=$total"
+            exit 1
+          fi
           printf '%s' "$response" | jq -r \
             '.issues[] | "::error file=\(.component | split(":")[1]),line=\(.line // 1)::\(.rule) \(.message)"'
           if [ "$total" -ne 0 ]; then
@@ -282,7 +286,7 @@ jobs:
       - docs
       - sonar-new-issues
     steps:
-      - name: Require all portable checks
+      - name: Require all gating checks
         env:
           EVENT_NAME: ${{ github.event_name }}
           SONAR_RESULT: ${{ needs.sonar-new-issues.result }}

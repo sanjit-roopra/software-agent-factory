@@ -1,5 +1,28 @@
 # Architecture Decisions
 
+## ADR-028: Pull requests must add no SonarCloud issues
+
+SonarCloud analyses every pull request.
+The built-in "Sonar way" quality gate only checks ratings, coverage, duplication, and hotspot review.
+A pull request can add new issues and still pass that gate while the ratings stay at A.
+This happened on pull request 55, which added two issues and passed.
+
+The SonarCloud free plan cannot assign a custom quality gate to a project.
+The API refuses the change with a 403 error.
+
+So CI enforces the rule instead.
+The `sonar-new-issues` job runs on pull requests only.
+It waits for SonarCloud to finish its analysis of the pull request head commit.
+Then it asks the public SonarCloud API for open or confirmed issues on that pull request.
+It fails when the count is not zero, or when the response is not what it expects.
+`ci-gate` requires this job on pull requests.
+
+This makes merges depend on SonarCloud.
+If SonarCloud is down or does not analyse the commit within 15 minutes, the job fails.
+Re-run the job when SonarCloud recovers.
+Do not mark real issues as Accepted to pass the job.
+Fix them, or mark a confirmed false positive in code with `# NOSONAR(<rule>)` and a reason.
+
 ## ADR-027: Adaptive Jev-driven execution routing
 
 Simple tasks do not always need the full factory pipeline.
