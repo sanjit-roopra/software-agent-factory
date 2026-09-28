@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
 
-from software_agent_factory.agents import AgentRequest
+from software_agent_factory.agent_artifact import parse_agent_artifact
+from software_agent_factory.agents import AgentRequest, is_retryable_typed_artifact_failure
 from software_agent_factory.config import PiConfig
+from software_agent_factory.copilot_runtime import parse_copilot_artifact
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
     RepositoryProfile,
+    TriageResult,
     WorkItem,
 )
-from software_agent_factory.pi_runtime import PiAgentRuntime
+from software_agent_factory.pi_runtime import PiAgentRuntime, ProcessFactory
 
 
 def _work_item() -> WorkItem:
@@ -61,9 +68,85 @@ def _skill_request(**overrides: object) -> AgentRequest:
     return _request(AgentRole.RESEARCHER, **defaults)
 
 
-def _runtime(**overrides: object) -> PiAgentRuntime:
+def _runtime(
+    *, process_factory: ProcessFactory | None = None, **overrides: object
+) -> PiAgentRuntime:
     config = PiConfig(**overrides)
-    return PiAgentRuntime(config, data_dir=Path("/data"))
+    kwargs: dict[str, object] = {}
+    if process_factory is not None:
+        kwargs["process_factory"] = process_factory
+    return PiAgentRuntime(config, data_dir=Path("/data"), **kwargs)
+
+
+# double-waiver: B1 — out-of-process pi subprocess handle
+class FakeProcess:
+    """``PiProcessHandle``-shaped double backed by real ``os.pipe()`` fds.
+
+    Same approach as ``tests/test_pi_rpc.py``'s ``FakeProcess``: real pipe
+    fds so ``PiRpcClient``'s raw-fd ``select``/``os.read`` loop runs against
+    real, deterministic file descriptors -- the test writes scripted JSONL
+    records into the read end ``PiRpcClient`` consumes, exactly as a real
+    ``pi`` process would.
+    """
+
+    def __init__(self) -> None:
+        stdin_read_fd, stdin_write_fd = os.pipe()
+        stdout_read_fd, stdout_write_fd = os.pipe()
+        stderr_read_fd, stderr_write_fd = os.pipe()
+
+        self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
+        self._stdin_read = os.fdopen(stdin_read_fd, "r")
+        self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
+        self._stdout_write = os.fdopen(stdout_write_fd, "w")
+        self.stderr: IO[str] | None = os.fdopen(stderr_read_fd, "r")
+        self._stderr_write: IO[str] | None = os.fdopen(stderr_write_fd, "w")
+
+        self.pid = 999_999
+        self._returncode: int | None = None
+        self._wait_returncode: int | None = None
+
+    def write_records(self, *records: dict[str, Any]) -> None:
+        for record in records:
+            self._stdout_write.write(json.dumps(record) + "\n")
+        self._stdout_write.flush()
+
+    def exit(self, returncode: int) -> None:
+        self._returncode = returncode
+        self._wait_returncode = returncode
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._wait_returncode is None:
+            raise subprocess.TimeoutExpired(cmd="fake-pi", timeout=timeout or 0)
+        return self._wait_returncode
+
+    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
+        return ("", "")
+
+
+def _scripted_process(final_assistant_text: str) -> FakeProcess:
+    """A ``FakeProcess`` that answers ``prompt`` then ``get_last_assistant_text``.
+
+    Matches the one exchange :meth:`PiAgentRuntime.run` drives: a ``prompt``
+    command (id ``c1``), settling via one ``agent_settled`` event, then a
+    ``get_last_assistant_text`` command (id ``c2``) answering with
+    ``final_assistant_text``.
+    """
+    process = FakeProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        {
+            "type": "response",
+            "id": "c2",
+            "success": True,
+            "data": {"text": final_assistant_text},
+        },
+    )
+    process.exit(0)
+    return process
 
 
 # ---------------------------------------------------------------------------
@@ -242,3 +325,97 @@ def test_child_env_defaults_pi_cache_retention_to_long() -> None:
     env = runtime._child_env()
 
     assert env["PI_CACHE_RETENTION"] == "long"
+
+
+# ---------------------------------------------------------------------------
+# run: happy path against a scripted process (Step 3.3)
+# ---------------------------------------------------------------------------
+
+
+_TRIAGE_JSON = {
+    "factory_eligible": True,
+    "complexity": "L1",
+    "risk": "R1",
+    "requirements_quality": "clear",
+    "needs_research": False,
+    "confidence": 0.9,
+}
+
+
+def test_run_implementer_happy_path_returns_change_set(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    final_text = json.dumps({"summary": "Reject empty customer names."})
+    process = _scripted_process(final_text)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+
+    result = runtime.run(request)
+
+    assert result.success is True
+    assert result.role is AgentRole.IMPLEMENTER
+    assert result.change_set == ChangeSet(summary="Reject empty customer names.")
+    assert result.performance is not None
+    assert result.performance.response_chars == len(final_text)
+
+
+def test_run_read_only_role_happy_path_returns_triage_result() -> None:
+    final_text = json.dumps(_TRIAGE_JSON)
+    process = _scripted_process(final_text)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    result = runtime.run(request)
+
+    assert result.success is True
+    assert result.role is AgentRole.TRIAGE
+    assert result.triage_result == TriageResult(**_TRIAGE_JSON)
+
+
+def test_run_sends_prompt_built_from_the_request() -> None:
+    process = _scripted_process(json.dumps(_TRIAGE_JSON))
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.TRIAGE)
+
+    runtime.run(request)
+
+    sent = process._stdin_read.readline()
+    command = json.loads(sent)
+    assert command["type"] == "prompt"
+    assert request.work_item.title in command["message"]
+
+
+# ---------------------------------------------------------------------------
+# run: output parity with Copilot (AC4)
+# ---------------------------------------------------------------------------
+
+
+def test_output_parity_with_copilot_for_identical_final_text() -> None:
+    final_text = json.dumps(_TRIAGE_JSON)
+
+    pi_artifact = parse_agent_artifact(
+        AgentRole.TRIAGE, text=final_text, purpose=AgentPurpose.STANDARD
+    )
+    copilot_artifact = parse_copilot_artifact(
+        AgentRole.TRIAGE, stdout=final_text, purpose=AgentPurpose.STANDARD
+    )
+
+    assert pi_artifact == copilot_artifact == TriageResult(**_TRIAGE_JSON)
+
+
+# ---------------------------------------------------------------------------
+# run: malformed output is retryable, same wording as Copilot
+# ---------------------------------------------------------------------------
+
+
+def test_run_malformed_output_is_retryable_like_copilot(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    process = _scripted_process("not a JSON object at all")
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+
+    result = runtime.run(request)
+
+    assert result.success is False
+    assert is_retryable_typed_artifact_failure(result, ChangeSet) is True

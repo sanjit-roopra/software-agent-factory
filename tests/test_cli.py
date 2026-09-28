@@ -842,33 +842,6 @@ def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
     assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
 
 
-def test_pi_agent_runtime_stub_returns_a_failed_result(tmp_path: Path) -> None:
-    """Step 2.2's stub: ``run()`` always fails, naming itself so Slice 3's
-    real implementation is easy to tell apart from a genuine pi failure."""
-    from software_agent_factory.agents import AgentRequest
-    from software_agent_factory.config import PiConfig
-    from software_agent_factory.models import AgentRole, WorkItem
-    from software_agent_factory.pi_runtime import PiAgentRuntime
-
-    pi_config = PiConfig()
-    data_dir = tmp_path / "data"
-    pi_runtime = PiAgentRuntime(pi_config, data_dir)
-
-    request = AgentRequest(
-        role=AgentRole.IMPLEMENTER,
-        model="claude-sonnet-5",
-        reasoning="medium",
-        work_item=WorkItem(id="WI-1", title="T", description="D"),
-        timeout_seconds=60,
-    )
-
-    result = pi_runtime.run(request)
-
-    assert result.success is False
-    assert result.role is AgentRole.IMPLEMENTER
-    assert result.failure_reason == "pi runtime not yet implemented"
-
-
 def test_project_with_pi_runtime_selects_the_real_runtime(
     source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
 ) -> None:

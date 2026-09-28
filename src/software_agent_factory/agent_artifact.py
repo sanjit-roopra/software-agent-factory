@@ -22,13 +22,16 @@ from typing import Literal, TypeAlias
 
 from pydantic import ValidationError
 
+from .agents import AgentResult
 from .models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
     ModelBase,
+    PerformanceRecord,
     ProjectPlan,
     RepositorySkill,
+    UsageMetrics,
 )
 from .prompts import RoleName, artifact_model_for_role, normalize_role
 
@@ -395,3 +398,31 @@ def parse_agent_artifact(
     """
 
     return parse_artifact_from_candidates(role, candidate_texts(text), purpose=purpose)
+
+
+def build_success_result(
+    role: RoleName,
+    *,
+    purpose: AgentPurpose,
+    artifact: ModelBase,
+    usage: UsageMetrics | None = None,
+    performance: PerformanceRecord | None = None,
+) -> AgentResult:
+    """Build the success :class:`AgentResult` carrying ``artifact`` in its typed field.
+
+    ``artifact_spec(role, purpose).result_field`` names which ``AgentResult``
+    field (``change_set``, ``triage_result``, ...) holds the artifact for
+    this role/purpose. Shared by every ``AgentRuntime`` (Copilot, pi) so this
+    mapping lives in one place instead of being duplicated per runtime.
+    """
+
+    result_field = artifact_spec(role, purpose).result_field
+    return AgentResult.model_validate(
+        {
+            "role": role,
+            "success": True,
+            "usage": usage,
+            "performance": performance,
+            result_field: artifact,
+        }
+    )

@@ -1,37 +1,43 @@
 """``pi`` (``@earendil-works/pi-coding-agent``) agent runtime.
 
-Step 2.2 of ``plans/pi-agent-runtime.md`` added only the shape of this
-runtime: :class:`PiAgentRuntime` stores its configuration and data
-directory, and :meth:`PiAgentRuntime.run` returns a failed
-:class:`~software_agent_factory.agents.AgentResult` naming itself as not yet
-implemented. Step 3.2 adds the private helpers ``run`` will use once Step 3.3
-wires the JSONL RPC call to the ``pi`` executable: the command line
-(``_build_command``), the working directory (``_cwd_for``, the same rule the
-Copilot runtime uses) and the scrubbed child environment (``_child_env``).
+Step 3.3 of ``plans/pi-agent-runtime.md`` wires :meth:`PiAgentRuntime.run` to
+a real ``pi --mode rpc`` subprocess: it starts one process per call (built by
+``_build_command``/``_cwd_for``/``_child_env``, added in Step 3.2), drives it
+over :class:`~software_agent_factory.pi_rpc.PiRpcClient` (Step 3.1) with a
+``prompt`` command followed by ``wait_for_settled`` and
+``get_last_assistant_text``, then parses the final assistant text with
+:func:`~software_agent_factory.agent_artifact.parse_agent_artifact` -- the
+same runtime-neutral parser the Copilot runtime uses, so a malformed
+response fails with byte-identical wording. Failure and timeout handling
+beyond a parse failure (assistant error/abort, non-zero exit, timeout) is
+Step 3.4; unexpected exceptions from starting or driving the process
+propagate to the caller today, exactly as they do from the Copilot runtime
+(the workflow/project/CLI layers convert them with
+``agents.runtime_exception_failure_reason``).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
+from .agent_artifact import build_success_result, parse_agent_artifact
 from .agent_capabilities import AgentCapability, capability_for
 from .agents import AgentRequest, AgentResult, AgentRuntime
-from .models import AgentPurpose
+from .models import AgentPurpose, PerformanceRecord
+from .pi_rpc import PiProcessHandle, PiRpcClient
+from .prompts import build_prompt
 from .subprocess_utils import build_child_env
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from .config import PiConfig
 
 logger = logging.getLogger(__name__)
-
-#: Returned by the Step 2.2 stub. Slice 3 replaces ``run`` with the real
-#: pi RPC call, at which point this constant is removed.
-_NOT_YET_IMPLEMENTED_REASON = "pi runtime not yet implemented"
 
 #: Pi ``--tools`` value per :class:`AgentCapability`, per the "Role tool
 #: allowlists (v1)" table in ``docs/specs/pi-agent-runtime.md``.
@@ -43,6 +49,26 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
 
+#: Starts one already-configured ``pi`` subprocess: ``(command, cwd, env) ->
+#: PiProcessHandle``. Injectable so tests drive :meth:`PiAgentRuntime.run`
+#: against a fake process instead of a real ``pi`` executable.
+ProcessFactory = Callable[[Sequence[str], Path, dict[str, str]], PiProcessHandle]
+
+
+def _default_process_factory(
+    command: Sequence[str], cwd: Path, env: dict[str, str]
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        list(command),
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
 
 class PiAgentRuntime(AgentRuntime):
     """Production ``AgentRuntime`` backed by the ``pi`` CLI.
@@ -53,16 +79,61 @@ class PiAgentRuntime(AgentRuntime):
     per-work-item session store under ``<data_dir>/pi-sessions``.
     """
 
-    def __init__(self, config: PiConfig, data_dir: Path) -> None:
+    def __init__(
+        self,
+        config: PiConfig,
+        data_dir: Path,
+        *,
+        process_factory: ProcessFactory = _default_process_factory,
+    ) -> None:
         self._config = config
         self._data_dir = data_dir
+        self._process_factory = process_factory
 
     def run(self, request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=request.role,
-            success=False,
-            failure_reason=_NOT_YET_IMPLEMENTED_REASON,
-        )
+        command = self._build_command(request, session_arg=["--no-session"])
+        cwd = self._cwd_for(request)
+        env = self._child_env()
+        prompt = build_prompt(request)
+        prompt_chars = len(prompt)
+
+        boot_start = time.perf_counter()
+        process = self._process_factory(command, cwd, env)
+        boot_ms = (time.perf_counter() - boot_start) * 1000.0
+
+        client = PiRpcClient(process)
+        try:
+            deadline = time.monotonic() + request.timeout_seconds
+            client.request({"type": "prompt", "message": prompt}, deadline=deadline)
+            client.wait_for_settled(deadline=deadline)
+            response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
+            data = response.get("data") or {}
+            text = str(data.get("text", ""))
+
+            performance = PerformanceRecord(
+                prompt_chars=prompt_chars,
+                response_chars=len(text),
+                process_boot_ms=boot_ms,
+            )
+
+            try:
+                artifact = parse_agent_artifact(request.role, text=text, purpose=request.purpose)
+            except ValueError as exc:
+                return AgentResult(
+                    role=request.role,
+                    success=False,
+                    failure_reason=str(exc),
+                    performance=performance,
+                )
+
+            return build_success_result(
+                request.role,
+                purpose=request.purpose,
+                artifact=artifact,
+                performance=performance,
+            )
+        finally:
+            client.close()
 
     def _build_command(
         self,

@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .agent_artifact import (
-    artifact_spec,
+    build_success_result,
     candidate_texts,
     parse_artifact_from_candidates,
 )
@@ -212,15 +212,12 @@ class CopilotAgentRuntime(AgentRuntime):
                     performance=perf,
                 )
 
-            result_field = artifact_spec(request.role, request.purpose).result_field
-            return AgentResult.model_validate(
-                {
-                    "role": request.role,
-                    "success": True,
-                    "usage": usage,
-                    "performance": perf,
-                    result_field: artifact,
-                }
+            return build_success_result(
+                request.role,
+                purpose=request.purpose,
+                artifact=artifact,
+                usage=usage,
+                performance=perf,
             )
 
     def _cwd_for(self, request: AgentRequest) -> Path:
