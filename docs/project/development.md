@@ -136,8 +136,8 @@ On every pull request:
   `main` and manual workflow runs
 - **sonar-new-issues**: pull requests only. Waits for SonarCloud to analyse the
   head commit, then fails if the pull request has any open SonarCloud issue
-- **ci-gate**: requires all portable checks to pass, and `sonar-new-issues` on
-  pull requests
+- **ci-gate**: requires all portable checks to pass. On every branch except
+  `main` it also requires `sonar-new-issues`
 
 Every CI job installs the locked dependencies with `uv sync --no-build`. That
 means wheels only: no third-party build script runs on a CI runner. Local

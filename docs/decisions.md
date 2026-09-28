@@ -15,7 +15,8 @@ The `sonar-new-issues` job runs on pull requests only.
 It waits for SonarCloud to finish its analysis of the pull request head commit.
 Then it asks the public SonarCloud API for open or confirmed issues on that pull request.
 It fails when the count is not zero, or when the response is not what it expects.
-`ci-gate` requires this job on pull requests.
+`ci-gate` requires this job on every branch except `main`.
+So a manual run on a pull request branch cannot skip it.
 
 This makes merges depend on SonarCloud.
 If SonarCloud is down or does not analyse the commit within 15 minutes, the job fails.

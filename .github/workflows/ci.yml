@@ -266,8 +266,13 @@ jobs:
             echo "::error::Unexpected SonarCloud response: paging.total=$total"
             exit 1
           fi
-          printf '%s' "$response" | jq -r \
-            '.issues[] | "::error file=\(.component | split(":")[1]),line=\(.line // 1)::\(.rule) \(.message)"'
+          # Escape Sonar-supplied text so a crafted path or message cannot
+          # inject a workflow command.
+          printf '%s' "$response" | jq -r '
+            def data: gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def prop: data | gsub(":"; "%3A") | gsub(","; "%2C");
+            .issues[]
+            | "::error file=\(.component | sub("^[^:]*:"; "") | prop),line=\(.line // 1)::\(.rule | data) \(.message | data)"'
           if [ "$total" -ne 0 ]; then
             echo "::error::SonarCloud reports $total open issue(s) on PR #$PR_NUMBER"
             exit 1
@@ -288,14 +293,16 @@ jobs:
     steps:
       - name: Require all gating checks
         env:
-          EVENT_NAME: ${{ github.event_name }}
           SONAR_RESULT: ${{ needs.sonar-new-issues.result }}
         run: |
           test "${{ needs.quality.result }}" = "success"
           test "${{ needs.tests.result }}" = "success"
           test "${{ needs.package.result }}" = "success"
           test "${{ needs.docs.result }}" = "success"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          # sonar-new-issues runs on pull requests only. Every ref except
+          # main must pass it, so a manual run on a PR branch cannot post a
+          # green ci-gate that skips SonarCloud.
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
             test "$SONAR_RESULT" = "success"
           fi
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -136,6 +138,44 @@ def _sonar_job_steps() -> dict[str, str]:
     return {step["name"]: step["run"] for step in steps}
 
 
+def _run_step(
+    script: str, tmp_path: Path, env: dict[str, str], curl_body: str | None
+) -> subprocess.CompletedProcess[str]:
+    """Execute a workflow ``run:`` script with ``curl`` and ``sleep`` stubbed.
+
+    ``curl_body`` is what the stub prints; ``None`` makes the stub fail like
+    ``curl -f`` on an HTTP error.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    body_file = tmp_path / "curl-body"
+    if curl_body is None:
+        curl = "#!/bin/sh\nexit 22\n"
+    else:
+        body_file.write_text(curl_body, encoding="utf-8")
+        curl = f"#!/bin/sh\ncat '{body_file}'\n"
+    for name, content in (("curl", curl), ("sleep", "#!/bin/sh\nexit 0\n")):
+        stub = bin_dir / name
+        stub.write_text(content, encoding="utf-8")
+        stub.chmod(0o755)
+    full_env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", **env}
+    return subprocess.run(
+        ["bash", "-c", script], env=full_env, capture_output=True, text=True, check=False
+    )
+
+
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+SONAR_ENV = {"PROJECT_KEY": "proj", "PR_NUMBER": "7", "HEAD_SHA": "abc123"}
+
+
+def _pr_list(sha: str) -> str:
+    return json.dumps({"pullRequests": [{"key": "7", "commit": {"sha": sha}}]})
+
+
+def _issues(total: object, issues: list[dict[str, object]] | None = None) -> str:
+    return json.dumps({"paging": {"total": total}, "issues": issues or []})
+
+
 def test_ci_sonar_job_runs_only_on_pull_requests_without_permissions() -> None:
     _text, workflow = _load_workflow("ci.yml")
     job = workflow["jobs"]["sonar-new-issues"]
@@ -144,30 +184,100 @@ def test_ci_sonar_job_runs_only_on_pull_requests_without_permissions() -> None:
     assert job["permissions"] == {}
 
 
-def test_ci_sonar_job_waits_for_analysis_of_the_pr_head_commit() -> None:
+@requires_jq
+def test_ci_sonar_wait_passes_once_head_commit_is_analysed(tmp_path: Path) -> None:
     wait = _sonar_job_steps()["Wait for SonarCloud to analyse the PR head commit"]
 
-    assert "api/project_pull_requests/list" in wait
-    assert '[ "$analysed_sha" = "$HEAD_SHA" ]' in wait
-    assert "seq 1 90" in wait
-    assert wait.rstrip().endswith("exit 1"), "timeout must fail the job, not pass it"
+    result = _run_step(wait, tmp_path, SONAR_ENV, _pr_list("abc123"))
+
+    assert result.returncode == 0
 
 
-def test_ci_sonar_job_fails_on_open_issues_and_on_unexpected_responses() -> None:
+@requires_jq
+def test_ci_sonar_wait_fails_when_only_an_older_commit_is_analysed(tmp_path: Path) -> None:
+    wait = _sonar_job_steps()["Wait for SonarCloud to analyse the PR head commit"]
+
+    result = _run_step(wait, tmp_path, SONAR_ENV, _pr_list("old999"))
+
+    assert result.returncode == 1
+    assert "did not analyse abc123" in result.stdout
+
+
+@requires_jq
+def test_ci_sonar_wait_fails_when_sonarcloud_is_unreachable(tmp_path: Path) -> None:
+    wait = _sonar_job_steps()["Wait for SonarCloud to analyse the PR head commit"]
+
+    result = _run_step(wait, tmp_path, SONAR_ENV, None)
+
+    assert result.returncode == 1
+
+
+@requires_jq
+def test_ci_sonar_check_passes_with_zero_open_issues(tmp_path: Path) -> None:
     check = _sonar_job_steps()["Require zero open SonarCloud issues on this PR"]
 
-    assert "issueStatuses=OPEN,CONFIRMED" in check
-    assert "jq -e '.paging.total'" in check
-    assert '[[ "$total" =~ ^[0-9]+$ ]]' in check
-    assert '[ "$total" -ne 0 ]' in check
+    result = _run_step(check, tmp_path, SONAR_ENV, _issues(0))
+
+    assert result.returncode == 0
 
 
-def test_ci_gate_requires_sonar_job_on_pull_requests_only() -> None:
+@requires_jq
+def test_ci_sonar_check_fails_with_open_issues(tmp_path: Path) -> None:
+    check = _sonar_job_steps()["Require zero open SonarCloud issues on this PR"]
+    issue = {"component": "proj:src/a.py", "line": 3, "rule": "python:S1", "message": "m"}
+
+    result = _run_step(check, tmp_path, SONAR_ENV, _issues(1, [issue]))
+
+    assert result.returncode == 1
+    assert "::error file=src/a.py,line=3::python:S1 m" in result.stdout
+
+
+@requires_jq
+@pytest.mark.parametrize("total", [None, "many"])
+def test_ci_sonar_check_fails_on_unexpected_response(tmp_path: Path, total: object) -> None:
+    check = _sonar_job_steps()["Require zero open SonarCloud issues on this PR"]
+
+    result = _run_step(check, tmp_path, SONAR_ENV, _issues(total))
+
+    assert result.returncode != 0
+
+
+@requires_jq
+def test_ci_sonar_check_escapes_injected_workflow_commands(tmp_path: Path) -> None:
+    check = _sonar_job_steps()["Require zero open SonarCloud issues on this PR"]
+    issue = {"component": "proj:a,b.py", "rule": "r", "message": "x\n::add-mask::y"}
+
+    result = _run_step(check, tmp_path, SONAR_ENV, _issues(1, [issue]))
+
+    assert "::error file=a%2Cb.py,line=1::r x%0A::add-mask::y" in result.stdout
+    assert not any(line.startswith("::add-mask::") for line in result.stdout.splitlines())
+
+
+def _ci_gate_script() -> str:
     _text, workflow = _load_workflow("ci.yml")
-    gate = workflow["jobs"]["ci-gate"]["steps"][0]["run"]
+    script: str = workflow["jobs"]["ci-gate"]["steps"][0]["run"]
+    for job in ("quality", "tests", "package", "docs"):
+        script = script.replace(f"${{{{ needs.{job}.result }}}}", "success")
+    return script
 
-    guarded = 'if [ "$EVENT_NAME" = "pull_request" ]; then\n  test "$SONAR_RESULT" = "success"\nfi'
-    assert guarded in gate
+
+@pytest.mark.parametrize(
+    ("ref", "sonar_result", "expected_code"),
+    [
+        ("refs/pull/7/merge", "success", 0),
+        ("refs/pull/7/merge", "failure", 1),
+        ("refs/heads/feature", "skipped", 1),
+        ("refs/heads/main", "skipped", 0),
+    ],
+)
+def test_ci_gate_requires_sonar_job_on_every_ref_except_main(
+    tmp_path: Path, ref: str, sonar_result: str, expected_code: int
+) -> None:
+    env = {"GITHUB_REF": ref, "SONAR_RESULT": sonar_result}
+
+    result = _run_step(_ci_gate_script(), tmp_path, env, "")
+
+    assert result.returncode == expected_code
 
 
 def test_ci_workflow_limits_native_macos_to_main_and_manual_dispatch() -> None:
