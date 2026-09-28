@@ -50,11 +50,6 @@ from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, _RunContext
 
 
-@pytest.fixture(autouse=True)
-def _routing_git_env(factory_git_env: None) -> None:
-    """Keep every routing test independent of the developer's Git config."""
-
-
 @pytest.fixture
 def source_repo(factory_source_repo: Path) -> Path:
     return factory_source_repo

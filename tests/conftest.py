@@ -26,6 +26,10 @@ example, in a deliberately opted-in local/manual smoke test).
 ``_restore_factory_logging`` (autouse) keeps the package logger a per-test
 concern, so a command that configures the bounded on-disk log cannot leak a
 file handler into another test's data directory.
+
+``factory_git_env`` (autouse) points Git at an empty global and system
+configuration and clears GitHub tokens for every test, so no test depends on
+the developer's signing setup, hooks or credentials.
 """
 
 from __future__ import annotations
@@ -189,7 +193,7 @@ def _restore_factory_logging() -> Iterator[None]:
         logger.propagate = original_propagate
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def factory_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)

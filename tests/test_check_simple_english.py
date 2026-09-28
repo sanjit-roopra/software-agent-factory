@@ -217,6 +217,7 @@ def test_violation_reporting_reports_actionable_path_and_lines() -> None:
 
 def test_condition_wrapped_after_its_comma_is_still_procedural() -> None:
     assert is_procedural_sentence("When the build fails,\nrun the tests again.")
+    assert is_procedural_sentence("If the build fails, run the unit\ntests again.")
 
 
 def test_procedural_sentences_use_the_twenty_word_limit() -> None:

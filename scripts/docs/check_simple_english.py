@@ -391,8 +391,8 @@ def is_procedural_sentence(sentence: str) -> bool:
     prose = sentence.lstrip(" *_0123456789.)")
     if INSTRUCTION_START.match(prose) is not None:
         return True
-    condition = re.match(r"^(?:if|when)\b[^,]*,\s*+(.*)$", prose, re.I)
-    return condition is not None and INSTRUCTION_START.match(condition.group(1)) is not None
+    condition = re.match(r"(?:if|when)\b[^,]*+,\s*+", prose, re.I)
+    return condition is not None and INSTRUCTION_START.match(prose[condition.end() :]) is not None
 
 
 def trailing_condition(sentence: str) -> re.Match[str] | None:
