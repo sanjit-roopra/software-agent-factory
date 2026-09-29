@@ -263,6 +263,73 @@ def test_run_with_copilot_runtime_requires_copilot(
     assert "missing required executable(s) on PATH: copilot" in result.output
 
 
+def test_run_with_pi_runtime_requires_pi(source_repo: Path, data_dir: Path, path_without) -> None:
+    path_without("git")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "missing required executable(s) on PATH: pi" in result.output
+
+
+def test_run_with_pi_runtime_checks_the_configured_executable_name(
+    source_repo: Path, data_dir: Path, tmp_path: Path, path_without
+) -> None:
+    """The prerequisite gate must look up ``config.pi.executable`` instead of
+    a literal ``"pi"``, so ``factory doctor`` and ``factory run`` can never
+    disagree about which executable name a custom ``pi.executable`` config
+    requires. A shim literally named ``pi`` on PATH must not satisfy it."""
+    import yaml
+
+    from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
+
+    packaged = Path(__import__("software_agent_factory").__file__).parent / DEFAULT_CONFIG_FILENAME
+    payload = yaml.safe_load(packaged.read_text(encoding="utf-8"))
+    payload["factory"]["data_dir"] = str(data_dir)
+    payload["pi"] = {"executable": "custom-pi-agent"}
+    config_path = tmp_path / "factory.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    path_without("git", "pi")  # literal "pi" present, "custom-pi-agent" is not
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--config",
+            str(config_path),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "missing required executable(s) on PATH: custom-pi-agent" in result.output
+
+
 def test_invalid_config_fails_with_one_line_and_no_traceback(
     source_repo: Path, tmp_path: Path
 ) -> None:
@@ -610,6 +677,7 @@ def test_run_with_copilot_runtime_selects_the_real_runtime(
     built: list[str] = []
     delegate = FakeAgentRuntime()
 
+    # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubCopilotRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
             built.append("copilot")
@@ -665,6 +733,200 @@ def test_run_rejects_an_unknown_runtime(source_repo: Path, data_dir: Path) -> No
     )
 
     assert result.exit_code != 0
+    assert "'fake'" in result.output
+    assert "'copilot'" in result.output
+    assert "'pi'" in result.output
+
+
+# A ``PiAgentRuntime(...)`` construction as the CLI made it: (args, kwargs).
+PiRuntimeCall = tuple[tuple[object, ...], dict[str, object]]
+
+
+@pytest.fixture
+def pi_runtime_calls(monkeypatch: pytest.MonkeyPatch) -> list[PiRuntimeCall]:
+    """Replace the real pi runtime with a fake-agent stand-in; return how it was built.
+
+    Keeps the CLI tests free of paid calls. Each construction appends its
+    ``(args, kwargs)`` to the returned list.
+    """
+    from software_agent_factory.agents import AgentResult, FakeAgentRuntime
+
+    calls: list[PiRuntimeCall] = []
+    delegate = FakeAgentRuntime()
+
+    # double-waiver: B1 — out-of-process agent subprocess runtime
+    class StubPiRuntime:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            calls.append((args, kwargs))
+
+        def run(self, request: object) -> AgentResult:
+            return delegate.run(request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+    return calls
+
+
+@pytest.fixture
+def pi_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Capture the CLI's ``logger.warning`` messages (the structured-log side of AC19)."""
+    warnings: list[str] = []
+
+    class _RecordingLogger:
+        def warning(self, msg: str, *args: object) -> None:
+            warnings.append(msg % args if args else msg)
+
+    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
+    return warnings
+
+
+def test_run_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path, data_dir: Path, path_with, pi_runtime_calls: list[PiRuntimeCall]
+) -> None:
+    """``--runtime pi`` opts in. The pi runtime is stubbed here so the test
+    still makes zero paid calls."""
+    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(pi_runtime_calls) == 1
+    assert "state: PR_READY" in result.output
+
+
+def test_run_with_pi_runtime_passes_the_routing_key_variable_name_to_be_scrubbed(
+    source_repo: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    path_with,
+    pi_runtime_calls: list[PiRuntimeCall],
+) -> None:
+    """pi never needs the routing API key, so the runtime must know which
+    variable holds it in order to drop it from pi's environment."""
+    path_with("pi")
+    config_path = tmp_path / "factory.yaml"
+    config_path.write_text(
+        Path(__file__)
+        .parents[1]
+        .joinpath("src/software_agent_factory/default_config.yaml")
+        .read_text()
+        .replace('api_key_env_var: "JEV_API_KEY"', 'api_key_env_var: "MY_ROUTING_KEY"')
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert pi_runtime_calls[0][1] == {"routing_api_key_env_var": "MY_ROUTING_KEY"}
+
+
+@pytest.mark.usefixtures("pi_runtime_calls")
+def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
+    source_repo: Path, data_dir: Path, path_with, pi_warnings: list[str]
+) -> None:
+    """AC19: selecting pi logs a warning naming the unrestricted shell tool
+    and linking the follow-up issue (AC18, #70), before the run happens."""
+    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert any(
+        "unrestricted" in warning
+        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
+        for warning in pi_warnings
+    ), pi_warnings
+    # AC19: the warning must also reach the operator's terminal, not just the
+    # structured file log.
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
+
+
+def test_project_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path,
+    data_dir: Path,
+    path_with,
+    pi_runtime_calls: list[PiRuntimeCall],
+    pi_warnings: list[str],
+) -> None:
+    path_with("pi")  # project's prerequisite gate; the pi runtime itself is stubbed
+
+    result = runner.invoke(
+        app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Build customer validation",
+            "--description",
+            "Reject blank customer names.",
+            "--acceptance-criterion",
+            "Blank names return HTTP 400.",
+            "--project-id",
+            "project-pi",
+            "--runtime",
+            "pi",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert any(
+        "unrestricted" in warning
+        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
+        for warning in pi_warnings
+    ), pi_warnings
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
+    assert len(pi_runtime_calls) == 1
+    assert "state: DONE" in result.output
 
 
 def test_explicit_work_item_id_is_used_for_deduplication(source_repo: Path, data_dir: Path) -> None:
@@ -819,6 +1081,48 @@ def test_start_once_runs_one_bounded_tick_without_touching_github(
     runs_result = runner.invoke(app, ["runs", "--data-dir", str(data_dir)])
     assert "PR_READY" in runs_result.output
     assert "tracker-acme/repo#11" in runs_result.output
+
+
+def test_start_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_with,
+    pi_runtime_calls: list[PiRuntimeCall],
+    pi_warnings: list[str],
+) -> None:
+    path_with("gh", "pi")  # start's prerequisite gate; the tracker itself is stubbed
+    _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
+
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "start",
+            "--repo",
+            str(source_repo),
+            "--github-repo",
+            "acme/repo",
+            "--once",
+            "--runtime",
+            "pi",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(pi_runtime_calls) == 1
+    assert "dispatched: acme/repo#11" in result.output
+    assert any(
+        "unrestricted" in warning
+        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
+        for warning in pi_warnings
+    ), pi_warnings
+    assert "unrestricted" in result.stderr
+    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
 
 
 def test_start_accepts_fast_performance_mode(

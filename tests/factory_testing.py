@@ -9,10 +9,11 @@ model calls, and every remote-touching ``git``/``gh`` invocation goes through
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import IO, Any, Mapping, Sequence
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
@@ -333,3 +334,154 @@ def build_controller(
         config, client=GitHubClient(runner=runner), token=None, sleep=lambda _seconds: None
     )
     return WorkflowController(config, store, runtime, publisher=publisher, ci_observer=observer)
+
+
+_open_fake_pi_processes: list[FakePiProcess] = []
+
+
+# double-waiver: B1 — out-of-process pi subprocess handle
+class FakePiProcess:
+    """``PiProcessHandle``-shaped double backed by real ``os.pipe()`` fds.
+
+    Real pipe fds let ``PiRpcClient``'s raw-fd ``select``/``os.read`` loop run
+    against real, deterministic file descriptors: a test writes scripted JSONL
+    records into the end the client reads, exactly as a real ``pi`` process
+    would. ``stdin``/``stdout``/``stderr`` are the client's ends; the
+    ``_*_write``/``_*_read`` counterparts are the test's ends. ``stderr=False``
+    mirrors a real ``Popen(stderr=subprocess.DEVNULL)`` handle
+    (``.stderr is None``), as ``scripts/performance/pi_cache_probe.py`` uses.
+
+    Every instance registers itself so the autouse ``conftest`` fixture can
+    :meth:`close` it after the test: the pipes are real fds and would
+    otherwise leak until garbage collection.
+    """
+
+    def __init__(self, *, stderr: bool = True) -> None:
+        stdin_read_fd, stdin_write_fd = os.pipe()
+        stdout_read_fd, stdout_write_fd = os.pipe()
+
+        self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
+        self._stdin_read = os.fdopen(stdin_read_fd, "r")
+        self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
+        self._stdout_write = os.fdopen(stdout_write_fd, "w")
+
+        self.stderr: IO[str] | None = None
+        self._stderr_write: IO[str] | None = None
+        if stderr:
+            stderr_read_fd, stderr_write_fd = os.pipe()
+            self.stderr = os.fdopen(stderr_read_fd, "r")
+            self._stderr_write = os.fdopen(stderr_write_fd, "w")
+
+        self.pid = 999_999
+        self._returncode: int | None = None
+        self._wait_returncode: int | None = None
+        #: Raised by :meth:`communicate`, e.g. a ``UnicodeDecodeError`` as a
+        #: real text-mode ``Popen`` raises on undecodable leftover output.
+        self.communicate_error: Exception | None = None
+        _open_fake_pi_processes.append(self)
+
+    def write_records(self, *records: Mapping[str, Any]) -> None:
+        for record in records:
+            self._stdout_write.write(json.dumps(record) + "\n")
+        self._stdout_write.flush()
+
+    def write_raw_stdout(self, text: str) -> None:
+        self._stdout_write.write(text)
+        self._stdout_write.flush()
+
+    def write_stdout_bytes(self, data: bytes) -> None:
+        self._stdout_write.buffer.write(data)
+        self._stdout_write.flush()
+
+    def write_stderr(self, text: str) -> None:
+        assert self._stderr_write is not None
+        self._stderr_write.write(text)
+        self._stderr_write.flush()
+
+    def write_stderr_bytes(self, data: bytes) -> None:
+        assert self._stderr_write is not None
+        self._stderr_write.buffer.write(data)
+        self._stderr_write.flush()
+
+    def close_stdout(self) -> None:
+        self._stdout_write.close()
+
+    def exit(self, returncode: int) -> None:
+        self._returncode = returncode
+        self._wait_returncode = returncode
+
+    def exit_pending_reap(self, returncode: int) -> None:
+        """Simulate a process that has exited but not yet been reaped by ``poll()``.
+
+        ``poll()`` still reports ``None`` (not yet observed), while ``wait()``
+        successfully reaps it and returns ``returncode``.
+        """
+        self._wait_returncode = returncode
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._wait_returncode is None:
+            raise subprocess.TimeoutExpired(cmd="fake-pi", timeout=timeout or 0)
+        return self._wait_returncode
+
+    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
+        if self.communicate_error is not None:
+            raise self.communicate_error
+        return ("", "")
+
+    def sent_commands(self) -> list[dict[str, Any]]:
+        """Read back what ``PiRpcClient`` wrote to stdin so far (non-blocking)."""
+        os.set_blocking(self._stdin_read.fileno(), False)
+        commands: list[dict[str, Any]] = []
+        try:
+            for line in self._stdin_read:
+                stripped = line.strip()
+                if stripped:
+                    commands.append(json.loads(stripped))
+        except BlockingIOError:
+            pass
+        return commands
+
+    def close(self) -> None:
+        """Close every pipe end this double still holds. Safe to call twice."""
+        for stream in (
+            self.stdin,
+            self._stdin_read,
+            self.stdout,
+            self._stdout_write,
+            self.stderr,
+            self._stderr_write,
+        ):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def close_open_fake_pi_processes() -> None:
+    """Close and forget every :class:`FakePiProcess` created so far."""
+    while _open_fake_pi_processes:
+        _open_fake_pi_processes.pop().close()
+
+
+class FakePiClock:
+    """Deterministic monotonic clock for ``PiRpcClient``/``PiAgentRuntime`` timeout tests.
+
+    Time only moves when the code under test would block: the ``pi_fake_clock``
+    fixture swaps ``select.select`` for a poll that advances :attr:`now` by the
+    requested timeout when nothing is ready, so a "1 second" timeout elapses
+    instantly and deterministically.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def deadline(self, seconds: float) -> float:
+        return self.now + seconds

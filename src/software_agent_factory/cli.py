@@ -2,12 +2,12 @@
 
 ```bash
 factory --version
-factory run --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
-factory project --repo PATH --title TEXT --description TEXT [--runtime fake|copilot]
+factory run --repo PATH --title TEXT --description TEXT [--runtime fake|copilot|pi]
+factory project --repo PATH --title TEXT --description TEXT [--runtime fake|copilot|pi]
 factory runs
 factory show RUN_ID
-factory start --repo PATH --github-repo OWNER/NAME [--once]
-factory doctor [--json]
+factory start --repo PATH --github-repo OWNER/NAME [--once] [--runtime fake|copilot|pi]
+factory doctor [--runtime fake|copilot|pi] [--json]
 factory status [--json]
 factory dashboard [--port 8765] [--open-browser]
 factory service install|status|uninstall
@@ -16,7 +16,10 @@ factory skill path|validate|refresh --repo PATH [--runtime fake|copilot]
 
 ``--runtime`` defaults to ``fake`` so no command ever makes a paid model call
 by accident; ``--runtime copilot`` opts in to the real
-:class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`.
+:class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`, and
+``--runtime pi`` opts in to the pi agent runtime (requires ``pi``, Node and a
+provider credential -- see ``factory doctor --runtime pi``). ``factory skill
+refresh`` does not support ``pi``.
 
 Pull request creation, CI observation, the backlog daemon, the dashboard and
 the launchd service are all strictly opt-in (``pull_request.enabled``,
@@ -37,9 +40,10 @@ file.
 Three conventions hold across every command here:
 
 - **Fail before you work.** Configuration problems and missing external
-  prerequisites (``git``, and ``gh``/``copilot`` only when the requested
-  feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE` and one
-  explicit line, never a traceback from deep inside a workspace or tracker.
+  prerequisites (``git``, and ``gh``/``copilot``/``pi`` only when the
+  requested feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE`
+  and one explicit line, never a traceback from deep inside a workspace or
+  tracker.
 - **Read-only stays read-only.** ``runs``, ``show``, ``status``, ``skill
   path`` and ``skill validate`` derive everything from persisted artifacts
   and never create or mutate a run, a workspace or configuration -- not even
@@ -120,6 +124,29 @@ DEFAULT_LABEL = "com.github.software-agent-factory"
 #: run inside the repository, a worktree or the operator's shell cwd.
 SKILL_GENERATION_DIRNAME = "skill-generation"
 
+#: Tracks the missing tool-call restriction/sandboxing the pi runtime does
+#: not yet have (``plans/pi-agent-runtime.md`` Build-time decisions, AC18/19).
+PI_UNRESTRICTED_SHELL_FOLLOWUP_URL = (
+    "https://github.com/sanjit-roopra/software-agent-factory/issues/70"
+)
+
+#: Shared ``--runtime`` help text for every command whose runtime choice
+#: builds an :class:`~software_agent_factory.agents.AgentRuntime` (``run``,
+#: ``project``, ``start``, ``skill refresh``). One source keeps the three
+#: runtime names here from drifting out of sync with :class:`RuntimeChoice`.
+RUNTIME_OPTION_HELP = (
+    "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or "
+    "'pi' (paid; unrestricted shell tool)."
+)
+
+#: ``--runtime`` help text for ``skill refresh``, which rejects ``pi``
+#: outright (see ``skill_refresh_command``) -- so it advertises only the
+#: runtimes it actually accepts instead of :data:`RUNTIME_OPTION_HELP`.
+SKILL_REFRESH_RUNTIME_OPTION_HELP = (
+    "Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid); "
+    "'pi' is not supported for skill refresh."
+)
+
 _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
     "CopilotAgentRuntime": (".copilot_runtime", "CopilotAgentRuntime"),
     "WorkflowController": (".workflow", "WorkflowController"),
@@ -132,6 +159,7 @@ _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
     "get_service_status": (".service_install", "get_service_status"),
     "uninstall_service": (".service_install", "uninstall_service"),
     "FakeAgentRuntime": (".agents", "FakeAgentRuntime"),
+    "PiAgentRuntime": (".pi_runtime", "PiAgentRuntime"),
 }
 
 
@@ -154,6 +182,7 @@ def _seam(name: str) -> Any:
 class RuntimeChoice(StrEnum):
     FAKE = "fake"
     COPILOT = "copilot"
+    PI = "pi"
 
 
 class PerformanceModeChoice(StrEnum):
@@ -230,17 +259,30 @@ def _load_config(
     return loaded
 
 
-def _require_prerequisites(*, require_gh: bool, require_copilot: bool) -> None:
+def _require_prerequisites(
+    *,
+    require_gh: bool,
+    require_copilot: bool,
+    require_pi: bool = False,
+    pi_executable: str = "pi",
+) -> None:
     """Refuse to start work when a required external executable is absent.
 
     Uses the same ``PATH`` lookup ``factory doctor`` uses
     (:func:`~software_agent_factory.doctor.missing_prerequisites`), so the
     two can never disagree, and runs before any workspace, tracker or agent
     code -- the alternative is a traceback from a failed ``git`` exec several
-    layers down.
+    layers down. ``pi_executable`` should be the configured
+    ``factory_config.pi.executable`` whenever a loaded config is available, so
+    a custom executable name is looked up instead of the literal ``"pi"``.
     """
     missing_checker = _seam("missing_prerequisites")
-    missing = missing_checker(require_gh=require_gh, require_copilot=require_copilot)
+    missing = missing_checker(
+        require_gh=require_gh,
+        require_copilot=require_copilot,
+        require_pi=require_pi,
+        pi_executable=pi_executable,
+    )
     if not missing:
         return
     raise _fail(
@@ -264,12 +306,36 @@ def _configure_logging(config: FactoryConfig) -> None:
         typer.echo(f"warning: could not open the structured log: {exc}", err=True)
 
 
-def _build_runtime(choice: RuntimeChoice) -> AgentRuntime:
+def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime:
     if choice is RuntimeChoice.COPILOT:
         runtime_cls = _seam("CopilotAgentRuntime")
         return runtime_cls()  # type: ignore[no-any-return]
+    if choice is RuntimeChoice.PI:
+        _warn_pi_unrestricted_shell()
+        pi_runtime_cls = _seam("PiAgentRuntime")
+        return pi_runtime_cls(  # type: ignore[no-any-return]
+            config.pi,
+            config.data_dir,
+            routing_api_key_env_var=config.routing.api_key_env_var,
+        )
     fake_runtime_cls = _seam("FakeAgentRuntime")
     return fake_runtime_cls()  # type: ignore[no-any-return]
+
+
+def _warn_pi_unrestricted_shell() -> None:
+    """The pi shell tool has no approval layer yet (follow-up: AC18/#70).
+
+    Written to both the structured file log (``logger.warning``) and stderr
+    (``typer.echo``, mirroring :func:`_warn_fake_backlog_claims`) so the
+    warning reaches the operator's terminal even when nobody is tailing the
+    log file.
+    """
+    message = (
+        "the pi runtime's shell tool is unrestricted: git push and gh can run "
+        f"without approval. Follow-up: {PI_UNRESTRICTED_SHELL_FOLLOWUP_URL}"
+    )
+    logger.warning(message)
+    typer.echo(f"warning: {message}", err=True)
 
 
 def _warn_fake_backlog_claims() -> None:
@@ -362,7 +428,7 @@ def run_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -394,12 +460,14 @@ def run_command(
     _require_prerequisites(
         require_gh=factory_config.pull_request.enabled or factory_config.ci.enabled,
         require_copilot=runtime is RuntimeChoice.COPILOT,
+        require_pi=runtime is RuntimeChoice.PI,
+        pi_executable=factory_config.pi.executable,
     )
     _configure_logging(factory_config)
 
     store = FileRunStore(factory_config.data_dir)
     controller_cls = _seam("WorkflowController")
-    controller = controller_cls(factory_config, store, _build_runtime(runtime))
+    controller = controller_cls(factory_config, store, _build_runtime(runtime, factory_config))
 
     work_item = WorkItem(
         id=work_item_id or f"WI-{uuid4().hex[:12]}",
@@ -489,7 +557,7 @@ def project_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -537,6 +605,8 @@ def project_command(
             or factory_config.merge.enabled
         ),
         require_copilot=runtime is RuntimeChoice.COPILOT,
+        require_pi=runtime is RuntimeChoice.PI,
+        pi_executable=factory_config.pi.executable,
     )
     _configure_logging(factory_config)
 
@@ -552,7 +622,7 @@ def project_command(
         project_runner = runner_cls(
             factory_config,
             run_store,
-            _build_runtime(runtime),
+            _build_runtime(runtime, factory_config),
         )
         if resume:
             assert project_id is not None
@@ -627,7 +697,7 @@ def start_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -662,7 +732,12 @@ def start_command(
         )
     # Polling the backlog is a GitHub operation, so ``gh`` is required here
     # even when publishing and CI observation are both disabled.
-    _require_prerequisites(require_gh=True, require_copilot=runtime is RuntimeChoice.COPILOT)
+    _require_prerequisites(
+        require_gh=True,
+        require_copilot=runtime is RuntimeChoice.COPILOT,
+        require_pi=runtime is RuntimeChoice.PI,
+        pi_executable=factory_config.pi.executable,
+    )
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
     _configure_logging(factory_config)
@@ -677,7 +752,7 @@ def start_command(
     service = FactoryService(
         config=factory_config,
         store=store,
-        runtime=_build_runtime(runtime),
+        runtime=_build_runtime(runtime, factory_config),
         source_repo=repo,
         github_repo=github_repo,
     )
@@ -785,7 +860,10 @@ def doctor_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Check prerequisites for this runtime ('copilot' additionally requires copilot).",
+        help=(
+            "Check prerequisites for this runtime ('copilot' additionally requires copilot; "
+            "'pi' additionally requires pi, Node and a provider credential)."
+        ),
     ),
     model_profile: str = typer.Option(
         "default",
@@ -814,6 +892,7 @@ def doctor_command(
         data_dir_override=data_dir,
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
+        requested_runtime_pi=runtime is RuntimeChoice.PI,
     )
 
     if json_output:
@@ -1179,6 +1258,8 @@ def service_install_command(
         )
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
+    if runtime is RuntimeChoice.PI:
+        _warn_pi_unrestricted_shell()
 
     run_doctor_fn = _seam("run_doctor")
     report = run_doctor_fn(
@@ -1186,6 +1267,11 @@ def service_install_command(
         data_dir_override=data_dir,
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
+        requested_runtime_pi=runtime is RuntimeChoice.PI,
+        # An env-var pi credential lives in the operator's shell and never
+        # reaches the launchd service (only the plist's own
+        # EnvironmentVariables does), so it must not satisfy this preflight.
+        accept_pi_env_credentials=False,
     )
     if not report.success:
         from .cli_output import render_doctor_report
@@ -1204,6 +1290,8 @@ def service_install_command(
     )
 
     try:
+        import os
+
         resolved_executable = resolve_factory_executable(executable)
         request = ServiceInstallRequest(
             executable=resolved_executable,
@@ -1221,6 +1309,10 @@ def service_install_command(
             ),
             label=label,
             allow_source_dev=allow_source_dev,
+            # A path, not a secret: carried into the plist so the service can
+            # find the same ~/.pi/agent override the operator's shell uses
+            # (the launchd environment otherwise only inherits PATH).
+            pi_coding_agent_dir=os.environ.get("PI_CODING_AGENT_DIR"),
         )
         install_service_fn = _seam("install_service")
         default_launch_agents_dir_fn = _seam("default_launch_agents_dir")
@@ -1487,7 +1579,7 @@ def skill_refresh_command(
     runtime: RuntimeChoice = typer.Option(
         RuntimeChoice.FAKE,
         "--runtime",
-        help="Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid).",
+        help=SKILL_REFRESH_RUNTIME_OPTION_HELP,
     ),
     model_profile: str = typer.Option(
         "default",
@@ -1515,6 +1607,8 @@ def skill_refresh_command(
     refused and the previously stored file is left byte-for-byte unchanged.
     """
     factory_config = _load_config(config, data_dir, model_profile)
+    if runtime is RuntimeChoice.PI:
+        raise _fail("not supported on pi; use --runtime copilot")
     if not factory_config.polish.enabled:
         raise _fail(
             "repository skill generation is disabled: set 'polish.enabled: true' in the "
@@ -1548,7 +1642,7 @@ def skill_refresh_command(
     from .writing_policy import apply_agent_result_writing_policy
 
     role_model = ModelRouter(factory_config).model_for_researcher()
-    agent_runtime = _build_runtime(runtime)
+    agent_runtime = _build_runtime(runtime, factory_config)
     skill: RepositorySkill | None = None
     rejection: str | None = None
     initial_rejection: str | None = None

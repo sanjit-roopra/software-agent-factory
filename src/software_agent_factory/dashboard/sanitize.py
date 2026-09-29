@@ -159,6 +159,7 @@ USAGE_FIELDS: frozenset[str] = frozenset(
         "cache_write_tokens",
         "reported_invocations",
         "premium_request_cost",
+        "list_price_estimate_usd",
     }
 )
 

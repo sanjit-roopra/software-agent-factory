@@ -17,6 +17,8 @@ from software_agent_factory.agents import (
     AgentResult,
     FakeAgentRuntime,
     runtime_exception_failure_reason,
+    validate_runtime_request,
+    workspace_cwd,
 )
 from software_agent_factory.models import (
     GENERIC_SKILL_TARGET,
@@ -557,3 +559,149 @@ def test_reviewer_hook_can_reject() -> None:
 
     assert result.review_report is not None
     assert result.review_report.approved is False
+
+
+# ---------------------------------------------------------------------------
+# workspace_cwd: shared cwd rule for the Copilot and pi runtimes
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_cwd_uses_workspace_path_when_supplied(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        workspace_path=str(workspace),
+        timeout_seconds=30,
+    )
+
+    assert workspace_cwd(request) == workspace.resolve()
+
+
+def test_workspace_cwd_falls_back_to_process_cwd_for_read_only_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    request = AgentRequest(
+        role=AgentRole.TRIAGE,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=30,
+    )
+
+    assert workspace_cwd(request) == tmp_path.resolve()
+
+
+def test_workspace_cwd_skill_generation_requires_workspace_path() -> None:
+    request = AgentRequest(
+        role=AgentRole.RESEARCHER,
+        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        repository_profile=RepositoryProfile(
+            manifest_fingerprint="a" * 64,
+            dependency_fingerprint="b" * 64,
+        ),
+        official_documentation_origins=["https://react.dev"],
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="neutral run directory"):
+        workspace_cwd(request)
+
+
+# ---------------------------------------------------------------------------
+# validate_runtime_request: shared request guard for the Copilot and pi
+# runtimes
+# ---------------------------------------------------------------------------
+
+
+def test_validate_runtime_request_rejects_implementer_without_workspace_path() -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="IMPLEMENTER requests require workspace_path"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_correction_without_workspace_path_uses_correction_wording() -> (
+    None
+):
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        change_set=ChangeSet(summary="Fix output shape"),
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_correction_with_empty_workspace_path_is_rejected() -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        change_set=ChangeSet(summary="Fix output shape"),
+        workspace_path="",
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_accepts_implementer_with_workspace_path(
+    tmp_path: Path,
+) -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        workspace_path=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert validate_runtime_request(request) is None
+
+
+def test_validate_runtime_request_rejects_timeout_below_one() -> None:
+    request = AgentRequest(
+        role=AgentRole.TRIAGE,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=0,
+    )
+
+    with pytest.raises(ValueError, match="timeout_seconds must be at least 1"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_accepts_read_only_role_without_workspace_path() -> None:
+    request = AgentRequest(
+        role=AgentRole.TRIAGE,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        timeout_seconds=30,
+    )
+
+    assert validate_runtime_request(request) is None

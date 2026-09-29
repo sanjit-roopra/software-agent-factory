@@ -291,6 +291,10 @@ def test_phase_1_config_still_loads_and_new_sections_default(tmp_path: Path) -> 
     assert config.scheduler.stall_timeout_seconds == 900
     assert config.scheduler.required_label == "agent-ready"
     assert config.scheduler.max_runs_per_day == 20
+    assert config.pi.executable == "pi"
+    assert config.pi.provider == "github-copilot"
+    assert config.pi.session_reuse_max_age_seconds == 3600
+    assert config.pi.cache_retention == "long"
     assert config.repository.env_passthrough == []
     assert config.repository.log_capture_bytes == 32768
     assert config.repository.max_changed_files == 100
@@ -564,6 +568,10 @@ def test_max_runs_per_day_accepts_null_for_unbounded_and_a_custom_positive_value
         {"scheduler": {"poll_interval_seconds": 600, "stall_timeout_seconds": 60}},
         {"scheduler": {"max_runs_per_day": 0}},
         {"scheduler": {"max_runs_per_day": -1}},
+        {"pi": {"session_reuse_max_age_seconds": -1}},
+        {"pi": {"executable": ""}},
+        {"pi": {"provider": ""}},
+        {"pi": {"cache_retention": "medium"}},
         {"repository": {"log_capture_bytes": 0}},
         {"repository": {"max_changed_files": 0}},
         {"scope_drift": {"max_replans": -1}},
@@ -572,6 +580,34 @@ def test_max_runs_per_day_accepts_null_for_unbounded_and_a_custom_positive_value
 def test_config_rejects_invalid_phase_values(tmp_path: Path, overrides: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         load_config(_config_with(tmp_path, overrides))
+
+
+def test_pi_block_accepts_explicit_valid_values(tmp_path: Path) -> None:
+    config = load_config(
+        _config_with(
+            tmp_path,
+            {
+                "pi": {
+                    "executable": "pi-custom",
+                    "provider": "openai",
+                    "session_reuse_max_age_seconds": 120,
+                    "cache_retention": "short",
+                }
+            },
+        )
+    )
+
+    assert config.pi.executable == "pi-custom"
+    assert config.pi.provider == "openai"
+    assert config.pi.session_reuse_max_age_seconds == 120
+    assert config.pi.cache_retention == "short"
+
+
+def test_pi_negative_session_reuse_max_age_fails_naming_the_field(tmp_path: Path) -> None:
+    config_path = _config_with(tmp_path, {"pi": {"session_reuse_max_age_seconds": -1}})
+
+    with pytest.raises(ValidationError, match="pi.session_reuse_max_age_seconds"):
+        load_config(config_path)
 
 
 def test_config_rejects_unknown_sections_and_keys(tmp_path: Path) -> None:

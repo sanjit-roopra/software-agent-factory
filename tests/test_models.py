@@ -461,6 +461,47 @@ def test_factory_run_additive_fields_default_to_none_for_schema_version_1() -> N
     assert run.schema_version == 1
 
 
+def test_list_price_estimate_round_trips_on_model_usage_and_usage_metrics() -> None:
+    usage = UsageMetrics(
+        total_nano_aiu=123,
+        list_price_estimate_usd=0.42,
+        model_usage=(
+            ModelUsage(
+                model="claude-sonnet-5",
+                input_tokens=100,
+                output_tokens=20,
+                list_price_estimate_usd=0.42,
+            ),
+        ),
+    )
+
+    round_tripped = UsageMetrics.model_validate_json(usage.model_dump_json())
+
+    assert round_tripped == usage
+    assert round_tripped.list_price_estimate_usd == 0.42
+    assert round_tripped.model_usage[0].list_price_estimate_usd == 0.42
+
+
+def test_list_price_estimate_defaults_to_unknown_for_legacy_usage_json() -> None:
+    """Runs persisted before this field existed load with an unknown estimate."""
+    legacy_model_usage_json = '{"model": "claude-sonnet-5", "input_tokens": 100}'
+    legacy_usage_metrics_json = '{"total_nano_aiu": 123}'
+
+    model_usage = ModelUsage.model_validate_json(legacy_model_usage_json)
+    usage_metrics = UsageMetrics.model_validate_json(legacy_usage_metrics_json)
+
+    assert model_usage.list_price_estimate_usd is None
+    assert usage_metrics.list_price_estimate_usd is None
+
+
+def test_list_price_estimate_rejects_negative_value() -> None:
+    with pytest.raises(ValidationError, match="list_price_estimate_usd"):
+        ModelUsage(model="claude-sonnet-5", list_price_estimate_usd=-0.01)
+
+    with pytest.raises(ValidationError, match="list_price_estimate_usd"):
+        UsageMetrics(list_price_estimate_usd=-0.01)
+
+
 def test_invocation_record_requires_valid_timestamps_and_failure_reason() -> None:
     with pytest.raises(ValidationError, match="completed_at"):
         InvocationRecord(

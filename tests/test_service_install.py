@@ -147,6 +147,15 @@ def test_explicit_copilot_opt_in(tmp_path: Path) -> None:
     assert args[-2:] == ["--runtime", "copilot"]
 
 
+def test_explicit_pi_opt_in(tmp_path: Path) -> None:
+    """``plans/pi-agent-runtime.md`` Slice 2: the rendered service definition
+    records ``--runtime pi`` so the service starts the factory with it."""
+    request = make_request(tmp_path, runtime=ServiceRuntime.PI)
+    assert request.runtime is ServiceRuntime.PI
+    args = build_program_arguments(request)
+    assert args[-2:] == ["--runtime", "pi"]
+
+
 # -- ProgramArguments / plist exactness --------------------------------------
 
 
@@ -208,6 +217,30 @@ def test_plist_exact_shape(tmp_path: Path) -> None:
     assert payload["StandardOutPath"] == "/dev/null"
     assert payload["StandardErrorPath"] == "/dev/null"
     assert payload["ThrottleInterval"] >= MIN_THROTTLE_INTERVAL_SECONDS
+
+
+def test_plist_omits_pi_coding_agent_dir_by_default(tmp_path: Path) -> None:
+    request = make_request(tmp_path)
+    assert request.pi_coding_agent_dir is None
+    payload = build_launch_agent_plist(request, "/usr/bin:/bin")
+    assert payload["EnvironmentVariables"] == {"PATH": "/usr/bin:/bin"}
+
+
+def test_plist_carries_pi_coding_agent_dir_when_set(tmp_path: Path) -> None:
+    """A path, not a secret: when the operator's ``PI_CODING_AGENT_DIR`` was
+    set at install time, it must reach the plist's own
+    ``EnvironmentVariables`` -- a launchd job otherwise only inherits
+    ``PATH``, so the service would silently stop honoring the same
+    ``~/.pi/agent`` override the operator's shell uses."""
+    request = make_request(tmp_path)
+    request = ServiceInstallRequest(
+        **{**request.__dict__, "pi_coding_agent_dir": "/custom/pi-agent-dir"}
+    )
+    payload = build_launch_agent_plist(request, "/usr/bin:/bin")
+    assert payload["EnvironmentVariables"] == {
+        "PATH": "/usr/bin:/bin",
+        "PI_CODING_AGENT_DIR": "/custom/pi-agent-dir",
+    }
 
 
 def test_keep_alive_never_restarts_on_any_exit_code_only_on_crash(tmp_path: Path) -> None:

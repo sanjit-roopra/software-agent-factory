@@ -743,6 +743,107 @@ def test_runtime_reported_usage_is_summed_without_estimating_missing_values(
     assert detail.invocations[0].usage.model_usage[0].output_tokens == 20
 
 
+def test_list_price_estimate_summed_across_invocations(tmp_path: Path) -> None:
+    store = _fake_store(tmp_path)
+    invocation_1 = InvocationRecord(
+        invocation_number=1,
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        started_at=T0,
+        completed_at=T0 + timedelta(seconds=1),
+        success=True,
+        usage=UsageMetrics(list_price_estimate_usd=0.5),
+    )
+    invocation_2 = InvocationRecord(
+        invocation_number=2,
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        started_at=T0,
+        completed_at=T0 + timedelta(seconds=1),
+        success=True,
+        usage=UsageMetrics(list_price_estimate_usd=0.75),
+    )
+    store.add_run(
+        FactoryRun(
+            id="run-1",
+            work_item_id="WI-run-1",
+            state=WorkflowState.CREATED,
+            created_at=T0,
+            updated_at=T0,
+            invocation_records=[invocation_1, invocation_2],
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert snapshot.metrics.usage.list_price_estimate_usd == pytest.approx(1.25)
+
+
+def test_list_price_estimate_falls_back_to_model_usage_when_aggregate_missing(
+    tmp_path: Path,
+) -> None:
+    store = _fake_store(tmp_path)
+    invocation = InvocationRecord(
+        invocation_number=1,
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        started_at=T0,
+        completed_at=T0 + timedelta(seconds=1),
+        success=True,
+        usage=UsageMetrics(
+            model_usage=(
+                ModelUsage(model="claude-sonnet-5", list_price_estimate_usd=0.3),
+                ModelUsage(model="gpt-5.6-sol", list_price_estimate_usd=0.2),
+            ),
+        ),
+    )
+    store.add_run(
+        FactoryRun(
+            id="run-1",
+            work_item_id="WI-run-1",
+            state=WorkflowState.CREATED,
+            created_at=T0,
+            updated_at=T0,
+            invocation_records=[invocation],
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert snapshot.metrics.usage.list_price_estimate_usd == pytest.approx(0.5)
+
+
+def test_list_price_estimate_stays_unknown_when_not_reported(tmp_path: Path) -> None:
+    store = _fake_store(tmp_path)
+    invocation = InvocationRecord(
+        invocation_number=1,
+        role=AgentRole.IMPLEMENTER,
+        model="fake-model",
+        reasoning="medium",
+        started_at=T0,
+        completed_at=T0 + timedelta(seconds=1),
+        success=True,
+        usage=UsageMetrics(input_tokens=10),
+    )
+    store.add_run(
+        FactoryRun(
+            id="run-1",
+            work_item_id="WI-run-1",
+            state=WorkflowState.CREATED,
+            created_at=T0,
+            updated_at=T0,
+            invocation_records=[invocation],
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert snapshot.metrics.usage.list_price_estimate_usd is None
+
+
 # ---------------------------------------------------------------------------
 # Safe per-run summaries: title/complexity/risk resolution
 # ---------------------------------------------------------------------------
