@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ from software_agent_factory.models import (
     WorkflowState,
 )
 from software_agent_factory.store import FileRunStore
+from software_agent_factory.subprocess_utils import GITHUB_CREDENTIAL_ENV_VARS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -869,27 +871,46 @@ def _is_factory_run(args: list[str]) -> bool:
 
 
 class FakeCommands:
-    """Injected command runner: no git, no gh and no factory process is started."""
+    """Injected command runner: no git, no gh and no factory process is started.
+
+    ``git clone`` is mimicked by creating the target directory, so cleanup can be checked.
+    """
 
     def __init__(self, *, state: WorkflowState | None = WorkflowState.PR_READY) -> None:
         self.calls: list[tuple[list[str], Path]] = []
+        self.factory_envs: list[dict[str, str] | None] = []
+        self.gh_config_listings: list[list[str]] = []
         self._state = state
 
-    def __call__(self, args: Any, cwd: Path) -> Any:
+    def __call__(self, args: Any, cwd: Path, env: Any = None) -> Any:
         import subprocess
 
         argv = list(args)
         self.calls.append((argv, cwd))
-        if _is_factory_run(argv) and self._state is not None:
-            store = FileRunStore(_option(argv, "--data-dir"))
-            store.save_run(
-                _run(self._state, invocation_records=[_invocation(1, premium_requests=2.0)])
-            )
-            store.save_artifact("run-1", VerificationReport(passed=True, confidence=0.9))
+        if argv[:2] == ["git", "clone"]:
+            Path(argv[-1]).mkdir(parents=True)
+        if _is_factory_run(argv):
+            self._record_factory_env(env)
+            self._store_run(argv)
         return subprocess.CompletedProcess(argv, 0, "", "boom on stderr")
+
+    def _record_factory_env(self, env: Any) -> None:
+        self.factory_envs.append(None if env is None else dict(env))
+        if env is not None:
+            self.gh_config_listings.append(sorted(os.listdir(env["GH_CONFIG_DIR"])))
+
+    def _store_run(self, argv: list[str]) -> None:
+        if self._state is None:
+            return
+        store = FileRunStore(_option(argv, "--data-dir"))
+        store.save_run(_run(self._state, invocation_records=[_invocation(1, premium_requests=2.0)]))
+        store.save_artifact("run-1", VerificationReport(passed=True, confidence=0.9))
 
     def factory_runs(self) -> list[list[str]]:
         return [argv for argv, _ in self.calls if _is_factory_run(argv)]
+
+    def git_calls(self) -> list[list[str]]:
+        return [argv for argv, _ in self.calls if argv[0] == "git"]
 
 
 def _runner(tmp_path: Path, commands: Any, **overrides: Any) -> Any:
@@ -913,31 +934,107 @@ def _request(runtime: Any, issue: int = 10) -> Any:
     )
 
 
-def test_runner_replays_at_base_sha_in_an_isolated_worktree_and_data_dir(tmp_path: Path) -> None:
+def _task_dir(tmp_path: Path, runtime: str = "pi", issue: int = 10) -> Path:
+    return tmp_path / "work" / runtime / f"issue-{issue}"
+
+
+def test_runner_replays_at_base_sha_in_a_throwaway_shared_clone(tmp_path: Path) -> None:
     commands = FakeCommands()
 
     sample = _runner(tmp_path, commands)(_request(ab.Runtime.PI))
 
-    added, *_, removed = [argv for argv, _ in commands.calls if argv[0] == "git"]
-    worktree = tmp_path / "work" / "pi" / "issue-10" / "repo"
-    assert added == [
-        "git",
-        "-C",
-        str(tmp_path / "source"),
-        "worktree",
-        "add",
-        "--detach",
-        str(worktree),
-        SHA_B,
+    clone = _task_dir(tmp_path) / "repo"
+    assert commands.git_calls() == [
+        ["git", "clone", "--shared", "--no-checkout", str(tmp_path / "source"), str(clone)],
+        ["git", "-C", str(clone), "checkout", "--detach", SHA_B],
+        ["git", "-C", str(clone), "remote", "set-url", "--push", "origin", "no-push://disabled"],
     ]
-    assert removed[4:6] == ["remove", "--force"]
     (factory_run,) = commands.factory_runs()
-    assert _option(factory_run, "--repo") == str(worktree)
-    assert _option(factory_run, "--data-dir") == str(tmp_path / "work" / "pi" / "issue-10" / "data")
+    assert _option(factory_run, "--repo") == str(clone)
+    assert _option(factory_run, "--data-dir") == str(_task_dir(tmp_path) / "data")
     assert _option(factory_run, "--runtime") == "pi"
     assert (_option(factory_run, "--title"), _option(factory_run, "--description")) == ("T", "D")
     assert sample.passed is True
     assert sample.invocations[0].usage.premium_requests == 2.0
+
+
+def test_runner_never_gives_the_user_repo_to_worktree_or_branch_commands(tmp_path: Path) -> None:
+    commands = FakeCommands()
+    source = str(tmp_path / "source")
+
+    _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    for argv in commands.git_calls():
+        is_clone = argv[1] == "clone"
+        assert (source in argv) is is_clone
+        assert "worktree" not in argv
+        assert "-b" not in argv
+        assert "branch" not in argv
+    (factory_run,) = commands.factory_runs()
+    assert source not in factory_run
+    assert all(cwd != tmp_path / "source" for _, cwd in commands.calls)
+
+
+def test_runner_removes_the_clone_after_a_run(tmp_path: Path) -> None:
+    commands = FakeCommands()
+
+    _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    assert not (_task_dir(tmp_path) / "repo").exists()
+    assert (_task_dir(tmp_path) / "data").exists()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("kaboom"), KeyboardInterrupt()])
+def test_runner_removes_the_clone_even_when_factory_run_is_interrupted(
+    tmp_path: Path, failure: BaseException
+) -> None:
+    class Explodes(FakeCommands):
+        def __call__(self, args: Any, cwd: Path, env: Any = None) -> Any:
+            if _is_factory_run(list(args)):
+                raise failure
+            return super().__call__(args, cwd, env)
+
+    with pytest.raises(type(failure)):
+        _runner(tmp_path, Explodes())(_request(ab.Runtime.PI))
+
+    assert not (_task_dir(tmp_path) / "repo").exists()
+
+
+@pytest.mark.parametrize("failing_step", ["clone", "checkout", "remote"])
+def test_runner_reports_a_failed_clone_step_without_running_factory(
+    tmp_path: Path, failing_step: str
+) -> None:
+    import subprocess
+
+    class StepFails(FakeCommands):
+        def __call__(self, args: Any, cwd: Path, env: Any = None) -> Any:
+            done = super().__call__(args, cwd, env)
+            if failing_step in list(args):
+                return subprocess.CompletedProcess(list(args), 128, "", "bad object")
+            return done
+
+    commands = StepFails()
+
+    sample = _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    assert commands.factory_runs() == []
+    assert sample.passed is False
+    assert sample.error is not None
+    assert "bad object" in sample.error
+    assert not (_task_dir(tmp_path) / "repo").exists()
+
+
+def test_runner_refuses_a_non_empty_task_directory(tmp_path: Path) -> None:
+    task_dir = _task_dir(tmp_path)
+    task_dir.mkdir(parents=True)
+    (task_dir / "old-run.json").write_text("{}", encoding="utf-8")
+    commands = FakeCommands()
+
+    with pytest.raises(ab.WorkdirError, match="issue-10"):
+        _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    assert commands.calls == []
+    assert (task_dir / "old-run.json").exists()
 
 
 def test_runner_gives_both_runtimes_the_same_models_and_isolated_state(tmp_path: Path) -> None:
@@ -953,7 +1050,30 @@ def test_runner_gives_both_runtimes_the_same_models_and_isolated_state(tmp_path:
     assert _option(copilot_run, "--model-profile") == "economy"
     assert _option(copilot_run, "--runtime") == "copilot"
     assert _option(copilot_run, "--data-dir") != _option(pi_run, "--data-dir")
+    assert _option(copilot_run, "--repo") != _option(pi_run, "--repo")
     assert _option(copilot_run, "--work-item-id") != _option(pi_run, "--work-item-id")
+
+
+def test_work_item_ids_differ_between_benchmark_invocations(tmp_path: Path) -> None:
+    ids = []
+    for index in range(2):
+        commands = FakeCommands()
+        runner = _runner(tmp_path / f"invocation-{index}", commands)
+        runner(_request(ab.Runtime.PI))
+        ids.append(_option(commands.factory_runs()[0], "--work-item-id"))
+
+    assert ids[0] != ids[1]
+    assert all(item.endswith("-pi-issue-10") for item in ids)
+
+
+def test_work_item_id_carries_the_given_invocation_id(tmp_path: Path) -> None:
+    commands = FakeCommands()
+
+    _runner(tmp_path, commands, invocation_id="abc123")(_request(ab.Runtime.PI))
+
+    assert _option(commands.factory_runs()[0], "--work-item-id") == (
+        "runtime-ab-abc123-pi-issue-10"
+    )
 
 
 def test_runner_reports_failure_when_no_run_was_stored(tmp_path: Path) -> None:
@@ -967,37 +1087,42 @@ def test_runner_reports_failure_when_no_run_was_stored(tmp_path: Path) -> None:
     assert "boom on stderr" in sample.error
 
 
-def test_runner_reports_a_failed_worktree_add_without_running_factory(tmp_path: Path) -> None:
-    import subprocess
-
-    class GitFails(FakeCommands):
-        def __call__(self, args: Any, cwd: Path) -> Any:
-            super().__call__(args, cwd)
-            return subprocess.CompletedProcess(list(args), 128, "", "bad object")
-
-    commands = GitFails()
-
-    sample = _runner(tmp_path, commands)(_request(ab.Runtime.PI))
-
-    assert commands.factory_runs() == []
-    assert sample.passed is False
-    assert sample.error is not None
-    assert "bad object" in sample.error
+GITHUB_CREDENTIAL_VARS = sorted(GITHUB_CREDENTIAL_ENV_VARS | {"GH_TOKEN", "GH_ENTERPRISE_TOKEN"})
 
 
-def test_runner_removes_the_worktree_even_when_factory_run_raises(tmp_path: Path) -> None:
-    class Explodes(FakeCommands):
-        def __call__(self, args: Any, cwd: Path) -> Any:
-            if _is_factory_run(list(args)):
-                raise RuntimeError("kaboom")
-            return super().__call__(args, cwd)
+@pytest.mark.parametrize("name", GITHUB_CREDENTIAL_VARS)
+def test_factory_run_env_has_no_github_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv(name, "secret-value")
+    commands = FakeCommands()
 
-    commands = Explodes()
+    _runner(tmp_path, commands)(_request(ab.Runtime.PI))
 
-    with pytest.raises(RuntimeError, match="kaboom"):
-        _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+    (env,) = commands.factory_envs
+    assert env is not None
+    assert name not in env
 
-    assert any(argv[4:6] == ["remove", "--force"] for argv, _ in commands.calls)
+
+def test_factory_run_env_keeps_copilot_token_and_uses_an_empty_gh_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_gh_config = tmp_path / "real-gh"
+    real_gh_config.mkdir()
+    (real_gh_config / "hosts.yml").write_text("token: x", encoding="utf-8")
+    monkeypatch.setenv("GH_CONFIG_DIR", str(real_gh_config))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-token")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi-agent"))
+    commands = FakeCommands()
+
+    _runner(tmp_path, commands)(_request(ab.Runtime.COPILOT))
+
+    (env,) = commands.factory_envs
+    assert env is not None
+    assert env["COPILOT_GITHUB_TOKEN"] == "copilot-token"
+    assert env["PI_CODING_AGENT_DIR"] == str(tmp_path / "pi-agent")
+    assert env["GH_CONFIG_DIR"] != str(real_gh_config)
+    assert commands.gh_config_listings == [[]]
 
 
 def test_default_config_option_is_omitted_when_not_given(tmp_path: Path) -> None:
@@ -1104,6 +1229,20 @@ def test_cli_invalid_manifest_fails_before_any_command(
     assert code == 2
     assert commands.calls == []
     assert "issue 42" in capsys.readouterr().err
+
+
+def test_cli_refuses_a_used_workdir_before_any_paid_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    used = tmp_path / "work" / "pi" / "issue-2"
+    used.mkdir(parents=True)
+    (used / "data").mkdir()
+
+    code, commands = _cli(tmp_path, "--max-wall-seconds", "10")
+
+    assert code == 2
+    assert commands.factory_runs() == []
+    assert "issue-2" in capsys.readouterr().err
 
 
 def test_cli_requires_a_budget(tmp_path: Path) -> None:

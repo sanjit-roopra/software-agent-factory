@@ -22,12 +22,50 @@ Local-only replay:
   request and no issue comment.
 * Any ``--config`` is loaded first and refused when one of those sections is
   enabled (``ensure_local_only``).
-* The only GitHub call is the read-only ``gh issue view`` that fetches each
-  issue's title and body, done for every task before the first paid run.
+* The only GitHub call the script makes is the read-only ``gh issue view`` that
+  fetches each issue's title and body, done for every task before the first
+  paid run. It runs with the operator's own environment.
+
+Isolation. Each task runs in a throwaway ``git clone --shared --no-checkout`` of
+``--repo`` under ``--workdir``, checked out detached at the base commit:
+
+* ``factory run`` gets the clone as its repository, so the ``factory/...``
+  branch and the inner worktree it creates exist only in the clone. ``--repo``
+  is never passed to ``git worktree`` or to a branch command; the clone only
+  reads its objects (through git alternates).
+* The clone is deleted when the task ends, also on an error or Ctrl-C.
+* Work item ids carry a random per-invocation id, and a task directory that
+  already holds files is refused, so a run never picks up the branch,
+  workspace or run data of an earlier benchmark.
+* In the clone, the push URL of ``origin`` is ``no-push://disabled``.
+  ``factory run`` starts without the variables of ``GITHUB_CREDENTIAL_ENV_VARS``
+  (``GH_TOKEN``, ``GITHUB_TOKEN``, ``GH_ENTERPRISE_TOKEN`` and others) and with
+  ``GH_CONFIG_DIR`` pointing at an empty directory, so ``gh`` has no login.
+
+Runtime authentication does not need what is removed. Copilot CLI (1.0.89)
+reads ``COPILOT_GITHUB_TOKEN``, ``GH_TOKEN`` or ``GITHUB_TOKEN`` in that order,
+else its stored login (system credential store, or ``~/.copilot``); its help
+lists no ``GH_CONFIG_DIR``. The factory already strips ``GH_TOKEN`` and
+``GITHUB_TOKEN`` from every Copilot and pi child (``build_child_env``). pi's
+``github-copilot`` provider reads ``COPILOT_GITHUB_TOKEN`` or
+``~/.pi/agent/auth.json`` (``PI_CODING_AGENT_DIR``). Both variables and both
+directories are left as they are.
+
+What is still possible. The agents run as the operator with the operator's
+home directory, and pi (and the Copilot implementer) can run any shell command:
+
+* An agent can read files the operator can read, such as stored logins, and
+  use them, for example ``git push <explicit url>`` through a git credential
+  helper, or a direct call to the GitHub API. Only ``git push`` to ``origin``
+  and ``gh`` without a login are blocked.
+* An agent can push to the local path of ``--repo``, which ``origin`` and the
+  clone's alternates name. Nothing blocks a push to that path.
+* An agent can write anywhere the operator can write, and use the network.
 
 Budget: stop starting a new task once any given limit is reached by the running
 total: Copilot premium requests, pi list-price USD estimate or wall seconds.
 Both runtimes always finish the task they started, so the comparison stays fair.
+An excluded task still counts against the budget, since it may have spent money.
 
 Reporting rules:
 
@@ -45,14 +83,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+import uuid
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 import yaml
 from pydantic import Field, ValidationError, model_validator
@@ -72,6 +113,7 @@ from software_agent_factory.models import (
 # re-implementing the "unreported stays None" rules.
 from software_agent_factory.observability import UsageSummary, summarize_usage
 from software_agent_factory.store import FileRunStore
+from software_agent_factory.subprocess_utils import GITHUB_CREDENTIAL_ENV_VARS
 
 type Level = Literal["L0", "L1", "L2", "L3"]
 
@@ -535,6 +577,10 @@ def render_markdown(report: RuntimeAbReport) -> str:
 # --- driver ---------------------------------------------------------------------------------
 
 
+class WorkdirError(RuntimeError):
+    """A task directory already holds files, so a new run could mix with an old one."""
+
+
 class UnsafeConfigError(RuntimeError):
     """The factory config could publish to GitHub, or could not be loaded."""
 
@@ -551,7 +597,16 @@ _COMMAND_NOT_FOUND_EXIT_CODE = 127
 _USAGE_ERROR_EXIT_CODE = 2
 _STDERR_TAIL_CHARS = 500
 
-type CommandRunner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]
+_PUSH_DISABLED_URL = "no-push://disabled"
+_GH_CONFIG_DIR_VAR = "GH_CONFIG_DIR"
+
+
+class CommandRunner(Protocol):
+    """Runs a command in ``cwd``. ``env`` replaces the environment; ``None`` inherits it."""
+
+    def __call__(
+        self, args: Sequence[str], cwd: Path, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]: ...
 
 
 class IssueText(ModelBase):
@@ -663,11 +718,45 @@ def _failed_sample(message: str) -> RunSample:
     return RunSample(passed=False, wall_seconds=0.0, repair_rounds=0, error=message)
 
 
-class CliReplayRunner:
-    """Replays one task with ``factory run`` in a detached worktree at the base commit.
+def task_directory(workdir: Path, runtime: Runtime, issue: int) -> Path:
+    return workdir / runtime.value / f"issue-{issue}"
 
-    Each runtime and task gets its own worktree and its own data directory, so
-    runs never share state. Commands go through the injected ``run_command``.
+
+def require_unused(task_dir: Path) -> None:
+    """Refuse a task directory that already holds files."""
+    if task_dir.exists() and any(task_dir.iterdir()):
+        raise WorkdirError(f"{task_dir} is not empty; pass a new --workdir")
+
+
+def ensure_workdir_unused(manifest: Manifest, workdir: Path) -> None:
+    """Fail before any paid run when a task directory of this benchmark is already used."""
+    for entry in manifest.tasks:
+        for runtime in Runtime:
+            require_unused(task_directory(workdir, runtime, entry.issue))
+
+
+def replay_env(gh_config_dir: Path, base: Mapping[str, str]) -> dict[str, str]:
+    """``base`` without GitHub credentials, and with ``gh`` reading an empty config dir.
+
+    Every variable of ``GITHUB_CREDENTIAL_ENV_VARS`` is dropped, including
+    ``GH_TOKEN``, ``GITHUB_TOKEN`` and ``GH_ENTERPRISE_TOKEN``. Nothing else is
+    touched, so ``COPILOT_GITHUB_TOKEN`` and ``PI_CODING_AGENT_DIR`` still reach
+    the runtimes.
+    """
+    env = {name: value for name, value in base.items() if name not in GITHUB_CREDENTIAL_ENV_VARS}
+    env[_GH_CONFIG_DIR_VAR] = str(gh_config_dir)
+    return env
+
+
+class CliReplayRunner:
+    """Replays one task with ``factory run`` in a throwaway clone at the base commit.
+
+    Each runtime and task gets its own clone and its own data directory, so
+    runs never share state. The clone is ``git clone --shared --no-checkout``
+    of the repository, checked out detached at the base commit: the branch and
+    the inner worktree that ``factory run`` creates live in the clone, never in
+    the repository. The clone is deleted when the run ends, also on Ctrl-C.
+    Commands go through the injected ``run_command``.
     """
 
     def __init__(
@@ -678,37 +767,63 @@ class CliReplayRunner:
         model_profile: str,
         config: Path | None,
         run_command: CommandRunner,
+        invocation_id: str | None = None,
     ) -> None:
         self._repo = repo
         self._workdir = workdir
         self._model_profile = model_profile
         self._config = config
         self._run = run_command
+        self._invocation_id = invocation_id or uuid.uuid4().hex[:12]
 
     def __call__(self, request: ReplayRequest) -> RunSample:
-        task_dir = self._workdir / request.runtime.value / f"issue-{request.entry.issue}"
-        worktree = task_dir / "repo"
-        data_dir = task_dir / "data"
-        added = self._git("worktree", "add", "--detach", str(worktree), request.entry.base_sha)
-        if added.returncode != 0:
-            return _failed_sample(f"git worktree add failed: {_tail(added.stderr)}")
+        task_dir = task_directory(self._workdir, request.runtime, request.entry.issue)
+        require_unused(task_dir)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        clone = task_dir / "repo"
+        gh_config_dir = task_dir / "gh-config"
         try:
-            completed = self._run(self._factory_command(request, worktree, data_dir), worktree)
+            gh_config_dir.mkdir()
+            failure = self._prepare_clone(clone, request.entry.base_sha, task_dir)
+            if failure is not None:
+                return _failed_sample(failure)
+            env = replay_env(gh_config_dir, os.environ)
+            completed = self._run(
+                self._factory_command(request, clone, task_dir / "data"), clone, env
+            )
         finally:
-            self._git("worktree", "remove", "--force", str(worktree))
-        return self._sample(data_dir, completed)
+            shutil.rmtree(clone, ignore_errors=True)
+            shutil.rmtree(gh_config_dir, ignore_errors=True)
+        return self._sample(task_dir / "data", completed)
 
-    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return self._run(["git", "-C", str(self._repo), *args], self._repo)
+    def _prepare_clone(self, clone: Path, base_sha: str, cwd: Path) -> str | None:
+        """Clone, check out detached and disable pushing. Returns a failure message or ``None``."""
+        in_clone = ["git", "-C", str(clone)]
+        steps = (
+            (
+                "git clone",
+                ["git", "clone", "--shared", "--no-checkout", str(self._repo), str(clone)],
+            ),
+            ("git checkout", [*in_clone, "checkout", "--detach", base_sha]),
+            (
+                "git remote set-url",
+                [*in_clone, "remote", "set-url", "--push", "origin", _PUSH_DISABLED_URL],
+            ),
+        )
+        for name, argv in steps:
+            done = self._run(argv, cwd)
+            if done.returncode != 0:
+                return f"{name} failed: {_tail(done.stderr)}"
+        return None
 
-    def _factory_command(self, request: ReplayRequest, worktree: Path, data_dir: Path) -> list[str]:
+    def _factory_command(self, request: ReplayRequest, clone: Path, data_dir: Path) -> list[str]:
         command = [
             sys.executable,
             "-m",
             "software_agent_factory",
             "run",
             "--repo",
-            str(worktree),
+            str(clone),
             "--title",
             request.title,
             "--description",
@@ -720,7 +835,7 @@ class CliReplayRunner:
             "--data-dir",
             str(data_dir),
             "--work-item-id",
-            f"runtime-ab-{request.runtime.value}-issue-{request.entry.issue}",
+            f"runtime-ab-{self._invocation_id}-{request.runtime.value}-issue-{request.entry.issue}",
         ]
         if self._config is not None:
             command += ["--config", str(self._config)]
@@ -769,10 +884,17 @@ class GhIssueFetcher:
 def subprocess_command_runner(timeout_seconds: float) -> CommandRunner:
     """Real command runner. A timeout or a missing program becomes a failed result."""
 
-    def run(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    def run(
+        args: Sequence[str], cwd: Path, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
-                list(args), cwd=cwd, capture_output=True, text=True, timeout=timeout_seconds
+                list(args),
+                cwd=cwd,
+                env=None if env is None else dict(env),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(
@@ -800,7 +922,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=Path, required=True, help="manifest JSON file")
     parser.add_argument("--repo", type=Path, default=Path("."), help="this repository's checkout")
     parser.add_argument(
-        "--workdir", type=Path, help="worktrees and per-run data (default: a new temp directory)"
+        "--workdir", type=Path, help="clones and per-run data (default: a new temp directory)"
     )
     parser.add_argument("--out", type=Path, required=True, help="JSON report path; .md beside it")
     parser.add_argument("--model-profile", default="default", help="same profile for both runtimes")
@@ -845,6 +967,7 @@ def main(
         ensure_local_only(_load_local_config(args.config, args.model_profile))
         verify_base_commits(manifest, args.repo, command)
         workdir = args.workdir or Path(tempfile.mkdtemp(prefix="runtime_ab_"))
+        ensure_workdir_unused(manifest, workdir)
         runner = CliReplayRunner(
             repo=args.repo,
             workdir=workdir,
@@ -853,13 +976,13 @@ def main(
             run_command=command,
         )
         outcomes = run_benchmark(manifest, budget=budget, runner=runner, fetch_issue=fetch)
-    except (ManifestError, UnsafeConfigError, IssueFetchError) as exc:
+    except (ManifestError, UnsafeConfigError, IssueFetchError, WorkdirError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return _USAGE_ERROR_EXIT_CODE
     report = build_report(outcomes)
     markdown = _write_reports(report, args.out)
     print(f"{report.verdict.recommendation}: reports at {args.out} and {markdown}")
-    print(f"runs and worktree data under {workdir}")
+    print(f"run data under {workdir}")
     return 0
 
 
