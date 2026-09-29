@@ -194,27 +194,42 @@ def _settings_of(record: _SessionRecord) -> SessionSettings:
     return SessionSettings(model=record.model, provider=record.provider, reasoning=record.reasoning)
 
 
+def _role_stem(role: AgentRole) -> str:
+    return role.value.lower()
+
+
 def _record_path(directory: Path, role: AgentRole) -> Path:
-    return directory / f"{role.value.lower()}.meta.json"
+    return directory / f"{_role_stem(role)}.meta.json"
+
+
+def _session_file_name(role: AgentRole, number: int) -> str:
+    """The one definition of the file name: ``<stem>.jsonl``, then ``<stem>-<n>.jsonl``."""
+    stem = _role_stem(role)
+    if number == 1:
+        return f"{stem}{_SESSION_SUFFIX}"
+    return f"{stem}-{number}{_SESSION_SUFFIX}"
 
 
 def _is_session_file_name(name: str, role: AgentRole) -> bool:
-    """Return whether ``name`` is ``<role>.jsonl`` or ``<role>-<n>.jsonl`` with n >= 2."""
-    stem = re.escape(role.value.lower())
-    return (
-        re.fullmatch(rf"{stem}(-([2-9]|[1-9][0-9]+))?{re.escape(_SESSION_SUFFIX)}", name)
-        is not None
-    )
+    """Return whether ``name`` is what :func:`_session_file_name` makes for ``role``.
+
+    The number is read from the name and the name is built again from it, so
+    the parser cannot drift from the formatter. Numbers of more than nine digits
+    are not session numbers.
+    """
+    pattern = rf"{re.escape(_role_stem(role))}(?:-([0-9]{{1,9}}))?{re.escape(_SESSION_SUFFIX)}"
+    match = re.fullmatch(pattern, name)
+    if match is None:
+        return False
+    number = 1 if match.group(1) is None else int(match.group(1))
+    return number >= 1 and name == _session_file_name(role, number)
 
 
 def _next_session_path(directory: Path, role: AgentRole) -> Path:
-    stem = role.value.lower()
-    candidate = directory / f"{stem}{_SESSION_SUFFIX}"
     number = 1
-    while candidate.exists():
+    while (directory / _session_file_name(role, number)).exists():
         number += 1
-        candidate = directory / f"{stem}-{number}{_SESSION_SUFFIX}"
-    return candidate
+    return directory / _session_file_name(role, number)
 
 
 def _is_readable_file(path: Path) -> bool:

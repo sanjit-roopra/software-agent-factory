@@ -16,6 +16,8 @@ from software_agent_factory.pi_sessions import (
     Fresh,
     PiSessionStore,
     SessionSettings,
+    _is_session_file_name,
+    _next_session_path,
     persists_session,
 )
 
@@ -500,3 +502,17 @@ def test_the_same_work_item_id_always_maps_to_the_same_directory(tmp_path: Path)
 def test_an_empty_work_item_id_is_rejected(store: PiSessionStore) -> None:
     with pytest.raises(ValueError, match="work item id"):
         store.resolve("", AgentRole.IMPLEMENTER, SETTINGS)
+
+
+@pytest.mark.parametrize("role", [AgentRole.IMPLEMENTER, AgentRole.REVIEWER])
+def test_every_session_file_name_the_store_makes_is_accepted_as_one(
+    tmp_path: Path, role: AgentRole
+) -> None:
+    for _ in range(12):
+        path = _next_session_path(tmp_path, role)
+        assert _is_session_file_name(path.name, role)
+        path.touch()
+
+
+def test_a_session_file_name_with_an_absurdly_long_number_is_rejected() -> None:
+    assert not _is_session_file_name(f"implementer-{'9' * 5000}.jsonl", AgentRole.IMPLEMENTER)
