@@ -788,14 +788,14 @@ def _continue(request: AgentRequest, *earlier: AgentRequest) -> str:
     return continuation.text
 
 
-def _absent_from(prompt: str, unwanted: tuple[str, ...]) -> list[str]:
-    """The texts of ``unwanted`` that ``prompt`` holds. Empty means the prompt is clean."""
+def _found_in(prompt: str, unwanted: tuple[str, ...]) -> list[str]:
+    """The texts of ``unwanted`` that ``prompt`` holds. An empty list means it holds none."""
     return [text for text in unwanted if text in prompt]
 
 
 def _full_prompt_carries(request: AgentRequest, texts: tuple[str, ...]) -> None:
     """Positive control: a text a continuation must omit is really in the full prompt."""
-    assert _absent_from(build_prompt(request), texts) == list(texts)
+    assert _found_in(build_prompt(request), texts) == list(texts)
 
 
 def test_continuation_opens_with_a_lead_line_and_ends_with_the_output_contract() -> None:
@@ -827,7 +827,7 @@ def test_an_implementer_repair_sends_the_repair_context_diff_and_attempt_only() 
     assert DIFF.strip() in prompt
     assert "Attempt number:\n2" in prompt
     assert CHANGE_SET_SCHEMA in prompt
-    assert _absent_from(prompt, (*FIRST_CALL_TEXT, RESEARCH_QUESTION)) == []
+    assert _found_in(prompt, (*FIRST_CALL_TEXT, RESEARCH_QUESTION)) == []
 
 
 def test_a_polish_round_sends_the_repository_skill_that_appeared_after_the_first_call() -> None:
@@ -842,7 +842,7 @@ def test_a_polish_round_sends_the_repository_skill_that_appeared_after_the_first
     assert SKILL_GUIDANCE in prompt
     assert POLISH_SUMMARY in prompt
     assert DIFF.strip() in prompt
-    assert _absent_from(prompt, FIRST_CALL_TEXT) == []
+    assert _found_in(prompt, FIRST_CALL_TEXT) == []
 
 
 def test_a_polish_round_does_not_send_the_repository_skill_twice() -> None:
@@ -873,7 +873,7 @@ def test_a_review_after_accepted_debt_sends_the_debt_the_rules_and_the_new_diff(
     assert ACCEPTED_DEBT_RULE in prompt
     assert DEBT_DIFF.strip() in prompt
     assert "Implementation snapshot under review:\n3" in prompt
-    assert _absent_from(prompt, (*FIRST_CALL_TEXT, PRIOR_FINDING_MESSAGE)) == []
+    assert _found_in(prompt, (*FIRST_CALL_TEXT, PRIOR_FINDING_MESSAGE)) == []
 
 
 def test_a_re_review_sends_its_findings_rules_and_every_new_piece_of_evidence() -> None:
@@ -895,7 +895,7 @@ def test_a_re_review_sends_its_findings_rules_and_every_new_piece_of_evidence() 
     assert "Deterministic verification:" in prompt
     assert "Implementation snapshot under review:\n2" in prompt
     assert REVIEW_REPORT_SCHEMA in prompt
-    assert _absent_from(prompt, (*FIRST_CALL_TEXT, FIRST_REVIEW_TESTER_FINDING)) == []
+    assert _found_in(prompt, (*FIRST_CALL_TEXT, FIRST_REVIEW_TESTER_FINDING)) == []
 
 
 def test_a_retry_inside_one_reviewer_round_sends_only_the_output_rejection() -> None:
@@ -924,7 +924,7 @@ def test_an_implementer_output_rejection_sends_the_reason_and_the_contract() -> 
 
     assert OUTPUT_REJECTION in prompt
     assert CHANGE_SET_SCHEMA in prompt
-    assert _absent_from(prompt, FIRST_CALL_TEXT) == []
+    assert _found_in(prompt, FIRST_CALL_TEXT) == []
 
 
 def test_a_change_set_correction_sends_its_role_instructions_change_set_and_context() -> None:
@@ -940,7 +940,7 @@ def test_a_change_set_correction_sends_its_role_instructions_change_set_and_cont
     assert "Fix the output shape." in prompt
     assert "Correction context:" in prompt
     assert CHANGE_SET_SCHEMA in prompt
-    assert _absent_from(prompt, carried_over) == []
+    assert _found_in(prompt, carried_over) == []
 
 
 def test_the_implementer_rules_come_back_after_a_change_set_correction() -> None:
