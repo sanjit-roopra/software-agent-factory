@@ -541,7 +541,9 @@ def test_planner_writing_findings_are_recorded_without_a_retry(
     (record,) = _records_for(run, AgentRole.PLANNER)
     assert record.success is True
     assert record.failure_reason is None
-    assert any("summary" in finding for finding in record.writing_findings)
+    assert record.writing_findings == ("summary has 2 slop_word finding(s).",)
+    (persisted,) = _records_for(FileRunStore(data_dir).load_run(run.id), AgentRole.PLANNER)
+    assert persisted.writing_findings == record.writing_findings
 
 
 def test_triage_writing_findings_are_recorded_without_a_retry(
@@ -568,7 +570,77 @@ def test_triage_writing_findings_are_recorded_without_a_retry(
     assert len(requests) == 1
     (record,) = _records_for(run, AgentRole.TRIAGE)
     assert record.success is True
-    assert any("unknowns[0]" in finding for finding in record.writing_findings)
+    assert record.writing_findings == ("unknowns[0] has 2 slop_word finding(s).",)
+
+
+@pytest.mark.parametrize(
+    ("role", "hook", "artifact_field", "update", "finding"),
+    [
+        (
+            AgentRole.REFINER,
+            "refiner",
+            "specification",
+            {"problem": _WORDY},
+            "problem has 2 slop_word finding(s).",
+        ),
+        (
+            AgentRole.RESEARCHER,
+            "researcher",
+            "research_report",
+            {"findings": [_WORDY]},
+            "findings[0] has 2 slop_word finding(s).",
+        ),
+        (
+            AgentRole.TESTER,
+            "tester",
+            "test_report",
+            {"findings": [_WORDY]},
+            "findings[0] has 2 slop_word finding(s).",
+        ),
+        (
+            AgentRole.REVIEWER,
+            "reviewer",
+            "review_report",
+            {"suggested_changes": [_WORDY]},
+            "suggested_changes[0] has 2 slop_word finding(s).",
+        ),
+    ],
+)
+def test_writing_findings_from_other_roles_are_recorded_without_a_retry(
+    source_repo: Path,
+    data_dir: Path,
+    role: AgentRole,
+    hook: str,
+    artifact_field: str,
+    update: dict[str, object],
+    finding: str,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def wordy(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        result = default_runtime.run(request)
+        artifact = getattr(result, artifact_field)
+        assert artifact is not None
+        return result.model_copy(update={artifact_field: artifact.model_copy(update=update)})
+
+    hooks: dict[str, AgentHook] = {hook: wordy}
+    if role is AgentRole.RESEARCHER:
+        hooks["triage"] = _triage_hook(Complexity.L1, Risk.R1, needs_research=True)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=3),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(**hooks),
+    ).run(_work_item(f"WI-{hook}-writing-advisory"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 1
+    (record,) = _records_for(run, role)
+    assert record.success is True
+    assert record.failure_reason is None
+    assert record.writing_findings == (finding,)
 
 
 def test_implementer_writing_findings_are_recorded_without_a_retry(
@@ -598,7 +670,7 @@ def test_implementer_writing_findings_are_recorded_without_a_retry(
     assert [attempt.outcome for attempt in run.attempt_records] == ["succeeded"]
     (record,) = _records_for(run, AgentRole.IMPLEMENTER)
     assert record.purpose is AgentPurpose.STANDARD
-    assert any("summary" in finding for finding in record.writing_findings)
+    assert record.writing_findings == ("summary has 2 slop_word finding(s).",)
 
 
 @pytest.mark.parametrize(
