@@ -14,6 +14,7 @@ import http.client
 import io
 import json
 import logging
+import re
 import socket
 import threading
 from collections.abc import Iterator
@@ -46,6 +47,8 @@ from software_agent_factory.dashboard.sanitize import (
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    sanitize_invocation,
+    sanitize_project,
     sanitize_run_detail,
     sanitize_usage,
 )
@@ -1687,28 +1690,126 @@ def test_dashboard_explains_and_renders_usage_value() -> None:
     assert "AI usage value (USD)" in js
 
 
-def test_dashboard_renders_list_price_estimate_as_a_labelled_figure_with_unknown_fallback() -> None:
-    js = dashboard_assets.APP_JS
-    html = dashboard_assets.render_index_html(token="tok")
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
 
-    assert "List-price estimate" in js
-    assert "List-price estimate" in html
-    assert '"unknown"' in js
-    assert "displayListPriceEstimate(usage.list_price_estimate_usd)" in js
+
+def _js_function_source(js: str, name: str) -> str:
+    """The normalized source of ``function name(...) { ... }`` (no nested braces)."""
+    match = re.search(rf"function {name}\([^)]*\) \{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}", js)
+    assert match is not None, f"{name} not found in the dashboard script"
+    return _normalized(match.group(0))
+
+
+def test_sanitize_invocation_keeps_list_price_estimate_beside_unchanged_usage_value() -> None:
+    invocation = sanitize_invocation(
+        {
+            "invocation_number": 1,
+            "usage": {"total_nano_aiu": 38_483_200_000, "list_price_estimate_usd": 0.42},
+        }
+    )
+
+    assert invocation["usage"]["usage_value_usd"] == pytest.approx(0.384832)
+    assert invocation["usage"]["list_price_estimate_usd"] == pytest.approx(0.42)
+
+
+def test_sanitize_project_model_usage_keeps_list_price_estimate_beside_unchanged_usage_value() -> (
+    None
+):
+    project = sanitize_project(
+        {
+            "project_id": "project-001",
+            "models": [
+                {
+                    "model": "fake-model",
+                    "usage": {"total_nano_aiu": 38_483_200_000, "list_price_estimate_usd": 0.42},
+                }
+            ],
+        }
+    )
+
+    usage = project["models"][0]["usage"]
+    assert usage["usage_value_usd"] == pytest.approx(0.384832)
+    assert usage["list_price_estimate_usd"] == pytest.approx(0.42)
+
+
+def test_dashboard_list_price_estimate_falls_back_to_unknown_and_never_replaces_usage_value() -> (
+    None
+):
+    """No JS runner is available, so pin the exact rendering helper source and
+    the row wiring instead of grepping for loose substrings."""
+    js = dashboard_assets.APP_JS
+
+    assert _js_function_source(js, "displayListPriceEstimate") == (
+        'function displayListPriceEstimate(value) { if (typeof value !== "number" || '
+        '!Number.isFinite(value)) { return "unknown"; } return displayUsd(value); }'
+    )
+    normalized = _normalized(js)
+    # Both usage tables put the AI usage value, then the premium-request cost, then
+    # the list-price estimate in adjacent cells, matching their header order; the
+    # estimate is read from its own field, never from usage_value_usd.
+    row_wiring = (
+        "textCell(row, displayUsd(usage.usage_value_usd)); "
+        "textCell(row, usage.total_premium_request_cost); "
+        "textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
+    )
+    assert normalized.count(row_wiring) == 2
+    assert "displayListPriceEstimate(usage.usage_value_usd)" not in normalized
+    assert "displayUsd(usage.list_price_estimate_usd)" not in normalized
+    assert normalized.count("displayUsd(usage.usage_value_usd)") == 2
+
+
+def test_dashboard_run_detail_lists_list_price_estimate_after_the_usage_value_rows() -> None:
+    normalized = _normalized(dashboard_assets.APP_JS)
+
+    value_row = (
+        '[ "AI usage value (USD)", detail.usage ? '
+        "displayUsd(detail.usage.usage_value_usd) : null ],"
+    )
+    estimate_row = (
+        '[ "List-price estimate", displayListPriceEstimate(detail.usage ? '
+        "detail.usage.list_price_estimate_usd : null) ],"
+    )
+    assert value_row in normalized
+    assert estimate_row in normalized
+    assert normalized.index(value_row) < normalized.index(estimate_row)
+
+
+def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> None:
+    """Both usage tables list the AI usage value, the premium-request column, then
+    the estimate last, in the order their row builders fill the cells."""
+    html = dashboard_assets.render_index_html(token="tok")
+    normalized_js = _normalized(dashboard_assets.APP_JS)
+
+    invocations_head = re.search(
+        r'<table id="invocations-table">\s*<thead>(.*?)</thead>', html, flags=re.DOTALL
+    )
+    assert invocations_head is not None
+    invocation_headers = re.findall(r'<th scope="col">([^<]*)</th>', invocations_head.group(1))
+    assert invocation_headers[-3:] == [
+        "AI usage value (USD)",
+        "Premium-request cost",
+        "List-price estimate",
+    ]
     assert (
-        "displayListPriceEstimate(detail.usage ? detail.usage.list_price_estimate_usd : null)" in js
+        '"AI usage value (USD)", "Premium-request units", "List-price estimate" ].forEach('
+        in normalized_js
     )
 
 
-def test_dashboard_renders_totals_list_price_estimate_with_unknown_fallback() -> None:
+def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -> None:
     """renderTotals surfaces the List-price estimate row with the same
     ``displayListPriceEstimate`` "unknown" fallback the detail/invocation
     views use, rather than the generic renderer's ``[object Object]`` for a
     field nested two levels deep (``metrics.usage.list_price_estimate_usd``)."""
-    js = dashboard_assets.APP_JS
+    normalized = _normalized(dashboard_assets.APP_JS)
 
-    assert "displayListPriceEstimate(listPriceEstimate)" in js
-    assert "totals.metrics.usage.list_price_estimate_usd" in js
+    assert (
+        "var listPriceEstimate = totals.metrics.usage ? "
+        "totals.metrics.usage.list_price_estimate_usd : null; "
+        "totals.metrics = Object.assign({}, totals.metrics, { "
+        "list_price_estimate_usd: displayListPriceEstimate(listPriceEstimate) });"
+    ) in normalized
 
 
 # --------------------------------------------------------------------------
