@@ -530,8 +530,12 @@ def run_command(
 
 
 @app.command("project")
-def project_command(  # NOSONAR(S107) - Typer maps each CLI option to one parameter.
-    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+def project_command(
+    repo: Path = typer.Option(  # NOSONAR(S107) - Typer maps each CLI option to one parameter.
+        ...,
+        "--repo",
+        help="Path to the target Git repository.",
+    ),
     title: str = typer.Option(
         None, "--title", help="Short title for the project. Required unless --resume."
     ),
