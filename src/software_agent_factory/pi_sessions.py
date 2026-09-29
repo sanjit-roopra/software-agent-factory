@@ -93,11 +93,19 @@ class PiSessionStore:
     def resolve(
         self, work_item_id: str, role: AgentRole, settings: SessionSettings
     ) -> SessionDecision:
-        """Continue the role's session when every reuse condition holds, else start a new one."""
+        """Continue the role's session when every reuse condition holds, else start a new one.
+
+        Also makes sure the private directories exist before pi runs, so pi never
+        creates them with the umask's permissions.
+        """
         directory = self._directory(work_item_id, role)
+        _ensure_private_directory(self._root)
+        _ensure_private_directory(directory)
         record = self._read_record(directory, role)
         if record is not None and self._is_reusable(record, settings, directory):
-            return Continue(directory / record.session_file)
+            session_path = directory / record.session_file
+            _restrict_to_owner(session_path)
+            return Continue(session_path)
         return Fresh(_next_session_path(directory, role))
 
     def record(
@@ -110,7 +118,11 @@ class PiSessionStore:
         success: bool,
         ended_at: datetime | None = None,
     ) -> None:
-        """Remember how the call that used ``path`` ended. A failed call is never continued."""
+        """Remember how the call that used ``path`` ended. A failed call is never continued.
+
+        Call it after every pi call: it also makes the session file readable by
+        the owner only, because pi creates that file with the umask's permissions.
+        """
         directory = self._directory(work_item_id, role)
         if path.parent != directory or not _is_session_file_name(path.name, role):
             raise ValueError(f"{path} is not a session file of this work item and role")
@@ -122,7 +134,12 @@ class PiSessionStore:
             last_ended_at=ended_at or self._clock(),
             last_success=success,
         )
-        write_text_atomic(_record_path(directory, role), f"{record.model_dump_json(indent=2)}\n")
+        _restrict_to_owner(path)
+        write_text_atomic(
+            _record_path(directory, role),
+            f"{record.model_dump_json(indent=2)}\n",
+            mode=_OWNER_FILE_MODE,
+        )
 
     def _directory(self, work_item_id: str, role: AgentRole) -> Path:
         if not persists_session(role):
@@ -152,6 +169,8 @@ class PiSessionStore:
 
 
 _SESSION_SUFFIX = ".jsonl"
+_OWNER_FILE_MODE = 0o600
+_OWNER_DIRECTORY_MODE = 0o700
 _PLAIN_CHARACTERS = frozenset(string.ascii_lowercase + string.digits + "-_")
 _MAX_PLAIN_LENGTH = 60
 _DIGEST_LENGTH = 32
@@ -239,3 +258,17 @@ def _is_readable_file(path: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+def _ensure_private_directory(path: Path) -> None:
+    """Create ``path`` if needed and make it owner-only, whatever the umask says."""
+    path.mkdir(mode=_OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
+    path.chmod(_OWNER_DIRECTORY_MODE)
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """Make ``path`` owner-only. A file that does not exist (pi wrote none) is left alone."""
+    try:
+        path.chmod(_OWNER_FILE_MODE)
+    except FileNotFoundError:
+        pass

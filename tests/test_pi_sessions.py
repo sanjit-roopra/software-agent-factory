@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -253,7 +254,6 @@ def test_interleaved_work_items_use_only_their_own_files(store: PiSessionStore) 
     w1 = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
     w2 = store.resolve("W2", AgentRole.IMPLEMENTER, SETTINGS)
     for decision in (w1, w2):
-        decision.path.parent.mkdir(parents=True)
         decision.path.touch()
     store.record("W1", AgentRole.IMPLEMENTER, w1.path, SETTINGS, success=True)
     store.record("W2", AgentRole.IMPLEMENTER, w2.path, SETTINGS, success=True)
@@ -265,7 +265,6 @@ def test_interleaved_work_items_use_only_their_own_files(store: PiSessionStore) 
 
 def test_record_uses_the_given_end_time(store: PiSessionStore) -> None:
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
-    decision.path.parent.mkdir(parents=True)
     decision.path.touch()
     store.record(
         "W1",
@@ -516,3 +515,80 @@ def test_every_session_file_name_the_store_makes_is_accepted_as_one(
 
 def test_a_session_file_name_with_an_absurdly_long_number_is_rejected() -> None:
     assert not _is_session_file_name(f"implementer-{'9' * 5000}.jsonl", AgentRole.IMPLEMENTER)
+
+
+NO_GROUP_OR_OTHER_ACCESS = 0o077
+
+
+@pytest.fixture
+def open_umask() -> Iterator[None]:
+    """Run with umask 0, so only the code under test can make a file private."""
+    previous = os.umask(0)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def is_private(path: Path) -> bool:
+    return path.stat().st_mode & NO_GROUP_OR_OTHER_ACCESS == 0
+
+
+@pytest.mark.usefixtures("open_umask")
+def test_resolve_creates_the_root_and_work_item_directories_private(
+    store: PiSessionStore, tmp_path: Path
+) -> None:
+    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+
+    assert is_private(tmp_path / "pi-sessions")
+    assert is_private(decision.path.parent)
+
+
+def test_resolve_makes_directories_left_open_by_an_earlier_version_private(
+    store: PiSessionStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "pi-sessions"
+    directory = root / "+w1"
+    directory.mkdir(parents=True)
+    root.chmod(0o755)
+    directory.chmod(0o755)
+
+    store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+
+    assert is_private(root)
+    assert is_private(directory)
+
+
+@pytest.mark.usefixtures("open_umask")
+def test_record_writes_a_private_sidecar_and_makes_the_session_file_private(
+    store: PiSessionStore,
+) -> None:
+    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+    decision.path.touch(mode=0o644)
+
+    store.record("W1", AgentRole.IMPLEMENTER, decision.path, SETTINGS, success=True)
+
+    assert is_private(decision.path.parent / IMPLEMENTER_SIDECAR)
+    assert is_private(decision.path)
+
+
+def test_record_of_a_call_that_wrote_no_session_file_still_writes_the_sidecar(
+    store: PiSessionStore,
+) -> None:
+    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+
+    store.record("W1", AgentRole.IMPLEMENTER, decision.path, SETTINGS, success=False)
+
+    assert (decision.path.parent / IMPLEMENTER_SIDECAR).exists()
+
+
+def test_continuing_makes_a_session_file_left_open_by_a_crash_private(
+    store: PiSessionStore,
+) -> None:
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    first.path.chmod(0o644)
+
+    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+
+    assert decision == Continue(first.path)
+    assert is_private(first.path)

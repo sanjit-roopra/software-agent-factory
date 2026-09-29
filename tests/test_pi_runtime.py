@@ -84,6 +84,9 @@ def _skill_request(**overrides: object) -> AgentRequest:
     return _request(AgentRole.RESEARCHER, **defaults)
 
 
+_SESSIONS_DIRECTORY = "pi-sessions"
+_IMPLEMENTER_SIDECAR = "implementer.meta.json"
+
 #: Where ``_runtime`` puts the pi session store; ``_isolated_data_dir`` points it at a temp dir.
 _DATA_DIR = [Path("/nonexistent-data-dir")]
 
@@ -258,7 +261,7 @@ def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
         "--no-context-files",
         "--no-approve",
         "--session",
-        str(_DATA_DIR[0] / "pi-sessions" / "+w+i-1" / "implementer.jsonl"),
+        str(_DATA_DIR[0] / _SESSIONS_DIRECTORY / "+w+i-1" / "implementer.jsonl"),
     ]
     assert launch.cwd == tmp_path.resolve()
     assert "GITHUB_TOKEN" not in launch.env
@@ -440,7 +443,7 @@ def test_run_other_roles_never_use_a_persisted_session(role: AgentRole, tmp_path
 
     assert [command[-1] for command in rig.commands] == ["--no-session", "--no-session"]
     assert "--session" not in rig.commands[0] + rig.commands[1]
-    assert not (rig.data_dir / "pi-sessions").exists()
+    assert not (rig.data_dir / _SESSIONS_DIRECTORY).exists()
 
 
 def test_run_first_implementer_call_starts_its_session_file_under_the_data_dir(
@@ -452,7 +455,7 @@ def test_run_first_implementer_call_starts_its_session_file_under_the_data_dir(
 
     [path] = rig.session_paths()
     assert path is not None
-    assert path.parent.parent == rig.data_dir / "pi-sessions"
+    assert path.parent.parent == rig.data_dir / _SESSIONS_DIRECTORY
     assert path.name == "implementer.jsonl"
 
 
@@ -607,13 +610,25 @@ def test_run_success_after_a_failed_call_makes_the_new_session_reusable(tmp_path
     assert resumed == fresh
 
 
+def test_run_keeps_session_files_and_directories_private_to_the_owner(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+
+    rig.run(_implementer())
+
+    [path] = rig.session_paths()
+    assert path is not None
+    root = rig.data_dir / _SESSIONS_DIRECTORY
+    private = [root, path.parent, path, path.parent / _IMPLEMENTER_SIDECAR]
+    assert [entry.stat().st_mode & 0o077 for entry in private] == [0, 0, 0, 0]
+
+
 def test_run_keeps_the_result_when_the_session_record_cannot_be_written(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
     rig.run(_implementer())
     [first] = rig.session_paths()
     assert first is not None
-    (first.parent / "implementer.meta.json").unlink()
-    (first.parent / "implementer.meta.json").mkdir()
+    (first.parent / _IMPLEMENTER_SIDECAR).unlink()
+    (first.parent / _IMPLEMENTER_SIDECAR).mkdir()
 
     result = rig.run(_implementer())
 
