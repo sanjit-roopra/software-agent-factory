@@ -142,104 +142,105 @@ def _advance_string_state(char: str, escape: bool) -> tuple[bool, bool]:
     return char != '"', False
 
 
-def _scan_matching_brace(
-    text: str,
-    start: int,
-    length: int,
-    *,
-    matched_pairs: dict[int, int],
-    stats: ScanStats,
-    work_limit: int,
-) -> tuple[int, list[int]]:
-    """Scan forward from an opening ``{`` at ``start`` for its matching ``}``.
+class _JsonObjectScanner:
+    """Bounded-work scan for the ``}`` that closes each ``{`` in ``text``.
 
-    Tracks nesting depth (ignoring braces inside strings) and records every
-    open-brace index whose matching close is discovered along the way into
-    ``matched_pairs``, so a caller scanning an enclosing object can skip
-    re-scanning braces already resolved here. Returns ``(found_end,
-    open_stack)``: ``found_end`` is the index of the matching ``}``, or
-    ``-1`` if the scan ran out of text or hit ``work_limit`` first;
-    ``open_stack`` holds any braces still open when the scan stopped (only
-    meaningful when ``found_end`` is ``-1``).
+    Holds the state shared across the scans of one text: the work counter and
+    its limit, every open-brace index whose matching close an earlier scan
+    already found (``matched_pairs``, so a scan of an enclosing object skips
+    re-scanning braces resolved here), and the braces known to be unclosed
+    (``unclosed_starts``).
     """
-    depth = 0
-    in_string = False
-    escape = False
-    k = start
-    found_end = -1
-    open_stack: list[int] = []
 
-    while k < length:
-        stats.chars_scanned += 1
-        if stats.chars_scanned >= work_limit:
-            break
+    def __init__(
+        self,
+        text: str,
+        *,
+        stats: ScanStats | None = None,
+        max_scan_work: int | None = None,
+    ) -> None:
+        self.text = text
+        self.stats = stats if stats is not None else ScanStats()
+        self.work_limit = (
+            max_scan_work if max_scan_work is not None else max(100_000, 10 * len(text))
+        )
+        self.matched_pairs: dict[int, int] = {}
+        self.unclosed_starts: set[int] = set()
 
-        char = text[k]
-        if in_string:
-            in_string, escape = _advance_string_state(char, escape)
-        elif char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-            open_stack.append(k)
-        elif char == "}":
-            if open_stack:
-                popped = open_stack.pop()
-                matched_pairs[popped] = k
-            depth -= 1
-            if depth == 0:
-                found_end = k
+    def work_exhausted(self) -> bool:
+        return self.stats.chars_scanned >= self.work_limit
+
+    def is_scannable_start(self, start: int) -> bool:
+        """True when the ``{`` at ``start`` may open a JSON object worth scanning.
+
+        Rejects braces already known to be unclosed and braces whose next
+        non-whitespace character is neither ``"`` nor ``}``.
+        """
+        if start in self.unclosed_starts:
+            return False
+        length = len(self.text)
+        j = start + 1
+        while j < length and self.text[j].isspace():
+            j += 1
+        return j < length and self.text[j] in ('"', "}")
+
+    def find_object_end(self, start: int) -> int:
+        """Return the index of the ``}`` matching the ``{`` at ``start``, or ``-1``.
+
+        Reuses a match discovered by an earlier enclosing scan when available.
+        ``-1`` means the brace is not a scannable start, the object is unclosed
+        (its still-open braces are recorded in ``unclosed_starts``), or the scan
+        hit the work limit first.
+        """
+        if not self.is_scannable_start(start):
+            return -1
+        if start in self.matched_pairs:
+            return self.matched_pairs[start]
+        found_end, open_stack = self._scan_matching_brace(start)
+        if self.work_exhausted():
+            return -1
+        if found_end == -1:
+            self.unclosed_starts.update(open_stack)
+        return found_end
+
+    def _scan_matching_brace(self, start: int) -> tuple[int, list[int]]:
+        """Scan forward from an opening ``{`` at ``start`` for its matching ``}``.
+
+        Tracks nesting (ignoring braces inside strings) and records every
+        open-brace index whose matching close is discovered along the way into
+        ``matched_pairs``. Returns ``(found_end, open_stack)``: ``found_end`` is
+        the index of the matching ``}``, or ``-1`` if the scan ran out of text
+        or hit the work limit first; ``open_stack`` holds any braces still open
+        when the scan stopped (only meaningful when ``found_end`` is ``-1``).
+        """
+        in_string = False
+        escape = False
+        open_stack: list[int] = []
+
+        for k in range(start, len(self.text)):
+            self.stats.chars_scanned += 1
+            if self.work_exhausted():
                 break
-        k += 1
 
-    return found_end, open_stack
+            char = self.text[k]
+            if in_string:
+                in_string, escape = _advance_string_state(char, escape)
+            elif char == '"':
+                in_string = True
+            elif char == "{":
+                open_stack.append(k)
+            elif char == "}" and self._close_brace(k, open_stack):
+                return k, open_stack
 
+        return -1, open_stack
 
-def _is_scannable_start(text: str, start: int, unclosed_starts: set[int]) -> bool:
-    """True when the ``{`` at ``start`` may open a JSON object worth scanning.
+    def _close_brace(self, index: int, open_stack: list[int]) -> bool:
+        """Pair the ``}`` at ``index`` with its ``{``; True when that closes the outermost one.
 
-    Rejects braces already known to be unclosed and braces whose next
-    non-whitespace character is neither ``"`` nor ``}``.
-    """
-    if start in unclosed_starts:
-        return False
-    length = len(text)
-    j = start + 1
-    while j < length and text[j].isspace():
-        j += 1
-    return j < length and text[j] in ('"', "}")
-
-
-def _find_object_end(
-    text: str,
-    start: int,
-    *,
-    matched_pairs: dict[int, int],
-    unclosed_starts: set[int],
-    stats: ScanStats,
-    work_limit: int,
-) -> int:
-    """Return the index of the ``}`` matching the ``{`` at ``start``, or ``-1``.
-
-    Reuses a match discovered by an earlier enclosing scan when available.
-    ``-1`` means the object is unclosed (its still-open braces are recorded in
-    ``unclosed_starts``) or the scan hit ``work_limit`` first.
-    """
-    if start in matched_pairs:
-        return matched_pairs[start]
-    found_end, open_stack = _scan_matching_brace(
-        text,
-        start,
-        len(text),
-        matched_pairs=matched_pairs,
-        stats=stats,
-        work_limit=work_limit,
-    )
-    if stats.chars_scanned >= work_limit:
-        return -1
-    if found_end == -1:
-        unclosed_starts.update(open_stack)
-    return found_end
+        The scan starts on a ``{``, so ``open_stack`` is never empty at a ``}``.
+        """
+        self.matched_pairs[open_stack.pop()] = index
+        return not open_stack
 
 
 @dataclass
@@ -278,36 +279,21 @@ def _iter_json_objects(
     decoder = json.JSONDecoder()
     objects: list[dict[str, object]] = []
     length = len(text)
-    stats = scan_stats if scan_stats is not None else ScanStats()
-    work_limit = max_scan_work if max_scan_work is not None else max(100_000, 10 * length)
-
-    unclosed_starts: set[int] = set()
-    matched_pairs: dict[int, int] = {}
+    scanner = _JsonObjectScanner(text, stats=scan_stats, max_scan_work=max_scan_work)
     failures = _NestedFailureTracker(max_failures=max_nested_failures)
     i = 0
 
-    while i < length and stats.chars_scanned < work_limit:
+    while i < length and not scanner.work_exhausted():
         start = text.find("{", i)
         if start == -1:
             break
 
-        if not _is_scannable_start(text, start, unclosed_starts):
-            i = start + 1
-            continue
-
-        found_end = _find_object_end(
-            text,
-            start,
-            matched_pairs=matched_pairs,
-            unclosed_starts=unclosed_starts,
-            stats=stats,
-            work_limit=work_limit,
-        )
+        found_end = scanner.find_object_end(start)
         if found_end == -1:
             i = start + 1
             continue
 
-        stats.candidates_tested += 1
+        scanner.stats.candidates_tested += 1
         try:
             payload, end_idx = decoder.raw_decode(text, idx=start)
         except JSONDecodeError:
@@ -318,8 +304,8 @@ def _iter_json_objects(
             objects.append(payload)
             i = max(end_idx, found_end + 1)
             failures.reset()
-        else:
-            i = start + 1
+            continue
+        i = start + 1
 
     return objects
 
