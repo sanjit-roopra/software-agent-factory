@@ -84,8 +84,9 @@ def test_request_raises_command_error_on_success_false() -> None:
 
     process.write_records({"type": "response", "id": "c1", "success": False, "error": "boom"})
 
+    deadline = _deadline()
     with pytest.raises(PiRpcCommandError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert excinfo.value.error == "boom"
     assert excinfo.value.command == {"type": "prompt", "message": "hi", "id": "c1"}
@@ -97,8 +98,9 @@ def test_request_raises_protocol_error_on_invalid_json_line() -> None:
 
     process.write_raw_stdout("not valid json\n")
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "not valid json" in excinfo.value.line_excerpt
 
@@ -109,8 +111,9 @@ def test_request_raises_protocol_error_on_valid_json_that_is_not_an_object() -> 
 
     process.write_raw_stdout("[1, 2, 3]\n")
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "[1, 2, 3]" in excinfo.value.line_excerpt
 
@@ -134,8 +137,9 @@ def test_request_raises_process_exited_on_eof_with_stderr_tail() -> None:
     process.write_stderr("fatal: credential missing")
     process.close_stdout()
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert excinfo.value.returncode == 1
     assert "fatal: credential missing" in excinfo.value.stderr_tail
@@ -149,8 +153,9 @@ def test_process_exited_returncode_falls_back_to_wait_when_not_yet_polled() -> N
     process.exit_pending_reap(3)
     process.close_stdout()
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert excinfo.value.returncode == 3
 
@@ -163,8 +168,9 @@ def test_process_exited_returncode_is_none_when_process_still_running() -> None:
     client = PiRpcClient(process)
     process.close_stdout()  # EOF, but exit()/exit_pending_reap() never called
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert excinfo.value.returncode is None
 
@@ -179,8 +185,9 @@ def test_stderr_tail_keeps_trailing_window_when_it_exceeds_the_cap() -> None:
     process.write_stderr(("a" * 5000) + "TAIL_MARKER")
     process.close_stdout()
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     tail = excinfo.value.stderr_tail
     assert "TAIL_MARKER" in tail
@@ -204,8 +211,9 @@ def test_stderr_tail_redacts_a_secret_before_the_window_cuts_it() -> None:
     process.write_stderr("A" * 100 + _SECRET + "B" * (4096 - 5))
     process.close_stdout()
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     tail = excinfo.value.stderr_tail
     assert len(tail) <= 4096
@@ -222,8 +230,9 @@ def test_stderr_tail_keeps_a_full_window_when_the_raw_window_was_trimmed() -> No
     process.write_stderr("a" * (_STDERR_TAIL_CHARS + _STDERR_REDACTION_MARGIN_CHARS + 500) + "END")
     process.close_stdout()
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     tail = excinfo.value.stderr_tail
     assert len(tail) == _STDERR_TAIL_CHARS
@@ -245,8 +254,9 @@ def test_stderr_tail_hides_a_long_secret_cut_by_the_raw_window_when_redaction_sh
     process.write_stderr("P" * 100 + secret + " " + after)
     process.close_stdout()
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     tail = excinfo.value.stderr_tail
     assert not any(char.isdigit() for char in tail)
@@ -258,13 +268,15 @@ def test_stderr_tail_redacts_a_secret_split_across_reads(pi_fake_clock: FakePiCl
     client = PiRpcClient(process, redact=_redact_secret)
     process.exit(1)
     process.write_stderr("auth failed for " + _SECRET[:8])
+    deadline = pi_fake_clock.deadline(0.05)
     with pytest.raises(PiRpcTimeout):
-        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(0.05))
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
     process.write_stderr(_SECRET[8:] + "\n")
     process.close_stdout()
 
+    deadline = pi_fake_clock.deadline(5.0)
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert _SECRET not in excinfo.value.stderr_tail
     assert "auth failed for [REDACTED]" in excinfo.value.stderr_tail
@@ -280,13 +292,15 @@ def test_stderr_tail_redacts_a_token_shaped_secret_split_across_reads(
     client = PiRpcClient(process, redact=lambda text: redact_secrets(text, set()))
     process.exit(1)
     process.write_stderr("auth failed for " + token[:12])
+    deadline = pi_fake_clock.deadline(0.05)
     with pytest.raises(PiRpcTimeout):
-        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(0.05))
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
     process.write_stderr(token[12:] + "\n")
     process.close_stdout()
 
+    deadline = pi_fake_clock.deadline(5.0)
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "SECONDHALF12345" not in excinfo.value.stderr_tail
     assert "auth failed for [REDACTED]" in excinfo.value.stderr_tail
@@ -300,13 +314,15 @@ def test_stderr_tail_keeps_multibyte_characters_split_across_reads(
     process.exit(1)
     encoded = "caf\u00e9".encode()
     process.write_stderr_bytes(encoded[:4])
+    deadline = pi_fake_clock.deadline(0.05)
     with pytest.raises(PiRpcTimeout):
-        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(0.05))
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
     process.write_stderr_bytes(encoded[4:])
     process.close_stdout()
 
+    deadline = pi_fake_clock.deadline(5.0)
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert excinfo.value.stderr_tail == "caf\u00e9"
 
@@ -316,8 +332,9 @@ def test_protocol_error_excerpt_redacts_a_secret_before_truncating_to_200_chars(
     client = PiRpcClient(process, redact=_redact_secret)
     process.write_raw_stdout("x" * 195 + _SECRET + " not json\n")
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert len(excinfo.value.line_excerpt) <= 200
     assert "plain" not in excinfo.value.line_excerpt
@@ -328,8 +345,9 @@ def test_oversized_line_excerpt_redacts_a_secret_before_truncating_to_200_chars(
     client = PiRpcClient(process, max_line_bytes=300, redact=_redact_secret)
     process.write_raw_stdout("x" * 195 + _SECRET + "y" * 200)
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "plain" not in excinfo.value.line_excerpt
 
@@ -339,8 +357,9 @@ def test_invalid_utf8_line_excerpt_redacts_a_secret_before_truncating() -> None:
     client = PiRpcClient(process, redact=_redact_secret)
     process.write_stdout_bytes(b"x" * 195 + _SECRET.encode() + b"\xff\n")
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "plain" not in excinfo.value.line_excerpt
 
@@ -368,8 +387,9 @@ def test_read_line_raises_protocol_error_when_line_exceeds_max_line_bytes() -> N
     client = PiRpcClient(process, max_line_bytes=16)
     process.write_raw_stdout("x" * 17)  # no newline: buffer grows past the 16-byte cap
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "exceeded 16 bytes without a newline" in str(excinfo.value)
     assert excinfo.value.line_excerpt.startswith("x")
@@ -467,8 +487,9 @@ def test_request_raises_protocol_error_on_invalid_utf8_line() -> None:
 
     os.write(process._stdout_write.fileno(), b"\xff\xfe not utf-8\n")
 
+    deadline = _deadline()
     with pytest.raises(PiRpcProtocolError) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
 
     assert "not valid UTF-8" in str(excinfo.value)
 
@@ -497,7 +518,8 @@ def test_close_closes_stdin_and_waits_for_exit() -> None:
 
     client.close(timeout=1.0)
 
-    assert process.stdin is not None and process.stdin.closed
+    assert process.stdin is not None
+    assert process.stdin.closed
 
 
 def test_close_kills_process_group_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -515,7 +537,8 @@ def test_close_kills_process_group_on_timeout(monkeypatch: pytest.MonkeyPatch) -
 
     client.close(timeout=0.05)
 
-    assert process.stdin is not None and process.stdin.closed
+    assert process.stdin is not None
+    assert process.stdin.closed
     assert killed == [(process.pid, signal.SIGTERM)]
 
 
@@ -532,7 +555,8 @@ def test_close_survives_undecodable_output_left_by_a_killed_process(
 
     client.close(timeout=0.05)
 
-    assert process.stdin is not None and process.stdin.closed
+    assert process.stdin is not None
+    assert process.stdin.closed
 
 
 # ---------------------------------------------------------------------------

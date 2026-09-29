@@ -604,8 +604,10 @@ def test_pi_block_accepts_explicit_valid_values(tmp_path: Path) -> None:
 
 
 def test_pi_negative_session_reuse_max_age_fails_naming_the_field(tmp_path: Path) -> None:
+    config_path = _config_with(tmp_path, {"pi": {"session_reuse_max_age_seconds": -1}})
+
     with pytest.raises(ValidationError, match="pi.session_reuse_max_age_seconds"):
-        load_config(_config_with(tmp_path, {"pi": {"session_reuse_max_age_seconds": -1}}))
+        load_config(config_path)
 
 
 def test_config_rejects_unknown_sections_and_keys(tmp_path: Path) -> None:

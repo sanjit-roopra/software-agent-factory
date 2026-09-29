@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def _load_script_module(name: str, relative_path: str) -> ModuleType:
     script_path = ROOT / relative_path
     spec = importlib.util.spec_from_file_location(name, script_path)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
@@ -169,13 +170,16 @@ def test_run_same_process_reports_verdict_from_get_messages() -> None:
 
     assert verdict.cache == "available"
     assert verdict.cache_read_tokens == 7
-    assert process.stdin is not None and process.stdin.closed
+    assert process.stdin is not None
+    assert process.stdin.closed
     assert len(factory.commands) == 1
     cmd = factory.commands[0]
     assert cmd[0] == "pi"
     assert "--no-session" in cmd
-    assert "--provider" in cmd and "github-copilot" in cmd
-    assert "--model" in cmd and "claude-sonnet-5" in cmd
+    assert "--provider" in cmd
+    assert "github-copilot" in cmd
+    assert "--model" in cmd
+    assert "claude-sonnet-5" in cmd
     # Two prompt commands sent, second sharing the first's prefix.
     prompt_commands = [c for c in process.sent_commands() if c.get("type") == "prompt"]
     assert len(prompt_commands) == 2
@@ -212,8 +216,10 @@ def test_run_resume_second_process_uses_same_session_file(tmp_path: Path) -> Non
 
     assert verdict.cache == "available"
     assert verdict.cache_read_tokens == 4
-    assert first_process.stdin is not None and first_process.stdin.closed
-    assert second_process.stdin is not None and second_process.stdin.closed
+    assert first_process.stdin is not None
+    assert first_process.stdin.closed
+    assert second_process.stdin is not None
+    assert second_process.stdin.closed
 
     assert len(factory.commands) == 2
     first_cmd, second_cmd = factory.commands

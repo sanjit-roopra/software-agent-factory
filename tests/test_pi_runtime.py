@@ -299,8 +299,10 @@ def test_run_rejects_skill_generation_before_starting_pi() -> None:
 
     runtime = _runtime(process_factory=factory)
 
+    request = _skill_request()
+
     with pytest.raises(ValueError, match="not supported on pi"):
-        runtime.run(_skill_request())
+        runtime.run(request)
 
     assert started == []
 
