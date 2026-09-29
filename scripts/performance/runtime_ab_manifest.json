@@ -1,0 +1,64 @@
+{
+  "tasks": [
+    {
+      "issue": 57,
+      "base_sha": "40e111290c40b2e697fbd561b9bf62ac6dffb99e",
+      "level": "L0",
+      "title": "fix(security): resolve benchmark CLI paths at each file access"
+    },
+    {
+      "issue": 59,
+      "base_sha": "d93aa2669f4b36bd776310bedf4bd099523a9339",
+      "level": "L0",
+      "title": "chore(sonar): set Python version and test sources"
+    },
+    {
+      "issue": 22,
+      "base_sha": "7172c45f5f8296978784ab2d087e930c16337082",
+      "level": "L1",
+      "title": "Make planned file counts advisory"
+    },
+    {
+      "issue": 24,
+      "base_sha": "6ee1df9f8cf6e3f5c0bbacd6d0ebe1d7925f42b8",
+      "level": "L1",
+      "title": "Treat unregistered PR checks as pending"
+    },
+    {
+      "issue": 26,
+      "base_sha": "cd7baeb085aed4b14dd447e3d315b08205d36475",
+      "level": "L1",
+      "title": "Retry transient Git push failures"
+    },
+    {
+      "issue": 16,
+      "base_sha": "5d124e78733797ed2941e8c029b34183b15f5edd",
+      "level": "L2",
+      "title": "Harden offline factory runs"
+    },
+    {
+      "issue": 23,
+      "base_sha": "6a6b574b8f144bc9f7fc59489f0ecf155f01ed25",
+      "level": "L2",
+      "title": "Fix GitHub CLI host identity handling"
+    },
+    {
+      "issue": 55,
+      "base_sha": "05147cef40c0baaae1fb1c0d68233620feafc5fc",
+      "level": "L2",
+      "title": "fix(security): close remaining SonarCloud security issues"
+    },
+    {
+      "issue": 29,
+      "base_sha": "cd89cb7bca157acee7dba03569ff15b0b537e4b4",
+      "level": "L3",
+      "title": "Fix reviewer repair convergence"
+    },
+    {
+      "issue": 31,
+      "base_sha": "0a116f8d639d761b4a106a4cd7917013473c2d34",
+      "level": "L3",
+      "title": "Bound review repair loops and surface operator actions"
+    }
+  ]
+}

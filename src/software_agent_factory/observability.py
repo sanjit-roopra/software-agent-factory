@@ -142,6 +142,7 @@ __all__ = [
     "RunAttemptSummary",
     "RunInvocationSummary",
     "UsageSummary",
+    "summarize_usage",
     "RunDetail",
     "RunGuidance",
     "StaleRunFinding",
@@ -1154,7 +1155,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
         scope_replans=scope_replans,
         first_pass_success=first_pass_success,
         completed_run_durations=completed_run_durations,
-        usage=_usage_summary(invocation for run in runs for invocation in run.invocation_records),
+        usage=summarize_usage(invocation for run in runs for invocation in run.invocation_records),
         performance=performance,
     )
 
@@ -1183,94 +1184,62 @@ def _reported_or_model_sum(
     return None
 
 
-def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
+# UsageMetrics fields that also have a per-model ModelUsage counterpart of the
+# same name, so a runtime may report them only per model.
+_MODEL_BACKED_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "total_nano_aiu",
+    "list_price_estimate_usd",
+)
+
+
+def _sum_or_none(values: Sequence[Any]) -> Any:
+    return sum(values) if values else None
+
+
+def _usage_field_value(usage: UsageMetrics, field: str) -> Any:
+    """One invocation's value for ``field``: the aggregate, else the per-model sum."""
+    model_values = [
+        value for item in usage.model_usage if (value := getattr(item, field)) is not None
+    ]
+    return _reported_or_model_sum(getattr(usage, field), model_values)
+
+
+def _premium_request_costs(usage: UsageMetrics) -> list[float]:
+    """The aggregate cost when reported, else each per-model cost that was reported."""
+    if usage.total_premium_request_cost is not None:
+        return [usage.total_premium_request_cost]
+    return [
+        item.premium_request_cost
+        for item in usage.model_usage
+        if item.premium_request_cost is not None
+    ]
+
+
+def summarize_usage(invocations: Iterable[InvocationRecord]) -> UsageSummary:
+    """Sum runtime-reported usage; a field no invocation reported stays ``None``."""
     records = list(invocations)
-    reported = [record for record in records if record.usage is not None]
-
-    input_tokens: list[int] = []
-    output_tokens: list[int] = []
-    reasoning_tokens: list[int] = []
-    cache_read_tokens: list[int] = []
-    cache_write_tokens: list[int] = []
-    premium_requests: list[float] = []
-    premium_request_costs: list[float] = []
-    total_nano_aiu: list[int] = []
-    list_price_estimate: list[float] = []
-
-    for record in reported:
-        usage = record.usage
-        assert usage is not None
-        if usage.premium_requests is not None:
-            premium_requests.append(usage.premium_requests)
-        if usage.total_premium_request_cost is not None:
-            premium_request_costs.append(usage.total_premium_request_cost)
-        model_nano = [
-            item.total_nano_aiu for item in usage.model_usage if item.total_nano_aiu is not None
-        ]
-        nano_value = _reported_or_model_sum(usage.total_nano_aiu, model_nano)
-        if nano_value is not None:
-            total_nano_aiu.append(nano_value)
-
-        model_estimate = [
-            item.list_price_estimate_usd
-            for item in usage.model_usage
-            if item.list_price_estimate_usd is not None
-        ]
-        estimate_value = _reported_or_model_sum(usage.list_price_estimate_usd, model_estimate)
-        if estimate_value is not None:
-            list_price_estimate.append(estimate_value)
-
-        model_input = [
-            item.input_tokens for item in usage.model_usage if item.input_tokens is not None
-        ]
-        model_output = [
-            item.output_tokens for item in usage.model_usage if item.output_tokens is not None
-        ]
-        model_reasoning = [
-            item.reasoning_tokens for item in usage.model_usage if item.reasoning_tokens is not None
-        ]
-        model_cache_read = [
-            item.cache_read_tokens
-            for item in usage.model_usage
-            if item.cache_read_tokens is not None
-        ]
-        model_cache_write = [
-            item.cache_write_tokens
-            for item in usage.model_usage
-            if item.cache_write_tokens is not None
-        ]
-        input_value = _reported_or_model_sum(usage.input_tokens, model_input)
-        if input_value is not None:
-            input_tokens.append(input_value)
-        output_value = _reported_or_model_sum(usage.output_tokens, model_output)
-        if output_value is not None:
-            output_tokens.append(output_value)
-        reasoning_value = _reported_or_model_sum(usage.reasoning_tokens, model_reasoning)
-        if reasoning_value is not None:
-            reasoning_tokens.append(reasoning_value)
-        cache_read_value = _reported_or_model_sum(usage.cache_read_tokens, model_cache_read)
-        if cache_read_value is not None:
-            cache_read_tokens.append(cache_read_value)
-        cache_write_value = _reported_or_model_sum(usage.cache_write_tokens, model_cache_write)
-        if cache_write_value is not None:
-            cache_write_tokens.append(cache_write_value)
-
-        for item in usage.model_usage:
-            if usage.total_premium_request_cost is None and item.premium_request_cost is not None:
-                premium_request_costs.append(item.premium_request_cost)
-
+    usages = [record.usage for record in records if record.usage is not None]
+    totals = {
+        field: _sum_or_none(
+            [value for usage in usages if (value := _usage_field_value(usage, field)) is not None]
+        )
+        for field in _MODEL_BACKED_USAGE_FIELDS
+    }
+    premium_requests = [
+        usage.premium_requests for usage in usages if usage.premium_requests is not None
+    ]
+    premium_request_costs = [cost for usage in usages for cost in _premium_request_costs(usage)]
     return UsageSummary(
         invocation_count=len(records),
-        reported_invocations=len(reported),
-        input_tokens=sum(input_tokens) if input_tokens else None,
-        output_tokens=sum(output_tokens) if output_tokens else None,
-        reasoning_tokens=sum(reasoning_tokens) if reasoning_tokens else None,
-        cache_read_tokens=sum(cache_read_tokens) if cache_read_tokens else None,
-        cache_write_tokens=sum(cache_write_tokens) if cache_write_tokens else None,
-        premium_requests=sum(premium_requests) if premium_requests else None,
-        premium_request_cost=(sum(premium_request_costs) if premium_request_costs else None),
-        total_nano_aiu=sum(total_nano_aiu) if total_nano_aiu else None,
-        list_price_estimate_usd=(sum(list_price_estimate) if list_price_estimate else None),
+        reported_invocations=len(usages),
+        premium_requests=_sum_or_none(premium_requests),
+        premium_request_cost=_sum_or_none(premium_request_costs),
+        **totals,
     )
 
 
@@ -1392,7 +1361,7 @@ def _build_run_summary(
         invocation_count=len(run.invocation_records),
         implementation_attempts=implementation_attempts,
         ci_repair_attempts=ci_repair_attempts,
-        usage=_usage_summary(run.invocation_records),
+        usage=summarize_usage(run.invocation_records),
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
         review_status=(

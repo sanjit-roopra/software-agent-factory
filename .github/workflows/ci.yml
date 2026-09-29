@@ -50,7 +50,7 @@ jobs:
         run: uv run --no-sync --no-build ruff check --output-format=github .
 
       - name: Type check
-        run: uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release
+        run: uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release scripts/performance/runtime_ab.py
 
   tests:
     name: tests (Python ${{ matrix.python-version }})
