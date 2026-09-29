@@ -528,10 +528,17 @@ def test_sample_from_run_fails_a_run_that_did_not_reach_pr_ready(state: Workflow
     assert ab.sample_from_run(_run(state), verification_passed=True).passed is False
 
 
-def test_sample_from_run_fails_when_verification_was_red() -> None:
-    sample = ab.sample_from_run(_run(WorkflowState.DONE), verification_passed=False)
+@pytest.mark.parametrize(
+    ("verification_passed", "expected"), [(True, True), (False, False), (None, False)]
+)
+def test_sample_passes_only_with_green_verification(
+    verification_passed: bool | None, expected: bool
+) -> None:
+    run = _run(WorkflowState.DONE)
 
-    assert sample.passed is False
+    sample = ab.sample_from_run(run, verification_passed=verification_passed)
+
+    assert sample.passed is expected
 
 
 def test_sample_from_run_falls_back_to_updated_at_for_wall_time() -> None:
@@ -550,11 +557,11 @@ def test_load_sample_reads_run_and_verification_from_store(tmp_path: Path) -> No
     assert sample.passed is False
 
 
-def test_load_sample_treats_missing_verification_artifact_as_unknown(tmp_path: Path) -> None:
+def test_load_sample_does_not_pass_a_run_without_a_verification_artifact(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path)
     store.save_run(_run(WorkflowState.PR_READY))
 
-    assert ab.load_sample(store, "run-1").passed is True
+    assert ab.load_sample(store, "run-1").passed is False
 
 
 # --- rendering ----------
@@ -793,9 +800,11 @@ class FakeCommands:
         argv = list(args)
         self.calls.append((argv, cwd))
         if _is_factory_run(argv) and self._state is not None:
-            FileRunStore(_option(argv, "--data-dir")).save_run(
+            store = FileRunStore(_option(argv, "--data-dir"))
+            store.save_run(
                 _run(self._state, invocation_records=[_invocation(1, premium_requests=2.0)])
             )
+            store.save_artifact("run-1", VerificationReport(passed=True, confidence=0.9))
         return subprocess.CompletedProcess(argv, 0, "", "boom on stderr")
 
     def factory_runs(self) -> list[list[str]]:

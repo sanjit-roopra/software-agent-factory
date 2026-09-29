@@ -175,7 +175,12 @@ class TaskOutcome(ModelBase):
 
 
 def sample_from_run(run: FactoryRun, *, verification_passed: bool | None) -> RunSample:
-    """Summarise one stored run. ``verification_passed`` is ``None`` when unknown."""
+    """Summarise one stored run.
+
+    A run passes when it reached PR-ready (or done) with green verification.
+    ``verification_passed`` is ``None`` when no verification report was stored;
+    that is not green, so the run does not pass.
+    """
     finished = run.completed_at or run.updated_at
     repair_rounds = sum(
         1
@@ -184,7 +189,7 @@ def sample_from_run(run: FactoryRun, *, verification_passed: bool | None) -> Run
         and attempt.triggered_by is not AttemptTrigger.INITIAL
     )
     return RunSample(
-        passed=run.state in SUCCESS_STATES and verification_passed is not False,
+        passed=run.state in SUCCESS_STATES and verification_passed is True,
         wall_seconds=(finished - run.created_at).total_seconds(),
         repair_rounds=repair_rounds,
         invocations=tuple(run.invocation_records),
