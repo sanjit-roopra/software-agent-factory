@@ -1,25 +1,24 @@
 """Tests for :mod:`software_agent_factory.pi_rpc`.
 
-Most tests use ``FakeProcess``, which wraps ``os.pipe()`` pairs so
+Most tests use ``FakePiProcess`` (``tests/factory_testing.py``), which wraps ``os.pipe()`` pairs so
 ``PiRpcClient``'s raw-fd ``select``/``os.read`` loop runs against real,
 deterministic file descriptors -- the test writes scripted JSONL records
 into the read end ``PiRpcClient`` consumes, exactly as a real pi process
 would. One test drives a real short-lived Python child instead, to prove
 the stderr-draining ``select()`` loop can't deadlock against a full OS pipe
-buffer -- a scenario ``FakeProcess``'s unbounded pipes can't reproduce.
+buffer -- a scenario ``FakePiProcess``'s unbounded pipes can't reproduce.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import subprocess
 import sys
 import time
-from typing import IO, Any
 
 import pytest
+from factory_testing import FakePiProcess
 
 from software_agent_factory.pi_rpc import (
     PiRpcClient,
@@ -32,95 +31,6 @@ from software_agent_factory.pi_rpc import (
 _DEADLINE = 5.0
 
 
-# double-waiver: B1 — out-of-process pi subprocess handle
-class FakeProcess:
-    """``PiProcessHandle``-shaped double backed by real ``os.pipe()`` fds.
-
-    ``stdin``/``stdout``/``stderr`` are the ends ``PiRpcClient`` reads from
-    and writes to; the ``_*_write``/``_*_read`` counterparts are the test's
-    handle on the other end, used to script pi's output and to close stdout
-    to simulate the process exiting.
-    """
-
-    def __init__(self, *, stderr: bool = True) -> None:
-        stdin_read_fd, stdin_write_fd = os.pipe()
-        stdout_read_fd, stdout_write_fd = os.pipe()
-
-        self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
-        self._stdin_read = os.fdopen(stdin_read_fd, "r")
-        self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
-        self._stdout_write = os.fdopen(stdout_write_fd, "w")
-
-        if stderr:
-            stderr_read_fd, stderr_write_fd = os.pipe()
-            self.stderr: IO[str] | None = os.fdopen(stderr_read_fd, "r")
-            self._stderr_write: IO[str] | None = os.fdopen(stderr_write_fd, "w")
-        else:
-            # Mirrors a real ``Popen(stderr=subprocess.DEVNULL)`` handle, as
-            # used by ``scripts/performance/pi_cache_probe.py``'s process
-            # factory: ``.stderr`` is ``None`` rather than an open pipe.
-            self.stderr = None
-            self._stderr_write = None
-
-        self.pid = 999_999
-        self._returncode: int | None = None
-        self._wait_returncode: int | None = None
-
-    def write_records(self, *records: dict[str, Any]) -> None:
-        for record in records:
-            self._stdout_write.write(json.dumps(record) + "\n")
-        self._stdout_write.flush()
-
-    def write_raw_stdout(self, text: str) -> None:
-        self._stdout_write.write(text)
-        self._stdout_write.flush()
-
-    def write_stderr(self, text: str) -> None:
-        assert self._stderr_write is not None
-        self._stderr_write.write(text)
-        self._stderr_write.flush()
-
-    def close_stdout(self) -> None:
-        self._stdout_write.close()
-
-    def exit(self, returncode: int) -> None:
-        self._returncode = returncode
-        self._wait_returncode = returncode
-
-    def exit_pending_reap(self, returncode: int) -> None:
-        """Simulate a process that has exited but not yet been reaped by ``poll()``.
-
-        ``poll()`` still reports ``None`` (not yet observed), while ``wait()``
-        successfully reaps it and returns ``returncode`` -- exercising
-        ``_returncode``'s fallback from ``poll()`` to ``wait()``.
-        """
-        self._wait_returncode = returncode
-
-    def poll(self) -> int | None:
-        return self._returncode
-
-    def wait(self, timeout: float | None = None) -> int:
-        if self._wait_returncode is None:
-            raise subprocess.TimeoutExpired(cmd="fake-pi", timeout=timeout or 0)
-        return self._wait_returncode
-
-    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
-        return ("", "")
-
-    def sent_commands(self) -> list[dict[str, Any]]:
-        """Read back what ``PiRpcClient`` wrote to stdin so far (non-blocking)."""
-        os.set_blocking(self._stdin_read.fileno(), False)
-        commands: list[dict[str, Any]] = []
-        try:
-            for line in self._stdin_read:
-                stripped = line.strip()
-                if stripped:
-                    commands.append(json.loads(stripped))
-        except BlockingIOError:
-            pass
-        return commands
-
-
 def _deadline(seconds: float = _DEADLINE) -> float:
     return time.monotonic() + seconds
 
@@ -131,7 +41,7 @@ def _deadline(seconds: float = _DEADLINE) -> float:
 
 
 def test_send_assigns_incrementing_ids() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     first_id = client.send({"type": "prompt", "message": "hi"})
@@ -152,7 +62,7 @@ def test_send_assigns_incrementing_ids() -> None:
 
 
 def test_request_matches_response_by_id_and_buffers_interleaved_events() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_records(
@@ -166,7 +76,7 @@ def test_request_matches_response_by_id_and_buffers_interleaved_events() -> None
 
 
 def test_request_raises_command_error_on_success_false() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_records({"type": "response", "id": "c1", "success": False, "error": "boom"})
@@ -179,7 +89,7 @@ def test_request_raises_command_error_on_success_false() -> None:
 
 
 def test_request_raises_protocol_error_on_invalid_json_line() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_raw_stdout("not valid json\n")
@@ -191,7 +101,7 @@ def test_request_raises_protocol_error_on_invalid_json_line() -> None:
 
 
 def test_request_raises_protocol_error_on_valid_json_that_is_not_an_object() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_raw_stdout("[1, 2, 3]\n")
@@ -203,7 +113,7 @@ def test_request_raises_protocol_error_on_valid_json_that_is_not_an_object() -> 
 
 
 def test_request_raises_timeout_when_deadline_passes() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     started = time.monotonic()
@@ -215,7 +125,7 @@ def test_request_raises_timeout_when_deadline_passes() -> None:
 
 
 def test_request_raises_process_exited_on_eof_with_stderr_tail() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     process.exit(1)
     process.write_stderr("fatal: credential missing")
@@ -231,7 +141,7 @@ def test_request_raises_process_exited_on_eof_with_stderr_tail() -> None:
 def test_process_exited_returncode_falls_back_to_wait_when_not_yet_polled() -> None:
     """When ``poll()`` has not yet observed the exit (returns ``None``), the
     returncode reported on EOF comes from reaping via ``wait()`` instead."""
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     process.exit_pending_reap(3)
     process.close_stdout()
@@ -246,7 +156,7 @@ def test_process_exited_returncode_is_none_when_process_still_running() -> None:
     """EOF on stdout with ``poll()`` reporting ``None`` and ``wait()`` timing
     out (the process is genuinely still running) reports ``returncode`` as
     ``None`` rather than raising or hanging."""
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     process.close_stdout()  # EOF, but exit()/exit_pending_reap() never called
 
@@ -260,7 +170,7 @@ def test_stderr_tail_keeps_trailing_window_when_it_exceeds_the_cap() -> None:
     """``stderr_tail`` is bounded to the last ~4 KB (``_STDERR_TAIL_BYTES``)
     -- the trailing window, not the front, since the most recent output is
     what's useful in a failure reason."""
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     process.exit(1)
     process.write_stderr(("a" * 5000) + "TAIL_MARKER")
@@ -279,7 +189,7 @@ def test_request_succeeds_when_stderr_handle_is_none() -> None:
     """A process constructed like a real ``Popen(stderr=subprocess.DEVNULL)``
     handle (``.stderr is None``) must not be selected on -- ``PiRpcClient``
     reads stdout alone rather than raising on the missing fd."""
-    process = FakeProcess(stderr=False)
+    process = FakePiProcess(stderr=False)
     client = PiRpcClient(process)
     assert process.stderr is None
 
@@ -294,7 +204,7 @@ def test_read_line_raises_protocol_error_when_line_exceeds_max_line_bytes() -> N
     """A line that keeps growing without ever completing with a newline must
     fail fast once it exceeds the configured byte cap, naming the limit,
     rather than letting ``_stdout_buffer`` grow without bound."""
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process, max_line_bytes=16)
     process.write_raw_stdout("x" * 17)  # no newline: buffer grows past the 16-byte cap
 
@@ -311,7 +221,7 @@ def test_two_lines_in_one_write_are_both_read_without_timeout() -> None:
     lines without a second ``select()`` wait; one that relies on a buffered
     text stream's own readline buffering could otherwise miss the second
     line and time out waiting for data that already arrived."""
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     # Ids line up with what the two request() calls below will generate
@@ -338,7 +248,7 @@ def test_two_lines_in_one_write_are_both_read_without_timeout() -> None:
 
 
 def test_wait_for_settled_collects_events_until_agent_settled() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_records(
@@ -361,7 +271,7 @@ def test_wait_for_settled_collects_events_until_agent_settled() -> None:
 
 
 def test_wait_for_settled_returns_immediately_if_already_buffered() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_records(
@@ -376,7 +286,7 @@ def test_wait_for_settled_returns_immediately_if_already_buffered() -> None:
 
 
 def test_wait_for_settled_keeps_records_after_the_settle_for_the_next_wait() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     process.write_records(
@@ -395,7 +305,7 @@ def test_wait_for_settled_keeps_records_after_the_settle_for_the_next_wait() -> 
 
 
 def test_request_raises_protocol_error_on_invalid_utf8_line() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
 
     os.write(process._stdout_write.fileno(), b"\xff\xfe not utf-8\n")
@@ -407,7 +317,7 @@ def test_request_raises_protocol_error_on_invalid_utf8_line() -> None:
 
 
 def test_send_raises_process_exited_when_pi_stdin_is_gone() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     process.exit(3)
     process._stdin_read.close()
@@ -424,7 +334,7 @@ def test_send_raises_process_exited_when_pi_stdin_is_gone() -> None:
 
 
 def test_close_closes_stdin_and_waits_for_exit() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     process.exit(0)
 
@@ -434,7 +344,7 @@ def test_close_closes_stdin_and_waits_for_exit() -> None:
 
 
 def test_close_kills_process_group_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     client = PiRpcClient(process)
     # process.exit() never called: wait() always raises TimeoutExpired, so
     # close() must escalate to kill_process_group rather than hang or raise.

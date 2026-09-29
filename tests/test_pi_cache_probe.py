@@ -1,27 +1,24 @@
 """Tests for the offline-testable pi prompt-cache probe.
 
 No real ``pi`` subprocess is spawned: the process transport is faked via
-``FakePiProcess``, a ``PiProcessHandle``-shaped double backed by real
-``os.pipe()`` fds (mirroring ``tests/test_pi_rpc.py``'s own double, since the
-probe now drives its process through
-:class:`software_agent_factory.pi_rpc.PiRpcClient` rather than its own
-buffering). The missing-executable scenario relies on ``subprocess.Popen``
-raising ``FileNotFoundError`` for a nonexistent path without ever starting a
-process.
+``FakePiProcess`` (``tests/factory_testing.py``), a ``PiProcessHandle``-shaped
+double backed by real ``os.pipe()`` fds, since the probe drives its process
+through :class:`software_agent_factory.pi_rpc.PiRpcClient`. The
+missing-executable scenario relies on ``subprocess.Popen`` raising
+``FileNotFoundError`` for a nonexistent path without ever starting a process.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
-import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import IO, Any
+from typing import Any
 
 import pytest
+from factory_testing import FakePiProcess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,52 +52,14 @@ def _get_messages_response(command_id: str, messages: list[dict[str, Any]]) -> d
     }
 
 
-# double-waiver: B1 — out-of-process pi subprocess handle
-class FakePiProcess:
-    """``PiProcessHandle``-shaped double: a scripted queue of JSONL records
-    delivered over a real ``os.pipe()`` pair, with no stderr pipe (mirroring
-    a real ``Popen(stderr=subprocess.DEVNULL)`` handle, as the probe's own
-    ``_default_process_factory`` constructs)."""
-
-    def __init__(self, records: Sequence[Mapping[str, Any]]) -> None:
-        stdin_read_fd, stdin_write_fd = os.pipe()
-        stdout_read_fd, stdout_write_fd = os.pipe()
-
-        self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
-        self._stdin_read = os.fdopen(stdin_read_fd, "r")
-        self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
-        self.stderr: IO[str] | None = None
-
-        self.pid = 999_999
-        self._returncode: int | None = None
-
-        stdout_write = os.fdopen(stdout_write_fd, "w")
-        for record in records:
-            stdout_write.write(json.dumps(record) + "\n")
-        stdout_write.close()
-
-    def sent_commands(self) -> list[dict[str, Any]]:
-        """Read back what ``PiRpcClient`` wrote to stdin so far (non-blocking)."""
-        os.set_blocking(self._stdin_read.fileno(), False)
-        commands: list[dict[str, Any]] = []
-        try:
-            for line in self._stdin_read:
-                stripped = line.strip()
-                if stripped:
-                    commands.append(json.loads(stripped))
-        except BlockingIOError:
-            pass
-        return commands
-
-    def poll(self) -> int | None:
-        return self._returncode
-
-    def wait(self, timeout: float | None = None) -> int:
-        self._returncode = 0
-        return 0
-
-    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
-        return ("", "")
+def _fake_process(records: Sequence[Mapping[str, Any]]) -> FakePiProcess:
+    """A process with no stderr pipe (as the probe's own factory builds one)
+    that has already written ``records`` and closed its stdout."""
+    process = FakePiProcess(stderr=False)
+    process.write_records(*records)
+    process.close_stdout()
+    process.exit(0)
+    return process
 
 
 # double-waiver: B1 — out-of-process pi subprocess handle
@@ -197,7 +156,7 @@ def test_run_same_process_reports_verdict_from_get_messages() -> None:
             [{"role": "assistant", "usage": {"input": 10, "cacheRead": 7}}],
         ),
     ]
-    process = FakePiProcess(records)
+    process = _fake_process(records)
     factory = RecordingFactory([process])
 
     verdict = probe.run_same_process(
@@ -230,8 +189,8 @@ def test_run_same_process_reports_verdict_from_get_messages() -> None:
 
 def test_run_resume_second_process_uses_same_session_file(tmp_path: Path) -> None:
     session_path = tmp_path / "session.jsonl"
-    first_process = FakePiProcess(_settled_response("c1"))
-    second_process = FakePiProcess(
+    first_process = _fake_process(_settled_response("c1"))
+    second_process = _fake_process(
         [
             *_settled_response("c1"),
             _get_messages_response(
@@ -273,8 +232,8 @@ def test_run_resume_reports_unavailable_when_second_process_lacks_cache_fields(
     tmp_path: Path,
 ) -> None:
     session_path = tmp_path / "session.jsonl"
-    first_process = FakePiProcess(_settled_response("c1"))
-    second_process = FakePiProcess(
+    first_process = _fake_process(_settled_response("c1"))
+    second_process = _fake_process(
         [
             *_settled_response("c1"),
             _get_messages_response("c2", [{"role": "assistant", "usage": {"input": 5}}]),

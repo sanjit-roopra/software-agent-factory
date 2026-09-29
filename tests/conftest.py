@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from factory_testing import git
+from factory_testing import close_open_fake_pi_processes, git
 
 _ALLOW_NETWORK_ENV = "FACTORY_TEST_ALLOW_NETWORK"
 _ALLOW_REAL_BINARIES_ENV = "FACTORY_TEST_ALLOW_REAL_BINARIES"
@@ -163,6 +163,13 @@ def _factory_offline_guard(request: pytest.FixtureRequest, monkeypatch: pytest.M
             _real_popen_init(self, *args, **kwargs)
 
         monkeypatch.setattr(subprocess.Popen, "__init__", guarded_popen_init)
+
+
+@pytest.fixture(autouse=True)
+def _close_fake_pi_processes() -> Iterator[None]:
+    """Close the real pipe fds every ``FakePiProcess`` a test created holds."""
+    yield
+    close_open_fake_pi_processes()
 
 
 @pytest.fixture(autouse=True)

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import IO, Any, NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
+from factory_testing import FakePiProcess
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import (
@@ -88,80 +87,7 @@ def _runtime(
     return PiAgentRuntime(config, data_dir=Path("/data"), **kwargs)
 
 
-# double-waiver: B1 — out-of-process pi subprocess handle
-class FakeProcess:
-    """``PiProcessHandle``-shaped double backed by real ``os.pipe()`` fds.
-
-    Same approach as ``tests/test_pi_rpc.py``'s ``FakeProcess``: real pipe
-    fds so ``PiRpcClient``'s raw-fd ``select``/``os.read`` loop runs against
-    real, deterministic file descriptors -- the test writes scripted JSONL
-    records into the read end ``PiRpcClient`` consumes, exactly as a real
-    ``pi`` process would.
-    """
-
-    def __init__(self) -> None:
-        stdin_read_fd, stdin_write_fd = os.pipe()
-        stdout_read_fd, stdout_write_fd = os.pipe()
-        stderr_read_fd, stderr_write_fd = os.pipe()
-
-        self.stdin: IO[str] | None = os.fdopen(stdin_write_fd, "w")
-        self._stdin_read = os.fdopen(stdin_read_fd, "r")
-        self.stdout: IO[str] | None = os.fdopen(stdout_read_fd, "r")
-        self._stdout_write = os.fdopen(stdout_write_fd, "w")
-        self.stderr: IO[str] | None = os.fdopen(stderr_read_fd, "r")
-        self._stderr_write: IO[str] | None = os.fdopen(stderr_write_fd, "w")
-
-        self.pid = 999_999
-        self._returncode: int | None = None
-        self._wait_returncode: int | None = None
-
-    def write_records(self, *records: dict[str, Any]) -> None:
-        for record in records:
-            self._stdout_write.write(json.dumps(record) + "\n")
-        self._stdout_write.flush()
-
-    def write_raw_stdout(self, text: str) -> None:
-        self._stdout_write.write(text)
-        self._stdout_write.flush()
-
-    def write_stderr(self, text: str) -> None:
-        assert self._stderr_write is not None
-        self._stderr_write.write(text)
-        self._stderr_write.flush()
-
-    def close_stdout(self) -> None:
-        self._stdout_write.close()
-
-    def exit(self, returncode: int) -> None:
-        self._returncode = returncode
-        self._wait_returncode = returncode
-
-    def poll(self) -> int | None:
-        return self._returncode
-
-    def wait(self, timeout: float | None = None) -> int:
-        if self._wait_returncode is None:
-            raise subprocess.TimeoutExpired(cmd="fake-pi", timeout=timeout or 0)
-        return self._wait_returncode
-
-    def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
-        return ("", "")
-
-    def sent_commands(self) -> list[dict[str, Any]]:
-        """Read back what ``PiRpcClient`` wrote to stdin so far (non-blocking)."""
-        os.set_blocking(self._stdin_read.fileno(), False)
-        commands: list[dict[str, Any]] = []
-        try:
-            for line in self._stdin_read:
-                stripped = line.strip()
-                if stripped:
-                    commands.append(json.loads(stripped))
-        except BlockingIOError:
-            pass
-        return commands
-
-
-class StdinEofExitProcess(FakeProcess):
+class StdinEofExitProcess(FakePiProcess):
     """A pi-like fake that exits when its stdin is closed, not in response to abort.
 
     Real ``pi`` shuts down on stdin EOF, independent of whether it ever
@@ -224,8 +150,8 @@ def _scripted_process(
     stop_reason: str | None = None,
     usage: dict[str, Any] | None = None,
     model: str | None = None,
-) -> FakeProcess:
-    """A ``FakeProcess`` that answers ``prompt``, ``get_messages``, then
+) -> FakePiProcess:
+    """A ``FakePiProcess`` that answers ``prompt``, ``get_messages``, then
     ``get_last_assistant_text``.
 
     Matches the exchange :meth:`PiAgentRuntime.run` drives: a ``prompt``
@@ -236,7 +162,7 @@ def _scripted_process(
     ``get_last_assistant_text`` command (id ``c3``) answering with
     ``final_assistant_text``.
     """
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -387,7 +313,7 @@ def _launch(runtime_kwargs: dict[str, object] | None = None, **request_overrides
     launches: list[_Launch] = []
     process = _scripted_process(json.dumps(_TRIAGE_JSON))
 
-    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
         launches.append(_Launch(list(command), cwd, env))
         return process
 
@@ -398,7 +324,7 @@ def _launch(runtime_kwargs: dict[str, object] | None = None, **request_overrides
 
 
 def _failure_reason_when_pi_writes(stderr: str, **runtime_kwargs: object) -> str:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.write_stderr(stderr)
     process.close_stdout()
@@ -493,7 +419,7 @@ def test_run_child_env_drops_the_configured_routing_api_key(
     launches: list[_Launch] = []
     process = _scripted_process(json.dumps(_TRIAGE_JSON))
 
-    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
         launches.append(_Launch(list(command), cwd, env))
         return process
 
@@ -659,7 +585,7 @@ def test_run_malformed_output_is_retryable_like_copilot(tmp_path: Path) -> None:
 
 
 def test_run_assistant_error_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -676,7 +602,7 @@ def test_run_assistant_error_yields_failed_result() -> None:
 
 
 def test_run_assistant_error_without_error_message_uses_default_wording() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -693,7 +619,7 @@ def test_run_assistant_error_without_error_message_uses_default_wording() -> Non
 
 
 def test_run_assistant_aborted_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -710,7 +636,7 @@ def test_run_assistant_aborted_yields_failed_result() -> None:
 
 
 def test_run_process_exits_before_settling_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.close_stdout()
     process.exit(7)
@@ -725,7 +651,7 @@ def test_run_process_exits_before_settling_yields_failed_result() -> None:
 
 
 def test_run_invalid_protocol_line_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.write_raw_stdout("not json at all\n")
     process.exit(0)
@@ -740,7 +666,7 @@ def test_run_invalid_protocol_line_yields_failed_result() -> None:
 
 
 def test_run_command_error_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -759,7 +685,7 @@ def test_run_command_error_yields_failed_result() -> None:
 
 
 def test_run_get_messages_non_mapping_data_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -776,7 +702,7 @@ def test_run_get_messages_non_mapping_data_yields_failed_result() -> None:
 
 
 def test_run_get_last_assistant_text_non_mapping_data_yields_failed_result() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -794,7 +720,7 @@ def test_run_get_last_assistant_text_non_mapping_data_yields_failed_result() -> 
 
 
 def test_run_get_last_assistant_text_null_text_is_treated_as_empty() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -815,7 +741,7 @@ def test_run_get_last_assistant_text_null_text_is_treated_as_empty() -> None:
 
 
 def test_run_missing_executable_yields_failed_result() -> None:
-    def factory(command: list[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
+    def factory(command: list[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
         raise FileNotFoundError(command[0])
 
     runtime = _runtime(process_factory=factory, executable="pi-missing")
@@ -832,7 +758,7 @@ def test_run_sanitizes_credential_value_from_failure_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GH_TOKEN", "ghp_supersecrettoken1234")
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.write_stderr("auth failed for ghp_supersecrettoken1234")
     process.close_stdout()
@@ -851,7 +777,7 @@ def test_run_sanitizes_provider_api_key_from_failure_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake1234567890")
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.write_stderr("auth failed for sk-ant-fake1234567890")
     process.close_stdout()
@@ -867,7 +793,7 @@ def test_run_sanitizes_provider_api_key_from_failure_reason(
 
 
 def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.write_stderr("boom " * 5000)
     process.close_stdout()
@@ -889,7 +815,7 @@ def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
 def test_run_timeout_sends_abort_then_kills_process_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     # No agent_settled event is ever written, and the process never exits --
     # simulates pi not settling within the request timeout.
@@ -923,7 +849,7 @@ def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
     reaches the timeout path -- it is treated as unreported usage instead,
     and ``self._abort_and_kill(...)`` still runs when the subsequent
     ``get_last_assistant_text`` call times out."""
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
@@ -976,7 +902,7 @@ def test_abort_and_kill_does_not_kill_a_process_that_exits_on_stdin_eof(
 
 
 def test_run_process_exits_before_settling_reports_unknown_usage() -> None:
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     process.close_stdout()
     process.exit(7)
@@ -1032,7 +958,7 @@ def test_run_timeout_after_settling_keeps_partial_usage() -> None:
     before ``get_last_assistant_text`` stalls past the timeout -- no
     best-effort retry is needed (or attempted) here.
     """
-    process = FakeProcess()
+    process = FakePiProcess()
     process.write_records(
         {"type": "response", "id": "c1", "success": True},
         {"type": "agent_settled"},
