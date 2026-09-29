@@ -55,7 +55,11 @@ from .agents import (
     workspace_cwd,
 )
 from .models import ModelUsage, PerformanceRecord, UsageMetrics
-from .pi_providers import PI_PROVIDER_CREDENTIAL_ENV_VARS, pi_provider_credential_vars
+from .pi_providers import (
+    API_KEY_SUFFIX,
+    PI_PROVIDER_CREDENTIAL_ENV_VARS,
+    pi_provider_credential_vars,
+)
 from .pi_rpc import (
     PiProcessHandle,
     PiRpcClient,
@@ -88,11 +92,6 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.READ_ONLY: ("--tools", "read,grep,find,ls"),
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
-
-#: Suffix of provider API key variables pi can read beyond the ones
-#: :data:`~software_agent_factory.pi_providers.PI_PROVIDER_CREDENTIAL_ENV_VARS`
-#: names; all are removed unless they belong to the configured provider.
-_API_KEY_SUFFIX = "_API_KEY"
 
 #: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
 _DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
@@ -555,7 +554,7 @@ class PiAgentRuntime(AgentRuntime):
         stay: ``COPILOT_GITHUB_TOKEN`` for ``github-copilot`` (it authenticates
         headless when ``~/.pi/agent/auth.json`` has no interactive login), the
         API key, OAuth token or AWS variables of another provider, the derived
-        ``<PROVIDER>_API_KEY`` for a provider the map does not know. Every
+        ``<PROVIDER>_API_KEY`` for a provider the map does not list. Every
         other known credential variable, every other ``*_API_KEY`` and the
         routing API key (pi never needs it) are removed.
 
@@ -569,9 +568,9 @@ class PiAgentRuntime(AgentRuntime):
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
 
         own_vars = set(pi_provider_credential_vars(self._config.provider))
-        # pi reads many more provider keys than the map names (XAI_API_KEY,
-        # MISTRAL_API_KEY, ...), so every *_API_KEY variable is treated as one.
-        other_api_keys = [name for name in env if name.endswith(_API_KEY_SUFFIX)]
+        # A provider newer than the map may read a key the map does not name,
+        # so every *_API_KEY variable is treated as a credential.
+        other_api_keys = [name for name in env if name.endswith(API_KEY_SUFFIX)]
         credential_vars = {
             *(name for names in PI_PROVIDER_CREDENTIAL_ENV_VARS.values() for name in names),
             *own_vars,

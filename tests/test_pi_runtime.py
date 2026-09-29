@@ -388,6 +388,9 @@ def _isolated_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "COPILOT_GITHUB_TOKEN",
         "JEV_API_KEY",
         "XAI_API_KEY",
+        "ACME_LABS_API_KEY",
+        "KIMI_API_KEY",
+        "KIMI_CODING_API_KEY",
         *_PROVIDER_KEY_ENV_VARS.values(),
         *_NON_API_KEY_CREDENTIAL_ENV_VARS,
     ):
@@ -586,23 +589,38 @@ def test_run_child_env_keeps_the_aws_variables_for_amazon_bedrock(
 def test_run_child_env_keeps_the_api_key_of_a_provider_missing_from_the_map(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``xai`` is not in the provider map; its own key is derived from the name
-    and must survive the ``*_API_KEY`` sweep."""
-    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    """``acme-labs`` is not in the provider map; its own key is derived from the
+    name and must survive the ``*_API_KEY`` sweep."""
+    monkeypatch.setenv("ACME_LABS_API_KEY", "acme-secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
 
-    env = _launch(provider="xai").env
+    env = _launch(provider="acme-labs").env
 
-    assert env["XAI_API_KEY"] == "xai-secret"
+    assert env["ACME_LABS_API_KEY"] == "acme-secret"
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_run_child_env_keeps_the_key_variable_pi_reads_for_a_provider_named_differently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``kimi-coding`` reads ``KIMI_API_KEY``, not the name-derived ``KIMI_CODING_API_KEY``."""
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+
+    env = _launch(provider="kimi-coding").env
+
+    assert env["KIMI_API_KEY"] == "kimi-secret"
     assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_run_redacts_the_kept_api_key_of_a_provider_missing_from_the_map(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("XAI_API_KEY", _PLAIN_SECRET)
+    monkeypatch.setenv("ACME_LABS_API_KEY", _PLAIN_SECRET)
 
-    reason = _failure_reason_when_pi_writes(f"auth failed for {_PLAIN_SECRET}", provider="xai")
+    reason = _failure_reason_when_pi_writes(
+        f"auth failed for {_PLAIN_SECRET}", provider="acme-labs"
+    )
 
     assert _PLAIN_SECRET not in reason
 
