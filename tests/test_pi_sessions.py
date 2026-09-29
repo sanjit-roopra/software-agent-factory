@@ -28,6 +28,8 @@ SETTINGS = SessionSettings(model="claude-sonnet-5", provider="github-copilot", r
 IMPLEMENTER_FILE = "implementer.jsonl"
 IMPLEMENTER_SIDECAR = "implementer.meta.json"
 REVIEWER_FILE = "reviewer.jsonl"
+NOT_A_SESSION_FILE = "not a session file"
+UTF_8 = "utf-8"
 
 
 class Clock:
@@ -104,10 +106,10 @@ def run_call(
     """Resolve, let 'pi' write the session file, then record the outcome."""
     decision = store.resolve(work_item_id, role, settings)
     decision.path.parent.mkdir(parents=True, exist_ok=True)
-    with decision.path.open("a", encoding="utf-8") as session_file:
+    with decision.path.open("a", encoding=UTF_8) as session_file:
         session_file.write('{"type":"message"}\n')
     store.record(work_item_id, role, decision.path, settings, success=success)
-    ended_at = json.loads((decision.path.parent / sidecar_name(role)).read_text(encoding="utf-8"))
+    ended_at = json.loads((decision.path.parent / sidecar_name(role)).read_text(encoding=UTF_8))
     stamp(decision.path, datetime.fromisoformat(ended_at["last_ended_at"]))
     return decision
 
@@ -191,9 +193,9 @@ def test_a_session_last_used_in_the_future_is_not_continued(
 def point_sidecar_at(directory: Path, session_file: str) -> None:
     """Rewrite the implementer sidecar, valid in every other way, to name ``session_file``."""
     sidecar = directory / IMPLEMENTER_SIDECAR
-    tampered = json.loads(sidecar.read_text(encoding="utf-8"))
+    tampered = json.loads(sidecar.read_text(encoding=UTF_8))
     tampered["session_file"] = session_file
-    sidecar.write_text(json.dumps(tampered), encoding="utf-8")
+    sidecar.write_text(json.dumps(tampered), encoding=UTF_8)
 
 
 def test_a_missing_session_file_starts_a_new_session(store: PiSessionStore) -> None:
@@ -293,7 +295,7 @@ def test_record_uses_the_given_end_time(store: PiSessionStore) -> None:
 def test_record_rejects_a_path_outside_the_work_item_and_role_directory(
     store: PiSessionStore, tmp_path: Path
 ) -> None:
-    with pytest.raises(ValueError, match="not a session file"):
+    with pytest.raises(ValueError, match=NOT_A_SESSION_FILE):
         store.record(
             "W1", AgentRole.IMPLEMENTER, tmp_path / "elsewhere.jsonl", SETTINGS, success=True
         )
@@ -302,7 +304,7 @@ def test_record_rejects_a_path_outside_the_work_item_and_role_directory(
 def test_record_rejects_a_file_that_is_not_a_session_file(store: PiSessionStore) -> None:
     directory = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS).path.parent
 
-    with pytest.raises(ValueError, match="not a session file"):
+    with pytest.raises(ValueError, match=NOT_A_SESSION_FILE):
         store.record(
             "W1", AgentRole.IMPLEMENTER, directory / IMPLEMENTER_SIDECAR, SETTINGS, success=True
         )
@@ -310,14 +312,14 @@ def test_record_rejects_a_file_that_is_not_a_session_file(store: PiSessionStore)
 
 @pytest.mark.parametrize(
     "name",
-    ["reviewer.jsonl", "reviewer-2.jsonl", "implementer-1.jsonl", "implementer-02.jsonl"],
+    [REVIEWER_FILE, "reviewer-2.jsonl", "implementer-1.jsonl", "implementer-02.jsonl"],
 )
 def test_record_rejects_another_roles_or_a_malformed_session_file_name(
     store: PiSessionStore, name: str
 ) -> None:
     directory = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS).path.parent
 
-    with pytest.raises(ValueError, match="not a session file"):
+    with pytest.raises(ValueError, match=NOT_A_SESSION_FILE):
         store.record("W1", AgentRole.IMPLEMENTER, directory / name, SETTINGS, success=True)
 
 
@@ -352,7 +354,7 @@ def test_a_failed_atomic_write_keeps_the_previous_sidecar_and_cleans_up(
 @pytest.mark.parametrize("content", ["not json", "{}"], ids=["garbage", "missing fields"])
 def test_an_unusable_sidecar_starts_a_new_session(store: PiSessionStore, content: str) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
-    (first.path.parent / IMPLEMENTER_SIDECAR).write_text(content, encoding="utf-8")
+    (first.path.parent / IMPLEMENTER_SIDECAR).write_text(content, encoding=UTF_8)
 
     assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
 
@@ -368,7 +370,7 @@ def test_a_valid_sidecar_naming_a_file_outside_the_directory_is_not_followed(
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
     target = first.path.parent / named
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("{}\n", encoding="utf-8")
+    target.write_text("{}\n", encoding=UTF_8)
     point_sidecar_at(first.path.parent, named)
 
     assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
@@ -376,13 +378,13 @@ def test_a_valid_sidecar_naming_a_file_outside_the_directory_is_not_followed(
 
 @pytest.mark.parametrize(
     "named",
-    ["reviewer.jsonl", "implementer-1.jsonl", "implementer-0.jsonl", "implementer-02.jsonl"],
+    [REVIEWER_FILE, "implementer-1.jsonl", "implementer-0.jsonl", "implementer-02.jsonl"],
 )
 def test_a_sidecar_naming_another_roles_or_a_malformed_file_is_not_followed(
     store: PiSessionStore, named: str
 ) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
-    (first.path.parent / named).write_text("{}\n", encoding="utf-8")
+    (first.path.parent / named).write_text("{}\n", encoding=UTF_8)
     point_sidecar_at(first.path.parent, named)
 
     assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
@@ -393,7 +395,7 @@ def test_a_sidecar_naming_a_numbered_file_of_its_own_role_is_followed(
 ) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
     numbered = first.path.parent / "implementer-12.jsonl"
-    numbered.write_text("{}\n", encoding="utf-8")
+    numbered.write_text("{}\n", encoding=UTF_8)
     point_sidecar_at(first.path.parent, numbered.name)
 
     assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(numbered)
@@ -637,7 +639,7 @@ def test_a_fresh_session_leaves_other_roles_and_other_files_alone(
     implementer = run_call(store, "W1", AgentRole.IMPLEMENTER)
     old = run_call(store, "W1", AgentRole.REVIEWER)
     notes = old.path.parent / "notes.jsonl"
-    notes.write_text("{}\n", encoding="utf-8")
+    notes.write_text("{}\n", encoding=UTF_8)
     for path in (implementer.path, notes):
         stamp(path, START)
     clock.advance(seconds=MAX_AGE * 2)
@@ -665,7 +667,7 @@ def test_a_continued_session_removes_nothing(store: PiSessionStore, clock: Clock
     current = run_call(store, "W1", AgentRole.REVIEWER)
     clock.advance(seconds=MAX_AGE - 1)
     stale = current.path.parent / "reviewer-7.jsonl"
-    stale.write_text("{}\n", encoding="utf-8")
+    stale.write_text("{}\n", encoding=UTF_8)
     stamp(stale, START - timedelta(seconds=MAX_AGE))
 
     decision = store.resolve("W1", AgentRole.REVIEWER, SETTINGS)

@@ -337,18 +337,6 @@ def test_run_launches_the_requested_model_and_reasoning_level() -> None:
     assert launch.command[launch.command.index("--thinking") + 1] == "high"
 
 
-def test_build_command_appends_session_arg_for_resumed_session() -> None:
-    """Direct: ``_build_command`` appends whatever session argument it is given."""
-    runtime = _runtime()
-    request = _request(AgentRole.IMPLEMENTER, workspace_path="/workspaces/wi-1")
-
-    command = runtime._build_command(
-        request, session_arg=["--session", "/data/pi-sessions/WI-1/IMPLEMENTER.jsonl"]
-    )
-
-    assert command[-2:] == ["--session", "/data/pi-sessions/WI-1/IMPLEMENTER.jsonl"]
-
-
 # ---------------------------------------------------------------------------
 # run: session continuation (Slice 6)
 # ---------------------------------------------------------------------------
@@ -577,26 +565,27 @@ def test_run_correction_resumes_the_session_of_a_call_whose_output_did_not_parse
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_implementer(), process=_scripted_process("not a change set"))
+    unparsed = rig.run(_implementer(), process=_scripted_process("not a change set"))
 
     rig.run(_correction_request(workspace_path="/w"))
 
     first, second = rig.session_paths()
+    assert unparsed.success is False
     assert second == first
 
 
-def test_run_timed_out_call_does_not_make_the_session_reusable(
-    tmp_path: Path, pi_fake_clock: FakePiClock
-) -> None:
+@pytest.mark.usefixtures("pi_fake_clock")
+def test_run_timed_out_call_does_not_make_the_session_reusable(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
     hung = FakePiProcess()
     hung.write_records({"type": "response", "id": "c1", "success": True})
-    result = rig.run(_implementer(timeout_seconds=1), process=hung)
+    timed_out = rig.run(_implementer(timeout_seconds=1), process=hung)
 
     rig.run(_implementer())
 
     first, second = rig.session_paths()
-    assert result.success is False
+    assert timed_out.success is False
+    assert timed_out.failure_reason == "pi timed out after 1 seconds"
     assert first is not None
     assert second is not None
     assert second.name == "implementer-2.jsonl"
@@ -637,7 +626,9 @@ def test_run_keeps_session_files_and_directories_private_to_the_owner(tmp_path: 
     assert [entry.stat().st_mode & 0o077 for entry in private] == [0, 0, 0, 0]
 
 
-def test_run_keeps_the_result_when_the_session_record_cannot_be_written(tmp_path: Path) -> None:
+def test_run_keeps_the_result_when_the_session_record_cannot_be_written(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     rig = _SessionRig(tmp_path)
     rig.run(_implementer())
     [first] = rig.session_paths()
@@ -647,6 +638,7 @@ def test_run_keeps_the_result_when_the_session_record_cannot_be_written(tmp_path
 
     result = rig.run(_implementer())
 
+    assert "could not record the pi session outcome" in caplog.text
     assert result.success is True
     assert result.change_set == ChangeSet(summary="Reject empty customer names.")
 
@@ -1315,8 +1307,9 @@ def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("pi_fake_clock")
 def test_run_timeout_sends_abort_then_kills_process_group(
-    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
+    killpg_calls: list[tuple[int, int]],
 ) -> None:
     process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
@@ -1354,8 +1347,9 @@ def test_run_timeout_gives_best_effort_usage_read_its_own_short_deadline(
     assert pi_fake_clock.now == pytest.approx(1000.0 + 1 + _BEST_EFFORT_USAGE_DEADLINE_SECONDS)
 
 
+@pytest.mark.usefixtures("pi_fake_clock")
 def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
-    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
+    killpg_calls: list[tuple[int, int]],
 ) -> None:
     """A malformed value (e.g. a negative token count) in the settled call's
     own ``get_messages`` read must not raise out of ``run()`` before it
@@ -1384,8 +1378,9 @@ def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
     assert set(killpg_calls) == {(process.pid, signal.SIGTERM)}
 
 
+@pytest.mark.usefixtures("pi_fake_clock")
 def test_run_timeout_with_undecodable_leftover_output_keeps_partial_usage(
-    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
+    killpg_calls: list[tuple[int, int]],
 ) -> None:
     """AC6: killing a wedged pi reads its leftover output, and a text-mode
     ``Popen`` raises ``UnicodeDecodeError`` on a split UTF-8 character there.
@@ -1429,8 +1424,9 @@ def test_default_process_factory_tolerates_a_split_utf8_character_when_killed() 
     assert stdout == "\ufffd"
 
 
+@pytest.mark.usefixtures("pi_fake_clock")
 def test_run_does_not_kill_a_pi_that_exits_on_stdin_eof_after_a_timeout(
-    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
+    killpg_calls: list[tuple[int, int]],
 ) -> None:
     """pi shuts down on stdin EOF, not necessarily in response to ``abort``.
 
