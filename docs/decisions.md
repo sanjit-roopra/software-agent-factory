@@ -39,6 +39,12 @@ It applies the check only when the setting is `true`.
 A missing rationale is then a structural failure with one retry, as before.
 The model no longer rejects the result, so a triage stored without assessment loads again.
 
+A run keeps the choice it started with.
+The controller reads `risk_assessment_enabled` from the run for every gate check, also on resume and reopen.
+A project stores the same choice, and a resumed project starts its remaining tasks with it.
+So one project never runs under two policies.
+A resume with `--no-risk-assessment` cannot remove an approval that a run already needs.
+
 Each run stores `risk_assessment_enabled`.
 The controller logs a warning when a run starts with the setting off.
 `factory status --json` and the dashboard show the value, so an operator can audit it.

@@ -663,6 +663,9 @@ The `risk` table stays in the file, but no run uses its `human_approval` values.
 Other stops stay active. Examples are an ineligible work item, protected files and failed verification.
 
 Each run records `risk_assessment_enabled` in `run.json`. The factory also logs a warning when a run starts with the switch off.
+Each run keeps the choice it started with. A resume or a reopen of that run ignores a different setting.
+A project also keeps its starting choice. A resumed project starts its remaining tasks with that choice.
+A resume with `--no-risk-assessment` never removes an approval that a run already needs.
 Use `--no-risk-assessment` on `factory run`, `factory project`, `factory start` or `factory service install` to turn it off for one invocation.
 
 ## Cross-field validation

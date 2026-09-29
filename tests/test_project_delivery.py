@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from factory_testing import build_config, git
+from factory_testing import build_config, git, triage_hook
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
@@ -32,6 +32,7 @@ from software_agent_factory.models import (
     ProjectState,
     ProjectTask,
     ProjectTaskState,
+    Risk,
     WorkflowState,
     WorkItem,
 )
@@ -680,6 +681,44 @@ def test_resume_continues_an_interrupted_project_without_replanning(
         "delivery-project-task-1",
         "delivery-project-task-2",
     ]
+
+
+def test_resume_dispatches_remaining_tasks_under_the_policy_the_project_started_with(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    started = _local_config(
+        factory_data_dir,
+        scheduler={"max_concurrent_tasks": 1},
+        risk_assessment_enabled=False,
+    )
+    store = FileRunStore(factory_data_dir)
+    runtime = FakeAgentRuntime(
+        planner=_planner,
+        implementer=_appending_implementer,
+        triage=triage_hook(risk=Risk.R2),
+    )
+    crashing = ProjectRunner(
+        started,
+        store,
+        runtime,
+        controller=RecordingController(  # type: ignore[arg-type]
+            WorkflowController(started, store, runtime), crash_on_tasks=[2]
+        ),
+    )
+    brief = _brief(factory_source_repo)
+    with pytest.raises(KeyboardInterrupt):
+        crashing.run(brief, factory_source_repo)
+    project_store = FileProjectStore(factory_data_dir)
+    assert project_store.load_execution(brief.id).risk_assessment_enabled is False
+
+    enabled = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    resumed = ProjectRunner(enabled, store, runtime).resume(brief.id, factory_source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    child_runs = store.list_runs()
+    assert {run.risk_assessment_enabled for run in child_runs} == {False}
+    assert {run.state for run in child_runs} == {WorkflowState.PR_READY}
 
 
 def test_resume_never_integrates_the_same_task_twice(

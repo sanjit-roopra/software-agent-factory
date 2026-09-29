@@ -53,6 +53,7 @@ def build_config(
     max_changed_files: int = 100,
     polish_enabled: bool = False,
     approved_sensitive_files: list[str] | None = None,
+    risk_assessment_enabled: bool = True,
 ) -> FactoryConfig:
     payload: dict[str, object] = {
         "factory": {
@@ -98,6 +99,8 @@ def build_config(
             "R3": {"human_approval": True},
         },
     }
+    if not risk_assessment_enabled:
+        payload["risk_assessment"] = {"enabled": False}
     if pull_request is not None:
         payload["pull_request"] = pull_request
     if ci is not None:

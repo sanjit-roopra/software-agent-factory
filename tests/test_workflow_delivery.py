@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import pytest
-from factory_testing import build_config, git, work_item
+from factory_testing import build_config, git, triage_hook, work_item
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
-from software_agent_factory.config import FactoryConfig
+from software_agent_factory.config import FactoryConfig, RiskAssessmentConfig
 from software_agent_factory.delivery import DeliveryTarget
 from software_agent_factory.github import GitHubError, UnexpectedRepositoryError
 from software_agent_factory.models import (
@@ -21,6 +21,8 @@ from software_agent_factory.models import (
     ReviewFindingDraft,
     ReviewReport,
     ReviewSourceLocation,
+    Risk,
+    TriageResult,
     WorkflowState,
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
@@ -501,6 +503,52 @@ def test_resume_delivery_does_not_repeat_agents_or_reset_budgets(
     assert recovered.attempt_records == checkpoint.attempt_records
     assert len(runtime.requests) == agent_count
     assert controller.resume(checkpoint.id, source_repo) == recovered
+
+
+def _with_risk_assessment(config: FactoryConfig, *, enabled: bool) -> FactoryConfig:
+    return config.model_copy(update={"risk_assessment": RiskAssessmentConfig(enabled=enabled)})
+
+
+def test_resume_keeps_the_risk_assessment_choice_the_run_started_with(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    started = _with_risk_assessment(_config(tmp_path), enabled=False)
+    publisher = LocalPublisher(crash=True)
+    runtime = FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
+    controller, store = _controller(started, publisher=publisher, runtime=runtime)
+    with pytest.raises(KeyboardInterrupt):
+        controller.run(work_item(), source_repo, run_id="autonomous")
+    assert store.load_run("autonomous").state is WorkflowState.PR_READY
+
+    resumed_controller, _ = _controller(
+        _with_risk_assessment(started, enabled=True), publisher=publisher, runtime=runtime
+    )
+    recovered = resumed_controller.resume("autonomous", source_repo)
+
+    assert recovered.state is WorkflowState.DONE
+    assert recovered.risk_assessment_enabled is False
+
+
+def test_resume_with_the_switch_off_cannot_bypass_an_approval_the_run_started_with(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    started = _with_risk_assessment(_config(tmp_path), enabled=True)
+    publisher = LocalPublisher(crash=True)
+    controller, store = _controller(started, publisher=publisher)
+    with pytest.raises(KeyboardInterrupt):
+        controller.run(work_item(), source_repo, run_id="guarded")
+    triage = store.load_artifact("guarded", TriageResult)
+    store.save_artifact("guarded", triage.model_copy(update={"risk": Risk.R2}))
+    calls_before = publisher.calls
+
+    resumed_controller, _ = _controller(
+        _with_risk_assessment(started, enabled=False), publisher=publisher
+    )
+    recovered = resumed_controller.resume("guarded", source_repo)
+
+    assert recovered.state is not WorkflowState.DONE
+    assert recovered.risk_assessment_enabled is True
+    assert publisher.calls == calls_before
 
 
 def test_resume_refuses_policy_changes_without_mutating_checkpoint(

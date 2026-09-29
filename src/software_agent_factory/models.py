@@ -603,6 +603,7 @@ class ProjectExecution(VersionedModel):
     delivery_repository: str | None = None
     delivery_host: str | None = None
     delivery_policy_fingerprint: str | None = None
+    risk_assessment_enabled: bool = True
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
     completed_at: UtcDateTime | None = None
