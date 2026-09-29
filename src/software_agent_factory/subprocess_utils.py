@@ -36,9 +36,10 @@ GITHUB_CREDENTIAL_ENV_VARS = frozenset(
 #: Patterns matching GitHub token literals, used to scrub tokens that reach a
 #: child process's output even when they were not sourced from one of
 #: :data:`GITHUB_CREDENTIAL_ENV_VARS` (e.g. embedded in a URL or error body).
+#: ``(?a:\w)`` is exactly ``[A-Za-z0-9_]`` while ``\b`` keeps its Unicode-aware meaning.
 TOKEN_PATTERNS = (
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgh[pousr]_(?a:\w){8,}\b"),
+    re.compile(r"\bgithub_pat_(?a:\w){20,}\b"),
 )
 
 _VERSION_PATTERN = re.compile(r"(\d+(?:\.\d+)*)")
