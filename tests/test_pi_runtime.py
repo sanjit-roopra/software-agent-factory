@@ -12,14 +12,30 @@ from typing import Any, NamedTuple
 import pytest
 from factory_testing import FakePiClock, FakePiProcess
 from prompt_fixtures import (
+    ACCEPTED_FINDING_MESSAGE,
+    BRIEF_TEXT,
+    DEBT_DIFF,
     DIFF,
-    PLAN_SUMMARY,
+    FIRST_CALL_TEXT,
+    FIRST_REVIEW_TESTER_FINDING,
+    OPENING_TEXT,
+    OUTPUT_REJECTION,
+    POLISH_SUMMARY,
+    PRIOR_FINDING_MESSAGE,
+    RE_REVIEW_TESTER_FINDING,
     REPAIR_DIFF,
-    SPECIFICATION_PROBLEM,
+    REPAIRED_DIFF,
+    SKILL_GUIDANCE,
+    VERIFICATION_FAILURE,
+    accepted_debt_review_request,
+    change_set_correction_request,
+    first_implementer_request,
+    first_review_request,
     make_request,
-    plan,
-    review_finding,
-    specification,
+    polish_request,
+    re_review_request,
+    verification_repair_request,
+    with_output_rejection,
     work_item,
 )
 
@@ -35,9 +51,7 @@ from software_agent_factory.copilot_runtime import parse_copilot_artifact
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
-    AttemptTrigger,
     ChangeSet,
-    RepairContext,
     RepositoryProfile,
     TriageResult,
 )
@@ -49,7 +63,7 @@ from software_agent_factory.pi_runtime import (
     _default_process_factory,
     usage_from_pi_messages,
 )
-from software_agent_factory.prompts import build_prompt
+from software_agent_factory.prompts import build_prompt, build_prompt_sections, section_hashes
 from software_agent_factory.subprocess_utils import sanitize_output
 
 
@@ -417,53 +431,6 @@ def _reviewer(**overrides: object) -> AgentRequest:
     return make_request(AgentRole.REVIEWER, **overrides)
 
 
-_REPAIR_FAILURE = "unit-tests: TEST_FAILURE"
-_PRIOR_FINDING = "Empty values bypass normalization."
-_REJECTION_REASON = "The previous output was not valid JSON."
-
-#: What only the first call of a session carries: the brief, specification and plan.
-_FIRST_CALL_TEXT = (
-    work_item().title,
-    work_item().description,
-    SPECIFICATION_PROBLEM,
-    PLAN_SUMMARY,
-)
-
-
-def _first_artifacts() -> dict[str, object]:
-    return {"specification": specification(), "execution_plan": plan()}
-
-
-def _first_implementer_call(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
-    return _implementer(work_item_id, **_first_artifacts(), **overrides)
-
-
-def _repair_round(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
-    """The implementer call after a failed check: the first call's artifacts plus a repair."""
-    repair = RepairContext(
-        trigger=AttemptTrigger.VERIFICATION,
-        summary="Deterministic verification failed.",
-        failures=[_REPAIR_FAILURE],
-    )
-    return _implementer(
-        work_item_id,
-        **_first_artifacts(),
-        attempt_number=2,
-        diff=DIFF,
-        repair_context=repair,
-        **overrides,
-    )
-
-
-def _first_review(**overrides: object) -> AgentRequest:
-    return _reviewer(**_first_artifacts(), diff=DIFF, changed_files=["src/app.py"], **overrides)
-
-
-def _re_review() -> AgentRequest:
-    finding = review_finding("review-1", message=_PRIOR_FINDING, path="src/app.py")
-    return _first_review(prior_review_findings=[finding], repair_diff=REPAIR_DIFF)
-
-
 def _missing_from(prompt: str, texts: Sequence[str]) -> list[str]:
     return [text for text in texts if text not in prompt]
 
@@ -508,10 +475,10 @@ def test_run_first_implementer_call_starts_its_session_file_under_the_data_dir(
 
 def test_run_repair_round_within_the_limit_resumes_the_same_session_file(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_implementer_call())
+    rig.run(first_implementer_request())
     rig.advance(minutes=10)
 
-    rig.run(_repair_round())
+    rig.run(verification_repair_request())
 
     first, second = rig.session_paths()
     assert first is not None
@@ -521,10 +488,10 @@ def test_run_repair_round_within_the_limit_resumes_the_same_session_file(tmp_pat
 def test_run_reviewer_resumes_its_own_session_not_the_implementers(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
     rig.run(_implementer())
-    rig.run(_first_review())
+    rig.run(first_review_request())
     rig.advance(minutes=5)
 
-    rig.run(_re_review())
+    rig.run(re_review_request())
 
     implementer, reviewer, re_review = rig.session_paths()
     assert reviewer is not None
@@ -535,11 +502,11 @@ def test_run_reviewer_resumes_its_own_session_not_the_implementers(tmp_path: Pat
 
 def test_run_interleaved_work_items_use_only_their_own_session_files(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_implementer_call("W1"))
-    rig.run(_first_implementer_call("W2"))
+    rig.run(first_implementer_request("W1"))
+    rig.run(first_implementer_request("W2"))
 
-    rig.run(_repair_round("W1"))
-    rig.run(_repair_round("W2"))
+    rig.run(verification_repair_request("W1"))
+    rig.run(verification_repair_request("W2"))
 
     w1, w2, w1_again, w2_again = rig.session_paths()
     assert w1 != w2
@@ -553,10 +520,10 @@ def test_run_session_age_limit_comes_from_the_pi_config(
     tmp_path: Path, elapsed_seconds: int, resumed: bool
 ) -> None:
     rig = _SessionRig(tmp_path, session_reuse_max_age_seconds=_SESSION_MAX_AGE)
-    rig.run(_first_implementer_call())
+    rig.run(first_implementer_request())
     rig.advance(seconds=elapsed_seconds)
 
-    rig.run(_repair_round())
+    rig.run(verification_repair_request())
 
     first, second = rig.session_paths()
     assert (second == first) is resumed
@@ -664,9 +631,9 @@ def test_run_assistant_error_does_not_make_the_session_reusable(tmp_path: Path) 
 def test_run_success_after_a_failed_call_makes_the_new_session_reusable(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
     rig.run(_implementer(), process=_scripted_process("", stop_reason="error"))
-    rig.run(_first_implementer_call())
+    rig.run(first_implementer_request())
 
-    rig.run(_repair_round())
+    rig.run(verification_repair_request())
 
     _failed, fresh, resumed = rig.session_paths()
     assert resumed == fresh
@@ -701,75 +668,211 @@ def test_run_keeps_the_result_when_the_session_record_cannot_be_written(
     assert result.change_set == ChangeSet(summary="Reject empty customer names.")
 
 
+def _recorded_sections(rig: _SessionRig, role_stem: str) -> dict[str, str]:
+    """The ``sent_sections`` map in the sidecar of the session the last call used."""
+    [*_, last] = rig.session_paths()
+    assert last is not None
+    sidecar = json.loads((last.parent / f"{role_stem}.meta.json").read_text(encoding="utf-8"))
+    return dict(sidecar["sent_sections"])
+
+
+def _sections_of(*requests: AgentRequest) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for request in requests:
+        merged.update(section_hashes(build_prompt_sections(request)))
+    return merged
+
+
+def _assert_sent_only_what_changed(
+    rig: _SessionRig, result: AgentResult, request: AgentRequest, unwanted: Sequence[str]
+) -> None:
+    """The last call sent less than the full prompt and none of ``unwanted``.
+
+    Each of ``unwanted`` must really be in an earlier prompt of the session: the
+    positive control that makes its absence from the last prompt mean something.
+    """
+    *earlier, sent = rig.prompts
+    assert _missing_from("\n".join(earlier), unwanted) == []
+    assert _found_in(sent, unwanted) == []
+    assert len(sent) < len(build_prompt(request))
+    assert result.performance is not None
+    assert result.performance.prompt_chars == len(sent)
+
+
 def test_run_first_call_of_a_session_sends_the_full_prompt(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    request = _first_implementer_call()
+    request = first_implementer_request()
 
     result = rig.run(request)
 
     [prompt] = rig.prompts
     assert prompt == build_prompt(request)
-    assert _missing_from(prompt, _FIRST_CALL_TEXT) == []
+    assert _missing_from(prompt, FIRST_CALL_TEXT) == []
     assert result.performance is not None
     assert result.performance.prompt_chars == len(prompt)
+
+
+def test_run_first_call_records_every_section_of_the_full_prompt(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    request = first_implementer_request()
+
+    rig.run(request)
+
+    assert _recorded_sections(rig, "implementer") == _sections_of(request)
+
+
+def test_run_continued_call_records_the_earlier_sections_with_its_own(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    first = first_implementer_request()
+    repair = verification_repair_request()
+    rig.run(first)
+    rig.advance(minutes=1)
+
+    rig.run(repair)
+
+    recorded = _recorded_sections(rig, "implementer")
+    assert recorded == _sections_of(first, repair)
+    assert "Repair context" in recorded
 
 
 def test_run_implementer_repair_sends_only_the_repair_round_into_the_same_session(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_implementer_call())
+    rig.run(first_implementer_request())
     rig.advance(minutes=1)
 
-    result = rig.run(_repair_round())
+    repair = verification_repair_request()
+
+    result = rig.run(repair)
 
     first, second = rig.session_paths()
-    _first_prompt, repair_prompt = rig.prompts
+    repair_prompt = rig.prompts[1]
     assert second == first
-    assert _missing_from(repair_prompt, [_REPAIR_FAILURE, DIFF.strip()]) == []
-    assert _found_in(repair_prompt, _FIRST_CALL_TEXT) == []
-    assert result.performance is not None
-    assert result.performance.prompt_chars == len(repair_prompt)
+    assert _missing_from(repair_prompt, [VERIFICATION_FAILURE, DIFF.strip()]) == []
+    _assert_sent_only_what_changed(rig, result, repair, FIRST_CALL_TEXT)
 
 
-def test_run_reviewer_re_review_sends_only_the_findings_and_new_changes(tmp_path: Path) -> None:
+def test_run_polish_round_sends_the_repository_skill_that_first_appears_there(
+    tmp_path: Path,
+) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_review())
+    rig.run(first_implementer_request())
     rig.advance(minutes=1)
+    polish = polish_request()
 
-    rig.run(_re_review())
+    result = rig.run(polish)
 
     first, second = rig.session_paths()
-    _first_prompt, re_review_prompt = rig.prompts
+    first_prompt, polish_prompt = rig.prompts
     assert second == first
-    assert _missing_from(re_review_prompt, [_PRIOR_FINDING, REPAIR_DIFF.strip()]) == []
-    assert _found_in(re_review_prompt, [*_FIRST_CALL_TEXT, DIFF.strip()]) == []
+    assert SKILL_GUIDANCE not in first_prompt
+    assert _missing_from(polish_prompt, [SKILL_GUIDANCE, POLISH_SUMMARY, DIFF.strip()]) == []
+    _assert_sent_only_what_changed(rig, result, polish, FIRST_CALL_TEXT)
+
+
+def test_run_re_review_sends_the_new_evidence_findings_and_rules(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(first_review_request())
+    rig.advance(minutes=1)
+    re_review = re_review_request()
+
+    result = rig.run(re_review)
+
+    first, second = rig.session_paths()
+    first_prompt, re_review_prompt = rig.prompts
+    assert second == first
+    assert (
+        _missing_from(
+            re_review_prompt,
+            [
+                PRIOR_FINDING_MESSAGE,
+                REPAIR_DIFF.strip(),
+                REPAIRED_DIFF.strip(),
+                RE_REVIEW_TESTER_FINDING,
+                "Return one disposition for each prior finding id",
+            ],
+        )
+        == []
+    )
+    unwanted = (*FIRST_CALL_TEXT, FIRST_REVIEW_TESTER_FINDING, "Leave prior_finding_dispositions")
+    _assert_sent_only_what_changed(rig, result, re_review, unwanted)
+    assert _found_in(first_prompt, [FIRST_REVIEW_TESTER_FINDING]) != []
+
+
+def test_run_review_after_accepted_debt_sends_the_debt_the_rules_and_the_new_diff(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(first_review_request())
+    rig.advance(minutes=1)
+    rig.run(re_review_request())
+    rig.advance(minutes=1)
+    debt = accepted_debt_review_request()
+
+    result = rig.run(debt)
+
+    first, _second, third = rig.session_paths()
+    debt_prompt = rig.prompts[2]
+    assert third == first
+    assert (
+        _missing_from(
+            debt_prompt,
+            [
+                ACCEPTED_FINDING_MESSAGE,
+                "Do not report an unchanged accepted finding again",
+                DEBT_DIFF.strip(),
+                "Leave prior_finding_dispositions and repair_regressions empty",
+            ],
+        )
+        == []
+    )
+    unwanted = (*FIRST_CALL_TEXT, PRIOR_FINDING_MESSAGE, "Return one disposition for each prior")
+    _assert_sent_only_what_changed(rig, result, debt, unwanted)
+
+
+def test_run_retry_inside_one_reviewer_round_sends_only_the_output_rejection(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    first = first_review_request()
+    retry = with_output_rejection(first)
+    rig.run(first)
+
+    result = rig.run(retry)
+
+    first_path, retry_path = rig.session_paths()
+    _first_prompt, retry_prompt = rig.prompts
+    assert retry_path == first_path
+    assert OUTPUT_REJECTION in retry_prompt
+    unwanted = (*FIRST_CALL_TEXT, DIFF.strip(), FIRST_REVIEW_TESTER_FINDING)
+    _assert_sent_only_what_changed(rig, result, retry, unwanted)
 
 
 def test_run_change_set_correction_sends_only_the_change_set_and_its_context(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_implementer_call())
+    first = first_implementer_request()
+    rig.run(first)
     rig.advance(minutes=1)
-    correction = _correction_request(
-        workspace_path="/w", repair_context=_REJECTION_REASON, **_first_artifacts()
-    )
+    correction = change_set_correction_request(first)
 
-    rig.run(correction)
+    result = rig.run(correction)
 
-    first, second = rig.session_paths()
-    _first_prompt, correction_prompt = rig.prompts
-    assert second == first
-    assert _missing_from(correction_prompt, ["Fix output shape", _REJECTION_REASON]) == []
-    assert _found_in(correction_prompt, _FIRST_CALL_TEXT) == []
+    first_path, second = rig.session_paths()
+    first_prompt, correction_prompt = rig.prompts
+    assert second == first_path
+    assert _missing_from(correction_prompt, ["Fix the output shape.", "Correction context"]) == []
+    carried_over = (*BRIEF_TEXT, *OPENING_TEXT)
+    _assert_sent_only_what_changed(rig, result, correction, carried_over)
 
 
 def test_run_continued_call_with_nothing_new_starts_a_new_session_with_the_full_prompt(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
-    request = _first_implementer_call()
+    request = first_implementer_request()
     rig.run(request)
     rig.advance(minutes=1)
 
@@ -783,26 +886,66 @@ def test_run_continued_call_with_nothing_new_starts_a_new_session_with_the_full_
     assert rig.prompts == [build_prompt(request)] * 2
     assert result.performance is not None
     assert result.performance.prompt_chars == len(rig.prompts[1])
+    assert _recorded_sections(rig, "implementer") == _sections_of(request)
 
 
 def test_run_repair_after_a_fallback_continues_the_new_session(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_implementer_call())
+    rig.run(first_implementer_request())
     rig.advance(minutes=1)
-    rig.run(_first_implementer_call())
+    rig.run(first_implementer_request())
     rig.advance(minutes=1)
 
-    rig.run(_repair_round())
+    rig.run(verification_repair_request())
 
     _first, fallback, repair = rig.session_paths()
     assert repair == fallback
-    assert _found_in(rig.prompts[2], _FIRST_CALL_TEXT) == []
+    assert _missing_from(rig.prompts[1], FIRST_CALL_TEXT) == []
+    assert _found_in(rig.prompts[2], FIRST_CALL_TEXT) == []
+
+
+def test_run_call_that_did_not_settle_records_no_sections_and_the_next_call_sends_all(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(first_implementer_request(), process=_scripted_process("", stop_reason="error"))
+    assert _recorded_sections(rig, "implementer") == {}
+    repair = verification_repair_request()
+
+    rig.run(repair)
+
+    first, second = rig.session_paths()
+    assert second != first
+    assert rig.prompts[1] == build_prompt(repair)
+
+
+def test_run_sidecar_without_sections_starts_a_new_session_with_the_full_prompt(
+    tmp_path: Path,
+) -> None:
+    """A sidecar written before ``sent_sections`` existed: what the session holds is unknown."""
+    rig = _SessionRig(tmp_path)
+    rig.run(first_implementer_request())
+    [first] = rig.session_paths()
+    assert first is not None
+    sidecar_path = first.parent / _IMPLEMENTER_SIDECAR
+    old_format = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    del old_format["sent_sections"]
+    sidecar_path.write_text(json.dumps(old_format), encoding="utf-8")
+    repair = verification_repair_request()
+
+    rig.run(repair)
+
+    _first, second = rig.session_paths()
+    assert second is not None
+    assert second.name == "implementer-2.jsonl"
+    assert rig.prompts[1] == build_prompt(repair)
+    assert _recorded_sections(rig, "implementer") == _sections_of(repair)
 
 
 def test_run_repair_in_a_new_session_sends_the_full_prompt(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_first_implementer_call())
-    request = _repair_round(model="claude-opus-5")
+    rig.run(first_implementer_request())
+    request = verification_repair_request(model="claude-opus-5")
 
     rig.run(request)
 
@@ -815,7 +958,7 @@ def test_run_role_without_a_session_sends_the_full_prompt_even_with_a_rejection(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
-    request = make_request(AgentRole.TESTER, repair_context=_REJECTION_REASON)
+    request = make_request(AgentRole.TESTER, repair_context=OUTPUT_REJECTION)
 
     rig.run(request)
 

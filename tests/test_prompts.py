@@ -7,15 +7,39 @@ see. Nothing here calls a model.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from prompt_fixtures import (
+    ACCEPTED_FINDING_MESSAGE,
+    BRIEF_TEXT,
+    DEBT_DIFF,
     DIFF,
-    REPAIR_DIFF,
+    FIRST_CALL_TEXT,
+    FIRST_REVIEW_TESTER_FINDING,
+    OPENING_TEXT,
+    OUTPUT_REJECTION,
+    POLISH_SUMMARY,
+    PRIOR_FINDING_MESSAGE,
+    RE_REVIEW_TESTER_FINDING,
+    REPAIRED_DIFF,
+    RESEARCH_QUESTION,
+    SKILL_GUIDANCE,
+    VERIFICATION_FAILURE,
+    VERIFICATION_LOG_EXCERPT,
+    accepted_debt_review_request,
+    change_set_correction_request,
+    first_implementer_request,
+    first_review_request,
     make_request,
     plan,
+    polish_request,
+    re_review_request,
     review_finding,
     specification,
     verification,
+    verification_repair_request,
+    with_output_rejection,
     work_item,
 )
 
@@ -53,6 +77,7 @@ from software_agent_factory.prompts import (
     build_prompt_sections,
     normalize_role,
     parse_collection_errors,
+    section_hashes,
     summarize_command_result,
 )
 
@@ -741,213 +766,272 @@ def test_summarize_command_result_tail_traceback_retention() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Continuation prompt: only what changed since the previous call in a session
+# Continuation prompt: only the sections that are new or changed in a session
 # ---------------------------------------------------------------------------
 
-RESEARCH_QUESTION = "Which validator rejects blank names?"
-TESTER_FINDING = "Whitespace slips through validation."
-PRIOR_FINDING = "A blank name skips normalization."
-ACCEPTED_FINDING = "A legacy response remains accepted debt."
-REJECTION_REASON = "The previous output was not valid JSON."
-CHANGE_SET_SUMMARY = "Fix the output shape."
+CONTINUATION_LEAD = (
+    "This continues the session. Only new or changed sections follow. "
+    "Earlier sections still apply unless a section below replaces them."
+)
 JSON_SCHEMA_MARKER = "JSON Schema:"
 CHANGE_SET_SCHEMA = f"ChangeSet {JSON_SCHEMA_MARKER}"
 REVIEW_REPORT_SCHEMA = f"ReviewReport {JSON_SCHEMA_MARKER}"
-REPAIR_CONTEXT_TITLE = "Repair context"
-REPAIR_FAILURE = "integration-tests: TEST_FAILURE"
-REPAIR_LOG_EXCERPT = "AssertionError: expected HTTP 400"
-
-#: Text that only the first call of a session carries.
-FIRST_CALL_TEXT = (
-    work_item().title,
-    work_item().description,
-    "Names must not be blank.",
-    "Add a guard clause.",
-    RESEARCH_QUESTION,
-    "You are the Software Agent Factory",
-    "Use concise technical English",
-)
+FIRST_REVIEW_RULE = "Leave prior_finding_dispositions and repair_regressions empty"
+RE_REVIEW_RULE = "Return one disposition for each prior finding id"
+ACCEPTED_DEBT_RULE = "Do not report an unchanged accepted finding again"
 
 
-def _finding(message: str, path: str) -> ReviewFinding:
-    return ReviewFinding(
-        id=f"review-{path}",
-        category=ReviewFindingCategory.CORRECTNESS,
-        message=message,
-        locations=[ReviewSourceLocation(path=path, start_line=1, end_line=1)],
-        origin=ReviewFindingOrigin.INITIAL,
-        first_seen_snapshot=1,
+def _seen_by(*requests: AgentRequest) -> dict[str, str]:
+    """What a session holds after ``requests``: the first in full, the others as continued."""
+    seen = section_hashes(build_prompt_sections(requests[0]))
+    for request in requests[1:]:
+        continuation = build_continuation_prompt(request, seen)
+        assert continuation is not None
+        seen = dict(continuation.sections_seen)
+    return seen
+
+
+def _continue(request: AgentRequest, *earlier: AgentRequest) -> str:
+    continuation = build_continuation_prompt(request, _seen_by(*earlier))
+    assert continuation is not None
+    return continuation.text
+
+
+def _absent_from(prompt: str, unwanted: tuple[str, ...]) -> list[str]:
+    """The texts of ``unwanted`` that ``prompt`` holds. Empty means the prompt is clean."""
+    return [text for text in unwanted if text in prompt]
+
+
+def _full_prompt_carries(request: AgentRequest, texts: tuple[str, ...]) -> None:
+    """Positive control: a text a continuation must omit is really in the full prompt."""
+    assert _absent_from(build_prompt(request), texts) == list(texts)
+
+
+def test_continuation_opens_with_a_lead_line_and_ends_with_the_output_contract() -> None:
+    prompt = _continue(verification_repair_request(), first_implementer_request())
+
+    assert prompt.startswith(
+        "This continues the session. Only new or changed sections follow. "
+        "Earlier sections still apply unless a section below replaces them."
     )
+    assert prompt.index("Output contract:") > prompt.index("Repair context:")
+    assert prompt.endswith(f"ChangeSet {JSON_SCHEMA_MARKER}\n{_schema_of(ChangeSet)}")
 
 
-def _continued_implementer(**overrides: object) -> AgentRequest:
-    payload: dict[str, object] = {
-        "specification": specification(),
-        "research_report": ResearchReport(question=RESEARCH_QUESTION),
-        "execution_plan": plan(),
-        "workspace_path": "/w",
-        "attempt_number": 2,
-    }
-    payload.update(overrides)
-    return make_request(AgentRole.IMPLEMENTER, **payload)
+def _schema_of(model: type[ChangeSet] | type[ReviewReport]) -> str:
+    return json.dumps(model.model_json_schema(), separators=(",", ":"), sort_keys=True)
 
 
-def _continued_reviewer(**overrides: object) -> AgentRequest:
-    payload: dict[str, object] = {
-        "specification": specification(),
-        "execution_plan": plan(),
-        "diff": DIFF,
-        "changed_files": ["src/app.py"],
-        "verification_report": verification(),
-        "test_report": TestReport(passed=False, findings=[TESTER_FINDING], confidence=0.5),
-        "attempt_number": 3,
-    }
-    payload.update(overrides)
-    return make_request(AgentRole.REVIEWER, **payload)
+def test_an_implementer_repair_sends_the_repair_context_diff_and_attempt_only() -> None:
+    first = first_implementer_request()
+    repair = verification_repair_request()
 
+    prompt = _continue(repair, first)
 
-def _assert_absent(prompt: str, unwanted: tuple[str, ...]) -> None:
-    present = [text for text in unwanted if text in prompt]
-    assert present == []
-
-
-def test_continuation_prompt_for_an_implementer_repair_carries_the_repair_round_only() -> None:
-    prompt = build_continuation_prompt(
-        _continued_implementer(
-            diff=DIFF,
-            repair_context=RepairContext(
-                trigger=AttemptTrigger.VERIFICATION,
-                summary="Deterministic verification failed.",
-                failures=[REPAIR_FAILURE],
-                log_excerpt=REPAIR_LOG_EXCERPT,
-            ),
-        )
-    )
-
-    assert prompt is not None
-    assert REPAIR_CONTEXT_TITLE in prompt
-    assert REPAIR_FAILURE in prompt
-    assert REPAIR_LOG_EXCERPT in prompt
-    assert "Current diff" in prompt
+    _full_prompt_carries(repair, FIRST_CALL_TEXT)
+    assert "Repair context:" in prompt
+    assert VERIFICATION_FAILURE in prompt
+    assert VERIFICATION_LOG_EXCERPT in prompt
+    assert "Current diff:" in prompt
     assert DIFF.strip() in prompt
+    assert "Attempt number:\n2" in prompt
     assert CHANGE_SET_SCHEMA in prompt
-    assert prompt.index(REPAIR_CONTEXT_TITLE) < prompt.index(JSON_SCHEMA_MARKER)
-    _assert_absent(prompt, FIRST_CALL_TEXT)
+    assert _absent_from(prompt, (*FIRST_CALL_TEXT, RESEARCH_QUESTION)) == []
 
 
-def test_continuation_prompt_for_a_reviewer_re_review_carries_findings_and_new_changes_only() -> (
-    None
-):
-    prompt = build_continuation_prompt(
-        _continued_reviewer(
-            prior_review_findings=[_finding(PRIOR_FINDING, "src/a.py")],
-            accepted_review_findings=[_finding(ACCEPTED_FINDING, "src/b.py")],
-            repair_diff=REPAIR_DIFF,
-        )
-    )
+def test_a_polish_round_sends_the_repository_skill_that_appeared_after_the_first_call() -> None:
+    """The skill is resolved after the first green verification, so the first call lacks it."""
+    first = first_implementer_request()
+    polish = polish_request()
 
-    assert prompt is not None
-    assert "Previously reported blocking issues from this run" in prompt
-    assert PRIOR_FINDING in prompt
-    assert "Controller-accepted review debt" in prompt
-    assert ACCEPTED_FINDING in prompt
-    assert "Accepted-debt review rule" in prompt
-    assert "Changes since the previous review" in prompt
+    prompt = _continue(polish, first)
+
+    _full_prompt_carries(polish, FIRST_CALL_TEXT)
+    assert "Repository skill (untrusted advisory context):" in prompt
+    assert SKILL_GUIDANCE in prompt
+    assert POLISH_SUMMARY in prompt
+    assert DIFF.strip() in prompt
+    assert _absent_from(prompt, FIRST_CALL_TEXT) == []
+
+
+def test_a_polish_round_does_not_send_the_repository_skill_twice() -> None:
+    first = first_implementer_request()
+    polish = polish_request()
+    second_polish_like = verification_repair_request(repository_skill=polish.repository_skill)
+
+    prompt = _continue(second_polish_like, first, polish)
+
+    assert "Repository skill" not in prompt
+    assert SKILL_GUIDANCE not in prompt
+
+
+def test_a_review_after_accepted_debt_sends_the_debt_the_rules_and_the_new_diff() -> None:
+    """After acceptance the open findings are gone, so the first-review rules apply again."""
+    first = first_review_request()
+    re_review = re_review_request()
+    debt = accepted_debt_review_request()
+
+    prompt = _continue(debt, first, re_review)
+
+    _full_prompt_carries(debt, (*FIRST_CALL_TEXT, ACCEPTED_FINDING_MESSAGE))
+    assert "Role instructions:" in prompt
+    assert FIRST_REVIEW_RULE in prompt
+    assert RE_REVIEW_RULE not in prompt
+    assert "Controller-accepted review debt:" in prompt
+    assert ACCEPTED_FINDING_MESSAGE in prompt
+    assert ACCEPTED_DEBT_RULE in prompt
+    assert DEBT_DIFF.strip() in prompt
+    assert "Implementation snapshot under review:\n3" in prompt
+    assert _absent_from(prompt, (*FIRST_CALL_TEXT, PRIOR_FINDING_MESSAGE)) == []
+
+
+def test_a_re_review_sends_its_findings_rules_and_every_new_piece_of_evidence() -> None:
+    first = first_review_request()
+    re_review = re_review_request()
+
+    prompt = _continue(re_review, first)
+
+    _full_prompt_carries(re_review, FIRST_CALL_TEXT)
+    assert "Role instructions:" in prompt
+    assert RE_REVIEW_RULE in prompt
+    assert FIRST_REVIEW_RULE not in prompt
+    assert "Previously reported blocking issues from this run:" in prompt
+    assert PRIOR_FINDING_MESSAGE in prompt
+    assert "Changes since the previous review:" in prompt
     assert "@@ -1 +1 @@" in prompt
+    assert REPAIRED_DIFF.strip() in prompt
+    assert RE_REVIEW_TESTER_FINDING in prompt
+    assert "Deterministic verification:" in prompt
+    assert "Implementation snapshot under review:\n2" in prompt
     assert REVIEW_REPORT_SCHEMA in prompt
-    _assert_absent(
-        prompt,
-        (
-            *FIRST_CALL_TEXT,
-            DIFF.strip(),
-            TESTER_FINDING,
-            verification().deterministic_checks[0].command,
-        ),
+    assert _absent_from(prompt, (*FIRST_CALL_TEXT, FIRST_REVIEW_TESTER_FINDING)) == []
+
+
+def test_a_retry_inside_one_reviewer_round_sends_only_the_output_rejection() -> None:
+    first = first_review_request()
+    retry = with_output_rejection(first)
+
+    continuation = build_continuation_prompt(retry, section_hashes(build_prompt_sections(first)))
+
+    sections = {section.title: section for section in build_prompt_sections(retry)}
+    assert continuation is not None
+    assert continuation.text == "\n\n".join(
+        [
+            CONTINUATION_LEAD,
+            sections["Previous output rejection"].labelled_text,
+            sections["Output contract"].labelled_text,
+        ]
     )
+    assert OUTPUT_REJECTION in continuation.text
 
 
-def test_continuation_prompt_for_a_reviewer_re_review_restates_the_re_review_rules() -> None:
-    """The first review told the model to leave dispositions empty; a re-review must fill them."""
-    prompt = build_continuation_prompt(
-        _continued_reviewer(
-            prior_review_findings=[_finding(PRIOR_FINDING, "src/a.py")],
-            repair_diff=REPAIR_DIFF,
-        )
-    )
+def test_an_implementer_output_rejection_sends_the_reason_and_the_contract() -> None:
+    first = first_implementer_request()
+    retry = first.model_copy(update={"repair_context": OUTPUT_REJECTION})
 
-    assert prompt is not None
-    assert "Return one disposition for each prior finding id" in prompt
-    assert "Put repair defects in repair_regressions" in prompt
-    assert "Use the repair diff as the change evidence" in prompt
-    assert "Leave prior_finding_dispositions and repair_regressions empty" not in prompt
+    prompt = _continue(retry, first)
 
-
-def test_continuation_prompt_for_an_implementer_output_rejection_carries_the_reason() -> None:
-    prompt = build_continuation_prompt(_continued_implementer(repair_context=REJECTION_REASON))
-
-    assert prompt is not None
-    assert REJECTION_REASON in prompt
+    assert OUTPUT_REJECTION in prompt
     assert CHANGE_SET_SCHEMA in prompt
-    _assert_absent(prompt, FIRST_CALL_TEXT)
+    assert _absent_from(prompt, FIRST_CALL_TEXT) == []
 
 
-def test_continuation_prompt_for_a_reviewer_output_rejection_carries_the_reason() -> None:
-    prompt = build_continuation_prompt(_continued_reviewer(repair_context=REJECTION_REASON))
+def test_a_change_set_correction_sends_its_role_instructions_change_set_and_context() -> None:
+    first = first_implementer_request()
+    correction = change_set_correction_request(first)
 
-    assert prompt is not None
-    assert "Previous output rejection" in prompt
-    assert REJECTION_REASON in prompt
-    assert REVIEW_REPORT_SCHEMA in prompt
-    _assert_absent(prompt, (*FIRST_CALL_TEXT, DIFF.strip(), "Leave prior_finding_dispositions"))
+    prompt = _continue(correction, first)
+
+    carried_over = (*BRIEF_TEXT, *OPENING_TEXT)
+    _full_prompt_carries(correction, carried_over)
+    assert "Correct only the prose fields in the supplied ChangeSet" in prompt
+    assert "Supplied ChangeSet to correct:" in prompt
+    assert "Fix the output shape." in prompt
+    assert "Correction context:" in prompt
+    assert CHANGE_SET_SCHEMA in prompt
+    assert _absent_from(prompt, carried_over) == []
 
 
-def test_continuation_prompt_for_a_change_set_correction_carries_the_change_set_and_context() -> (
-    None
-):
-    prompt = build_continuation_prompt(
-        _continued_implementer(
-            purpose=AgentPurpose.CORRECT_CHANGE_SET,
-            change_set=ChangeSet(summary=CHANGE_SET_SUMMARY),
-            repair_context=RepairContext(
-                trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
-                summary="Correct only the ChangeSet prose.",
-                failures=[REJECTION_REASON],
-            ),
-        )
+def test_the_implementer_rules_come_back_after_a_change_set_correction() -> None:
+    first = first_implementer_request()
+    correction = change_set_correction_request(first)
+    next_repair = verification_repair_request()
+
+    prompt = _continue(next_repair, first, correction)
+
+    assert "Make the required changes in the current working directory" in prompt
+    assert "Correct only the prose fields" not in prompt
+
+
+def test_the_output_contract_is_always_sent_even_when_it_did_not_change() -> None:
+    first = first_review_request()
+    retry = with_output_rejection(first)
+    seen = section_hashes(build_prompt_sections(retry))
+
+    assert build_continuation_prompt(first, seen) is None
+    assert (
+        build_continuation_prompt(retry, section_hashes(build_prompt_sections(first))) is not None
     )
 
-    assert prompt is not None
-    assert "Supplied ChangeSet to correct" in prompt
-    assert CHANGE_SET_SUMMARY in prompt
-    assert "Correction context" in prompt
-    assert REJECTION_REASON in prompt
-    assert CHANGE_SET_SCHEMA in prompt
-    _assert_absent(prompt, FIRST_CALL_TEXT)
+
+def test_there_is_no_continuation_when_every_section_is_already_known() -> None:
+    request = first_implementer_request()
+
+    assert build_continuation_prompt(request, _seen_by(request)) is None
 
 
-@pytest.mark.parametrize(
-    "request_",
-    [
-        pytest.param(_continued_implementer(), id="implementer without a repair round"),
-        pytest.param(
-            _continued_implementer(changed_files=["src/app.py"]),
-            id="implementer with only changed files",
-        ),
-        pytest.param(_continued_reviewer(), id="reviewer without findings or new changes"),
-    ],
-)
-def test_continuation_prompt_is_none_when_nothing_is_round_specific(request_: AgentRequest) -> None:
-    assert build_continuation_prompt(request_) is None
+def test_a_request_whose_only_change_is_the_output_contract_has_no_continuation() -> None:
+    request = first_review_request()
+    seen = _seen_by(request)
+    seen["Output contract"] = "stale"
+
+    assert build_continuation_prompt(request, seen) is None
 
 
-@pytest.mark.parametrize(
-    "role",
-    [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.PLANNER, AgentRole.TESTER],
-)
-def test_continuation_prompt_is_none_for_a_role_without_a_session(role: AgentRole) -> None:
-    request = make_request(role, repair_context=REJECTION_REASON, diff=DIFF)
+def test_the_same_output_rejection_twice_has_no_continuation() -> None:
+    """The session holds that rejection already, so the runtime starts a new session."""
+    retry = with_output_rejection(first_review_request())
 
-    assert build_continuation_prompt(request) is None
+    assert build_continuation_prompt(retry, _seen_by(first_review_request(), retry)) is None
+
+
+def test_every_section_is_new_to_a_session_that_has_seen_nothing() -> None:
+    request = first_review_request()
+
+    continuation = build_continuation_prompt(request, {})
+
+    assert continuation is not None
+    sent_titles = [
+        section.title
+        for section in build_prompt_sections(request)
+        if section.title != "Output contract"
+    ]
+    assert all(f"{title}:\n" in continuation.text for title in sent_titles)
+
+
+def test_the_sections_seen_afterwards_are_the_earlier_ones_updated_with_this_request() -> None:
+    first = first_implementer_request()
+    repair = verification_repair_request()
+    seen = section_hashes(build_prompt_sections(first))
+
+    continuation = build_continuation_prompt(repair, seen)
+
+    assert continuation is not None
+    assert continuation.sections_seen == {**seen, **section_hashes(build_prompt_sections(repair))}
+    assert "Repair context" not in seen
+    assert "Repair context" in continuation.sections_seen
+
+
+def test_a_section_the_call_does_not_carry_stays_in_the_sections_seen() -> None:
+    """A change-set correction has no specification, but the session still holds it."""
+    first = first_implementer_request()
+
+    continuation = build_continuation_prompt(
+        change_set_correction_request(first), section_hashes(build_prompt_sections(first))
+    )
+
+    assert continuation is not None
+    assert "Specification" in continuation.sections_seen
 
 
 # ---------------------------------------------------------------------------

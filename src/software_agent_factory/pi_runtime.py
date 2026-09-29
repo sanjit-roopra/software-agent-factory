@@ -50,12 +50,15 @@ correction call can resume the conversation that produced it. A record that
 cannot be written is logged and never replaces the call's result.
 
 Continuation prompt (Slice 7): a call that resumes a session sends
-:func:`~software_agent_factory.prompts.build_continuation_prompt`, the
-round-specific sections only, because the session already holds the rest. A
-call that starts a session sends the full :func:`~software_agent_factory.prompts.build_prompt`.
-When a call could resume but has nothing round-specific to send, the runtime
-starts a new session with :meth:`~software_agent_factory.pi_sessions.PiSessionStore.fresh`
-and sends the full prompt. The recorded prompt size is that of the prompt sent.
+:func:`~software_agent_factory.prompts.build_continuation_prompt`: the prompt
+sections that are new to the session or changed since it received them, then
+the output contract. The session store keeps, per session, the content hash of
+each section the session has received. A call that starts a session sends the
+full prompt and records the hash of every section. A call that continues one
+records the earlier hashes updated with what it sent. When a call could resume
+but nothing is new, the runtime starts a new session with
+:meth:`~software_agent_factory.pi_sessions.PiSessionStore.fresh` and sends the
+full prompt. The recorded prompt size is that of the prompt sent.
 """
 
 from __future__ import annotations
@@ -64,7 +67,7 @@ import logging
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -95,7 +98,12 @@ from .pi_rpc import (
     messages_since_last_prompt,
 )
 from .pi_sessions import Continue, PiSessionStore, SessionSettings, persists_session
-from .prompts import build_continuation_prompt, build_prompt
+from .prompts import (
+    build_continuation_prompt,
+    build_prompt_sections,
+    render_prompt,
+    section_hashes,
+)
 from .subprocess_utils import (
     build_child_env,
     kill_process_group,
@@ -250,7 +258,12 @@ class _CallContext:
 
 @dataclass(frozen=True)
 class _SessionUse:
-    """The persisted session one call runs in: its file, its settings, and whether it resumes."""
+    """The persisted session one call runs in: its file, its settings, and whether it resumes.
+
+    ``sent_sections`` is what the session has received: before the call, what it
+    held when resumed; after :meth:`PiAgentRuntime._session_and_prompt`, what it
+    holds once this call's prompt has been sent.
+    """
 
     path: Path
     settings: SessionSettings
@@ -535,20 +548,25 @@ class PiAgentRuntime(AgentRuntime):
     def _session_and_prompt(self, request: AgentRequest) -> tuple[_SessionUse | None, str]:
         """Return the session this call runs in and the prompt it sends.
 
-        A resumed session gets the continuation prompt. When the request holds
-        nothing round-specific, the call moves to a new session and sends the full
-        prompt instead, so no session ever receives an empty round.
+        A resumed session gets only the prompt sections it has not received, or
+        received with other content. When there is none, the call moves to a new
+        session and sends the full prompt, so no session ever receives an empty
+        round. The returned session carries what the session holds after this
+        call, for the store to record.
         """
         session = self._session_for(request)
-        if session is not None and session.continued:
-            continuation = build_continuation_prompt(request)
+        if session is None:
+            return None, render_prompt(build_prompt_sections(request))
+        if session.continued:
+            continuation = build_continuation_prompt(request, session.sent_sections)
             if continuation is not None:
-                return session, continuation
+                return replace(session, sent_sections=continuation.sections_seen), continuation.text
             new_session = self._sessions.fresh(request.work_item.id, request.role)
             session = _SessionUse(
                 new_session.path, session.settings, continued=False, sent_sections={}
             )
-        return session, build_prompt(request)
+        sections = build_prompt_sections(request)
+        return replace(session, sent_sections=section_hashes(sections)), render_prompt(sections)
 
     def _record_session(
         self, request: AgentRequest, session: _SessionUse, *, success: bool

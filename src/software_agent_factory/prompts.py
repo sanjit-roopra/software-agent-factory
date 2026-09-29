@@ -22,7 +22,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Sequence, TypeAlias
+from typing import Mapping, Sequence, TypeAlias
 
 from .agents import AgentRequest
 from .models import (
@@ -70,28 +70,6 @@ _OPENING_TITLE = "Opening"
 _WRITING_RULES_TITLE = "Writing rules"
 _ROLE_INSTRUCTIONS_TITLE = "Role instructions"
 _OUTPUT_CONTRACT_TITLE = "Output contract"
-
-#: Per role that keeps a session, the section titles that change from one call to
-#: the next. A continued session already holds every other section.
-_ROUND_SPECIFIC_TITLES: dict[str, frozenset[str]] = {
-    "IMPLEMENTER": frozenset(
-        {
-            _REPAIR_CONTEXT_TITLE,
-            _CURRENT_DIFF_TITLE,
-            _CHANGE_SET_TO_CORRECT_TITLE,
-            _CORRECTION_CONTEXT_TITLE,
-        }
-    ),
-    "REVIEWER": frozenset(
-        {
-            _OUTPUT_REJECTION_TITLE,
-            _PRIOR_FINDINGS_TITLE,
-            _ACCEPTED_DEBT_TITLE,
-            _ACCEPTED_DEBT_RULE_TITLE,
-            _REPAIR_DIFF_TITLE,
-        }
-    ),
-}
 
 _ARTIFACT_MODELS: dict[str, type[ModelBase]] = {
     "TRIAGE": TriageResult,
@@ -237,46 +215,66 @@ def build_prompt_sections(request: AgentRequest) -> list[PromptSection]:
     return sections
 
 
-def build_continuation_prompt(request: AgentRequest) -> str | None:
-    """Build the prompt for a call that continues a persisted session, or ``None``.
+def section_hashes(sections: Sequence[PromptSection]) -> dict[str, str]:
+    """Map each section title to the content hash of its body."""
 
-    The session already holds the opening, the writing rules, the role
-    instructions and every artifact the first call carried: the work item
-    brief, specification, research report, plan, repository skill, full diff,
-    changed files, verification report and tester report. This prompt repeats
-    none of them. It carries the sections that mark a new round, then the
-    output contract:
+    return {section.title: section.digest for section in sections}
 
-    - ``IMPLEMENTER``: the repair context (a failed check, a review or CI
-      failure, or a rejection of the previous output) and the current diff.
-      The ChangeSet correction adds the supplied ChangeSet and its context.
-    - ``REVIEWER``: the previous output rejection, the prior blocking findings,
-      the controller-accepted debt with its rule, and the changes since the
-      previous review. With prior findings, it also restates the re-review
-      rules, because the first review told the reviewer to leave the
-      dispositions empty.
 
-    ``attempt_number`` and the snapshot number alone do not make a round.
-    Every other role has no session, so it has no round-specific section.
-    Returns ``None`` when the request holds no round-specific section. The
-    caller then starts a new session and sends :func:`build_prompt`.
+@dataclass(frozen=True)
+class ContinuationPrompt:
+    """The prompt for a call that continues a session, and what the session then holds.
+
+    ``sections_seen`` is the cumulative title to content hash map after this
+    call. The caller stores it for the next call.
     """
 
-    normalized_role = normalize_role(request.role)
-    titles = _ROUND_SPECIFIC_TITLES.get(normalized_role, frozenset())
-    round_sections = [
-        section for section in build_prompt_sections(request) if section.title in titles
-    ]
-    if not round_sections:
-        return None
+    text: str
+    sections_seen: Mapping[str, str]
 
-    parts = [section.labelled_text for section in round_sections]
-    if normalized_role == "REVIEWER" and request.prior_review_findings:
-        parts.insert(0, f"Re-review rules:\n{_REVIEWER_REPAIR_RULES}")
-    parts.append(
-        _output_contract(normalized_role, _model_class_for(normalized_role, request.purpose))
+
+_CONTINUATION_LEAD = (
+    "This continues the session. Only new or changed sections follow. "
+    "Earlier sections still apply unless a section below replaces them."
+)
+
+
+def build_continuation_prompt(
+    request: AgentRequest, seen: Mapping[str, str]
+) -> ContinuationPrompt | None:
+    """Build the prompt for a call that continues a session, or ``None``.
+
+    ``seen`` maps each section title to the content hash of what the session
+    already received. The prompt has a short lead line, then every section that
+    is absent from ``seen`` or has another hash, then always the output
+    contract. A changed section carries its title, so it replaces the earlier
+    section of that title. The role instructions change this way when a review
+    moves between the first-review rules and the re-review rules.
+
+    Nothing is sent that the session holds, so a round adds only what it
+    changed: a repository skill that appeared later, a repair context, a new
+    diff, tester report, verification report or snapshot number, prior
+    findings or accepted debt, an output rejection.
+
+    Returns ``None`` when no section other than the output contract is new or
+    changed. The caller then starts a new session and sends the full prompt.
+    Content that repeats exactly, such as the same rejection twice, is not new.
+    """
+
+    sections = build_prompt_sections(request)
+    changed = [
+        section
+        for section in sections
+        if section.title != _OUTPUT_CONTRACT_TITLE and seen.get(section.title) != section.digest
+    ]
+    if not changed:
+        return None
+    contract = next(section for section in sections if section.title == _OUTPUT_CONTRACT_TITLE)
+    parts = [_CONTINUATION_LEAD, *(section.labelled_text for section in (*changed, contract))]
+    return ContinuationPrompt(
+        text="\n\n".join(parts),
+        sections_seen={**seen, **section_hashes(sections)},
     )
-    return "\n\n".join(parts)
 
 
 #: Reviewer rules that replace the first-review rules when prior findings exist.
