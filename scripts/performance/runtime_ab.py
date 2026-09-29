@@ -12,7 +12,10 @@ Usage (this spends money; the operator runs it by hand)::
 
     uv run --no-sync python scripts/performance/runtime_ab.py \\
         --manifest scripts/performance/runtime_ab_manifest.json --repo . \\
-        --max-copilot-premium-requests 60 --max-pi-usd 20 --out /tmp/runtime_ab/report.json
+        --max-copilot-premium-requests 60 --max-pi-usd 20 --out runtime_ab/report.json
+
+``--manifest`` and ``--out`` must resolve inside the working directory; a path
+outside it (also through a symlink) is refused before any paid run.
 
 Local-only replay:
 
@@ -173,9 +176,28 @@ def _validate_entry(index: int, raw: object) -> ManifestEntry:
         raise ManifestError(f"{_describe_entry(index, raw)} is invalid: {problems}") from None
 
 
+def _resolve_within_cwd(path: Path) -> Path:
+    """Resolve a CLI-supplied path and refuse it if it escapes the working directory.
+
+    Guards against path traversal when an agent drives this CLI (Sonar
+    pythonsecurity:S8707). Kept as an identical copy in each script under
+    scripts/ because they run standalone and share no importable module.
+    """
+    resolved = os.path.realpath(path)
+    base_dir = os.path.realpath(os.getcwd())
+    base_prefix = base_dir if base_dir.endswith(os.sep) else base_dir + os.sep
+    if resolved != base_dir and not resolved.startswith(base_prefix):
+        raise ValueError(f"path {str(path)!r} is outside the working directory {base_dir!r}")
+    return Path(resolved)
+
+
 def _read_manifest_tasks(path: Path) -> list[object]:
     try:
-        payload = json.loads(path.read_text(encoding=_ENCODING))
+        manifest_path = _resolve_within_cwd(path)
+    except ValueError as exc:
+        raise ManifestError(f"manifest {exc}") from None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding=_ENCODING))
     except json.JSONDecodeError as exc:
         raise ManifestError(f"manifest {path} is not valid JSON: {exc}") from None
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
@@ -939,9 +961,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _write_reports(report: RuntimeAbReport, out: Path) -> Path:
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(report.model_dump_json(indent=2) + "\n", encoding=_ENCODING)
-    markdown = out.with_suffix(".md")
+    report_path = _resolve_within_cwd(out)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report.model_dump_json(indent=2) + "\n", encoding=_ENCODING)
+    markdown = report_path.with_suffix(".md")
     markdown.write_text(render_markdown(report), encoding=_ENCODING)
     return markdown
 
@@ -968,6 +991,11 @@ def main(
     command = run_command or subprocess_command_runner(args.run_timeout_seconds)
     fetch = fetch_issue or GhIssueFetcher(repo, command)
     try:
+        out = _resolve_within_cwd(args.out)  # up front: a bad --out must not follow a paid run
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _USAGE_ERROR_EXIT_CODE
+    try:
         manifest = load_manifest(args.manifest)
         ensure_local_only(_load_local_config(config, args.model_profile))
         verify_base_commits(manifest, repo, command)
@@ -985,8 +1013,8 @@ def main(
         print(f"error: {exc}", file=sys.stderr)
         return _USAGE_ERROR_EXIT_CODE
     report = build_report(outcomes)
-    markdown = _write_reports(report, args.out)
-    print(f"{report.verdict.recommendation}: reports at {args.out} and {markdown}")
+    markdown = _write_reports(report, out)
+    print(f"{report.verdict.recommendation}: reports at {out} and {markdown}")
     print(f"run data under {workdir}")
     return 0
 

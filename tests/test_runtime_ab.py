@@ -33,6 +33,12 @@ from software_agent_factory.subprocess_utils import GITHUB_CREDENTIAL_ENV_VARS
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _cwd_is_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The script confines --manifest and --out to the working directory."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _load_script_module(name: str, relative_path: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, ROOT / relative_path)
     assert spec is not None
@@ -184,6 +190,38 @@ def test_manifest_rejects_malformed_json(tmp_path: Path) -> None:
 
     with pytest.raises(ab.ManifestError, match="not valid JSON"):
         ab.load_manifest(path)
+
+
+def _outside_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Make a sibling directory the cwd and return a directory outside it."""
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    monkeypatch.chdir(inside)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    return outside
+
+
+def test_manifest_outside_the_working_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = _outside_cwd(tmp_path, monkeypatch)
+    path = _write_manifest(outside, [{"issue": 1, "base_sha": SHA_A}])
+
+    with pytest.raises(ab.ManifestError, match="outside the working directory"):
+        ab.load_manifest(path)
+
+
+def test_manifest_symlink_out_of_the_working_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = _outside_cwd(tmp_path, monkeypatch)
+    target = _write_manifest(outside, [{"issue": 1, "base_sha": SHA_A}])
+    link = Path("link.json")
+    link.symlink_to(target)
+
+    with pytest.raises(ab.ManifestError, match="outside the working directory"):
+        ab.load_manifest(link)
 
 
 # --- report: per task and total ----------
@@ -1463,6 +1501,55 @@ def test_cli_refuses_a_config_that_cannot_be_loaded(
     assert "config could not be loaded" in capsys.readouterr().err
 
 
+def test_cli_refuses_a_manifest_outside_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outside = _outside_cwd(tmp_path, monkeypatch)
+    commands = FakeCommands()
+    argv = [
+        "--manifest", str(_write_manifest(outside, [{"issue": 1, "base_sha": SHA_A}])),
+        "--out", "report.json",
+        "--max-wall-seconds", "10",
+    ]  # fmt: skip
+
+    code = ab.main(argv, run_command=commands, fetch_issue=_issue_text)
+
+    assert code == 2
+    assert commands.calls == []
+    assert "outside the working directory" in capsys.readouterr().err
+
+
+def test_cli_refuses_an_output_outside_the_working_directory_before_any_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outside = _outside_cwd(tmp_path, monkeypatch)
+    commands = FakeCommands()
+    argv = [
+        "--manifest", str(_write_manifest(Path("."), [{"issue": 1, "base_sha": SHA_A}])),
+        "--out", str(outside / "report.json"),
+        "--max-wall-seconds", "10",
+    ]  # fmt: skip
+
+    code = ab.main(argv, run_command=commands, fetch_issue=_issue_text)
+
+    assert code == 2
+    assert commands.calls == []
+    assert list(outside.iterdir()) == []
+    assert "outside the working directory" in capsys.readouterr().err
+
+
+def test_write_reports_refuses_a_path_outside_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = _outside_cwd(tmp_path, monkeypatch)
+    report = ab.build_report([])
+
+    with pytest.raises(ValueError, match="outside the working directory"):
+        ab._write_reports(report, outside / "report.json")
+
+    assert list(outside.iterdir()) == []
+
+
 def test_cli_requires_a_budget(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         _cli(tmp_path)
@@ -1507,7 +1594,10 @@ MANIFEST_PATH = ROOT / "scripts" / "performance" / "runtime_ab_manifest.json"
 PI_WORK_NUMBERS = range(60, 73)
 
 
-def test_shipped_manifest_validates_and_spans_every_level() -> None:
+def test_shipped_manifest_validates_and_spans_every_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
     manifest = ab.load_manifest(MANIFEST_PATH)
 
     assert 8 <= len(manifest.tasks) <= 12
@@ -1515,7 +1605,8 @@ def test_shipped_manifest_validates_and_spans_every_level() -> None:
     assert all(entry.title for entry in manifest.tasks)
 
 
-def test_shipped_manifest_leaves_out_the_pi_work_itself() -> None:
+def test_shipped_manifest_leaves_out_the_pi_work_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(ROOT)
     numbers = {entry.issue for entry in ab.load_manifest(MANIFEST_PATH).tasks}
 
     assert numbers.isdisjoint(PI_WORK_NUMBERS)
