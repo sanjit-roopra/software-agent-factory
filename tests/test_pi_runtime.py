@@ -183,17 +183,51 @@ def _scripted_process(
 
 
 # ---------------------------------------------------------------------------
-# _build_command: tool allowlists per role/purpose
+# run: what pi is launched with (command, cwd) per role/purpose
 # ---------------------------------------------------------------------------
 
 
-def test_build_command_implementer_gets_write_tools() -> None:
-    runtime = _runtime()
-    request = _request(AgentRole.IMPLEMENTER, workspace_path="/workspaces/wi-1")
+class _Launch(NamedTuple):
+    command: list[str]
+    cwd: Path
+    env: dict[str, str]
 
-    command = runtime._build_command(request, session_arg=["--no-session"])
 
-    assert command == [
+def _launch(request: AgentRequest | None = None, **pi_config: object) -> _Launch:
+    """Run ``request`` (default: a triage call) and return what pi was launched with.
+
+    ``pi_config`` overrides :class:`PiConfig` fields (``provider``, ...).
+
+    The process factory is the seam: it records the ``(command, cwd, env)``
+    the runtime hands it, then answers with a process that settles normally.
+    Whether the call then succeeds depends on the role's artifact, which these
+    launch assertions do not care about.
+    """
+    launches: list[_Launch] = []
+    process = _scripted_process(json.dumps(_TRIAGE_JSON))
+
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
+        launches.append(_Launch(list(command), cwd, env))
+        return process
+
+    _runtime(process_factory=factory, **pi_config).run(request or _request(AgentRole.TRIAGE))
+    assert len(launches) == 1
+    return launches[0]
+
+
+def _tools_of(command: list[str]) -> str:
+    return command[command.index("--tools") + 1]
+
+
+def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(tmp_path))
+
+    launch = _launch(request)
+
+    assert launch.command == [
         "pi",
         "--mode",
         "rpc",
@@ -212,6 +246,8 @@ def test_build_command_implementer_gets_write_tools() -> None:
         "--no-approve",
         "--no-session",
     ]
+    assert launch.cwd == tmp_path.resolve()
+    assert "GITHUB_TOKEN" not in launch.env
 
 
 @pytest.mark.parametrize(
@@ -225,47 +261,65 @@ def test_build_command_implementer_gets_write_tools() -> None:
         AgentRole.REVIEWER,
     ],
 )
-def test_build_command_read_only_roles_get_read_only_tools(role: AgentRole) -> None:
-    runtime = _runtime()
-    request = _request(role)
+def test_run_read_only_roles_launch_pi_with_read_only_tools_in_the_process_cwd(
+    role: AgentRole, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
 
-    command = runtime._build_command(request, session_arg=["--no-session"])
+    launch = _launch(_request(role))
 
-    assert "--tools" in command
-    tools_index = command.index("--tools")
-    assert command[tools_index + 1] == "read,grep,find,ls"
-    assert "--no-tools" not in command
-
-
-def test_build_command_change_set_correction_gets_no_tools() -> None:
-    runtime = _runtime()
-    request = _correction_request()
-
-    command = runtime._build_command(request, session_arg=["--no-session"])
-
-    assert "--no-tools" in command
-    assert "--tools" not in command
+    assert _tools_of(launch.command) == "read,grep,find,ls"
+    assert "--no-tools" not in launch.command
+    assert launch.cwd == tmp_path.resolve()
 
 
-def test_build_command_rejects_skill_generation() -> None:
-    runtime = _runtime()
-    request = _skill_request()
+def test_run_read_only_role_uses_its_workspace_when_the_request_has_one(tmp_path: Path) -> None:
+    launch = _launch(_request(AgentRole.REVIEWER, workspace_path=str(tmp_path)))
+
+    assert launch.cwd == tmp_path.resolve()
+
+
+def test_run_change_set_correction_launches_pi_without_tools_in_the_workspace(
+    tmp_path: Path,
+) -> None:
+    launch = _launch(_correction_request(workspace_path=str(tmp_path)))
+
+    assert "--no-tools" in launch.command
+    assert "--tools" not in launch.command
+    assert launch.cwd == tmp_path.resolve()
+
+
+def test_run_rejects_skill_generation_before_starting_pi() -> None:
+    started: list[Sequence[str]] = []
+
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
+        started.append(command)
+        raise AssertionError("pi must not be started for a rejected request")
+
+    runtime = _runtime(process_factory=factory)
 
     with pytest.raises(ValueError, match="not supported on pi"):
-        runtime._build_command(request, session_arg=["--no-session"])
+        runtime.run(_skill_request())
+
+    assert started == []
 
 
-def test_build_command_uses_configured_executable_and_provider() -> None:
-    runtime = _runtime(executable="pi-beta", provider="anthropic")
-    request = _request(AgentRole.TRIAGE)
+def test_run_launches_the_configured_executable_and_provider() -> None:
+    launch = _launch(executable="pi-beta", provider="anthropic")
 
-    command = runtime._build_command(request, session_arg=["--no-session"])
+    assert launch.command[0] == "pi-beta"
+    assert launch.command[launch.command.index("--provider") + 1] == "anthropic"
 
-    assert command[0] == "pi-beta"
-    assert command[command.index("--provider") + 1] == "anthropic"
+
+def test_run_launches_the_requested_model_and_reasoning_level() -> None:
+    launch = _launch(_request(AgentRole.TRIAGE, model="gpt-5", reasoning="high"))
+
+    assert launch.command[launch.command.index("--model") + 1] == "gpt-5"
+    assert launch.command[launch.command.index("--thinking") + 1] == "high"
 
 
 def test_build_command_appends_session_arg_for_resumed_session() -> None:
+    """Direct: ``run`` always passes ``--no-session`` until session reuse (Slice 6) lands."""
     runtime = _runtime()
     request = _request(AgentRole.IMPLEMENTER, workspace_path="/workspaces/wi-1")
 
@@ -291,12 +345,6 @@ _PROVIDER_KEY_ENV_VARS = {
 
 #: Deliberately not ``ghp_``-shaped, so only exact-value redaction can hide it.
 _PLAIN_SECRET = "plainsecretvalue1234"
-
-
-class _Launch(NamedTuple):
-    command: list[str]
-    cwd: Path
-    env: dict[str, str]
 
 
 @pytest.fixture(autouse=True)
@@ -327,21 +375,6 @@ def _isolated_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
         *_PROVIDER_KEY_ENV_VARS.values(),
     ):
         monkeypatch.delenv(name, raising=False)
-
-
-def _launch(runtime_kwargs: dict[str, object] | None = None, **request_overrides: Any) -> _Launch:
-    """Run one triage call and return what the runtime launched pi with."""
-    launches: list[_Launch] = []
-    process = _scripted_process(json.dumps(_TRIAGE_JSON))
-
-    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
-        launches.append(_Launch(list(command), cwd, env))
-        return process
-
-    runtime = _runtime(process_factory=factory, **(runtime_kwargs or {}))
-    result = runtime.run(_request(AgentRole.TRIAGE, **request_overrides))
-    assert result.success is True
-    return launches[0]
 
 
 def _failure_reason_when_pi_writes(stderr: str, **runtime_kwargs: object) -> str:
@@ -394,7 +427,7 @@ def test_run_child_env_keeps_copilot_github_token_for_headless_auth(
 
 
 def test_run_child_env_sets_pi_cache_retention_from_config() -> None:
-    assert _launch({"cache_retention": "short"}).env["PI_CACHE_RETENTION"] == "short"
+    assert _launch(cache_retention="short").env["PI_CACHE_RETENTION"] == "short"
 
 
 def test_run_child_env_defaults_pi_cache_retention_to_long() -> None:
@@ -406,7 +439,7 @@ def test_run_child_env_drops_copilot_github_token_for_non_copilot_provider(
 ) -> None:
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
 
-    env = _launch({"provider": "anthropic"}).env
+    env = _launch(provider="anthropic").env
 
     assert "COPILOT_GITHUB_TOKEN" not in env
 
@@ -419,7 +452,7 @@ def test_run_child_env_keeps_only_the_configured_providers_api_key(
         monkeypatch.setenv(name, f"value-of-{name}")
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
 
-    env = _launch({"provider": provider}).env
+    env = _launch(provider=provider).env
 
     assert env[own_var] == f"value-of-{own_var}"
     for name in _PROVIDER_KEY_ENV_VARS.values():
@@ -572,8 +605,7 @@ def test_run_sends_prompt_built_from_the_request() -> None:
 
     runtime.run(request)
 
-    sent = process._stdin_read.readline()
-    command = json.loads(sent)
+    command = process.sent_commands()[0]
     assert command["type"] == "prompt"
     assert request.work_item.title in command["message"]
 
