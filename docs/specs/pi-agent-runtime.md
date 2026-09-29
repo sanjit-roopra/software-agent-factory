@@ -110,8 +110,12 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
   differs. The output contract is always sent.
 - A changed section replaces the earlier section with the same title. The role instructions
   change this way when a review moves between the first-review rules and the re-review rules.
-- After a new session, `sent_sections` holds every section of the full prompt. After a
-  continued call, it holds the earlier map updated with the sections that call sent.
+- A continued call also lists each title in `sent_sections` that its request no longer
+  carries, in a section titled "No longer applies". An old repair context or output
+  rejection then does not look current. Such a title counts as a change, so a call that
+  only ends an earlier section still continues the session.
+- After any call, `sent_sections` holds exactly the sections of that call's full prompt.
+  A title that no longer applies is dropped, so the session gets it again if it returns.
 - The store keeps `sent_sections` only for a call that settled. A call that failed makes
   the next call start a new session.
 - A sidecar without `sent_sections` was written by an older version. The next call starts

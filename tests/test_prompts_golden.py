@@ -272,6 +272,11 @@ CONTINUATION_CASES: dict[str, Callable[[], tuple[AgentRequest, ...]]] = {
         change_set_correction_request(first_implementer_request()),
     ),
     "continuation_reviewer_rereview": lambda: (first_review_request(), re_review_request()),
+    "continuation_reviewer_after_rejection": lambda: (
+        first_review_request(),
+        with_output_rejection(first_review_request()),
+        first_review_request(),
+    ),
     "continuation_reviewer_rejection_retry": lambda: (
         first_review_request(),
         with_output_rejection(first_review_request()),

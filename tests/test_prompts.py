@@ -19,12 +19,14 @@ from prompt_fixtures import (
     FIRST_REVIEW_TESTER_FINDING,
     OPENING_TEXT,
     OUTPUT_REJECTION,
+    PLAN_SUMMARY,
     POLISH_SUMMARY,
     PRIOR_FINDING_MESSAGE,
     RE_REVIEW_TESTER_FINDING,
     REPAIRED_DIFF,
     RESEARCH_QUESTION,
     SKILL_GUIDANCE,
+    SPECIFICATION_PROBLEM,
     VERIFICATION_FAILURE,
     VERIFICATION_LOG_EXCERPT,
     accepted_debt_review_request,
@@ -957,12 +959,17 @@ def test_the_implementer_rules_come_back_after_a_change_set_correction() -> None
 def test_the_output_contract_is_always_sent_even_when_it_did_not_change() -> None:
     first = first_review_request()
     retry = with_output_rejection(first)
-    seen = section_hashes(build_prompt_sections(retry))
+    first_seen = section_hashes(build_prompt_sections(first))
 
-    assert build_continuation_prompt(first, seen) is None
+    continuation = build_continuation_prompt(retry, first_seen)
+
+    assert continuation is not None
+    assert build_continuation_prompt(first, first_seen) is None
     assert (
-        build_continuation_prompt(retry, section_hashes(build_prompt_sections(first))) is not None
+        first_seen["Output contract"]
+        == section_hashes(build_prompt_sections(retry))["Output contract"]
     )
+    assert "Output contract:" in continuation.text
 
 
 def test_there_is_no_continuation_when_every_section_is_already_known() -> None:
@@ -1000,7 +1007,7 @@ def test_every_section_is_new_to_a_session_that_has_seen_nothing() -> None:
     assert all(f"{title}:\n" in continuation.text for title in sent_titles)
 
 
-def test_the_sections_seen_afterwards_are_the_earlier_ones_updated_with_this_request() -> None:
+def test_the_sections_seen_afterwards_are_the_sections_of_this_request() -> None:
     first = first_implementer_request()
     repair = verification_repair_request()
     seen = section_hashes(build_prompt_sections(first))
@@ -1008,21 +1015,91 @@ def test_the_sections_seen_afterwards_are_the_earlier_ones_updated_with_this_req
     continuation = build_continuation_prompt(repair, seen)
 
     assert continuation is not None
-    assert continuation.sections_seen == {**seen, **section_hashes(build_prompt_sections(repair))}
+    assert continuation.sections_seen == section_hashes(build_prompt_sections(repair))
     assert "Repair context" not in seen
     assert "Repair context" in continuation.sections_seen
 
 
-def test_a_section_the_call_does_not_carry_stays_in_the_sections_seen() -> None:
-    """A change-set correction has no specification, but the session still holds it."""
+# ---------------------------------------------------------------------------
+# Sections that no longer apply: in the session, but not in the current request
+# ---------------------------------------------------------------------------
+
+NO_LONGER_APPLIES = "No longer applies:\n"
+
+
+def test_a_round_without_the_earlier_repair_says_the_repair_context_no_longer_applies() -> None:
+    first = first_implementer_request()
+    repair = verification_repair_request()
+    later = first_implementer_request(attempt_number=3)
+
+    prompt = _continue(later, first, repair)
+
+    assert (
+        f"{NO_LONGER_APPLIES}These earlier sections no longer apply: Current diff, Repair context."
+        in prompt
+    )
+    assert VERIFICATION_FAILURE not in prompt
+
+
+def test_a_stale_section_is_dropped_from_the_sections_seen() -> None:
+    first = first_implementer_request()
+    repair = verification_repair_request()
+    later = first_implementer_request(attempt_number=3)
+
+    seen = seen_after(first, repair, later)
+
+    assert "Repair context" not in seen
+    assert "Current diff" not in seen
+    assert seen == section_hashes(build_prompt_sections(later))
+
+
+def test_a_request_whose_only_difference_is_a_removed_section_still_has_a_continuation() -> None:
+    """The session must learn that the output rejection is over, so this is not ``None``."""
+    first = first_review_request()
+    retry = with_output_rejection(first)
+
+    continuation = build_continuation_prompt(first, seen_after(first, retry))
+
+    sections = {section.title: section for section in build_prompt_sections(first)}
+    assert continuation is not None
+    assert continuation.text == "\n\n".join(
+        [
+            CONTINUATION_LEAD,
+            f"{NO_LONGER_APPLIES}"
+            "These earlier sections no longer apply: Previous output rejection.",
+            sections["Output contract"].labelled_text,
+        ]
+    )
+    assert "Previous output rejection" not in continuation.sections_seen
+
+
+def test_a_request_with_no_stale_and_no_changed_section_has_no_stale_notice() -> None:
     first = first_implementer_request()
 
     continuation = build_continuation_prompt(
-        change_set_correction_request(first), section_hashes(build_prompt_sections(first))
+        verification_repair_request(), section_hashes(build_prompt_sections(first))
     )
 
     assert continuation is not None
-    assert "Specification" in continuation.sections_seen
+    assert "No longer applies" not in continuation.text
+
+
+def test_a_change_set_correction_drops_the_sections_it_does_not_carry() -> None:
+    """The correction has no specification, plan or research report, so it says so.
+
+    The next round then sends them again, which is more than needed but never less.
+    """
+    first = first_implementer_request()
+    correction = change_set_correction_request(first)
+
+    prompt = _continue(correction, first)
+    next_repair = _continue(verification_repair_request(), first, correction)
+
+    assert (
+        "no longer apply: Attempt number, Execution plan, Research report, Specification." in prompt
+    )
+    assert SPECIFICATION_PROBLEM in next_repair
+    assert PLAN_SUMMARY in next_repair
 
 
 # ---------------------------------------------------------------------------

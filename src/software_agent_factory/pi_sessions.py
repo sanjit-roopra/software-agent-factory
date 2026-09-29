@@ -143,7 +143,7 @@ class PiSessionStore:
     ) -> None:
         """Remember how the call that used ``path`` ended. A failed call is never continued.
 
-        ``sent_sections`` is the cumulative map of what the session has received,
+        ``sent_sections`` is the map of the sections that apply to the session,
         including this call. It is stored only for a call that settled: a failed
         call makes the next one start a new session, so its map is never read.
 

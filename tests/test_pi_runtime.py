@@ -849,6 +849,25 @@ def test_run_retry_inside_one_reviewer_round_sends_only_the_output_rejection(
     _assert_sent_only_what_changed(rig, result, retry, unwanted)
 
 
+def test_run_round_without_the_earlier_repair_says_it_no_longer_applies(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(first_implementer_request())
+    rig.advance(minutes=1)
+    rig.run(verification_repair_request())
+    rig.advance(minutes=1)
+
+    rig.run(first_implementer_request(attempt_number=3))
+
+    first, _second, third = rig.session_paths()
+    later_prompt = rig.prompts[2]
+    assert third == first
+    assert "These earlier sections no longer apply: Current diff, Repair context." in later_prompt
+    assert _found_in(later_prompt, [VERIFICATION_FAILURE]) == []
+    recorded = _recorded_sections(rig, "implementer")
+    assert "Repair context" not in recorded
+    assert recorded == _sections_of(first_implementer_request(attempt_number=3))
+
+
 def test_run_change_set_correction_sends_only_the_change_set_and_its_context(
     tmp_path: Path,
 ) -> None:

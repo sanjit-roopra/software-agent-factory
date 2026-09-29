@@ -70,6 +70,7 @@ _OPENING_TITLE = "Opening"
 _WRITING_RULES_TITLE = "Writing rules"
 _ROLE_INSTRUCTIONS_TITLE = "Role instructions"
 _OUTPUT_CONTRACT_TITLE = "Output contract"
+_NO_LONGER_APPLIES_TITLE = "No longer applies"
 
 _ARTIFACT_MODELS: dict[str, type[ModelBase]] = {
     "TRIAGE": TriageResult,
@@ -225,8 +226,8 @@ def section_hashes(sections: Sequence[PromptSection]) -> dict[str, str]:
 class ContinuationPrompt:
     """The prompt for a call that continues a session, and what the session then holds.
 
-    ``sections_seen`` is the cumulative title to content hash map after this
-    call. The caller stores it for the next call.
+    ``sections_seen`` is the title to content hash map of the sections that apply
+    after this call. The caller stores it for the next call.
     """
 
     text: str
@@ -246,35 +247,51 @@ def build_continuation_prompt(
 
     ``seen`` maps each section title to the content hash of what the session
     already received. The prompt has a short lead line, then every section that
-    is absent from ``seen`` or has another hash, then always the output
-    contract. A changed section carries its title, so it replaces the earlier
-    section of that title. The role instructions change this way when a review
-    moves between the first-review rules and the re-review rules.
+    is absent from ``seen`` or has another hash, then one "No longer applies"
+    section, then always the output contract. A changed section carries its
+    title, so it replaces the earlier section of that title. The role
+    instructions change this way when a review moves between the first-review
+    rules and the re-review rules.
+
+    "No longer applies" names each title in ``seen`` that this request does not
+    carry, such as a repair context or an output rejection of an earlier round.
+    Without it the lead line would let such a section look current.
 
     Nothing is sent that the session holds, so a round adds only what it
     changed: a repository skill that appeared later, a repair context, a new
     diff, tester report, verification report or snapshot number, prior
     findings or accepted debt, an output rejection.
 
-    Returns ``None`` when no section other than the output contract is new or
-    changed. The caller then starts a new session and sends the full prompt.
-    Content that repeats exactly, such as the same rejection twice, is not new.
+    Returns ``None`` when there is no new, changed or stale section. A stale
+    section counts as a change: the session must learn that it ended. The
+    caller then starts a new session and sends the full prompt. Content that
+    repeats exactly, such as the same rejection twice, is not new.
+
+    ``sections_seen`` is the section map of this request alone: a stale title
+    is dropped, so it is sent again if it comes back.
     """
 
     sections = build_prompt_sections(request)
+    current = section_hashes(sections)
     changed = [
         section
         for section in sections
         if section.title != _OUTPUT_CONTRACT_TITLE and seen.get(section.title) != section.digest
     ]
-    if not changed:
+    stale = sorted(title for title in seen if title not in current)
+    if not changed and not stale:
         return None
     contract = next(section for section in sections if section.title == _OUTPUT_CONTRACT_TITLE)
-    parts = [_CONTINUATION_LEAD, *(section.labelled_text for section in (*changed, contract))]
-    return ContinuationPrompt(
-        text="\n\n".join(parts),
-        sections_seen={**seen, **section_hashes(sections)},
-    )
+    notices = [PromptSection(_NO_LONGER_APPLIES_TITLE, _stale_notice(stale))] if stale else []
+    parts = [
+        _CONTINUATION_LEAD,
+        *(section.labelled_text for section in (*changed, *notices, contract)),
+    ]
+    return ContinuationPrompt(text="\n\n".join(parts), sections_seen=current)
+
+
+def _stale_notice(titles: Sequence[str]) -> str:
+    return f"These earlier sections no longer apply: {', '.join(titles)}."
 
 
 #: Reviewer rules that replace the first-review rules when prior findings exist.
