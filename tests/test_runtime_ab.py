@@ -1051,3 +1051,24 @@ def test_cli_stops_when_a_base_commit_is_missing(
     assert code == 2
     assert commands.factory_runs() == []
     assert "issue 1" in capsys.readouterr().err
+
+
+# --- shipped manifest ----------------------------------------------------------------------------
+
+
+MANIFEST_PATH = ROOT / "scripts" / "performance" / "runtime_ab_manifest.json"
+PI_WORK_NUMBERS = range(60, 73)
+
+
+def test_shipped_manifest_validates_and_spans_every_level() -> None:
+    manifest = ab.load_manifest(MANIFEST_PATH)
+
+    assert 8 <= len(manifest.tasks) <= 12
+    assert {entry.level for entry in manifest.tasks} == {"L0", "L1", "L2", "L3"}
+    assert all(entry.title for entry in manifest.tasks)
+
+
+def test_shipped_manifest_leaves_out_the_pi_work_itself() -> None:
+    numbers = {entry.issue for entry in ab.load_manifest(MANIFEST_PATH).tasks}
+
+    assert numbers.isdisjoint(PI_WORK_NUMBERS)
