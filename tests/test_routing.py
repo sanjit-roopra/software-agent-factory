@@ -267,6 +267,53 @@ def test_routing_disabled_preserves_full_pipeline_without_network() -> None:
     assert decision.fallback_reason == "routing is disabled by configuration"
 
 
+def _risk_gate_config(*, risk_assessment_enabled: bool) -> FactoryConfig:
+    config_dict = _config_dict()
+    config_dict["risk_assessment"] = {"enabled": risk_assessment_enabled}
+    config_dict["repository"]["commands"]["verify"] = ["pytest"]  # type: ignore[index]
+    config_dict["routing"] = {
+        "enabled": True,
+        "options": [
+            {"id": "single_r2", "route": "SINGLE", "complexity": "L0", "risk": "R2"},
+            {"id": "full_l2", "route": "FULL", "complexity": "L2"},
+            {"id": "manual_triage", "route": "MANUAL_TRIAGE"},
+        ],
+    }
+    return FactoryConfig.model_validate(config_dict)
+
+
+@pytest.mark.parametrize(
+    ("explicit_risk", "enabled", "expected"),
+    [
+        (None, True, {"manual_triage", "full_l2"}),
+        (None, False, {"manual_triage", "full_l2", "single_r2"}),
+        (Risk.R2, True, {"manual_triage", "full_l2"}),
+        (Risk.R2, False, {"manual_triage", "full_l2", "single_r2"}),
+    ],
+)
+def test_assess_safety_floors_ignores_the_approval_gate_when_risk_assessment_is_off(
+    explicit_risk: Risk | None, enabled: bool, expected: set[str]
+) -> None:
+    config = _risk_gate_config(risk_assessment_enabled=enabled)
+    wi = _work_item("WI-risk-gate").model_copy(
+        update={
+            "risk": explicit_risk,
+            "description": "Fix the typo in src/app.py.",
+            "acceptance_criteria": ["Check"],
+        }
+    )
+
+    assert assess_safety_floors(wi, _default_profile(), config) == expected
+
+
+def test_model_router_reports_no_approval_needed_when_risk_assessment_is_off() -> None:
+    payload = _config_dict()
+    payload["risk_assessment"] = {"enabled": False}
+    router = ModelRouter(FactoryConfig.model_validate(payload))
+
+    assert [router.requires_human_approval(risk) for risk in Risk] == [False] * len(Risk)
+
+
 def test_assess_safety_floors_filters_disallowed_options() -> None:
     config_dict = _config_dict()
     config_dict["routing"] = {"enabled": True}

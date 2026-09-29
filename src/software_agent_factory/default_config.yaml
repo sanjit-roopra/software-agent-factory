@@ -322,6 +322,12 @@ escalation:
   allowed_hosts:
     - "github.com"
 
+# Set enabled to false for an autonomous factory. Triage still sets a risk
+# level for routing, but no risk level stops a run for human approval and
+# triage does not write a risk rationale.
+# risk_assessment:
+#   enabled: true
+
 risk:
   R0:
     human_approval: false

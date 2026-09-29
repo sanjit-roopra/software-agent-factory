@@ -81,6 +81,7 @@ def test_load_config_uses_packaged_defaults() -> None:
     assert config.repository.branch_prefix == "factory/"
     assert config.risk["R2"].human_approval is True
     assert config.performance == PerformanceConfig()
+    assert config.risk_assessment.enabled is True
 
 
 def test_load_config_selects_named_model_profile() -> None:
@@ -702,3 +703,23 @@ def test_all_integrations_are_disabled_by_default() -> None:
         assert config.pull_request.enabled is False
         assert config.ci.enabled is False
         assert config.scheduler.enabled is False
+
+
+def _packaged_config_with(tmp_path: Path, extra: str) -> Path:
+    packaged = Path(__file__).parents[1] / "src/software_agent_factory/default_config.yaml"
+    return _write_config(tmp_path, packaged.read_text(encoding="utf-8") + "\n" + extra)
+
+
+def test_risk_assessment_can_be_disabled_in_config(tmp_path: Path) -> None:
+    config = load_config(_packaged_config_with(tmp_path, "risk_assessment:\n  enabled: false"))
+
+    assert config.risk_assessment.enabled is False
+    assert config.risk["R2"].human_approval is True
+    assert config.requires_human_approval(Risk.R2) is False
+
+
+def test_risk_assessment_rejects_unknown_keys(tmp_path: Path) -> None:
+    config_path = _packaged_config_with(tmp_path, "risk_assessment:\n  enable: false")
+
+    with pytest.raises(ValidationError, match="enable"):
+        load_config(config_path)

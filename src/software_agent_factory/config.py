@@ -525,6 +525,15 @@ class RiskRuleConfig(ConfigModel):
     human_approval: bool
 
 
+class RiskAssessmentConfig(ConfigModel):
+    """Switch for the risk approval gate and the triage risk rationale.
+
+    Triage still sets ``risk`` when disabled, because routing uses it.
+    """
+
+    enabled: bool = True
+
+
 class FactorySettings(ConfigModel):
     data_dir: Path
     retries: RetryConfig
@@ -716,6 +725,7 @@ class FactoryConfig(ConfigModel):
     model_profiles: dict[str, ModelsConfig] = Field(default_factory=dict)
     repository: RepositoryConfig
     risk: dict[Risk, RiskRuleConfig]
+    risk_assessment: RiskAssessmentConfig = Field(default_factory=RiskAssessmentConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
@@ -785,6 +795,10 @@ class FactoryConfig(ConfigModel):
                     f"{opt.model_profile!r}; available profiles: {available}"
                 )
         return self
+
+    def requires_human_approval(self, risk: Risk) -> bool:
+        """Whether ``risk`` stops a run for a human. Never true when assessment is off."""
+        return self.risk_assessment.enabled and self.risk[risk].human_approval
 
     @property
     def data_dir(self) -> Path:
