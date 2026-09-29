@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import string
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -112,7 +113,7 @@ class PiSessionStore:
     ) -> None:
         """Remember how the call that used ``path`` ended. A failed call is never continued."""
         directory = self._directory(work_item_id, role)
-        if path.parent != directory or path.suffix != _SESSION_SUFFIX:
+        if path.parent != directory or not _is_session_file_name(path.name, role):
             raise ValueError(f"{path} is not a session file of this work item and role")
         record = _SessionRecord(
             session_file=path.name,
@@ -146,7 +147,7 @@ class PiSessionStore:
             record = _SessionRecord.model_validate_json(text)
         except (OSError, ValueError):
             return None
-        if Path(record.session_file).name != record.session_file:
+        if not _is_session_file_name(record.session_file, role):
             return None
         return record
 
@@ -196,6 +197,15 @@ def _settings_of(record: _SessionRecord) -> SessionSettings:
 
 def _record_path(directory: Path, role: AgentRole) -> Path:
     return directory / f"{role.value.lower()}.meta.json"
+
+
+def _is_session_file_name(name: str, role: AgentRole) -> bool:
+    """Return whether ``name`` is ``<role>.jsonl`` or ``<role>-<n>.jsonl`` with n >= 2."""
+    stem = re.escape(role.value.lower())
+    return (
+        re.fullmatch(rf"{stem}(-([2-9]|[1-9][0-9]+))?{re.escape(_SESSION_SUFFIX)}", name)
+        is not None
+    )
 
 
 def _next_session_path(directory: Path, role: AgentRole) -> Path:

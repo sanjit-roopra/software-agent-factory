@@ -295,6 +295,19 @@ def test_record_rejects_a_file_that_is_not_a_session_file(store: PiSessionStore)
         )
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["reviewer.jsonl", "reviewer-2.jsonl", "implementer-1.jsonl", "implementer-02.jsonl"],
+)
+def test_record_rejects_another_roles_or_a_malformed_session_file_name(
+    store: PiSessionStore, name: str
+) -> None:
+    directory = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS).path.parent
+
+    with pytest.raises(ValueError, match="not a session file"):
+        store.record("W1", AgentRole.IMPLEMENTER, directory / name, SETTINGS, success=True)
+
+
 def test_record_leaves_no_temporary_files_behind(store: PiSessionStore) -> None:
     decision = run_call(store, "W1", AgentRole.IMPLEMENTER)
 
@@ -343,6 +356,20 @@ def test_a_valid_sidecar_naming_a_file_outside_the_directory_is_not_followed(
     target = first.path.parent / named
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("{}\n", encoding="utf-8")
+    point_sidecar_at(first.path.parent, named)
+
+    assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
+
+
+@pytest.mark.parametrize(
+    "named",
+    ["reviewer.jsonl", "implementer-1.jsonl", "implementer-0.jsonl", "implementer-02.jsonl"],
+)
+def test_a_sidecar_naming_another_roles_or_a_malformed_file_is_not_followed(
+    store: PiSessionStore, named: str
+) -> None:
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    (first.path.parent / named).write_text("{}\n", encoding="utf-8")
     point_sidecar_at(first.path.parent, named)
 
     assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
