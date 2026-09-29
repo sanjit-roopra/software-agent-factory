@@ -466,3 +466,22 @@ def close_open_fake_pi_processes() -> None:
     """Close and forget every :class:`FakePiProcess` created so far."""
     while _open_fake_pi_processes:
         _open_fake_pi_processes.pop().close()
+
+
+class FakePiClock:
+    """Deterministic monotonic clock for ``PiRpcClient``/``PiAgentRuntime`` timeout tests.
+
+    Time only moves when the code under test would block: the ``pi_fake_clock``
+    fixture swaps ``select.select`` for a poll that advances :attr:`now` by the
+    requested timeout when nothing is ready, so a "1 second" timeout elapses
+    instantly and deterministically.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def deadline(self, seconds: float) -> float:
+        return self.now + seconds

@@ -37,14 +37,19 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import select
 import socket
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Sequence
 
 import pytest
-from factory_testing import close_open_fake_pi_processes, git
+from factory_testing import FakePiClock, close_open_fake_pi_processes, git
+
+from software_agent_factory import pi_rpc, pi_runtime
 
 _ALLOW_NETWORK_ENV = "FACTORY_TEST_ALLOW_NETWORK"
 _ALLOW_REAL_BINARIES_ENV = "FACTORY_TEST_ALLOW_REAL_BINARIES"
@@ -170,6 +175,35 @@ def _close_fake_pi_processes() -> Iterator[None]:
     """Close the real pipe fds every ``FakePiProcess`` a test created holds."""
     yield
     close_open_fake_pi_processes()
+
+
+@pytest.fixture
+def pi_fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakePiClock:
+    """Make pi RPC and runtime timeouts elapse instantly, without real waiting.
+
+    Replaces the clock and ``select`` in ``pi_rpc`` (and the clock in
+    ``pi_runtime``) with a fake whose time advances only when a ``select``
+    would have blocked on an fd with nothing ready. Real fds still deliver
+    scripted data; only the waiting is simulated.
+    """
+    clock = FakePiClock()
+
+    def fake_select(
+        readers: list[int], writers: list[int], others: list[int], timeout: float | None = None
+    ) -> tuple[list[int], list[int], list[int]]:
+        ready = select.select(readers, writers, others, 0)
+        if not ready[0] and timeout is not None:
+            clock.now += timeout
+        return ready
+
+    monkeypatch.setattr(pi_rpc, "time", SimpleNamespace(monotonic=clock.monotonic))
+    monkeypatch.setattr(pi_rpc, "select", SimpleNamespace(select=fake_select))
+    monkeypatch.setattr(
+        pi_runtime,
+        "time",
+        SimpleNamespace(monotonic=clock.monotonic, perf_counter=time.perf_counter),
+    )
+    return clock
 
 
 @pytest.fixture(autouse=True)

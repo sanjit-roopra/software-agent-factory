@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import pytest
-from factory_testing import FakePiProcess
+from factory_testing import FakePiClock, FakePiProcess
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import (
@@ -26,14 +27,13 @@ from software_agent_factory.models import (
     TriageResult,
     WorkItem,
 )
-from software_agent_factory.pi_rpc import PiRpcClient
 from software_agent_factory.pi_runtime import (
+    _BEST_EFFORT_USAGE_DEADLINE_SECONDS,
     PiAgentRuntime,
     ProcessFactory,
     _default_process_factory,
     usage_from_pi_messages,
 )
-from software_agent_factory.subprocess_utils import kill_process_group
 
 
 def _work_item() -> WorkItem:
@@ -297,6 +297,23 @@ class _Launch(NamedTuple):
     command: list[str]
     cwd: Path
     env: dict[str, str]
+
+
+@pytest.fixture(autouse=True)
+def killpg_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Record ``os.killpg`` calls instead of signalling the fake pid's process group.
+
+    ``FakePiProcess.pid`` is not a real process group: without this, a
+    timeout test would send SIGTERM to whatever group has that id. The fake
+    never "dies", so ``PiRpcClient.close`` repeats the kill after the runtime's
+    own: tests compare ``set(killpg_calls)``, not the list.
+    """
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "software_agent_factory.subprocess_utils.os.killpg",
+        lambda pid, sig: calls.append((pid, sig)),
+    )
+    return calls
 
 
 @pytest.fixture(autouse=True)
@@ -831,17 +848,12 @@ def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
 
 
 def test_run_timeout_sends_abort_then_kills_process_group(
-    monkeypatch: pytest.MonkeyPatch,
+    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
 ) -> None:
     process = FakePiProcess()
     process.write_records({"type": "response", "id": "c1", "success": True})
     # No agent_settled event is ever written, and the process never exits --
     # simulates pi not settling within the request timeout.
-    killed: list[Any] = []
-    monkeypatch.setattr(
-        "software_agent_factory.pi_runtime.kill_process_group",
-        lambda proc: killed.append(proc),
-    )
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
     request = _request(AgentRole.TRIAGE, timeout_seconds=1)
 
@@ -851,7 +863,7 @@ def test_run_timeout_sends_abort_then_kills_process_group(
     assert result.failure_reason == "pi timed out after 1 seconds"
     sent_types = [command.get("type") for command in process.sent_commands()]
     assert "abort" in sent_types
-    assert killed == [process]
+    assert set(killpg_calls) == {(process.pid, signal.SIGTERM)}
     # No get_messages call ever completed (wait_for_settled itself never
     # settled), so the best-effort get_messages retry (Step 4.2) is attempted
     # but also gets nothing back -- usage stays unknown, not zeroed out.
@@ -859,13 +871,28 @@ def test_run_timeout_sends_abort_then_kills_process_group(
     assert result.usage is None
 
 
+def test_run_timeout_gives_best_effort_usage_read_its_own_short_deadline(
+    pi_fake_clock: FakePiClock,
+) -> None:
+    """The request's deadline has already passed when the best-effort
+    ``get_messages`` runs, so it gets its own bounded window, not the request's."""
+    process = FakePiProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+
+    runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
+
+    # 1 s request timeout, then the 2 s best-effort window, then nothing more.
+    assert pi_fake_clock.now == pytest.approx(1000.0 + 1 + _BEST_EFFORT_USAGE_DEADLINE_SECONDS)
+
+
 def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
-    monkeypatch: pytest.MonkeyPatch,
+    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
 ) -> None:
     """A malformed value (e.g. a negative token count) in the settled call's
     own ``get_messages`` read must not raise out of ``run()`` before it
     reaches the timeout path -- it is treated as unreported usage instead,
-    and ``self._abort_and_kill(...)`` still runs when the subsequent
+    and pi is still aborted and killed when the subsequent
     ``get_last_assistant_text`` call times out."""
     process = FakePiProcess()
     process.write_records(
@@ -875,11 +902,6 @@ def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
     )
     # No response ever arrives for get_last_assistant_text (c3), and the
     # process never exits on its own.
-    killed: list[Any] = []
-    monkeypatch.setattr(
-        "software_agent_factory.pi_runtime.kill_process_group",
-        lambda proc: killed.append(proc),
-    )
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
     request = _request(AgentRole.TRIAGE, timeout_seconds=1)
 
@@ -891,11 +913,11 @@ def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
     assert result.usage.input_tokens is None
     sent_types = [command.get("type") for command in process.sent_commands()]
     assert "abort" in sent_types
-    assert killed == [process]
+    assert set(killpg_calls) == {(process.pid, signal.SIGTERM)}
 
 
 def test_run_timeout_with_undecodable_leftover_output_keeps_partial_usage(
-    monkeypatch: pytest.MonkeyPatch,
+    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
 ) -> None:
     """AC6: killing a wedged pi reads its leftover output, and a text-mode
     ``Popen`` raises ``UnicodeDecodeError`` on a split UTF-8 character there.
@@ -907,8 +929,6 @@ def test_run_timeout_with_undecodable_leftover_output_keeps_partial_usage(
         _get_messages_response(usage={"input": 40, "output": 10}, model="claude-sonnet-5"),
     )
     process.communicate_error = UnicodeDecodeError("utf-8", b"\xe2\x82", 0, 2, "unexpected end")
-    monkeypatch.setattr("software_agent_factory.subprocess_utils.os.killpg", lambda pid, sig: None)
-    monkeypatch.setattr("software_agent_factory.pi_runtime._ABORT_GRACE_SECONDS", 0.01)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
     result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
@@ -917,6 +937,7 @@ def test_run_timeout_with_undecodable_leftover_output_keeps_partial_usage(
     assert result.failure_reason == "pi timed out after 1 seconds"
     assert result.usage is not None
     assert result.usage.input_tokens == 40
+    assert set(killpg_calls) == {(process.pid, signal.SIGTERM)}
 
 
 def test_default_process_factory_tolerates_a_split_utf8_character_when_killed() -> None:
@@ -934,34 +955,31 @@ def test_default_process_factory_tolerates_a_split_utf8_character_when_killed() 
     assert process.stderr is not None
     assert process.stderr.readline() == "ready\n"
 
-    stdout, _stderr = kill_process_group(process)
+    process.kill()
+    stdout, _stderr = process.communicate()
 
     assert stdout == "\ufffd"
 
 
-def test_abort_and_kill_does_not_kill_a_process_that_exits_on_stdin_eof(
-    monkeypatch: pytest.MonkeyPatch,
+def test_run_does_not_kill_a_pi_that_exits_on_stdin_eof_after_a_timeout(
+    pi_fake_clock: FakePiClock, killpg_calls: list[tuple[int, int]]
 ) -> None:
     """pi shuts down on stdin EOF, not necessarily in response to ``abort``.
 
-    :meth:`PiAgentRuntime._abort_and_kill` must close stdin after sending the
-    best-effort ``abort`` -- a fake that only exits once its stdin is closed
-    (:class:`StdinEofExitProcess`) must not be escalated to
-    ``kill_process_group``.
+    On timeout the runtime must close stdin after sending the best-effort
+    ``abort``: a pi that only exits once its stdin closes
+    (:class:`StdinEofExitProcess`) must not be escalated to a process-group kill.
     """
     process = StdinEofExitProcess()
-    client = PiRpcClient(process)
-    killed: list[Any] = []
-    monkeypatch.setattr(
-        "software_agent_factory.pi_runtime.kill_process_group",
-        lambda proc: killed.append(proc),
-    )
-    runtime = _runtime()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    runtime._abort_and_kill(client, process)
+    result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
 
-    assert killed == []
+    assert result.failure_reason == "pi timed out after 1 seconds"
+    assert "abort" in [command.get("type") for command in process.sent_commands()]
     assert process.poll() == 0
+    assert killpg_calls == []
 
 
 def test_run_process_exits_before_settling_reports_unknown_usage() -> None:
@@ -1014,7 +1032,7 @@ def test_run_success_carries_usage_from_get_messages(tmp_path: Path) -> None:
     assert result.usage.current_model == "claude-sonnet-5"
 
 
-def test_run_timeout_after_settling_keeps_partial_usage() -> None:
+def test_run_timeout_after_settling_keeps_partial_usage(pi_fake_clock: FakePiClock) -> None:
     """AC6: a timeout after the call settled still records usage read so far.
 
     The settled call's own ``get_messages`` read already captured usage
@@ -1038,6 +1056,8 @@ def test_run_timeout_after_settling_keeps_partial_usage() -> None:
     assert result.usage is not None
     assert result.usage.input_tokens == 40
     assert result.usage.output_tokens == 10
+    # Usage was already read, so no best-effort retry extends the wait.
+    assert pi_fake_clock.now == pytest.approx(1000.0 + 1)
 
 
 # ---------------------------------------------------------------------------

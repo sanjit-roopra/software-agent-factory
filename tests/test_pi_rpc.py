@@ -18,7 +18,7 @@ import sys
 import time
 
 import pytest
-from factory_testing import FakePiProcess
+from factory_testing import FakePiClock, FakePiProcess
 
 from software_agent_factory.pi_rpc import (
     PiRpcClient,
@@ -112,16 +112,16 @@ def test_request_raises_protocol_error_on_valid_json_that_is_not_an_object() -> 
     assert "[1, 2, 3]" in excinfo.value.line_excerpt
 
 
-def test_request_raises_timeout_when_deadline_passes() -> None:
+def test_request_raises_timeout_when_deadline_passes(pi_fake_clock: FakePiClock) -> None:
     process = FakePiProcess()
     client = PiRpcClient(process)
 
-    started = time.monotonic()
-    with pytest.raises(PiRpcTimeout):
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(0.2))
-    elapsed = time.monotonic() - started
+    deadline = pi_fake_clock.deadline(0.2)
 
-    assert elapsed < 2.0
+    with pytest.raises(PiRpcTimeout):
+        client.request({"type": "prompt", "message": "hi"}, deadline=deadline)
+
+    assert pi_fake_clock.now == deadline
 
 
 def test_request_raises_process_exited_on_eof_with_stderr_tail() -> None:
@@ -210,36 +210,38 @@ def test_stderr_tail_redacts_a_secret_before_the_window_cuts_it() -> None:
     assert tail.endswith("B" * 4000)
 
 
-def test_stderr_tail_redacts_a_secret_split_across_reads() -> None:
+def test_stderr_tail_redacts_a_secret_split_across_reads(pi_fake_clock: FakePiClock) -> None:
     process = FakePiProcess()
     client = PiRpcClient(process, redact=_redact_secret)
     process.exit(1)
     process.write_stderr("auth failed for " + _SECRET[:8])
     with pytest.raises(PiRpcTimeout):
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(0.05))
+        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(0.05))
     process.write_stderr(_SECRET[8:] + "\n")
     process.close_stdout()
 
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
 
     assert _SECRET not in excinfo.value.stderr_tail
     assert "auth failed for [REDACTED]" in excinfo.value.stderr_tail
 
 
-def test_stderr_tail_keeps_multibyte_characters_split_across_reads() -> None:
+def test_stderr_tail_keeps_multibyte_characters_split_across_reads(
+    pi_fake_clock: FakePiClock,
+) -> None:
     process = FakePiProcess()
     client = PiRpcClient(process)
     process.exit(1)
     encoded = "caf\u00e9".encode()
     process.write_stderr_bytes(encoded[:4])
     with pytest.raises(PiRpcTimeout):
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(0.05))
+        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(0.05))
     process.write_stderr_bytes(encoded[4:])
     process.close_stdout()
 
     with pytest.raises(PiRpcProcessExited) as excinfo:
-        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
 
     assert excinfo.value.stderr_tail == "caf\u00e9"
 
@@ -325,14 +327,11 @@ def test_two_lines_in_one_write_are_both_read_without_timeout() -> None:
     )
     process.close_stdout()
 
-    started = time.monotonic()
     first = client.request({"type": "prompt"}, deadline=_deadline(1.0))
     second = client.request({"type": "prompt"}, deadline=_deadline(1.0))
-    elapsed = time.monotonic() - started
 
     assert first["id"] == "c1"
     assert second["id"] == "c2"
-    assert elapsed < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -506,11 +505,8 @@ def test_read_line_drains_stderr_while_waiting_for_stdout_avoiding_deadlock() ->
     )
     client = PiRpcClient(popen)
     try:
-        started = time.monotonic()
         result = client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(5.0))
-        elapsed = time.monotonic() - started
     finally:
         client.close(timeout=1.0)
 
     assert result["success"] is True
-    assert elapsed < 5.0
