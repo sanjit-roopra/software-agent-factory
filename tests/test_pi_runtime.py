@@ -868,6 +868,30 @@ def test_run_round_without_the_earlier_repair_says_it_no_longer_applies(tmp_path
     assert recorded == _sections_of(first_implementer_request(attempt_number=3))
 
 
+def test_run_repair_after_a_change_set_correction_does_not_send_the_specification_again(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    first = first_implementer_request()
+    rig.run(first)
+    rig.advance(minutes=1)
+    rig.run(change_set_correction_request(first))
+    rig.advance(minutes=1)
+    repair = verification_repair_request()
+
+    result = rig.run(repair)
+
+    first_path, _correction_path, repair_path = rig.session_paths()
+    repair_prompt = rig.prompts[2]
+    assert repair_path == first_path
+    assert _missing_from(repair_prompt, [VERIFICATION_FAILURE, DIFF.strip()]) == []
+    assert (
+        "These earlier sections no longer apply: Correction context, Supplied ChangeSet to correct."
+        in repair_prompt
+    )
+    _assert_sent_only_what_changed(rig, result, repair, FIRST_CALL_TEXT)
+
+
 def test_run_change_set_correction_sends_only_the_change_set_and_its_context(
     tmp_path: Path,
 ) -> None:

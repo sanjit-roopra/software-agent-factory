@@ -116,6 +116,9 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
   only ends an earlier section still continues the session.
 - After any call, `sent_sections` holds exactly the sections of that call's full prompt.
   A title that no longer applies is dropped, so the session gets it again if it returns.
+- A `CORRECT_CHANGE_SET` call is the exception. It carries fewer artifacts, but the rest
+  still apply. It has no "No longer applies" section, and it keeps the earlier titles in
+  `sent_sections`. The next round does not send the specification and plan again.
 - The store keeps `sent_sections` only for a call that settled. A call that failed makes
   the next call start a new session.
 - A sidecar without `sent_sections` was written by an older version. The next call starts

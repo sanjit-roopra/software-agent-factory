@@ -1084,22 +1084,43 @@ def test_a_request_with_no_stale_and_no_changed_section_has_no_stale_notice() ->
     assert "No longer applies" not in continuation.text
 
 
-def test_a_change_set_correction_drops_the_sections_it_does_not_carry() -> None:
-    """The correction has no specification, plan or research report, so it says so.
-
-    The next round then sends them again, which is more than needed but never less.
-    """
+def test_a_change_set_correction_does_not_say_the_first_call_sections_no_longer_apply() -> None:
+    """The correction only omits the specification and plan. They still apply."""
     first = first_implementer_request()
     correction = change_set_correction_request(first)
 
-    prompt = _continue(correction, first)
-    next_repair = _continue(verification_repair_request(), first, correction)
-
-    assert (
-        "no longer apply: Attempt number, Execution plan, Research report, Specification." in prompt
+    continuation = build_continuation_prompt(
+        correction, section_hashes(build_prompt_sections(first))
     )
-    assert SPECIFICATION_PROBLEM in next_repair
-    assert PLAN_SUMMARY in next_repair
+
+    assert continuation is not None
+    assert "No longer applies" not in continuation.text
+
+
+def test_a_change_set_correction_keeps_the_first_call_sections_in_the_sections_seen() -> None:
+    first = first_implementer_request()
+    correction = change_set_correction_request(first)
+    seen = section_hashes(build_prompt_sections(first))
+
+    continuation = build_continuation_prompt(correction, seen)
+
+    assert continuation is not None
+    assert continuation.sections_seen == {
+        **seen,
+        **section_hashes(build_prompt_sections(correction)),
+    }
+    for title in ("Specification", "Execution plan", "Research report", "Attempt number"):
+        assert title in continuation.sections_seen
+
+
+def test_the_round_after_a_change_set_correction_does_not_send_the_specification_again() -> None:
+    first = first_implementer_request()
+    correction = change_set_correction_request(first)
+
+    prompt = _continue(verification_repair_request(), first, correction)
+
+    assert SPECIFICATION_PROBLEM not in prompt
+    assert PLAN_SUMMARY not in prompt
 
 
 # ---------------------------------------------------------------------------

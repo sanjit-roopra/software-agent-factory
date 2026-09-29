@@ -269,6 +269,12 @@ def build_continuation_prompt(
 
     ``sections_seen`` is the section map of this request alone: a stale title
     is dropped, so it is sent again if it comes back.
+
+    A ``CORRECT_CHANGE_SET`` request is the exception. It carries only the work
+    item, the ChangeSet and the correction context, but the specification, plan
+    and research report still apply to the session. It has no "No longer
+    applies" section, and its ``sections_seen`` is ``seen`` updated with this
+    request, so the next round does not send those sections again.
     """
 
     sections = build_prompt_sections(request)
@@ -278,7 +284,8 @@ def build_continuation_prompt(
         for section in sections
         if section.title != _OUTPUT_CONTRACT_TITLE and seen.get(section.title) != section.digest
     ]
-    stale = sorted(title for title in seen if title not in current)
+    correction = request.purpose is AgentPurpose.CORRECT_CHANGE_SET
+    stale = [] if correction else sorted(title for title in seen if title not in current)
     if not changed and not stale:
         return None
     contract = next(section for section in sections if section.title == _OUTPUT_CONTRACT_TITLE)
@@ -287,7 +294,8 @@ def build_continuation_prompt(
         _CONTINUATION_LEAD,
         *(section.labelled_text for section in (*changed, *notices, contract)),
     ]
-    return ContinuationPrompt(text="\n\n".join(parts), sections_seen=current)
+    sections_seen = {**seen, **current} if correction else current
+    return ContinuationPrompt(text="\n\n".join(parts), sections_seen=sections_seen)
 
 
 def _stale_notice(titles: Sequence[str]) -> str:

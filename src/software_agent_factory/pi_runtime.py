@@ -55,7 +55,8 @@ sections that are new to the session or changed since it received them, then
 the output contract. The session store keeps, per session, the content hash of
 each section the session has received. A call that starts a session sends the
 full prompt and records the hash of every section. A call that continues one
-records the hashes of the sections of its own request. When a call could resume
+records the hashes of the sections of its own request. A ChangeSet correction
+instead keeps the earlier ones, since the sections it omits still apply. When a call could resume
 but nothing is new, the runtime starts a new session with
 :meth:`~software_agent_factory.pi_sessions.PiSessionStore.fresh` and sends the
 full prompt. The recorded prompt size is that of the prompt sent.

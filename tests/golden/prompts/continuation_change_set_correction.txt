@@ -14,9 +14,6 @@ Supplied ChangeSet to correct:
 Correction context:
 {"failures":["ChangeSet did not satisfy writing policy"],"log_excerpt":null,"summary":"The implementation is not rejected. Correct only the ChangeSet prose.","trigger":"IMPLEMENTER_FAILURE"}
 
-No longer applies:
-These earlier sections no longer apply: Attempt number, Execution plan, Research report, Specification.
-
 Output contract:
 Return exactly one JSON object that Pydantic-validates as ChangeSet. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
 ChangeSet JSON Schema:
