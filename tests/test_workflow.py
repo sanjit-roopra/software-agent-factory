@@ -80,7 +80,7 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
-from software_agent_factory.store import ArtifactModel, FileRunStore
+from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
@@ -1285,47 +1285,44 @@ def test_invalid_repository_skill_provenance_gets_one_correction(
 
 
 def test_refreshed_profile_persistence_failure_skips_skill_selection(
-    source_repo: Path, data_dir: Path
+    source_repo: Path,
+    data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    class RefreshedProfileFailingStore(FileRunStore):
-        def __init__(self, root: Path) -> None:
-            super().__init__(root)
-            self.profile_writes = 0
+    store = FileRunStore(data_dir)
 
-        def save_artifact(
-            self,
-            run_id: str,
-            artifact: ArtifactModel,
-            filename: str | None = None,
-            *,
-            attempt: int | None = None,
-        ) -> Path:
-            if isinstance(artifact, RepositoryProfile):
-                self.profile_writes += 1
-                if self.profile_writes == 2:
-                    raise OSError("profile storage unavailable")
-            return super().save_artifact(run_id, artifact, filename, attempt=attempt)
+    class ProfileBlockingRuntime(RecordingRuntime):
+        """Once the first profile is on disk, a directory takes its place, so
+        the real store cannot write the refreshed profile there."""
 
-    runtime = RecordingRuntime(FakeAgentRuntime())
-    store = RefreshedProfileFailingStore(data_dir)
+        def run(self, request: AgentRequest) -> AgentResult:
+            for profile_path in store.runs_dir.glob("*/repository-profile.json"):
+                if profile_path.is_file():
+                    profile_path.unlink()
+                    profile_path.mkdir()
+            return super().run(request)
+
+    runtime = ProfileBlockingRuntime(FakeAgentRuntime())
     controller = WorkflowController(
         _config(data_dir, polish_enabled=True),
         store,
         runtime,
     )
 
-    run = controller.run(_work_item("WI-profile-persistence"), source_repo)
+    with caplog.at_level("WARNING"):
+        run = controller.run(_work_item("WI-profile-persistence"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
+    assert any(
+        record.getMessage() == "advisory artifact persistence failed"
+        and getattr(record, "artifact", None) == "RepositoryProfile"
+        for record in caplog.records
+    )
     assert all(
         request.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL
         for request in runtime.requests
     )
-    profile = FileRunStore(data_dir).load_artifact(run.id, RepositoryProfile)
-    assert any(
-        "refreshed repository profile could not be persisted" in warning
-        for warning in profile.warnings
-    )
+    assert not any(store.runs_dir.glob("*/repository-skill*.json"))
 
 
 def test_repository_skill_rejects_sources_outside_factory_allowlist(
@@ -2147,19 +2144,6 @@ SNAPSHOT_FILENAMES = (
 )
 
 
-class StateRecordingStore(FileRunStore):
-    """Records every persisted workflow state, so a test can assert that a
-    state (``RESEARCHING``) was never entered at all."""
-
-    def __init__(self, root: Path) -> None:
-        super().__init__(root)
-        self.states: list[WorkflowState] = []
-
-    def save_run(self, run: FactoryRun) -> Path:
-        self.states.append(run.state)
-        return super().save_run(run)
-
-
 def _skill_storage(data_dir: Path, source_repo: Path) -> RepositorySkillManager:
     return RepositorySkillManager.for_repository(data_dir, source_repo)
 
@@ -2183,6 +2167,7 @@ def _polish_run(
     *,
     profile: RepositoryProfile,
     store: FileRunStore | None = None,
+    run_id: str | None = None,
 ) -> tuple[FactoryRun, FileRunStore, RecordingRuntime]:
     runtime = RecordingRuntime(FakeAgentRuntime())
     resolved_store = store if store is not None else FileRunStore(data_dir)
@@ -2192,7 +2177,8 @@ def _polish_run(
         runtime,
         repository_profiler=lambda path: profile,
     )
-    return controller.run(_work_item(work_item_id), source_repo), resolved_store, runtime
+    run = controller.run(_work_item(work_item_id), source_repo, run_id=run_id)
+    return run, resolved_store, runtime
 
 
 def _guidance_consumers(runtime: RecordingRuntime) -> list[AgentRequest]:
@@ -2251,16 +2237,22 @@ def test_a_second_run_reuses_stored_guidance_without_researching(
     first_run, store, first_runtime = _polish_run(
         source_repo, data_dir, "WI-reuse-first", profile=profile
     )
-    second_store = StateRecordingStore(data_dir)
     second_run, _, second_runtime = _polish_run(
-        source_repo, data_dir, "WI-reuse-second", profile=profile, store=second_store
+        source_repo, data_dir, "WI-reuse-second", profile=profile
     )
 
     assert first_run.state is WorkflowState.PR_READY
     assert second_run.state is WorkflowState.PR_READY
     assert len(_generation_requests(first_runtime)) == 1
     assert _generation_requests(second_runtime) == []
-    assert WorkflowState.RESEARCHING not in second_store.states
+    # Persisted evidence: only the first run ever spent time in RESEARCHING.
+    persisted_first = store.load_run(first_run.id)
+    persisted_second = store.load_run(second_run.id)
+    assert "stage.RESEARCHING" in persisted_first.performance.durations_ms
+    assert "stage.RESEARCHING" not in persisted_second.performance.durations_ms
+    assert AgentRole.RESEARCHER not in {
+        record.role for record in persisted_second.invocation_records
+    }
     assert [attempt.triggered_by for attempt in second_run.attempt_records] == [
         AttemptTrigger.INITIAL,
         AttemptTrigger.POLISH,
@@ -2573,10 +2565,24 @@ def test_a_concurrent_winner_is_revalidated_before_use(source_repo: Path, data_d
         store.load_artifact(run.id, RepositorySkill)
 
 
+_CONFLICTING_SNAPSHOT = "{}\n"
+
+
+def _obstruct_with_directory(path: Path) -> None:
+    path.mkdir()
+
+
+def _obstruct_with_conflicting_snapshot(path: Path) -> None:
+    path.write_text(_CONFLICTING_SNAPSHOT, encoding="utf-8")
+
+
 @pytest.mark.parametrize(
-    "boundary_error",
-    [OSError("read-only file system"), RuntimeError("store unavailable"), ValueError("bad path")],
-    ids=["oserror", "runtimeerror", "valueerror"],
+    ("obstruct", "expected_error"),
+    [
+        (_obstruct_with_directory, "Is a directory"),
+        (_obstruct_with_conflicting_snapshot, "already holds different content"),
+    ],
+    ids=["unwritable-path", "conflicting-snapshot"],
 )
 @pytest.mark.parametrize(
     "failing_artifact",
@@ -2587,7 +2593,8 @@ def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
     source_repo: Path,
     data_dir: Path,
     failing_artifact: type[ArtifactModel],
-    boundary_error: Exception,
+    obstruct: Callable[[Path], None],
+    expected_error: str,
 ) -> None:
     """Every create-once snapshot is a precondition of polish.
 
@@ -2599,39 +2606,38 @@ def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
     profile = _react_profile()
     manager = _skill_storage(data_dir, source_repo)
     _write_overlay(manager, OVERLAY_YAML)
-
-    class SnapshotFailingStore(FileRunStore):
-        def save_artifact_once(
-            self,
-            run_id: str,
-            artifact: ArtifactModel,
-            filename: str | None = None,
-        ) -> Path:
-            if isinstance(artifact, failing_artifact):
-                raise boundary_error
-            return super().save_artifact_once(run_id, artifact, filename)
+    store = FileRunStore(data_dir)
+    run_id = "run-snapshot-failure"
+    run_dir = store.runs_dir / run_id
+    run_dir.mkdir(parents=True)
+    obstruct(run_dir / ARTIFACT_FILENAMES[failing_artifact])
 
     run, _, runtime = _polish_run(
         source_repo,
         data_dir,
         "WI-snapshot-failure",
         profile=profile,
-        store=SnapshotFailingStore(data_dir),
+        store=store,
+        run_id=run_id,
     )
 
     assert run.state is WorkflowState.PR_READY
     assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
     assert all(request.repository_skill is None for request in runtime.requests)
 
-    reader = FileRunStore(data_dir)
-    profile_artifact = reader.load_artifact(run.id, RepositoryProfile)
+    profile_artifact = store.load_artifact(run.id, RepositoryProfile)
     assert any(
-        f"repository guidance snapshot could not be persisted: {boundary_error}" in warning
+        "repository guidance snapshot could not be persisted: " in warning
+        and expected_error in warning
         for warning in profile_artifact.warnings
     )
 
-    run_dir = reader.runs_dir / run.id
-    written = {name for name in SNAPSHOT_FILENAMES if (run_dir / name).exists()}
+    written = {
+        name
+        for name in SNAPSHOT_FILENAMES
+        if (run_dir / name).is_file()
+        and (run_dir / name).read_text(encoding="utf-8") != _CONFLICTING_SNAPSHOT
+    }
     assert "repository-skill.json" not in written
     if failing_artifact is RepositorySkillUse:
         assert written == set()
@@ -2639,8 +2645,6 @@ def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
         assert written == {"repository-skill-use.json"}
     else:
         assert written == {"repository-skill-use.json", "repository-skill-overlay.json"}
-    with pytest.raises(FileNotFoundError):
-        reader.load_artifact(run.id, RepositorySkill)
 
     # The shared generated file was still published, so a later run reuses it.
     assert manager.list_generated_fingerprints() == (profile.dependency_fingerprint,)
