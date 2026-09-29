@@ -25,6 +25,8 @@ site/
 .claude/memory/
 .claude/metrics/
 .claude/plans/
+# Per-session hook state (transcript id, turn counter); rewritten every turn.
+.claude/code-intelligence-turn-state.json
 /.dev-team-reports/*
 !/.dev-team-reports/test-improve/
 memory/
