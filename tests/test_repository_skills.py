@@ -97,25 +97,14 @@ def _identity(name: str = "demo") -> RepositoryIdentity:
     return RepositoryIdentity(key=repository_key(common_dir), git_common_dir=common_dir)
 
 
-def test_repository_skill_correction_includes_rejected_artifact() -> None:
-    skill = _skill(simplify=_guidance("Use robust guidance."))
-
-    context = repository_skill_correction_context(
-        "RepositorySkill did not satisfy writing policy.",
-        skill,
-    )
-
-    assert "Previous rejected artifact" in context
-    assert "Use robust guidance." in context
-
-
-def test_repository_skill_structural_correction_does_not_request_prose_only_edits() -> None:
-    skill = _skill()
+def test_repository_skill_correction_includes_the_reason_and_rejected_artifact() -> None:
+    skill = _skill(simplify=_guidance("Keep the change small."))
 
     context = repository_skill_correction_context("A required target is missing.", skill)
 
+    assert "Failure reason:\nA required target is missing." in context
     assert "Previous rejected artifact" in context
-    assert "Rewrite only the prose fields" not in context
+    assert "Keep the change small." in context
 
 
 def _manager(data_dir: Path, name: str = "demo") -> RepositorySkillManager:

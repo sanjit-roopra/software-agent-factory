@@ -710,6 +710,38 @@ def test_generation_request_carries_only_the_profile_and_configured_sources(
     assert invocation.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL
 
 
+def test_wordy_skill_is_stored_after_one_request_and_records_writing_findings(
+    skill_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    captured: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def wordy(request: AgentRequest) -> AgentResult:
+        captured.append(request)
+        result = default_runtime.run(request)
+        skill = result.repository_skill
+        assert skill is not None
+        simplify = skill.simplify.model_copy(
+            update={"summary": "A robust and comprehensive summary."}
+        )
+        return result.model_copy(
+            update={"repository_skill": skill.model_copy(update={"simplify": simplify})}
+        )
+
+    _install_runtime(monkeypatch, FakeAgentRuntime(researcher=wordy))
+    result = _refresh(skill_repo, data_dir)
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    assert _generated_path(skill_repo, data_dir).is_file()
+    invocation = InvocationRecord.model_validate_json(
+        _last_invocation_path(skill_repo, data_dir).read_text(encoding="utf-8")
+    )
+    assert invocation.success is True
+    assert invocation.writing_findings == ("simplify.summary has 2 slop_word finding(s).",)
+
+
 def test_refresh_honours_an_explicit_config_file(
     skill_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
