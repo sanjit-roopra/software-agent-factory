@@ -21,8 +21,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Sequence, TypeAlias
 
 from .agents import AgentRequest
 from .models import (
@@ -45,7 +45,7 @@ from .models import (
     WorkItem,
 )
 
-RoleName: TypeAlias = AgentRole | str
+type RoleName = AgentRole | str
 
 #: Maximum characters of controller-derived diff placed in a prompt. Bounded
 #: so a large change never produces an unbounded prompt (``AGENTS.md``
