@@ -109,6 +109,12 @@ _API_KEY_SUFFIX = "_API_KEY"
 #: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
 _DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
 
+#: Trailing characters of pi's stderr tail put in a process-exit failure
+#: reason. The final lines hold the actual error, and
+#: :func:`~software_agent_factory.subprocess_utils.sanitize_output` keeps only
+#: the *first* 600 characters, so the reason takes the end of the tail up front.
+_STDERR_REASON_CHARS = 500
+
 #: Grace period :meth:`PiAgentRuntime._abort_and_kill` waits for pi to exit on
 #: its own after a best-effort ``abort`` command, before escalating to
 #: :func:`~software_agent_factory.subprocess_utils.kill_process_group` --
@@ -176,7 +182,8 @@ def _failure_reason_for(exc: PiRpcError) -> str:
     result.
     """
     if isinstance(exc, PiRpcProcessExited):
-        return f"pi process exited with code {exc.returncode} before settling: {exc.stderr_tail}"
+        stderr_end = exc.stderr_tail.strip()[-_STDERR_REASON_CHARS:]
+        return f"pi process exited with code {exc.returncode} before settling: {stderr_end}"
     if isinstance(exc, PiRpcProtocolError):
         return f"pi wrote an invalid protocol record: {exc.line_excerpt}"
     if isinstance(exc, PiRpcCommandError):

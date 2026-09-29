@@ -405,6 +405,16 @@ def test_run_redacts_a_secret_the_stderr_window_would_cut_in_half(
     assert _PLAIN_SECRET[-5:] not in reason
 
 
+def test_run_failure_reason_keeps_the_final_stderr_line_of_a_long_stderr() -> None:
+    """The last lines of stderr hold the actual error; the reason must not keep
+    only the noisy front of the 4 KB tail."""
+    stderr = "startup noise line\n" * 200 + "Error: quota exceeded for model"
+
+    reason = _failure_reason_when_pi_writes(stderr)
+
+    assert reason.endswith("Error: quota exceeded for model")
+
+
 def test_run_child_env_scrubs_github_credential_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
     monkeypatch.setenv("GH_TOKEN", "ghp_other_secret")
