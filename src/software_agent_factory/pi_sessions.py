@@ -100,17 +100,22 @@ class PiSessionStore:
         Also makes sure the private directories exist before pi runs, so pi never
         creates them with the umask's permissions.
         """
-        directory = self._directory(work_item_id, role)
-        _ensure_private_directory(self._root)
-        _ensure_private_directory(directory)
+        directory = self._prepare_directory(work_item_id, role)
         record = self._read_record(directory, role)
         if record is not None and self._is_reusable(record, settings, directory):
             session_path = directory / record.session_file
             _restrict_to_owner(session_path)
             return Continue(session_path)
-        fresh = Fresh(_next_session_path(directory, role))
-        self._prune_expired_files(directory, role)
-        return fresh
+        return self._start_session(directory, role)
+
+    def fresh(self, work_item_id: str, role: AgentRole) -> Fresh:
+        """Start a new session file, although the role's current one could be continued.
+
+        For a call that has nothing new to add to a continued session, so it needs
+        the full prompt in a new one. The current file stays: only a file that
+        expired is removed, as for any new session.
+        """
+        return self._start_session(self._prepare_directory(work_item_id, role), role)
 
     def record(
         self,
@@ -144,6 +149,18 @@ class PiSessionStore:
             f"{record.model_dump_json(indent=2)}\n",
             mode=_OWNER_FILE_MODE,
         )
+
+    def _prepare_directory(self, work_item_id: str, role: AgentRole) -> Path:
+        """Return the role's work item directory, made private before pi runs in it."""
+        directory = self._directory(work_item_id, role)
+        _ensure_private_directory(self._root)
+        _ensure_private_directory(directory)
+        return directory
+
+    def _start_session(self, directory: Path, role: AgentRole) -> Fresh:
+        fresh = Fresh(_next_session_path(directory, role))
+        self._prune_expired_files(directory, role)
+        return fresh
 
     def _directory(self, work_item_id: str, role: AgentRole) -> Path:
         if not persists_session(role):

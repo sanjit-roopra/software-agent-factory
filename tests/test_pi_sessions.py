@@ -688,3 +688,57 @@ def test_a_file_that_cannot_be_removed_does_not_fail_the_new_session(
     monkeypatch.setattr(Path, "unlink", refuse)
 
     assert isinstance(store.resolve("W1", AgentRole.REVIEWER, SETTINGS), Fresh)
+
+
+def test_fresh_starts_a_new_numbered_file_and_keeps_the_one_that_could_be_continued(
+    store: PiSessionStore, clock: Clock
+) -> None:
+    current = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    clock.advance(seconds=MAX_AGE - 1)
+
+    fresh = store.fresh("W1", AgentRole.IMPLEMENTER)
+
+    assert fresh == Fresh(current.path.parent / "implementer-2.jsonl")
+    assert current.path.exists()
+
+
+def test_a_call_recorded_on_the_fresh_file_is_the_one_continued_next(
+    store: PiSessionStore,
+) -> None:
+    run_call(store, "W1", AgentRole.IMPLEMENTER)
+    fresh = store.fresh("W1", AgentRole.IMPLEMENTER)
+    fresh.path.write_text('{"type":"message"}\n', encoding=UTF_8)
+    store.record("W1", AgentRole.IMPLEMENTER, fresh.path, SETTINGS, success=True)
+
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(fresh.path)
+
+
+def test_fresh_removes_the_roles_expired_files_only(store: PiSessionStore, clock: Clock) -> None:
+    expired = run_call(store, "W1", AgentRole.REVIEWER)
+    clock.advance(seconds=MAX_AGE)
+    current = run_call(store, "W1", AgentRole.REVIEWER)
+
+    store.fresh("W1", AgentRole.REVIEWER)
+
+    assert not expired.path.exists()
+    assert current.path.exists()
+
+
+def test_fresh_for_a_role_without_a_persisted_session_is_an_error(store: PiSessionStore) -> None:
+    with pytest.raises(ValueError, match="TESTER"):
+        store.fresh("W1", AgentRole.TESTER)
+
+
+def test_fresh_makes_the_root_and_work_item_directories_private(
+    store: PiSessionStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "pi-sessions"
+    directory = root / "+w1"
+    directory.mkdir(parents=True)
+    root.chmod(0o755)
+    directory.chmod(0o755)
+
+    store.fresh("W1", AgentRole.IMPLEMENTER)
+
+    assert is_private(root)
+    assert is_private(directory)
