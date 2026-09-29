@@ -9,7 +9,11 @@ from typing import IO, Any
 import pytest
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
-from software_agent_factory.agents import AgentRequest, is_retryable_typed_artifact_failure
+from software_agent_factory.agents import (
+    RUNTIME_FAILURE_REASON_LIMIT,
+    AgentRequest,
+    is_retryable_typed_artifact_failure,
+)
 from software_agent_factory.config import PiConfig
 from software_agent_factory.copilot_runtime import parse_copilot_artifact
 from software_agent_factory.models import (
@@ -770,6 +774,21 @@ def test_run_sanitizes_provider_api_key_from_failure_reason(
     assert result.success is False
     assert result.failure_reason is not None
     assert "sk-ant-fake1234567890" not in result.failure_reason
+
+
+def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.write_stderr("boom " * 5000)
+    process.close_stdout()
+    process.exit(1)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+
+    result = runtime.run(_request(AgentRole.TRIAGE))
+
+    assert result.failure_reason is not None
+    assert result.failure_reason.startswith("pi process exited with code 1")
+    assert len(result.failure_reason) <= RUNTIME_FAILURE_REASON_LIMIT
 
 
 # ---------------------------------------------------------------------------

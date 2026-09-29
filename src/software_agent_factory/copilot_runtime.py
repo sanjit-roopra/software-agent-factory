@@ -27,6 +27,7 @@ from .agent_artifact import (
 )
 from .agent_capabilities import AgentCapability, capability_for
 from .agents import (
+    RUNTIME_FAILURE_REASON_LIMIT,
     AgentRequest,
     AgentResult,
     AgentRuntime,
@@ -71,7 +72,9 @@ class _PermissionProfile:
 class CopilotAgentRuntime(AgentRuntime):
     """Invoke the installed ``copilot`` CLI and parse one typed artifact."""
 
-    def __init__(self, *, executable: str = "copilot", max_error_chars: int = 4000) -> None:
+    def __init__(
+        self, *, executable: str = "copilot", max_error_chars: int = RUNTIME_FAILURE_REASON_LIMIT
+    ) -> None:
         self._executable = executable
         self._max_error_chars = max_error_chars
 
