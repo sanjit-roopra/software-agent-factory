@@ -37,7 +37,7 @@ tracked as a follow-up.
 | `service_install.py` | `ServiceRuntime.PI`. |
 | `doctor.py` | `check_pi`: `pi` on PATH, version at least the pinned minimum, Node at least 22.19, provider credentials present. |
 | `config.py` | New `pi` block (see Configuration). |
-| `prompts.py` | Continuation prompt: only the round-specific sections (repair context, prior findings, changes since previous review, typed-output correction). |
+| `prompts.py` | Prompt sections and the continuation prompt: the sections that are new or changed since the session received them, then the output contract. |
 | `models.py` | `ModelUsage` and `UsageMetrics` gain `list_price_estimate_usd: float | None`. |
 | `dashboard/` | Shows the list-price estimate labelled as an estimate, never summed with Copilot usage value. |
 | `scripts/performance/runtime_ab.py` (new) | Offline A/B driver and report. |
@@ -99,10 +99,25 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
 - Session files hold prompts, repository content and tool output. The `pi-sessions`
   folder and each work item folder are private to the owner (mode `0700`). Session
   files and the sidecar are private to the owner too (mode `0600`).
-- A continued call sends the continuation prompt (round-specific sections only). A
-  new session sends the full prompt from `build_prompt`.
-- If a call can continue a session but has no round-specific section, it starts a new
-  session. It sends the full prompt there.
+- A continued call sends the continuation prompt. It holds the sections that are new or
+  changed, then the output contract. A new session sends the full prompt from
+  `build_prompt`.
+- A prompt has these sections: the opening, the writing rules, the role instructions,
+  the output contract and one section for each artifact. Each section has a title.
+- The sidecar holds `sent_sections` for each session. It maps a section title to the
+  SHA-256 hash of the section content that the session received.
+- A section is new when its title is not in `sent_sections`. It is changed when its hash
+  differs. The output contract is always sent.
+- A changed section replaces the earlier section with the same title. The role instructions
+  change this way when a review moves between the first-review rules and the re-review rules.
+- After a new session, `sent_sections` holds every section of the full prompt. After a
+  continued call, it holds the earlier map updated with the sections that call sent.
+- The store keeps `sent_sections` only for a call that settled. A call that failed makes
+  the next call start a new session.
+- A sidecar without `sent_sections` was written by an older version. The next call starts
+  a new session, because the factory cannot tell what the old session holds.
+- If a call can continue a session but has no new or changed section, it starts a new
+  session. It sends the full prompt there. The same output rejection twice is one example.
 - IMPLEMENTER and REVIEWER sessions are always separate. Model switching inside a
   session never happens. Escalation to another model starts a new session.
 - Parallel work items (bounded by `scheduler.max_concurrent_tasks`) never share a
@@ -213,7 +228,7 @@ Model ids and reasoning levels in `models:` are passed through unchanged. Copilo
 |------|------------|--------|--------|
 | Agent program | The program that drives a model: tools, context handling, caching behavior. Copilot CLI and pi are agent programs. | `verified` | Talk. user conversation |
 | Pi session | Pi's persisted JSONL conversation file. Resuming it re-sends its history as the prompt prefix. | `unverified` | pi docs `session-format.md` |
-| Continuation prompt | The prompt sent into a continued session: only the round-specific sections. | `verified` | User conversation (append, do not rewrite) |
+| Continuation prompt | The prompt sent into a continued session: the new or changed sections, then the output contract. | `verified` | User conversation. User decision to send what changed. |
 | Cache-read share | `cache_read / (input + cache_read + cache_write)` tokens. | `unverified` | Agent definition. talk uses "share of input served from cache" |
 | List-price estimate | Cost pi computes from its own model price catalog. Not what the provider billed. | `verified` | pi source `calculateCost`. user decision |
 | Repair round | A new IMPLEMENTER call triggered by `VERIFICATION`, `REVIEW`, `SCOPE`, `CI`, `POLISH` or `IMPLEMENTER_FAILURE`. | `unverified` | `AttemptTrigger` in `models.py` |
@@ -227,6 +242,7 @@ Model ids and reasoning levels in `models:` are passed through unchanged. Copilo
 | pi process lifetime | `requires-stakeholder-input` | human | New process per call, resuming the session file. Runtime stays stateless. |
 | What to do with pi's list-price cost | `requires-stakeholder-input` | human | Persist as a separate labelled estimate field. amend ADR-017. |
 | Benchmark corpus | `requires-stakeholder-input` | human | Replay about 10 closed issues of this repository. |
+| What a continued call sends | `requires-stakeholder-input` | human | The new or changed sections, found by content hash. A fixed list of round sections missed changes. |
 | Tool restriction and sandbox | `requires-stakeholder-input` | human | Out of scope for v1. follow-up issue. Built-in `--tools` allowlist still used because it costs nothing. |
 | Billing provider | `requires-stakeholder-input` | human | `github-copilot` through pi first. |
 | Integration mode (RPC vs print vs SDK) | `inferable` | inference | SDK is Node-only. RPC gives `abort`, `get_session_stats`, `get_last_assistant_text`. |
