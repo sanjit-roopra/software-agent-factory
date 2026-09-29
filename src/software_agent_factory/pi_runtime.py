@@ -47,8 +47,15 @@ store records whether pi settled cleanly: a timeout, a lost process, an RPC
 error or an assistant error makes the next round start a new session. A
 response that only fails artifact parsing still counts as settled, so the
 correction call can resume the conversation that produced it. A record that
-cannot be written is logged and never replaces the call's result. A continued
-call still sends the full prompt: the continuation prompt arrives in Slice 7.
+cannot be written is logged and never replaces the call's result.
+
+Continuation prompt (Slice 7): a call that resumes a session sends
+:func:`~software_agent_factory.prompts.build_continuation_prompt`, the
+round-specific sections only, because the session already holds the rest. A
+call that starts a session sends the full :func:`~software_agent_factory.prompts.build_prompt`.
+When a call could resume but has nothing round-specific to send, the runtime
+starts a new session with :meth:`~software_agent_factory.pi_sessions.PiSessionStore.fresh`
+and sends the full prompt. The recorded prompt size is that of the prompt sent.
 """
 
 from __future__ import annotations
@@ -86,8 +93,8 @@ from .pi_rpc import (
     PiRpcProtocolError,
     PiRpcTimeout,
 )
-from .pi_sessions import PiSessionStore, SessionSettings, persists_session
-from .prompts import build_prompt
+from .pi_sessions import Continue, PiSessionStore, SessionSettings, persists_session
+from .prompts import build_continuation_prompt, build_prompt
 from .subprocess_utils import (
     build_child_env,
     kill_process_group,
@@ -242,10 +249,11 @@ class _CallContext:
 
 @dataclass(frozen=True)
 class _SessionUse:
-    """The persisted session one call runs in: its file and the settings it is bound to."""
+    """The persisted session one call runs in: its file, its settings, and whether it resumes."""
 
     path: Path
     settings: SessionSettings
+    continued: bool
 
     @property
     def args(self) -> tuple[str, str]:
@@ -480,13 +488,12 @@ class PiAgentRuntime(AgentRuntime):
 
     def run(self, request: AgentRequest) -> AgentResult:
         validate_runtime_request(request)
-        session = self._session_for(request)
+        session, prompt = self._session_and_prompt(request)
         command = self._build_command(
             request, session_arg=session.args if session else _NO_SESSION_ARG
         )
         cwd = workspace_cwd(request)
         env, scrubbed_values = self._child_env_and_scrubbed()
-        prompt = build_prompt(request)
         prompt_chars = len(prompt)
 
         boot_start = time.perf_counter()
@@ -515,7 +522,23 @@ class PiAgentRuntime(AgentRuntime):
             model=request.model, provider=self._config.provider, reasoning=request.reasoning
         )
         decision = self._sessions.resolve(request.work_item.id, request.role, settings)
-        return _SessionUse(decision.path, settings)
+        return _SessionUse(decision.path, settings, continued=isinstance(decision, Continue))
+
+    def _session_and_prompt(self, request: AgentRequest) -> tuple[_SessionUse | None, str]:
+        """Return the session this call runs in and the prompt it sends.
+
+        A resumed session gets the continuation prompt. When the request holds
+        nothing round-specific, the call moves to a new session and sends the full
+        prompt instead, so no session ever receives an empty round.
+        """
+        session = self._session_for(request)
+        if session is not None and session.continued:
+            continuation = build_continuation_prompt(request)
+            if continuation is not None:
+                return session, continuation
+            new_session = self._sessions.fresh(request.work_item.id, request.role)
+            session = _SessionUse(new_session.path, session.settings, continued=False)
+        return session, build_prompt(request)
 
     def _record_session(
         self, request: AgentRequest, session: _SessionUse, *, success: bool

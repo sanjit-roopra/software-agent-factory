@@ -24,8 +24,18 @@ from software_agent_factory.copilot_runtime import parse_copilot_artifact
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
+    AttemptTrigger,
     ChangeSet,
+    ExecutionPlan,
+    ExpectedScope,
+    PlanStep,
+    RepairContext,
     RepositoryProfile,
+    ReviewFinding,
+    ReviewFindingCategory,
+    ReviewFindingOrigin,
+    ReviewSourceLocation,
+    Specification,
     TriageResult,
     WorkItem,
 )
@@ -36,6 +46,7 @@ from software_agent_factory.pi_runtime import (
     _default_process_factory,
     usage_from_pi_messages,
 )
+from software_agent_factory.prompts import build_prompt
 from software_agent_factory.subprocess_utils import sanitize_output
 
 
@@ -363,6 +374,7 @@ class _SessionRig:
         self.data_dir = tmp_path / "factory-data"
         self.now = _SESSION_START
         self.commands: list[list[str]] = []
+        self.prompts: list[str] = []
         self._process: FakePiProcess | None = None
         self.runtime = self._runtime_for(PiConfig(**pi_config))
 
@@ -389,7 +401,9 @@ class _SessionRig:
         self._process = process or _scripted_process(
             _TEXT_BY_ROLE.get(request.role, json.dumps(_TRIAGE_JSON))
         )
-        return self.runtime.run(request)
+        result = self.runtime.run(request)
+        self.prompts.append(_sent_prompt(self._process))
+        return result
 
     def session_paths(self) -> list[Path | None]:
         """The session file each launch used, in order (``None`` for ``--no-session``)."""
@@ -397,6 +411,11 @@ class _SessionRig:
 
     def advance(self, **delta: float) -> None:
         self.now += timedelta(**delta)
+
+
+def _sent_prompt(process: FakePiProcess) -> str:
+    [prompt] = [command for command in process.sent_commands() if command["type"] == "prompt"]
+    return str(prompt["message"])
 
 
 def _session_path_of(command: Sequence[str]) -> Path | None:
@@ -412,6 +431,81 @@ def _implementer(work_item_id: str = "WI-1", **overrides: object) -> AgentReques
 
 def _reviewer(**overrides: object) -> AgentRequest:
     return _request(AgentRole.REVIEWER, **overrides)
+
+
+_DIFF = "diff --git a/src/app.py b/src/app.py\n+    if not name.strip():\n"
+_REPAIR_DIFF = "diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+_REPAIR_FAILURE = "unit-tests: TEST_FAILURE"
+_PRIOR_FINDING = "Empty values bypass normalization."
+_SPECIFICATION_TEXT = "Names must not be blank."
+_PLAN_TEXT = "Add a guard clause."
+_REJECTION_REASON = "The previous output was not valid JSON."
+
+#: What only the first call of a session carries: the brief, specification and plan.
+_FIRST_CALL_TEXT = (
+    "Reject empty customer names",
+    "Return HTTP 400 for empty or whitespace-only customer names.",
+    _SPECIFICATION_TEXT,
+    _PLAN_TEXT,
+)
+
+
+def _first_artifacts() -> dict[str, object]:
+    return {
+        "specification": Specification(problem=_SPECIFICATION_TEXT, confidence=0.9),
+        "execution_plan": ExecutionPlan(
+            summary=_PLAN_TEXT,
+            steps=[PlanStep(id="s1", goal="Validate the name")],
+            expected_scope=ExpectedScope(
+                modules=["src"], estimated_files_min=1, estimated_files_max=2
+            ),
+        ),
+    }
+
+
+def _first_implementer_call(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
+    return _implementer(work_item_id, **_first_artifacts(), **overrides)
+
+
+def _repair_round(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
+    """The implementer call after a failed check: the first call's artifacts plus a repair."""
+    repair = RepairContext(
+        trigger=AttemptTrigger.VERIFICATION,
+        summary="Deterministic verification failed.",
+        failures=[_REPAIR_FAILURE],
+    )
+    return _implementer(
+        work_item_id,
+        **_first_artifacts(),
+        attempt_number=2,
+        diff=_DIFF,
+        repair_context=repair,
+        **overrides,
+    )
+
+
+def _first_review(**overrides: object) -> AgentRequest:
+    return _reviewer(**_first_artifacts(), diff=_DIFF, changed_files=["src/app.py"], **overrides)
+
+
+def _re_review() -> AgentRequest:
+    finding = ReviewFinding(
+        id="review-1",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message=_PRIOR_FINDING,
+        locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+    return _first_review(prior_review_findings=[finding], repair_diff=_REPAIR_DIFF)
+
+
+def _missing_from(prompt: str, texts: Sequence[str]) -> list[str]:
+    return [text for text in texts if text not in prompt]
+
+
+def _found_in(prompt: str, texts: Sequence[str]) -> list[str]:
+    return [text for text in texts if text in prompt]
 
 
 @pytest.mark.parametrize(
@@ -450,10 +544,10 @@ def test_run_first_implementer_call_starts_its_session_file_under_the_data_dir(
 
 def test_run_repair_round_within_the_limit_resumes_the_same_session_file(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_implementer())
+    rig.run(_first_implementer_call())
     rig.advance(minutes=10)
 
-    rig.run(_implementer())
+    rig.run(_repair_round())
 
     first, second = rig.session_paths()
     assert first is not None
@@ -463,10 +557,10 @@ def test_run_repair_round_within_the_limit_resumes_the_same_session_file(tmp_pat
 def test_run_reviewer_resumes_its_own_session_not_the_implementers(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
     rig.run(_implementer())
-    rig.run(_reviewer())
+    rig.run(_first_review())
     rig.advance(minutes=5)
 
-    rig.run(_reviewer())
+    rig.run(_re_review())
 
     implementer, reviewer, re_review = rig.session_paths()
     assert reviewer is not None
@@ -477,11 +571,11 @@ def test_run_reviewer_resumes_its_own_session_not_the_implementers(tmp_path: Pat
 
 def test_run_interleaved_work_items_use_only_their_own_session_files(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
-    rig.run(_implementer("W1"))
-    rig.run(_implementer("W2"))
+    rig.run(_first_implementer_call("W1"))
+    rig.run(_first_implementer_call("W2"))
 
-    rig.run(_implementer("W1"))
-    rig.run(_implementer("W2"))
+    rig.run(_repair_round("W1"))
+    rig.run(_repair_round("W2"))
 
     w1, w2, w1_again, w2_again = rig.session_paths()
     assert w1 != w2
@@ -495,10 +589,10 @@ def test_run_session_age_limit_comes_from_the_pi_config(
     tmp_path: Path, elapsed_seconds: int, resumed: bool
 ) -> None:
     rig = _SessionRig(tmp_path, session_reuse_max_age_seconds=_SESSION_MAX_AGE)
-    rig.run(_implementer())
+    rig.run(_first_implementer_call())
     rig.advance(seconds=elapsed_seconds)
 
-    rig.run(_implementer())
+    rig.run(_repair_round())
 
     first, second = rig.session_paths()
     assert (second == first) is resumed
@@ -606,9 +700,9 @@ def test_run_assistant_error_does_not_make_the_session_reusable(tmp_path: Path) 
 def test_run_success_after_a_failed_call_makes_the_new_session_reusable(tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
     rig.run(_implementer(), process=_scripted_process("", stop_reason="error"))
-    rig.run(_implementer())
+    rig.run(_first_implementer_call())
 
-    rig.run(_implementer())
+    rig.run(_repair_round())
 
     _failed, fresh, resumed = rig.session_paths()
     assert resumed == fresh
@@ -641,6 +735,127 @@ def test_run_keeps_the_result_when_the_session_record_cannot_be_written(
     assert "could not record the pi session outcome" in caplog.text
     assert result.success is True
     assert result.change_set == ChangeSet(summary="Reject empty customer names.")
+
+
+def test_run_first_call_of_a_session_sends_the_full_prompt(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    request = _first_implementer_call()
+
+    result = rig.run(request)
+
+    [prompt] = rig.prompts
+    assert prompt == build_prompt(request)
+    assert _missing_from(prompt, _FIRST_CALL_TEXT) == []
+    assert result.performance is not None
+    assert result.performance.prompt_chars == len(prompt)
+
+
+def test_run_implementer_repair_sends_only_the_repair_round_into_the_same_session(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_first_implementer_call())
+    rig.advance(minutes=1)
+
+    result = rig.run(_repair_round())
+
+    first, second = rig.session_paths()
+    _first_prompt, repair_prompt = rig.prompts
+    assert second == first
+    assert _missing_from(repair_prompt, [_REPAIR_FAILURE, _DIFF.strip()]) == []
+    assert _found_in(repair_prompt, _FIRST_CALL_TEXT) == []
+    assert result.performance is not None
+    assert result.performance.prompt_chars == len(repair_prompt)
+
+
+def test_run_reviewer_re_review_sends_only_the_findings_and_new_changes(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_first_review())
+    rig.advance(minutes=1)
+
+    rig.run(_re_review())
+
+    first, second = rig.session_paths()
+    _first_prompt, re_review_prompt = rig.prompts
+    assert second == first
+    assert _missing_from(re_review_prompt, [_PRIOR_FINDING, _REPAIR_DIFF.strip()]) == []
+    assert _found_in(re_review_prompt, [*_FIRST_CALL_TEXT, _DIFF.strip()]) == []
+
+
+def test_run_change_set_correction_sends_only_the_change_set_and_its_context(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_first_implementer_call())
+    rig.advance(minutes=1)
+    correction = _correction_request(
+        workspace_path="/w", repair_context=_REJECTION_REASON, **_first_artifacts()
+    )
+
+    rig.run(correction)
+
+    first, second = rig.session_paths()
+    _first_prompt, correction_prompt = rig.prompts
+    assert second == first
+    assert _missing_from(correction_prompt, ["Fix output shape", _REJECTION_REASON]) == []
+    assert _found_in(correction_prompt, _FIRST_CALL_TEXT) == []
+
+
+def test_run_continued_call_with_nothing_new_starts_a_new_session_with_the_full_prompt(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    request = _first_implementer_call()
+    rig.run(request)
+    rig.advance(minutes=1)
+
+    result = rig.run(request)
+
+    first, second = rig.session_paths()
+    assert first is not None
+    assert second is not None
+    assert second.name == "implementer-2.jsonl"
+    assert first.exists()
+    assert rig.prompts == [build_prompt(request)] * 2
+    assert result.performance is not None
+    assert result.performance.prompt_chars == len(rig.prompts[1])
+
+
+def test_run_repair_after_a_fallback_continues_the_new_session(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_first_implementer_call())
+    rig.advance(minutes=1)
+    rig.run(_first_implementer_call())
+    rig.advance(minutes=1)
+
+    rig.run(_repair_round())
+
+    _first, fallback, repair = rig.session_paths()
+    assert repair == fallback
+    assert _found_in(rig.prompts[2], _FIRST_CALL_TEXT) == []
+
+
+def test_run_repair_in_a_new_session_sends_the_full_prompt(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_first_implementer_call())
+    request = _repair_round(model="claude-opus-5")
+
+    rig.run(request)
+
+    first, second = rig.session_paths()
+    assert second != first
+    assert rig.prompts[1] == build_prompt(request)
+
+
+def test_run_role_without_a_session_sends_the_full_prompt_even_with_a_rejection(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    request = _request(AgentRole.TESTER, repair_context=_REJECTION_REASON)
+
+    rig.run(request)
+
+    assert rig.prompts == [build_prompt(request)]
 
 
 # ---------------------------------------------------------------------------

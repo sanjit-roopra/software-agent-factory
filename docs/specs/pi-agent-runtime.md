@@ -101,6 +101,8 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
   files and the sidecar are private to the owner too (mode `0600`).
 - A continued call sends the continuation prompt (round-specific sections only). A
   new session sends the full prompt from `build_prompt`.
+- If a call can continue a session but has no round-specific section, it starts a new
+  session. It sends the full prompt there.
 - IMPLEMENTER and REVIEWER sessions are always separate. Model switching inside a
   session never happens. Escalation to another model starts a new session.
 - Parallel work items (bounded by `scheduler.max_concurrent_tasks`) never share a
