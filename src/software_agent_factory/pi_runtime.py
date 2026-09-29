@@ -34,6 +34,21 @@ Unexpected exceptions from starting or driving the process still propagate
 to the caller, exactly as they do from the Copilot runtime (the
 workflow/project/CLI layers convert them with
 ``agents.runtime_exception_failure_reason``).
+
+Session continuation (Slice 6): the IMPLEMENTER and REVIEWER roles keep one
+persisted pi session per work item. :func:`~software_agent_factory.pi_sessions.persists_session`
+is the single place that decides this by role. Those roles launch pi with
+``--session <path>``, where
+:class:`~software_agent_factory.pi_sessions.PiSessionStore` chooses the file
+of the previous call (resumed) or a new one. Every other role launches with
+``--no-session``. A ``CORRECT_CHANGE_SET`` call belongs to the IMPLEMENTER, so
+it resumes that session, with ``--no-tools`` as before. After the call, the
+store records whether pi settled cleanly: a timeout, a lost process, an RPC
+error or an assistant error makes the next round start a new session. A
+response that only fails artifact parsing still counts as settled, so the
+correction call can resume the conversation that produced it. A record that
+cannot be written is logged and never replaces the call's result. A continued
+call still sends the full prompt: the continuation prompt arrives in Slice 7.
 """
 
 from __future__ import annotations
@@ -43,6 +58,7 @@ import subprocess
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -70,6 +86,7 @@ from .pi_rpc import (
     PiRpcProtocolError,
     PiRpcTimeout,
 )
+from .pi_sessions import PiSessionStore, SessionSettings, persists_session
 from .prompts import build_prompt
 from .subprocess_utils import (
     build_child_env,
@@ -124,6 +141,8 @@ _BEST_EFFORT_USAGE_DEADLINE_SECONDS = 2.0
 #: PiProcessHandle``. Injectable so tests drive :meth:`PiAgentRuntime.run`
 #: against a fake process instead of a real ``pi`` executable.
 ProcessFactory = Callable[[Sequence[str], Path, dict[str, str]], PiProcessHandle]
+
+_NO_SESSION_ARG = ("--no-session",)
 
 
 def _default_process_factory(
@@ -219,6 +238,18 @@ class _CallContext:
                 process_boot_ms=self.boot_ms,
             ),
         )
+
+
+@dataclass(frozen=True)
+class _SessionUse:
+    """The persisted session one call runs in: its file and the settings it is bound to."""
+
+    path: Path
+    settings: SessionSettings
+
+    @property
+    def args(self) -> tuple[str, str]:
+        return ("--session", str(self.path))
 
 
 def _failure_reason_for(exc: PiRpcError) -> str:
@@ -423,8 +454,10 @@ class PiAgentRuntime(AgentRuntime):
 
     ``config`` is the loaded ``pi:`` configuration block
     (:class:`~software_agent_factory.config.PiConfig`); ``data_dir`` is the
-    factory's configured data directory, used by later slices for the
-    per-work-item session store under ``<data_dir>/pi-sessions``.
+    factory's configured data directory. The per-work-item session store lives
+    under ``<data_dir>/pi-sessions`` and reuses a session for
+    ``config.session_reuse_max_age_seconds``. ``clock`` replaces the store's
+    UTC clock, for tests.
     """
 
     def __init__(
@@ -434,15 +467,23 @@ class PiAgentRuntime(AgentRuntime):
         *,
         process_factory: ProcessFactory = _default_process_factory,
         routing_api_key_env_var: str = _DEFAULT_ROUTING_API_KEY_ENV_VAR,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._config = config
-        self._data_dir = data_dir
         self._process_factory = process_factory
         self._routing_api_key_env_var = routing_api_key_env_var
+        self._sessions = PiSessionStore(
+            data_dir / "pi-sessions",
+            max_age_seconds=config.session_reuse_max_age_seconds,
+            clock=clock,
+        )
 
     def run(self, request: AgentRequest) -> AgentResult:
         validate_runtime_request(request)
-        command = self._build_command(request, session_arg=["--no-session"])
+        session = self._session_for(request)
+        command = self._build_command(
+            request, session_arg=session.args if session else _NO_SESSION_ARG
+        )
         cwd = workspace_cwd(request)
         env, scrubbed_values = self._child_env_and_scrubbed()
         prompt = build_prompt(request)
@@ -458,7 +499,46 @@ class PiAgentRuntime(AgentRuntime):
             )
         ctx = _CallContext(request, prompt_chars, _elapsed_ms(boot_start), scrubbed_values)
 
-        client = PiRpcClient(process, redact=lambda text: redact_secrets(text, scrubbed_values))
+        settled = False
+        try:
+            result, settled = self._converse(ctx, process, prompt)
+            return result
+        finally:
+            if session is not None:
+                self._record_session(request, session, success=settled)
+
+    def _session_for(self, request: AgentRequest) -> _SessionUse | None:
+        """Return the persisted session this call runs in, ``None`` for a role without one."""
+        if not persists_session(request.role):
+            return None
+        settings = SessionSettings(
+            model=request.model, provider=self._config.provider, reasoning=request.reasoning
+        )
+        decision = self._sessions.resolve(request.work_item.id, request.role, settings)
+        return _SessionUse(decision.path, settings)
+
+    def _record_session(
+        self, request: AgentRequest, session: _SessionUse, *, success: bool
+    ) -> None:
+        """Tell the store how the call ended. A record that cannot be written is only logged."""
+        try:
+            self._sessions.record(
+                request.work_item.id, request.role, session.path, session.settings, success=success
+            )
+        except OSError:
+            logger.warning("could not record the pi session outcome", exc_info=True)
+
+    def _converse(
+        self, ctx: _CallContext, process: PiProcessHandle, prompt: str
+    ) -> tuple[AgentResult, bool]:
+        """Drive one started pi process; return the result and whether pi settled cleanly.
+
+        The flag is ``False`` for a timeout, a lost process, an RPC error and an
+        assistant error or abort. It is ``True`` once pi answered, even when the
+        answer then fails artifact parsing.
+        """
+        request = ctx.request
+        client = PiRpcClient(process, redact=lambda text: redact_secrets(text, ctx.scrubbed_values))
         usage: UsageMetrics | None = None
         try:
             deadline = time.monotonic() + request.timeout_seconds
@@ -470,26 +550,29 @@ class PiAgentRuntime(AgentRuntime):
                 stop_reason, error_message = _stop_reason_from_messages(messages)
                 failure_message = _stop_reason_failure_message(stop_reason, error_message)
                 if failure_message is not None:
-                    return ctx.failed(failure_message, usage=usage)
+                    return ctx.failed(failure_message, usage=usage), False
                 response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
                 data = _response_data(response, "get_last_assistant_text")
             except PiRpcTimeout:
                 if usage is None:
                     usage = self._best_effort_usage(client)
                 self._abort_and_kill(client, process)
-                return ctx.failed(
-                    f"pi timed out after {request.timeout_seconds} seconds", usage=usage
+                return (
+                    ctx.failed(
+                        f"pi timed out after {request.timeout_seconds} seconds", usage=usage
+                    ),
+                    False,
                 )
             except PiRpcProcessExited as exc:
                 if usage is None:
                     usage = self._best_effort_usage(client)
-                return ctx.failed(_failure_reason_for(exc), usage=usage)
+                return ctx.failed(_failure_reason_for(exc), usage=usage), False
             except PiRpcError as exc:
-                return ctx.failed(_failure_reason_for(exc), usage=usage)
+                return ctx.failed(_failure_reason_for(exc), usage=usage), False
             except _UnexpectedResponse as exc:
-                return ctx.failed(str(exc), usage=usage)
+                return ctx.failed(str(exc), usage=usage), False
 
-            return self._result_from_response(ctx, data, usage=usage)
+            return self._result_from_response(ctx, data, usage=usage), True
         finally:
             client.close()
 
@@ -533,8 +616,8 @@ class PiAgentRuntime(AgentRuntime):
         """Build the ``pi --mode rpc`` command line for one agent call.
 
         ``session_arg`` is ``["--no-session"]`` or ``["--session", <path>]``;
-        Slice 6 supplies the persisted-session path, so every caller in this
-        slice passes ``["--no-session"]``.
+        :meth:`run` passes the second form for a role that keeps a session
+        (see :func:`~software_agent_factory.pi_sessions.persists_session`).
         """
         capability = capability_for(request)
         if capability is AgentCapability.WEB_RESEARCH:

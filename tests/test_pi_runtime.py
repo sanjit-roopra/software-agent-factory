@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -15,6 +16,7 @@ from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import (
     RUNTIME_FAILURE_REASON_LIMIT,
     AgentRequest,
+    AgentResult,
     is_retryable_typed_artifact_failure,
 )
 from software_agent_factory.config import PiConfig
@@ -82,6 +84,16 @@ def _skill_request(**overrides: object) -> AgentRequest:
     return _request(AgentRole.RESEARCHER, **defaults)
 
 
+#: Where ``_runtime`` puts the pi session store; ``_isolated_data_dir`` points it at a temp dir.
+_DATA_DIR = [Path("/nonexistent-data-dir")]
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path: Path) -> None:
+    """Keep the session store of every runtime under the test's own temp dir."""
+    _DATA_DIR[0] = tmp_path / "factory-data"
+
+
 def _runtime(
     *, process_factory: ProcessFactory | None = None, **overrides: object
 ) -> PiAgentRuntime:
@@ -89,7 +101,7 @@ def _runtime(
     kwargs: dict[str, object] = {}
     if process_factory is not None:
         kwargs["process_factory"] = process_factory
-    return PiAgentRuntime(config, data_dir=Path("/data"), **kwargs)
+    return PiAgentRuntime(config, data_dir=_DATA_DIR[0], **kwargs)
 
 
 class StdinEofExitProcess(FakePiProcess):
@@ -245,7 +257,8 @@ def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
         "--no-prompt-templates",
         "--no-context-files",
         "--no-approve",
-        "--no-session",
+        "--session",
+        str(_DATA_DIR[0] / "pi-sessions" / "+w+i-1" / "implementer.jsonl"),
     ]
     assert launch.cwd == tmp_path.resolve()
     assert "GITHUB_TOKEN" not in launch.env
@@ -322,7 +335,7 @@ def test_run_launches_the_requested_model_and_reasoning_level() -> None:
 
 
 def test_build_command_appends_session_arg_for_resumed_session() -> None:
-    """Direct: ``run`` always passes ``--no-session`` until session reuse (Slice 6) lands."""
+    """Direct: ``_build_command`` appends whatever session argument it is given."""
     runtime = _runtime()
     request = _request(AgentRole.IMPLEMENTER, workspace_path="/workspaces/wi-1")
 
@@ -331,6 +344,281 @@ def test_build_command_appends_session_arg_for_resumed_session() -> None:
     )
 
     assert command[-2:] == ["--session", "/data/pi-sessions/WI-1/IMPLEMENTER.jsonl"]
+
+
+# ---------------------------------------------------------------------------
+# run: session continuation (Slice 6)
+# ---------------------------------------------------------------------------
+
+
+_SESSION_START = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+_SESSION_MAX_AGE = 3600
+_REVIEW_TEXT = json.dumps({"approved": True})
+_CHANGE_SET_TEXT = json.dumps({"summary": "Reject empty customer names."})
+_TEXT_BY_ROLE = {
+    AgentRole.IMPLEMENTER: _CHANGE_SET_TEXT,
+    AgentRole.REVIEWER: _REVIEW_TEXT,
+}
+
+
+class _SessionRig:
+    """A pi runtime on a hand-moved session clock that records each launch.
+
+    The process factory plays pi: it records the command, creates the session
+    file named by ``--session`` (as pi does), and answers with a settled process.
+    """
+
+    def __init__(self, tmp_path: Path, **pi_config: object) -> None:
+        self.data_dir = tmp_path / "factory-data"
+        self.now = _SESSION_START
+        self.commands: list[list[str]] = []
+        self._process: FakePiProcess | None = None
+        self.runtime = self._runtime_for(PiConfig(**pi_config))
+
+    def _runtime_for(self, config: PiConfig) -> PiAgentRuntime:
+        return PiAgentRuntime(
+            config, self.data_dir, process_factory=self._start, clock=lambda: self.now
+        )
+
+    def switch_provider(self, provider: str) -> None:
+        """Run later calls with another configured provider, on the same session store."""
+        self.runtime = self._runtime_for(PiConfig(provider=provider))
+
+    def _start(self, command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
+        self.commands.append(list(command))
+        session_path = _session_path_of(command)
+        if session_path is not None:
+            session_path.parent.mkdir(parents=True, exist_ok=True)
+            session_path.touch()
+        assert self._process is not None
+        return self._process
+
+    def run(self, request: AgentRequest, *, process: FakePiProcess | None = None) -> AgentResult:
+        self._process = process or _scripted_process(
+            _TEXT_BY_ROLE.get(request.role, json.dumps(_TRIAGE_JSON))
+        )
+        return self.runtime.run(request)
+
+    def session_paths(self) -> list[Path | None]:
+        """The session file each launch used, in order (``None`` for ``--no-session``)."""
+        return [_session_path_of(command) for command in self.commands]
+
+    def advance(self, **delta: float) -> None:
+        self.now += timedelta(**delta)
+
+
+def _session_path_of(command: Sequence[str]) -> Path | None:
+    if "--session" not in command:
+        return None
+    return Path(command[list(command).index("--session") + 1])
+
+
+def _implementer(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
+    work_item = _work_item().model_copy(update={"id": work_item_id})
+    return _request(AgentRole.IMPLEMENTER, work_item=work_item, workspace_path="/w", **overrides)
+
+
+def _reviewer(**overrides: object) -> AgentRequest:
+    return _request(AgentRole.REVIEWER, **overrides)
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        AgentRole.TRIAGE,
+        AgentRole.REFINER,
+        AgentRole.RESEARCHER,
+        AgentRole.PLANNER,
+        AgentRole.TESTER,
+    ],
+)
+def test_run_other_roles_never_use_a_persisted_session(role: AgentRole, tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+
+    rig.run(_request(role))
+    rig.run(_request(role))
+
+    assert [command[-1] for command in rig.commands] == ["--no-session", "--no-session"]
+    assert "--session" not in rig.commands[0] + rig.commands[1]
+    assert not (rig.data_dir / "pi-sessions").exists()
+
+
+def test_run_first_implementer_call_starts_its_session_file_under_the_data_dir(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+
+    rig.run(_implementer())
+
+    [path] = rig.session_paths()
+    assert path is not None
+    assert path.parent.parent == rig.data_dir / "pi-sessions"
+    assert path.name == "implementer.jsonl"
+
+
+def test_run_repair_round_within_the_limit_resumes_the_same_session_file(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+    rig.advance(minutes=10)
+
+    rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert first is not None
+    assert second == first
+
+
+def test_run_reviewer_resumes_its_own_session_not_the_implementers(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+    rig.run(_reviewer())
+    rig.advance(minutes=5)
+
+    rig.run(_reviewer())
+
+    implementer, reviewer, re_review = rig.session_paths()
+    assert reviewer is not None
+    assert reviewer.name == "reviewer.jsonl"
+    assert re_review == reviewer
+    assert implementer != reviewer
+
+
+def test_run_interleaved_work_items_use_only_their_own_session_files(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer("W1"))
+    rig.run(_implementer("W2"))
+
+    rig.run(_implementer("W1"))
+    rig.run(_implementer("W2"))
+
+    w1, w2, w1_again, w2_again = rig.session_paths()
+    assert w1 != w2
+    assert (w1_again, w2_again) == (w1, w2)
+
+
+@pytest.mark.parametrize(
+    ("elapsed_seconds", "resumed"), [(_SESSION_MAX_AGE - 1, True), (_SESSION_MAX_AGE, False)]
+)
+def test_run_session_age_limit_comes_from_the_pi_config(
+    tmp_path: Path, elapsed_seconds: int, resumed: bool
+) -> None:
+    rig = _SessionRig(tmp_path, session_reuse_max_age_seconds=_SESSION_MAX_AGE)
+    rig.run(_implementer())
+    rig.advance(seconds=elapsed_seconds)
+
+    rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert (second == first) is resumed
+
+
+@pytest.mark.parametrize(
+    "changed", [{"model": "claude-opus-5"}, {"reasoning": "high"}], ids=["model", "reasoning"]
+)
+def test_run_changed_call_settings_start_a_new_session_and_keep_the_old_file(
+    tmp_path: Path, changed: dict[str, str]
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+
+    rig.run(_implementer(**changed))
+
+    first, second = rig.session_paths()
+    assert first is not None
+    assert second != first
+    assert first.exists()
+
+
+def test_run_changed_provider_starts_a_new_session(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+    rig.switch_provider("anthropic")
+
+    rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert second != first
+
+
+def test_run_change_set_correction_resumes_the_implementer_session_without_tools(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+    rig.advance(minutes=2)
+
+    rig.run(_correction_request(workspace_path="/w"))
+
+    first, second = rig.session_paths()
+    assert second == first
+    assert "--no-tools" in rig.commands[1]
+    assert "--tools" not in rig.commands[1]
+
+
+def test_run_correction_resumes_the_session_of_a_call_whose_output_did_not_parse(
+    tmp_path: Path,
+) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer(), process=_scripted_process("not a change set"))
+
+    rig.run(_correction_request(workspace_path="/w"))
+
+    first, second = rig.session_paths()
+    assert second == first
+
+
+def test_run_timed_out_call_does_not_make_the_session_reusable(
+    tmp_path: Path, pi_fake_clock: FakePiClock
+) -> None:
+    rig = _SessionRig(tmp_path)
+    hung = FakePiProcess()
+    hung.write_records({"type": "response", "id": "c1", "success": True})
+    result = rig.run(_implementer(timeout_seconds=1), process=hung)
+
+    rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert result.success is False
+    assert first is not None
+    assert second is not None
+    assert second.name == "implementer-2.jsonl"
+    assert first.exists()
+
+
+def test_run_assistant_error_does_not_make_the_session_reusable(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    result = rig.run(_implementer(), process=_scripted_process("", stop_reason="error"))
+
+    rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert result.success is False
+    assert second != first
+
+
+def test_run_success_after_a_failed_call_makes_the_new_session_reusable(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer(), process=_scripted_process("", stop_reason="error"))
+    rig.run(_implementer())
+
+    rig.run(_implementer())
+
+    _failed, fresh, resumed = rig.session_paths()
+    assert resumed == fresh
+
+
+def test_run_keeps_the_result_when_the_session_record_cannot_be_written(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+    [first] = rig.session_paths()
+    assert first is not None
+    (first.parent / "implementer.meta.json").unlink()
+    (first.parent / "implementer.meta.json").mkdir()
+
+    result = rig.run(_implementer())
+
+    assert result.success is True
+    assert result.change_set == ChangeSet(summary="Reject empty customer names.")
 
 
 # ---------------------------------------------------------------------------
