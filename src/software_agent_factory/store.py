@@ -25,6 +25,7 @@ depend on them:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -56,6 +57,8 @@ from .models import (
     VersionedModel,
     WorkItem,
 )
+
+logger = logging.getLogger(__name__)
 
 ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 
@@ -185,8 +188,17 @@ class FileRunStore:
 
     def list_runs(self) -> list[FactoryRun]:
         """List every persisted run. Read-only: never creates a run or
-        attempt directory."""
-        runs = [self.load_run(path.parent.name) for path in self._runs_dir.glob("*/run.json")]
+        attempt directory.
+
+        A run file that no longer validates is skipped and logged, so one old
+        or damaged run cannot hide every other run from a listing.
+        """
+        runs: list[FactoryRun] = []
+        for path in self._runs_dir.glob("*/run.json"):
+            try:
+                runs.append(self.load_run(path.parent.name))
+            except ValueError as exc:
+                logger.warning("skipped run %s: %s", path.parent.name, exc)
         return sorted(runs, key=lambda run: (run.created_at, run.id))
 
     def save_artifact(
