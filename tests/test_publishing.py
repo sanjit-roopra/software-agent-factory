@@ -98,9 +98,14 @@ def test_token_reaches_gh_only_through_the_child_environment(tmp_path: Path) -> 
             assert env is None
 
 
+_WORDY_TEXT = "Use a robust and comprehensive solution."
+
+
+@pytest.mark.parametrize("field", ["title", "body", "commit_message"])
 def test_wording_findings_are_logged_and_do_not_block_publication(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
+    field: str,
 ) -> None:
     runner = ScriptedRunner()
     publisher = PullRequestPublisher(
@@ -109,19 +114,29 @@ def test_wording_findings_are_logged_and_do_not_block_publication(
         client=GitHubClient(runner=runner),
         runner=runner,
     )
+    texts = {"title": "Do the thing", "body": "body", "commit_message": "Do the thing"}
+    texts[field] = _WORDY_TEXT
+    label = field.replace("_", " ")
+    label = label if field == "commit_message" else f"pull request {label}"
 
     with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
-        publisher.publish(
+        result = publisher.publish(
             workspace_path=tmp_path,
             branch_name="factory/WI-1",
             base_branch="main",
-            commit_message="Do the thing",
-            title="Do the thing",
-            body="Use a robust and comprehensive solution.",
+            **texts,
         )
 
-    assert runner.calls
-    assert "publication text findings field=pull request body" in caplog.text
+    assert result.created_pull_request is True
+    create = [argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "create"]][0]
+    assert create[create.index("--title") + 1] == texts["title"]
+    assert create[create.index("--body") + 1].startswith(texts["body"])
+    commit = [argv for argv in runner.commands("git") if "commit" in argv and "-m" in argv][0]
+    assert commit[commit.index("-m") + 1].startswith(texts["commit_message"])
+    assert (
+        f"publication text findings field={label} count=1: {label} has 2 slop_word finding(s)."
+        in caplog.text
+    )
 
 
 def test_blank_title_is_blocked_before_git_or_github_mutation(tmp_path: Path) -> None:
