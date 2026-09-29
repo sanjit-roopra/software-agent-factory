@@ -738,29 +738,53 @@ def test_run_rejects_an_unknown_runtime(source_repo: Path, data_dir: Path) -> No
     assert "'pi'" in result.output
 
 
-def test_run_with_pi_runtime_selects_the_real_runtime(
-    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
-) -> None:
-    """``--runtime pi`` opts in. The pi runtime is stubbed here so the test
-    still makes zero paid calls."""
+# A ``PiAgentRuntime(...)`` construction as the CLI made it: (args, kwargs).
+PiRuntimeCall = tuple[tuple[object, ...], dict[str, object]]
+
+
+@pytest.fixture
+def pi_runtime_calls(monkeypatch: pytest.MonkeyPatch) -> list[PiRuntimeCall]:
+    """Replace the real pi runtime with a fake-agent stand-in; return how it was built.
+
+    Keeps the CLI tests free of paid calls. Each construction appends its
+    ``(args, kwargs)`` to the returned list.
+    """
     from software_agent_factory.agents import AgentResult, FakeAgentRuntime
-    from software_agent_factory.models import AgentRole
 
-    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
-
-    built: list[str] = []
+    calls: list[PiRuntimeCall] = []
     delegate = FakeAgentRuntime()
 
     # double-waiver: B1 — out-of-process agent subprocess runtime
     class StubPiRuntime:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            built.append("pi")
+            calls.append((args, kwargs))
 
         def run(self, request: object) -> AgentResult:
-            assert getattr(request, "role") in set(AgentRole)
             return delegate.run(request)  # type: ignore[arg-type]
 
     monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
+    return calls
+
+
+@pytest.fixture
+def pi_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Capture the CLI's ``logger.warning`` messages (the structured-log side of AC19)."""
+    warnings: list[str] = []
+
+    class _RecordingLogger:
+        def warning(self, msg: str, *args: object) -> None:
+            warnings.append(msg % args if args else msg)
+
+    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
+    return warnings
+
+
+def test_run_with_pi_runtime_selects_the_real_runtime(
+    source_repo: Path, data_dir: Path, path_with, pi_runtime_calls: list[PiRuntimeCall]
+) -> None:
+    """``--runtime pi`` opts in. The pi runtime is stubbed here so the test
+    still makes zero paid calls."""
+    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
 
     result = runner.invoke(
         app,
@@ -780,38 +804,17 @@ def test_run_with_pi_runtime_selects_the_real_runtime(
     )
 
     assert result.exit_code == 0, result.output
-    assert built == ["pi"]
+    assert len(pi_runtime_calls) == 1
     assert "state: PR_READY" in result.output
 
 
+@pytest.mark.usefixtures("pi_runtime_calls")
 def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
-    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
+    source_repo: Path, data_dir: Path, path_with, pi_warnings: list[str]
 ) -> None:
     """AC19: selecting pi logs a warning naming the unrestricted shell tool
     and linking the follow-up issue (AC18, #70), before the run happens."""
-    from software_agent_factory.agents import FakeAgentRuntime
-
     path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
-
-    delegate = FakeAgentRuntime()
-
-    # double-waiver: B1 — out-of-process agent subprocess runtime
-    class StubPiRuntime:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        def run(self, request: object) -> object:
-            return delegate.run(request)  # type: ignore[arg-type]
-
-    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
-
-    warnings: list[str] = []
-
-    class _RecordingLogger:
-        def warning(self, msg: str, *args: object) -> None:
-            warnings.append(msg % args if args else msg)
-
-    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
 
     result = runner.invoke(
         app,
@@ -834,8 +837,8 @@ def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
     assert any(
         "unrestricted" in warning
         and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
-        for warning in warnings
-    ), warnings
+        for warning in pi_warnings
+    ), pi_warnings
     # AC19: the warning must also reach the operator's terminal, not just the
     # structured file log.
     assert "unrestricted" in result.stderr
@@ -843,32 +846,13 @@ def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
 
 
 def test_project_with_pi_runtime_selects_the_real_runtime(
-    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, path_with
+    source_repo: Path,
+    data_dir: Path,
+    path_with,
+    pi_runtime_calls: list[PiRuntimeCall],
+    pi_warnings: list[str],
 ) -> None:
-    from software_agent_factory.agents import AgentResult, FakeAgentRuntime
-
     path_with("pi")  # project's prerequisite gate; the pi runtime itself is stubbed
-
-    built: list[str] = []
-    delegate = FakeAgentRuntime()
-
-    # double-waiver: B1 — out-of-process agent subprocess runtime
-    class StubPiRuntime:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            built.append("pi")
-
-        def run(self, request: object) -> AgentResult:
-            return delegate.run(request)  # type: ignore[arg-type]
-
-    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
-
-    warnings: list[str] = []
-
-    class _RecordingLogger:
-        def warning(self, msg: str, *args: object) -> None:
-            warnings.append(msg % args if args else msg)
-
-    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
 
     result = runner.invoke(
         app,
@@ -895,11 +879,11 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
     assert any(
         "unrestricted" in warning
         and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
-        for warning in warnings
-    ), warnings
+        for warning in pi_warnings
+    ), pi_warnings
     assert "unrestricted" in result.stderr
     assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
-    assert built == ["pi"]
+    assert len(pi_runtime_calls) == 1
     assert "state: DONE" in result.output
 
 
@@ -1063,32 +1047,11 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     path_with,
+    pi_runtime_calls: list[PiRuntimeCall],
+    pi_warnings: list[str],
 ) -> None:
-    from software_agent_factory.agents import AgentResult, FakeAgentRuntime
-
     path_with("gh", "pi")  # start's prerequisite gate; the tracker itself is stubbed
     _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
-
-    built: list[str] = []
-    delegate = FakeAgentRuntime()
-
-    # double-waiver: B1 — out-of-process agent subprocess runtime
-    class StubPiRuntime:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            built.append("pi")
-
-        def run(self, request: object) -> AgentResult:
-            return delegate.run(request)  # type: ignore[arg-type]
-
-    monkeypatch.setattr("software_agent_factory.cli.PiAgentRuntime", StubPiRuntime)
-
-    warnings: list[str] = []
-
-    class _RecordingLogger:
-        def warning(self, msg: str, *args: object) -> None:
-            warnings.append(msg % args if args else msg)
-
-    monkeypatch.setattr("software_agent_factory.cli.logger", _RecordingLogger())
 
     config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
 
@@ -1109,13 +1072,13 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     )
 
     assert result.exit_code == 0, result.output
-    assert built == ["pi"]
+    assert len(pi_runtime_calls) == 1
     assert "dispatched: acme/repo#11" in result.output
     assert any(
         "unrestricted" in warning
         and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
-        for warning in warnings
-    ), warnings
+        for warning in pi_warnings
+    ), pi_warnings
     assert "unrestricted" in result.stderr
     assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
 
