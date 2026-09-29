@@ -449,6 +449,14 @@ def test_run_implementer_without_workspace_path_raises() -> None:
         runtime.run(request)
 
 
+def test_run_change_set_correction_without_workspace_path_raises_correction_wording() -> None:
+    runtime = _runtime()
+    request = _correction_request(workspace_path=None)
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        runtime.run(request)
+
+
 def test_run_timeout_seconds_below_one_raises() -> None:
     runtime = _runtime()
     request = _request(AgentRole.TRIAGE, timeout_seconds=0)

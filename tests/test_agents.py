@@ -596,21 +596,6 @@ def test_workspace_cwd_falls_back_to_process_cwd_for_read_only_role(
     assert workspace_cwd(request) == tmp_path.resolve()
 
 
-def test_workspace_cwd_change_set_correction_requires_workspace_path() -> None:
-    request = AgentRequest(
-        role=AgentRole.IMPLEMENTER,
-        purpose=AgentPurpose.CORRECT_CHANGE_SET,
-        model="claude-sonnet-5",
-        reasoning="high",
-        work_item=_work_item(),
-        change_set=ChangeSet(summary="Fix output shape"),
-        timeout_seconds=30,
-    )
-
-    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
-        workspace_cwd(request)
-
-
 def test_workspace_cwd_skill_generation_requires_workspace_path() -> None:
     request = AgentRequest(
         role=AgentRole.RESEARCHER,
@@ -649,7 +634,40 @@ def test_validate_runtime_request_rejects_implementer_without_workspace_path() -
         validate_runtime_request(request)
 
 
-def test_validate_runtime_request_allows_implementer_with_workspace_path(
+def test_validate_runtime_request_correction_without_workspace_path_uses_correction_wording() -> (
+    None
+):
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        change_set=ChangeSet(summary="Fix output shape"),
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_correction_with_empty_workspace_path_is_rejected() -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        purpose=AgentPurpose.CORRECT_CHANGE_SET,
+        model="claude-sonnet-5",
+        reasoning="high",
+        work_item=_work_item(),
+        change_set=ChangeSet(summary="Fix output shape"),
+        workspace_path="",
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+        validate_runtime_request(request)
+
+
+def test_validate_runtime_request_accepts_implementer_with_workspace_path(
     tmp_path: Path,
 ) -> None:
     request = AgentRequest(
@@ -661,7 +679,7 @@ def test_validate_runtime_request_allows_implementer_with_workspace_path(
         timeout_seconds=30,
     )
 
-    validate_runtime_request(request)
+    assert validate_runtime_request(request) is None
 
 
 def test_validate_runtime_request_rejects_timeout_below_one() -> None:
@@ -677,7 +695,7 @@ def test_validate_runtime_request_rejects_timeout_below_one() -> None:
         validate_runtime_request(request)
 
 
-def test_validate_runtime_request_allows_read_only_role_without_workspace_path() -> None:
+def test_validate_runtime_request_accepts_read_only_role_without_workspace_path() -> None:
     request = AgentRequest(
         role=AgentRole.TRIAGE,
         model="claude-sonnet-5",
@@ -686,4 +704,4 @@ def test_validate_runtime_request_allows_read_only_role_without_workspace_path()
         timeout_seconds=30,
     )
 
-    validate_runtime_request(request)
+    assert validate_runtime_request(request) is None

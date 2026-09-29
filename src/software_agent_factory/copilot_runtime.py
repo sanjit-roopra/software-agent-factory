@@ -76,8 +76,6 @@ class CopilotAgentRuntime(AgentRuntime):
         self._max_error_chars = max_error_chars
 
     def run(self, request: AgentRequest) -> AgentResult:
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET and not request.workspace_path:
-            raise ValueError("ChangeSet correction requires workspace_path")
         validate_runtime_request(request)
 
         cwd = workspace_cwd(request)

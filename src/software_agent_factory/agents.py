@@ -159,16 +159,15 @@ def workspace_cwd(request: AgentRequest) -> Path:
     and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
     apply the exact same rule: the request's workspace when supplied,
     otherwise the process's current working directory -- except
-    ``CORRECT_CHANGE_SET`` and ``GENERATE_REPOSITORY_SKILL``, which always
-    require an explicit workspace (a rejected ``ChangeSet`` must be corrected
-    in the workspace it was produced in, and the skill researcher must run in
-    the neutral run directory the workflow passes, never the operator's or
-    repository's cwd).
+    ``GENERATE_REPOSITORY_SKILL``, which always requires an explicit workspace
+    (the skill researcher must run in the neutral run directory the workflow
+    passes, never the operator's or repository's cwd). ``CORRECT_CHANGE_SET``
+    also needs an explicit workspace, but
+    :func:`validate_runtime_request` enforces that before any runtime resolves
+    a cwd.
     """
     if request.workspace_path:
         return Path(request.workspace_path).expanduser().resolve()
-    if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-        raise ValueError("ChangeSet correction requires workspace_path")
     if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
         raise ValueError(
             "repository skill generation requires workspace_path (the neutral run directory)"
@@ -181,15 +180,19 @@ def validate_runtime_request(request: AgentRequest) -> None:
 
     Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
     and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
-    enforce the same two runtime-neutral checks, in the same order, before
-    either builds a command or starts a subprocess: an
+    enforce the same runtime-neutral checks, in the same order, before
+    either builds a command or starts a subprocess: a ``CORRECT_CHANGE_SET``
+    request needs a ``workspace_path`` (a rejected ``ChangeSet`` must be
+    corrected in the workspace it was produced in), an
     :attr:`AgentRole.IMPLEMENTER` request always needs a ``workspace_path``
     (there is no "current directory" an implementer should ever write to),
     and ``timeout_seconds`` must be positive (a runtime cannot bound a
-    subprocess call against a non-positive deadline). Raises ``ValueError``
-    with the exact wording each runtime raised inline before this was
-    extracted, so callers matching against that wording are unaffected.
+    subprocess call against a non-positive deadline). The correction check
+    runs first because every correction request is an ``IMPLEMENTER`` request,
+    and its more specific wording must win.
     """
+    if request.purpose is AgentPurpose.CORRECT_CHANGE_SET and not request.workspace_path:
+        raise ValueError("ChangeSet correction requires workspace_path")
     if request.role is AgentRole.IMPLEMENTER and not request.workspace_path:
         raise ValueError("IMPLEMENTER requests require workspace_path")
     if request.timeout_seconds < 1:
