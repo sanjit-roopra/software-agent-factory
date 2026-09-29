@@ -1639,7 +1639,7 @@ def skill_refresh_command(
         repository_skill_validation_error,
     )
     from .routing import ModelRouter
-    from .writing_policy import apply_agent_result_writing_policy
+    from .writing_policy import result_writing_findings
 
     role_model = ModelRouter(factory_config).model_for_researcher()
     agent_runtime = _build_runtime(runtime, factory_config)
@@ -1672,10 +1672,7 @@ def skill_refresh_command(
 
         started_at = utc_now()
         try:
-            result = apply_agent_result_writing_policy(
-                agent_runtime.run(request),
-                request.purpose,
-            )
+            result = agent_runtime.run(request)
         except ValueError as exc:
             completed_at = utc_now()
             invocation = InvocationRecord(
@@ -1722,6 +1719,9 @@ def skill_refresh_command(
             failure_reason=result.failure_reason,
             attempt_number=attempt,
             usage=result.usage,
+            writing_findings=result_writing_findings(
+                result, request.purpose, source="repository skill RESEARCHER"
+            ),
         )
         try:
             _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)

@@ -41,7 +41,6 @@ from pydantic_core import from_json
 from .agents import (
     AgentRequest,
     AgentRuntime,
-    is_writing_policy_failure,
     runtime_exception_failure_reason,
 )
 from .config import FactoryConfig
@@ -82,11 +81,7 @@ from .workflow import (
     is_run_finished,
 )
 from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
-from .writing_policy import (
-    apply_agent_result_writing_policy,
-    require_publication_text,
-    writing_policy_correction_context,
-)
+from .writing_policy import require_publication_text, result_writing_findings
 
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
@@ -664,10 +659,7 @@ class ProjectRunner:
             )
             started_at = utc_now()
             try:
-                result = apply_agent_result_writing_policy(
-                    self._runtime.run(request),
-                    request.purpose,
-                )
+                result = self._runtime.run(request)
             except (OSError, RuntimeError, ValueError) as exc:
                 completed_at = utc_now()
                 execution.invocation_records.append(
@@ -701,6 +693,9 @@ class ProjectRunner:
                     success=result.success,
                     failure_reason=result.failure_reason,
                     usage=result.usage,
+                    writing_findings=result_writing_findings(
+                        result, request.purpose, source=f"project {brief.id} PLANNER"
+                    ),
                 )
             )
             execution.updated_at = completed_at
@@ -708,8 +703,6 @@ class ProjectRunner:
             if result.success and result.project_plan is not None:
                 return result.project_plan.model_copy(update={"project_id": brief.id})
             rejection = result.failure_reason or "project planner failed to produce a ProjectPlan"
-            if is_writing_policy_failure(result, ProjectPlan) and result.project_plan is not None:
-                rejection = writing_policy_correction_context(rejection, result.project_plan)
         raise ProjectError(rejection or "project planner failed to produce a ProjectPlan")
 
     def _publish_issues(

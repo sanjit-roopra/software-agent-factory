@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
+import pytest
+
 from software_agent_factory._vendor.simple_english.lint import lint
-from software_agent_factory.agents import AgentResult, is_retryable_typed_artifact_failure
+from software_agent_factory.agents import AgentResult
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
@@ -16,7 +19,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.writing_policy import (
     SIMPLE_ENGLISH_REVISION,
-    apply_agent_result_writing_policy,
+    result_writing_findings,
     validate_artifact_writing,
     validate_publication_text,
 )
@@ -61,8 +64,8 @@ def test_policy_preserves_uncertainty_modals() -> None:
     assert validate_artifact_writing(report) == ()
 
 
-def test_agent_result_writing_failure_is_retryable() -> None:
-    plan = ExecutionPlan(
+def _wordy_plan() -> ExecutionPlan:
+    return ExecutionPlan(
         summary="Use a robust and comprehensive implementation.",
         steps=[PlanStep(id="one", goal="Change the parser.")],
         expected_scope=ExpectedScope(
@@ -71,19 +74,39 @@ def test_agent_result_writing_failure_is_retryable() -> None:
             estimated_files_max=1,
         ),
     )
-    result = AgentResult(
+
+
+def test_agent_result_writing_findings_are_returned_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    result = AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=_wordy_plan())
+
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
+        findings = result_writing_findings(result, AgentPurpose.STANDARD, source="run RUN-1")
+
+    assert "summary has 2 slop_word finding(s)." in findings
+    assert "source=run RUN-1" in caplog.text
+    assert "artifact=ExecutionPlan" in caplog.text
+    assert result.success is True
+    assert result.failure_reason is None
+
+
+def test_clean_or_failed_results_have_no_writing_findings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clean = AgentResult(
         role=AgentRole.PLANNER,
         success=True,
-        execution_plan=plan,
+        execution_plan=_wordy_plan().model_copy(update={"summary": "Change the parser."}),
     )
+    failed = AgentResult(role=AgentRole.PLANNER, success=False, failure_reason="boom")
+    no_artifact = AgentResult(role=AgentRole.PLANNER, success=True)
 
-    checked = apply_agent_result_writing_policy(result, AgentPurpose.STANDARD)
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
+        for result in (clean, failed, no_artifact):
+            assert result_writing_findings(result, AgentPurpose.STANDARD, source="x") == ()
 
-    assert checked.success is False
-    assert checked.failure_reason is not None
-    assert "ExecutionPlan did not satisfy writing policy" in checked.failure_reason
-    assert is_retryable_typed_artifact_failure(checked, ExecutionPlan)
-    assert checked.execution_plan == plan
+    assert caplog.text == ""
 
 
 def test_artifact_word_budget_limits_total_filler() -> None:

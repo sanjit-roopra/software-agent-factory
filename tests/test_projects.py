@@ -270,6 +270,46 @@ def test_project_retries_rejected_decomposition_with_feedback(
     assert len(project_store.load_execution(brief.id).invocation_records) == 2
 
 
+def test_project_decomposition_writing_findings_are_recorded_without_a_retry(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    decomposition_requests: list[AgentRequest] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
+            return _project_planner(request)
+        decomposition_requests.append(request)
+        result = _project_planner(request)
+        assert result.project_plan is not None
+        wordy = result.project_plan.model_copy(
+            update={"summary": "A robust and comprehensive plan."}
+        )
+        return result.model_copy(update={"project_plan": wordy})
+
+    brief = ProjectBrief(
+        id="project-writing-advisory",
+        title="Build customer validation",
+        description="Implement two dependent validation outcomes.",
+        repository_path=str(factory_source_repo),
+    )
+    project_store = FileProjectStore(factory_data_dir)
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+        project_store=project_store,
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert len(decomposition_requests) == 1
+    (record,) = project_store.load_execution(brief.id).invocation_records
+    assert record.success is True
+    assert any("summary" in finding for finding in record.writing_findings)
+
+
 def test_project_plan_rejects_overpacked_single_task() -> None:
     with pytest.raises(ValueError, match="single project task may have at most 6"):
         ProjectPlan(

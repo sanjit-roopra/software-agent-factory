@@ -6,6 +6,7 @@ ASD-STE100 principles but does not claim formal compliance.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -29,6 +30,8 @@ WritingType = Literal["procedural", "descriptive"]
 POLICY_NAME = "controlled technical English"
 POLICY_VERSION = 1
 SIMPLE_ENGLISH_REVISION = "61ee200efbd423050aab982eed94226229891ae0"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -332,45 +335,33 @@ def _result_artifact(result: AgentResult, purpose: AgentPurpose) -> ModelBase | 
     }[result.role.value]
 
 
-def apply_agent_result_writing_policy(
+def result_writing_findings(
     result: AgentResult,
     purpose: AgentPurpose,
-) -> AgentResult:
-    """Convert a non-conforming successful result into a retryable failure."""
+    *,
+    source: str,
+) -> tuple[str, ...]:
+    """Return and log the advisory writing findings for a successful result.
+
+    Writing rules never fail a result and never trigger a retry. The caller
+    stores the findings on the invocation record.
+    """
 
     if not result.success:
-        return result
+        return ()
     artifact = _result_artifact(result, purpose)
     if artifact is None:
-        return result
+        return ()
     findings = validate_artifact_writing(artifact)
-    if not findings:
-        return result
-    artifact_name = type(artifact).__name__
-    return result.model_copy(
-        update={
-            "success": False,
-            "failure_reason": (
-                f"{artifact_name} did not satisfy writing policy:\n" + "\n".join(findings)
-            ),
-        }
-    )
-
-
-def writing_policy_correction_context(
-    failure_reason: str,
-    artifact: ModelBase,
-) -> str:
-    """Build one correction prompt with the rejected artifact."""
-
-    return (
-        f"{failure_reason}\n"
-        "Rewrite only the prose fields that failed. Preserve all facts, uncertainty, "
-        "identifiers, paths, commands, quoted errors, and other fields. Return one complete "
-        f"{type(artifact).__name__} JSON object.\n\n"
-        "Previous rejected artifact:\n"
-        f"{artifact.model_dump_json(indent=2)}"
-    )
+    if findings:
+        logger.warning(
+            "writing findings source=%s artifact=%s count=%d: %s",
+            source,
+            type(artifact).__name__,
+            len(findings),
+            " | ".join(findings),
+        )
+    return findings
 
 
 def validate_publication_text(
