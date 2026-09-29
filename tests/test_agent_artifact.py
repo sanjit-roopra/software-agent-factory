@@ -9,7 +9,7 @@ from software_agent_factory.agent_artifact import (
     _iter_json_objects,
     parse_agent_artifact,
 )
-from software_agent_factory.models import AgentPurpose, AgentRole, TriageResult
+from software_agent_factory.models import AgentPurpose, AgentRole, ChangeSet, TriageResult
 
 
 def _triage_payload() -> dict[str, object]:
@@ -100,28 +100,51 @@ def test_correct_change_set_purpose_requires_implementer_role() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_iter_json_objects_adversarial_unclosed_braces_linear_speed() -> None:
+def test_parse_agent_artifact_rejects_unclosed_braces_as_no_parseable_object() -> None:
+    with pytest.raises(
+        ValueError, match="did not contain a parseable JSON object for TriageResult"
+    ):
+        parse_agent_artifact(AgentRole.TRIAGE, text="{" * 50000)
+
+
+def test_parse_agent_artifact_rejects_unclosed_objects_as_no_parseable_object() -> None:
+    with pytest.raises(
+        ValueError, match="did not contain a parseable JSON object for TriageResult"
+    ):
+        parse_agent_artifact(AgentRole.TRIAGE, text='{"key":' * 5000)
+
+
+def test_iter_json_objects_unclosed_braces_find_nothing_and_scan_within_a_linear_bound() -> None:
     text = "{" * 50000
+    stats = ScanStats()
 
-    objects = _iter_json_objects(text)
+    objects = _iter_json_objects(text, scan_stats=stats)
+
     assert objects == []
+    assert stats.chars_scanned <= 2 * len(text)
 
 
-def test_iter_json_objects_adversarial_unclosed_objects_speed() -> None:
+def test_iter_json_objects_repeated_unclosed_keys_find_nothing_within_a_linear_bound() -> None:
     text = '{"key":' * 5000
+    stats = ScanStats()
 
-    objects = _iter_json_objects(text)
+    objects = _iter_json_objects(text, scan_stats=stats)
+
     assert objects == []
+    assert stats.chars_scanned <= 2 * len(text)
 
 
-def test_iter_json_objects_handles_braces_in_strings_and_escapes() -> None:
+def test_parse_agent_artifact_handles_braces_in_strings_and_escapes() -> None:
     text = (
         'prose before {"summary": "has {braces} and \\"escaped\\" quotes", '
         '"changed_files": ["foo.py"], "tests_added": [], "commands_run": []} prose after'
     )
-    objects = _iter_json_objects(text)
-    assert len(objects) == 1
-    assert objects[0]["summary"] == 'has {braces} and "escaped" quotes'
+
+    artifact = parse_agent_artifact(AgentRole.IMPLEMENTER, text=text)
+
+    assert isinstance(artifact, ChangeSet)
+    assert artifact.summary == 'has {braces} and "escaped" quotes'
+    assert artifact.changed_files == ["foo.py"]
 
 
 def test_iter_json_objects_handles_multiple_valid_objects() -> None:
