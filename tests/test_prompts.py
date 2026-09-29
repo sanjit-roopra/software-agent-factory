@@ -190,6 +190,22 @@ def test_repository_skill_prompt_requires_general_practice_scope_and_carries_rej
     assert "Set each practice applies_to to ['repository']" in prompt
 
 
+@pytest.mark.parametrize("role", [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER])
+def test_early_role_prompt_carries_the_previous_output_rejection(role: AgentRole) -> None:
+    prompt = build_prompt(
+        make_request(role, repair_context="response did not validate: confidence: Field required")
+    )
+
+    assert "Previous output rejection:\nresponse did not validate: confidence: Field required" in (
+        prompt
+    )
+
+
+@pytest.mark.parametrize("role", [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER])
+def test_early_role_prompt_has_no_rejection_section_on_a_first_attempt(role: AgentRole) -> None:
+    assert "Previous output rejection" not in build_prompt(make_request(role))
+
+
 def test_standard_planner_prompt_requires_smallest_implementation() -> None:
     prompt = build_prompt(make_request(AgentRole.PLANNER, specification=specification()))
 

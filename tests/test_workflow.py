@@ -18,7 +18,7 @@ from typing import Callable
 import pytest
 from pydantic import ValidationError
 
-from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
+from software_agent_factory.agents import AgentHook, AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.governance import (
     CheckPhase,
@@ -77,6 +77,7 @@ from software_agent_factory.models import (
     utc_now,
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
+from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
 from software_agent_factory.store import ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
@@ -598,6 +599,50 @@ def test_implementer_writing_findings_are_recorded_without_a_retry(
     (record,) = _records_for(run, AgentRole.IMPLEMENTER)
     assert record.purpose is AgentPurpose.STANDARD
     assert any("summary" in finding for finding in record.writing_findings)
+
+
+@pytest.mark.parametrize(
+    ("role", "hook", "artifact"),
+    [
+        (AgentRole.TRIAGE, "triage", "TriageResult"),
+        (AgentRole.REFINER, "refiner", "Specification"),
+        (AgentRole.RESEARCHER, "researcher", "ResearchReport"),
+    ],
+)
+def test_structural_retry_prompt_names_the_failure_for_early_roles(
+    source_repo: Path,
+    data_dir: Path,
+    role: AgentRole,
+    hook: str,
+    artifact: str,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+    reason = f"{role.value} response did not validate as {artifact}: confidence: Field required"
+
+    def failing_first(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        if len(requests) == 1:
+            return AgentResult(role=role, success=False, failure_reason=reason)
+        return default_runtime.run(request)
+
+    hooks: dict[str, AgentHook] = {hook: failing_first}
+    if role is AgentRole.RESEARCHER:
+        hooks["triage"] = _triage_hook(Complexity.L1, Risk.R1, needs_research=True)
+    runtime = FakeAgentRuntime(**hooks)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        runtime,
+    ).run(_work_item(f"WI-{hook}-structural-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 2
+    assert requests[0].repair_context is None
+    retry_prompt = build_prompt(requests[1])
+    assert "Previous output rejection" in retry_prompt
+    assert "confidence: Field required" in retry_prompt
 
 
 def test_planner_does_not_retry_non_schema_failure(

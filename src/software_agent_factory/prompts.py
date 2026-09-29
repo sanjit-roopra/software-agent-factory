@@ -540,13 +540,17 @@ def _skill_context_sections(
 
 
 def _triage_sections(request: AgentRequest) -> list[tuple[str, object]]:
-    return [(_WORK_ITEM_TITLE, request.work_item)]
+    return _given(
+        (_WORK_ITEM_TITLE, request.work_item),
+        (_OUTPUT_REJECTION_TITLE, request.repair_context),
+    )
 
 
 def _refiner_sections(request: AgentRequest) -> list[tuple[str, object]]:
     return _given(
         (_WORK_ITEM_TITLE, request.work_item),
         (_TRIAGE_RESULT_TITLE, request.triage_result),
+        (_OUTPUT_REJECTION_TITLE, request.repair_context),
     )
 
 
@@ -555,6 +559,7 @@ def _researcher_sections(request: AgentRequest) -> list[tuple[str, object]]:
         (_WORK_ITEM_TITLE, request.work_item),
         (_TRIAGE_RESULT_TITLE, request.triage_result),
         (_SPECIFICATION_TITLE, request.specification),
+        (_OUTPUT_REJECTION_TITLE, request.repair_context),
     )
 
 
