@@ -835,7 +835,7 @@ def test_project_can_publish_and_close_issues_without_daemon_label(
     assert github.closed == ["https://github.com/acme/repo/issues/1"]
 
 
-def test_issue_wording_findings_are_logged_and_do_not_block_issue_creation(
+def test_wordy_issue_text_is_logged_and_still_published(
     factory_source_repo: Path,
     factory_data_dir: Path,
     caplog: pytest.LogCaptureFixture,
@@ -848,19 +848,19 @@ def test_issue_wording_findings_are_logged_and_do_not_block_issue_creation(
         github_client=github,  # type: ignore[arg-type]
     )
     brief = ProjectBrief(
-        id="project-prevalidate",
-        title="Validate issue text",
-        description="Validate all issue text before publication.",
+        id="project-wordy-issues",
+        title="Publish issues",
+        description="Publish two issues even when their wording has findings.",
         repository_path=str(factory_source_repo),
     )
     plan = ProjectPlan(
         project_id=brief.id,
         summary="Two issue templates.",
-        delivery_approach="Publish only after every template passes.",
+        delivery_approach="Publish each issue in order.",
         tasks=(
             ProjectTask(
                 id=1,
-                title="Create first issue",
+                title="Add a robust and comprehensive guard",
                 description="Create the first issue.",
                 acceptance_criteria=("The first issue exists.",),
             ),
@@ -878,8 +878,8 @@ def test_issue_wording_findings_are_logged_and_do_not_block_issue_creation(
         project_id=brief.id,
         state=ProjectState.PLANNING,
         tasks=(
-            ProjectTaskExecution(task_id=1, work_item_id="project-prevalidate-task-1"),
-            ProjectTaskExecution(task_id=2, work_item_id="project-prevalidate-task-2"),
+            ProjectTaskExecution(task_id=1, work_item_id="project-wordy-issues-task-1"),
+            ProjectTaskExecution(task_id=2, work_item_id="project-wordy-issues-task-2"),
         ),
     )
 
@@ -887,10 +887,38 @@ def test_issue_wording_findings_are_logged_and_do_not_block_issue_creation(
         runner._publish_issues(brief, plan, execution, factory_source_repo, "acme/repo")
 
     assert [title for title, _body, _labels in github.created] == [
-        "Create first issue",
+        "Add a robust and comprehensive guard",
         "Create second issue",
     ]
-    assert "publication text findings field=issue body" in caplog.text
+    assert (
+        "publication text findings field=issue title count=1: "
+        "issue title has 2 slop_word finding(s)." in caplog.text
+    )
+    assert (
+        "publication text findings field=issue body count=2: "
+        "issue body has 636 words. The limit is 500. | "
+        "issue body has 20 sentence_over_limit finding(s)." in caplog.text
+    )
+
+
+def test_wordy_child_commit_message_is_logged_and_returned(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    task = ProjectTask(
+        id=3,
+        title="Add a robust and comprehensive guard",
+        description="Add the guard.",
+        acceptance_criteria=("The guard works.",),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
+        message = ProjectRunner._child_commit_message(task)
+
+    assert message == "Implement project task 3: Add a robust and comprehensive guard"
+    assert (
+        "publication text findings field=commit message count=1: "
+        "commit message has 2 slop_word finding(s)." in caplog.text
+    )
 
 
 def test_file_project_store_rejects_corrupt_json(tmp_path: Path) -> None:
