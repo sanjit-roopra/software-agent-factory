@@ -5,7 +5,29 @@ The manifest lists closed issues of this repository with the commit each one
 started from. Each task is replayed once per runtime with the same models and
 reasoning. This module holds the manifest schema, the report built from stored
 runs, and the go bar that decides whether pi is "recommended" or
-"experimental" (see ``plans/pi-agent-runtime.md``, Risks).
+"experimental" (see ``plans/pi-agent-runtime.md``, Risks). The driver replays
+the tasks under a budget and writes a JSON and a Markdown report.
+
+Usage (this spends money; the operator runs it by hand)::
+
+    uv run --no-sync python scripts/performance/runtime_ab.py \\
+        --manifest scripts/performance/runtime_ab_manifest.json --repo . \\
+        --max-copilot-premium-requests 60 --max-pi-usd 20 --out /tmp/runtime_ab/report.json
+
+Local-only replay:
+
+* ``factory run`` is called without ``--config`` unless the operator passes one.
+  The packaged default keeps ``pull_request``, ``ci``, ``merge``, ``escalation``
+  and ``scheduler`` off, so a run stops at ``PR_READY`` with no push, no pull
+  request and no issue comment.
+* Any ``--config`` is loaded first and refused when one of those sections is
+  enabled (``ensure_local_only``).
+* The only GitHub call is the read-only ``gh issue view`` that fetches each
+  issue's title and body, done for every task before the first paid run.
+
+Budget: stop starting a new task once any given limit is reached by the running
+total: Copilot premium requests, pi list-price USD estimate or wall seconds.
+Both runtimes always finish the task they started, so the comparison stays fair.
 
 Reporting rules:
 
@@ -21,14 +43,21 @@ Reporting rules:
 
 from __future__ import annotations
 
+import argparse
 import json
-from collections.abc import Iterable, Sequence
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationError
+import yaml
+from pydantic import Field, ValidationError, model_validator
 
+from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.models import (
     AgentRole,
     AttemptTrigger,
@@ -470,3 +499,338 @@ def render_markdown(report: RuntimeAbReport) -> str:
         for runtime, message in task.errors.items()
     ]
     return "\n".join([*lines, *(["## Errors", "", *errors, ""] if errors else [])])
+
+
+# --- driver ---------------------------------------------------------------------------------
+
+
+class UnsafeConfigError(RuntimeError):
+    """The factory config could publish to GitHub, or could not be loaded."""
+
+
+class IssueFetchError(RuntimeError):
+    """An issue's title and body could not be read."""
+
+
+#: Config sections whose ``enabled`` flag lets a run reach GitHub.
+_GITHUB_SECTIONS = ("pull_request", "ci", "merge", "escalation", "scheduler")
+
+_RUN_TIMEOUT_EXIT_CODE = 124
+_COMMAND_NOT_FOUND_EXIT_CODE = 127
+_USAGE_ERROR_EXIT_CODE = 2
+_STDERR_TAIL_CHARS = 500
+
+type CommandRunner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]
+
+
+class IssueText(ModelBase):
+    title: str
+    body: str
+
+
+class Budget(ModelBase):
+    """Stop starting new tasks once any given limit is reached by the running total."""
+
+    max_copilot_premium_requests: float | None = Field(default=None, gt=0.0)
+    max_pi_usd: float | None = Field(default=None, gt=0.0)
+    max_wall_seconds: float | None = Field(default=None, gt=0.0)
+
+    @model_validator(mode="after")
+    def _require_a_limit(self) -> Budget:
+        if (
+            self.max_copilot_premium_requests is None
+            and self.max_pi_usd is None
+            and self.max_wall_seconds is None
+        ):
+            raise ValueError("set at least one budget limit")
+        return self
+
+
+@dataclass
+class BudgetTotals:
+    """Running spend. Copilot premium requests and pi USD are kept apart."""
+
+    premium_requests: float = 0.0
+    pi_usd: float = 0.0
+    wall_seconds: float = 0.0
+
+    def add(self, runtime: Runtime, sample: RunSample) -> None:
+        usage = summarize_usage(sample.invocations)
+        self.wall_seconds += sample.wall_seconds
+        if runtime is Runtime.COPILOT:
+            self.premium_requests += usage.premium_requests or 0.0
+        else:
+            self.pi_usd += usage.list_price_estimate_usd or 0.0
+
+
+def budget_reached(budget: Budget, totals: BudgetTotals) -> bool:
+    pairs = (
+        (budget.max_copilot_premium_requests, totals.premium_requests),
+        (budget.max_pi_usd, totals.pi_usd),
+        (budget.max_wall_seconds, totals.wall_seconds),
+    )
+    return any(limit is not None and used >= limit for limit, used in pairs)
+
+
+@dataclass(frozen=True)
+class ReplayRequest:
+    entry: ManifestEntry
+    runtime: Runtime
+    title: str
+    description: str
+
+
+type Runner = Callable[[ReplayRequest], RunSample]
+type IssueFetcher = Callable[[int], IssueText]
+
+
+def _request(entry: ManifestEntry, runtime: Runtime, text: IssueText) -> ReplayRequest:
+    return ReplayRequest(
+        entry=entry,
+        runtime=runtime,
+        title=entry.title or text.title,
+        description=text.body.strip() or text.title,
+    )
+
+
+def run_benchmark(
+    manifest: Manifest, *, budget: Budget, runner: Runner, fetch_issue: IssueFetcher
+) -> list[TaskOutcome]:
+    """Replay each task once per runtime; skip the rest once the budget is reached.
+
+    Issue text is fetched for every task first, so a fetch failure costs nothing.
+    """
+    texts = {entry.issue: fetch_issue(entry.issue) for entry in manifest.tasks}
+    totals = BudgetTotals()
+    outcomes: list[TaskOutcome] = []
+    for entry in manifest.tasks:
+        if budget_reached(budget, totals):
+            outcomes.append(TaskOutcome(entry=entry))
+            continue
+        samples: dict[Runtime, RunSample] = {}
+        for runtime in Runtime:
+            samples[runtime] = runner(_request(entry, runtime, texts[entry.issue]))
+            totals.add(runtime, samples[runtime])
+        outcomes.append(TaskOutcome(entry=entry, samples=samples))
+    return outcomes
+
+
+def ensure_local_only(config: FactoryConfig) -> None:
+    """Refuse a config under which a run could push, open a PR or comment on GitHub."""
+    enabled = [name for name in _GITHUB_SECTIONS if getattr(config, name).enabled]
+    if enabled:
+        raise UnsafeConfigError(
+            f"the benchmark must stay local; config enables: {', '.join(enabled)}"
+        )
+
+
+def _tail(text: str) -> str:
+    return text.strip()[-_STDERR_TAIL_CHARS:]
+
+
+def _failed_sample(message: str) -> RunSample:
+    return RunSample(passed=False, wall_seconds=0.0, repair_rounds=0, error=message)
+
+
+class CliReplayRunner:
+    """Replays one task with ``factory run`` in a detached worktree at the base commit.
+
+    Each runtime and task gets its own worktree and its own data directory, so
+    runs never share state. Commands go through the injected ``run_command``.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo: Path,
+        workdir: Path,
+        model_profile: str,
+        config: Path | None,
+        run_command: CommandRunner,
+    ) -> None:
+        self._repo = repo
+        self._workdir = workdir
+        self._model_profile = model_profile
+        self._config = config
+        self._run = run_command
+
+    def __call__(self, request: ReplayRequest) -> RunSample:
+        task_dir = self._workdir / request.runtime.value / f"issue-{request.entry.issue}"
+        worktree = task_dir / "repo"
+        data_dir = task_dir / "data"
+        added = self._git("worktree", "add", "--detach", str(worktree), request.entry.base_sha)
+        if added.returncode != 0:
+            return _failed_sample(f"git worktree add failed: {_tail(added.stderr)}")
+        try:
+            completed = self._run(self._factory_command(request, worktree, data_dir), worktree)
+        finally:
+            self._git("worktree", "remove", "--force", str(worktree))
+        return self._sample(data_dir, completed)
+
+    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return self._run(["git", "-C", str(self._repo), *args], self._repo)
+
+    def _factory_command(self, request: ReplayRequest, worktree: Path, data_dir: Path) -> list[str]:
+        command = [
+            sys.executable,
+            "-m",
+            "software_agent_factory",
+            "run",
+            "--repo",
+            str(worktree),
+            "--title",
+            request.title,
+            "--description",
+            request.description,
+            "--runtime",
+            request.runtime.value,
+            "--model-profile",
+            self._model_profile,
+            "--data-dir",
+            str(data_dir),
+            "--work-item-id",
+            f"runtime-ab-{request.runtime.value}-issue-{request.entry.issue}",
+        ]
+        if self._config is not None:
+            command += ["--config", str(self._config)]
+        return command
+
+    @staticmethod
+    def _sample(data_dir: Path, completed: subprocess.CompletedProcess[str]) -> RunSample:
+        store = FileRunStore(data_dir)
+        runs = store.list_runs()
+        if not runs:
+            return _failed_sample(
+                f"no run stored (exit {completed.returncode}): {_tail(completed.stderr)}"
+            )
+        return load_sample(store, runs[-1].id)
+
+
+def verify_base_commits(manifest: Manifest, repo: Path, run_command: CommandRunner) -> None:
+    """Fail before any paid run when a base commit is missing from ``repo``."""
+    for entry in manifest.tasks:
+        found = run_command(
+            ["git", "-C", str(repo), "cat-file", "-e", f"{entry.base_sha}^{{commit}}"], repo
+        )
+        if found.returncode != 0:
+            raise ManifestError(f"issue {entry.issue}: base commit {entry.base_sha} not in {repo}")
+
+
+class GhIssueFetcher:
+    """Reads an issue's title and body with the read-only ``gh issue view``."""
+
+    def __init__(self, repo: Path, run_command: CommandRunner) -> None:
+        self._repo = repo
+        self._run = run_command
+
+    def __call__(self, issue: int) -> IssueText:
+        completed = self._run(
+            ["gh", "issue", "view", str(issue), "--json", "title,body"], self._repo
+        )
+        if completed.returncode != 0:
+            raise IssueFetchError(f"issue {issue}: gh failed: {_tail(completed.stderr)}")
+        try:
+            return IssueText.model_validate_json(completed.stdout)
+        except ValidationError as exc:
+            raise IssueFetchError(f"issue {issue}: unexpected gh output: {exc}") from None
+
+
+def subprocess_command_runner(timeout_seconds: float) -> CommandRunner:
+    """Real command runner. A timeout or a missing program becomes a failed result."""
+
+    def run(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                list(args), cwd=cwd, capture_output=True, text=True, timeout=timeout_seconds
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                list(args), _RUN_TIMEOUT_EXIT_CODE, "", f"timed out after {timeout_seconds:g}s"
+            )
+        except FileNotFoundError as exc:
+            return subprocess.CompletedProcess(
+                list(args), _COMMAND_NOT_FOUND_EXIT_CODE, "", str(exc)
+            )
+
+    return run
+
+
+def _load_local_config(path: Path | None, model_profile: str) -> FactoryConfig:
+    try:
+        return load_config(path, model_profile=model_profile)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise UnsafeConfigError(f"config could not be loaded: {exc}") from None
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Replay closed issues with Copilot and pi and compare the runtimes."
+    )
+    parser.add_argument("--manifest", type=Path, required=True, help="manifest JSON file")
+    parser.add_argument("--repo", type=Path, default=Path("."), help="this repository's checkout")
+    parser.add_argument(
+        "--workdir", type=Path, help="worktrees and per-run data (default: a new temp directory)"
+    )
+    parser.add_argument("--out", type=Path, required=True, help="JSON report path; .md beside it")
+    parser.add_argument("--model-profile", default="default", help="same profile for both runtimes")
+    parser.add_argument("--config", type=Path, help="factory config; must not enable publishing")
+    parser.add_argument("--max-copilot-premium-requests", type=float)
+    parser.add_argument("--max-pi-usd", type=float, help="pi list-price estimate, not spend")
+    parser.add_argument("--max-wall-seconds", type=float)
+    parser.add_argument(
+        "--run-timeout-seconds", type=float, default=3600.0, help="limit for each command"
+    )
+    return parser
+
+
+def _write_reports(report: RuntimeAbReport, out: Path) -> Path:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    markdown = out.with_suffix(".md")
+    markdown.write_text(render_markdown(report), encoding="utf-8")
+    return markdown
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    run_command: CommandRunner | None = None,
+    fetch_issue: IssueFetcher | None = None,
+) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        budget = Budget(
+            max_copilot_premium_requests=args.max_copilot_premium_requests,
+            max_pi_usd=args.max_pi_usd,
+            max_wall_seconds=args.max_wall_seconds,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    command = run_command or subprocess_command_runner(args.run_timeout_seconds)
+    fetch = fetch_issue or GhIssueFetcher(args.repo, command)
+    try:
+        manifest = load_manifest(args.manifest)
+        ensure_local_only(_load_local_config(args.config, args.model_profile))
+        verify_base_commits(manifest, args.repo, command)
+        workdir = args.workdir or Path(tempfile.mkdtemp(prefix="runtime_ab_"))
+        runner = CliReplayRunner(
+            repo=args.repo,
+            workdir=workdir,
+            model_profile=args.model_profile,
+            config=args.config,
+            run_command=command,
+        )
+        outcomes = run_benchmark(manifest, budget=budget, runner=runner, fetch_issue=fetch)
+    except (ManifestError, UnsafeConfigError, IssueFetchError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _USAGE_ERROR_EXIT_CODE
+    report = build_report(outcomes)
+    markdown = _write_reports(report, args.out)
+    print(f"{report.verdict.recommendation}: reports at {args.out} and {markdown}")
+    print(f"runs and worktree data under {workdir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

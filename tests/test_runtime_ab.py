@@ -106,7 +106,7 @@ def _criteria(report: Any) -> dict[str, bool]:
 COPILOT_BASE = dict(input=1000, cache_read=1000)
 
 
-# --- manifest -----------------------------------------------------------------------------
+# --- manifest ----------
 
 
 def _write_manifest(tmp_path: Path, tasks: list[dict[str, Any]]) -> Path:
@@ -181,7 +181,7 @@ def test_manifest_rejects_malformed_json(tmp_path: Path) -> None:
         ab.load_manifest(path)
 
 
-# --- report: per task and total -------------------------------------------------------------
+# --- report: per task and total ----------
 
 
 def test_report_shows_every_metric_per_task_and_in_total() -> None:
@@ -367,7 +367,7 @@ def test_task_report_carries_level_title_and_error() -> None:
     assert task.errors == {ab.Runtime.COPILOT: "no run stored"}
 
 
-# --- go bar ---------------------------------------------------------------------------------
+# --- go bar ----------
 
 
 def test_go_bar_met() -> None:
@@ -478,7 +478,7 @@ def test_go_bar_is_not_met_with_no_completed_tasks() -> None:
     assert report.verdict.meets is False
 
 
-# --- stored runs ------------------------------------------------------------------------------
+# --- stored runs ----------
 
 
 def _attempt(number: int, trigger: AttemptTrigger, role: AgentRole = AgentRole.IMPLEMENTER) -> Any:
@@ -557,7 +557,7 @@ def test_load_sample_treats_missing_verification_artifact_as_unknown(tmp_path: P
     assert ab.load_sample(store, "run-1").passed is True
 
 
-# --- rendering ----------------------------------------------------------------------------------
+# --- rendering ----------
 
 
 def test_markdown_shows_unavailable_zero_and_verdict() -> None:
@@ -586,3 +586,468 @@ def test_markdown_lists_skipped_tasks() -> None:
     report = ab.build_report([ab.TaskOutcome(entry=_entry(77), samples={})])
 
     assert "skipped" in ab.render_markdown(report)
+
+
+# --- driver: budget and replay ----------
+
+
+def _manifest(count: int = 3) -> Any:
+    return ab.Manifest(
+        tasks=tuple(
+            ab.ManifestEntry(issue=10 + index, base_sha=SHA_A, level="L1") for index in range(count)
+        )
+    )
+
+
+def _issue_text(issue: int) -> Any:
+    return ab.IssueText(title=f"Issue {issue}", body=f"Body of {issue}")
+
+
+class RecordingRunner:
+    """Fake replay runner: returns a canned sample per runtime and records requests."""
+
+    def __init__(self, samples: dict[Any, Any] | None = None) -> None:
+        self.requests: list[Any] = []
+        self._samples = samples or {}
+
+    def __call__(self, request: Any) -> Any:
+        self.requests.append(request)
+        return self._samples.get(request.runtime, _sample())
+
+
+def _run_benchmark(
+    runner: Any, *, budget: Any, manifest: Any | None = None, fetch: Any = _issue_text
+) -> Any:
+    return ab.run_benchmark(
+        manifest or _manifest(), budget=budget, runner=runner, fetch_issue=fetch
+    )
+
+
+def test_every_task_runs_once_per_runtime_with_the_same_issue_text() -> None:
+    runner = RecordingRunner()
+
+    outcomes = _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=1e9))
+
+    assert [(r.entry.issue, r.runtime) for r in runner.requests] == [
+        (10, ab.Runtime.COPILOT),
+        (10, ab.Runtime.PI),
+        (11, ab.Runtime.COPILOT),
+        (11, ab.Runtime.PI),
+        (12, ab.Runtime.COPILOT),
+        (12, ab.Runtime.PI),
+    ]
+    assert all(set(outcome.samples) == set(ab.Runtime) for outcome in outcomes)
+    first, second = runner.requests[:2]
+    assert (first.title, first.description) == (second.title, second.description)
+    assert (first.title, first.description) == ("Issue 10", "Body of 10")
+
+
+def test_manifest_title_overrides_fetched_title() -> None:
+    manifest = ab.Manifest(
+        tasks=(ab.ManifestEntry(issue=5, base_sha=SHA_A, title="Manifest title"),)
+    )
+    runner = RecordingRunner()
+
+    _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=1e9), manifest=manifest)
+
+    assert runner.requests[0].title == "Manifest title"
+    assert runner.requests[0].description == "Body of 5"
+
+
+def test_empty_issue_body_falls_back_to_the_title() -> None:
+    runner = RecordingRunner()
+
+    _run_benchmark(
+        runner,
+        budget=ab.Budget(max_wall_seconds=1e9),
+        manifest=_manifest(1),
+        fetch=lambda issue: ab.IssueText(title="Only title", body="  "),
+    )
+
+    assert runner.requests[0].description == "Only title"
+
+
+def test_budget_reached_stops_new_tasks_and_marks_the_rest_skipped() -> None:
+    expensive = _sample(invocations=(_invocation(premium_requests=3.0),))
+    runner = RecordingRunner({ab.Runtime.COPILOT: expensive})
+
+    outcomes = _run_benchmark(runner, budget=ab.Budget(max_copilot_premium_requests=3.0))
+
+    assert [request.entry.issue for request in runner.requests] == [10, 10]
+    assert [bool(outcome.samples) for outcome in outcomes] == [True, False, False]
+    assert ab.build_report(outcomes).tasks[2].skipped is True
+
+
+def test_pi_list_price_budget_stops_new_tasks() -> None:
+    pricey = _sample(invocations=(_invocation(list_price_estimate_usd=0.6),))
+    runner = RecordingRunner({ab.Runtime.PI: pricey})
+
+    outcomes = _run_benchmark(runner, budget=ab.Budget(max_pi_usd=1.0))
+
+    assert [bool(outcome.samples) for outcome in outcomes] == [True, True, False]
+
+
+def test_wall_time_budget_sums_both_runtimes() -> None:
+    runner = RecordingRunner(
+        {ab.Runtime.COPILOT: _sample(wall=40.0), ab.Runtime.PI: _sample(wall=20.0)}
+    )
+
+    outcomes = _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=100.0))
+
+    assert [bool(outcome.samples) for outcome in outcomes] == [True, True, False]
+
+
+def test_unreported_cost_never_trips_a_cost_budget() -> None:
+    runner = RecordingRunner()
+
+    outcomes = _run_benchmark(runner, budget=ab.Budget(max_copilot_premium_requests=0.1))
+
+    assert all(outcome.samples for outcome in outcomes)
+
+
+def test_issue_text_is_fetched_for_every_task_before_the_first_run() -> None:
+    events: list[str] = []
+
+    def fetch(issue: int) -> Any:
+        events.append(f"fetch {issue}")
+        return _issue_text(issue)
+
+    def runner(request: Any) -> Any:
+        events.append(f"run {request.entry.issue}")
+        return _sample()
+
+    _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=1e9), fetch=fetch)
+
+    assert events[:3] == ["fetch 10", "fetch 11", "fetch 12"]
+
+
+def test_failed_issue_fetch_aborts_before_any_run() -> None:
+    def fetch(issue: int) -> Any:
+        raise ab.IssueFetchError(f"cannot fetch {issue}")
+
+    runner = RecordingRunner()
+
+    with pytest.raises(ab.IssueFetchError):
+        _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=1e9), fetch=fetch)
+
+    assert runner.requests == []
+
+
+def test_budget_needs_at_least_one_positive_limit() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        ab.Budget()
+    with pytest.raises(ValueError, match="greater than 0"):
+        ab.Budget(max_pi_usd=0.0)
+
+
+# --- driver: local-only guard --------------------------------------------------------------------
+
+
+def test_default_config_is_local_only() -> None:
+    from software_agent_factory.config import load_config
+
+    ab.ensure_local_only(load_config(None))
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("pull_request", "enabled"),
+        ("merge", "enabled"),
+        ("escalation", "enabled"),
+        ("scheduler", "enabled"),
+    ],
+)
+def test_config_that_can_reach_github_is_refused(section: str, field: str) -> None:
+    from software_agent_factory.config import load_config
+
+    config = load_config(None)
+    changed = getattr(config, section).model_copy(update={field: True})
+    unsafe = config.model_copy(update={section: changed})
+
+    with pytest.raises(ab.UnsafeConfigError, match=section):
+        ab.ensure_local_only(unsafe)
+
+
+# --- driver: real runner over an injected command runner ----------
+
+
+def _option(args: list[str], name: str) -> str:
+    return args[args.index(name) + 1]
+
+
+def _is_factory_run(args: list[str]) -> bool:
+    return args[1:4] == ["-m", "software_agent_factory", "run"]
+
+
+class FakeCommands:
+    """Injected command runner: no git, no gh and no factory process is started."""
+
+    def __init__(self, *, state: WorkflowState | None = WorkflowState.PR_READY) -> None:
+        self.calls: list[tuple[list[str], Path]] = []
+        self._state = state
+
+    def __call__(self, args: Any, cwd: Path) -> Any:
+        import subprocess
+
+        argv = list(args)
+        self.calls.append((argv, cwd))
+        if _is_factory_run(argv) and self._state is not None:
+            FileRunStore(_option(argv, "--data-dir")).save_run(
+                _run(self._state, invocation_records=[_invocation(1, premium_requests=2.0)])
+            )
+        return subprocess.CompletedProcess(argv, 0, "", "boom on stderr")
+
+    def factory_runs(self) -> list[list[str]]:
+        return [argv for argv, _ in self.calls if _is_factory_run(argv)]
+
+
+def _runner(tmp_path: Path, commands: Any, **overrides: Any) -> Any:
+    options: dict[str, Any] = {
+        "repo": tmp_path / "source",
+        "workdir": tmp_path / "work",
+        "model_profile": "default",
+        "config": None,
+        "run_command": commands,
+    }
+    options.update(overrides)
+    return ab.CliReplayRunner(**options)
+
+
+def _request(runtime: Any, issue: int = 10) -> Any:
+    return ab.ReplayRequest(
+        entry=ab.ManifestEntry(issue=issue, base_sha=SHA_B),
+        runtime=runtime,
+        title="T",
+        description="D",
+    )
+
+
+def test_runner_replays_at_base_sha_in_an_isolated_worktree_and_data_dir(tmp_path: Path) -> None:
+    commands = FakeCommands()
+
+    sample = _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    added, *_, removed = [argv for argv, _ in commands.calls if argv[0] == "git"]
+    worktree = tmp_path / "work" / "pi" / "issue-10" / "repo"
+    assert added == [
+        "git",
+        "-C",
+        str(tmp_path / "source"),
+        "worktree",
+        "add",
+        "--detach",
+        str(worktree),
+        SHA_B,
+    ]
+    assert removed[4:6] == ["remove", "--force"]
+    (factory_run,) = commands.factory_runs()
+    assert _option(factory_run, "--repo") == str(worktree)
+    assert _option(factory_run, "--data-dir") == str(tmp_path / "work" / "pi" / "issue-10" / "data")
+    assert _option(factory_run, "--runtime") == "pi"
+    assert (_option(factory_run, "--title"), _option(factory_run, "--description")) == ("T", "D")
+    assert sample.passed is True
+    assert sample.invocations[0].usage.premium_requests == 2.0
+
+
+def test_runner_gives_both_runtimes_the_same_models_and_isolated_state(tmp_path: Path) -> None:
+    commands = FakeCommands()
+    runner = _runner(tmp_path, commands, model_profile="economy", config=tmp_path / "c.yaml")
+
+    runner(_request(ab.Runtime.COPILOT))
+    runner(_request(ab.Runtime.PI))
+
+    copilot_run, pi_run = commands.factory_runs()
+    for option in ("--model-profile", "--config", "--title", "--description"):
+        assert _option(copilot_run, option) == _option(pi_run, option)
+    assert _option(copilot_run, "--model-profile") == "economy"
+    assert _option(copilot_run, "--runtime") == "copilot"
+    assert _option(copilot_run, "--data-dir") != _option(pi_run, "--data-dir")
+    assert _option(copilot_run, "--work-item-id") != _option(pi_run, "--work-item-id")
+
+
+def test_runner_reports_failure_when_no_run_was_stored(tmp_path: Path) -> None:
+    commands = FakeCommands(state=None)
+
+    sample = _runner(tmp_path, commands)(_request(ab.Runtime.COPILOT))
+
+    assert sample.passed is False
+    assert sample.invocations == ()
+    assert sample.error is not None
+    assert "boom on stderr" in sample.error
+
+
+def test_runner_reports_a_failed_worktree_add_without_running_factory(tmp_path: Path) -> None:
+    import subprocess
+
+    class GitFails(FakeCommands):
+        def __call__(self, args: Any, cwd: Path) -> Any:
+            super().__call__(args, cwd)
+            return subprocess.CompletedProcess(list(args), 128, "", "bad object")
+
+    commands = GitFails()
+
+    sample = _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    assert commands.factory_runs() == []
+    assert sample.passed is False
+    assert sample.error is not None
+    assert "bad object" in sample.error
+
+
+def test_runner_removes_the_worktree_even_when_factory_run_raises(tmp_path: Path) -> None:
+    class Explodes(FakeCommands):
+        def __call__(self, args: Any, cwd: Path) -> Any:
+            if _is_factory_run(list(args)):
+                raise RuntimeError("kaboom")
+            return super().__call__(args, cwd)
+
+    commands = Explodes()
+
+    with pytest.raises(RuntimeError, match="kaboom"):
+        _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    assert any(argv[4:6] == ["remove", "--force"] for argv, _ in commands.calls)
+
+
+def test_default_config_option_is_omitted_when_not_given(tmp_path: Path) -> None:
+    commands = FakeCommands()
+
+    _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+
+    assert "--config" not in commands.factory_runs()[0]
+
+
+def test_verify_base_commits_names_the_missing_commit(tmp_path: Path) -> None:
+    import subprocess
+
+    def commands(args: Any, cwd: Path) -> Any:
+        missing = str(args[-1]).startswith(SHA_B)
+        return subprocess.CompletedProcess(list(args), 1 if missing else 0, "", "")
+
+    manifest = ab.Manifest(
+        tasks=(
+            ab.ManifestEntry(issue=1, base_sha=SHA_A),
+            ab.ManifestEntry(issue=2, base_sha=SHA_B),
+        )
+    )
+
+    with pytest.raises(ab.ManifestError, match="issue 2"):
+        ab.verify_base_commits(manifest, tmp_path, commands)
+
+
+def test_issue_fetcher_reads_title_and_body_with_gh(tmp_path: Path) -> None:
+    import subprocess
+
+    seen: list[list[str]] = []
+
+    def commands(args: Any, cwd: Path) -> Any:
+        seen.append(list(args))
+        payload = json.dumps({"title": "T", "body": "B"})
+        return subprocess.CompletedProcess(list(args), 0, payload, "")
+
+    text = ab.GhIssueFetcher(tmp_path, commands)(42)
+
+    assert (text.title, text.body) == ("T", "B")
+    assert seen == [["gh", "issue", "view", "42", "--json", "title,body"]]
+
+
+def test_issue_fetcher_raises_when_gh_fails(tmp_path: Path) -> None:
+    import subprocess
+
+    def commands(args: Any, cwd: Path) -> Any:
+        return subprocess.CompletedProcess(list(args), 1, "", "not found")
+
+    with pytest.raises(ab.IssueFetchError, match="issue 42"):
+        ab.GhIssueFetcher(tmp_path, commands)(42)
+
+
+# --- command line ----------
+
+
+def _cli(
+    tmp_path: Path,
+    *extra: str,
+    commands: Any | None = None,
+    tasks: list[dict[str, Any]] | None = None,
+) -> tuple[int, Any]:
+    manifest = _write_manifest(
+        tmp_path, tasks or [{"issue": 1, "base_sha": SHA_A}, {"issue": 2, "base_sha": SHA_B}]
+    )
+    fake = commands or FakeCommands()
+    argv = [
+        "--manifest", str(manifest),
+        "--repo", str(tmp_path / "source"),
+        "--workdir", str(tmp_path / "work"),
+        "--out", str(tmp_path / "out" / "report.json"),
+        *extra,
+    ]  # fmt: skip
+    return ab.main(argv, run_command=fake, fetch_issue=_issue_text), fake
+
+
+def test_cli_writes_json_and_markdown_reports(tmp_path: Path) -> None:
+    code, commands = _cli(tmp_path, "--max-wall-seconds", "1000000")
+
+    assert code == 0
+    payload = json.loads((tmp_path / "out" / "report.json").read_text(encoding="utf-8"))
+    assert [task["issue"] for task in payload["tasks"]] == [1, 2]
+    assert payload["verdict"]["recommendation"] in {"recommended", "experimental"}
+    markdown = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
+    assert "Go bar" in markdown
+    assert len(commands.factory_runs()) == 4
+
+
+def test_cli_marks_remaining_tasks_skipped_when_budget_is_reached(tmp_path: Path) -> None:
+    code, commands = _cli(tmp_path, "--max-copilot-premium-requests", "2")
+
+    assert code == 0
+    payload = json.loads((tmp_path / "out" / "report.json").read_text(encoding="utf-8"))
+    assert [task["skipped"] for task in payload["tasks"]] == [False, True]
+    assert len(commands.factory_runs()) == 2
+
+
+def test_cli_invalid_manifest_fails_before_any_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, commands = _cli(tmp_path, "--max-wall-seconds", "10", tasks=[{"issue": 42}])
+
+    assert code == 2
+    assert commands.calls == []
+    assert "issue 42" in capsys.readouterr().err
+
+
+def test_cli_requires_a_budget(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        _cli(tmp_path)
+
+    assert excinfo.value.code == 2
+
+
+def test_cli_refuses_a_config_that_can_publish(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "publish.yaml"
+    config.write_text("pull_request:\n  enabled: true\n", encoding="utf-8")
+
+    code, commands = _cli(tmp_path, "--max-wall-seconds", "10", "--config", str(config))
+
+    assert code == 2
+    assert commands.calls == []
+    assert "pull_request" in capsys.readouterr().err
+
+
+def test_cli_stops_when_a_base_commit_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import subprocess
+
+    class NoCommits(FakeCommands):
+        def __call__(self, args: Any, cwd: Path) -> Any:
+            super().__call__(args, cwd)
+            return subprocess.CompletedProcess(list(args), 1, "", "")
+
+    code, commands = _cli(tmp_path, "--max-wall-seconds", "10", commands=NoCommits())
+
+    assert code == 2
+    assert commands.factory_runs() == []
+    assert "issue 1" in capsys.readouterr().err
