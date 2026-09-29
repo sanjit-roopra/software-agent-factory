@@ -166,12 +166,22 @@ class RunSample(ModelBase):
     invocations: tuple[InvocationRecord, ...] = ()
     error: str | None = None
 
+    @property
+    def infra_failed(self) -> bool:
+        """The replay itself broke (an error, or no agent call at all), so it says nothing."""
+        return self.error is not None or not self.invocations
+
 
 class TaskOutcome(ModelBase):
     """One manifest task with its per-runtime samples. No samples means skipped."""
 
     entry: ManifestEntry
     samples: dict[Runtime, RunSample] = Field(default_factory=dict)
+
+    @property
+    def excluded(self) -> bool:
+        """An infrastructure failure in either runtime drops the task from both."""
+        return any(sample.infra_failed for sample in self.samples.values())
 
 
 def sample_from_run(run: FactoryRun, *, verification_passed: bool | None) -> RunSample:
@@ -236,6 +246,7 @@ class TaskReport(ModelBase):
     level: Level | None
     title: str | None
     skipped: bool
+    excluded: bool
     runtimes: dict[Runtime, RuntimeMetrics] = Field(default_factory=dict)
     errors: dict[Runtime, str] = Field(default_factory=dict)
 
@@ -383,6 +394,7 @@ def _task_report(outcome: TaskOutcome) -> TaskReport:
         level=entry.level,
         title=entry.title,
         skipped=not outcome.samples,
+        excluded=outcome.excluded,
         runtimes={
             runtime: _metrics(runtime, [sample]) for runtime, sample in outcome.samples.items()
         },
@@ -395,11 +407,17 @@ def _task_report(outcome: TaskOutcome) -> TaskReport:
 
 
 def build_report(outcomes: Sequence[TaskOutcome]) -> RuntimeAbReport:
-    """Build the per-task and total report plus the go-bar verdict."""
+    """Build the per-task and total report plus the go-bar verdict.
+
+    Totals and the verdict cover only tasks that ran cleanly in both runtimes:
+    a skipped task, or a task where either runtime failed to run at all
+    (``excluded``), is left out of both, so neither runtime is counted alone.
+    """
+    compared = [outcome for outcome in outcomes if not outcome.excluded]
     totals = {
         runtime: _metrics(
             runtime,
-            [outcome.samples[runtime] for outcome in outcomes if runtime in outcome.samples],
+            [outcome.samples[runtime] for outcome in compared if runtime in outcome.samples],
         )
         for runtime in Runtime
     }
@@ -459,9 +477,17 @@ def _task_label(task: TaskReport) -> str:
 def _task_rows(task: TaskReport) -> list[str]:
     if task.skipped:
         return [f"| {_task_label(task)} | skipped (budget reached) |" + " |" * 9]
+    label = f"{_task_label(task)} (excluded)" if task.excluded else _task_label(task)
+    return [_metrics_row(label, runtime, metrics) for runtime, metrics in task.runtimes.items()]
+
+
+def _excluded_note(report: RuntimeAbReport) -> list[str]:
+    if not any(task.excluded for task in report.tasks):
+        return []
     return [
-        _metrics_row(_task_label(task), runtime, metrics)
-        for runtime, metrics in task.runtimes.items()
+        "Excluded: a runtime failed to run, so the task is left out of both totals "
+        "and the go bar. See Errors.",
+        "",
     ]
 
 
@@ -493,6 +519,7 @@ def render_markdown(report: RuntimeAbReport) -> str:
         "",
         "## Per task",
         "",
+        *_excluded_note(report),
         _TABLE_HEADER,
         *(row for task in report.tasks for row in _task_rows(task)),
         "",

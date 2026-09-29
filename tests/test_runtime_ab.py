@@ -66,8 +66,10 @@ def _sample(
     passed: bool = True,
     wall: float = 10.0,
     repairs: int = 0,
-    invocations: tuple[InvocationRecord, ...] = (),
+    invocations: tuple[InvocationRecord, ...] | None = None,
 ) -> Any:
+    if invocations is None:
+        invocations = (_invocation(),)
     return ab.RunSample(
         passed=passed, wall_seconds=wall, repair_rounds=repairs, invocations=invocations
     )
@@ -354,6 +356,38 @@ def test_skipped_task_is_marked_and_excluded_from_totals() -> None:
     assert report.totals[ab.Runtime.COPILOT].runs == 1
 
 
+def _failed(message: str | None = "no run stored") -> Any:
+    return ab.RunSample(passed=False, wall_seconds=0.0, repair_rounds=0, error=message)
+
+
+def test_task_where_one_runtime_failed_is_dropped_from_both_totals() -> None:
+    fine = _tokens_sample(input=100, cache_read=100)
+    dropped = _outcome(2, _failed(), _tokens_sample(input=9000, cache_read=1))
+
+    report = ab.build_report([_outcome(1, fine, fine), dropped])
+
+    assert [task.excluded for task in report.tasks] == [False, True]
+    assert [task.skipped for task in report.tasks] == [False, False]
+    for runtime in ab.Runtime:
+        assert report.totals[runtime].runs == 1
+        assert report.totals[runtime].tokens.input == 100
+
+
+def test_sample_without_invocations_excludes_the_task() -> None:
+    silent = ab.RunSample(passed=True, wall_seconds=1.0, repair_rounds=0)
+
+    report = ab.build_report([_outcome(1, silent, _sample())])
+
+    assert report.tasks[0].excluded is True
+    assert report.totals[ab.Runtime.PI].runs == 0
+
+
+def test_task_that_ran_cleanly_is_not_excluded() -> None:
+    report = ab.build_report([_outcome(1, _sample(), _sample())])
+
+    assert report.tasks[0].excluded is False
+
+
 def test_task_report_carries_level_title_and_error() -> None:
     entry = ab.ManifestEntry(issue=9, base_sha=SHA_A, level="L2", title="Fix thing")
     broken = ab.RunSample(passed=False, wall_seconds=0.0, repair_rounds=0, error="no run stored")
@@ -587,6 +621,53 @@ def test_markdown_states_recommended_when_go_bar_met() -> None:
 
     assert "recommended" in markdown
     assert "list-price estimate" in markdown
+
+
+def test_markdown_marks_excluded_tasks_and_lists_their_errors_and_costs() -> None:
+    clean = _outcome(
+        1,
+        _sample(
+            wall=100.0,
+            invocations=(
+                _invocation(
+                    1,
+                    input_tokens=1000,
+                    output_tokens=200,
+                    cache_read_tokens=500,
+                    cache_write_tokens=100,
+                    premium_requests=3.0,
+                    total_nano_aiu=7,
+                ),
+            ),
+        ),
+        _sample(
+            wall=80.0,
+            invocations=(_invocation(1, input_tokens=600, list_price_estimate_usd=0.25),),
+        ),
+    )
+    broken = ab.TaskOutcome(
+        entry=ab.ManifestEntry(issue=9, base_sha=SHA_A, level="L2"),
+        samples={
+            ab.Runtime.COPILOT: _failed("no run stored (exit 1): boom"),
+            ab.Runtime.PI: _sample(),
+        },
+    )
+
+    lines = ab.render_markdown(ab.build_report([clean, broken])).splitlines()
+
+    assert (
+        "| #1 | copilot | 1/1 | 1000 | 200 | 500 | 100 | 31.2% "
+        "| 3 premium requests / 7 nano-AIU | 100.0 | 0 |" in lines
+    )
+    assert (
+        "| #1 | pi | 1/1 | 600 | unavailable | unavailable | unavailable | unavailable "
+        "| $0.2500 list-price estimate | 80.0 | 0 |" in lines
+    )
+    assert (
+        "| #9 L2 (excluded) | copilot | 0/1 | unavailable | unavailable | unavailable "
+        "| unavailable | unavailable | unavailable | 0.0 | 0 |" in lines
+    )
+    assert lines[-3:] == ["## Errors", "", "- #9 L2 copilot: no run stored (exit 1): boom"]
 
 
 def test_markdown_lists_skipped_tasks() -> None:
