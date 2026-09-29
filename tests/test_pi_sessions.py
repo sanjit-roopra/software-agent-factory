@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from software_agent_factory.pi_sessions import (
 MAX_AGE = 3600
 START = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 SETTINGS = SessionSettings(model="claude-sonnet-5", provider="github-copilot", reasoning="medium")
+IMPLEMENTER_FILE = "implementer.jsonl"
+IMPLEMENTER_SIDECAR = "implementer.meta.json"
 
 
 class Clock:
@@ -53,7 +56,7 @@ def test_first_call_starts_a_fresh_session_file_for_the_work_item_and_role(
 
     assert isinstance(decision, Fresh)
     assert decision.path.parent.parent == tmp_path / "pi-sessions"
-    assert decision.path.name == "implementer.jsonl"
+    assert decision.path.name == IMPLEMENTER_FILE
 
 
 @pytest.mark.parametrize(
@@ -119,19 +122,19 @@ def test_reviewer_continues_its_own_file_not_the_implementers(
 
 
 @pytest.mark.parametrize(
-    ("changed", "minutes"),
+    "changed",
     [
-        (SessionSettings("claude-opus-5", "github-copilot", "medium"), 10),
-        (SessionSettings("claude-sonnet-5", "anthropic", "medium"), 10),
-        (SessionSettings("claude-sonnet-5", "github-copilot", "high"), 10),
+        SessionSettings("claude-opus-5", "github-copilot", "medium"),
+        SessionSettings("claude-sonnet-5", "anthropic", "medium"),
+        SessionSettings("claude-sonnet-5", "github-copilot", "high"),
     ],
     ids=["model changed", "provider changed", "reasoning changed"],
 )
 def test_changed_settings_start_a_new_session_and_keep_the_old_file(
-    store: PiSessionStore, clock: Clock, changed: SessionSettings, minutes: int
+    store: PiSessionStore, clock: Clock, changed: SessionSettings
 ) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
-    clock.advance(minutes=minutes)
+    clock.advance(minutes=10)
 
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, changed)
 
@@ -168,6 +171,14 @@ def test_a_session_last_used_in_the_future_is_not_continued(
     clock.advance(minutes=-1)
 
     assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
+
+
+def point_sidecar_at(directory: Path, session_file: str) -> None:
+    """Rewrite the implementer sidecar, valid in every other way, to name ``session_file``."""
+    sidecar = directory / IMPLEMENTER_SIDECAR
+    tampered = json.loads(sidecar.read_text(encoding="utf-8"))
+    tampered["session_file"] = session_file
+    sidecar.write_text(json.dumps(tampered), encoding="utf-8")
 
 
 def test_a_missing_session_file_starts_a_new_session(store: PiSessionStore) -> None:
@@ -207,21 +218,32 @@ def test_a_success_after_a_failure_makes_the_new_session_reusable(store: PiSessi
     assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(second.path)
 
 
-def test_fresh_sessions_use_numbered_files_and_the_sidecar_tracks_the_latest(
-    store: PiSessionStore, clock: Clock
-) -> None:
+def run_three_expired_reviewer_calls(store: PiSessionStore, clock: Clock) -> list[Path]:
+    """Run three reviewer calls, each after the previous session expired."""
     paths = []
     for _ in range(3):
         paths.append(run_call(store, "W1", AgentRole.REVIEWER).path)
         clock.advance(seconds=MAX_AGE)
+    return paths
+
+
+def test_fresh_sessions_use_numbered_files_and_keep_every_earlier_file(
+    store: PiSessionStore, clock: Clock
+) -> None:
+    paths = run_three_expired_reviewer_calls(store, clock)
 
     assert [path.name for path in paths] == [
         "reviewer.jsonl",
         "reviewer-2.jsonl",
         "reviewer-3.jsonl",
     ]
-    assert all(path.exists() for path in paths)
+    assert [path.exists() for path in paths] == [True, True, True]
+
+
+def test_the_sidecar_tracks_the_latest_numbered_file(store: PiSessionStore, clock: Clock) -> None:
+    paths = run_three_expired_reviewer_calls(store, clock)
     clock.advance(seconds=60 - MAX_AGE)
+
     assert store.resolve("W1", AgentRole.REVIEWER, SETTINGS) == Continue(paths[-1])
 
 
@@ -239,7 +261,7 @@ def test_interleaved_work_items_use_only_their_own_files(store: PiSessionStore) 
     assert store.resolve("W2", AgentRole.IMPLEMENTER, SETTINGS) == Continue(w2.path)
 
 
-def test_record_uses_the_given_end_time(store: PiSessionStore, clock: Clock) -> None:
+def test_record_uses_the_given_end_time(store: PiSessionStore) -> None:
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
     decision.path.parent.mkdir(parents=True)
     decision.path.touch()
@@ -264,12 +286,21 @@ def test_record_rejects_a_path_outside_the_work_item_and_role_directory(
         )
 
 
+def test_record_rejects_a_file_that_is_not_a_session_file(store: PiSessionStore) -> None:
+    directory = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS).path.parent
+
+    with pytest.raises(ValueError, match="not a session file"):
+        store.record(
+            "W1", AgentRole.IMPLEMENTER, directory / IMPLEMENTER_SIDECAR, SETTINGS, success=True
+        )
+
+
 def test_record_leaves_no_temporary_files_behind(store: PiSessionStore) -> None:
     decision = run_call(store, "W1", AgentRole.IMPLEMENTER)
 
     names = sorted(entry.name for entry in decision.path.parent.iterdir())
 
-    assert names == ["implementer.jsonl", "implementer.meta.json"]
+    assert names == [IMPLEMENTER_FILE, IMPLEMENTER_SIDECAR]
 
 
 def test_a_failed_atomic_write_keeps_the_previous_sidecar_and_cleans_up(
@@ -286,38 +317,46 @@ def test_a_failed_atomic_write_keeps_the_previous_sidecar_and_cleans_up(
     monkeypatch.undo()
 
     assert sorted(entry.name for entry in first.path.parent.iterdir()) == [
-        "implementer.jsonl",
-        "implementer.meta.json",
+        IMPLEMENTER_FILE,
+        IMPLEMENTER_SIDECAR,
     ]
     assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(first.path)
 
 
-@pytest.mark.parametrize(
-    "content",
-    ["not json", "{}", '{"session_file": "../x.jsonl"}'],
-    ids=["garbage", "missing fields", "escaping session file"],
-)
+@pytest.mark.parametrize("content", ["not json", "{}"], ids=["garbage", "missing fields"])
 def test_an_unusable_sidecar_starts_a_new_session(store: PiSessionStore, content: str) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
-    (first.path.parent / "implementer.meta.json").write_text(content, encoding="utf-8")
+    (first.path.parent / IMPLEMENTER_SIDECAR).write_text(content, encoding="utf-8")
 
     assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
 
 
-def test_a_sidecar_naming_a_file_outside_the_directory_is_not_followed(
-    store: PiSessionStore, tmp_path: Path
+@pytest.mark.parametrize(
+    "named",
+    ["../../outside.jsonl", "../x.jsonl", "sub/implementer.jsonl"],
+    ids=["two levels up", "one level up", "subdirectory"],
+)
+def test_a_valid_sidecar_naming_a_file_outside_the_directory_is_not_followed(
+    store: PiSessionStore, named: str
 ) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
-    outside = tmp_path / "outside.jsonl"
-    outside.write_text("{}\n", encoding="utf-8")
-    sidecar = first.path.parent / "implementer.meta.json"
-    tampered = json.loads(sidecar.read_text(encoding="utf-8"))
-    tampered["session_file"] = "../../outside.jsonl"
-    sidecar.write_text(json.dumps(tampered), encoding="utf-8")
+    target = first.path.parent / named
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}\n", encoding="utf-8")
+    point_sidecar_at(first.path.parent, named)
 
-    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+    assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
 
-    assert isinstance(decision, Fresh)
+
+def test_a_sidecar_naming_a_numbered_file_of_its_own_role_is_followed(
+    store: PiSessionStore,
+) -> None:
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    numbered = first.path.parent / "implementer-12.jsonl"
+    numbered.write_text("{}\n", encoding="utf-8")
+    point_sidecar_at(first.path.parent, numbered.name)
+
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(numbered)
 
 
 ODD_IDS = [
@@ -335,6 +374,10 @@ ODD_IDS = [
     "caf\u00e9",
     "\u202egnp.exe",
     "x" * 1000,
+    "v1.2",
+    "a.b",
+    "\ud800",
+    "x" * 100 + "\ud800",
 ]
 
 
@@ -382,6 +425,39 @@ def test_distinct_work_item_ids_never_share_a_directory(store: PiSessionStore) -
     names = [store.resolve(item, AgentRole.IMPLEMENTER, SETTINGS).path.parent.name for item in ids]
 
     assert len({name.lower() for name in names}) == len(set(ids))
+
+
+def directory_name_of(store: PiSessionStore, work_item_id: str) -> str:
+    return store.resolve(work_item_id, AgentRole.IMPLEMENTER, SETTINGS).path.parent.name
+
+
+@pytest.mark.parametrize(
+    ("work_item_id", "expected"),
+    [
+        ("W1", "+w1"),
+        ("gh/12", "gh%2F12"),
+        (".x", "%2Ex"),
+        ("v1.2", "v1.2"),
+        ("caf\u00e9", "caf%C3%A9"),
+        ("a+b", "a%2Bb"),
+    ],
+)
+def test_directory_names_use_the_documented_encoding(
+    store: PiSessionStore, work_item_id: str, expected: str
+) -> None:
+    assert directory_name_of(store, work_item_id) == expected
+
+
+def test_a_name_of_the_longest_allowed_length_is_kept(store: PiSessionStore) -> None:
+    assert directory_name_of(store, "x" * 93) == "x" * 93
+
+
+def test_a_name_one_character_over_the_limit_is_cut_and_ends_in_a_digest(
+    store: PiSessionStore,
+) -> None:
+    name = directory_name_of(store, "x" * 94)
+
+    assert re.fullmatch(r"x{60}~[0-9a-f]{32}", name)
 
 
 def test_the_same_work_item_id_always_maps_to_the_same_directory(tmp_path: Path) -> None:
