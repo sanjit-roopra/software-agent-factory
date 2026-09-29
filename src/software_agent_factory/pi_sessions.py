@@ -231,8 +231,8 @@ def _write_text_atomic(destination: Path, content: str) -> None:
     """Write ``content`` to a temp file beside ``destination``, then ``os.replace`` it in."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
-    temp_path.write_text(content, encoding="utf-8")
     try:
+        temp_path.write_text(content, encoding="utf-8")
         os.replace(temp_path, destination)
     except OSError:
         temp_path.unlink(missing_ok=True)
