@@ -21,6 +21,8 @@ import pytest
 from factory_testing import FakePiClock, FakePiProcess
 
 from software_agent_factory.pi_rpc import (
+    _STDERR_REDACTION_MARGIN_CHARS,
+    _STDERR_TAIL_CHARS,
     PiRpcClient,
     PiRpcCommandError,
     PiRpcProcessExited,
@@ -209,6 +211,46 @@ def test_stderr_tail_redacts_a_secret_before_the_window_cuts_it() -> None:
     assert len(tail) <= 4096
     assert "e1234" not in tail
     assert tail.endswith("B" * 4000)
+
+
+def test_stderr_tail_keeps_a_full_window_when_the_raw_window_was_trimmed() -> None:
+    """Dropping the margin that guards the front edge must not shorten a tail
+    that has nothing redacted."""
+    process = FakePiProcess()
+    client = PiRpcClient(process)
+    process.exit(1)
+    process.write_stderr("a" * (_STDERR_TAIL_CHARS + _STDERR_REDACTION_MARGIN_CHARS + 500) + "END")
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    tail = excinfo.value.stderr_tail
+    assert len(tail) == _STDERR_TAIL_CHARS
+    assert tail.endswith("aEND")
+
+
+def test_stderr_tail_hides_a_long_secret_cut_by_the_raw_window_when_redaction_shrinks_it() -> None:
+    """A secret longer than 256 chars whose front the raw window cuts is not
+    redactable whole; the redacted tokens after it shrink the text and would
+    slide the leftover fragment into the exposed tail."""
+    secret = "sk-" + "".join(f"{i:04d}" for i in range(250))
+    window = _STDERR_TAIL_CHARS + _STDERR_REDACTION_MARGIN_CHARS
+    token = "ghp_" + "A" * 36
+    kept_of_secret = 600
+    after = " ".join([token] * ((window - (len(secret) - kept_of_secret)) // (len(token) + 1)))
+    process = FakePiProcess()
+    client = PiRpcClient(process, redact=lambda text: redact_secrets(text, {secret}))
+    process.exit(1)
+    process.write_stderr("P" * 100 + secret + " " + after)
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    tail = excinfo.value.stderr_tail
+    assert not any(char.isdigit() for char in tail)
+    assert "ghp_" not in tail
 
 
 def test_stderr_tail_redacts_a_secret_split_across_reads(pi_fake_clock: FakePiClock) -> None:

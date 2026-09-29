@@ -28,9 +28,13 @@ from .subprocess_utils import kill_process_group
 #: growth if pi writes a lot to stderr before exiting.
 _STDERR_TAIL_CHARS = 4096
 
-#: Extra unredacted characters kept ahead of the exposed tail, so a secret
-#: straddling the tail's front edge is redacted whole before the cut.
-_STDERR_REDACTION_MARGIN_CHARS = 256
+#: Extra raw characters kept ahead of the exposed tail. A secret straddling the
+#: tail's front edge is then redacted whole, and once the raw window has been
+#: trimmed :attr:`PiRpcClient.stderr_tail` drops this many redacted characters
+#: from the front, where a secret cut by the trim leaves its fragment. Must be
+#: at least as long as the longest secret (an ``AWS_SESSION_TOKEN`` runs to
+#: about a thousand characters).
+_STDERR_REDACTION_MARGIN_CHARS = 4096
 
 #: Bound :meth:`PiRpcClient._returncode` waits for an exited-stdout child to
 #: report its exit code.
@@ -149,6 +153,8 @@ class PiRpcClient:
         self._stdout_eof = False
         #: Raw (unredacted) trailing stderr; redacted only when read, see :meth:`_append_stderr`.
         self._raw_stderr_tail = ""
+        #: True once :meth:`_append_stderr` has cut the front off the raw window.
+        self._stderr_trimmed = False
         self._stderr_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._stderr_eof = process.stderr is None
         #: Records seen by :meth:`request` that did not match the response it
@@ -158,7 +164,14 @@ class PiRpcClient:
     @property
     def stderr_tail(self) -> str:
         """Last ~4 K characters of pi's stderr read so far, redacted for a failure reason."""
-        return self._redact(self._raw_stderr_tail)[-_STDERR_TAIL_CHARS:]
+        redacted = self._redact(self._raw_stderr_tail)
+        if self._stderr_trimmed:
+            # The trim may have cut a secret in two, leaving an unredactable
+            # fragment at the front; redaction shrinking the text after it
+            # would slide that fragment into the tail. Nothing before the
+            # fragment is redacted, so it sits within the first margin chars.
+            redacted = redacted[_STDERR_REDACTION_MARGIN_CHARS:]
+        return redacted[-_STDERR_TAIL_CHARS:]
 
     def send(self, command: dict[str, Any]) -> str:
         """Write one JSON command line (plus ``"\\n"``), assigning a unique ``id``.
@@ -306,7 +319,10 @@ class PiRpcClient:
         half behind); :attr:`stderr_tail` redacts the whole window on read.
         """
         keep = _STDERR_TAIL_CHARS + _STDERR_REDACTION_MARGIN_CHARS
-        self._raw_stderr_tail = (self._raw_stderr_tail + text)[-keep:]
+        combined = self._raw_stderr_tail + text
+        if len(combined) > keep:
+            self._stderr_trimmed = True
+        self._raw_stderr_tail = combined[-keep:]
 
     def _excerpt(self, text: str) -> str:
         """Redact all of ``text``, then keep its first :data:`_LINE_EXCERPT_CHARS` chars."""
