@@ -387,7 +387,8 @@ def _percent(share: float | None) -> str:
 def _pass_count_criterion(copilot: RuntimeMetrics, pi: RuntimeMetrics) -> CriterionResult:
     return CriterionResult(
         name=CRITERION_PASS_COUNT,
-        met=pi.passes >= copilot.passes,
+        # A tie at zero passes is not evidence that pi works.
+        met=pi.passes >= max(copilot.passes, 1),
         detail=f"pi {pi.passes} passes vs Copilot {copilot.passes}",
     )
 

@@ -512,6 +512,16 @@ def test_go_bar_pass_count_fails_alone() -> None:
     assert _criteria(report) == {"pass_count": False, "cache_read_share": True, "tokens": True}
 
 
+def test_go_bar_pass_count_needs_at_least_one_pi_pass() -> None:
+    copilot = _tokens_sample(input=1000, cache_read=1000, passed=False)
+    pi = _tokens_sample(input=700, cache_read=3000, passed=False)
+
+    report = _bar_report(copilot, pi)
+
+    assert report.verdict.meets is False
+    assert _criteria(report) == {"pass_count": False, "cache_read_share": True, "tokens": True}
+
+
 def test_go_bar_cache_share_fails_alone() -> None:
     copilot = _copilot_sample()
     pi = _tokens_sample(input=700, cache_read=1000)
