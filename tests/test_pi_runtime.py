@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -28,8 +30,10 @@ from software_agent_factory.pi_rpc import PiRpcClient
 from software_agent_factory.pi_runtime import (
     PiAgentRuntime,
     ProcessFactory,
+    _default_process_factory,
     usage_from_pi_messages,
 )
+from software_agent_factory.subprocess_utils import kill_process_group
 
 
 def _work_item() -> WorkItem:
@@ -888,6 +892,51 @@ def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
     sent_types = [command.get("type") for command in process.sent_commands()]
     assert "abort" in sent_types
     assert killed == [process]
+
+
+def test_run_timeout_with_undecodable_leftover_output_keeps_partial_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC6: killing a wedged pi reads its leftover output, and a text-mode
+    ``Popen`` raises ``UnicodeDecodeError`` on a split UTF-8 character there.
+    That must not replace the failed result or lose the usage read so far."""
+    process = FakePiProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        {"type": "agent_settled"},
+        _get_messages_response(usage={"input": 40, "output": 10}, model="claude-sonnet-5"),
+    )
+    process.communicate_error = UnicodeDecodeError("utf-8", b"\xe2\x82", 0, 2, "unexpected end")
+    monkeypatch.setattr("software_agent_factory.subprocess_utils.os.killpg", lambda pid, sig: None)
+    monkeypatch.setattr("software_agent_factory.pi_runtime._ABORT_GRACE_SECONDS", 0.01)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+
+    result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
+
+    assert result.success is False
+    assert result.failure_reason == "pi timed out after 1 seconds"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 40
+
+
+def test_default_process_factory_tolerates_a_split_utf8_character_when_killed() -> None:
+    """The real ``Popen`` the runtime starts must decode leniently: a child
+    killed mid-character leaves bytes ``communicate()`` cannot strictly decode."""
+    script = (
+        "import sys, time\n"
+        "sys.stdout.buffer.write(b'\\xe2\\x82')\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.stderr.write('ready\\n')\n"
+        "sys.stderr.flush()\n"
+        "time.sleep(60)\n"
+    )
+    process = _default_process_factory([sys.executable, "-c", script], Path.cwd(), dict(os.environ))
+    assert process.stderr is not None
+    assert process.stderr.readline() == "ready\n"
+
+    stdout, _stderr = kill_process_group(process)
+
+    assert stdout == "\ufffd"
 
 
 def test_abort_and_kill_does_not_kill_a_process_that_exits_on_stdin_eof(

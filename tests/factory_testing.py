@@ -375,6 +375,9 @@ class FakePiProcess:
         self.pid = 999_999
         self._returncode: int | None = None
         self._wait_returncode: int | None = None
+        #: Raised by :meth:`communicate`, e.g. a ``UnicodeDecodeError`` as a
+        #: real text-mode ``Popen`` raises on undecodable leftover output.
+        self.communicate_error: Exception | None = None
         _open_fake_pi_processes.append(self)
 
     def write_records(self, *records: Mapping[str, Any]) -> None:
@@ -424,6 +427,8 @@ class FakePiProcess:
         return self._wait_returncode
 
     def communicate(self, *, timeout: float | None = None) -> tuple[str, str]:
+        if self.communicate_error is not None:
+            raise self.communicate_error
         return ("", "")
 
     def sent_commands(self) -> list[dict[str, Any]]:

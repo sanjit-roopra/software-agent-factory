@@ -138,6 +138,10 @@ def _default_process_factory(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # ``PiRpcClient`` reads the raw fds, so ``communicate()`` (called when
+        # pi is killed) may find a UTF-8 character cut in half; strict
+        # decoding would raise there and lose the usage read so far.
+        errors="replace",
         start_new_session=True,
     )
 
@@ -683,4 +687,10 @@ class PiAgentRuntime(AgentRuntime):
         try:
             process.wait(timeout=_ABORT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            kill_process_group(process)
+            try:
+                kill_process_group(process)
+            except UnicodeDecodeError:
+                # Only the read of pi's leftover output failed; pi is already
+                # signalled, and a failed cleanup read must not replace the
+                # failed result (and its partial usage) this timeout returns.
+                pass

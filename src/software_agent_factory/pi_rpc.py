@@ -216,7 +216,12 @@ class PiRpcClient:
         try:
             self._process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            kill_process_group(self._process)
+            try:
+                kill_process_group(self._process)
+            except UnicodeDecodeError:
+                # Only the read of the leftover output failed; the process
+                # group is already signalled, so cleanup is done.
+                pass
 
     def _read_record(self, deadline: float) -> dict[str, Any]:
         line = self._read_line(deadline)

@@ -455,6 +455,22 @@ def test_close_kills_process_group_on_timeout(monkeypatch: pytest.MonkeyPatch) -
     assert killed == [(process.pid, signal.SIGTERM)]
 
 
+def test_close_survives_undecodable_output_left_by_a_killed_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``kill_process_group`` reads the dying process's leftover output; a
+    text-mode ``Popen`` raises ``UnicodeDecodeError`` on a split UTF-8
+    character there. Cleanup must not raise."""
+    process = FakePiProcess()
+    process.communicate_error = UnicodeDecodeError("utf-8", b"\xe2\x82", 0, 2, "unexpected end")
+    client = PiRpcClient(process)
+    monkeypatch.setattr("software_agent_factory.subprocess_utils.os.killpg", lambda pid, sig: None)
+
+    client.close(timeout=0.05)
+
+    assert process.stdin is not None and process.stdin.closed
+
+
 # ---------------------------------------------------------------------------
 # stderr draining: a full stderr pipe must never block a stdout-only wait
 # ---------------------------------------------------------------------------
