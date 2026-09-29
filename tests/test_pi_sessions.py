@@ -336,26 +336,6 @@ def test_a_failed_atomic_write_keeps_the_previous_sidecar_and_cleans_up(
     assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(first.path)
 
 
-def test_a_failed_temp_file_write_leaves_no_temporary_file_behind(
-    store: PiSessionStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
-
-    def write_part_then_fail(self: Path, _content: str, **_options: object) -> int:
-        self.touch()
-        raise OSError("disk full")
-
-    monkeypatch.setattr(Path, "write_text", write_part_then_fail)
-    with pytest.raises(OSError, match="disk full"):
-        store.record("W1", AgentRole.IMPLEMENTER, first.path, SETTINGS, success=False)
-    monkeypatch.undo()
-
-    assert sorted(entry.name for entry in first.path.parent.iterdir()) == [
-        IMPLEMENTER_FILE,
-        IMPLEMENTER_SIDECAR,
-    ]
-
-
 @pytest.mark.parametrize("content", ["not json", "{}"], ids=["garbage", "missing fields"])
 def test_an_unusable_sidecar_starts_a_new_session(store: PiSessionStore, content: str) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)

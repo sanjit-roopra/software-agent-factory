@@ -33,6 +33,7 @@ from uuid import uuid4
 
 from pydantic_core import from_json
 
+from .atomic_write import write_text_atomic
 from .models import (
     ChangeSet,
     CIReport,
@@ -406,15 +407,7 @@ class FileRunStore:
         return f"{model.model_dump_json(indent=2)}\n"
 
     def _write_text_atomic(self, destination: Path, content: str) -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
-        temp_path.write_text(content, encoding="utf-8")
-        try:
-            os.replace(temp_path, destination)
-        except OSError:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
+        write_text_atomic(destination, content)
 
     def _write_text_create_only(self, destination: Path, content: str) -> bool:
         """Publish ``content`` at ``destination`` only if it does not exist.

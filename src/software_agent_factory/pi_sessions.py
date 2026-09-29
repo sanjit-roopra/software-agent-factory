@@ -10,15 +10,14 @@ path to pi and reports the outcome back through :meth:`PiSessionStore.record`.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import string
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
+from .atomic_write import write_text_atomic
 from .models import AgentRole, ModelBase, UtcDateTime, utc_now
 
 #: Only these roles continue a session. Every other role runs without one.
@@ -123,7 +122,7 @@ class PiSessionStore:
             last_ended_at=ended_at or self._clock(),
             last_success=success,
         )
-        _write_text_atomic(_record_path(directory, role), f"{record.model_dump_json(indent=2)}\n")
+        write_text_atomic(_record_path(directory, role), f"{record.model_dump_json(indent=2)}\n")
 
     def _directory(self, work_item_id: str, role: AgentRole) -> Path:
         if not persists_session(role):
@@ -225,15 +224,3 @@ def _is_readable_file(path: Path) -> bool:
     except OSError:
         return False
     return True
-
-
-def _write_text_atomic(destination: Path, content: str) -> None:
-    """Write ``content`` to a temp file beside ``destination``, then ``os.replace`` it in."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
-    try:
-        temp_path.write_text(content, encoding="utf-8")
-        os.replace(temp_path, destination)
-    except OSError:
-        temp_path.unlink(missing_ok=True)
-        raise
