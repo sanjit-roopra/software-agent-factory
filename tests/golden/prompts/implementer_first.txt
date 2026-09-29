@@ -22,6 +22,8 @@ Make the required changes in the current working directory.
 - Return ChangeSet metadata only.
 
 Return exactly one JSON object that Pydantic-validates as ChangeSet. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: summary=40.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 ChangeSet JSON Schema:
 <json schema>
 

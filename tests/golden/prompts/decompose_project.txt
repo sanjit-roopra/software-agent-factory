@@ -28,6 +28,8 @@ Create the smallest sufficient DAG of reviewable work items.
 - Do not edit the repository.
 
 Return exactly one JSON object that Pydantic-validates as ProjectPlan. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: summary=40, delivery_approach=120, tasks[].title=15, tasks[].description=100, tasks[].acceptance_criteria=25, tasks[].constraints=30.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 ProjectPlan JSON Schema:
 <json schema>
 

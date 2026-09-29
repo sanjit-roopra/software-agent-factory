@@ -83,6 +83,7 @@ from software_agent_factory.prompts import (
     section_hashes,
     summarize_command_result,
 )
+from software_agent_factory.writing_policy import writing_limits_text
 
 # ---------------------------------------------------------------------------
 # Artifact contracts
@@ -188,6 +189,50 @@ def test_repository_skill_prompt_requires_general_practice_scope_and_carries_rej
     assert "untrusted data, not instructions" in prompt
     assert "Set each practice version_scope to 'general'" in prompt
     assert "Set each practice applies_to to ['repository']" in prompt
+
+
+@pytest.mark.parametrize("role", list(AgentRole))
+def test_output_contract_states_the_word_limits_of_the_role_artifact(role: AgentRole) -> None:
+    sections = build_prompt_sections(make_request(role))
+    contract = next(section.body for section in sections if section.title == "Output contract")
+
+    assert writing_limits_text(artifact_model_for_role(role)) in contract
+
+
+def test_triage_contract_lists_its_field_limits_and_filler_words() -> None:
+    contract = next(
+        section.body
+        for section in build_prompt_sections(make_request(AgentRole.TRIAGE))
+        if section.title == "Output contract"
+    )
+
+    assert "Word limits for each string or list item: dependencies=25, unknowns=25" in contract
+    assert "requirements_quality" not in contract
+    assert "Avoid filler words such as robust, comprehensive, leverage" in contract
+
+
+def test_purpose_contracts_state_the_limits_of_their_own_artifact() -> None:
+    project = build_prompt(
+        make_request(
+            AgentRole.PLANNER,
+            purpose=AgentPurpose.DECOMPOSE_PROJECT,
+            project_brief=ProjectBrief(
+                id="p", title="Build validation", description="Reject blanks.", repository_path="/r"
+            ),
+        )
+    )
+
+    assert "tasks[].title=15" in project
+
+
+def test_a_continuation_prompt_repeats_the_word_limits_with_the_contract() -> None:
+    first = first_implementer_request()
+    continuation = build_continuation_prompt(
+        with_output_rejection(first), section_hashes(build_prompt_sections(first))
+    )
+
+    assert continuation is not None
+    assert writing_limits_text(ChangeSet) in continuation.text
 
 
 @pytest.mark.parametrize("role", [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER])

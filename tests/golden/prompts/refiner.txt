@@ -18,6 +18,8 @@ Write an explicit specification.
 - Do not invent requirements, future features, unrelated refactors, or generic hardening.
 
 Return exactly one JSON object that Pydantic-validates as Specification. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: problem=80, acceptance_criteria=25, constraints=30, assumptions=30, unknowns=30, dependencies=30, risk_flags=30.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 Specification JSON Schema:
 <json schema>
 

@@ -6,23 +6,29 @@ from pathlib import Path
 
 import pytest
 
+from software_agent_factory import writing_policy
 from software_agent_factory._vendor.simple_english.lint import lint
 from software_agent_factory.agents import AgentResult
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
+    ChangeSet,
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
     ResearchReport,
     TriageResult,
+    WorkItem,
 )
 from software_agent_factory.writing_policy import (
+    FILLER_EXAMPLES,
     SIMPLE_ENGLISH_REVISION,
     check_publication_text,
+    field_word_limits,
     result_writing_findings,
     validate_artifact_writing,
     validate_publication_text,
+    writing_limits_text,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -240,3 +246,46 @@ def test_clean_publication_text_logs_nothing(caplog: pytest.LogCaptureFixture) -
 def test_blank_publication_text_still_raises() -> None:
     with pytest.raises(ValueError, match="commit message is empty"):
         check_publication_text("commit message", "  ", max_words=20)
+
+
+def test_field_word_limits_come_from_the_table_that_the_check_uses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _wordy_plan().model_copy(update={"summary": " ".join(["word"] * 8)})
+    assert field_word_limits(ExecutionPlan)["summary"] == 25
+    assert validate_artifact_writing(plan) == ()
+
+    monkeypatch.setitem(writing_policy._FIELD_LIMITS[ExecutionPlan], "summary", 7)
+
+    assert field_word_limits(ExecutionPlan)["summary"] == 7
+    assert "summary has 8 words. The limit is 7." in validate_artifact_writing(plan)
+
+
+def test_triage_limits_do_not_include_the_removed_requirements_quality() -> None:
+    limits = field_word_limits(TriageResult)
+
+    assert limits["unknowns"] == 25
+    assert limits["credible_scenario"] == 45
+    assert "requirements_quality" not in limits
+
+
+def test_field_word_limits_is_a_copy_and_empty_for_an_unlimited_type() -> None:
+    field_word_limits(ChangeSet)["summary"] = 1
+
+    assert field_word_limits(ChangeSet) == {"summary": 40}
+    assert field_word_limits(WorkItem) == {}
+
+
+def test_writing_limits_text_lists_each_limit_and_filler_examples() -> None:
+    text = writing_limits_text(TriageResult)
+
+    assert text.startswith("Word limits for each string or list item: ")
+    assert "unknowns=25" in text
+    assert "credible_scenario=45" in text
+    assert "Avoid filler words such as robust, comprehensive" in text
+    assert writing_limits_text(WorkItem) == ""
+
+
+def test_filler_examples_are_words_the_prose_check_flags() -> None:
+    for word in FILLER_EXAMPLES:
+        assert lint(f"The change is {word} today.", "descriptive")["violations"]["slop_word"] == 1
