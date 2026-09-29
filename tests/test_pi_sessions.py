@@ -318,3 +318,82 @@ def test_a_sidecar_naming_a_file_outside_the_directory_is_not_followed(
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
 
     assert isinstance(decision, Fresh)
+
+
+ODD_IDS = [
+    "../../etc/passwd",
+    "..",
+    ".",
+    "a/b",
+    "a\\b",
+    "/absolute",
+    "C:\\windows",
+    ".hidden",
+    "nul\x00byte",
+    "line\nbreak",
+    "with space",
+    "caf\u00e9",
+    "\u202egnp.exe",
+    "x" * 1000,
+]
+
+
+@pytest.mark.parametrize("work_item_id", ODD_IDS, ids=lambda item: repr(item)[:24])
+def test_odd_work_item_ids_stay_inside_the_root(
+    store: PiSessionStore, tmp_path: Path, work_item_id: str
+) -> None:
+    root = tmp_path / "pi-sessions"
+
+    decision = run_call(store, work_item_id, AgentRole.IMPLEMENTER)
+
+    assert decision.path.parent.parent == root
+    assert decision.path.resolve().is_relative_to(root.resolve())
+    assert len(decision.path.parent.name) <= 100
+    assert not decision.path.parent.name.startswith(".")
+    assert decision.path.exists()
+
+
+@pytest.mark.parametrize("work_item_id", ODD_IDS, ids=lambda item: repr(item)[:24])
+def test_odd_work_item_ids_are_continued_like_any_other(
+    store: PiSessionStore, work_item_id: str
+) -> None:
+    first = run_call(store, work_item_id, AgentRole.IMPLEMENTER)
+
+    assert store.resolve(work_item_id, AgentRole.IMPLEMENTER, SETTINGS) == Continue(first.path)
+
+
+def test_distinct_work_item_ids_never_share_a_directory(store: PiSessionStore) -> None:
+    ids = [
+        "W1",
+        "w1",
+        "a/b",
+        "a%2Fb",
+        "a_b",
+        "a+b",
+        "..",
+        "%2E%2E",
+        "+w1",
+        "x" * 200,
+        "x" * 201,
+        "x" * 199 + "y",
+        *ODD_IDS,
+    ]
+
+    names = [store.resolve(item, AgentRole.IMPLEMENTER, SETTINGS).path.parent.name for item in ids]
+
+    assert len({name.lower() for name in names}) == len(set(ids))
+
+
+def test_the_same_work_item_id_always_maps_to_the_same_directory(tmp_path: Path) -> None:
+    first = PiSessionStore(tmp_path, max_age_seconds=MAX_AGE)
+    second = PiSessionStore(tmp_path, max_age_seconds=MAX_AGE)
+
+    assert (
+        first.resolve("gh/12", AgentRole.REVIEWER, SETTINGS).path
+        == second.resolve("gh/12", AgentRole.REVIEWER, SETTINGS).path
+    )
+
+
+def test_an_empty_work_item_id_is_rejected(store: PiSessionStore) -> None:
+    with pytest.raises(ValueError, match="work item id"):
+        store.resolve("", AgentRole.IMPLEMENTER, SETTINGS)

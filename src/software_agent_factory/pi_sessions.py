@@ -9,7 +9,9 @@ path to pi and reports the outcome back through :meth:`PiSessionStore.record`.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import string
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -125,7 +127,7 @@ class PiSessionStore:
     def _directory(self, work_item_id: str, role: AgentRole) -> Path:
         if not persists_session(role):
             raise ValueError(f"role {role.value} does not keep a pi session")
-        return self._root / work_item_id
+        return self._root / _directory_name(work_item_id)
 
     def _is_reusable(
         self, record: _SessionRecord, settings: SessionSettings, directory: Path
@@ -150,6 +152,42 @@ class PiSessionStore:
 
 
 _SESSION_SUFFIX = ".jsonl"
+_PLAIN_CHARACTERS = frozenset(string.ascii_lowercase + string.digits + "-_")
+_MAX_PLAIN_LENGTH = 60
+_DIGEST_LENGTH = 32
+_MAX_DIRECTORY_NAME_LENGTH = _MAX_PLAIN_LENGTH + 1 + _DIGEST_LENGTH
+
+
+def _directory_name(work_item_id: str) -> str:
+    """Map a work item id to one safe directory name: stable, and distinct per id.
+
+    Lowercase letters, digits, ``-`` and ``_`` stay as they are. An uppercase
+    letter becomes ``+`` and its lowercase letter, so ids that differ only in
+    case do not share a directory on a case-insensitive file system. A ``.`` stays
+    unless it comes first. Every other character becomes ``%XX`` for each of its
+    UTF-8 bytes, so ``/``, ``\\``, NUL, ``%`` and ``+`` never appear raw and
+    the result cannot leave the root. An encoding longer than the limit is cut
+    and ends in ``~`` plus a digest of the whole id; ``~`` is always escaped in a
+    plain name, so a cut name cannot equal one.
+    """
+    if not work_item_id:
+        raise ValueError("work item id must not be empty")
+    encoded = "".join(
+        _encode_character(character, first=index == 0)
+        for index, character in enumerate(work_item_id)
+    )
+    if len(encoded) <= _MAX_DIRECTORY_NAME_LENGTH:
+        return encoded
+    digest = hashlib.sha256(work_item_id.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"{encoded[:_MAX_PLAIN_LENGTH]}~{digest[:_DIGEST_LENGTH]}"
+
+
+def _encode_character(character: str, *, first: bool) -> str:
+    if character in _PLAIN_CHARACTERS or (character == "." and not first):
+        return character
+    if character in string.ascii_uppercase:
+        return f"+{character.lower()}"
+    return "".join(f"%{byte:02X}" for byte in character.encode("utf-8", "surrogatepass"))
 
 
 def _settings_of(record: _SessionRecord) -> SessionSettings:
