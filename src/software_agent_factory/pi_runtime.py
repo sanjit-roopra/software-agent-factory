@@ -47,8 +47,19 @@ store records whether pi settled cleanly: a timeout, a lost process, an RPC
 error or an assistant error makes the next round start a new session. A
 response that only fails artifact parsing still counts as settled, so the
 correction call can resume the conversation that produced it. A record that
-cannot be written is logged and never replaces the call's result. A continued
-call still sends the full prompt: the continuation prompt arrives in Slice 7.
+cannot be written is logged and never replaces the call's result.
+
+Continuation prompt (Slice 7): a call that resumes a session sends
+:func:`~software_agent_factory.prompts.build_continuation_prompt`: the prompt
+sections that are new to the session or changed since it received them, then
+the output contract. The session store keeps, per session, the content hash of
+each section the session has received. A call that starts a session sends the
+full prompt and records the hash of every section. A call that continues one
+records the hashes of the sections of its own request. A ChangeSet correction
+instead keeps the earlier ones, since the sections it omits still apply. When a call could resume
+but nothing is new, the runtime starts a new session with
+:meth:`~software_agent_factory.pi_sessions.PiSessionStore.fresh` and sends the
+full prompt. The recorded prompt size is that of the prompt sent.
 """
 
 from __future__ import annotations
@@ -85,9 +96,15 @@ from .pi_rpc import (
     PiRpcProcessExited,
     PiRpcProtocolError,
     PiRpcTimeout,
+    messages_since_last_prompt,
 )
-from .pi_sessions import PiSessionStore, SessionSettings, persists_session
-from .prompts import build_prompt
+from .pi_sessions import Continue, PiSessionStore, SessionSettings, persists_session
+from .prompts import (
+    build_continuation_prompt,
+    build_prompt_sections,
+    render_prompt,
+    section_hashes,
+)
 from .subprocess_utils import (
     build_child_env,
     kill_process_group,
@@ -242,14 +259,30 @@ class _CallContext:
 
 @dataclass(frozen=True)
 class _SessionUse:
-    """The persisted session one call runs in: its file and the settings it is bound to."""
+    """The persisted session one call runs in: its file, its settings, and whether it resumes.
+
+    ``held_sections`` is what the session held before this call: the section
+    hashes of a resumed session, and empty for a new one.
+    """
 
     path: Path
     settings: SessionSettings
+    continued: bool
+    held_sections: Mapping[str, str]
 
     @property
     def args(self) -> tuple[str, str]:
         return ("--session", str(self.path))
+
+
+@dataclass(frozen=True)
+class _PreparedCall:
+    """What one call sends and where: the session (``None`` for a role without one), the
+    prompt, and the section hashes the session holds once that prompt has been sent."""
+
+    session: _SessionUse | None
+    prompt: str
+    sections_after: Mapping[str, str]
 
 
 def _failure_reason_for(exc: PiRpcError) -> str:
@@ -309,21 +342,23 @@ def _sum_usage_field(usages: Sequence[Mapping[str, Any]], key: str) -> int | Non
 
 
 def _sum_cache_write_field(usages: Sequence[Mapping[str, Any]]) -> int | None:
-    """Sum ``cacheWrite`` plus ``cacheWrite1h`` (when present) over ``usages``.
+    """Sum the cache writes over ``usages``: ``cacheWrite``, else ``cacheWrite1h``.
 
-    Per the "Usage mapping" table: ``cacheWrite`` (+ ``cacheWrite1h``) ->
-    ``cache_write_tokens``. Either key reported on a message is enough to
-    make the field "known"; a message reporting neither contributes nothing.
+    Per the "Usage mapping" table: ``cacheWrite`` -> ``cache_write_tokens``.
+    pi reports ``cacheWrite1h`` as a subset of ``cacheWrite``, so adding both
+    would count the one-hour writes twice. A message that reports only
+    ``cacheWrite1h`` contributes that count; one that reports neither
+    contributes nothing.
     """
-    total = 0
-    reported = False
-    for usage in usages:
-        for key in ("cacheWrite", "cacheWrite1h"):
-            count = non_negative_int(usage.get(key))
-            if count is not None:
-                total += count
-                reported = True
-    return total if reported else None
+    reported = [count for usage in usages if (count := _cache_write_of(usage)) is not None]
+    return sum(reported) if reported else None
+
+
+def _cache_write_of(usage: Mapping[str, Any]) -> int | None:
+    count = non_negative_int(usage.get("cacheWrite"))
+    if count is None:
+        count = non_negative_int(usage.get("cacheWrite1h"))
+    return count
 
 
 def _sum_cost_field(usages: Sequence[Mapping[str, Any]]) -> float | None:
@@ -480,13 +515,13 @@ class PiAgentRuntime(AgentRuntime):
 
     def run(self, request: AgentRequest) -> AgentResult:
         validate_runtime_request(request)
-        session = self._session_for(request)
+        prepared = self._prepare_call(request)
+        session, prompt = prepared.session, prepared.prompt
         command = self._build_command(
             request, session_arg=session.args if session else _NO_SESSION_ARG
         )
         cwd = workspace_cwd(request)
         env, scrubbed_values = self._child_env_and_scrubbed()
-        prompt = build_prompt(request)
         prompt_chars = len(prompt)
 
         boot_start = time.perf_counter()
@@ -505,7 +540,7 @@ class PiAgentRuntime(AgentRuntime):
             return result
         finally:
             if session is not None:
-                self._record_session(request, session, success=settled)
+                self._record_session(request, session, prepared.sections_after, success=settled)
 
     def _session_for(self, request: AgentRequest) -> _SessionUse | None:
         """Return the persisted session this call runs in, ``None`` for a role without one."""
@@ -515,15 +550,51 @@ class PiAgentRuntime(AgentRuntime):
             model=request.model, provider=self._config.provider, reasoning=request.reasoning
         )
         decision = self._sessions.resolve(request.work_item.id, request.role, settings)
-        return _SessionUse(decision.path, settings)
+        if isinstance(decision, Continue):
+            return _SessionUse(
+                decision.path, settings, continued=True, held_sections=decision.sent_sections
+            )
+        return _SessionUse(decision.path, settings, continued=False, held_sections={})
+
+    def _prepare_call(self, request: AgentRequest) -> _PreparedCall:
+        """Return the session, the prompt this call sends and what the session then holds.
+
+        A resumed session gets only the prompt sections it has not received, or
+        received with other content. When there is none, the call moves to a new
+        session and sends the full prompt, so no session ever receives an empty
+        round.
+        """
+        session = self._session_for(request)
+        if session is None:
+            return _PreparedCall(None, render_prompt(build_prompt_sections(request)), {})
+        if session.continued:
+            continuation = build_continuation_prompt(request, session.held_sections)
+            if continuation is not None:
+                return _PreparedCall(session, continuation.text, continuation.sections_seen)
+            new_session = self._sessions.fresh(request.work_item.id, request.role)
+            session = _SessionUse(
+                new_session.path, session.settings, continued=False, held_sections={}
+            )
+        sections = build_prompt_sections(request)
+        return _PreparedCall(session, render_prompt(sections), section_hashes(sections))
 
     def _record_session(
-        self, request: AgentRequest, session: _SessionUse, *, success: bool
+        self,
+        request: AgentRequest,
+        session: _SessionUse,
+        sections_after: Mapping[str, str],
+        *,
+        success: bool,
     ) -> None:
         """Tell the store how the call ended. A record that cannot be written is only logged."""
         try:
             self._sessions.record(
-                request.work_item.id, request.role, session.path, session.settings, success=success
+                request.work_item.id,
+                request.role,
+                session.path,
+                session.settings,
+                success=success,
+                sent_sections=sections_after,
             )
         except OSError:
             logger.warning("could not record the pi session outcome", exc_info=True)
@@ -546,7 +617,7 @@ class PiAgentRuntime(AgentRuntime):
                 client.request({"type": "prompt", "message": prompt}, deadline=deadline)
                 client.wait_for_settled(deadline=deadline)
                 messages = self._get_messages(client, deadline=deadline)
-                usage = _safe_usage_from_pi_messages(messages)
+                usage = _safe_usage_from_pi_messages(messages_since_last_prompt(messages, prompt))
                 stop_reason, error_message = _stop_reason_from_messages(messages)
                 failure_message = _stop_reason_failure_message(stop_reason, error_message)
                 if failure_message is not None:
@@ -555,7 +626,7 @@ class PiAgentRuntime(AgentRuntime):
                 data = _response_data(response, "get_last_assistant_text")
             except PiRpcTimeout:
                 if usage is None:
-                    usage = self._best_effort_usage(client)
+                    usage = self._best_effort_usage(client, prompt)
                 self._abort_and_kill(client, process)
                 return (
                     ctx.failed(
@@ -565,7 +636,7 @@ class PiAgentRuntime(AgentRuntime):
                 )
             except PiRpcProcessExited as exc:
                 if usage is None:
-                    usage = self._best_effort_usage(client)
+                    usage = self._best_effort_usage(client, prompt)
                 return ctx.failed(_failure_reason_for(exc), usage=usage), False
             except PiRpcError as exc:
                 return ctx.failed(_failure_reason_for(exc), usage=usage), False
@@ -705,7 +776,7 @@ class PiAgentRuntime(AgentRuntime):
         messages = data.get("messages") or []
         return [message for message in messages if isinstance(message, dict)]
 
-    def _best_effort_usage(self, client: PiRpcClient) -> UsageMetrics | None:
+    def _best_effort_usage(self, client: PiRpcClient, prompt: str) -> UsageMetrics | None:
         """Best-effort ``get_messages`` after pi failed to settle in time.
 
         Only called when :meth:`run` never reached its own ``get_messages``
@@ -727,7 +798,7 @@ class PiAgentRuntime(AgentRuntime):
             )
         except (PiRpcError, _UnexpectedResponse):
             return None
-        return _safe_usage_from_pi_messages(messages)
+        return _safe_usage_from_pi_messages(messages_since_last_prompt(messages, prompt))
 
     def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
         """Best-effort abort, close stdin, then escalate to killing pi's process group.

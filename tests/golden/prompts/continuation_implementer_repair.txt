@@ -1,0 +1,16 @@
+This continues the session. Only new or changed sections follow. Earlier sections still apply unless a section below replaces them.
+
+Attempt number:
+2
+
+Repair context:
+{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected HTTP 400","summary":"Deterministic verify failed (test failure).","trigger":"VERIFICATION"}
+
+Current diff:
+diff --git a/src/app.py b/src/app.py
++    if not name.strip():
+
+Output contract:
+Return exactly one JSON object that Pydantic-validates as ChangeSet. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+ChangeSet JSON Schema:
+<json schema>

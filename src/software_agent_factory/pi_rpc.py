@@ -18,7 +18,7 @@ import os
 import select
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import IO, Any, Protocol
 
 from .subprocess_utils import kill_process_group
@@ -89,6 +89,50 @@ class PiProcessHandle(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
     def communicate(self, *, timeout: float | None = None) -> tuple[str, str]: ...
+
+
+#: ``role`` of the message pi records for each prompt it receives.
+_USER_ROLE = "user"
+
+
+def _text_of(message: Mapping[str, Any]) -> str:
+    """The text of a message: its ``content`` string, or its text content blocks joined."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, Mapping) and block.get("type") == "text"
+        )
+    return ""
+
+
+def messages_since_last_prompt[M: Mapping[str, Any]](messages: Sequence[M], prompt: str) -> list[M]:
+    """Return the messages that follow this call's own ``prompt`` in the session.
+
+    ``get_messages`` returns a session's whole history. A resumed session also
+    holds every earlier round, so a caller that measures one call must drop
+    them. The boundary is the last ``user`` message whose text is ``prompt``,
+    not just the last ``user`` message: when pi stopped before it recorded this
+    call's prompt, the last ``user`` message belongs to the previous round, and
+    its answers must not be counted again. Then the result is empty.
+
+    A list without any ``user`` message is returned whole. Pi never produces
+    one, because it records the prompt first, but there is no earlier round to
+    drop from it.
+    """
+    wanted = prompt.strip()
+    has_user_message = False
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != _USER_ROLE:
+            continue
+        has_user_message = True
+        if _text_of(message).strip() == wanted:
+            return list(messages[index + 1 :])
+    return [] if has_user_message else list(messages)
 
 
 class PiRpcError(RuntimeError):

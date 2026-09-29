@@ -1,0 +1,20 @@
+This continues the session. Only new or changed sections follow. Earlier sections still apply unless a section below replaces them.
+
+Role instructions:
+Correct only the prose fields in the supplied ChangeSet.
+- Update the summary to describe the change accurately.
+- Do not edit files or run commands.
+- Do not change workflow state.
+- Preserve the verified changed_files, tests_added, and commands_run.
+- Return ChangeSet metadata only.
+
+Supplied ChangeSet to correct:
+{"changed_files":[],"commands_run":[],"schema_version":1,"summary":"Fix the output shape.","tests_added":[]}
+
+Correction context:
+{"failures":["ChangeSet did not satisfy writing policy"],"log_excerpt":null,"summary":"The implementation is not rejected. Correct only the ChangeSet prose.","trigger":"IMPLEMENTER_FAILURE"}
+
+Output contract:
+Return exactly one JSON object that Pydantic-validates as ChangeSet. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+ChangeSet JSON Schema:
+<json schema>

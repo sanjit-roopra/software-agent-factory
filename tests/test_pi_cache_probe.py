@@ -35,6 +35,7 @@ def _load_script_module(name: str, relative_path: str) -> ModuleType:
 
 
 probe = _load_script_module("pi_cache_probe", "scripts/performance/pi_cache_probe.py")
+_SECOND_PROMPT = probe._FIRST_PROMPT + probe._SECOND_PROMPT_SUFFIX
 
 
 def _settled_response(command_id: str) -> list[dict[str, Any]]:
@@ -232,6 +233,72 @@ def test_run_resume_second_process_uses_same_session_file(tmp_path: Path) -> Non
     # Only the second process was asked for messages; verdict reflects it alone.
     assert not any(c.get("type") == "get_messages" for c in first_process.sent_commands())
     assert any(c.get("type") == "get_messages" for c in second_process.sent_commands())
+
+
+def test_run_resume_counts_only_the_second_prompts_messages(tmp_path: Path) -> None:
+    """The resumed session's ``get_messages`` also holds the first prompt's round."""
+    first_process = _fake_process(_settled_response("c1"))
+    second_process = _fake_process(
+        [
+            *_settled_response("c1"),
+            _get_messages_response(
+                "c2",
+                [
+                    {"role": "user", "content": "first prompt"},
+                    {
+                        "role": "assistant",
+                        "usage": {"input": 900, "cacheRead": 0, "cacheWrite": 800},
+                    },
+                    {"role": "user", "content": _SECOND_PROMPT},
+                    {"role": "assistant", "usage": {"input": 5, "cacheRead": 4, "cacheWrite": 1}},
+                ],
+            ),
+        ]
+    )
+
+    verdict = probe.run_resume(
+        executable="pi",
+        provider="github-copilot",
+        model="gpt-5",
+        timeout=5.0,
+        process_factory=RecordingFactory([first_process, second_process]),
+        session_path=tmp_path / "session.jsonl",
+    )
+
+    assert (verdict.input_tokens, verdict.cache_read_tokens, verdict.cache_write_tokens) == (
+        5,
+        4,
+        1,
+    )
+
+
+def test_run_resume_counts_nothing_when_pi_never_recorded_the_second_prompt(
+    tmp_path: Path,
+) -> None:
+    first_process = _fake_process(_settled_response("c1"))
+    second_process = _fake_process(
+        [
+            *_settled_response("c1"),
+            _get_messages_response(
+                "c2",
+                [
+                    {"role": "user", "content": "first prompt"},
+                    {"role": "assistant", "usage": {"input": 900, "cacheRead": 0}},
+                ],
+            ),
+        ]
+    )
+
+    verdict = probe.run_resume(
+        executable="pi",
+        provider="github-copilot",
+        model="gpt-5",
+        timeout=5.0,
+        process_factory=RecordingFactory([first_process, second_process]),
+        session_path=tmp_path / "session.jsonl",
+    )
+
+    assert (verdict.cache, verdict.input_tokens) == ("unavailable", 0)
 
 
 def test_run_resume_reports_unavailable_when_second_process_lacks_cache_fields(

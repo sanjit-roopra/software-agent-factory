@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 import string
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,9 +35,14 @@ class SessionSettings:
 
 @dataclass(frozen=True)
 class Continue:
-    """Resume the existing session file at ``path`` with the continuation prompt."""
+    """Resume the existing session file at ``path`` with the continuation prompt.
+
+    ``sent_sections`` maps each prompt section title to the content hash of what
+    the session has received so far, so the caller can send only what is new.
+    """
 
     path: Path
+    sent_sections: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,11 @@ class _SessionRecord(ModelBase):
     reasoning: str
     last_ended_at: UtcDateTime
     last_success: bool
+    #: Section title -> content hash of what the session has received. Required:
+    #: a sidecar written before this field existed does not validate, so its
+    #: session is not continued. Without the map the factory cannot tell what the
+    #: session holds, and it would send every section again into a long history.
+    sent_sections: dict[str, str]
 
 
 class PiSessionStore:
@@ -76,7 +86,10 @@ class PiSessionStore:
         <root>/<work item>/<role>.meta.json    sidecar naming the current file
 
     The sidecar always names the file of the latest recorded call, so only that
-    file can be continued. Starting a new session deletes the role's older files
+    file can be continued. It also holds ``sent_sections``, the content hash of
+    each prompt section the session has received. A sidecar without that map
+    (written by an older version) is not reusable: the next call starts a new
+    session. Starting a new session deletes the role's older files
     that were last written ``max_age_seconds`` or longer ago; younger ones stay.
     Everything is owner-only: directories 0700, files 0600.
     """
@@ -100,17 +113,22 @@ class PiSessionStore:
         Also makes sure the private directories exist before pi runs, so pi never
         creates them with the umask's permissions.
         """
-        directory = self._directory(work_item_id, role)
-        _ensure_private_directory(self._root)
-        _ensure_private_directory(directory)
+        directory = self._prepare_directory(work_item_id, role)
         record = self._read_record(directory, role)
         if record is not None and self._is_reusable(record, settings, directory):
             session_path = directory / record.session_file
             _restrict_to_owner(session_path)
-            return Continue(session_path)
-        fresh = Fresh(_next_session_path(directory, role))
-        self._prune_expired_files(directory, role)
-        return fresh
+            return Continue(session_path, record.sent_sections)
+        return self._start_session(directory, role)
+
+    def fresh(self, work_item_id: str, role: AgentRole) -> Fresh:
+        """Start a new session file, although the role's current one could be continued.
+
+        For a call that has nothing new to add to a continued session, so it needs
+        the full prompt in a new one. The current file stays: only a file that
+        expired is removed, as for any new session.
+        """
+        return self._start_session(self._prepare_directory(work_item_id, role), role)
 
     def record(
         self,
@@ -120,9 +138,14 @@ class PiSessionStore:
         settings: SessionSettings,
         *,
         success: bool,
+        sent_sections: Mapping[str, str],
         ended_at: datetime | None = None,
     ) -> None:
         """Remember how the call that used ``path`` ended. A failed call is never continued.
+
+        ``sent_sections`` is the map of the sections that apply to the session,
+        including this call. It is stored only for a call that settled: a failed
+        call makes the next one start a new session, so its map is never read.
 
         Call it after every pi call: it also makes the session file readable by
         the owner only, because pi creates that file with the umask's permissions.
@@ -137,6 +160,7 @@ class PiSessionStore:
             reasoning=settings.reasoning,
             last_ended_at=ended_at or self._clock(),
             last_success=success,
+            sent_sections=dict(sent_sections) if success else {},
         )
         _restrict_to_owner(path)
         write_text_atomic(
@@ -144,6 +168,18 @@ class PiSessionStore:
             f"{record.model_dump_json(indent=2)}\n",
             mode=_OWNER_FILE_MODE,
         )
+
+    def _prepare_directory(self, work_item_id: str, role: AgentRole) -> Path:
+        """Return the role's work item directory, made private before pi runs in it."""
+        directory = self._directory(work_item_id, role)
+        _ensure_private_directory(self._root)
+        _ensure_private_directory(directory)
+        return directory
+
+    def _start_session(self, directory: Path, role: AgentRole) -> Fresh:
+        fresh = Fresh(_next_session_path(directory, role))
+        self._prune_expired_files(directory, role)
+        return fresh
 
     def _directory(self, work_item_id: str, role: AgentRole) -> Path:
         if not persists_session(role):

@@ -30,6 +30,7 @@ IMPLEMENTER_SIDECAR = "implementer.meta.json"
 REVIEWER_FILE = "reviewer.jsonl"
 NOT_A_SESSION_FILE = "not a session file"
 UTF_8 = "utf-8"
+SENT_SECTIONS = {"Work item": "a" * 64, "Output contract": "b" * 64}
 
 
 class Clock:
@@ -108,7 +109,9 @@ def run_call(
     decision.path.parent.mkdir(parents=True, exist_ok=True)
     with decision.path.open("a", encoding=UTF_8) as session_file:
         session_file.write('{"type":"message"}\n')
-    store.record(work_item_id, role, decision.path, settings, success=success)
+    store.record(
+        work_item_id, role, decision.path, settings, success=success, sent_sections=SENT_SECTIONS
+    )
     ended_at = json.loads((decision.path.parent / sidecar_name(role)).read_text(encoding=UTF_8))
     stamp(decision.path, datetime.fromisoformat(ended_at["last_ended_at"]))
     return decision
@@ -122,7 +125,7 @@ def test_repair_round_within_the_limit_continues_the_same_file(
 
     second = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
 
-    assert second == Continue(first.path)
+    assert second == Continue(first.path, SENT_SECTIONS)
 
 
 def test_reviewer_continues_its_own_file_not_the_implementers(
@@ -134,7 +137,7 @@ def test_reviewer_continues_its_own_file_not_the_implementers(
 
     decision = store.resolve("W1", AgentRole.REVIEWER, SETTINGS)
 
-    assert decision == Continue(reviewer.path)
+    assert decision == Continue(reviewer.path, SENT_SECTIONS)
     assert reviewer.path != implementer.path
 
 
@@ -198,6 +201,59 @@ def point_sidecar_at(directory: Path, session_file: str) -> None:
     sidecar.write_text(json.dumps(tampered), encoding=UTF_8)
 
 
+def read_sidecar(directory: Path) -> dict[str, object]:
+    return json.loads((directory / IMPLEMENTER_SIDECAR).read_text(encoding=UTF_8))
+
+
+def test_a_continued_call_gets_the_sections_the_session_has_seen(store: PiSessionStore) -> None:
+    run_call(store, "W1", AgentRole.IMPLEMENTER)
+
+    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+
+    assert isinstance(decision, Continue)
+    assert decision.sent_sections == SENT_SECTIONS
+
+
+def test_record_stores_the_sections_of_a_call_that_settled(store: PiSessionStore) -> None:
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
+
+    assert read_sidecar(first.path.parent)["sent_sections"] == SENT_SECTIONS
+
+
+def test_record_stores_no_sections_for_a_failed_call(store: PiSessionStore) -> None:
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER, success=False)
+
+    assert read_sidecar(first.path.parent)["sent_sections"] == {}
+
+
+def test_a_sidecar_from_before_sent_sections_existed_starts_a_new_session(
+    store: PiSessionStore,
+) -> None:
+    """Without the map the factory cannot tell what the session holds, so it starts again."""
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    sidecar = first.path.parent / IMPLEMENTER_SIDECAR
+    old_format = read_sidecar(first.path.parent)
+    del old_format["sent_sections"]
+    sidecar.write_text(json.dumps(old_format), encoding=UTF_8)
+
+    decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
+
+    assert decision == Fresh(first.path.parent / "implementer-2.jsonl")
+
+
+@pytest.mark.parametrize("malformed", [["Work item"], {"Work item": 1}, "Work item"])
+def test_a_sidecar_with_malformed_sent_sections_starts_a_new_session(
+    store: PiSessionStore, malformed: object
+) -> None:
+    first = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    sidecar = first.path.parent / IMPLEMENTER_SIDECAR
+    tampered = read_sidecar(first.path.parent)
+    tampered["sent_sections"] = malformed
+    sidecar.write_text(json.dumps(tampered), encoding=UTF_8)
+
+    assert isinstance(store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS), Fresh)
+
+
 def test_a_missing_session_file_starts_a_new_session(store: PiSessionStore) -> None:
     first = run_call(store, "W1", AgentRole.IMPLEMENTER)
     first.path.unlink()
@@ -232,7 +288,9 @@ def test_a_success_after_a_failure_makes_the_new_session_reusable(store: PiSessi
     run_call(store, "W1", AgentRole.IMPLEMENTER, success=False)
     second = run_call(store, "W1", AgentRole.IMPLEMENTER)
 
-    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(second.path)
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(
+        second.path, SENT_SECTIONS
+    )
 
 
 def run_three_expired_reviewer_calls(store: PiSessionStore, clock: Clock) -> list[Path]:
@@ -261,7 +319,7 @@ def test_the_sidecar_tracks_the_latest_numbered_file(store: PiSessionStore, cloc
     paths = run_three_expired_reviewer_calls(store, clock)
     clock.advance(seconds=60 - MAX_AGE)
 
-    assert store.resolve("W1", AgentRole.REVIEWER, SETTINGS) == Continue(paths[-1])
+    assert store.resolve("W1", AgentRole.REVIEWER, SETTINGS) == Continue(paths[-1], SENT_SECTIONS)
 
 
 def test_interleaved_work_items_use_only_their_own_files(store: PiSessionStore) -> None:
@@ -269,12 +327,16 @@ def test_interleaved_work_items_use_only_their_own_files(store: PiSessionStore) 
     w2 = store.resolve("W2", AgentRole.IMPLEMENTER, SETTINGS)
     for decision in (w1, w2):
         decision.path.touch()
-    store.record("W1", AgentRole.IMPLEMENTER, w1.path, SETTINGS, success=True)
-    store.record("W2", AgentRole.IMPLEMENTER, w2.path, SETTINGS, success=True)
+    store.record(
+        "W1", AgentRole.IMPLEMENTER, w1.path, SETTINGS, success=True, sent_sections=SENT_SECTIONS
+    )
+    store.record(
+        "W2", AgentRole.IMPLEMENTER, w2.path, SETTINGS, success=True, sent_sections=SENT_SECTIONS
+    )
 
     assert w1.path != w2.path
-    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(w1.path)
-    assert store.resolve("W2", AgentRole.IMPLEMENTER, SETTINGS) == Continue(w2.path)
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(w1.path, SENT_SECTIONS)
+    assert store.resolve("W2", AgentRole.IMPLEMENTER, SETTINGS) == Continue(w2.path, SENT_SECTIONS)
 
 
 def test_record_uses_the_given_end_time(store: PiSessionStore) -> None:
@@ -286,6 +348,7 @@ def test_record_uses_the_given_end_time(store: PiSessionStore) -> None:
         decision.path,
         SETTINGS,
         success=True,
+        sent_sections=SENT_SECTIONS,
         ended_at=START - timedelta(seconds=MAX_AGE),
     )
 
@@ -297,7 +360,12 @@ def test_record_rejects_a_path_outside_the_work_item_and_role_directory(
 ) -> None:
     with pytest.raises(ValueError, match=NOT_A_SESSION_FILE):
         store.record(
-            "W1", AgentRole.IMPLEMENTER, tmp_path / "elsewhere.jsonl", SETTINGS, success=True
+            "W1",
+            AgentRole.IMPLEMENTER,
+            tmp_path / "elsewhere.jsonl",
+            SETTINGS,
+            success=True,
+            sent_sections=SENT_SECTIONS,
         )
 
 
@@ -306,7 +374,12 @@ def test_record_rejects_a_file_that_is_not_a_session_file(store: PiSessionStore)
 
     with pytest.raises(ValueError, match=NOT_A_SESSION_FILE):
         store.record(
-            "W1", AgentRole.IMPLEMENTER, directory / IMPLEMENTER_SIDECAR, SETTINGS, success=True
+            "W1",
+            AgentRole.IMPLEMENTER,
+            directory / IMPLEMENTER_SIDECAR,
+            SETTINGS,
+            success=True,
+            sent_sections=SENT_SECTIONS,
         )
 
 
@@ -320,7 +393,14 @@ def test_record_rejects_another_roles_or_a_malformed_session_file_name(
     directory = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS).path.parent
 
     with pytest.raises(ValueError, match=NOT_A_SESSION_FILE):
-        store.record("W1", AgentRole.IMPLEMENTER, directory / name, SETTINGS, success=True)
+        store.record(
+            "W1",
+            AgentRole.IMPLEMENTER,
+            directory / name,
+            SETTINGS,
+            success=True,
+            sent_sections=SENT_SECTIONS,
+        )
 
 
 def test_record_leaves_no_temporary_files_behind(store: PiSessionStore) -> None:
@@ -341,14 +421,23 @@ def test_a_failed_atomic_write_keeps_the_previous_sidecar_and_cleans_up(
 
     monkeypatch.setattr(os, "replace", refuse)
     with pytest.raises(OSError, match="disk full"):
-        store.record("W1", AgentRole.IMPLEMENTER, first.path, SETTINGS, success=False)
+        store.record(
+            "W1",
+            AgentRole.IMPLEMENTER,
+            first.path,
+            SETTINGS,
+            success=False,
+            sent_sections=SENT_SECTIONS,
+        )
     monkeypatch.undo()
 
     assert sorted(entry.name for entry in first.path.parent.iterdir()) == [
         IMPLEMENTER_FILE,
         IMPLEMENTER_SIDECAR,
     ]
-    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(first.path)
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(
+        first.path, SENT_SECTIONS
+    )
 
 
 @pytest.mark.parametrize("content", ["not json", "{}"], ids=["garbage", "missing fields"])
@@ -398,7 +487,7 @@ def test_a_sidecar_naming_a_numbered_file_of_its_own_role_is_followed(
     numbered.write_text("{}\n", encoding=UTF_8)
     point_sidecar_at(first.path.parent, numbered.name)
 
-    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(numbered)
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(numbered, SENT_SECTIONS)
 
 
 ODD_IDS = [
@@ -444,7 +533,9 @@ def test_odd_work_item_ids_are_continued_like_any_other(
 ) -> None:
     first = run_call(store, work_item_id, AgentRole.IMPLEMENTER)
 
-    assert store.resolve(work_item_id, AgentRole.IMPLEMENTER, SETTINGS) == Continue(first.path)
+    assert store.resolve(work_item_id, AgentRole.IMPLEMENTER, SETTINGS) == Continue(
+        first.path, SENT_SECTIONS
+    )
 
 
 def test_distinct_work_item_ids_never_share_a_directory(store: PiSessionStore) -> None:
@@ -580,7 +671,14 @@ def test_record_writes_a_private_sidecar_and_makes_the_session_file_private(
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
     decision.path.touch(mode=0o644)
 
-    store.record("W1", AgentRole.IMPLEMENTER, decision.path, SETTINGS, success=True)
+    store.record(
+        "W1",
+        AgentRole.IMPLEMENTER,
+        decision.path,
+        SETTINGS,
+        success=True,
+        sent_sections=SENT_SECTIONS,
+    )
 
     assert is_private(decision.path.parent / IMPLEMENTER_SIDECAR)
     assert is_private(decision.path)
@@ -591,7 +689,14 @@ def test_record_of_a_call_that_wrote_no_session_file_still_writes_the_sidecar(
 ) -> None:
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
 
-    store.record("W1", AgentRole.IMPLEMENTER, decision.path, SETTINGS, success=False)
+    store.record(
+        "W1",
+        AgentRole.IMPLEMENTER,
+        decision.path,
+        SETTINGS,
+        success=False,
+        sent_sections=SENT_SECTIONS,
+    )
 
     assert (decision.path.parent / IMPLEMENTER_SIDECAR).exists()
 
@@ -604,7 +709,7 @@ def test_continuing_makes_a_session_file_left_open_by_a_crash_private(
 
     decision = store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS)
 
-    assert decision == Continue(first.path)
+    assert decision == Continue(first.path, SENT_SECTIONS)
     assert is_private(first.path)
 
 
@@ -672,7 +777,7 @@ def test_a_continued_session_removes_nothing(store: PiSessionStore, clock: Clock
 
     decision = store.resolve("W1", AgentRole.REVIEWER, SETTINGS)
 
-    assert decision == Continue(current.path)
+    assert decision == Continue(current.path, SENT_SECTIONS)
     assert stale.exists()
 
 
@@ -688,3 +793,64 @@ def test_a_file_that_cannot_be_removed_does_not_fail_the_new_session(
     monkeypatch.setattr(Path, "unlink", refuse)
 
     assert isinstance(store.resolve("W1", AgentRole.REVIEWER, SETTINGS), Fresh)
+
+
+def test_fresh_starts_a_new_numbered_file_and_keeps_the_one_that_could_be_continued(
+    store: PiSessionStore, clock: Clock
+) -> None:
+    current = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    clock.advance(seconds=MAX_AGE - 1)
+
+    fresh = store.fresh("W1", AgentRole.IMPLEMENTER)
+
+    assert fresh == Fresh(current.path.parent / "implementer-2.jsonl")
+    assert current.path.exists()
+
+
+def test_a_call_recorded_on_the_fresh_file_is_the_one_continued_next(
+    store: PiSessionStore,
+) -> None:
+    run_call(store, "W1", AgentRole.IMPLEMENTER)
+    fresh = store.fresh("W1", AgentRole.IMPLEMENTER)
+    fresh.path.write_text('{"type":"message"}\n', encoding=UTF_8)
+    store.record(
+        "W1", AgentRole.IMPLEMENTER, fresh.path, SETTINGS, success=True, sent_sections=SENT_SECTIONS
+    )
+
+    assert store.resolve("W1", AgentRole.IMPLEMENTER, SETTINGS) == Continue(
+        fresh.path, SENT_SECTIONS
+    )
+
+
+def test_fresh_removes_the_roles_expired_files_only(store: PiSessionStore, clock: Clock) -> None:
+    current = run_call(store, "W1", AgentRole.REVIEWER)
+    expired = current.path.parent / "reviewer-7.jsonl"
+    expired.write_text('{"type":"message"}\n', encoding=UTF_8)
+    stamp(expired, START - timedelta(seconds=MAX_AGE))
+    assert expired.exists()
+    assert current.path.exists()
+
+    store.fresh("W1", AgentRole.REVIEWER)
+
+    assert not expired.exists()
+    assert current.path.exists()
+
+
+def test_fresh_for_a_role_without_a_persisted_session_is_an_error(store: PiSessionStore) -> None:
+    with pytest.raises(ValueError, match="TESTER"):
+        store.fresh("W1", AgentRole.TESTER)
+
+
+def test_fresh_makes_the_root_and_work_item_directories_private(
+    store: PiSessionStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "pi-sessions"
+    directory = root / "+w1"
+    directory.mkdir(parents=True)
+    root.chmod(0o755)
+    directory.chmod(0o755)
+
+    store.fresh("W1", AgentRole.IMPLEMENTER)
+
+    assert is_private(root)
+    assert is_private(directory)

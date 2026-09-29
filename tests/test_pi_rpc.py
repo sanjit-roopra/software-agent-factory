@@ -16,6 +16,8 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import pytest
 from factory_testing import FakePiClock, FakePiProcess
@@ -28,6 +30,7 @@ from software_agent_factory.pi_rpc import (
     PiRpcProcessExited,
     PiRpcProtocolError,
     PiRpcTimeout,
+    messages_since_last_prompt,
 )
 from software_agent_factory.subprocess_utils import redact_secrets
 
@@ -599,3 +602,89 @@ def test_read_line_drains_stderr_while_waiting_for_stdout_avoiding_deadlock() ->
         client.close(timeout=1.0)
 
     assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# messages_since_last_prompt: what one call added to a resumed session
+# ---------------------------------------------------------------------------
+
+_PROMPT = "round 2 prompt"
+
+
+def _message(role: str, label: str, *, content: object = None) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": role, "label": label}
+    if content is not None:
+        message["content"] = content
+    return message
+
+
+def _user(prompt: str) -> dict[str, Any]:
+    return _message("user", prompt, content=prompt)
+
+
+def _labels(messages: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [message["label"] for message in messages]
+
+
+def test_messages_since_last_prompt_drops_the_rounds_before_the_calls_own_prompt() -> None:
+    session = [
+        _user("round 1 prompt"),
+        _message("assistant", "round 1 tool call"),
+        _message("toolResult", "round 1 tool output"),
+        _message("assistant", "round 1 answer"),
+        _user(_PROMPT),
+        _message("assistant", "round 2 tool call"),
+        _message("toolResult", "round 2 tool output"),
+        _message("assistant", "round 2 answer"),
+    ]
+
+    result = messages_since_last_prompt(session, _PROMPT)
+
+    assert _labels(result) == ["round 2 tool call", "round 2 tool output", "round 2 answer"]
+
+
+def test_messages_since_last_prompt_is_empty_when_the_prompt_is_not_in_the_session() -> None:
+    """pi timed out before it recorded this call's prompt: the assistant messages are older."""
+    session = [_user("round 1 prompt"), _message("assistant", "round 1 answer")]
+
+    assert messages_since_last_prompt(session, _PROMPT) == []
+
+
+def test_messages_since_last_prompt_matches_a_prompt_held_in_text_content_blocks() -> None:
+    blocks = [{"type": "text", "text": "round "}, {"type": "text", "text": "2 prompt"}]
+    session = [
+        _user("round 1 prompt"),
+        _message("assistant", "round 1 answer"),
+        _message("user", "round 2", content=blocks),
+        _message("assistant", "round 2 answer"),
+    ]
+
+    assert _labels(messages_since_last_prompt(session, _PROMPT)) == ["round 2 answer"]
+
+
+def test_messages_since_last_prompt_starts_after_the_last_copy_of_the_prompt() -> None:
+    session = [
+        _user(_PROMPT),
+        _message("assistant", "earlier answer"),
+        _user(_PROMPT),
+        _message("assistant", "answer"),
+    ]
+
+    assert _labels(messages_since_last_prompt(session, _PROMPT)) == ["answer"]
+
+
+def test_messages_since_last_prompt_keeps_a_list_that_has_no_user_message() -> None:
+    """No round can precede the prompt in such a list, so nothing is dropped."""
+    session = [_message("assistant", "answer"), _message("toolResult", "output")]
+
+    assert messages_since_last_prompt(session, _PROMPT) == session
+
+
+def test_messages_since_last_prompt_is_empty_for_no_messages() -> None:
+    assert messages_since_last_prompt([], _PROMPT) == []
+
+
+def test_messages_since_last_prompt_is_empty_when_the_prompt_got_no_answer() -> None:
+    session = [_message("assistant", "answer"), _user(_PROMPT)]
+
+    assert messages_since_last_prompt(session, _PROMPT) == []
