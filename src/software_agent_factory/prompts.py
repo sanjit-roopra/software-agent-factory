@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from typing import Sequence, TypeAlias
 
 from .agents import AgentRequest
@@ -64,6 +65,11 @@ _PRIOR_FINDINGS_TITLE = "Previously reported blocking issues from this run"
 _ACCEPTED_DEBT_TITLE = "Controller-accepted review debt"
 _ACCEPTED_DEBT_RULE_TITLE = "Accepted-debt review rule"
 _REPAIR_DIFF_TITLE = "Changes since the previous review"
+
+_OPENING_TITLE = "Opening"
+_WRITING_RULES_TITLE = "Writing rules"
+_ROLE_INSTRUCTIONS_TITLE = "Role instructions"
+_OUTPUT_CONTRACT_TITLE = "Output contract"
 
 #: Per role that keeps a session, the section titles that change from one call to
 #: the next. A continued session already holds every other section.
@@ -129,14 +135,80 @@ def normalize_role(role: RoleName) -> str:
     return normalized
 
 
+@dataclass(frozen=True)
+class PromptSection:
+    """One titled part of a prompt.
+
+    ``body`` is the content. ``build_prompt`` prints ``<title>:`` before an
+    artifact section (``titled``) and prints the body of the opening, the writing
+    rules, the role instructions and the output contract as they are.
+    ``labelled_text`` always carries the title, so a section that is sent alone
+    still says what it is.
+    """
+
+    title: str
+    body: str
+    titled: bool = True
+
+    @property
+    def labelled_text(self) -> str:
+        return f"{self.title}:\n{self.body}"
+
+    @property
+    def text(self) -> str:
+        """The section exactly as ``build_prompt`` prints it."""
+        return self.labelled_text if self.titled else self.body
+
+    @property
+    def digest(self) -> str:
+        """SHA-256 of the body: equal digests under one title mean equal content."""
+        return hashlib.sha256(self.body.encode("utf-8")).hexdigest()
+
+
 def build_prompt(request: AgentRequest) -> str:
     """Build the prompt for an ``AgentRequest`` supported by the runtime."""
 
-    return build_prompt_for_role(
-        request.role,
-        purpose=request.purpose,
-        model=request.model,
-        reasoning=request.reasoning,
+    return render_prompt(build_prompt_sections(request))
+
+
+def render_prompt(sections: Sequence[PromptSection]) -> str:
+    """Join ``sections`` into the full prompt."""
+
+    return "\n\n".join(section.text for section in sections if section.text).strip()
+
+
+def build_prompt_sections(request: AgentRequest) -> list[PromptSection]:
+    """Return every part of the full prompt for ``request``, in prompt order.
+
+    The opening, the writing rules, the role instructions and the output
+    contract come first, then one section for each artifact the role receives.
+    Titles are unique within one request.
+    """
+
+    normalized_role = normalize_role(request.role)
+    model_class = _model_class_for(normalized_role, request.purpose)
+    sections = [
+        PromptSection(
+            _OPENING_TITLE,
+            _opening(normalized_role, request.model, request.reasoning),
+            titled=False,
+        ),
+        PromptSection(_WRITING_RULES_TITLE, _WRITING_RULES, titled=False),
+        PromptSection(
+            _ROLE_INSTRUCTIONS_TITLE,
+            _role_instructions(
+                normalized_role,
+                request.purpose,
+                repair_review=bool(request.prior_review_findings),
+            ),
+            titled=False,
+        ),
+        PromptSection(
+            _OUTPUT_CONTRACT_TITLE, _output_contract(normalized_role, model_class), titled=False
+        ),
+    ]
+    artifacts = _artifact_sections(
+        normalized_role=normalized_role,
         work_item=request.work_item,
         project_brief=request.project_brief,
         triage_result=request.triage_result,
@@ -144,20 +216,25 @@ def build_prompt(request: AgentRequest) -> str:
         research_report=request.research_report,
         execution_plan=request.execution_plan,
         diff=request.diff,
-        changed_files=request.changed_files,
+        changed_files=list(request.changed_files),
         verification_report=request.verification_report,
         test_report=request.test_report,
-        prior_review_findings=request.prior_review_findings,
-        accepted_review_findings=request.accepted_review_findings,
+        prior_review_findings=list(request.prior_review_findings),
+        accepted_review_findings=list(request.accepted_review_findings),
         repair_diff=request.repair_diff,
         repair_context=request.repair_context,
+        purpose=request.purpose,
         repository_profile=request.repository_profile,
         repository_skill=request.repository_skill,
-        official_documentation_origins=request.official_documentation_origins,
-        practice_reference_urls=request.practice_reference_urls,
+        official_documentation_origins=list(request.official_documentation_origins),
+        practice_reference_urls=list(request.practice_reference_urls),
         attempt_number=request.attempt_number,
+        research_question=None,
+        research_context=None,
         change_set=request.change_set,
     )
+    sections.extend(PromptSection(title, _render(value)) for title, value in artifacts)
+    return sections
 
 
 def build_continuation_prompt(request: AgentRequest) -> str | None:
@@ -188,121 +265,18 @@ def build_continuation_prompt(request: AgentRequest) -> str | None:
     normalized_role = normalize_role(request.role)
     titles = _ROUND_SPECIFIC_TITLES.get(normalized_role, frozenset())
     round_sections = [
-        (title, value)
-        for title, value in _artifact_sections(
-            normalized_role=normalized_role,
-            purpose=request.purpose,
-            work_item=request.work_item,
-            project_brief=request.project_brief,
-            triage_result=request.triage_result,
-            specification=request.specification,
-            research_report=request.research_report,
-            execution_plan=request.execution_plan,
-            change_set=request.change_set,
-            diff=request.diff,
-            changed_files=request.changed_files,
-            verification_report=request.verification_report,
-            test_report=request.test_report,
-            prior_review_findings=request.prior_review_findings,
-            accepted_review_findings=request.accepted_review_findings,
-            repair_diff=request.repair_diff,
-            repair_context=request.repair_context,
-            repository_profile=request.repository_profile,
-            repository_skill=request.repository_skill,
-            official_documentation_origins=request.official_documentation_origins,
-            practice_reference_urls=request.practice_reference_urls,
-            attempt_number=request.attempt_number,
-            research_question=None,
-            research_context=None,
-        )
-        if title in titles
+        section for section in build_prompt_sections(request) if section.title in titles
     ]
     if not round_sections:
         return None
 
-    parts = [_section(title, value) for title, value in round_sections]
+    parts = [section.labelled_text for section in round_sections]
     if normalized_role == "REVIEWER" and request.prior_review_findings:
         parts.insert(0, f"Re-review rules:\n{_REVIEWER_REPAIR_RULES}")
     parts.append(
         _output_contract(normalized_role, _model_class_for(normalized_role, request.purpose))
     )
     return "\n\n".join(parts)
-
-
-def build_prompt_for_role(
-    role: RoleName,
-    *,
-    purpose: AgentPurpose = AgentPurpose.STANDARD,
-    model: str,
-    reasoning: str,
-    work_item: WorkItem,
-    project_brief: ProjectBrief | None = None,
-    triage_result: TriageResult | None = None,
-    specification: Specification | None = None,
-    research_report: ResearchReport | None = None,
-    execution_plan: ExecutionPlan | None = None,
-    diff: str | None = None,
-    changed_files: Sequence[str] | None = None,
-    verification_report: VerificationReport | None = None,
-    test_report: TestReport | None = None,
-    prior_review_findings: Sequence[ReviewFinding] | None = None,
-    accepted_review_findings: Sequence[ReviewFinding] | None = None,
-    repair_diff: str | None = None,
-    repair_context: RepairContext | str | None = None,
-    repository_profile: RepositoryProfile | None = None,
-    repository_skill: RepositorySkill | None = None,
-    official_documentation_origins: Sequence[str] | None = None,
-    practice_reference_urls: Sequence[str] | None = None,
-    attempt_number: int | None = None,
-    research_question: str | None = None,
-    research_context: str | None = None,
-    change_set: ChangeSet | None = None,
-) -> str:
-    """Build a concise role-specific prompt from only the required artifacts."""
-
-    normalized_role = normalize_role(role)
-    model_class = _model_class_for(normalized_role, purpose)
-
-    sections = [
-        _opening(normalized_role, model, reasoning),
-        _WRITING_RULES,
-        _role_instructions(
-            normalized_role,
-            purpose,
-            repair_review=bool(prior_review_findings),
-        ),
-        _output_contract(normalized_role, model_class),
-    ]
-
-    for title, value in _artifact_sections(
-        normalized_role=normalized_role,
-        work_item=work_item,
-        project_brief=project_brief,
-        triage_result=triage_result,
-        specification=specification,
-        research_report=research_report,
-        execution_plan=execution_plan,
-        diff=diff,
-        changed_files=list(changed_files or []),
-        verification_report=verification_report,
-        test_report=test_report,
-        prior_review_findings=list(prior_review_findings or []),
-        accepted_review_findings=list(accepted_review_findings or []),
-        repair_diff=repair_diff,
-        repair_context=repair_context,
-        purpose=purpose,
-        repository_profile=repository_profile,
-        repository_skill=repository_skill,
-        official_documentation_origins=list(official_documentation_origins or []),
-        practice_reference_urls=list(practice_reference_urls or []),
-        attempt_number=attempt_number,
-        research_question=research_question,
-        research_context=research_context,
-        change_set=change_set,
-    ):
-        sections.append(_section(title, value))
-
-    return "\n\n".join(section for section in sections if section).strip()
 
 
 #: Reviewer rules that replace the first-review rules when prior findings exist.
@@ -618,7 +592,7 @@ def _artifact_sections(
         if changed_files:
             sections.append(("Changed files so far", changed_files))
         if diff:
-            sections.append(("Current diff", _bounded_diff(diff)))
+            sections.append((_CURRENT_DIFF_TITLE, _bounded_diff(diff)))
         return sections
 
     if normalized_role == "IMPLEMENTER":
@@ -718,10 +692,6 @@ def _work_item_brief(work_item: WorkItem) -> dict[str, object]:
         "acceptance_criteria": work_item.acceptance_criteria,
         "constraints": work_item.constraints,
     }
-
-
-def _section(title: str, value: object) -> str:
-    return f"{title}:\n{_render(value)}"
 
 
 def parse_test_counts(*outputs: str) -> dict[str, int]:

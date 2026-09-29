@@ -13,6 +13,7 @@ from prompt_fixtures import (
     REPAIR_DIFF,
     make_request,
     plan,
+    review_finding,
     specification,
     verification,
     work_item,
@@ -49,6 +50,7 @@ from software_agent_factory.prompts import (
     artifact_model_for_role,
     build_continuation_prompt,
     build_prompt,
+    build_prompt_sections,
     normalize_role,
     parse_collection_errors,
     summarize_command_result,
@@ -946,3 +948,56 @@ def test_continuation_prompt_is_none_for_a_role_without_a_session(role: AgentRol
     request = make_request(role, repair_context=REJECTION_REASON, diff=DIFF)
 
     assert build_continuation_prompt(request) is None
+
+
+# ---------------------------------------------------------------------------
+# Prompt sections: the titled parts a prompt is made of
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_sections_start_with_the_fixed_parts_then_the_artifacts() -> None:
+    request = make_request(AgentRole.IMPLEMENTER, specification=specification(), diff=DIFF)
+
+    titles = [section.title for section in build_prompt_sections(request)]
+
+    assert titles[:4] == ["Opening", "Writing rules", "Role instructions", "Output contract"]
+    assert titles[4:] == ["Work item", "Specification", "Current diff"]
+
+
+def test_a_section_prints_its_title_in_the_full_prompt_only_when_it_is_titled() -> None:
+    sections = {
+        section.title: section
+        for section in build_prompt_sections(make_request(AgentRole.IMPLEMENTER))
+    }
+
+    assert sections["Work item"].text.startswith("Work item:\n")
+    assert not sections["Role instructions"].text.startswith("Role instructions")
+    assert sections["Role instructions"].body == sections["Role instructions"].text
+
+
+def test_a_section_digest_changes_with_its_body_only() -> None:
+    first = {
+        section.title: section.digest
+        for section in build_prompt_sections(make_request(AgentRole.IMPLEMENTER))
+    }
+    changed = {
+        section.title: section.digest
+        for section in build_prompt_sections(
+            make_request(AgentRole.IMPLEMENTER, work_item=work_item("WI-2"))
+        )
+    }
+
+    assert first["Work item"] != changed["Work item"]
+    assert first["Role instructions"] == changed["Role instructions"]
+
+
+def test_the_reviewer_role_instructions_change_when_prior_findings_exist() -> None:
+    first = build_prompt_sections(make_request(AgentRole.REVIEWER))
+    repair = build_prompt_sections(
+        make_request(AgentRole.REVIEWER, prior_review_findings=[review_finding("review-1")])
+    )
+
+    first_rules = next(s for s in first if s.title == "Role instructions")
+    repair_rules = next(s for s in repair if s.title == "Role instructions")
+    assert "Leave prior_finding_dispositions and repair_regressions empty" in first_rules.body
+    assert "Return one disposition for each prior finding id" in repair_rules.body

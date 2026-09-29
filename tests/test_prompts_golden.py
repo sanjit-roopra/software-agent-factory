@@ -56,7 +56,7 @@ from software_agent_factory.models import (
     TestReport,
     TriageResult,
 )
-from software_agent_factory.prompts import build_prompt
+from software_agent_factory.prompts import build_prompt, build_prompt_sections
 
 GOLDEN_DIRECTORY = Path(__file__).parent / "golden" / "prompts"
 UPDATE_ENVIRONMENT_VARIABLE = "UPDATE_PROMPT_GOLDENS"
@@ -227,3 +227,19 @@ def test_masked_model_text_is_the_models_own_schema_and_fields(case: str) -> Non
     )
     assert fields_match.group(1) == ", ".join(model.model_fields)
     assert "<json schema>" in _mask_model_derived_text(prompt)
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_prompt_sections_cover_every_part_of_the_full_prompt(case: str) -> None:
+    request = CASES[case]()
+
+    sections = build_prompt_sections(request)
+
+    assert "\n\n".join(section.text for section in sections).strip() == build_prompt(request)
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_prompt_section_titles_are_unique(case: str) -> None:
+    titles = [section.title for section in build_prompt_sections(CASES[case]())]
+
+    assert sorted(titles) == sorted(set(titles))
