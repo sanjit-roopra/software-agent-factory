@@ -130,6 +130,7 @@ CRITERION_CACHE_SHARE = "cache_read_share"
 CRITERION_TOKENS = "tokens"
 
 _UNAVAILABLE = "unavailable"
+_ENCODING = "utf-8"
 
 
 class ManifestError(ValueError):
@@ -174,7 +175,7 @@ def _validate_entry(index: int, raw: object) -> ManifestEntry:
 
 def _read_manifest_tasks(path: Path) -> list[object]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding=_ENCODING))
     except json.JSONDecodeError as exc:
         raise ManifestError(f"manifest {path} is not valid JSON: {exc}") from None
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
@@ -938,9 +939,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _write_reports(report: RuntimeAbReport, out: Path) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    out.write_text(report.model_dump_json(indent=2) + "\n", encoding=_ENCODING)
     markdown = out.with_suffix(".md")
-    markdown.write_text(render_markdown(report), encoding="utf-8")
+    markdown.write_text(render_markdown(report), encoding=_ENCODING)
     return markdown
 
 
