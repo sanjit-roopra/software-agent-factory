@@ -84,6 +84,7 @@ from software_agent_factory.observability import (
     configure_factory_logging,
     log_run_event,
     scan_readable_runs,
+    summarize_usage,
 )
 from software_agent_factory.store import FileRunStore
 
@@ -779,6 +780,33 @@ def test_list_price_estimate_summed_across_invocations(tmp_path: Path) -> None:
     snapshot = build_monitoring_snapshot(store, now=T0)
 
     assert snapshot.metrics.usage.list_price_estimate_usd == pytest.approx(1.25)
+
+
+def test_summarize_usage_sums_reported_values_and_keeps_unreported_unknown() -> None:
+    def invocation(number: int, usage: UsageMetrics | None) -> InvocationRecord:
+        return InvocationRecord(
+            invocation_number=number,
+            role=AgentRole.IMPLEMENTER,
+            model="claude-sonnet-5",
+            reasoning="medium",
+            started_at=T0,
+            completed_at=T0 + timedelta(seconds=1),
+            success=True,
+            usage=usage,
+        )
+
+    summary = summarize_usage(
+        [
+            invocation(1, UsageMetrics(input_tokens=10, cache_read_tokens=0)),
+            invocation(2, UsageMetrics(input_tokens=5)),
+            invocation(3, None),
+        ]
+    )
+
+    assert (summary.invocation_count, summary.reported_invocations) == (3, 2)
+    assert summary.input_tokens == 15
+    assert summary.cache_read_tokens == 0
+    assert summary.cache_write_tokens is None
 
 
 def test_list_price_estimate_falls_back_to_model_usage_when_aggregate_missing(

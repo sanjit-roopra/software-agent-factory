@@ -142,6 +142,7 @@ __all__ = [
     "RunAttemptSummary",
     "RunInvocationSummary",
     "UsageSummary",
+    "summarize_usage",
     "RunDetail",
     "RunGuidance",
     "StaleRunFinding",
@@ -1154,7 +1155,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
         scope_replans=scope_replans,
         first_pass_success=first_pass_success,
         completed_run_durations=completed_run_durations,
-        usage=_usage_summary(invocation for run in runs for invocation in run.invocation_records),
+        usage=summarize_usage(invocation for run in runs for invocation in run.invocation_records),
         performance=performance,
     )
 
@@ -1183,7 +1184,8 @@ def _reported_or_model_sum(
     return None
 
 
-def _usage_summary(invocations: Iterable[InvocationRecord]) -> UsageSummary:
+def summarize_usage(invocations: Iterable[InvocationRecord]) -> UsageSummary:
+    """Sum runtime-reported usage; a field no invocation reported stays ``None``."""
     records = list(invocations)
     reported = [record for record in records if record.usage is not None]
 
@@ -1392,7 +1394,7 @@ def _build_run_summary(
         invocation_count=len(run.invocation_records),
         implementation_attempts=implementation_attempts,
         ci_repair_attempts=ci_repair_attempts,
-        usage=_usage_summary(run.invocation_records),
+        usage=summarize_usage(run.invocation_records),
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
         review_status=(

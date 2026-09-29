@@ -70,8 +70,7 @@ from software_agent_factory.models import (
 
 # Runtime-reported usage summing lives in observability; reuse it rather than
 # re-implementing the "unreported stays None" rules.
-from software_agent_factory.observability import UsageSummary
-from software_agent_factory.observability import _usage_summary as summarize_usage
+from software_agent_factory.observability import UsageSummary, summarize_usage
 from software_agent_factory.store import FileRunStore
 
 type Level = Literal["L0", "L1", "L2", "L3"]
