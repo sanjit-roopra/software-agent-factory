@@ -637,6 +637,34 @@ level at `NEEDS_HUMAN` instead of proceeding automatically.
 Risk selects governance. Complexity selects model strength. They are separate:
 a one-line change can be `R3`, and a hard change can be `R0`.
 
+## risk_assessment
+
+```yaml
+risk_assessment:
+  enabled: true
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `true` | Turn the risk approval gate and the triage risk rationale on or off. |
+
+The section is optional. When `enabled` is `true`, the factory works as described in the `risk` section.
+
+When `enabled` is `false`, the factory runs without human risk approval:
+
+- Triage still sets `risk`. Routing uses it.
+- No risk level stops a run at `NEEDS_HUMAN`. This applies to `R0`, `R1`, `R2` and `R3`.
+- The factory does not create a risk escalation or an approval request.
+- The triage prompt does not ask for a `risk_rationale`.
+- The factory accepts a triage result for `R2` or `R3` with no `risk_rationale`.
+- Routing options treat every risk level as not needing approval.
+
+The `risk` table stays in the file, but no run uses its `human_approval` values.
+Other stops stay active. Examples are an ineligible work item, protected files and failed verification.
+
+Each run records `risk_assessment_enabled` in `run.json`. The factory also logs a warning when a run starts with the switch off.
+Use `--no-risk-assessment` on `factory run`, `factory project`, `factory start` or `factory service install` to turn it off for one invocation.
+
 ## Cross-field validation
 
 The loader rejects a configuration when:

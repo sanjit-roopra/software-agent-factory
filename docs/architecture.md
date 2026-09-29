@@ -910,6 +910,12 @@ Risk controls required gates.
 
 It does not directly select the worker model.
 
+Risk assessment is on by default.
+Set `risk_assessment.enabled` to `false` for an autonomous factory.
+Triage then still sets the risk level for routing.
+No risk level stops a run for human approval, and triage does not write a risk rationale.
+See ADR-030 in the decisions log.
+
 ## Initial agents
 
 ### Triage
