@@ -997,3 +997,52 @@ def test_non_blank_prose_keeps_its_original_whitespace() -> None:
     )
 
     assert plan.summary == "  Change it.  "
+
+
+def test_work_item_drops_blank_criteria_and_constraints_but_keeps_the_rest() -> None:
+    item = WorkItem(
+        id="WI-1",
+        title="Reject blanks",
+        description="Reject blank names.",
+        acceptance_criteria=["", "  Blank names fail.  ", "\t"],
+        constraints=[" ", "Keep the API."],
+    )
+
+    assert item.acceptance_criteria == ["  Blank names fail.  "]
+    assert item.constraints == ["Keep the API."]
+
+
+def test_project_brief_drops_blank_criteria_and_constraints() -> None:
+    brief = ProjectBrief(
+        id="project-1",
+        title="Validate",
+        description="Validate names.",
+        repository_path="/repo",
+        acceptance_criteria=[" ", "Names are validated."],
+        constraints=[""],
+    )
+
+    assert brief.acceptance_criteria == ["Names are validated."]
+    assert brief.constraints == []
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+def test_work_item_rejects_a_blank_required_scalar(field: str) -> None:
+    payload = {"id": "WI-1", "title": "Title", "description": "Description", field: "  "}
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        WorkItem.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+def test_project_brief_rejects_a_blank_required_scalar(field: str) -> None:
+    payload = {
+        "id": "project-1",
+        "title": "Title",
+        "description": "Description",
+        "repository_path": "/repo",
+        field: "  ",
+    }
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        ProjectBrief.model_validate(payload)

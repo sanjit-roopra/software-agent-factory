@@ -237,6 +237,34 @@ def test_project_command_plans_and_executes_one_smallest_sufficient_task(
     assert (data_dir / "projects" / "project-validation" / "project-plan.json").is_file()
 
 
+def test_project_command_drops_a_blank_acceptance_criterion(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Build customer validation",
+            "--description",
+            "Reject blank customer names.",
+            "--acceptance-criterion",
+            " ",
+            "--project-id",
+            "project-blank-criterion",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "state: DONE" in result.output
+    assert "tasks: 1" in result.output
+
+
 def test_run_with_copilot_runtime_requires_copilot(
     source_repo: Path, data_dir: Path, path_without
 ) -> None:
@@ -424,6 +452,36 @@ def test_run_happy_path_reaches_pr_ready_with_zero_exit(source_repo: Path, data_
         "The source checkout remains unchanged.",
     ]
     assert work_item["constraints"] == ["Do not add dependencies."]
+
+
+def test_run_drops_a_blank_acceptance_criterion_and_reaches_pr_ready(
+    source_repo: Path, data_dir: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--acceptance-criterion",
+            "",
+            "--constraint",
+            "  ",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "state: PR_READY" in result.output
+    (run_dir,) = (data_dir / "runs").iterdir()
+    work_item = json.loads((run_dir / "work-item.json").read_text())
+    assert work_item["acceptance_criteria"] == []
+    assert work_item["constraints"] == []
 
 
 def test_run_non_pr_ready_outcome_uses_nonzero_exit_code(

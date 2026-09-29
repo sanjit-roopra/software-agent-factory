@@ -30,6 +30,22 @@ def _reject_blank(value: str) -> str:
 #: Agent-authored prose. Whitespace-only text is a structural error, so it fails
 #: model validation and takes the ordinary retry. The original text is kept.
 NonBlankStr = Annotated[str, AfterValidator(_reject_blank)]
+
+
+def _without_blank_entries(data: object, fields: tuple[str, ...]) -> object:
+    """Drop blank entries from the named human-input lists before validation."""
+    if not isinstance(data, dict):
+        return data
+    cleaned = dict(data)
+    for field in fields:
+        values = cleaned.get(field)
+        if isinstance(values, list | tuple):
+            cleaned[field] = [
+                value for value in values if not isinstance(value, str) or value.strip()
+            ]
+    return cleaned
+
+
 MAX_OPEN_REVIEW_FINDINGS = 24
 MAX_PERFORMANCE_METRICS = 250
 MAX_PERFORMANCE_NAME_LENGTH = 100
@@ -438,8 +454,8 @@ class WorkItem(VersionedModel):
     id: str = Field(min_length=1)
     external_id: str | None = None
     source: Literal["MANUAL", "GITHUB"] = "MANUAL"
-    title: str = Field(min_length=1)
-    description: str = Field(min_length=1)
+    title: NonBlankStr = Field(min_length=1)
+    description: NonBlankStr = Field(min_length=1)
     acceptance_criteria: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
@@ -450,6 +466,11 @@ class WorkItem(VersionedModel):
     project_task_id: int | None = Field(default=None, ge=1)
     depends_on: list[int] = Field(default_factory=list)
     created_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_blank_entries(cls, data: object) -> object:
+        return _without_blank_entries(data, ("acceptance_criteria", "constraints"))
 
     @model_validator(mode="after")
     def _validate_project_linkage(self) -> WorkItem:
@@ -489,12 +510,17 @@ class ProjectTaskState(StrEnum):
 
 class ProjectBrief(VersionedModel):
     id: str = Field(pattern=PROJECT_ID_PATTERN)
-    title: str = Field(min_length=1, max_length=300)
-    description: str = Field(min_length=1, max_length=20000)
+    title: NonBlankStr = Field(min_length=1, max_length=300)
+    description: NonBlankStr = Field(min_length=1, max_length=20000)
     repository_path: str = Field(min_length=1, max_length=2000)
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=50)
     constraints: list[str] = Field(default_factory=list, max_length=50)
     created_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_blank_entries(cls, data: object) -> object:
+        return _without_blank_entries(data, ("acceptance_criteria", "constraints"))
 
 
 class ProjectTask(ModelBase):
