@@ -55,6 +55,7 @@ from .agents import (
     workspace_cwd,
 )
 from .models import ModelUsage, PerformanceRecord, UsageMetrics
+from .pi_providers import PI_PROVIDER_CREDENTIAL_ENV_VARS, pi_provider_credential_vars
 from .pi_rpc import (
     PiProcessHandle,
     PiRpcClient,
@@ -64,7 +65,6 @@ from .pi_rpc import (
     PiRpcProtocolError,
     PiRpcTimeout,
 )
-from .pi_providers import PI_PROVIDER_CREDENTIAL_ENV_VARS, pi_provider_credential_vars
 from .prompts import build_prompt
 from .subprocess_utils import (
     build_child_env,
