@@ -116,12 +116,13 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
 | `output` | `output_tokens` |
 | `reasoning` | `reasoning_tokens` (already included in `output`) |
 | `cacheRead` | `cache_read_tokens` |
-| `cacheWrite` (+ `cacheWrite1h`) | `cache_write_tokens` |
+| `cacheWrite` | `cache_write_tokens` |
 | `cost.total` | `list_price_estimate_usd` |
 | count of assistant messages | `requests` |
 
 Premium-request cost and nano-AIU stay `None` for pi runs. A field pi did not report
-stays `None`, never zero.
+stays `None`, never zero. Pi counts `cacheWrite1h` inside `cacheWrite`, so the factory
+does not add it. The factory reads `cacheWrite1h` only when a message has no `cacheWrite`.
 
 ### Configuration
 

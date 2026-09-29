@@ -1831,8 +1831,22 @@ def test_usage_from_pi_messages_reported_zero_stays_zero_not_unknown() -> None:
     assert usage.cache_read_tokens == 0
 
 
-def test_usage_from_pi_messages_sums_cache_write_1h_with_cache_write() -> None:
-    messages = [_assistant_message({"input": 10, "cacheWrite": 3, "cacheWrite1h": 4})]
+def test_usage_from_pi_messages_counts_cache_write_1h_as_part_of_cache_write() -> None:
+    """pi 0.84.4 reports the one-hour writes as a subset of ``cacheWrite``."""
+    messages = [_assistant_message({"input": 10, "cacheWrite": 706, "cacheWrite1h": 706})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage is not None
+    assert usage.cache_write_tokens == 706
+    assert usage.model_usage[0].cache_write_tokens == 706
+
+
+def test_usage_from_pi_messages_falls_back_to_cache_write_1h_without_cache_write() -> None:
+    messages = [
+        _assistant_message({"input": 10, "cacheWrite1h": 4}),
+        _assistant_message({"input": 10, "cacheWrite": 3, "cacheWrite1h": 3}),
+    ]
 
     usage = usage_from_pi_messages(messages)
 

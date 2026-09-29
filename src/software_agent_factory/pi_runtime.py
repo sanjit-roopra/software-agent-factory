@@ -317,21 +317,23 @@ def _sum_usage_field(usages: Sequence[Mapping[str, Any]], key: str) -> int | Non
 
 
 def _sum_cache_write_field(usages: Sequence[Mapping[str, Any]]) -> int | None:
-    """Sum ``cacheWrite`` plus ``cacheWrite1h`` (when present) over ``usages``.
+    """Sum the cache writes over ``usages``: ``cacheWrite``, else ``cacheWrite1h``.
 
-    Per the "Usage mapping" table: ``cacheWrite`` (+ ``cacheWrite1h``) ->
-    ``cache_write_tokens``. Either key reported on a message is enough to
-    make the field "known"; a message reporting neither contributes nothing.
+    Per the "Usage mapping" table: ``cacheWrite`` -> ``cache_write_tokens``.
+    pi reports ``cacheWrite1h`` as a subset of ``cacheWrite``, so adding both
+    would count the one-hour writes twice. A message that reports only
+    ``cacheWrite1h`` contributes that count; one that reports neither
+    contributes nothing.
     """
-    total = 0
-    reported = False
-    for usage in usages:
-        for key in ("cacheWrite", "cacheWrite1h"):
-            count = non_negative_int(usage.get(key))
-            if count is not None:
-                total += count
-                reported = True
-    return total if reported else None
+    reported = [count for usage in usages if (count := _cache_write_of(usage)) is not None]
+    return sum(reported) if reported else None
+
+
+def _cache_write_of(usage: Mapping[str, Any]) -> int | None:
+    count = non_negative_int(usage.get("cacheWrite"))
+    if count is None:
+        count = non_negative_int(usage.get("cacheWrite1h"))
+    return count
 
 
 def _sum_cost_field(usages: Sequence[Mapping[str, Any]]) -> float | None:
