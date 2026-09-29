@@ -146,7 +146,8 @@ Premium-request cost and nano-AIU stay `None` for pi runs. A field pi did not re
 stays `None`, never zero. Pi counts `cacheWrite1h` inside `cacheWrite`, so the factory
 does not add it. The factory reads `cacheWrite1h` only when a message has no `cacheWrite`.
 A resumed session returns its whole history. The factory counts only the messages that
-follow the last user message, so a call reports its own round and no earlier round.
+follow the user message with the prompt of this call. If pi never recorded that prompt,
+the call reports no usage, so it never reports an earlier round.
 
 ### Configuration
 

@@ -215,16 +215,17 @@ def run_resume(
     finally:
         first_client.close(timeout=_CLOSE_TIMEOUT_SECONDS)
 
+    second_prompt = _FIRST_PROMPT + _SECOND_PROMPT_SUFFIX
     second_cmd = _build_command(executable, provider, model, session_args)
     second_process = process_factory(second_cmd)
     second_client = PiRpcClient(second_process)
     try:
         conversation = _PiConversation(second_client, deadline)
-        conversation.send_prompt_and_wait(_FIRST_PROMPT + _SECOND_PROMPT_SUFFIX)
+        conversation.send_prompt_and_wait(second_prompt)
         messages = conversation.get_messages()
     finally:
         second_client.close(timeout=_CLOSE_TIMEOUT_SECONDS)
-    return verdict_from_messages(messages_since_last_prompt(messages))
+    return verdict_from_messages(messages_since_last_prompt(messages, second_prompt))
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:

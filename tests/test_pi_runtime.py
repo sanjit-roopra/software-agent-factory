@@ -1712,33 +1712,54 @@ def test_run_timeout_gives_best_effort_usage_read_its_own_short_deadline(
     assert pi_fake_clock.now == pytest.approx(1000.0 + 1 + _BEST_EFFORT_USAGE_DEADLINE_SECONDS)
 
 
-def test_best_effort_usage_of_a_resumed_session_counts_only_its_own_round() -> None:
-    """A timed-out call reads ``get_messages`` on a session that also holds earlier rounds.
+_ROUND_ONE_PROMPT = "round 1 prompt"
+_ROUND_TWO_PROMPT = "round 2 prompt"
+
+
+def _best_effort_usage_of(session: list[dict[str, Any]], prompt: str) -> Any:
+    """Read the usage of a call that timed out, from a session holding ``session``.
 
     The read runs after ``wait_for_settled`` gave up, which drops any response
     already in the pipe, so the test drives the read itself.
     """
     process = FakePiProcess()
     process.write_records(
-        {
-            "type": "response",
-            "id": "c1",
-            "success": True,
-            "data": {
-                "messages": [
-                    {"role": "user", "content": "round 1 prompt"},
-                    _assistant_message({"input": 100, "output": 20}),
-                    {"role": "user", "content": "round 2 prompt"},
-                    _assistant_message({"input": 7, "output": 3}),
-                ]
-            },
-        }
+        {"type": "response", "id": "c1", "success": True, "data": {"messages": session}}
     )
+    return _runtime()._best_effort_usage(PiRpcClient(process), prompt)
 
-    usage = _runtime()._best_effort_usage(PiRpcClient(process))
+
+def test_best_effort_usage_of_a_resumed_session_counts_only_its_own_round() -> None:
+    usage = _best_effort_usage_of(
+        [
+            {"role": "user", "content": _ROUND_ONE_PROMPT},
+            _assistant_message({"input": 100, "output": 20}),
+            {"role": "user", "content": _ROUND_TWO_PROMPT},
+            _assistant_message({"input": 7, "output": 3}),
+        ],
+        _ROUND_TWO_PROMPT,
+    )
 
     assert usage is not None
     assert (usage.total_user_requests, usage.input_tokens) == (1, 7)
+
+
+def test_best_effort_usage_does_not_count_the_previous_round_when_pi_never_took_the_prompt() -> (
+    None
+):
+    """pi timed out before it recorded this call's prompt, so the assistant messages are older."""
+    usage = _best_effort_usage_of(
+        [
+            {"role": "user", "content": _ROUND_ONE_PROMPT},
+            _assistant_message({"input": 100, "output": 20, "cost": {"total": 0.4}}),
+        ],
+        _ROUND_TWO_PROMPT,
+    )
+
+    assert usage is not None
+    assert usage.total_user_requests == 0
+    assert usage.input_tokens is None
+    assert usage.list_price_estimate_usd is None
 
 
 @pytest.mark.usefixtures("pi_fake_clock")
@@ -1900,8 +1921,9 @@ def test_run_resumed_call_reports_only_the_usage_of_its_own_round(tmp_path: Path
         {"role": "toolResult", "content": "round 1 tool output"},
         _assistant_message({"input": 30, "output": 10, "cacheRead": 90, "cost": {"total": 0.1}}),
     ]
+    request = make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
     round_two = [
-        {"role": "user", "content": "round 2 prompt"},
+        {"role": "user", "content": build_prompt(request)},
         _assistant_message({"input": 7, "output": 3, "cacheRead": 120, "cost": {"total": 0.02}}),
     ]
     process = FakePiProcess()
@@ -1924,7 +1946,7 @@ def test_run_resumed_call_reports_only_the_usage_of_its_own_round(tmp_path: Path
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    result = runtime.run(make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace)))
+    result = runtime.run(request)
 
     assert result.usage is not None
     assert result.usage.total_user_requests == 1

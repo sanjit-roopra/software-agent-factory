@@ -603,7 +603,7 @@ class PiAgentRuntime(AgentRuntime):
                 client.request({"type": "prompt", "message": prompt}, deadline=deadline)
                 client.wait_for_settled(deadline=deadline)
                 messages = self._get_messages(client, deadline=deadline)
-                usage = _safe_usage_from_pi_messages(messages_since_last_prompt(messages))
+                usage = _safe_usage_from_pi_messages(messages_since_last_prompt(messages, prompt))
                 stop_reason, error_message = _stop_reason_from_messages(messages)
                 failure_message = _stop_reason_failure_message(stop_reason, error_message)
                 if failure_message is not None:
@@ -612,7 +612,7 @@ class PiAgentRuntime(AgentRuntime):
                 data = _response_data(response, "get_last_assistant_text")
             except PiRpcTimeout:
                 if usage is None:
-                    usage = self._best_effort_usage(client)
+                    usage = self._best_effort_usage(client, prompt)
                 self._abort_and_kill(client, process)
                 return (
                     ctx.failed(
@@ -622,7 +622,7 @@ class PiAgentRuntime(AgentRuntime):
                 )
             except PiRpcProcessExited as exc:
                 if usage is None:
-                    usage = self._best_effort_usage(client)
+                    usage = self._best_effort_usage(client, prompt)
                 return ctx.failed(_failure_reason_for(exc), usage=usage), False
             except PiRpcError as exc:
                 return ctx.failed(_failure_reason_for(exc), usage=usage), False
@@ -762,7 +762,7 @@ class PiAgentRuntime(AgentRuntime):
         messages = data.get("messages") or []
         return [message for message in messages if isinstance(message, dict)]
 
-    def _best_effort_usage(self, client: PiRpcClient) -> UsageMetrics | None:
+    def _best_effort_usage(self, client: PiRpcClient, prompt: str) -> UsageMetrics | None:
         """Best-effort ``get_messages`` after pi failed to settle in time.
 
         Only called when :meth:`run` never reached its own ``get_messages``
@@ -784,7 +784,7 @@ class PiAgentRuntime(AgentRuntime):
             )
         except (PiRpcError, _UnexpectedResponse):
             return None
-        return _safe_usage_from_pi_messages(messages_since_last_prompt(messages))
+        return _safe_usage_from_pi_messages(messages_since_last_prompt(messages, prompt))
 
     def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
         """Best-effort abort, close stdin, then escalate to killing pi's process group.
