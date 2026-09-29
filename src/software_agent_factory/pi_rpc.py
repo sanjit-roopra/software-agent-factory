@@ -28,6 +28,14 @@ from .subprocess_utils import kill_process_group
 #: growth if pi writes a lot to stderr before exiting.
 _STDERR_TAIL_CHARS = 4096
 
+#: Extra unredacted characters kept ahead of the exposed tail, so a secret
+#: straddling the tail's front edge is redacted whole before the cut.
+_STDERR_REDACTION_MARGIN_CHARS = 256
+
+#: Bound :meth:`PiRpcClient._returncode` waits for an exited-stdout child to
+#: report its exit code.
+_EXIT_CODE_WAIT_SECONDS = 1.0
+
 #: Characters of a bad stdout line kept in a :class:`PiRpcProtocolError` excerpt.
 _LINE_EXCERPT_CHARS = 200
 
@@ -139,7 +147,8 @@ class PiRpcClient:
         self._next_id = itertools.count(1)
         self._stdout_buffer = b""
         self._stdout_eof = False
-        self._stderr_tail = ""
+        #: Raw (unredacted) trailing stderr; redacted only when read, see :meth:`_append_stderr`.
+        self._raw_stderr_tail = ""
         self._stderr_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._stderr_eof = process.stderr is None
         #: Records seen by :meth:`request` that did not match the response it
@@ -149,7 +158,7 @@ class PiRpcClient:
     @property
     def stderr_tail(self) -> str:
         """Last ~4 K characters of pi's stderr read so far, redacted for a failure reason."""
-        return self._stderr_tail
+        return self._redact(self._raw_stderr_tail)[-_STDERR_TAIL_CHARS:]
 
     def send(self, command: dict[str, Any]) -> str:
         """Write one JSON command line (plus ``"\\n"``), assigning a unique ``id``.
@@ -289,13 +298,15 @@ class PiRpcClient:
             ) from exc
 
     def _append_stderr(self, text: str) -> None:
-        """Redact the contiguous window (old tail plus ``text``), then keep its last chars.
+        """Keep the raw trailing window: :data:`_STDERR_TAIL_CHARS` plus a margin.
 
-        Redacting before truncating means a secret straddling the cut is
-        replaced whole. A secret split across two reads is caught too: the
-        earlier read's unredacted prefix is still in the window.
+        Nothing is redacted here. A secret split across two reads is only
+        recognisable once both halves are present (a token pattern matches its
+        first half on its own, so redacting per read would leave the second
+        half behind); :attr:`stderr_tail` redacts the whole window on read.
         """
-        self._stderr_tail = self._redact(self._stderr_tail + text)[-_STDERR_TAIL_CHARS:]
+        keep = _STDERR_TAIL_CHARS + _STDERR_REDACTION_MARGIN_CHARS
+        self._raw_stderr_tail = (self._raw_stderr_tail + text)[-keep:]
 
     def _excerpt(self, text: str) -> str:
         """Redact all of ``text``, then keep its first :data:`_LINE_EXCERPT_CHARS` chars."""
@@ -306,6 +317,6 @@ class PiRpcClient:
         if code is not None:
             return code
         try:
-            return self._process.wait(timeout=1.0)
+            return self._process.wait(timeout=_EXIT_CODE_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
             return None

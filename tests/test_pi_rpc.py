@@ -27,6 +27,7 @@ from software_agent_factory.pi_rpc import (
     PiRpcProtocolError,
     PiRpcTimeout,
 )
+from software_agent_factory.subprocess_utils import redact_secrets
 
 _DEADLINE = 5.0
 
@@ -224,6 +225,28 @@ def test_stderr_tail_redacts_a_secret_split_across_reads(pi_fake_clock: FakePiCl
         client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
 
     assert _SECRET not in excinfo.value.stderr_tail
+    assert "auth failed for [REDACTED]" in excinfo.value.stderr_tail
+
+
+def test_stderr_tail_redacts_a_token_shaped_secret_split_across_reads(
+    pi_fake_clock: FakePiClock,
+) -> None:
+    """A GitHub token's first half already matches ``TOKEN_PATTERNS`` (``\\b`` fires
+    at the end of the text), so redacting per read would leak the second half."""
+    token = "ghp_" + "A" * 8 + "SECONDHALF12345"
+    process = FakePiProcess()
+    client = PiRpcClient(process, redact=lambda text: redact_secrets(text, set()))
+    process.exit(1)
+    process.write_stderr("auth failed for " + token[:12])
+    with pytest.raises(PiRpcTimeout):
+        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(0.05))
+    process.write_stderr(token[12:] + "\n")
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=pi_fake_clock.deadline(5.0))
+
+    assert "SECONDHALF12345" not in excinfo.value.stderr_tail
     assert "auth failed for [REDACTED]" in excinfo.value.stderr_tail
 
 
