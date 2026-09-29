@@ -48,7 +48,7 @@ tested here; the first real tag is what exercises them end to end.
 | 16 | Repository capability layer + bounded post-green polish | done (`repository_profile`, `polish.enabled`, `GENERATE_REPOSITORY_SKILL`) |
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 | 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
-| 19 | Mandatory controlled writing policy | implemented (ADR-023) |
+| 19 | Advisory controlled writing policy | implemented (ADR-023, ADR-029) |
 | 20 | Adaptive Jev-driven execution routing | implemented (ADR-027) |
 
 Every integration is disabled by default: with the packaged configuration
@@ -61,12 +61,12 @@ unless someone ran `factory service install`.
 
 Status: done.
 
-Use one mandatory writing policy for all factory-authored prose.
+Use one advisory writing policy for all factory-authored prose (ADR-023, ADR-029).
 
 - Give every agent the same short writing rules.
-- Check model-authored artifact fields before acceptance.
-- Give one bounded correction prompt for invalid prose.
-- Check generated issue, pull request and commit text before mutation.
+- Check model-authored artifact fields, then log and store the findings.
+- Never retry, fail or block on a wording finding.
+- Check generated issue, pull request and commit text, then log the findings.
 - Do not repeat the full project brief in each child work item.
 - Preserve code, identifiers, commands, paths, URLs, quoted errors and uncertainty.
 - Include the pinned SimpleEnglish linter subset and its MIT license.

@@ -1,6 +1,8 @@
 # Writing policy
 
 The factory uses concise controlled English for all text that it authors.
+The policy is advisory. A finding is logged and stored. It never fails a run,
+never causes a retry and never blocks delivery.
 
 The policy applies to:
 
@@ -17,7 +19,7 @@ source is pinned to revision
 
 ## Rules
 
-The factory checks these rules:
+The factory checks these rules and reports each finding:
 
 - Use 20 words or fewer for an instruction sentence.
 - Use 25 words or fewer for a descriptive sentence.
@@ -28,7 +30,8 @@ The factory checks these rules:
 - Do not use Latin abbreviations such as `e.g.` or `i.e.`.
 
 The prompts also tell agents to use active voice, simple tenses and one idea
-per sentence.
+per sentence. The output contract of each role lists the word limit of each
+field and a short list of filler words to avoid.
 
 ## Repository documentation
 
@@ -54,10 +57,20 @@ uv run --no-sync python scripts/docs/check_simple_english.py
 CI, the Pages workflow, and the release workflow run the same command.
 The gate reports each finding with its file, line, and rule.
 
-## Correction
+## Findings
 
-If model prose fails, the controller sends the exact findings to the same
-role. The correction is bounded by `factory.retries.same_model_attempts`.
+The controller checks each successful agent result. It does not change the
+result.
+
+- The controller writes each finding to the log as a warning.
+- The controller stores the findings in `writing_findings` on the invocation
+  record in `run.json`.
+- The controller logs findings for generated issue, pull request and commit
+  text. It still publishes the text.
+- Blank publication text is an error, because it is not a wording problem.
+
+A retry happens only for a structural failure. Examples are invalid JSON, a
+schema error and missing required data. The retry prompt names the failure.
 
 The controller does not rewrite the artifact. This rule protects facts and
 safety language.

@@ -170,9 +170,9 @@ Jira comes later.
 
 ### Controlled writing
 
-All model-authored prose passes a controller-owned writing policy before the
-factory accepts the artifact. The policy uses selected deterministic checks
-from SimpleEnglish revision
+All model-authored prose follows a controller-owned writing policy. The policy
+is advisory. The prompt states the rules and the word limit of each field. The
+policy uses selected deterministic checks from SimpleEnglish revision
 `61ee200efbd423050aab982eed94226229891ae0`.
 
 The policy checks:
@@ -184,9 +184,11 @@ The policy checks:
 - Em dashes
 - Latin abbreviations
 
-The factory gives one bounded correction prompt when the role supports typed
-output correction. The controller records each invocation. It never silently
-rewrites facts.
+A writing finding never fails a result, never causes a retry and never blocks
+publication. The controller logs each finding and stores it in
+`writing_findings` on the invocation record. Retries stay for structural
+failures such as invalid JSON, schema errors and missing required data. The
+controller never rewrites facts. See ADR-029.
 
 Issue bodies, pull request bodies, titles and commit messages pass the same
 checks before Git or GitHub mutation. Project child work items contain only the
