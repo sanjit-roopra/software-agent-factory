@@ -357,7 +357,8 @@ def _pi_provider_credential_present(
     ``accept_env_credentials`` is true (the default) -- the matching
     API-token environment variable pi reads for it (any of the variables
     :func:`~software_agent_factory.pi_providers.pi_provider_credential_vars`
-    names).
+    names; ``amazon-bedrock`` needs a complete AWS credential instead, see
+    :func:`_bedrock_env_credential_present`).
 
     ``accept_env_credentials=False`` is for the service-install preflight
     (:func:`run_doctor`'s ``accept_pi_env_credentials``): an environment
@@ -375,7 +376,30 @@ def _pi_provider_credential_present(
             return True
     if not accept_env_credentials:
         return False
+    if provider == "amazon-bedrock":
+        return _bedrock_env_credential_present(env)
     return any(env.getenv(name) for name in pi_provider_credential_vars(provider))
+
+
+#: Each of these alone lets the AWS SDK credential chain sign a Bedrock request:
+#: a bearer token, a named profile, or an ECS/container credentials endpoint.
+_BEDROCK_SELF_SUFFICIENT_ENV_VARS = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_PROFILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+)
+
+
+def _bedrock_env_credential_present(env: DoctorEnvironment) -> bool:
+    """``amazon-bedrock`` needs a complete AWS credential, not any AWS variable:
+    a key id *and* its secret, or one self-sufficient variable. A lone
+    ``AWS_ACCESS_KEY_ID`` or ``AWS_SESSION_TOKEN`` cannot sign a request."""
+    if env.getenv("AWS_ACCESS_KEY_ID") and (
+        env.getenv("AWS_SECRET_ACCESS_KEY") or env.getenv("AWS_SECRET_KEY")
+    ):
+        return True
+    return any(env.getenv(name) for name in _BEDROCK_SELF_SUFFICIENT_ENV_VARS)
 
 
 def _check_pi_component_version(

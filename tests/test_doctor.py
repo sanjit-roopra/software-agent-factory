@@ -405,6 +405,43 @@ def test_check_pi_anthropic_provider_accepts_an_oauth_token() -> None:
     assert result.status is CheckStatus.OK
 
 
+def _check_bedrock(variables: dict[str, str]) -> CheckStatus:
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv(variables),
+    )
+    return check_pi(env, PiConfig(provider="amazon-bedrock"), required=True).status
+
+
+@pytest.mark.parametrize("variable", ["AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN"])
+def test_check_pi_amazon_bedrock_lone_aws_variable_is_not_a_credential(variable: str) -> None:
+    """A key id (or session token) without its secret cannot sign a request."""
+    assert _check_bedrock({variable: "value"}) is CheckStatus.ERROR
+
+
+@pytest.mark.parametrize("secret", ["AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY"])
+def test_check_pi_amazon_bedrock_key_id_with_a_secret_passes(secret: str) -> None:
+    assert _check_bedrock({"AWS_ACCESS_KEY_ID": "id", secret: "secret"}) is CheckStatus.OK
+
+
+def test_check_pi_amazon_bedrock_secret_without_a_key_id_fails() -> None:
+    assert _check_bedrock({"AWS_SECRET_ACCESS_KEY": "secret"}) is CheckStatus.ERROR
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_PROFILE",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    ],
+)
+def test_check_pi_amazon_bedrock_self_sufficient_variable_passes(variable: str) -> None:
+    assert _check_bedrock({variable: "value"}) is CheckStatus.OK
+
+
 def test_check_pi_several_failures_names_the_executable_first() -> None:
     """No executable and no credential both apply; the executable check runs
     first in the fixed order, so its message wins."""
