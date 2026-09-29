@@ -1634,6 +1634,7 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
             "requested_performance_mode": "fast",
             "effective_performance_mode": "standard",
             "performance_model_profile": "economy",
+            "risk_assessment_enabled": False,
             "merge_commit_sha": "a" * 40,
             "escalation": EscalationRecord(
                 episode_id="ep-safe",
@@ -1685,6 +1686,7 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
     assert payload["requested_performance_mode"] == "fast"
     assert payload["effective_performance_mode"] == "standard"
     assert payload["performance_model_profile"] == "economy"
+    assert payload["risk_assessment_enabled"] is False
     assert payload["waiting_for_human"] is True
     assert payload["merge_commit_sha"] == "a" * 40
     assert payload["verification"] == {

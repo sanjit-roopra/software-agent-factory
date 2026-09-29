@@ -57,6 +57,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "requested_performance_mode",
         "effective_performance_mode",
         "performance_model_profile",
+        "risk_assessment_enabled",
         "waiting_for_human",
         "performance",
     }
@@ -305,8 +306,9 @@ def _sanitize_summary_fields(data: dict[str, Any], sanitized: dict[str, Any]) ->
         not isinstance(model_profile, str) or not _MODEL_PROFILE_PATTERN.fullmatch(model_profile)
     ):
         sanitized.pop("performance_model_profile", None)
-    if not isinstance(sanitized.get("waiting_for_human"), bool):
-        sanitized.pop("waiting_for_human", None)
+    for flag in ("waiting_for_human", "risk_assessment_enabled"):
+        if not isinstance(sanitized.get(flag), bool):
+            sanitized.pop(flag, None)
 
 
 def sanitize_performance(raw: Any) -> dict[str, Any]:
