@@ -36,3 +36,7 @@ def test_non_negative_float_accepts_finite_non_negative_numbers(
 )
 def test_non_negative_float_rejects_everything_else(value: object) -> None:
     assert non_negative_float(value) is None
+
+
+def test_non_negative_float_rejects_an_int_too_large_for_a_float() -> None:
+    assert non_negative_float(10**400) is None

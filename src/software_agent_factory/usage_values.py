@@ -29,12 +29,15 @@ def non_negative_int(value: object) -> int | None:
 
 
 def non_negative_float(value: object) -> float | None:
-    """Return ``value`` as a ``float`` when it is a finite, non-negative number."""
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(value)
-        or value < 0
-    ):
+    """Return ``value`` as a ``float`` when it is a finite, non-negative number.
+
+    An ``int`` too large to fit a ``float`` is rejected like any other
+    non-finite value instead of raising ``OverflowError``.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
         return None
-    return float(value)
+    try:
+        result = float(value)
+    except OverflowError:
+        return None
+    return result if math.isfinite(result) else None
