@@ -107,7 +107,8 @@ def _criteria(report: Any) -> dict[str, bool]:
     return {item.name: item.met for item in report.verdict.criteria}
 
 
-COPILOT_BASE = dict(input=1000, cache_read=1000)
+def _copilot_sample() -> Any:
+    return _tokens_sample(input=1000, cache_read=1000)
 
 
 # --- manifest ----------
@@ -250,36 +251,74 @@ def test_report_shows_every_metric_per_task_and_in_total() -> None:
 
     report = ab.build_report([_outcome(1, copilot_1, pi_1), _outcome(2, copilot_2, pi_2)])
 
-    first = report.tasks[0].runtimes[ab.Runtime.COPILOT]
-    assert (first.runs, first.passes) == (1, 1)
-    assert first.tokens.model_dump() == {
-        "input": 1000,
-        "output": 200,
-        "cache_read": 500,
-        "cache_write": 100,
+    assert report.tasks[0].runtimes == {
+        ab.Runtime.COPILOT: ab.RuntimeMetrics(
+            runs=1,
+            passes=1,
+            tokens=ab.TokenCounts(input=1000, output=200, cache_read=500, cache_write=100),
+            cache_read_share=500 / 1600,
+            cost=ab.RuntimeCost(premium_requests=3.0, total_nano_aiu=7),
+            wall_seconds=100.0,
+            repair_rounds=1,
+        ),
+        ab.Runtime.PI: ab.RuntimeMetrics(
+            runs=1,
+            passes=1,
+            tokens=ab.TokenCounts(input=600, output=150, cache_read=900, cache_write=50),
+            cache_read_share=900 / 1550,
+            cost=ab.RuntimeCost(list_price_estimate_usd=0.25),
+            wall_seconds=80.0,
+            repair_rounds=0,
+        ),
     }
-    assert first.cache_read_share == pytest.approx(500 / 1600)
-    assert (first.cost.premium_requests, first.cost.total_nano_aiu) == (3.0, 7)
-    assert first.cost.list_price_estimate_usd is None
-    assert (first.wall_seconds, first.repair_rounds) == (100.0, 1)
-
-    copilot_total = report.totals[ab.Runtime.COPILOT]
-    assert (copilot_total.runs, copilot_total.passes) == (2, 1)
-    assert copilot_total.tokens.input == 1400
-    assert copilot_total.tokens.cache_read == 600
-    assert copilot_total.cache_read_share == pytest.approx(600 / (1400 + 600 + 100))
-    assert copilot_total.cost.premium_requests == 4.0
-    assert (copilot_total.wall_seconds, copilot_total.repair_rounds) == (150.0, 3)
-
-    pi_total = report.totals[ab.Runtime.PI]
-    assert pi_total.cost.list_price_estimate_usd == pytest.approx(0.35)
-    assert pi_total.cost.premium_requests is None
-    assert pi_total.cost.total_nano_aiu is None
+    assert report.tasks[1].runtimes == {
+        ab.Runtime.COPILOT: ab.RuntimeMetrics(
+            runs=1,
+            passes=0,
+            tokens=ab.TokenCounts(input=400, output=100, cache_read=100, cache_write=0),
+            cache_read_share=100 / 500,
+            cost=ab.RuntimeCost(premium_requests=1.0, total_nano_aiu=3),
+            wall_seconds=50.0,
+            repair_rounds=2,
+        ),
+        ab.Runtime.PI: ab.RuntimeMetrics(
+            runs=1,
+            passes=1,
+            tokens=ab.TokenCounts(input=300, output=60, cache_read=300, cache_write=0),
+            cache_read_share=300 / 600,
+            cost=ab.RuntimeCost(list_price_estimate_usd=0.10),
+            wall_seconds=40.0,
+            repair_rounds=1,
+        ),
+    }
+    assert report.totals == {
+        ab.Runtime.COPILOT: ab.RuntimeMetrics(
+            runs=2,
+            passes=1,
+            tokens=ab.TokenCounts(input=1400, output=300, cache_read=600, cache_write=100),
+            cache_read_share=600 / 2100,
+            cost=ab.RuntimeCost(premium_requests=4.0, total_nano_aiu=10),
+            wall_seconds=150.0,
+            repair_rounds=3,
+        ),
+        ab.Runtime.PI: ab.RuntimeMetrics(
+            runs=2,
+            passes=2,
+            tokens=ab.TokenCounts(input=900, output=210, cache_read=1200, cache_write=50),
+            cache_read_share=1200 / 2150,
+            cost=ab.RuntimeCost(list_price_estimate_usd=0.25 + 0.10),
+            wall_seconds=120.0,
+            repair_rounds=1,
+        ),
+    }
 
 
 def test_cost_units_are_kept_apart_per_runtime() -> None:
-    both = dict(premium_requests=2.0, total_nano_aiu=9, list_price_estimate_usd=1.5)
-    sample = _sample(invocations=(_invocation(**both),))
+    sample = _sample(
+        invocations=(
+            _invocation(premium_requests=2.0, total_nano_aiu=9, list_price_estimate_usd=1.5),
+        )
+    )
 
     report = _bar_report(sample, sample)
 
@@ -407,7 +446,7 @@ def test_task_report_carries_level_title_and_error() -> None:
 
 
 def test_go_bar_met() -> None:
-    copilot = _tokens_sample(**COPILOT_BASE)
+    copilot = _copilot_sample()
     pi = _tokens_sample(input=700, cache_read=3000)
 
     report = _bar_report(copilot, pi)
@@ -417,7 +456,7 @@ def test_go_bar_met() -> None:
 
 
 def test_go_bar_pass_count_fails_alone() -> None:
-    copilot = _tokens_sample(**COPILOT_BASE)
+    copilot = _copilot_sample()
     pi = _tokens_sample(input=700, cache_read=3000, passed=False)
 
     report = _bar_report(copilot, pi)
@@ -427,7 +466,7 @@ def test_go_bar_pass_count_fails_alone() -> None:
 
 
 def test_go_bar_cache_share_fails_alone() -> None:
-    copilot = _tokens_sample(**COPILOT_BASE)
+    copilot = _copilot_sample()
     pi = _tokens_sample(input=700, cache_read=1000)
 
     report = _bar_report(copilot, pi)
@@ -437,7 +476,7 @@ def test_go_bar_cache_share_fails_alone() -> None:
 
 
 def test_go_bar_tokens_fail_alone() -> None:
-    copilot = _tokens_sample(**COPILOT_BASE)
+    copilot = _copilot_sample()
     pi = _tokens_sample(input=900, cache_read=3000)
 
     report = _bar_report(copilot, pi)
@@ -446,40 +485,47 @@ def test_go_bar_tokens_fail_alone() -> None:
     assert _criteria(report) == {"pass_count": True, "cache_read_share": True, "tokens": False}
 
 
-def test_go_bar_share_needs_fifteen_points_over_copilot() -> None:
+@pytest.mark.parametrize(
+    ("pi_input", "expected"),
+    [(175, True), (176, False)],
+    ids=["exactly 15 points over", "just short of 15 points"],
+)
+def test_go_bar_share_needs_fifteen_points_over_copilot(pi_input: int, expected: bool) -> None:
     copilot = _tokens_sample(input=500, cache_read=500)
-    exactly = _tokens_sample(input=175, cache_read=325)
-    just_short = _tokens_sample(input=176, cache_read=325)
+    pi = _tokens_sample(input=pi_input, cache_read=325)
 
-    assert _criteria(_bar_report(copilot, exactly))["cache_read_share"] is True
-    assert _criteria(_bar_report(copilot, just_short))["cache_read_share"] is False
+    assert _criteria(_bar_report(copilot, pi))["cache_read_share"] is expected
 
 
-def test_go_bar_token_ceiling_counts_input_plus_cache_write() -> None:
+@pytest.mark.parametrize(
+    ("pi_cache_write", "expected"), [(600, True), (601, False)], ids=["at ceiling", "over ceiling"]
+)
+def test_go_bar_token_ceiling_counts_input_plus_cache_write(
+    pi_cache_write: int, expected: bool
+) -> None:
     copilot = _tokens_sample(input=1000, cache_read=1000, cache_write=1000)
-    at_ceiling = _tokens_sample(input=1000, cache_read=9000, cache_write=600)
-    over_ceiling = _tokens_sample(input=1000, cache_read=9000, cache_write=601)
+    pi = _tokens_sample(input=1000, cache_read=9000, cache_write=pi_cache_write)
 
-    assert _criteria(_bar_report(copilot, at_ceiling))["tokens"] is True
-    assert _criteria(_bar_report(copilot, over_ceiling))["tokens"] is False
+    assert _criteria(_bar_report(copilot, pi))["tokens"] is expected
 
 
-def test_go_bar_pi_passes_only_at_70_percent_when_copilot_share_unavailable() -> None:
+@pytest.mark.parametrize(
+    ("pi_input", "expected"), [(300, True), (301, False)], ids=["at 70 percent", "below 70 percent"]
+)
+def test_go_bar_pi_needs_70_percent_share_when_copilot_share_unavailable(
+    pi_input: int, expected: bool
+) -> None:
     copilot = _tokens_sample(input=1000, cache_read=None, cache_write=None)
-    at_bar = _tokens_sample(input=300, cache_read=700)
-    below_bar = _tokens_sample(input=301, cache_read=700)
+    pi = _tokens_sample(input=pi_input, cache_read=700)
 
-    met = _bar_report(copilot, at_bar)
-    unmet = _bar_report(copilot, below_bar)
+    report = _bar_report(copilot, pi)
 
-    assert _criteria(met)["cache_read_share"] is True
-    assert met.verdict.meets is True
-    assert _criteria(unmet)["cache_read_share"] is False
-    assert unmet.verdict.meets is False
+    assert _criteria(report)["cache_read_share"] is expected
+    assert report.verdict.meets is expected
 
 
 def test_go_bar_fails_when_pi_reports_no_cache_counts() -> None:
-    copilot = _tokens_sample(**COPILOT_BASE)
+    copilot = _copilot_sample()
     pi = _tokens_sample(input=100, cache_read=None, cache_write=None)
 
     report = _bar_report(copilot, pi)
@@ -499,7 +545,7 @@ def test_go_bar_token_criterion_fails_when_input_tokens_unreported() -> None:
 
 
 def test_go_bar_compares_only_tasks_that_ran() -> None:
-    copilot = _tokens_sample(**COPILOT_BASE)
+    copilot = _copilot_sample()
     pi = _tokens_sample(input=700, cache_read=3000)
     skipped = ab.TaskOutcome(entry=_entry(2), samples={})
 
@@ -512,6 +558,32 @@ def test_go_bar_is_not_met_with_no_completed_tasks() -> None:
     report = ab.build_report([ab.TaskOutcome(entry=_entry(1), samples={})])
 
     assert report.verdict.meets is False
+
+
+def _bar_metrics(*, runs: int, input: int, cache_read: int) -> Any:
+    return ab.RuntimeMetrics(
+        runs=runs,
+        passes=1,
+        tokens=ab.TokenCounts(input=input, output=10, cache_read=cache_read, cache_write=0),
+        cache_read_share=cache_read / (input + cache_read),
+        cost=ab.RuntimeCost(),
+        wall_seconds=1.0,
+        repair_rounds=0,
+    )
+
+
+@pytest.mark.parametrize(("pi_runs", "expected"), [(0, False), (1, True)])
+def test_go_bar_needs_at_least_one_pi_run_even_when_every_criterion_is_met(
+    pi_runs: int, expected: bool
+) -> None:
+    copilot = _bar_metrics(runs=1, input=1000, cache_read=100)
+    pi = _bar_metrics(runs=pi_runs, input=100, cache_read=900)
+
+    verdict = ab.evaluate_go_bar(copilot, pi)
+
+    assert all(item.met for item in verdict.criteria)
+    assert verdict.meets is expected
+    assert verdict.recommendation == ("recommended" if expected else "experimental")
 
 
 # --- stored runs ----------
@@ -603,25 +675,50 @@ def test_load_sample_does_not_pass_a_run_without_a_verification_artifact(tmp_pat
 # --- rendering ----------
 
 
-def test_markdown_shows_unavailable_zero_and_verdict() -> None:
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _total_cell(markdown: str, runtime: Any, column: str) -> str:
+    lines = markdown.splitlines()
+    columns = _cells(next(line for line in lines if line.startswith("| Task |")))
+    row = next(line for line in lines if line.startswith(f"| total | {runtime.value} |"))
+    return _cells(row)[columns.index(column)]
+
+
+def test_markdown_total_cache_share_is_unavailable_when_runtime_reported_none() -> None:
     copilot = _tokens_sample(input=1000, cache_read=None, cache_write=None)
+    pi = _tokens_sample(input=500, cache_read=0)
+
+    markdown = ab.render_markdown(_bar_report(copilot, pi))
+
+    assert _total_cell(markdown, ab.Runtime.COPILOT, "Cache share") == "unavailable"
+    assert _total_cell(markdown, ab.Runtime.PI, "Cache share") == "0.0%"
+
+
+def test_markdown_total_cache_share_is_zero_percent_when_reported_zero() -> None:
     zero = _tokens_sample(input=500, cache_read=0)
 
-    unavailable_md = ab.render_markdown(_bar_report(copilot, zero))
-    zero_md = ab.render_markdown(_bar_report(zero, zero))
+    markdown = ab.render_markdown(_bar_report(zero, zero))
 
-    assert "unavailable" in unavailable_md
-    assert "0.0%" in zero_md
-    assert "Go bar" in unavailable_md
-    assert "experimental" in unavailable_md
+    assert _total_cell(markdown, ab.Runtime.COPILOT, "Cache share") == "0.0%"
+
+
+def test_markdown_states_experimental_when_go_bar_unmet() -> None:
+    zero = _tokens_sample(input=500, cache_read=0)
+
+    lines = ab.render_markdown(_bar_report(zero, zero)).splitlines()
+
+    assert "Go bar: pi does not meet the go bar: experimental, not recommended" in lines
 
 
 def test_markdown_states_recommended_when_go_bar_met() -> None:
-    report = _bar_report(_tokens_sample(**COPILOT_BASE), _tokens_sample(input=700, cache_read=3000))
+    report = _bar_report(_copilot_sample(), _tokens_sample(input=700, cache_read=3000))
 
     markdown = ab.render_markdown(report)
 
-    assert "recommended" in markdown
+    assert "Go bar: pi meets the go bar: recommended" in markdown.splitlines()
+    assert "not recommended" not in markdown
     assert "list-price estimate" in markdown
 
 
@@ -823,9 +920,12 @@ def test_failed_issue_fetch_aborts_before_any_run() -> None:
     assert runner.requests == []
 
 
-def test_budget_needs_at_least_one_positive_limit() -> None:
+def test_budget_needs_at_least_one_limit() -> None:
     with pytest.raises(ValueError, match="at least one"):
         ab.Budget()
+
+
+def test_budget_limits_must_be_positive() -> None:
     with pytest.raises(ValueError, match="greater than 0"):
         ab.Budget(max_pi_usd=0.0)
 
@@ -839,20 +939,12 @@ def test_default_config_is_local_only() -> None:
     ab.ensure_local_only(load_config(None))
 
 
-@pytest.mark.parametrize(
-    ("section", "field"),
-    [
-        ("pull_request", "enabled"),
-        ("merge", "enabled"),
-        ("escalation", "enabled"),
-        ("scheduler", "enabled"),
-    ],
-)
-def test_config_that_can_reach_github_is_refused(section: str, field: str) -> None:
+@pytest.mark.parametrize("section", ab._GITHUB_SECTIONS)
+def test_config_that_can_reach_github_is_refused(section: str) -> None:
     from software_agent_factory.config import load_config
 
     config = load_config(None)
-    changed = getattr(config, section).model_copy(update={field: True})
+    changed = getattr(config, section).model_copy(update={"enabled": True})
     unsafe = config.model_copy(update={section: changed})
 
     with pytest.raises(ab.UnsafeConfigError, match=section):
@@ -1177,6 +1269,91 @@ def test_issue_fetcher_raises_when_gh_fails(tmp_path: Path) -> None:
         ab.GhIssueFetcher(tmp_path, commands)(42)
 
 
+def test_issue_fetcher_names_the_issue_when_gh_prints_bad_json(tmp_path: Path) -> None:
+    import subprocess
+
+    def commands(args: Any, cwd: Path, env: Any = None) -> Any:
+        return subprocess.CompletedProcess(list(args), 0, "not json", "")
+
+    with pytest.raises(ab.IssueFetchError, match="issue 42: unexpected gh output"):
+        ab.GhIssueFetcher(tmp_path, commands)(42)
+
+
+def test_tail_keeps_the_last_500_characters_without_surrounding_whitespace() -> None:
+    text = "  head" + "x" * 600 + "end \n"
+
+    tail = ab._tail(text)
+
+    assert len(tail) == 500
+    assert tail.endswith("xxxend")
+    assert "head" not in tail
+
+
+# --- real command runner ----------
+
+
+def _patch_subprocess_run(monkeypatch: pytest.MonkeyPatch, behaviour: Any) -> list[dict[str, Any]]:
+    import subprocess
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(args: Any, **kwargs: Any) -> Any:
+        calls.append({"args": args, **kwargs})
+        return behaviour(args)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_command_runner_turns_a_timeout_into_exit_124(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    def times_out(args: Any) -> Any:
+        raise subprocess.TimeoutExpired(args, 5)
+
+    _patch_subprocess_run(monkeypatch, times_out)
+
+    result = ab.subprocess_command_runner(5)(["sleep", "9"], tmp_path)
+
+    assert result.returncode == 124
+    assert result.stderr == "timed out after 5s"
+
+
+def test_command_runner_turns_a_missing_program_into_exit_127(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(args: Any) -> Any:
+        raise FileNotFoundError("no such program: nope")
+
+    _patch_subprocess_run(monkeypatch, missing)
+
+    result = ab.subprocess_command_runner(5)(["nope"], tmp_path)
+
+    assert result.returncode == 127
+    assert "no such program: nope" in result.stderr
+
+
+def test_command_runner_passes_cwd_timeout_and_env_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    def fine(args: Any) -> Any:
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    calls = _patch_subprocess_run(monkeypatch, fine)
+    run = ab.subprocess_command_runner(7)
+
+    run(["a"], tmp_path)
+    run(["b"], tmp_path, {"ONLY": "this"})
+
+    inherited, replaced = calls
+    assert (inherited["cwd"], inherited["timeout"], inherited["env"]) == (tmp_path, 7, None)
+    assert replaced["env"] == {"ONLY": "this"}
+
+
 # --- command line ----------
 
 
@@ -1206,7 +1383,8 @@ def test_cli_writes_json_and_markdown_reports(tmp_path: Path) -> None:
     assert code == 0
     payload = json.loads((tmp_path / "out" / "report.json").read_text(encoding="utf-8"))
     assert [task["issue"] for task in payload["tasks"]] == [1, 2]
-    assert payload["verdict"]["recommendation"] in {"recommended", "experimental"}
+    assert payload["verdict"]["recommendation"] == "experimental"
+    assert payload["verdict"]["meets"] is False
     markdown = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
     assert "Go bar" in markdown
     assert len(commands.factory_runs()) == 4
@@ -1245,6 +1423,23 @@ def test_cli_refuses_a_used_workdir_before_any_paid_run(
     assert "issue-2" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "content", [None, "- a\n- list\n", "a: [unclosed"], ids=["missing", "not a mapping", "bad yaml"]
+)
+def test_cli_refuses_a_config_that_cannot_be_loaded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], content: str | None
+) -> None:
+    config = tmp_path / "broken.yaml"
+    if content is not None:
+        config.write_text(content, encoding="utf-8")
+
+    code, commands = _cli(tmp_path, "--max-wall-seconds", "10", "--config", str(config))
+
+    assert code == 2
+    assert commands.calls == []
+    assert "config could not be loaded" in capsys.readouterr().err
+
+
 def test_cli_requires_a_budget(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         _cli(tmp_path)
@@ -1271,8 +1466,8 @@ def test_cli_stops_when_a_base_commit_is_missing(
     import subprocess
 
     class NoCommits(FakeCommands):
-        def __call__(self, args: Any, cwd: Path) -> Any:
-            super().__call__(args, cwd)
+        def __call__(self, args: Any, cwd: Path, env: Any = None) -> Any:
+            super().__call__(args, cwd, env)
             return subprocess.CompletedProcess(list(args), 1, "", "")
 
     code, commands = _cli(tmp_path, "--max-wall-seconds", "10", commands=NoCommits())
