@@ -25,4 +25,4 @@ Work item:
 {"acceptance_criteria":["Blank names return HTTP 400."],"complexity":null,"constraints":["Do not change the public API."],"created_at":"2026-01-01T00:00:00Z","depends_on":[],"description":"Return HTTP 400 for empty or whitespace-only names.","external_id":null,"id":"WI-1","labels":[],"priority":null,"project_id":null,"project_task_id":null,"risk":null,"schema_version":1,"source":"MANUAL","title":"Reject empty customer names"}
 
 Triage result:
-{"complexity":"L2","confidence":0.4,"dependencies":[],"factory_eligible":true,"needs_research":true,"provenance":"AGENT","requirements_quality":"vague","risk":"R1","risk_rationale":null,"schema_version":1,"unknowns":[]}
+{"complexity":"L2","confidence":0.4,"dependencies":[],"factory_eligible":true,"needs_research":true,"provenance":"AGENT","risk":"R1","risk_rationale":null,"schema_version":1,"unknowns":[]}

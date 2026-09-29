@@ -368,7 +368,6 @@ class FakeAgentRuntime:
             factory_eligible=True,
             complexity=Complexity.L1,
             risk=Risk.R1,
-            requirements_quality="clear",
             needs_research=False,
             dependencies=[],
             unknowns=[],

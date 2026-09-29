@@ -85,7 +85,6 @@ def artifact_passages(artifact: ModelBase) -> list[WritingPassage]:
 
     if isinstance(artifact, TriageResult):
         passages = [
-            _passage("requirements_quality", artifact.requirements_quality, max_words=12),
             *_items("dependencies", artifact.dependencies, max_words=25, lint_prose=False),
             *_items("unknowns", artifact.unknowns, max_words=25),
         ]

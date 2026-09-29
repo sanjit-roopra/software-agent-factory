@@ -1233,13 +1233,20 @@ class TriageResult(VersionedModel):
     factory_eligible: bool
     complexity: Complexity
     risk: Risk
-    requirements_quality: str = Field(min_length=1)
     needs_research: bool
     dependencies: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     risk_rationale: RiskRationale | None = None
     provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_requirements_quality(cls, data: object) -> object:
+        """Load triage files written before the factory removed ``requirements_quality``."""
+        if isinstance(data, dict) and "requirements_quality" in data:
+            return {key: value for key, value in data.items() if key != "requirements_quality"}
+        return data
 
     @model_validator(mode="after")
     def _validate_risk_rationale(self) -> TriageResult:

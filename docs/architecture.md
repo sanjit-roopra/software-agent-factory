@@ -648,7 +648,6 @@ Fields approximately:
 factory_eligible
 complexity
 risk
-requirements_quality
 needs_research
 dependencies
 unknowns

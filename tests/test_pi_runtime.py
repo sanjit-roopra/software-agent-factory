@@ -1377,7 +1377,6 @@ _TRIAGE_JSON = {
     "factory_eligible": True,
     "complexity": "L1",
     "risk": "R1",
-    "requirements_quality": "clear",
     "needs_research": False,
     "confidence": 0.9,
 }

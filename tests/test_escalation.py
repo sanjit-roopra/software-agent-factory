@@ -1238,7 +1238,6 @@ def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: P
             factory_eligible=True,
             complexity=Complexity.L1,
             risk=Risk.R2,  # R2 requires human approval
-            requirements_quality="clear",
             needs_research=False,
             confidence=0.9,
             risk_rationale=RiskRationale(
@@ -1525,7 +1524,6 @@ def test_no_reply_text_in_agent_prompts(source_repo: Path, tmp_path: Path) -> No
                 factory_eligible=True,
                 complexity=Complexity.L1,
                 risk=Risk.R2,
-                requirements_quality="clear",
                 needs_research=False,
                 confidence=0.9,
                 risk_rationale=RiskRationale(
@@ -1656,7 +1654,6 @@ def test_service_reconciles_and_reopens_within_capacity(source_repo: Path, tmp_p
             factory_eligible=True,
             complexity=Complexity.L1,
             risk=Risk.R2,
-            requirements_quality="good",
             needs_research=False,
             confidence=0.9,
             risk_rationale=escalation.approval_context.risk_rationale,
@@ -1913,7 +1910,6 @@ def test_service_reconciliation_recovers_stranded_reopened_run(
             factory_eligible=True,
             complexity=Complexity.L1,
             risk=Risk.R2,
-            requirements_quality="good",
             needs_research=False,
             confidence=0.9,
             risk_rationale=app_ctx.risk_rationale,
@@ -2623,7 +2619,6 @@ def test_crash_recovered_reopened_dispatch_does_not_require_extra_quota_slot(
             factory_eligible=True,
             complexity=Complexity.L1,
             risk=Risk.R2,
-            requirements_quality="good",
             needs_research=False,
             confidence=0.9,
             risk_rationale=app_ctx.risk_rationale,

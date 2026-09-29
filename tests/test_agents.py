@@ -463,7 +463,6 @@ def test_triage_hook_overrides_default_for_scripted_tests() -> None:
                 factory_eligible=False,
                 complexity=Complexity.L2,
                 risk=Risk.R2,
-                requirements_quality="vague",
                 needs_research=True,
                 dependencies=[],
                 unknowns=["unclear scope"],

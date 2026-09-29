@@ -149,7 +149,6 @@ def test_dependency_identifiers_are_not_linted_as_prose() -> None:
         factory_eligible=True,
         complexity="L1",
         risk="R1",
-        requirements_quality="Requirements are clear.",
         needs_research=False,
         confidence=0.9,
         dependencies=["delve"],

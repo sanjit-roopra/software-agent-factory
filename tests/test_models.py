@@ -235,7 +235,6 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         factory_eligible=True,
         complexity=Complexity.L1,
         risk=Risk.R1,
-        requirements_quality="clear",
         needs_research=False,
         dependencies=["pytest"],
         unknowns=["none"],
@@ -879,3 +878,22 @@ def test_invocation_record_round_trips_writing_findings() -> None:
     reloaded = InvocationRecord.model_validate_json(record.model_dump_json())
 
     assert reloaded.writing_findings == ("summary has 26 words.",)
+
+
+def test_triage_result_no_longer_asks_the_model_for_requirements_quality() -> None:
+    schema = TriageResult.model_json_schema()
+
+    assert "requirements_quality" not in schema["properties"]
+    assert "requirements_quality" not in schema["required"]
+
+
+def test_old_triage_json_with_requirements_quality_still_loads() -> None:
+    old = (
+        '{"schema_version":1,"factory_eligible":true,"complexity":"L1","risk":"R1",'
+        '"requirements_quality":"clear","needs_research":false,"confidence":0.9}'
+    )
+
+    result = TriageResult.model_validate_json(old)
+
+    assert result.complexity is Complexity.L1
+    assert "requirements_quality" not in result.model_dump_json()

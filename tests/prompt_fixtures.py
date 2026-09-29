@@ -82,7 +82,6 @@ def triage() -> TriageResult:
         factory_eligible=True,
         complexity="L2",
         risk="R1",
-        requirements_quality="vague",
         needs_research=True,
         confidence=0.4,
     )

@@ -142,7 +142,6 @@ def triage_hook(
                 factory_eligible=True,
                 complexity=complexity,
                 risk=risk,
-                requirements_quality="clear",
                 needs_research=needs_research,
                 dependencies=[],
                 unknowns=[],

@@ -928,7 +928,6 @@ def test_complexity_and_risk_prefer_triage_result_over_work_item(tmp_path: Path)
             factory_eligible=True,
             complexity=Complexity.L2,
             risk=Risk.R2,
-            requirements_quality="good",
             needs_research=False,
             confidence=0.9,
             risk_rationale=RiskRationale(

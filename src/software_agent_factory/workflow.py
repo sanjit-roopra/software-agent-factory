@@ -1348,7 +1348,6 @@ class WorkflowController:
             factory_eligible=True,
             complexity=route_decision.selected_worker_complexity,
             risk=route_decision.selected_risk,
-            requirements_quality="SYNTHESIZED: Direct execution from work item acceptance criteria",
             needs_research=False,
             dependencies=[],
             unknowns=[],
