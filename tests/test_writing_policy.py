@@ -289,3 +289,16 @@ def test_writing_limits_text_lists_each_limit_and_filler_examples() -> None:
 def test_filler_examples_are_words_the_prose_check_flags() -> None:
     for word in FILLER_EXAMPLES:
         assert lint(f"The change is {word} today.", "descriptive")["violations"]["slop_word"] == 1
+
+
+def test_an_artifact_type_without_prose_fields_has_no_passages() -> None:
+    assert writing_policy.artifact_passages(WorkItem(id="WI-1", title="T", description="D")) == []
+
+
+def test_findings_stop_after_twelve_with_an_omission_note() -> None:
+    report = ResearchReport(question="Q?", findings=[" ".join(["word"] * 60)] * 15)
+
+    findings = validate_artifact_writing(report)
+
+    assert len(findings) == 13
+    assert findings[-1] == "More writing findings were omitted."
