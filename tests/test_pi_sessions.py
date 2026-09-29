@@ -714,13 +714,16 @@ def test_a_call_recorded_on_the_fresh_file_is_the_one_continued_next(
 
 
 def test_fresh_removes_the_roles_expired_files_only(store: PiSessionStore, clock: Clock) -> None:
-    expired = run_call(store, "W1", AgentRole.REVIEWER)
-    clock.advance(seconds=MAX_AGE)
     current = run_call(store, "W1", AgentRole.REVIEWER)
+    expired = current.path.parent / "reviewer-7.jsonl"
+    expired.write_text('{"type":"message"}\n', encoding=UTF_8)
+    stamp(expired, START - timedelta(seconds=MAX_AGE))
+    assert expired.exists()
+    assert current.path.exists()
 
     store.fresh("W1", AgentRole.REVIEWER)
 
-    assert not expired.path.exists()
+    assert not expired.exists()
     assert current.path.exists()
 
 
