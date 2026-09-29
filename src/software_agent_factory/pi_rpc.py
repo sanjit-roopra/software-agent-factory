@@ -11,20 +11,25 @@ stdin/stdout/stderr.
 
 from __future__ import annotations
 
+import codecs
 import itertools
 import json
 import os
 import select
 import subprocess
 import time
+from collections.abc import Callable
 from typing import IO, Any, Protocol
 
 from .subprocess_utils import kill_process_group
 
-#: Bytes retained in the stderr tail exposed via :attr:`PiRpcClient.stderr_tail`
+#: Characters retained in the stderr tail exposed via :attr:`PiRpcClient.stderr_tail`
 #: -- enough for a useful excerpt in a failure reason without unbounded
 #: growth if pi writes a lot to stderr before exiting.
-_STDERR_TAIL_BYTES = 4096
+_STDERR_TAIL_CHARS = 4096
+
+#: Characters of a bad stdout line kept in a :class:`PiRpcProtocolError` excerpt.
+_LINE_EXCERPT_CHARS = 200
 
 _READ_CHUNK_BYTES = 65536
 
@@ -113,15 +118,29 @@ class PiRpcClient:
 
     ``process`` must already be started; construction and cwd/argv are the
     runtime's concern (see :class:`PiProcessHandle`).
+
+    ``redact`` maps text pi wrote to the same text with secrets hidden. The
+    client applies it to the *whole* stderr window or offending line before
+    truncating it into :attr:`stderr_tail` or a ``line_excerpt``, so a secret
+    the truncation would have cut in half is never left as an unredactable
+    fragment. The default hides nothing.
     """
 
-    def __init__(self, process: PiProcessHandle, *, max_line_bytes: int = _MAX_LINE_BYTES) -> None:
+    def __init__(
+        self,
+        process: PiProcessHandle,
+        *,
+        max_line_bytes: int = _MAX_LINE_BYTES,
+        redact: Callable[[str], str] = str,
+    ) -> None:
         self._process = process
         self._max_line_bytes = max_line_bytes
+        self._redact = redact
         self._next_id = itertools.count(1)
         self._stdout_buffer = b""
         self._stdout_eof = False
-        self._stderr_tail = b""
+        self._stderr_tail = ""
+        self._stderr_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._stderr_eof = process.stderr is None
         #: Records seen by :meth:`request` that did not match the response it
         #: was waiting for. Drained by the next :meth:`wait_for_settled` call.
@@ -129,8 +148,8 @@ class PiRpcClient:
 
     @property
     def stderr_tail(self) -> str:
-        """Last ~4 KB of pi's stderr read so far, decoded for display in a failure reason."""
-        return self._stderr_tail.decode("utf-8", errors="replace")
+        """Last ~4 K characters of pi's stderr read so far, redacted for a failure reason."""
+        return self._stderr_tail
 
     def send(self, command: dict[str, Any]) -> str:
         """Write one JSON command line (plus ``"\\n"``), assigning a unique ``id``.
@@ -205,9 +224,9 @@ class PiRpcClient:
         try:
             record = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            raise PiRpcProtocolError(stripped[:200]) from exc
+            raise PiRpcProtocolError(self._excerpt(stripped)) from exc
         if not isinstance(record, dict):
-            raise PiRpcProtocolError(stripped[:200])
+            raise PiRpcProtocolError(self._excerpt(stripped))
         return record
 
     def _read_line(self, deadline: float) -> str:
@@ -236,9 +255,10 @@ class PiRpcClient:
             if stderr_fd is not None and stderr_fd in ready:
                 chunk = os.read(stderr_fd, _READ_CHUNK_BYTES)
                 if chunk:
-                    self._stderr_tail = (self._stderr_tail + chunk)[-_STDERR_TAIL_BYTES:]
+                    self._append_stderr(self._stderr_decoder.decode(chunk))
                 else:
                     self._stderr_eof = True
+                    self._append_stderr(self._stderr_decoder.decode(b"", final=True))
             if stdout_fd in ready:
                 chunk = os.read(stdout_fd, _READ_CHUNK_BYTES)
                 if chunk:
@@ -248,7 +268,7 @@ class PiRpcClient:
                         and b"\n" not in self._stdout_buffer
                     ):
                         raise PiRpcProtocolError(
-                            self._stdout_buffer[:200].decode("utf-8", errors="replace"),
+                            self._excerpt(self._stdout_buffer.decode("utf-8", errors="replace")),
                             reason=f"exceeded {self._max_line_bytes} bytes without a newline",
                         )
                 else:
@@ -259,8 +279,22 @@ class PiRpcClient:
             return line.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise PiRpcProtocolError(
-                line[:200].decode("utf-8", errors="replace"), reason="is not valid UTF-8"
+                self._excerpt(line.decode("utf-8", errors="replace")),
+                reason="is not valid UTF-8",
             ) from exc
+
+    def _append_stderr(self, text: str) -> None:
+        """Redact the contiguous window (old tail plus ``text``), then keep its last chars.
+
+        Redacting before truncating means a secret straddling the cut is
+        replaced whole. A secret split across two reads is caught too: the
+        earlier read's unredacted prefix is still in the window.
+        """
+        self._stderr_tail = self._redact(self._stderr_tail + text)[-_STDERR_TAIL_CHARS:]
+
+    def _excerpt(self, text: str) -> str:
+        """Redact all of ``text``, then keep its first :data:`_LINE_EXCERPT_CHARS` chars."""
+        return self._redact(text)[:_LINE_EXCERPT_CHARS]
 
     def _returncode(self) -> int | None:
         code = self._process.poll()

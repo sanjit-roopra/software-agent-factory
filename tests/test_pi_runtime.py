@@ -336,6 +336,20 @@ def _failure_reason_when_pi_writes(stderr: str, **runtime_kwargs: object) -> str
     return result.failure_reason
 
 
+def test_run_redacts_a_secret_the_stderr_window_would_cut_in_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pi's 4 KB stderr window cuts inside the secret: without redaction before
+    truncation, its last five characters would open the failure reason."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _PLAIN_SECRET)
+
+    reason = _failure_reason_when_pi_writes(
+        "A" * 100 + _PLAIN_SECRET + "B" * (4096 - 5), provider="anthropic"
+    )
+
+    assert _PLAIN_SECRET[-5:] not in reason
+
+
 def test_run_child_env_scrubs_github_credential_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
     monkeypatch.setenv("GH_TOKEN", "ghp_other_secret")

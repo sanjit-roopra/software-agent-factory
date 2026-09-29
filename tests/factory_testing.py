@@ -386,9 +386,18 @@ class FakePiProcess:
         self._stdout_write.write(text)
         self._stdout_write.flush()
 
+    def write_stdout_bytes(self, data: bytes) -> None:
+        self._stdout_write.buffer.write(data)
+        self._stdout_write.flush()
+
     def write_stderr(self, text: str) -> None:
         assert self._stderr_write is not None
         self._stderr_write.write(text)
+        self._stderr_write.flush()
+
+    def write_stderr_bytes(self, data: bytes) -> None:
+        assert self._stderr_write is not None
+        self._stderr_write.buffer.write(data)
         self._stderr_write.flush()
 
     def close_stdout(self) -> None:

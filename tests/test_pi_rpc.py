@@ -167,7 +167,7 @@ def test_process_exited_returncode_is_none_when_process_still_running() -> None:
 
 
 def test_stderr_tail_keeps_trailing_window_when_it_exceeds_the_cap() -> None:
-    """``stderr_tail`` is bounded to the last ~4 KB (``_STDERR_TAIL_BYTES``)
+    """``stderr_tail`` is bounded to the last ~4 K characters (``_STDERR_TAIL_CHARS``)
     -- the trailing window, not the front, since the most recent output is
     what's useful in a failure reason."""
     process = FakePiProcess()
@@ -181,8 +181,101 @@ def test_stderr_tail_keeps_trailing_window_when_it_exceeds_the_cap() -> None:
 
     tail = excinfo.value.stderr_tail
     assert "TAIL_MARKER" in tail
-    assert len(tail.encode("utf-8")) <= 4096
+    assert len(tail) <= 4096
     assert "a" * 5000 not in tail
+
+
+_SECRET = "plainsecretvalue1234"
+
+
+def _redact_secret(text: str) -> str:
+    return text.replace(_SECRET, "[REDACTED]")
+
+
+def test_stderr_tail_redacts_a_secret_before_the_window_cuts_it() -> None:
+    """A secret whose front falls outside the 4 KB window must not survive as
+    a suffix: redaction runs on the untruncated stream, then the window cuts."""
+    process = FakePiProcess()
+    client = PiRpcClient(process, redact=_redact_secret)
+    process.exit(1)
+    process.write_stderr("A" * 100 + _SECRET + "B" * (4096 - 5))
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    tail = excinfo.value.stderr_tail
+    assert len(tail) <= 4096
+    assert "e1234" not in tail
+    assert tail.endswith("B" * 4000)
+
+
+def test_stderr_tail_redacts_a_secret_split_across_reads() -> None:
+    process = FakePiProcess()
+    client = PiRpcClient(process, redact=_redact_secret)
+    process.exit(1)
+    process.write_stderr("auth failed for " + _SECRET[:8])
+    with pytest.raises(PiRpcTimeout):
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(0.05))
+    process.write_stderr(_SECRET[8:] + "\n")
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert _SECRET not in excinfo.value.stderr_tail
+    assert "auth failed for [REDACTED]" in excinfo.value.stderr_tail
+
+
+def test_stderr_tail_keeps_multibyte_characters_split_across_reads() -> None:
+    process = FakePiProcess()
+    client = PiRpcClient(process)
+    process.exit(1)
+    encoded = "caf\u00e9".encode()
+    process.write_stderr_bytes(encoded[:4])
+    with pytest.raises(PiRpcTimeout):
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline(0.05))
+    process.write_stderr_bytes(encoded[4:])
+    process.close_stdout()
+
+    with pytest.raises(PiRpcProcessExited) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert excinfo.value.stderr_tail == "caf\u00e9"
+
+
+def test_protocol_error_excerpt_redacts_a_secret_before_truncating_to_200_chars() -> None:
+    process = FakePiProcess()
+    client = PiRpcClient(process, redact=_redact_secret)
+    process.write_raw_stdout("x" * 195 + _SECRET + " not json\n")
+
+    with pytest.raises(PiRpcProtocolError) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert len(excinfo.value.line_excerpt) <= 200
+    assert "plain" not in excinfo.value.line_excerpt
+
+
+def test_oversized_line_excerpt_redacts_a_secret_before_truncating_to_200_chars() -> None:
+    process = FakePiProcess()
+    client = PiRpcClient(process, max_line_bytes=300, redact=_redact_secret)
+    process.write_raw_stdout("x" * 195 + _SECRET + "y" * 200)
+
+    with pytest.raises(PiRpcProtocolError) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert "plain" not in excinfo.value.line_excerpt
+
+
+def test_invalid_utf8_line_excerpt_redacts_a_secret_before_truncating() -> None:
+    process = FakePiProcess()
+    client = PiRpcClient(process, redact=_redact_secret)
+    process.write_stdout_bytes(b"x" * 195 + _SECRET.encode() + b"\xff\n")
+
+    with pytest.raises(PiRpcProtocolError) as excinfo:
+        client.request({"type": "prompt", "message": "hi"}, deadline=_deadline())
+
+    assert "plain" not in excinfo.value.line_excerpt
 
 
 def test_request_succeeds_when_stderr_handle_is_none() -> None:

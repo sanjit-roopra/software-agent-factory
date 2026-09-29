@@ -95,19 +95,31 @@ def build_child_env() -> tuple[dict[str, str], set[str]]:
     return env, scrubbed_values
 
 
+def redact_secrets(text: str, scrubbed_values: set[str]) -> str:
+    """Redact scrubbed credential values and token-shaped substrings from text.
+
+    Leaves whitespace and length untouched, so a caller can redact a whole
+    buffer *before* truncating it: a secret cut in half by the truncation
+    would otherwise escape exact-value redaction. Values shorter than four
+    characters are ignored (too short to be a credential, too likely to hit
+    unrelated text).
+    """
+    redacted = text
+    for value in sorted(scrubbed_values, key=len, reverse=True):
+        if len(value) >= 4:
+            redacted = redacted.replace(value, "[REDACTED]")
+    for pattern in TOKEN_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
+
 def sanitize_output(text: str, scrubbed_values: set[str]) -> str:
     """Redact scrubbed credential values and token-shaped substrings from text.
 
     Collapses whitespace and truncates to 600 characters, matching the
     excerpt length used in failure-reason and log messages.
     """
-    sanitized = text
-    for value in sorted(scrubbed_values, key=len, reverse=True):
-        if len(value) >= 4:
-            sanitized = sanitized.replace(value, "[REDACTED]")
-    for pattern in TOKEN_PATTERNS:
-        sanitized = pattern.sub("[REDACTED]", sanitized)
-    sanitized = " ".join(sanitized.split())
+    sanitized = " ".join(redact_secrets(text, scrubbed_values).split())
     if len(sanitized) <= 600:
         return sanitized
     return f"{sanitized[:597].rstrip()}..."

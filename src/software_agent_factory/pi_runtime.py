@@ -65,7 +65,12 @@ from .pi_rpc import (
     PiRpcTimeout,
 )
 from .prompts import build_prompt
-from .subprocess_utils import build_child_env, kill_process_group, sanitize_output
+from .subprocess_utils import (
+    build_child_env,
+    kill_process_group,
+    redact_secrets,
+    sanitize_output,
+)
 from .usage_values import non_negative_float, non_negative_int
 
 if TYPE_CHECKING:
@@ -386,7 +391,7 @@ class PiAgentRuntime(AgentRuntime):
             )
         boot_ms = (time.perf_counter() - boot_start) * 1000.0
 
-        client = PiRpcClient(process)
+        client = PiRpcClient(process, redact=lambda text: redact_secrets(text, scrubbed_values))
         usage: UsageMetrics | None = None
         try:
             deadline = time.monotonic() + request.timeout_seconds
