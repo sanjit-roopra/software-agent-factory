@@ -75,8 +75,10 @@ class PiSessionStore:
         <root>/<work item>/<role>-<n>.jsonl    n-th replacement, n >= 2
         <root>/<work item>/<role>.meta.json    sidecar naming the current file
 
-    A replacement never deletes the file it replaces. The sidecar always names
-    the file of the latest recorded call, so only that file can be continued.
+    The sidecar always names the file of the latest recorded call, so only that
+    file can be continued. Starting a new session deletes the role's older files
+    that were last written ``max_age_seconds`` or longer ago; younger ones stay.
+    Everything is owner-only: directories 0700, files 0600.
     """
 
     def __init__(
@@ -106,7 +108,9 @@ class PiSessionStore:
             session_path = directory / record.session_file
             _restrict_to_owner(session_path)
             return Continue(session_path)
-        return Fresh(_next_session_path(directory, role))
+        fresh = Fresh(_next_session_path(directory, role))
+        self._prune_expired_files(directory, role)
+        return fresh
 
     def record(
         self,
@@ -155,6 +159,27 @@ class PiSessionStore:
         if not 0 <= age_seconds < self._max_age_seconds:
             return False
         return _is_readable_file(directory / record.session_file)
+
+    def _prune_expired_files(self, directory: Path, role: AgentRole) -> None:
+        """Delete the role's session files last written ``max_age`` or longer ago.
+
+        Such a file can never be continued, and it holds a full transcript. Only
+        a new session prunes, so the file a call continues is never touched. A
+        file that cannot be removed is skipped: pruning must not fail a call.
+        """
+        cutoff = self._clock().timestamp() - self._max_age_seconds
+        try:
+            entries = [
+                entry for entry in directory.iterdir() if _is_session_file_name(entry.name, role)
+            ]
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if entry.stat().st_mtime <= cutoff:
+                    entry.unlink()
+            except OSError:
+                continue
 
     @staticmethod
     def _read_record(directory: Path, role: AgentRole) -> _SessionRecord | None:

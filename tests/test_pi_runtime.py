@@ -355,7 +355,7 @@ def test_build_command_appends_session_arg_for_resumed_session() -> None:
 
 
 _SESSION_START = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
-_SESSION_MAX_AGE = 3600
+_SESSION_MAX_AGE = 600  # not the config default, so the wiring is proven
 _REVIEW_TEXT = json.dumps({"approved": True})
 _CHANGE_SET_TEXT = json.dumps({"summary": "Reject empty customer names."})
 _TEXT_BY_ROLE = {
@@ -387,12 +387,13 @@ class _SessionRig:
         """Run later calls with another configured provider, on the same session store."""
         self.runtime = self._runtime_for(PiConfig(provider=provider))
 
-    def _start(self, command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
+    def _start(self, command: Sequence[str], _cwd: Path, _env: dict[str, str]) -> FakePiProcess:
         self.commands.append(list(command))
         session_path = _session_path_of(command)
         if session_path is not None:
             session_path.parent.mkdir(parents=True, exist_ok=True)
             session_path.touch()
+            os.utime(session_path, (self.now.timestamp(), self.now.timestamp()))
         assert self._process is not None
         return self._process
 
@@ -513,6 +514,20 @@ def test_run_session_age_limit_comes_from_the_pi_config(
 
     first, second = rig.session_paths()
     assert (second == first) is resumed
+
+
+def test_run_new_session_removes_the_expired_file_of_the_previous_one(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path, session_reuse_max_age_seconds=_SESSION_MAX_AGE)
+    rig.run(_implementer())
+    rig.advance(seconds=_SESSION_MAX_AGE)
+
+    rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert first is not None
+    assert second is not None
+    assert not first.exists()
+    assert second.exists()
 
 
 @pytest.mark.parametrize(

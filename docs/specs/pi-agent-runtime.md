@@ -92,7 +92,13 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
   - model, provider and reasoning level equal those of the session's last call
   - the last call ended less than `pi.session_reuse_max_age_seconds` ago
   Otherwise the call starts a new session file and sends the full prompt. The old
-  file is kept, not deleted, until the work item's run ends.
+  file is kept while it is younger than `pi.session_reuse_max_age_seconds`. A new
+  session also deletes that role's older files. It deletes a file that was last
+  written that long ago or longer, because it can never be continued. Nothing else
+  deletes a session file.
+- Session files hold prompts, repository content and tool output. The `pi-sessions`
+  folder and each work item folder are private to the owner (mode `0700`). Session
+  files and the sidecar are private to the owner too (mode `0600`).
 - A continued call sends the continuation prompt (round-specific sections only). A
   new session sends the full prompt from `build_prompt`.
 - IMPLEMENTER and REVIEWER sessions are always separate. Model switching inside a

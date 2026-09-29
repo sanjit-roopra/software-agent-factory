@@ -27,6 +27,7 @@ START = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 SETTINGS = SessionSettings(model="claude-sonnet-5", provider="github-copilot", reasoning="medium")
 IMPLEMENTER_FILE = "implementer.jsonl"
 IMPLEMENTER_SIDECAR = "implementer.meta.json"
+REVIEWER_FILE = "reviewer.jsonl"
 
 
 class Clock:
@@ -83,6 +84,15 @@ def test_resolving_a_role_without_a_persisted_session_is_an_error(store: PiSessi
         store.resolve("W1", AgentRole.TESTER, SETTINGS)
 
 
+def sidecar_name(role: AgentRole) -> str:
+    return f"{role.value.lower()}.meta.json"
+
+
+def stamp(path: Path, when: datetime) -> None:
+    """Set the modification time of ``path``, as pi's last write would."""
+    os.utime(path, (when.timestamp(), when.timestamp()))
+
+
 def run_call(
     store: PiSessionStore,
     work_item_id: str,
@@ -97,6 +107,8 @@ def run_call(
     with decision.path.open("a", encoding="utf-8") as session_file:
         session_file.write('{"type":"message"}\n')
     store.record(work_item_id, role, decision.path, settings, success=success)
+    ended_at = json.loads((decision.path.parent / sidecar_name(role)).read_text(encoding="utf-8"))
+    stamp(decision.path, datetime.fromisoformat(ended_at["last_ended_at"]))
     return decision
 
 
@@ -230,16 +242,16 @@ def run_three_expired_reviewer_calls(store: PiSessionStore, clock: Clock) -> lis
     return paths
 
 
-def test_fresh_sessions_use_numbered_files_and_keep_every_earlier_file(
-    store: PiSessionStore, clock: Clock
+def test_fresh_sessions_use_numbered_files_and_keep_every_earlier_live_file(
+    store: PiSessionStore,
 ) -> None:
-    paths = run_three_expired_reviewer_calls(store, clock)
-
-    assert [path.name for path in paths] == [
-        "reviewer.jsonl",
-        "reviewer-2.jsonl",
-        "reviewer-3.jsonl",
+    efforts = ["low", "medium", "high"]
+    paths = [
+        run_call(store, "W1", AgentRole.REVIEWER, SessionSettings("m", "p", effort)).path
+        for effort in efforts
     ]
+
+    assert [path.name for path in paths] == [REVIEWER_FILE, "reviewer-2.jsonl", "reviewer-3.jsonl"]
     assert [path.exists() for path in paths] == [True, True, True]
 
 
@@ -592,3 +604,85 @@ def test_continuing_makes_a_session_file_left_open_by_a_crash_private(
 
     assert decision == Continue(first.path)
     assert is_private(first.path)
+
+
+def test_a_fresh_session_removes_the_roles_expired_files(
+    store: PiSessionStore, clock: Clock
+) -> None:
+    old = run_call(store, "W1", AgentRole.REVIEWER)
+    clock.advance(seconds=MAX_AGE)
+
+    fresh = store.resolve("W1", AgentRole.REVIEWER, SETTINGS)
+
+    assert isinstance(fresh, Fresh)
+    assert not old.path.exists()
+
+
+def test_a_fresh_session_keeps_a_file_that_can_still_be_continued_later(
+    store: PiSessionStore, clock: Clock
+) -> None:
+    recent = run_call(store, "W1", AgentRole.REVIEWER)
+    clock.advance(seconds=MAX_AGE - 1)
+    changed = SessionSettings("claude-opus-5", "github-copilot", "medium")
+
+    fresh = store.resolve("W1", AgentRole.REVIEWER, changed)
+
+    assert isinstance(fresh, Fresh)
+    assert recent.path.exists()
+
+
+def test_a_fresh_session_leaves_other_roles_and_other_files_alone(
+    store: PiSessionStore, clock: Clock
+) -> None:
+    implementer = run_call(store, "W1", AgentRole.IMPLEMENTER)
+    old = run_call(store, "W1", AgentRole.REVIEWER)
+    notes = old.path.parent / "notes.jsonl"
+    notes.write_text("{}\n", encoding="utf-8")
+    for path in (implementer.path, notes):
+        stamp(path, START)
+    clock.advance(seconds=MAX_AGE * 2)
+
+    store.resolve("W1", AgentRole.REVIEWER, SETTINGS)
+
+    assert sorted(entry.name for entry in old.path.parent.iterdir()) == [
+        IMPLEMENTER_FILE,
+        IMPLEMENTER_SIDECAR,
+        "notes.jsonl",
+        "reviewer.meta.json",
+    ]
+
+
+def test_a_fresh_session_leaves_other_work_items_alone(store: PiSessionStore, clock: Clock) -> None:
+    other = run_call(store, "W2", AgentRole.REVIEWER)
+    clock.advance(seconds=MAX_AGE * 2)
+
+    store.resolve("W1", AgentRole.REVIEWER, SETTINGS)
+
+    assert other.path.exists()
+
+
+def test_a_continued_session_removes_nothing(store: PiSessionStore, clock: Clock) -> None:
+    current = run_call(store, "W1", AgentRole.REVIEWER)
+    clock.advance(seconds=MAX_AGE - 1)
+    stale = current.path.parent / "reviewer-7.jsonl"
+    stale.write_text("{}\n", encoding="utf-8")
+    stamp(stale, START - timedelta(seconds=MAX_AGE))
+
+    decision = store.resolve("W1", AgentRole.REVIEWER, SETTINGS)
+
+    assert decision == Continue(current.path)
+    assert stale.exists()
+
+
+def test_a_file_that_cannot_be_removed_does_not_fail_the_new_session(
+    store: PiSessionStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_call(store, "W1", AgentRole.REVIEWER)
+    clock.advance(seconds=MAX_AGE)
+
+    def refuse(_self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    assert isinstance(store.resolve("W1", AgentRole.REVIEWER, SETTINGS), Fresh)
