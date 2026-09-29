@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from software_agent_factory.pi_rpc import PiProcessHandle, PiRpcClient
+from software_agent_factory.pi_rpc import PiProcessHandle, PiRpcClient, messages_since_last_prompt
 from software_agent_factory.subprocess_utils import build_child_env
 
 #: Bound on how long :meth:`~software_agent_factory.pi_rpc.PiRpcClient.close`
@@ -201,7 +201,8 @@ def run_resume(
 ) -> CacheVerdict:
     """Answer one prompt, exit, then resume the same session file for a follow-up.
 
-    Reports the verdict from the second process's messages only.
+    Reports the verdict from the second prompt's messages only: the resumed
+    session's ``get_messages`` also holds the first prompt's round.
     """
     deadline = time.monotonic() + timeout
     session_args = ("--session", str(session_path))
@@ -223,7 +224,7 @@ def run_resume(
         messages = conversation.get_messages()
     finally:
         second_client.close(timeout=_CLOSE_TIMEOUT_SECONDS)
-    return verdict_from_messages(messages)
+    return verdict_from_messages(messages_since_last_prompt(messages))
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:

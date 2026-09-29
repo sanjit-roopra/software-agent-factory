@@ -123,6 +123,8 @@ another way to push. ADR-029 records the gap as an amendment to ADR-022, and iss
 Premium-request cost and nano-AIU stay `None` for pi runs. A field pi did not report
 stays `None`, never zero. Pi counts `cacheWrite1h` inside `cacheWrite`, so the factory
 does not add it. The factory reads `cacheWrite1h` only when a message has no `cacheWrite`.
+A resumed session returns its whole history. The factory counts only the messages that
+follow the last user message, so a call reports its own round and no earlier round.
 
 ### Configuration
 

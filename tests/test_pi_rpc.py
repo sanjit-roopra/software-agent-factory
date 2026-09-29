@@ -28,6 +28,7 @@ from software_agent_factory.pi_rpc import (
     PiRpcProcessExited,
     PiRpcProtocolError,
     PiRpcTimeout,
+    messages_since_last_prompt,
 )
 from software_agent_factory.subprocess_utils import redact_secrets
 
@@ -599,3 +600,45 @@ def test_read_line_drains_stderr_while_waiting_for_stdout_avoiding_deadlock() ->
         client.close(timeout=1.0)
 
     assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# messages_since_last_prompt: what one call added to a resumed session
+# ---------------------------------------------------------------------------
+
+
+def _message(role: str, label: str) -> dict[str, str]:
+    return {"role": role, "label": label}
+
+
+def test_messages_since_last_prompt_drops_the_rounds_before_the_last_user_message() -> None:
+    session = [
+        _message("user", "round 1 prompt"),
+        _message("assistant", "round 1 tool call"),
+        _message("toolResult", "round 1 tool output"),
+        _message("assistant", "round 1 answer"),
+        _message("user", "round 2 prompt"),
+        _message("assistant", "round 2 tool call"),
+        _message("toolResult", "round 2 tool output"),
+        _message("assistant", "round 2 answer"),
+    ]
+
+    labels = [message["label"] for message in messages_since_last_prompt(session)]
+
+    assert labels == ["round 2 tool call", "round 2 tool output", "round 2 answer"]
+
+
+def test_messages_since_last_prompt_keeps_every_message_when_there_is_no_user_message() -> None:
+    session = [_message("assistant", "answer"), _message("toolResult", "output")]
+
+    assert messages_since_last_prompt(session) == session
+
+
+def test_messages_since_last_prompt_is_empty_for_no_messages() -> None:
+    assert messages_since_last_prompt([]) == []
+
+
+def test_messages_since_last_prompt_is_empty_when_the_prompt_got_no_answer() -> None:
+    session = [_message("assistant", "answer"), _message("user", "prompt")]
+
+    assert messages_since_last_prompt(session) == []

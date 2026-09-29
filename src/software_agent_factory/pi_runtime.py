@@ -92,6 +92,7 @@ from .pi_rpc import (
     PiRpcProcessExited,
     PiRpcProtocolError,
     PiRpcTimeout,
+    messages_since_last_prompt,
 )
 from .pi_sessions import Continue, PiSessionStore, SessionSettings, persists_session
 from .prompts import build_continuation_prompt, build_prompt
@@ -571,7 +572,7 @@ class PiAgentRuntime(AgentRuntime):
                 client.request({"type": "prompt", "message": prompt}, deadline=deadline)
                 client.wait_for_settled(deadline=deadline)
                 messages = self._get_messages(client, deadline=deadline)
-                usage = _safe_usage_from_pi_messages(messages)
+                usage = _safe_usage_from_pi_messages(messages_since_last_prompt(messages))
                 stop_reason, error_message = _stop_reason_from_messages(messages)
                 failure_message = _stop_reason_failure_message(stop_reason, error_message)
                 if failure_message is not None:
@@ -752,7 +753,7 @@ class PiAgentRuntime(AgentRuntime):
             )
         except (PiRpcError, _UnexpectedResponse):
             return None
-        return _safe_usage_from_pi_messages(messages)
+        return _safe_usage_from_pi_messages(messages_since_last_prompt(messages))
 
     def _abort_and_kill(self, client: PiRpcClient, process: PiProcessHandle) -> None:
         """Best-effort abort, close stdin, then escalate to killing pi's process group.

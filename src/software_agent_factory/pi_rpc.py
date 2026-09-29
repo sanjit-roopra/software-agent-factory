@@ -18,7 +18,7 @@ import os
 import select
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import IO, Any, Protocol
 
 from .subprocess_utils import kill_process_group
@@ -89,6 +89,24 @@ class PiProcessHandle(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
     def communicate(self, *, timeout: float | None = None) -> tuple[str, str]: ...
+
+
+#: ``role`` of the message pi records for each prompt it receives.
+_USER_ROLE = "user"
+
+
+def messages_since_last_prompt[M: Mapping[str, Any]](messages: Sequence[M]) -> list[M]:
+    """Return the messages of the latest call: those after the last ``user`` message.
+
+    ``get_messages`` returns a session's whole history. A resumed session also
+    holds every earlier round, so a caller that measures one call must drop
+    them. The assistant and tool result messages of the call follow its prompt.
+    A list without a ``user`` message is returned whole.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") == _USER_ROLE:
+            return list(messages[index + 1 :])
+    return list(messages)
 
 
 class PiRpcError(RuntimeError):
