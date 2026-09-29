@@ -1030,6 +1030,18 @@ def _task_dir(tmp_path: Path, runtime: str = "pi", issue: int = 10) -> Path:
     return tmp_path / "work" / runtime / f"issue-{issue}"
 
 
+def test_runner_resolves_relative_repo_and_workdir_before_cloning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    commands = FakeCommands()
+
+    _runner(tmp_path, commands, repo=Path("source"), workdir=Path("work"))(_request(ab.Runtime.PI))
+
+    clone_call = commands.git_calls()[0]
+    assert clone_call[-2:] == [str(tmp_path / "source"), str(_task_dir(tmp_path) / "repo")]
+
+
 def test_runner_replays_at_base_sha_in_a_throwaway_shared_clone(tmp_path: Path) -> None:
     commands = FakeCommands()
 

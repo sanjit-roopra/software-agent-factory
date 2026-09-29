@@ -770,8 +770,9 @@ class CliReplayRunner:
         run_command: CommandRunner,
         invocation_id: str | None = None,
     ) -> None:
-        self._repo = repo
-        self._workdir = workdir
+        # Resolved now: the clone step runs with the task directory as its cwd.
+        self._repo = repo.resolve()
+        self._workdir = workdir.resolve()
         self._model_profile = model_profile
         self._config = config
         self._run = run_command
@@ -967,7 +968,7 @@ def main(
         manifest = load_manifest(args.manifest)
         ensure_local_only(_load_local_config(args.config, args.model_profile))
         verify_base_commits(manifest, args.repo, command)
-        workdir = args.workdir or Path(tempfile.mkdtemp(prefix="runtime_ab_"))
+        workdir = (args.workdir or Path(tempfile.mkdtemp(prefix="runtime_ab_"))).resolve()
         ensure_workdir_unused(manifest, workdir)
         runner = CliReplayRunner(
             repo=args.repo,
