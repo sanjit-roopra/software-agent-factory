@@ -18,6 +18,7 @@ from typing import Callable
 import pytest
 from pydantic import ValidationError
 
+from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentHook, AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.governance import (
@@ -642,6 +643,60 @@ def test_structural_retry_prompt_names_the_failure_for_early_roles(
     retry_prompt = build_prompt(requests[1])
     assert "Previous output rejection" in retry_prompt
     assert "confidence: Field required" in retry_prompt
+
+
+def test_blank_plan_summary_takes_the_structural_retry(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+    blank_plan = (
+        '{"summary":"  ","steps":[],"expected_scope":'
+        '{"modules":["src"],"estimated_files_min":1,"estimated_files_max":1}}'
+    )
+
+    def planner(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        if len(requests) > 1:
+            return default_runtime.run(request)
+        try:
+            parse_agent_artifact(AgentRole.PLANNER, text=blank_plan)
+        except ValueError as exc:
+            return AgentResult(role=AgentRole.PLANNER, success=False, failure_reason=str(exc))
+        raise AssertionError("a blank summary must not validate")
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(planner=planner),
+    ).run(_work_item("WI-blank-plan-summary"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 2
+    assert isinstance(requests[1].repair_context, str)
+    assert "summary" in requests[1].repair_context
+    assert "must not be blank" in requests[1].repair_context
+
+
+def test_synthesized_artifacts_skip_blank_human_criteria(data_dir: Path, source_repo: Path) -> None:
+    controller = WorkflowController(_config(data_dir), FileRunStore(data_dir), FakeAgentRuntime())
+    item = WorkItem(
+        id="WI-blank-criteria",
+        title="Reject empty names",
+        description="Return HTTP 400.",
+        acceptance_criteria=["", "Blank names return 400."],
+        constraints=[" "],
+    )
+
+    specification = controller._synthesize_specification(item)
+    plan = controller._synthesize_execution_plan(
+        item, GitWorktreeWorkspace(data_dir, source_repo, item.id)
+    )
+
+    assert specification.acceptance_criteria == ["Blank names return 400."]
+    assert specification.constraints == []
+    assert plan.steps[0].validation == ["Blank names return 400."]
 
 
 def test_planner_does_not_retry_non_schema_failure(

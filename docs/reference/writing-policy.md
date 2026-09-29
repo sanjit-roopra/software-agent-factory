@@ -68,6 +68,7 @@ result.
 - The controller logs findings for generated issue, pull request and commit
   text. It still publishes the text.
 - Blank publication text is an error, because it is not a wording problem.
+- Blank agent text fails model validation and takes the ordinary retry.
 
 A retry happens only for a structural failure. Examples are invalid JSON, a
 schema error and missing required data. The retry prompt names the failure.

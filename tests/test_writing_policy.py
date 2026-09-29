@@ -146,10 +146,6 @@ def test_policy_preserves_exact_technical_text() -> None:
         assert validate_publication_text("text", text, max_words=5) == ()
 
 
-def test_policy_rejects_empty_publication_text() -> None:
-    assert validate_publication_text("title", "  ", max_words=5) == ("title is empty.",)
-
-
 def test_dependency_identifiers_are_not_linted_as_prose() -> None:
     result = TriageResult(
         factory_eligible=True,
@@ -190,27 +186,34 @@ def test_clean_unresolved_decision_prose_passes_writing_policy() -> None:
     assert validate_artifact_writing(plan) == ()
 
 
-def test_invalid_unresolved_decision_prose_fails_writing_policy() -> None:
-    # Test word count limit (>30 words)
-    long_decision = " ".join(["word"] * 31)
-    plan_long = ExecutionPlan(
+def _plan_with_decision(decision: str) -> ExecutionPlan:
+    return ExecutionPlan(
         summary="Implement required interface changes.",
         steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
         expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
-        unresolved_decisions=[long_decision],
+        unresolved_decisions=[decision],
     )
-    findings_long = validate_artifact_writing(plan_long)
-    assert any("unresolved_decisions[0] has 31 words. The limit is 30." in f for f in findings_long)
 
-    # Test prohibited style (e.g. semicolon, latin abbrev, filler)
-    plan_bad_style = ExecutionPlan(
-        summary="Implement required interface changes.",
-        steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
-        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
-        unresolved_decisions=["We need a robust solution; e.g. for gRPC."],
+
+def test_unresolved_decision_over_the_word_limit_reports_the_field_and_sentence_limits() -> None:
+    findings = validate_artifact_writing(_plan_with_decision(" ".join(["word"] * 31)))
+
+    assert findings == (
+        "unresolved_decisions[0] has 31 words. The limit is 30.",
+        "unresolved_decisions[0] has 1 sentence_over_limit finding(s).",
     )
-    findings_bad = validate_artifact_writing(plan_bad_style)
-    assert len(findings_bad) > 0
+
+
+def test_unresolved_decision_with_banned_style_reports_each_rule() -> None:
+    findings = validate_artifact_writing(
+        _plan_with_decision("We need a robust solution; e.g. for gRPC.")
+    )
+
+    assert findings == (
+        "unresolved_decisions[0] has 1 semicolon finding(s).",
+        "unresolved_decisions[0] has 1 latin_abbrev finding(s).",
+        "unresolved_decisions[0] has 1 slop_word finding(s).",
+    )
 
 
 def test_lint_reads_each_list_item_as_one_sentence() -> None:

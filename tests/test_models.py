@@ -22,6 +22,7 @@ from software_agent_factory.models import (
     ExpectedScope,
     FactoryRun,
     InvocationRecord,
+    ModelBase,
     ModelUsage,
     PlanStep,
     ProjectBrief,
@@ -897,3 +898,102 @@ def test_old_triage_json_with_requirements_quality_still_loads() -> None:
 
     assert result.complexity is Complexity.L1
     assert "requirements_quality" not in result.model_dump_json()
+
+
+_SCOPE = {"modules": ["src"], "estimated_files_min": 1, "estimated_files_max": 1}
+_LOCATION = {"path": "src/a.py", "start_line": 1, "end_line": 1}
+_TASK = {
+    "id": 1,
+    "title": "Add the guard",
+    "description": "Add the guard.",
+    "acceptance_criteria": ["The guard works."],
+}
+_GUIDANCE = {"summary": "Keep it small.", "guidance": ["Use the standard library."]}
+_BLANK_PROSE_CASES: list[tuple[type[ModelBase], dict[str, object]]] = [
+    (TriageResult, {"unknowns": [" "]}),
+    (TriageResult, {"dependencies": [""]}),
+    (Specification, {"problem": " "}),
+    (Specification, {"acceptance_criteria": ["\t"]}),
+    (Specification, {"risk_flags": [" "]}),
+    (ResearchReport, {"question": "\n"}),
+    (ResearchReport, {"evidence": [" "]}),
+    (PlanStep, {"goal": " "}),
+    (PlanStep, {"validation": [" "]}),
+    (ExecutionPlan, {"summary": " "}),
+    (ExecutionPlan, {"test_strategy": [" "]}),
+    (ExecutionPlan, {"unresolved_decisions": [" "]}),
+    (ChangeSet, {"summary": "  "}),
+    (TestReport, {"findings": [" "]}),
+    (TestReport, {"suggested_tests": [" "]}),
+    (ReviewReport, {"findings": [" "]}),
+    (ReviewReport, {"suggested_changes": [" "]}),
+    (
+        ReviewReport,
+        {
+            "blocking_findings": [
+                {"category": "CORRECTNESS", "message": " ", "locations": [_LOCATION]}
+            ]
+        },
+    ),
+    (
+        ReviewReport,
+        {
+            "prior_finding_dispositions": [
+                {"finding_id": "F1", "status": "RESOLVED", "rationale": " "}
+            ]
+        },
+    ),
+    (ProjectTask, {"title": " "}),
+    (ProjectTask, {"acceptance_criteria": [" "]}),
+    (ProjectPlan, {"summary": " "}),
+    (ProjectPlan, {"delivery_approach": " "}),
+    (SkillGuidance, {"summary": " "}),
+    (SkillGuidance, {"guidance": [" "]}),
+]
+_VALID_BASES: dict[type[ModelBase], dict[str, object]] = {
+    TriageResult: {
+        "factory_eligible": True,
+        "complexity": "L1",
+        "risk": "R1",
+        "needs_research": False,
+        "confidence": 0.9,
+    },
+    Specification: {"problem": "Fix it.", "confidence": 0.9},
+    ResearchReport: {"question": "Why?"},
+    PlanStep: {"id": "s1", "goal": "Change it."},
+    ExecutionPlan: {"summary": "Change it.", "expected_scope": _SCOPE},
+    ChangeSet: {"summary": "Changed it."},
+    TestReport: {"passed": True, "confidence": 0.9},
+    ReviewReport: {"approved": True},
+    ProjectTask: _TASK,
+    ProjectPlan: {
+        "project_id": "proj-1",
+        "summary": "One task.",
+        "delivery_approach": "One task.",
+        "tasks": [_TASK],
+    },
+    SkillGuidance: _GUIDANCE,
+}
+
+
+@pytest.mark.parametrize(("model", "override"), _BLANK_PROSE_CASES)
+def test_blank_agent_prose_fails_model_validation(
+    model: type[ModelBase], override: dict[str, object]
+) -> None:
+    payload = {**_VALID_BASES[model], **override}
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize("model", list(_VALID_BASES))
+def test_valid_agent_prose_still_validates(model: type[ModelBase]) -> None:
+    assert model.model_validate(_VALID_BASES[model]) is not None
+
+
+def test_non_blank_prose_keeps_its_original_whitespace() -> None:
+    plan = ExecutionPlan.model_validate(
+        {**_VALID_BASES[ExecutionPlan], "summary": "  Change it.  "}
+    )
+
+    assert plan.summary == "  Change it.  "

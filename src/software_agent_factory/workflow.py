@@ -333,6 +333,11 @@ def _planner_human_decision_context(
     )
 
 
+def _non_blank(values: Sequence[str]) -> list[str]:
+    """Drop blank human entries before they enter a synthesized artifact."""
+    return [value for value in values if value.strip()]
+
+
 def _typed_artifact_repair_context(
     failure_reason: str,
     artifact_name: str,
@@ -1359,8 +1364,8 @@ class WorkflowController:
     def _synthesize_specification(self, work_item: WorkItem) -> Specification:
         return Specification(
             problem=f"SYNTHESIZED: {work_item.description}",
-            acceptance_criteria=list(work_item.acceptance_criteria),
-            constraints=list(work_item.constraints),
+            acceptance_criteria=_non_blank(work_item.acceptance_criteria),
+            constraints=_non_blank(work_item.constraints),
             assumptions=["SYNTHESIZED: Direct single-pass execution without refiner"],
             unknowns=[],
             dependencies=[],
@@ -1385,7 +1390,7 @@ class WorkflowController:
                     id="step-1",
                     goal=f"Implement: {work_item.title}",
                     likely_files=modules[:10],
-                    validation=list(work_item.acceptance_criteria),
+                    validation=_non_blank(work_item.acceptance_criteria),
                 )
             ],
             expected_scope=ExpectedScope(

@@ -22,6 +22,7 @@ The factory now treats writing rules as advice.
 - A writing finding never fails a result, never causes a retry and never blocks a run.
 - Publication text findings are logged. The factory still publishes the text.
 - Blank publication text is still an error.
+- Blank agent text is also an error. Model validation rejects it, so it takes the ordinary retry.
 - Retries stay for structural failures. Examples are invalid JSON, schema errors and missing data.
 
 One table in `writing_policy.py` holds the word limits.

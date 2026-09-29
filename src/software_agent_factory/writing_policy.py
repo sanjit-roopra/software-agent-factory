@@ -432,24 +432,33 @@ def artifact_passages(artifact: ModelBase) -> list[WritingPassage]:
     return builder(artifact, _FIELD_LIMITS[type(artifact)])
 
 
+def _passage_findings(passage: WritingPassage) -> list[str]:
+    findings: list[str] = []
+    word_count = prose_word_count(passage.text)
+    if word_count > passage.max_words:
+        findings.append(
+            f"{passage.field} has {word_count} words. The limit is {passage.max_words}."
+        )
+    if passage.lint_prose:
+        report = lint(passage.text, passage.text_type)
+        findings.extend(
+            f"{passage.field} has {count} {rule} finding(s)."
+            for rule, count in report["violations"].items()
+            if count
+        )
+    return findings
+
+
 def validate_passages(passages: list[WritingPassage]) -> tuple[str, ...]:
-    """Return bounded policy findings for authored prose."""
+    """Return bounded policy findings for authored prose.
+
+    Blank prose is not a finding. Model validation rejects blank agent text and
+    ``check_publication_text`` rejects blank publication text.
+    """
 
     findings: list[str] = []
     for passage in passages:
-        if not passage.text.strip():
-            findings.append(f"{passage.field} is empty.")
-        else:
-            word_count = prose_word_count(passage.text)
-            if word_count > passage.max_words:
-                findings.append(
-                    f"{passage.field} has {word_count} words. The limit is {passage.max_words}."
-                )
-            if passage.lint_prose:
-                report = lint(passage.text, passage.text_type)
-                for rule, count in report["violations"].items():
-                    if count:
-                        findings.append(f"{passage.field} has {count} {rule} finding(s).")
+        findings.extend(_passage_findings(passage))
         if len(findings) >= 12:
             findings.append("More writing findings were omitted.")
             break

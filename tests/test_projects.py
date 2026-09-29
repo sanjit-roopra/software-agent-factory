@@ -8,6 +8,7 @@ from typing import Sequence
 import pytest
 from factory_testing import build_config, git, triage_hook
 
+from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.models import (
     AgentPurpose,
@@ -269,6 +270,61 @@ def test_project_retries_rejected_decomposition_with_feedback(
     assert "single project task" in str(decomposition_requests[1].repair_context)
     assert len(project_store.load_plan(brief.id).tasks) == 2
     assert len(project_store.load_execution(brief.id).invocation_records) == 2
+
+
+def test_blank_task_title_takes_the_decomposition_retry(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    decomposition_requests: list[AgentRequest] = []
+    blank_title_plan = json.dumps(
+        {
+            "project_id": "project-blank-title",
+            "summary": "One task.",
+            "delivery_approach": "One task is enough.",
+            "tasks": [
+                {
+                    "id": 1,
+                    "title": "   ",
+                    "description": "Do it.",
+                    "acceptance_criteria": ["It works."],
+                }
+            ],
+        }
+    )
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
+            return _project_planner(request)
+        decomposition_requests.append(request)
+        if len(decomposition_requests) > 1:
+            return _project_planner(request)
+        try:
+            parse_agent_artifact(
+                AgentRole.PLANNER, text=blank_title_plan, purpose=AgentPurpose.DECOMPOSE_PROJECT
+            )
+        except ValueError as exc:
+            return AgentResult(role=AgentRole.PLANNER, success=False, failure_reason=str(exc))
+        raise AssertionError("a blank title must not validate")
+
+    brief = ProjectBrief(
+        id="project-blank-title",
+        title="Build customer validation",
+        description="Implement two dependent validation outcomes.",
+        repository_path=str(factory_source_repo),
+    )
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+        project_store=FileProjectStore(factory_data_dir),
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert len(decomposition_requests) == 2
+    assert "must not be blank" in str(decomposition_requests[1].repair_context)
 
 
 def test_project_decomposition_writing_findings_are_recorded_without_a_retry(

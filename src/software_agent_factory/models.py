@@ -19,6 +19,17 @@ def _normalize_utc(value: datetime) -> datetime:
 
 
 UtcDateTime = Annotated[datetime, AfterValidator(_normalize_utc)]
+
+
+def _reject_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("text must not be blank")
+    return value
+
+
+#: Agent-authored prose. Whitespace-only text is a structural error, so it fails
+#: model validation and takes the ordinary retry. The original text is kept.
+NonBlankStr = Annotated[str, AfterValidator(_reject_blank)]
 MAX_OPEN_REVIEW_FINDINGS = 24
 MAX_PERFORMANCE_METRICS = 250
 MAX_PERFORMANCE_NAME_LENGTH = 100
@@ -284,14 +295,14 @@ class SkillGuidance(ModelBase):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    summary: str = Field(min_length=1, max_length=300)
-    guidance: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+    summary: NonBlankStr = Field(min_length=1, max_length=300)
+    guidance: tuple[Annotated[NonBlankStr, Field(min_length=1, max_length=1000)], ...] = Field(
         min_length=1, max_length=12
     )
-    avoid: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+    avoid: tuple[Annotated[NonBlankStr, Field(min_length=1, max_length=1000)], ...] = Field(
         default=(), max_length=8
     )
-    validation: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+    validation: tuple[Annotated[NonBlankStr, Field(min_length=1, max_length=1000)], ...] = Field(
         default=(), max_length=8
     )
 
@@ -309,7 +320,7 @@ class RepositorySkill(VersionedModel):
     practice_sources: tuple[SkillSource, ...] = Field(default=(), max_length=20)
     simplify: SkillGuidance
     polish: SkillGuidance
-    uncertainties: tuple[Annotated[str, Field(min_length=1, max_length=1000)], ...] = Field(
+    uncertainties: tuple[Annotated[NonBlankStr, Field(min_length=1, max_length=1000)], ...] = Field(
         default=(), max_length=10
     )
 
@@ -488,13 +499,13 @@ class ProjectBrief(VersionedModel):
 
 class ProjectTask(ModelBase):
     id: int = Field(ge=1)
-    title: str = Field(min_length=1, max_length=300)
-    description: str = Field(min_length=1, max_length=10000)
-    acceptance_criteria: tuple[str, ...] = Field(
+    title: NonBlankStr = Field(min_length=1, max_length=300)
+    description: NonBlankStr = Field(min_length=1, max_length=10000)
+    acceptance_criteria: tuple[NonBlankStr, ...] = Field(
         min_length=1,
         max_length=MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA,
     )
-    constraints: tuple[str, ...] = Field(default=(), max_length=30)
+    constraints: tuple[NonBlankStr, ...] = Field(default=(), max_length=30)
     dependencies: tuple[int, ...] = Field(default=(), max_length=8)
     priority: str | None = Field(default=None, max_length=20)
     labels: tuple[str, ...] = Field(default=(), max_length=20)
@@ -510,8 +521,8 @@ class ProjectTask(ModelBase):
 
 class ProjectPlan(VersionedModel):
     project_id: str = Field(pattern=PROJECT_ID_PATTERN)
-    summary: str = Field(min_length=1, max_length=2000)
-    delivery_approach: str = Field(min_length=1, max_length=2000)
+    summary: NonBlankStr = Field(min_length=1, max_length=2000)
+    delivery_approach: NonBlankStr = Field(min_length=1, max_length=2000)
     tasks: tuple[ProjectTask, ...] = Field(min_length=1, max_length=MAX_PROJECT_TASKS)
     created_at: UtcDateTime = Field(default_factory=utc_now)
 
@@ -876,7 +887,7 @@ class ReviewSourceLocation(ModelBase):
 
 class ReviewFindingDraft(ModelBase):
     category: ReviewFindingCategory
-    message: str = Field(min_length=1, max_length=1000)
+    message: NonBlankStr = Field(min_length=1, max_length=1000)
     locations: list[ReviewSourceLocation] = Field(min_length=1, max_length=8)
 
 
@@ -889,7 +900,7 @@ class ReviewFinding(ReviewFindingDraft):
 class ReviewFindingDisposition(ModelBase):
     finding_id: str = Field(min_length=1, max_length=80)
     status: ReviewDispositionStatus
-    rationale: str = Field(min_length=1, max_length=1000)
+    rationale: NonBlankStr = Field(min_length=1, max_length=1000)
 
 
 class ReviewLedger(ModelBase):
@@ -1234,8 +1245,8 @@ class TriageResult(VersionedModel):
     complexity: Complexity
     risk: Risk
     needs_research: bool
-    dependencies: list[str] = Field(default_factory=list)
-    unknowns: list[str] = Field(default_factory=list)
+    dependencies: list[NonBlankStr] = Field(default_factory=list)
+    unknowns: list[NonBlankStr] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     risk_rationale: RiskRationale | None = None
     provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
@@ -1256,30 +1267,30 @@ class TriageResult(VersionedModel):
 
 
 class Specification(VersionedModel):
-    problem: str = Field(min_length=1)
-    acceptance_criteria: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    unknowns: list[str] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    risk_flags: list[str] = Field(default_factory=list)
+    problem: NonBlankStr = Field(min_length=1)
+    acceptance_criteria: list[NonBlankStr] = Field(default_factory=list)
+    constraints: list[NonBlankStr] = Field(default_factory=list)
+    assumptions: list[NonBlankStr] = Field(default_factory=list)
+    unknowns: list[NonBlankStr] = Field(default_factory=list)
+    dependencies: list[NonBlankStr] = Field(default_factory=list)
+    risk_flags: list[NonBlankStr] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
 
 
 class ResearchReport(VersionedModel):
-    question: str = Field(min_length=1)
-    findings: list[str] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
-    implications: list[str] = Field(default_factory=list)
-    uncertainty: list[str] = Field(default_factory=list)
+    question: NonBlankStr = Field(min_length=1)
+    findings: list[NonBlankStr] = Field(default_factory=list)
+    evidence: list[NonBlankStr] = Field(default_factory=list)
+    implications: list[NonBlankStr] = Field(default_factory=list)
+    uncertainty: list[NonBlankStr] = Field(default_factory=list)
 
 
 class PlanStep(ModelBase):
     id: str = Field(min_length=1)
-    goal: str = Field(min_length=1)
+    goal: NonBlankStr = Field(min_length=1)
     likely_files: list[str] = Field(default_factory=list)
-    validation: list[str] = Field(default_factory=list)
+    validation: list[NonBlankStr] = Field(default_factory=list)
 
     @field_validator("likely_files")
     @classmethod
@@ -1358,12 +1369,12 @@ class ExpectedScope(ModelBase):
 
 
 class ExecutionPlan(VersionedModel):
-    summary: str = Field(min_length=1)
+    summary: NonBlankStr = Field(min_length=1)
     steps: list[PlanStep] = Field(default_factory=list)
     expected_scope: ExpectedScope
-    test_strategy: list[str] = Field(default_factory=list)
-    risks: list[str] = Field(default_factory=list)
-    unresolved_decisions: list[str] = Field(default_factory=list)
+    test_strategy: list[NonBlankStr] = Field(default_factory=list)
+    risks: list[NonBlankStr] = Field(default_factory=list)
+    unresolved_decisions: list[NonBlankStr] = Field(default_factory=list)
     provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
 
     @property
@@ -1376,7 +1387,7 @@ class ExecutionPlan(VersionedModel):
 
 
 class ChangeSet(VersionedModel):
-    summary: str = Field(min_length=1)
+    summary: NonBlankStr = Field(min_length=1)
     changed_files: list[str] = Field(default_factory=list)
     tests_added: list[str] = Field(default_factory=list)
     commands_run: list[str] = Field(default_factory=list)
@@ -1418,8 +1429,8 @@ class TestReport(VersionedModel):
     """
 
     passed: bool
-    findings: list[str] = Field(default_factory=list)
-    suggested_tests: list[str] = Field(default_factory=list)
+    findings: list[NonBlankStr] = Field(default_factory=list)
+    suggested_tests: list[NonBlankStr] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     skipped: bool = False
     provenance: Literal["AGENT", "SKIPPED"] = "AGENT"
@@ -1446,11 +1457,11 @@ class RepairContext(ModelBase):
 
 class ReviewReport(VersionedModel):
     approved: bool
-    findings: list[str] = Field(default_factory=list)
-    scope_concerns: list[str] = Field(default_factory=list)
-    security_concerns: list[str] = Field(default_factory=list)
-    compatibility_concerns: list[str] = Field(default_factory=list)
-    suggested_changes: list[str] = Field(default_factory=list)
+    findings: list[NonBlankStr] = Field(default_factory=list)
+    scope_concerns: list[NonBlankStr] = Field(default_factory=list)
+    security_concerns: list[NonBlankStr] = Field(default_factory=list)
+    compatibility_concerns: list[NonBlankStr] = Field(default_factory=list)
+    suggested_changes: list[NonBlankStr] = Field(default_factory=list)
     blocking_findings: list[ReviewFindingDraft] = Field(
         default_factory=list,
         max_length=MAX_OPEN_REVIEW_FINDINGS,
