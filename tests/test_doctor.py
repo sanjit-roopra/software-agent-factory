@@ -231,7 +231,7 @@ def test_check_pi_missing_executable_is_error_naming_the_npm_install_fix() -> No
     env, _ = make_env(available={})
     result = check_pi(env, PiConfig(), required=True)
     assert result.status is CheckStatus.ERROR
-    assert "pi" in result.message
+    assert result.message == "'pi' was not found on PATH"
     assert result.remediation is not None
     assert "npm install -g @earendil-works/pi-coding-agent" in result.remediation
 
