@@ -275,32 +275,43 @@ class PiRpcClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise PiRpcTimeout("timed out waiting for pi output")
-            readers = [stdout_fd]
-            if stderr_fd is not None and not self._stderr_eof:
-                readers.append(stderr_fd)
-            ready, _, _ = select.select(readers, [], [], remaining)
-            if stderr_fd is not None and stderr_fd in ready:
-                chunk = os.read(stderr_fd, _READ_CHUNK_BYTES)
-                if chunk:
-                    self._append_stderr(self._stderr_decoder.decode(chunk))
-                else:
-                    self._stderr_eof = True
-                    self._append_stderr(self._stderr_decoder.decode(b"", final=True))
-            if stdout_fd in ready:
-                chunk = os.read(stdout_fd, _READ_CHUNK_BYTES)
-                if chunk:
-                    self._stdout_buffer += chunk
-                    if (
-                        len(self._stdout_buffer) > self._max_line_bytes
-                        and b"\n" not in self._stdout_buffer
-                    ):
-                        raise PiRpcProtocolError(
-                            self._excerpt(self._stdout_buffer.decode("utf-8", errors="replace")),
-                            reason=f"exceeded {self._max_line_bytes} bytes without a newline",
-                        )
-                else:
-                    self._stdout_eof = True
+            self._read_ready_pipes(stdout_fd, stderr_fd, remaining)
 
+        return self._pop_buffered_line()
+
+    def _read_ready_pipes(self, stdout_fd: int, stderr_fd: int | None, timeout: float) -> None:
+        """Wait up to ``timeout`` seconds, then read whichever pipes are ready."""
+        readers = [stdout_fd]
+        if stderr_fd is not None and not self._stderr_eof:
+            readers.append(stderr_fd)
+        ready, _, _ = select.select(readers, [], [], timeout)
+        if stderr_fd is not None and stderr_fd in ready:
+            self._read_stderr_chunk(stderr_fd)
+        if stdout_fd in ready:
+            self._read_stdout_chunk(stdout_fd)
+
+    def _read_stderr_chunk(self, stderr_fd: int) -> None:
+        chunk = os.read(stderr_fd, _READ_CHUNK_BYTES)
+        if chunk:
+            self._append_stderr(self._stderr_decoder.decode(chunk))
+        else:
+            self._stderr_eof = True
+            self._append_stderr(self._stderr_decoder.decode(b"", final=True))
+
+    def _read_stdout_chunk(self, stdout_fd: int) -> None:
+        chunk = os.read(stdout_fd, _READ_CHUNK_BYTES)
+        if not chunk:
+            self._stdout_eof = True
+            return
+        self._stdout_buffer += chunk
+        if len(self._stdout_buffer) > self._max_line_bytes and b"\n" not in self._stdout_buffer:
+            raise PiRpcProtocolError(
+                self._excerpt(self._stdout_buffer.decode("utf-8", errors="replace")),
+                reason=f"exceeded {self._max_line_bytes} bytes without a newline",
+            )
+
+    def _pop_buffered_line(self) -> str:
+        """Remove and decode the first complete line from the stdout buffer."""
         line, _, self._stdout_buffer = self._stdout_buffer.partition(b"\n")
         try:
             return line.decode("utf-8")

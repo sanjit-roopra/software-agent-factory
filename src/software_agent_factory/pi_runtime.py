@@ -348,6 +348,15 @@ def _safe_usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics
         return None
 
 
+def _stop_reason_failure_message(stop_reason: object, error_message: str | None) -> str | None:
+    """Failure message for an ``error`` or ``aborted`` stop reason, else ``None``."""
+    if stop_reason == "error":
+        return f"pi assistant error: {error_message or '(no error message)'}"
+    if stop_reason == "aborted":
+        return "pi assistant call was aborted"
+    return None
+
+
 class PiAgentRuntime(AgentRuntime):
     """Production ``AgentRuntime`` backed by the ``pi`` CLI.
 
@@ -404,22 +413,14 @@ class PiAgentRuntime(AgentRuntime):
                 messages = self._get_messages(client, deadline=deadline)
                 usage = _safe_usage_from_pi_messages(messages)
                 stop_reason, error_message = _stop_reason_from_messages(messages)
-                if stop_reason == "error":
+                failure_message = _stop_reason_failure_message(stop_reason, error_message)
+                if failure_message is not None:
                     return self._failed(
                         request,
                         prompt_chars=prompt_chars,
                         boot_ms=boot_ms,
                         scrubbed_values=scrubbed_values,
-                        message=f"pi assistant error: {error_message or '(no error message)'}",
-                        usage=usage,
-                    )
-                if stop_reason == "aborted":
-                    return self._failed(
-                        request,
-                        prompt_chars=prompt_chars,
-                        boot_ms=boot_ms,
-                        scrubbed_values=scrubbed_values,
-                        message="pi assistant call was aborted",
+                        message=failure_message,
                         usage=usage,
                     )
                 response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
@@ -465,47 +466,67 @@ class PiAgentRuntime(AgentRuntime):
                     usage=usage,
                 )
 
-            data = response.get("data")
-            if data is not None and not isinstance(data, Mapping):
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=str(_UnexpectedResponse("get_last_assistant_text")),
-                    usage=usage,
-                )
-            data = data or {}
-            text = str(data.get("text") or "")
-
-            performance = PerformanceRecord(
+            return self._result_from_response(
+                request,
+                response,
                 prompt_chars=prompt_chars,
-                response_chars=len(text),
-                process_boot_ms=boot_ms,
-            )
-
-            try:
-                artifact = parse_agent_artifact(request.role, text=text, purpose=request.purpose)
-            except ValueError as exc:
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=str(exc),
-                    response_chars=len(text),
-                    usage=usage,
-                )
-
-            return build_success_result(
-                request.role,
-                purpose=request.purpose,
-                artifact=artifact,
-                performance=performance,
+                boot_ms=boot_ms,
+                scrubbed_values=scrubbed_values,
                 usage=usage,
             )
         finally:
             client.close()
+
+    def _result_from_response(
+        self,
+        request: AgentRequest,
+        response: dict[str, Any],
+        *,
+        prompt_chars: int,
+        boot_ms: float,
+        scrubbed_values: set[str],
+        usage: UsageMetrics | None,
+    ) -> AgentResult:
+        """Turn the ``get_last_assistant_text`` response into a success or failed result."""
+        data = response.get("data")
+        if data is not None and not isinstance(data, Mapping):
+            return self._failed(
+                request,
+                prompt_chars=prompt_chars,
+                boot_ms=boot_ms,
+                scrubbed_values=scrubbed_values,
+                message=str(_UnexpectedResponse("get_last_assistant_text")),
+                usage=usage,
+            )
+        data = data or {}
+        text = str(data.get("text") or "")
+
+        performance = PerformanceRecord(
+            prompt_chars=prompt_chars,
+            response_chars=len(text),
+            process_boot_ms=boot_ms,
+        )
+
+        try:
+            artifact = parse_agent_artifact(request.role, text=text, purpose=request.purpose)
+        except ValueError as exc:
+            return self._failed(
+                request,
+                prompt_chars=prompt_chars,
+                boot_ms=boot_ms,
+                scrubbed_values=scrubbed_values,
+                message=str(exc),
+                response_chars=len(text),
+                usage=usage,
+            )
+
+        return build_success_result(
+            request.role,
+            purpose=request.purpose,
+            artifact=artifact,
+            performance=performance,
+            usage=usage,
+        )
 
     def _build_command(
         self,
