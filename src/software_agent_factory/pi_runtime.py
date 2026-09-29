@@ -255,6 +255,7 @@ class _SessionUse:
     path: Path
     settings: SessionSettings
     continued: bool
+    sent_sections: Mapping[str, str]
 
     @property
     def args(self) -> tuple[str, str]:
@@ -525,7 +526,11 @@ class PiAgentRuntime(AgentRuntime):
             model=request.model, provider=self._config.provider, reasoning=request.reasoning
         )
         decision = self._sessions.resolve(request.work_item.id, request.role, settings)
-        return _SessionUse(decision.path, settings, continued=isinstance(decision, Continue))
+        if isinstance(decision, Continue):
+            return _SessionUse(
+                decision.path, settings, continued=True, sent_sections=decision.sent_sections
+            )
+        return _SessionUse(decision.path, settings, continued=False, sent_sections={})
 
     def _session_and_prompt(self, request: AgentRequest) -> tuple[_SessionUse | None, str]:
         """Return the session this call runs in and the prompt it sends.
@@ -540,7 +545,9 @@ class PiAgentRuntime(AgentRuntime):
             if continuation is not None:
                 return session, continuation
             new_session = self._sessions.fresh(request.work_item.id, request.role)
-            session = _SessionUse(new_session.path, session.settings, continued=False)
+            session = _SessionUse(
+                new_session.path, session.settings, continued=False, sent_sections={}
+            )
         return session, build_prompt(request)
 
     def _record_session(
@@ -549,7 +556,12 @@ class PiAgentRuntime(AgentRuntime):
         """Tell the store how the call ended. A record that cannot be written is only logged."""
         try:
             self._sessions.record(
-                request.work_item.id, request.role, session.path, session.settings, success=success
+                request.work_item.id,
+                request.role,
+                session.path,
+                session.settings,
+                success=success,
+                sent_sections=session.sent_sections,
             )
         except OSError:
             logger.warning("could not record the pi session outcome", exc_info=True)
