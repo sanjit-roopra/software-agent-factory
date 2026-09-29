@@ -198,6 +198,18 @@ def test_build_program_arguments_preserves_performance_mode(tmp_path: Path) -> N
     assert args[args.index("--performance-mode") + 1] == "fast"
 
 
+def test_build_program_arguments_omits_no_risk_assessment_by_default(tmp_path: Path) -> None:
+    assert "--no-risk-assessment" not in build_program_arguments(make_request(tmp_path))
+
+
+def test_build_program_arguments_preserves_no_risk_assessment(tmp_path: Path) -> None:
+    request = ServiceInstallRequest(
+        **{**make_request(tmp_path).__dict__, "risk_assessment_disabled": True}
+    )
+
+    assert "--no-risk-assessment" in build_program_arguments(request)
+
+
 def test_build_program_arguments_with_config(tmp_path: Path) -> None:
     request = make_request(tmp_path, with_config=True)
     args = build_program_arguments(request)

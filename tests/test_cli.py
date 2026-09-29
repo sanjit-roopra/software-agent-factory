@@ -653,6 +653,82 @@ def test_project_accepts_fast_performance_mode(source_repo: Path, data_dir: Path
     assert child_run.performance_model_profile == "economy"
 
 
+def test_run_keeps_risk_assessment_on_by_default(source_repo: Path, data_dir: Path) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Default task",
+            "--description",
+            "A task with the default risk policy.",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FileRunStore(data_dir).list_runs()[0].risk_assessment_enabled is True
+
+
+def test_run_no_risk_assessment_turns_the_assessment_off(source_repo: Path, data_dir: Path) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Autonomous task",
+            "--description",
+            "A task for an autonomous factory.",
+            "--no-risk-assessment",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FileRunStore(data_dir).list_runs()[0].risk_assessment_enabled is False
+
+
+def test_project_no_risk_assessment_turns_the_assessment_off(
+    source_repo: Path, data_dir: Path
+) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    result = runner.invoke(
+        app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--title",
+            "Autonomous project",
+            "--description",
+            "A project for an autonomous factory.",
+            "--acceptance-criterion",
+            "The project succeeds.",
+            "--project-id",
+            "project-autonomous",
+            "--data-dir",
+            str(data_dir),
+            "--no-risk-assessment",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    runs = FileRunStore(data_dir).list_runs()
+    assert runs
+    assert {run.risk_assessment_enabled for run in runs} == {False}
+
+
 def test_cli_rejects_fast_performance_mode_with_unconfigured_profile(
     source_repo: Path, data_dir: Path, tmp_path: Path
 ) -> None:
@@ -1220,6 +1296,40 @@ def test_start_accepts_fast_performance_mode(
     assert dispatched_run.requested_performance_mode == "fast"
     assert dispatched_run.effective_performance_mode == "fast"
     assert dispatched_run.performance_model_profile == "economy"
+
+
+def test_start_no_risk_assessment_turns_the_assessment_off(
+    source_repo: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_with,
+) -> None:
+    from software_agent_factory.store import FileRunStore
+
+    path_with("gh")
+    _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "start",
+            "--repo",
+            str(source_repo),
+            "--github-repo",
+            "acme/repo",
+            "--once",
+            "--no-risk-assessment",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    runs = FileRunStore(data_dir).list_runs()
+    assert runs
+    assert {run.risk_assessment_enabled for run in runs} == {False}
 
 
 def test_start_requires_gh_because_it_polls_github_issues(

@@ -134,6 +134,14 @@ PI_UNRESTRICTED_SHELL_FOLLOWUP_URL = (
 #: builds an :class:`~software_agent_factory.agents.AgentRuntime` (``run``,
 #: ``project``, ``start``, ``skill refresh``). One source keeps the three
 #: runtime names here from drifting out of sync with :class:`RuntimeChoice`.
+#: Shared ``--no-risk-assessment`` option for the commands that start runs
+#: (``run``, ``project``, ``start``, ``service install``).
+NO_RISK_ASSESSMENT_FLAG = "--no-risk-assessment"
+NO_RISK_ASSESSMENT_HELP = (
+    "Turn off risk assessment for this invocation: no risk level asks for human "
+    "approval and triage writes no risk rationale."
+)
+
 RUNTIME_OPTION_HELP = (
     "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or "
     "'pi' (paid; unrestricted shell tool)."
@@ -210,8 +218,9 @@ def _load_config(
     data_dir: Path | None,
     model_profile: str | None = None,
     performance_mode: PerformanceModeChoice | None = None,
+    no_risk_assessment: bool = False,
 ) -> FactoryConfig:
-    """Load configuration, applying an optional ``--data-dir`` override.
+    """Load configuration, applying optional ``--data-dir`` and ``--no-risk-assessment`` overrides.
 
     Every expected failure mode -- a missing file, an unreadable file,
     malformed YAML, or a schema violation -- becomes one explicit stderr line
@@ -239,6 +248,10 @@ def _load_config(
             update={
                 "factory": loaded.factory.model_copy(update={"data_dir": data_dir.expanduser()})
             }
+        )
+    if no_risk_assessment:
+        loaded = loaded.model_copy(
+            update={"risk_assessment": loaded.risk_assessment.model_copy(update={"enabled": False})}
         )
     if performance_mode is not None:
         loaded = loaded.model_copy(
@@ -440,6 +453,9 @@ def run_command(
         "--performance-mode",
         help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
     ),
+    no_risk_assessment: bool = typer.Option(
+        False, NO_RISK_ASSESSMENT_FLAG, help=NO_RISK_ASSESSMENT_HELP
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -453,7 +469,9 @@ def run_command(
     from .models import ChangeSet, WorkItem
     from .store import FileRunStore
 
-    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
+    factory_config = _load_config(
+        config, data_dir, model_profile, performance_mode, no_risk_assessment
+    )
     # A manual run needs ``gh`` only for the publishing/CI features it would
     # actually reach; the scheduler is irrelevant here, so an offline default
     # run requires nothing but ``git``.
@@ -569,6 +587,9 @@ def project_command(
         "--performance-mode",
         help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
     ),
+    no_risk_assessment: bool = typer.Option(
+        False, NO_RISK_ASSESSMENT_FLAG, help=NO_RISK_ASSESSMENT_HELP
+    ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
     ),
@@ -596,7 +617,9 @@ def project_command(
         if title is None or description is None:
             raise _fail("--title and --description are required unless --resume is used")
 
-    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
+    factory_config = _load_config(
+        config, data_dir, model_profile, performance_mode, no_risk_assessment
+    )
     _require_prerequisites(
         require_gh=(
             github_repo is not None
@@ -709,6 +732,9 @@ def start_command(
         "--performance-mode",
         help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
     ),
+    no_risk_assessment: bool = typer.Option(
+        False, NO_RISK_ASSESSMENT_FLAG, help=NO_RISK_ASSESSMENT_HELP
+    ),
     once: bool = typer.Option(
         False, "--once", help="Run one bounded scheduler tick instead of polling forever."
     ),
@@ -724,7 +750,9 @@ def start_command(
     Refuses to run (and never touches GitHub) unless ``scheduler.enabled`` is
     set in configuration.
     """
-    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
+    factory_config = _load_config(
+        config, data_dir, model_profile, performance_mode, no_risk_assessment
+    )
     if not factory_config.scheduler.enabled:
         raise _fail(
             "scheduler is disabled: set 'scheduler.enabled: true' in the factory "
@@ -1223,6 +1251,11 @@ def service_install_command(
         "--performance-mode",
         help="Override the workflow performance mode for every dispatched run.",
     ),
+    no_risk_assessment: bool = typer.Option(
+        False,
+        NO_RISK_ASSESSMENT_FLAG,
+        help="Turn off risk assessment for every run the service dispatches.",
+    ),
     executable: Path = typer.Option(
         None,
         "--executable",
@@ -1250,7 +1283,9 @@ def service_install_command(
     """
     _require_macos()
 
-    factory_config = _load_config(config, data_dir, model_profile, performance_mode)
+    factory_config = _load_config(
+        config, data_dir, model_profile, performance_mode, no_risk_assessment
+    )
     if not factory_config.scheduler.enabled:
         raise _fail(
             "refusing to install a service for a disabled scheduler: set "
@@ -1307,6 +1342,7 @@ def service_install_command(
                 if performance_mode is not None
                 else None
             ),
+            risk_assessment_disabled=no_risk_assessment,
             label=label,
             allow_source_dev=allow_source_dev,
             # A path, not a secret: carried into the plist so the service can
