@@ -194,6 +194,13 @@ def test_manifest_rejects_malformed_json(tmp_path: Path) -> None:
         ab.load_manifest(path)
 
 
+def test_manifest_that_cannot_be_read_is_a_manifest_error(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.json"
+
+    with pytest.raises(ab.ManifestError, match="could not be read"):
+        ab.load_manifest(missing)
+
+
 def _outside_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Make a sibling directory the cwd and return a directory outside it."""
     inside = tmp_path / "inside"

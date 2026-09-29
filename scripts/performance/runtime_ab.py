@@ -197,7 +197,11 @@ def _read_manifest_tasks(path: Path) -> list[object]:
     except ValueError as exc:
         raise ManifestError(f"manifest {exc}") from None
     try:
-        payload = json.loads(manifest_path.read_text(encoding=_ENCODING))
+        text = manifest_path.read_text(encoding=_ENCODING)
+    except OSError as exc:
+        raise ManifestError(f"manifest {path} could not be read: {exc.strerror}") from None
+    try:
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ManifestError(f"manifest {path} is not valid JSON: {exc}") from None
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
