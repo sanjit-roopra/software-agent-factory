@@ -541,7 +541,7 @@ def test_run_falls_back_to_result_stream_when_usage_file_is_malformed(
                 '{"type":"assistant.message","message":{"content":['
                 '{"type":"output_text","text":"'
                 '{"factory_eligible":true,"complexity":"L1","risk":"R1",'
-                '"requirements_quality":"clear","needs_research":false,'
+                '"needs_research":false,'
                 '"dependencies":[],"unknowns":[],"confidence":0.8}'
                 '"}]}}'
             ),
@@ -796,7 +796,7 @@ def test_parse_copilot_artifact_prefers_final_assistant_content_over_prompt_echo
     )
     final_content = (
         '{"schema_version":1,"factory_eligible":true,"complexity":"L1","risk":"R1",'
-        '"requirements_quality":"clear","needs_research":false,'
+        '"needs_research":false,'
         '"dependencies":[],"unknowns":[],"confidence":0.9}'
     )
 
@@ -821,7 +821,6 @@ def test_parse_copilot_artifact_prefers_final_assistant_content_over_prompt_echo
         factory_eligible=True,
         complexity="L1",
         risk="R1",
-        requirements_quality="clear",
         needs_research=False,
         dependencies=[],
         unknowns=[],
@@ -1120,7 +1119,6 @@ def test_parse_copilot_artifact_recovers_nested_envelope_object() -> None:
         "factory_eligible": True,
         "complexity": "L0",
         "risk": "R0",
-        "requirements_quality": "clear",
         "needs_research": False,
         "dependencies": [],
         "unknowns": [],
@@ -1139,7 +1137,6 @@ def test_parse_copilot_artifact_recovers_deeply_nested_envelope_object() -> None
         "factory_eligible": True,
         "complexity": "L1",
         "risk": "R1",
-        "requirements_quality": "clear",
         "needs_research": False,
         "dependencies": [],
         "unknowns": [],
@@ -1158,7 +1155,6 @@ def test_parse_copilot_artifact_recovers_nested_envelope_in_list() -> None:
         "factory_eligible": True,
         "complexity": "L2",
         "risk": "R0",
-        "requirements_quality": "clear",
         "needs_research": False,
         "dependencies": [],
         "unknowns": [],
@@ -1177,7 +1173,6 @@ def test_parse_copilot_artifact_malformed_prose_followed_by_valid_object() -> No
             "factory_eligible": True,
             "complexity": "L0",
             "risk": "R0",
-            "requirements_quality": "clear",
             "needs_research": False,
             "dependencies": [],
             "unknowns": [],
@@ -1203,7 +1198,6 @@ def test_parse_copilot_artifact_recovers_valid_after_deeply_nested_prefix() -> N
             "factory_eligible": True,
             "complexity": "L0",
             "risk": "R0",
-            "requirements_quality": "clear",
             "needs_research": False,
             "dependencies": [],
             "unknowns": [],
@@ -1228,7 +1222,7 @@ def test_compatibility_non_streaming_fallback_and_no_resume(
         return _FakePopen(
             stdout=(
                 '{"schema_version":1,"factory_eligible":true,"complexity":"L0",'
-                '"risk":"R0","requirements_quality":"clear","needs_research":false,'
+                '"risk":"R0","needs_research":false,'
                 '"dependencies":[],"unknowns":[],"confidence":1.0}'
             )
         )

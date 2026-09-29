@@ -12,9 +12,11 @@ Supplied ChangeSet to correct:
 {"changed_files":[],"commands_run":[],"schema_version":1,"summary":"Fix the output shape.","tests_added":[]}
 
 Correction context:
-{"failures":["ChangeSet did not satisfy writing policy"],"log_excerpt":null,"summary":"The implementation is not rejected. Correct only the ChangeSet prose.","trigger":"IMPLEMENTER_FAILURE"}
+{"failures":["The ChangeSet summary must describe the diff."],"log_excerpt":null,"summary":"The implementation is not rejected. Correct only the ChangeSet prose.","trigger":"IMPLEMENTER_FAILURE"}
 
 Output contract:
 Return exactly one JSON object that Pydantic-validates as ChangeSet. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: summary=40.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 ChangeSet JSON Schema:
 <json schema>

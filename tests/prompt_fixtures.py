@@ -82,7 +82,6 @@ def triage() -> TriageResult:
         factory_eligible=True,
         complexity="L2",
         risk="R1",
-        requirements_quality="vague",
         needs_research=True,
         confidence=0.4,
     )
@@ -257,7 +256,10 @@ def polish_request(work_item_id: str = "WI-1", **overrides: object) -> AgentRequ
 def change_set_correction_request(
     base: AgentRequest, summary: str = "Fix the output shape."
 ) -> AgentRequest:
-    """The prose-only correction ``_invoke_implementer`` derives from ``base``."""
+    """A prose-only ChangeSet correction for ``base``.
+
+    The controller no longer starts one. The runtimes still support the purpose.
+    """
     return base.model_copy(
         update={
             "purpose": AgentPurpose.CORRECT_CHANGE_SET,
@@ -267,7 +269,7 @@ def change_set_correction_request(
             "repair_context": repair_context(
                 AttemptTrigger.IMPLEMENTER_FAILURE,
                 "The implementation is not rejected. Correct only the ChangeSet prose.",
-                ["ChangeSet did not satisfy writing policy"],
+                ["The ChangeSet summary must describe the diff."],
                 log_excerpt=None,
             ),
         }

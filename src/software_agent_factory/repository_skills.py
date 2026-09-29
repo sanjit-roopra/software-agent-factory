@@ -80,7 +80,6 @@ from .models import (
     VersionedModel,
     utc_now,
 )
-from .writing_policy import writing_policy_correction_context
 
 STORAGE_ROOT_DIRNAME = "repository-skills"
 STORAGE_LAYOUT_VERSION = "v1"
@@ -159,15 +158,11 @@ def repository_skill_correction_context(
         f"{repository_skill_rejection_summary(rejection)}"
     )
     if rejected_skill is not None:
-        if "RepositorySkill did not satisfy writing policy" in rejection:
-            artifact_context = writing_policy_correction_context(rejection, rejected_skill)
-        else:
-            artifact_context = (
-                "Correct the rejected artifact without changing valid evidence.\n\n"
-                "Previous rejected artifact:\n"
-                f"{rejected_skill.model_dump_json(indent=2)}"
-            )
-        context += "\n\n" + artifact_context
+        context += (
+            "\n\nCorrect the rejected artifact without changing valid evidence.\n\n"
+            "Previous rejected artifact:\n"
+            f"{rejected_skill.model_dump_json(indent=2)}"
+        )
     return context
 
 

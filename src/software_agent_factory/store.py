@@ -25,6 +25,7 @@ depend on them:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -56,6 +57,8 @@ from .models import (
     VersionedModel,
     WorkItem,
 )
+
+logger = logging.getLogger(__name__)
 
 ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 
@@ -183,10 +186,24 @@ class FileRunStore:
             raise ValueError(f"Unsupported FactoryRun schema_version: {schema_version}")
         return FactoryRun.model_validate(payload)
 
-    def list_runs(self) -> list[FactoryRun]:
+    def list_runs(self, *, skip_invalid: bool = False) -> list[FactoryRun]:
         """List every persisted run. Read-only: never creates a run or
-        attempt directory."""
-        runs = [self.load_run(path.parent.name) for path in self._runs_dir.glob("*/run.json")]
+        attempt directory.
+
+        Strict by default: a run file that does not load raises. Dispatch
+        safety depends on this, because a run that is "not listed" would look
+        like "no persisted run" and allow a duplicate dispatch. A read-only
+        view passes ``skip_invalid=True`` to skip and log such a run instead,
+        so one old or damaged run cannot hide every other run.
+        """
+        runs: list[FactoryRun] = []
+        for path in self._runs_dir.glob("*/run.json"):
+            try:
+                runs.append(self.load_run(path.parent.name))
+            except ValueError as exc:
+                if not skip_invalid:
+                    raise
+                logger.warning("skipped run %s: %s", path.parent.name, exc)
         return sorted(runs, key=lambda run: (run.created_at, run.id))
 
     def save_artifact(

@@ -18,7 +18,8 @@ from typing import Callable
 import pytest
 from pydantic import ValidationError
 
-from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
+from software_agent_factory.agent_artifact import parse_agent_artifact
+from software_agent_factory.agents import AgentHook, AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.governance import (
     CheckPhase,
@@ -38,6 +39,7 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    InvocationRecord,
     PlanStep,
     RepairContext,
     RepositoryDependency,
@@ -76,8 +78,9 @@ from software_agent_factory.models import (
     utc_now,
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
+from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
-from software_agent_factory.store import ArtifactModel, FileRunStore
+from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
@@ -255,7 +258,6 @@ def _triage_hook(complexity: Complexity, risk: Risk, *, needs_research: bool = F
                 factory_eligible=True,
                 complexity=complexity,
                 risk=risk,
-                requirements_quality="clear",
                 needs_research=needs_research,
                 dependencies=[],
                 unknowns=[],
@@ -506,7 +508,14 @@ def test_planner_retries_once_after_malformed_execution_plan(
     assert run.active_invocation is None
 
 
-def test_planner_retries_once_after_writing_policy_failure(
+_WORDY = "Use a robust and comprehensive implementation."
+
+
+def _records_for(run: FactoryRun, role: AgentRole) -> list[InvocationRecord]:
+    return [record for record in run.invocation_records if record.role is role]
+
+
+def test_planner_writing_findings_are_recorded_without_a_retry(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
@@ -515,242 +524,29 @@ def test_planner_retries_once_after_writing_policy_failure(
 
     def planner(request: AgentRequest) -> AgentResult:
         requests.append(request)
-        if len(requests) == 1:
-            return AgentResult(
-                role=AgentRole.PLANNER,
-                success=True,
-                execution_plan=ExecutionPlan(
-                    summary="Use a robust and comprehensive implementation.",
-                    steps=[PlanStep(id="one", goal="Change the parser.")],
-                    expected_scope=ExpectedScope(
-                        modules=["FACTORY_NOTES.md"],
-                        estimated_files_min=1,
-                        estimated_files_max=1,
-                    ),
-                ),
-            )
-        return default_runtime.run(request)
+        result = default_runtime.run(request)
+        assert result.execution_plan is not None
+        return result.model_copy(
+            update={"execution_plan": result.execution_plan.model_copy(update={"summary": _WORDY})}
+        )
 
     run = WorkflowController(
-        _config(data_dir, same_model_attempts=2),
+        _config(data_dir, same_model_attempts=3),
         FileRunStore(data_dir),
         FakeAgentRuntime(planner=planner),
-    ).run(_work_item("WI-planner-writing-retry"), source_repo)
+    ).run(_work_item("WI-planner-writing-advisory"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
-    assert len(requests) == 2
-    assert isinstance(requests[1].repair_context, str)
-    assert "ExecutionPlan did not satisfy writing policy" in requests[1].repair_context
-    assert "Rewrite only the prose fields" in requests[1].repair_context
-    assert "Use a robust and comprehensive implementation." in requests[1].repair_context
-    assert '"FACTORY_NOTES.md"' in requests[1].repair_context
+    assert len(requests) == 1
+    (record,) = _records_for(run, AgentRole.PLANNER)
+    assert record.success is True
+    assert record.failure_reason is None
+    assert record.writing_findings == ("summary has 2 slop_word finding(s).",)
+    (persisted,) = _records_for(FileRunStore(data_dir).load_run(run.id), AgentRole.PLANNER)
+    assert persisted.writing_findings == record.writing_findings
 
 
-def test_planner_allows_only_one_writing_policy_correction(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-
-    def planner(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        return AgentResult(
-            role=AgentRole.PLANNER,
-            success=True,
-            execution_plan=ExecutionPlan(
-                summary="Use a robust and comprehensive implementation.",
-                steps=[PlanStep(id="one", goal="Change the parser.")],
-                expected_scope=ExpectedScope(
-                    modules=["FACTORY_NOTES.md"],
-                    estimated_files_min=1,
-                    estimated_files_max=1,
-                ),
-            ),
-        )
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=4),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(planner=planner),
-    ).run(_work_item("WI-planner-writing-limit"), source_repo)
-
-    assert run.state is WorkflowState.FAILED
-    assert len(requests) == 2
-
-
-def test_implementer_allows_only_one_writing_policy_correction(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
-        )
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=4, max_total_attempts=4),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=implementer),
-    ).run(_work_item("WI-implementer-writing-limit"), source_repo)
-
-    assert run.state is WorkflowState.NEEDS_HUMAN
-    assert len(requests) == 2
-    assert requests[1].repair_context is not None
-    assert "Previous rejected artifact" in requests[1].repair_context.failures[0]
-    assert (
-        "Use a robust and comprehensive implementation." in (requests[1].repair_context.failures[0])
-    )
-
-
-def test_implementer_change_set_prose_correction_succeeds_without_extra_attempt(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            assert request.change_set is not None
-            assert request.diff is None
-            assert request.repair_context is not None
-            assert (
-                "Do not edit, add, or remove any source files or workspace files. "
-                "Source edits are strictly forbidden for this artifact-only correction."
-            ) in request.repair_context.summary
-            return AgentResult(
-                role=AgentRole.IMPLEMENTER,
-                success=True,
-                change_set=ChangeSet(
-                    summary="Add requested notes.",
-                    tests_added=[],
-                    commands_run=[],
-                ),
-            )
-        assert request.workspace_path is not None
-        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text("repaired notes\n")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(
-                summary="Use a robust and comprehensive implementation.",
-                tests_added=["tests/test_notes.py"],
-                commands_run=["echo 1"],
-            ),
-        )
-
-    store = FileRunStore(data_dir)
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
-        store,
-        FakeAgentRuntime(implementer=implementer),
-    ).run(_work_item("WI-change-set-correction"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert len(requests) == 2
-    assert requests[0].purpose is AgentPurpose.STANDARD
-    assert requests[1].purpose is AgentPurpose.CORRECT_CHANGE_SET
-    assert len(run.attempt_records) == 1
-    assert run.attempt_records[0].attempt_number == 1
-    assert run.attempt_records[0].outcome == "succeeded"
-    saved_patch = store.load_patch(run.id, attempt=1)
-    assert "repaired notes" in saved_patch
-    saved_change_set = store.load_artifact(run.id, ChangeSet, attempt=1)
-    assert saved_change_set.summary == "Add requested notes."
-    assert saved_change_set.tests_added == ["tests/test_notes.py"]
-    assert saved_change_set.commands_run == ["echo 1"]
-    assert saved_change_set.changed_files == ["FACTORY_NOTES.md"]
-    assert run.performance.counters.get("rework.change_set_artifact_correction") == 1
-
-
-def test_implementer_change_set_correction_is_capped_at_one_across_attempts(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-    attempt_count = 0
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        nonlocal attempt_count
-        requests.append(request)
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            return AgentResult(
-                role=AgentRole.IMPLEMENTER,
-                success=True,
-                change_set=ChangeSet(summary="Add clean notes."),
-            )
-        attempt_count += 1
-        assert request.workspace_path is not None
-        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text(f"work {attempt_count}\n")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
-        )
-
-    config = _config(
-        data_dir,
-        verify=["test -f pass_flag.txt"],
-        same_model_attempts=2,
-        max_total_attempts=3,
-    )
-    run = WorkflowController(
-        config,
-        FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=implementer),
-    ).run(_work_item("WI-correction-capped"), source_repo)
-
-    assert run.state is WorkflowState.NEEDS_HUMAN
-    correction_requests = [r for r in requests if r.purpose is AgentPurpose.CORRECT_CHANGE_SET]
-    assert len(correction_requests) == 1
-
-
-def test_implementer_change_set_correction_rejected_if_worktree_diff_changes(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        assert request.workspace_path is not None
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            (Path(request.workspace_path) / "unexpected.txt").write_text("sneaky edit\n")
-            return AgentResult(
-                role=AgentRole.IMPLEMENTER,
-                success=True,
-                change_set=ChangeSet(summary="Add clean notes."),
-            )
-        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text("initial edit\n")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
-        )
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=1, max_total_attempts=1),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=implementer),
-    ).run(_work_item("WI-diff-change-rejected"), source_repo)
-
-    assert run.state is WorkflowState.NEEDS_HUMAN
-    assert len(requests) == 2
-    assert requests[1].purpose is AgentPurpose.CORRECT_CHANGE_SET
-    assert len(run.attempt_records) == 1
-    assert run.attempt_records[0].outcome == "failed"
-    assert (
-        "ChangeSet correction changed the Git diff; the artifact-only correction was rejected"
-        in (run.attempt_records[0].failure_reason or "")
-    )
-
-
-def test_triage_retries_once_after_writing_policy_failure(
+def test_triage_writing_findings_are_recorded_without_a_retry(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
@@ -759,31 +555,220 @@ def test_triage_retries_once_after_writing_policy_failure(
 
     def triage(request: AgentRequest) -> AgentResult:
         requests.append(request)
+        result = default_runtime.run(request)
+        assert result.triage_result is not None
+        wordy = result.triage_result.model_copy(update={"unknowns": [_WORDY]})
+        return result.model_copy(update={"triage_result": wordy})
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=3),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(triage=triage),
+    ).run(_work_item("WI-triage-writing-advisory"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 1
+    (record,) = _records_for(run, AgentRole.TRIAGE)
+    assert record.success is True
+    assert record.writing_findings == ("unknowns[0] has 2 slop_word finding(s).",)
+
+
+@pytest.mark.parametrize(
+    ("role", "hook", "artifact_field", "update", "finding"),
+    [
+        (
+            AgentRole.REFINER,
+            "refiner",
+            "specification",
+            {"problem": _WORDY},
+            "problem has 2 slop_word finding(s).",
+        ),
+        (
+            AgentRole.RESEARCHER,
+            "researcher",
+            "research_report",
+            {"findings": [_WORDY]},
+            "findings[0] has 2 slop_word finding(s).",
+        ),
+        (
+            AgentRole.TESTER,
+            "tester",
+            "test_report",
+            {"findings": [_WORDY]},
+            "findings[0] has 2 slop_word finding(s).",
+        ),
+        (
+            AgentRole.REVIEWER,
+            "reviewer",
+            "review_report",
+            {"suggested_changes": [_WORDY]},
+            "suggested_changes[0] has 2 slop_word finding(s).",
+        ),
+    ],
+)
+def test_writing_findings_from_other_roles_are_recorded_without_a_retry(
+    source_repo: Path,
+    data_dir: Path,
+    role: AgentRole,
+    hook: str,
+    artifact_field: str,
+    update: dict[str, object],
+    finding: str,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+
+    def wordy(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        result = default_runtime.run(request)
+        artifact = getattr(result, artifact_field)
+        assert artifact is not None
+        return result.model_copy(update={artifact_field: artifact.model_copy(update=update)})
+
+    hooks: dict[str, AgentHook] = {hook: wordy}
+    if role is AgentRole.RESEARCHER:
+        hooks["triage"] = _triage_hook(Complexity.L1, Risk.R1, needs_research=True)
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=3),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(**hooks),
+    ).run(_work_item(f"WI-{hook}-writing-advisory"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 1
+    (record,) = _records_for(run, role)
+    assert record.success is True
+    assert record.failure_reason is None
+    assert record.writing_findings == (finding,)
+
+
+def test_implementer_writing_findings_are_recorded_without_a_retry(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        assert request.workspace_path is not None
+        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text("notes\n")
+        return AgentResult(
+            role=AgentRole.IMPLEMENTER,
+            success=True,
+            change_set=ChangeSet(summary=_WORDY),
+        )
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=3, max_total_attempts=4),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=implementer),
+    ).run(_work_item("WI-implementer-writing-advisory"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 1
+    assert [attempt.outcome for attempt in run.attempt_records] == ["succeeded"]
+    (record,) = _records_for(run, AgentRole.IMPLEMENTER)
+    assert record.purpose is AgentPurpose.STANDARD
+    assert record.writing_findings == ("summary has 2 slop_word finding(s).",)
+
+
+@pytest.mark.parametrize(
+    ("role", "hook", "artifact"),
+    [
+        (AgentRole.TRIAGE, "triage", "TriageResult"),
+        (AgentRole.REFINER, "refiner", "Specification"),
+        (AgentRole.RESEARCHER, "researcher", "ResearchReport"),
+    ],
+)
+def test_structural_retry_prompt_names_the_failure_for_early_roles(
+    source_repo: Path,
+    data_dir: Path,
+    role: AgentRole,
+    hook: str,
+    artifact: str,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+    reason = f"{role.value} response did not validate as {artifact}: confidence: Field required"
+
+    def failing_first(request: AgentRequest) -> AgentResult:
+        requests.append(request)
         if len(requests) == 1:
-            return AgentResult(
-                role=AgentRole.TRIAGE,
-                success=True,
-                triage_result=TriageResult(
-                    factory_eligible=True,
-                    complexity=Complexity.L1,
-                    risk=Risk.R1,
-                    requirements_quality="A robust and comprehensive task.",
-                    needs_research=False,
-                    confidence=0.8,
-                ),
-            )
+            return AgentResult(role=role, success=False, failure_reason=reason)
         return default_runtime.run(request)
+
+    hooks: dict[str, AgentHook] = {hook: failing_first}
+    if role is AgentRole.RESEARCHER:
+        hooks["triage"] = _triage_hook(Complexity.L1, Risk.R1, needs_research=True)
+    runtime = FakeAgentRuntime(**hooks)
 
     run = WorkflowController(
         _config(data_dir, same_model_attempts=2),
         FileRunStore(data_dir),
-        FakeAgentRuntime(triage=triage),
-    ).run(_work_item("WI-triage-writing-retry"), source_repo)
+        runtime,
+    ).run(_work_item(f"WI-{hook}-structural-retry"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert len(requests) == 2
+    assert requests[0].repair_context is None
+    retry_prompt = build_prompt(requests[1])
+    assert "Previous output rejection" in retry_prompt
+    assert "confidence: Field required" in retry_prompt
+
+
+def test_blank_plan_summary_takes_the_structural_retry(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    requests: list[AgentRequest] = []
+    default_runtime = FakeAgentRuntime()
+    blank_plan = (
+        '{"summary":"  ","steps":[],"expected_scope":'
+        '{"modules":["src"],"estimated_files_min":1,"estimated_files_max":1}}'
+    )
+
+    def planner(request: AgentRequest) -> AgentResult:
+        requests.append(request)
+        if len(requests) > 1:
+            return default_runtime.run(request)
+        try:
+            parse_agent_artifact(AgentRole.PLANNER, text=blank_plan)
+        except ValueError as exc:
+            return AgentResult(role=AgentRole.PLANNER, success=False, failure_reason=str(exc))
+        raise AssertionError("a blank summary must not validate")
+
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2),
+        FileRunStore(data_dir),
+        FakeAgentRuntime(planner=planner),
+    ).run(_work_item("WI-blank-plan-summary"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
     assert len(requests) == 2
     assert isinstance(requests[1].repair_context, str)
-    assert "TriageResult did not satisfy writing policy" in requests[1].repair_context
+    assert "summary" in requests[1].repair_context
+    assert "must not be blank" in requests[1].repair_context
+
+
+def test_synthesized_artifacts_skip_blank_human_criteria(data_dir: Path, source_repo: Path) -> None:
+    controller = WorkflowController(_config(data_dir), FileRunStore(data_dir), FakeAgentRuntime())
+    item = WorkItem(
+        id="WI-blank-criteria",
+        title="Reject empty names",
+        description="Return HTTP 400.",
+        acceptance_criteria=["", "Blank names return 400."],
+        constraints=[" "],
+    )
+
+    specification = controller._synthesize_specification(item)
+    plan = controller._synthesize_execution_plan(
+        item, GitWorktreeWorkspace(data_dir, source_repo, item.id)
+    )
+
+    assert specification.acceptance_criteria == ["Blank names return 400."]
+    assert specification.constraints == []
+    assert plan.steps[0].validation == ["Blank names return 400."]
 
 
 def test_planner_does_not_retry_non_schema_failure(
@@ -1300,47 +1285,44 @@ def test_invalid_repository_skill_provenance_gets_one_correction(
 
 
 def test_refreshed_profile_persistence_failure_skips_skill_selection(
-    source_repo: Path, data_dir: Path
+    source_repo: Path,
+    data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    class RefreshedProfileFailingStore(FileRunStore):
-        def __init__(self, root: Path) -> None:
-            super().__init__(root)
-            self.profile_writes = 0
+    store = FileRunStore(data_dir)
 
-        def save_artifact(
-            self,
-            run_id: str,
-            artifact: ArtifactModel,
-            filename: str | None = None,
-            *,
-            attempt: int | None = None,
-        ) -> Path:
-            if isinstance(artifact, RepositoryProfile):
-                self.profile_writes += 1
-                if self.profile_writes == 2:
-                    raise OSError("profile storage unavailable")
-            return super().save_artifact(run_id, artifact, filename, attempt=attempt)
+    class ProfileBlockingRuntime(RecordingRuntime):
+        """Once the first profile is on disk, a directory takes its place, so
+        the real store cannot write the refreshed profile there."""
 
-    runtime = RecordingRuntime(FakeAgentRuntime())
-    store = RefreshedProfileFailingStore(data_dir)
+        def run(self, request: AgentRequest) -> AgentResult:
+            for profile_path in store.runs_dir.glob("*/repository-profile.json"):
+                if profile_path.is_file():
+                    profile_path.unlink()
+                    profile_path.mkdir()
+            return super().run(request)
+
+    runtime = ProfileBlockingRuntime(FakeAgentRuntime())
     controller = WorkflowController(
         _config(data_dir, polish_enabled=True),
         store,
         runtime,
     )
 
-    run = controller.run(_work_item("WI-profile-persistence"), source_repo)
+    with caplog.at_level("WARNING"):
+        run = controller.run(_work_item("WI-profile-persistence"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
+    assert any(
+        record.getMessage() == "advisory artifact persistence failed"
+        and getattr(record, "artifact", None) == "RepositoryProfile"
+        for record in caplog.records
+    )
     assert all(
         request.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL
         for request in runtime.requests
     )
-    profile = FileRunStore(data_dir).load_artifact(run.id, RepositoryProfile)
-    assert any(
-        "refreshed repository profile could not be persisted" in warning
-        for warning in profile.warnings
-    )
+    assert not any(store.runs_dir.glob("*/repository-skill*.json"))
 
 
 def test_repository_skill_rejects_sources_outside_factory_allowlist(
@@ -2162,19 +2144,6 @@ SNAPSHOT_FILENAMES = (
 )
 
 
-class StateRecordingStore(FileRunStore):
-    """Records every persisted workflow state, so a test can assert that a
-    state (``RESEARCHING``) was never entered at all."""
-
-    def __init__(self, root: Path) -> None:
-        super().__init__(root)
-        self.states: list[WorkflowState] = []
-
-    def save_run(self, run: FactoryRun) -> Path:
-        self.states.append(run.state)
-        return super().save_run(run)
-
-
 def _skill_storage(data_dir: Path, source_repo: Path) -> RepositorySkillManager:
     return RepositorySkillManager.for_repository(data_dir, source_repo)
 
@@ -2198,6 +2167,7 @@ def _polish_run(
     *,
     profile: RepositoryProfile,
     store: FileRunStore | None = None,
+    run_id: str | None = None,
 ) -> tuple[FactoryRun, FileRunStore, RecordingRuntime]:
     runtime = RecordingRuntime(FakeAgentRuntime())
     resolved_store = store if store is not None else FileRunStore(data_dir)
@@ -2207,7 +2177,8 @@ def _polish_run(
         runtime,
         repository_profiler=lambda path: profile,
     )
-    return controller.run(_work_item(work_item_id), source_repo), resolved_store, runtime
+    run = controller.run(_work_item(work_item_id), source_repo, run_id=run_id)
+    return run, resolved_store, runtime
 
 
 def _guidance_consumers(runtime: RecordingRuntime) -> list[AgentRequest]:
@@ -2266,16 +2237,22 @@ def test_a_second_run_reuses_stored_guidance_without_researching(
     first_run, store, first_runtime = _polish_run(
         source_repo, data_dir, "WI-reuse-first", profile=profile
     )
-    second_store = StateRecordingStore(data_dir)
     second_run, _, second_runtime = _polish_run(
-        source_repo, data_dir, "WI-reuse-second", profile=profile, store=second_store
+        source_repo, data_dir, "WI-reuse-second", profile=profile
     )
 
     assert first_run.state is WorkflowState.PR_READY
     assert second_run.state is WorkflowState.PR_READY
     assert len(_generation_requests(first_runtime)) == 1
     assert _generation_requests(second_runtime) == []
-    assert WorkflowState.RESEARCHING not in second_store.states
+    # Persisted evidence: only the first run ever spent time in RESEARCHING.
+    persisted_first = store.load_run(first_run.id)
+    persisted_second = store.load_run(second_run.id)
+    assert "stage.RESEARCHING" in persisted_first.performance.durations_ms
+    assert "stage.RESEARCHING" not in persisted_second.performance.durations_ms
+    assert AgentRole.RESEARCHER not in {
+        record.role for record in persisted_second.invocation_records
+    }
     assert [attempt.triggered_by for attempt in second_run.attempt_records] == [
         AttemptTrigger.INITIAL,
         AttemptTrigger.POLISH,
@@ -2588,10 +2565,24 @@ def test_a_concurrent_winner_is_revalidated_before_use(source_repo: Path, data_d
         store.load_artifact(run.id, RepositorySkill)
 
 
+_CONFLICTING_SNAPSHOT = "{}\n"
+
+
+def _obstruct_with_directory(path: Path) -> None:
+    path.mkdir()
+
+
+def _obstruct_with_conflicting_snapshot(path: Path) -> None:
+    path.write_text(_CONFLICTING_SNAPSHOT, encoding="utf-8")
+
+
 @pytest.mark.parametrize(
-    "boundary_error",
-    [OSError("read-only file system"), RuntimeError("store unavailable"), ValueError("bad path")],
-    ids=["oserror", "runtimeerror", "valueerror"],
+    ("obstruct", "expected_error"),
+    [
+        (_obstruct_with_directory, "Is a directory"),
+        (_obstruct_with_conflicting_snapshot, "already holds different content"),
+    ],
+    ids=["unwritable-path", "conflicting-snapshot"],
 )
 @pytest.mark.parametrize(
     "failing_artifact",
@@ -2602,7 +2593,8 @@ def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
     source_repo: Path,
     data_dir: Path,
     failing_artifact: type[ArtifactModel],
-    boundary_error: Exception,
+    obstruct: Callable[[Path], None],
+    expected_error: str,
 ) -> None:
     """Every create-once snapshot is a precondition of polish.
 
@@ -2614,39 +2606,38 @@ def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
     profile = _react_profile()
     manager = _skill_storage(data_dir, source_repo)
     _write_overlay(manager, OVERLAY_YAML)
-
-    class SnapshotFailingStore(FileRunStore):
-        def save_artifact_once(
-            self,
-            run_id: str,
-            artifact: ArtifactModel,
-            filename: str | None = None,
-        ) -> Path:
-            if isinstance(artifact, failing_artifact):
-                raise boundary_error
-            return super().save_artifact_once(run_id, artifact, filename)
+    store = FileRunStore(data_dir)
+    run_id = "run-snapshot-failure"
+    run_dir = store.runs_dir / run_id
+    run_dir.mkdir(parents=True)
+    obstruct(run_dir / ARTIFACT_FILENAMES[failing_artifact])
 
     run, _, runtime = _polish_run(
         source_repo,
         data_dir,
         "WI-snapshot-failure",
         profile=profile,
-        store=SnapshotFailingStore(data_dir),
+        store=store,
+        run_id=run_id,
     )
 
     assert run.state is WorkflowState.PR_READY
     assert [attempt.triggered_by for attempt in run.attempt_records] == [AttemptTrigger.INITIAL]
     assert all(request.repository_skill is None for request in runtime.requests)
 
-    reader = FileRunStore(data_dir)
-    profile_artifact = reader.load_artifact(run.id, RepositoryProfile)
+    profile_artifact = store.load_artifact(run.id, RepositoryProfile)
     assert any(
-        f"repository guidance snapshot could not be persisted: {boundary_error}" in warning
+        "repository guidance snapshot could not be persisted: " in warning
+        and expected_error in warning
         for warning in profile_artifact.warnings
     )
 
-    run_dir = reader.runs_dir / run.id
-    written = {name for name in SNAPSHOT_FILENAMES if (run_dir / name).exists()}
+    written = {
+        name
+        for name in SNAPSHOT_FILENAMES
+        if (run_dir / name).is_file()
+        and (run_dir / name).read_text(encoding="utf-8") != _CONFLICTING_SNAPSHOT
+    }
     assert "repository-skill.json" not in written
     if failing_artifact is RepositorySkillUse:
         assert written == set()
@@ -2654,8 +2645,6 @@ def test_any_snapshot_failure_safely_skips_polish_without_claiming_guidance(
         assert written == {"repository-skill-use.json"}
     else:
         assert written == {"repository-skill-use.json", "repository-skill-overlay.json"}
-    with pytest.raises(FileNotFoundError):
-        reader.load_artifact(run.id, RepositorySkill)
 
     # The shared generated file was still published, so a later run reuses it.
     assert manager.list_generated_fingerprints() == (profile.dependency_fingerprint,)
@@ -2874,7 +2863,6 @@ def test_tester_receives_repair_diff_and_prior_accepted_findings_during_review_r
                 factory_eligible=True,
                 complexity=Complexity.L1,
                 risk=Risk.R0,
-                requirements_quality="clear",
                 needs_research=False,
                 dependencies=[],
                 unknowns=[],
@@ -3024,7 +3012,6 @@ def test_review_repair_loop_passes_repair_diff_and_prior_accepted_findings_to_te
                 factory_eligible=True,
                 complexity=Complexity.L1,
                 risk=Risk.R0,
-                requirements_quality="clear",
                 needs_research=False,
                 dependencies=[],
                 unknowns=[],
@@ -3770,7 +3757,6 @@ def test_ineligible_triage_ends_needs_human(source_repo: Path, data_dir: Path) -
                 factory_eligible=False,
                 complexity=Complexity.L1,
                 risk=Risk.R1,
-                requirements_quality="vague",
                 needs_research=False,
                 dependencies=[],
                 unknowns=["scope unclear"],
@@ -4459,64 +4445,6 @@ def test_fast_performance_mode_fallback_actual_scope_protected_file(
     persisted = store.load_run(run.id)
     assert persisted.effective_performance_mode == "standard"
     assert persisted.performance_fallback_reason == "scope includes protected files: README.md"
-
-
-def test_implementer_change_set_correction_bound_enforced_across_recovery_records(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-    attempt_count = 0
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        nonlocal attempt_count
-        requests.append(request)
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            return AgentResult(
-                role=AgentRole.IMPLEMENTER,
-                success=True,
-                change_set=ChangeSet(summary="Add clean notes."),
-            )
-        attempt_count += 1
-        assert request.workspace_path is not None
-        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text(f"attempt {attempt_count}\n")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(summary="Use a robust and comprehensive implementation."),
-        )
-
-    config = _config(
-        data_dir,
-        verify=["test -f pass_flag.txt"],
-        same_model_attempts=2,
-        max_total_attempts=3,
-    )
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(implementer=implementer),
-    )
-    run = controller.run(_work_item("WI-correction-bound-recovery"), source_repo)
-
-    correction_invocations = [
-        inv for inv in run.invocation_records if inv.purpose is AgentPurpose.CORRECT_CHANGE_SET
-    ]
-    assert len(correction_invocations) == 1
-
-    workspace = GitWorktreeWorkspace(data_dir, source_repo, run.work_item_id)
-    context = _RunContext(
-        work_item=store.load_artifact(run.id, WorkItem),
-        triage_result=store.load_artifact(run.id, TriageResult),
-        specification=store.load_artifact(run.id, Specification),
-        research_report=None,
-        execution_plan=store.load_artifact(run.id, ExecutionPlan),
-        repository_profile=store.load_artifact(run.id, RepositoryProfile),
-        workspace=workspace,
-        source_repo=source_repo,
-    )
-    assert controller._change_set_correction_used(run, context) is True
 
 
 def test_reviewer_source_location_model_validation_rejects_invalid_paths() -> None:

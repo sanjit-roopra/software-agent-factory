@@ -30,6 +30,8 @@ Choose the smallest implementation that satisfies the specification.
 - File-count estimates are advisory. The controller enforces the hard limit.
 
 Return exactly one JSON object that Pydantic-validates as ExecutionPlan. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: summary=25, test_strategy=20, risks=30, unresolved_decisions=30, steps[].goal=20, steps[].validation=20.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 ExecutionPlan JSON Schema:
 <json schema>
 

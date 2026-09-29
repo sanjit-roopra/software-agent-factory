@@ -15,7 +15,7 @@ LLMs provide intelligence. Deterministic code provides authority. Agents return
 short typed artifacts. They do not control state, budgets, model routes, gates,
 or merges.
 
-All factory-authored prose uses a mandatory controlled writing policy. It uses
+All factory-authored prose follows an advisory controlled writing policy. It uses
 selected checks from [SimpleEnglish](https://github.com/AminBlg/SimpleEnglish)
 and follows ASD-STE100 principles. The checks do not prove formal compliance.
 

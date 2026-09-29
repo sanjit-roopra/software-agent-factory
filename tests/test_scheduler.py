@@ -352,29 +352,41 @@ def test_stale_revalidation_backfills_capacity_in_the_same_tick() -> None:
     assert provider.fetch_by_ids_calls == [["a"], ["b"]]
 
 
-def test_tick_uses_one_selection_and_one_claim_run_snapshot(tmp_path: Path) -> None:
-    class CountingStore(FileRunStore):
-        def __init__(self, data_dir: Path) -> None:
-            super().__init__(data_dir)
-            self.list_calls = 0
-
-        def list_runs(self) -> list[FactoryRun]:
-            self.list_calls += 1
-            return super().list_runs()
-
-    store = CountingStore(tmp_path / "data")
+def test_tick_selects_from_one_early_snapshot_and_claims_from_a_fresh_one(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
     item = make_item("new")
+
+    class RacingProvider(FakeProvider):
+        def fetch_candidates(self) -> list[TrackerItem]:
+            # A concurrent `factory run` persists an active run after the
+            # selection snapshot was taken but before the claim snapshot.
+            store.save_run(
+                FactoryRun(
+                    id="run-concurrent",
+                    work_item_id=deterministic_work_item_id(item),
+                    state=WorkflowState.IMPLEMENTING,
+                )
+            )
+            return super().fetch_candidates()
+
+    dispatched: list[str] = []
     scheduler = Scheduler(
-        FakeProvider([item]),
-        lambda _item: FakeHandle(),
+        RacingProvider([item]),
+        lambda i: (dispatched.append(i.opaque_id), FakeHandle())[1],
         store=store,
         max_runs_per_day=20,
     )
 
     report = scheduler.tick()
 
-    assert report.dispatched == ("new",)
-    assert store.list_calls == 2
+    # Selection used the snapshot taken before candidate discovery, so the item
+    # was still eligible; the claim re-read caught the concurrent run.
+    assert report.eligible_count == 1
+    assert report.skipped_stale == ("new",)
+    assert report.dispatched == ()
+    assert dispatched == []
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +708,40 @@ def test_candidate_with_existing_persisted_nonterminal_run_is_not_redispatched(
     assert dispatched == []
     assert report.eligible_count == 0
     assert report.skipped_stale == ()
+
+
+def _write_unreadable_run(store: FileRunStore, run_id: str) -> None:
+    run_dir = store.runs_dir / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{corrupt", encoding="utf-8")
+
+
+def test_tick_fails_closed_when_a_persisted_run_is_unreadable(tmp_path: Path) -> None:
+    """An unreadable run.json may hide a live run for this item, so the
+    scheduler must not dispatch anything rather than risk a duplicate."""
+    store = FileRunStore(tmp_path / "data")
+    _write_unreadable_run(store, "run-unreadable")
+    dispatched: list[str] = []
+    scheduler = Scheduler(
+        FakeProvider([make_item("issue-1")]),
+        lambda i: (dispatched.append(i.opaque_id), FakeHandle())[1],
+        max_concurrent_tasks=1,
+        store=store,
+    )
+
+    with pytest.raises(ValueError):  # noqa: PT011 - the strict store lists nothing partial
+        scheduler.tick()
+
+    assert dispatched == []
+
+
+def test_recover_fails_closed_when_a_persisted_run_is_unreadable(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    _write_unreadable_run(store, "run-unreadable")
+    scheduler = Scheduler(FakeProvider([]), lambda i: FakeHandle())
+
+    with pytest.raises(ValueError):  # noqa: PT011 - the strict store lists nothing partial
+        scheduler.recover(store, lambda run: ReconciliationAction.LEAVE)
 
 
 def test_candidate_becomes_dispatchable_again_once_persisted_run_completes(

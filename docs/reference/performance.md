@@ -14,7 +14,6 @@ only to eligible low-risk work.
 - Git evidence uses fewer processes and batches review location checks.
 - Repository profiles reuse parsed facts only when their evidence is unchanged.
 - Successful command output stores counts and a content hash instead of full logs.
-- ChangeSet prose can receive one tool-free correction.
 - The runtime records stage, process, prompt, gate, and rework measurements.
 
 The fast mode uses a configured Refiner and Planner profile. It also skips the

@@ -18,7 +18,6 @@ def _triage_payload() -> dict[str, object]:
         "factory_eligible": True,
         "complexity": "L0",
         "risk": "R0",
-        "requirements_quality": "clear",
         "needs_research": False,
         "dependencies": [],
         "unknowns": [],

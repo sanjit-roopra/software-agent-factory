@@ -20,6 +20,7 @@ for real.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -1162,3 +1163,25 @@ def test_no_command_installs_a_service_as_a_side_effect(
     make_run(source_repo, data_dir)
     assert runner.invoke(app, ["status", "--data-dir", str(data_dir)]).exit_code == 0
     assert runner.invoke(app, ["runs", "--data-dir", str(data_dir)]).exit_code == 0
+
+
+def test_runs_command_lists_readable_runs_and_logs_the_unreadable_one(
+    source_repo: Path,
+    data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    good_id = make_run(source_repo, data_dir)
+    # An earlier command in this process can attach the file log and stop propagation.
+    monkeypatch.setattr(logging.getLogger("software_agent_factory"), "propagate", True)
+    bad_dir = data_dir / "runs" / "RUN-UNREADABLE"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "run.json").write_text("{corrupt", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.store"):
+        result = runner.invoke(app, ["runs", "--data-dir", str(data_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert good_id in result.output
+    assert "RUN-UNREADABLE" not in result.output
+    assert "skipped run RUN-UNREADABLE" in caplog.text

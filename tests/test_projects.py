@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Sequence
 
 import pytest
 from factory_testing import build_config, git, triage_hook
 
+from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.models import (
     AgentPurpose,
@@ -268,6 +270,101 @@ def test_project_retries_rejected_decomposition_with_feedback(
     assert "single project task" in str(decomposition_requests[1].repair_context)
     assert len(project_store.load_plan(brief.id).tasks) == 2
     assert len(project_store.load_execution(brief.id).invocation_records) == 2
+
+
+def test_blank_task_title_takes_the_decomposition_retry(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    decomposition_requests: list[AgentRequest] = []
+    blank_title_plan = json.dumps(
+        {
+            "project_id": "project-blank-title",
+            "summary": "One task.",
+            "delivery_approach": "One task is enough.",
+            "tasks": [
+                {
+                    "id": 1,
+                    "title": "   ",
+                    "description": "Do it.",
+                    "acceptance_criteria": ["It works."],
+                }
+            ],
+        }
+    )
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
+            return _project_planner(request)
+        decomposition_requests.append(request)
+        if len(decomposition_requests) > 1:
+            return _project_planner(request)
+        try:
+            parse_agent_artifact(
+                AgentRole.PLANNER, text=blank_title_plan, purpose=AgentPurpose.DECOMPOSE_PROJECT
+            )
+        except ValueError as exc:
+            return AgentResult(role=AgentRole.PLANNER, success=False, failure_reason=str(exc))
+        raise AssertionError("a blank title must not validate")
+
+    brief = ProjectBrief(
+        id="project-blank-title",
+        title="Build customer validation",
+        description="Implement two dependent validation outcomes.",
+        repository_path=str(factory_source_repo),
+    )
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+        project_store=FileProjectStore(factory_data_dir),
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert len(decomposition_requests) == 2
+    assert "must not be blank" in str(decomposition_requests[1].repair_context)
+
+
+def test_project_decomposition_writing_findings_are_recorded_without_a_retry(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    decomposition_requests: list[AgentRequest] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
+            return _project_planner(request)
+        decomposition_requests.append(request)
+        result = _project_planner(request)
+        assert result.project_plan is not None
+        wordy = result.project_plan.model_copy(
+            update={"summary": "A robust and comprehensive plan."}
+        )
+        return result.model_copy(update={"project_plan": wordy})
+
+    brief = ProjectBrief(
+        id="project-writing-advisory",
+        title="Build customer validation",
+        description="Implement two dependent validation outcomes.",
+        repository_path=str(factory_source_repo),
+    )
+    project_store = FileProjectStore(factory_data_dir)
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+        project_store=project_store,
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert len(decomposition_requests) == 1
+    (record,) = project_store.load_execution(brief.id).invocation_records
+    assert record.success is True
+    assert any("summary" in finding for finding in record.writing_findings)
 
 
 def test_project_plan_rejects_overpacked_single_task() -> None:
@@ -738,9 +835,10 @@ def test_project_can_publish_and_close_issues_without_daemon_label(
     assert github.closed == ["https://github.com/acme/repo/issues/1"]
 
 
-def test_issue_text_is_fully_validated_before_any_issue_is_created(
+def test_wordy_issue_text_is_logged_and_still_published(
     factory_source_repo: Path,
     factory_data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     github = _RecordingGitHubClient()
     runner = ProjectRunner(
@@ -750,19 +848,19 @@ def test_issue_text_is_fully_validated_before_any_issue_is_created(
         github_client=github,  # type: ignore[arg-type]
     )
     brief = ProjectBrief(
-        id="project-prevalidate",
-        title="Validate issue text",
-        description="Validate all issue text before publication.",
+        id="project-wordy-issues",
+        title="Publish issues",
+        description="Publish two issues even when their wording has findings.",
         repository_path=str(factory_source_repo),
     )
     plan = ProjectPlan(
         project_id=brief.id,
         summary="Two issue templates.",
-        delivery_approach="Publish only after every template passes.",
+        delivery_approach="Publish each issue in order.",
         tasks=(
             ProjectTask(
                 id=1,
-                title="Create first issue",
+                title="Add a robust and comprehensive guard",
                 description="Create the first issue.",
                 acceptance_criteria=("The first issue exists.",),
             ),
@@ -780,15 +878,47 @@ def test_issue_text_is_fully_validated_before_any_issue_is_created(
         project_id=brief.id,
         state=ProjectState.PLANNING,
         tasks=(
-            ProjectTaskExecution(task_id=1, work_item_id="project-prevalidate-task-1"),
-            ProjectTaskExecution(task_id=2, work_item_id="project-prevalidate-task-2"),
+            ProjectTaskExecution(task_id=1, work_item_id="project-wordy-issues-task-1"),
+            ProjectTaskExecution(task_id=2, work_item_id="project-wordy-issues-task-2"),
         ),
     )
 
-    with pytest.raises(ValueError, match="issue body did not satisfy writing policy"):
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
         runner._publish_issues(brief, plan, execution, factory_source_repo, "acme/repo")
 
-    assert github.created == []
+    assert [title for title, _body, _labels in github.created] == [
+        "Add a robust and comprehensive guard",
+        "Create second issue",
+    ]
+    assert (
+        "publication text findings field=issue title count=1: "
+        "issue title has 2 slop_word finding(s)." in caplog.text
+    )
+    assert (
+        "publication text findings field=issue body count=2: "
+        "issue body has 636 words. The limit is 500. | "
+        "issue body has 20 sentence_over_limit finding(s)." in caplog.text
+    )
+
+
+def test_wordy_child_commit_message_is_logged_and_returned(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    task = ProjectTask(
+        id=3,
+        title="Add a robust and comprehensive guard",
+        description="Add the guard.",
+        acceptance_criteria=("The guard works.",),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
+        message = ProjectRunner._child_commit_message(task)
+
+    assert message == "Implement project task 3: Add a robust and comprehensive guard"
+    assert (
+        "publication text findings field=commit message count=1: "
+        "commit message has 2 slop_word finding(s)." in caplog.text
+    )
 
 
 def test_file_project_store_rejects_corrupt_json(tmp_path: Path) -> None:

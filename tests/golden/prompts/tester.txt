@@ -19,6 +19,8 @@ Test the implementation independently.
 - Do not require a broader redesign when the requested behavior works.
 
 Return exactly one JSON object that Pydantic-validates as TestReport. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: findings=50, suggested_tests=20.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 TestReport JSON Schema:
 <json schema>
 

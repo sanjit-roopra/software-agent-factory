@@ -23,6 +23,8 @@ Create bounded repository guidance for the detected technologies and versions.
 - Preserve declared ranges when an exact version is unknown. Record the uncertainty.
 
 Return exactly one JSON object that Pydantic-validates as RepositorySkill. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: simplify.summary=40, simplify.guidance=25, simplify.avoid=25, simplify.validation=20, polish.summary=40, polish.guidance=25, polish.avoid=25, polish.validation=20, uncertainties=35.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 RepositorySkill JSON Schema:
 <json schema>
 

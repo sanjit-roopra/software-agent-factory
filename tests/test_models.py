@@ -22,6 +22,7 @@ from software_agent_factory.models import (
     ExpectedScope,
     FactoryRun,
     InvocationRecord,
+    ModelBase,
     ModelUsage,
     PlanStep,
     ProjectBrief,
@@ -235,7 +236,6 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         factory_eligible=True,
         complexity=Complexity.L1,
         risk=Risk.R1,
-        requirements_quality="clear",
         needs_research=False,
         dependencies=["pytest"],
         unknowns=["none"],
@@ -852,3 +852,197 @@ def test_execution_plan_derived_readiness_behavior() -> None:
     assert "ready" not in dumped
     assert "is_ready" not in ready_plan.model_dump_json()
     assert "ready" not in ready_plan.model_dump_json()
+
+
+def _invocation_payload() -> dict[str, object]:
+    return {
+        "invocation_number": 1,
+        "role": "TRIAGE",
+        "model": "m",
+        "reasoning": "low",
+        "started_at": "2026-09-29T10:00:00Z",
+        "completed_at": "2026-09-29T10:00:01Z",
+        "success": True,
+    }
+
+
+def test_invocation_record_defaults_to_no_writing_findings() -> None:
+    record = InvocationRecord.model_validate(_invocation_payload())
+
+    assert record.writing_findings == ()
+
+
+def test_invocation_record_round_trips_writing_findings() -> None:
+    payload = {**_invocation_payload(), "writing_findings": ["summary has 26 words."]}
+
+    record = InvocationRecord.model_validate(payload)
+    reloaded = InvocationRecord.model_validate_json(record.model_dump_json())
+
+    assert reloaded.writing_findings == ("summary has 26 words.",)
+
+
+def test_triage_result_no_longer_asks_the_model_for_requirements_quality() -> None:
+    schema = TriageResult.model_json_schema()
+
+    assert "requirements_quality" not in schema["properties"]
+    assert "requirements_quality" not in schema["required"]
+
+
+def test_old_triage_json_with_requirements_quality_still_loads() -> None:
+    old = (
+        '{"schema_version":1,"factory_eligible":true,"complexity":"L1","risk":"R1",'
+        '"requirements_quality":"clear","needs_research":false,"confidence":0.9}'
+    )
+
+    result = TriageResult.model_validate_json(old)
+
+    assert result.complexity is Complexity.L1
+    assert "requirements_quality" not in result.model_dump_json()
+
+
+_SCOPE = {"modules": ["src"], "estimated_files_min": 1, "estimated_files_max": 1}
+_LOCATION = {"path": "src/a.py", "start_line": 1, "end_line": 1}
+_TASK = {
+    "id": 1,
+    "title": "Add the guard",
+    "description": "Add the guard.",
+    "acceptance_criteria": ["The guard works."],
+}
+_GUIDANCE = {"summary": "Keep it small.", "guidance": ["Use the standard library."]}
+_BLANK_PROSE_CASES: list[tuple[type[ModelBase], dict[str, object]]] = [
+    (TriageResult, {"unknowns": [" "]}),
+    (TriageResult, {"dependencies": [""]}),
+    (Specification, {"problem": " "}),
+    (Specification, {"acceptance_criteria": ["\t"]}),
+    (Specification, {"risk_flags": [" "]}),
+    (ResearchReport, {"question": "\n"}),
+    (ResearchReport, {"evidence": [" "]}),
+    (PlanStep, {"goal": " "}),
+    (PlanStep, {"validation": [" "]}),
+    (ExecutionPlan, {"summary": " "}),
+    (ExecutionPlan, {"test_strategy": [" "]}),
+    (ExecutionPlan, {"unresolved_decisions": [" "]}),
+    (ChangeSet, {"summary": "  "}),
+    (TestReport, {"findings": [" "]}),
+    (TestReport, {"suggested_tests": [" "]}),
+    (ReviewReport, {"findings": [" "]}),
+    (ReviewReport, {"suggested_changes": [" "]}),
+    (
+        ReviewReport,
+        {
+            "blocking_findings": [
+                {"category": "CORRECTNESS", "message": " ", "locations": [_LOCATION]}
+            ]
+        },
+    ),
+    (
+        ReviewReport,
+        {
+            "prior_finding_dispositions": [
+                {"finding_id": "F1", "status": "RESOLVED", "rationale": " "}
+            ]
+        },
+    ),
+    (ProjectTask, {"title": " "}),
+    (ProjectTask, {"acceptance_criteria": [" "]}),
+    (ProjectPlan, {"summary": " "}),
+    (ProjectPlan, {"delivery_approach": " "}),
+    (SkillGuidance, {"summary": " "}),
+    (SkillGuidance, {"guidance": [" "]}),
+]
+_VALID_BASES: dict[type[ModelBase], dict[str, object]] = {
+    TriageResult: {
+        "factory_eligible": True,
+        "complexity": "L1",
+        "risk": "R1",
+        "needs_research": False,
+        "confidence": 0.9,
+    },
+    Specification: {"problem": "Fix it.", "confidence": 0.9},
+    ResearchReport: {"question": "Why?"},
+    PlanStep: {"id": "s1", "goal": "Change it."},
+    ExecutionPlan: {"summary": "Change it.", "expected_scope": _SCOPE},
+    ChangeSet: {"summary": "Changed it."},
+    TestReport: {"passed": True, "confidence": 0.9},
+    ReviewReport: {"approved": True},
+    ProjectTask: _TASK,
+    ProjectPlan: {
+        "project_id": "proj-1",
+        "summary": "One task.",
+        "delivery_approach": "One task.",
+        "tasks": [_TASK],
+    },
+    SkillGuidance: _GUIDANCE,
+}
+
+
+@pytest.mark.parametrize(("model", "override"), _BLANK_PROSE_CASES)
+def test_blank_agent_prose_fails_model_validation(
+    model: type[ModelBase], override: dict[str, object]
+) -> None:
+    payload = {**_VALID_BASES[model], **override}
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize("model", list(_VALID_BASES))
+def test_valid_agent_prose_still_validates(model: type[ModelBase]) -> None:
+    assert model.model_validate(_VALID_BASES[model]) is not None
+
+
+def test_non_blank_prose_keeps_its_original_whitespace() -> None:
+    plan = ExecutionPlan.model_validate(
+        {**_VALID_BASES[ExecutionPlan], "summary": "  Change it.  "}
+    )
+
+    assert plan.summary == "  Change it.  "
+
+
+def test_work_item_drops_blank_criteria_and_constraints_but_keeps_the_rest() -> None:
+    item = WorkItem(
+        id="WI-1",
+        title="Reject blanks",
+        description="Reject blank names.",
+        acceptance_criteria=["", "  Blank names fail.  ", "\t"],
+        constraints=[" ", "Keep the API."],
+    )
+
+    assert item.acceptance_criteria == ["  Blank names fail.  "]
+    assert item.constraints == ["Keep the API."]
+
+
+def test_project_brief_drops_blank_criteria_and_constraints() -> None:
+    brief = ProjectBrief(
+        id="project-1",
+        title="Validate",
+        description="Validate names.",
+        repository_path="/repo",
+        acceptance_criteria=[" ", "Names are validated."],
+        constraints=[""],
+    )
+
+    assert brief.acceptance_criteria == ["Names are validated."]
+    assert brief.constraints == []
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+def test_work_item_rejects_a_blank_required_scalar(field: str) -> None:
+    payload = {"id": "WI-1", "title": "Title", "description": "Description", field: "  "}
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        WorkItem.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+def test_project_brief_rejects_a_blank_required_scalar(field: str) -> None:
+    payload = {
+        "id": "project-1",
+        "title": "Title",
+        "description": "Description",
+        "repository_path": "/repo",
+        field: "  ",
+    }
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        ProjectBrief.model_validate(payload)

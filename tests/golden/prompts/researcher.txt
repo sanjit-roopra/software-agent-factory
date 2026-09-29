@@ -18,6 +18,8 @@ Answer the research question with available repository evidence.
 - Do not invent external facts when web access is unavailable.
 
 Return exactly one JSON object that Pydantic-validates as ResearchReport. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: question=80, findings=50, evidence=50, implications=35, uncertainty=35.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 ResearchReport JSON Schema:
 <json schema>
 
@@ -25,7 +27,7 @@ Work item:
 {"acceptance_criteria":["Blank names return HTTP 400."],"complexity":null,"constraints":["Do not change the public API."],"created_at":"2026-01-01T00:00:00Z","depends_on":[],"description":"Return HTTP 400 for empty or whitespace-only names.","external_id":null,"id":"WI-1","labels":[],"priority":null,"project_id":null,"project_task_id":null,"risk":null,"schema_version":1,"source":"MANUAL","title":"Reject empty customer names"}
 
 Triage result:
-{"complexity":"L2","confidence":0.4,"dependencies":[],"factory_eligible":true,"needs_research":true,"provenance":"AGENT","requirements_quality":"vague","risk":"R1","risk_rationale":null,"schema_version":1,"unknowns":[]}
+{"complexity":"L2","confidence":0.4,"dependencies":[],"factory_eligible":true,"needs_research":true,"provenance":"AGENT","risk":"R1","risk_rationale":null,"schema_version":1,"unknowns":[]}
 
 Specification:
 {"acceptance_criteria":[],"assumptions":[],"confidence":0.9,"constraints":[],"dependencies":[],"problem":"Names must not be blank.","provenance":"AGENT","risk_flags":[],"schema_version":1,"unknowns":[]}

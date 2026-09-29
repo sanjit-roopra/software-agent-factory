@@ -1,5 +1,46 @@
 # Architecture Decisions
 
+## ADR-029: Writing rules are advisory
+
+Status: accepted on 2026-09-29. This amends ADR-023.
+
+ADR-023 made the writing policy a gate. A prose finding failed the result, and
+the factory sent one correction prompt. Publication text failed before Git or
+GitHub mutation.
+
+A benchmark showed the cost of that gate.
+Both agent runtimes failed triage twice on `requirements_quality`.
+The field had a hidden limit of 12 words that the prompt did not state.
+The retry prompt also did not carry the correction, so the retry had no way to fix it.
+A wording rule stopped the run and spent tokens without a better result.
+
+The factory now treats writing rules as advice.
+
+- The prompt states the rules, the word limit of each field and some filler words.
+- The controller checks each successful result and logs the findings.
+- The controller stores the findings in `writing_findings` on the invocation record.
+- A writing finding never fails a result, never causes a retry and never blocks a run.
+- Publication text findings are logged. The factory still publishes the text.
+- Blank publication text is still an error.
+- Blank agent text is also an error. Model validation rejects it, so it takes the ordinary retry.
+- Retries stay for structural failures. Examples are invalid JSON, schema errors and missing data.
+
+One table in `writing_policy.py` holds the word limits.
+The check and the prompt both read it, so they cannot differ.
+
+Triage, refiner and researcher retries now receive the failure reason.
+Before this change these three roles dropped it.
+
+The factory removes `requirements_quality` from `TriageResult`.
+No decision used it.
+Old `triage.json` files that contain the key still load.
+
+The `CORRECT_CHANGE_SET` purpose stays in the model, because old run files can name it.
+The controller no longer starts it.
+
+This trades a guaranteed style for lower cost and fewer failed runs.
+Operators can read the logged findings and improve the prompts.
+
 ## ADR-028: Pull requests must add no SonarCloud issues
 
 SonarCloud analyses every pull request.
@@ -224,6 +265,8 @@ CI, Pages deployment, and release validation run the documentation gate.
 The controller rejects invalid model prose and gives one bounded correction
 prompt. It never silently rewrites an artifact. Publication text fails before
 Git or GitHub mutation.
+
+ADR-029 replaces this rule. Writing findings are now advisory.
 
 Human input, code, identifiers, paths, commands, URLs, quoted errors and raw
 command output remain exact. Generated pull request text uses the refined

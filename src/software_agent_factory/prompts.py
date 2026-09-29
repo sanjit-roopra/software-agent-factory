@@ -45,6 +45,7 @@ from .models import (
     VerificationReport,
     WorkItem,
 )
+from .writing_policy import writing_limits_text
 
 type RoleName = AgentRole | str
 
@@ -434,6 +435,9 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
             "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3. "
             "When risk is R2 or R3, risk_rationale is required."
         )
+    limits = writing_limits_text(model_class)
+    if limits:
+        contract = f"{contract}\n{limits}"
     return (
         f"{contract}\n{model_class.__name__} JSON Schema:\n"
         f"{json.dumps(model_class.model_json_schema(), separators=(',', ':'), sort_keys=True)}"
@@ -540,13 +544,17 @@ def _skill_context_sections(
 
 
 def _triage_sections(request: AgentRequest) -> list[tuple[str, object]]:
-    return [(_WORK_ITEM_TITLE, request.work_item)]
+    return _given(
+        (_WORK_ITEM_TITLE, request.work_item),
+        (_OUTPUT_REJECTION_TITLE, request.repair_context),
+    )
 
 
 def _refiner_sections(request: AgentRequest) -> list[tuple[str, object]]:
     return _given(
         (_WORK_ITEM_TITLE, request.work_item),
         (_TRIAGE_RESULT_TITLE, request.triage_result),
+        (_OUTPUT_REJECTION_TITLE, request.repair_context),
     )
 
 
@@ -555,6 +563,7 @@ def _researcher_sections(request: AgentRequest) -> list[tuple[str, object]]:
         (_WORK_ITEM_TITLE, request.work_item),
         (_TRIAGE_RESULT_TITLE, request.triage_result),
         (_SPECIFICATION_TITLE, request.specification),
+        (_OUTPUT_REJECTION_TITLE, request.repair_context),
     )
 
 

@@ -5,5 +5,7 @@ These earlier sections no longer apply: Previous output rejection.
 
 Output contract:
 Return exactly one JSON object that Pydantic-validates as ReviewReport. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: findings=50, scope_concerns=50, security_concerns=50, compatibility_concerns=50, suggested_changes=20, blocking_findings[].message=50, repair_regressions[].message=50, prior_finding_dispositions[].rationale=50.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
 ReviewReport JSON Schema:
 <json schema>
