@@ -1042,6 +1042,17 @@ def test_runner_resolves_relative_repo_and_workdir_before_cloning(
     assert clone_call[-2:] == [str(tmp_path / "source"), str(_task_dir(tmp_path) / "repo")]
 
 
+def test_runner_passes_a_relative_config_as_an_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    commands = FakeCommands()
+
+    _runner(tmp_path, commands, config=Path("local.yaml"))(_request(ab.Runtime.PI))
+
+    assert _option(commands.factory_runs()[0], "--config") == str(tmp_path / "local.yaml")
+
+
 def test_runner_replays_at_base_sha_in_a_throwaway_shared_clone(tmp_path: Path) -> None:
     commands = FakeCommands()
 

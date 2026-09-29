@@ -773,8 +773,8 @@ class CliReplayRunner:
         # Resolved now: the clone step runs with the task directory as its cwd.
         self._repo = repo.resolve()
         self._workdir = workdir.resolve()
+        self._config = config.expanduser().resolve() if config is not None else None
         self._model_profile = model_profile
-        self._config = config
         self._run = run_command
         self._invocation_id = invocation_id or uuid.uuid4().hex[:12]
 
@@ -962,19 +962,22 @@ def main(
         )
     except ValueError as exc:
         parser.error(str(exc))
+    # One absolute path each, so the checked paths are the ones the runs use.
+    repo = args.repo.resolve()
+    config = args.config.expanduser().resolve() if args.config is not None else None
     command = run_command or subprocess_command_runner(args.run_timeout_seconds)
-    fetch = fetch_issue or GhIssueFetcher(args.repo, command)
+    fetch = fetch_issue or GhIssueFetcher(repo, command)
     try:
         manifest = load_manifest(args.manifest)
-        ensure_local_only(_load_local_config(args.config, args.model_profile))
-        verify_base_commits(manifest, args.repo, command)
+        ensure_local_only(_load_local_config(config, args.model_profile))
+        verify_base_commits(manifest, repo, command)
         workdir = (args.workdir or Path(tempfile.mkdtemp(prefix="runtime_ab_"))).resolve()
         ensure_workdir_unused(manifest, workdir)
         runner = CliReplayRunner(
-            repo=args.repo,
+            repo=repo,
             workdir=workdir,
             model_profile=args.model_profile,
-            config=args.config,
+            config=config,
             run_command=command,
         )
         outcomes = run_benchmark(manifest, budget=budget, runner=runner, fetch_issue=fetch)
