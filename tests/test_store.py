@@ -143,9 +143,7 @@ def test_file_run_store_rejects_corrupt_json_with_json_decode_error(tmp_path: Pa
         store.load_run("RUN-CORRUPT")
 
 
-def test_list_runs_skips_and_logs_runs_that_fail_validation(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def _store_with_one_good_and_two_unreadable_runs(tmp_path: Path) -> tuple[FileRunStore, str]:
     store = FileRunStore(tmp_path / "data")
     good = _sample_run()
     store.save_run(good)
@@ -169,11 +167,25 @@ def test_list_runs_skips_and_logs_runs_that_fail_validation(
     corrupt_dir = store.runs_dir / "RUN-CORRUPT"
     corrupt_dir.mkdir()
     (corrupt_dir / "run.json").write_text("{corrupt", encoding="utf-8")
+    return store, good.id
+
+
+def test_list_runs_is_strict_by_default(tmp_path: Path) -> None:
+    store, _good_id = _store_with_one_good_and_two_unreadable_runs(tmp_path)
+
+    with pytest.raises(ValueError):  # noqa: PT011 - both a bad value and bad JSON count
+        store.list_runs()
+
+
+def test_list_runs_can_skip_and_log_runs_that_fail_validation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store, good_id = _store_with_one_good_and_two_unreadable_runs(tmp_path)
 
     with caplog.at_level(logging.WARNING, logger="software_agent_factory.store"):
-        runs = store.list_runs()
+        runs = store.list_runs(skip_invalid=True)
 
-    assert [run.id for run in runs] == [good.id]
+    assert [run.id for run in runs] == [good_id]
     assert "skipped run RUN-LEGACY" in caplog.text
     assert "text must not be blank" in caplog.text
     assert "skipped run RUN-CORRUPT" in caplog.text

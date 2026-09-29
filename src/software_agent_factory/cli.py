@@ -816,7 +816,7 @@ def runs_command(
     factory_config = _load_config(config, data_dir)
     store = FileRunStore(factory_config.data_dir)
 
-    runs = store.list_runs()
+    runs = store.list_runs(skip_invalid=True)
     if not runs:
         typer.echo("no runs found")
         return

@@ -698,6 +698,40 @@ def test_candidate_with_existing_persisted_nonterminal_run_is_not_redispatched(
     assert report.skipped_stale == ()
 
 
+def _write_unreadable_run(store: FileRunStore, run_id: str) -> None:
+    run_dir = store.runs_dir / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{corrupt", encoding="utf-8")
+
+
+def test_tick_fails_closed_when_a_persisted_run_is_unreadable(tmp_path: Path) -> None:
+    """An unreadable run.json may hide a live run for this item, so the
+    scheduler must not dispatch anything rather than risk a duplicate."""
+    store = FileRunStore(tmp_path / "data")
+    _write_unreadable_run(store, "run-unreadable")
+    dispatched: list[str] = []
+    scheduler = Scheduler(
+        FakeProvider([make_item("issue-1")]),
+        lambda i: (dispatched.append(i.opaque_id), FakeHandle())[1],
+        max_concurrent_tasks=1,
+        store=store,
+    )
+
+    with pytest.raises(ValueError):  # noqa: PT011 - the strict store lists nothing partial
+        scheduler.tick()
+
+    assert dispatched == []
+
+
+def test_recover_fails_closed_when_a_persisted_run_is_unreadable(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    _write_unreadable_run(store, "run-unreadable")
+    scheduler = Scheduler(FakeProvider([]), lambda i: FakeHandle())
+
+    with pytest.raises(ValueError):  # noqa: PT011 - the strict store lists nothing partial
+        scheduler.recover(store, lambda run: ReconciliationAction.LEAVE)
+
+
 def test_candidate_becomes_dispatchable_again_once_persisted_run_completes(
     tmp_path: Path,
 ) -> None:
