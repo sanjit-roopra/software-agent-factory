@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Sequence
 
@@ -778,9 +779,10 @@ def test_project_can_publish_and_close_issues_without_daemon_label(
     assert github.closed == ["https://github.com/acme/repo/issues/1"]
 
 
-def test_issue_text_is_fully_validated_before_any_issue_is_created(
+def test_issue_wording_findings_are_logged_and_do_not_block_issue_creation(
     factory_source_repo: Path,
     factory_data_dir: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     github = _RecordingGitHubClient()
     runner = ProjectRunner(
@@ -825,10 +827,14 @@ def test_issue_text_is_fully_validated_before_any_issue_is_created(
         ),
     )
 
-    with pytest.raises(ValueError, match="issue body did not satisfy writing policy"):
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
         runner._publish_issues(brief, plan, execution, factory_source_repo, "acme/repo")
 
-    assert github.created == []
+    assert [title for title, _body, _labels in github.created] == [
+        "Create first issue",
+        "Create second issue",
+    ]
+    assert "publication text findings field=issue body" in caplog.text
 
 
 def test_file_project_store_rejects_corrupt_json(tmp_path: Path) -> None:

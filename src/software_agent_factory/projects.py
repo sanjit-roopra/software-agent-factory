@@ -81,7 +81,7 @@ from .workflow import (
     is_run_finished,
 )
 from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
-from .writing_policy import require_publication_text, result_writing_findings
+from .writing_policy import check_publication_text, result_writing_findings
 
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
@@ -713,20 +713,12 @@ class ProjectRunner:
         source_repo: Path,
         repository: str,
     ) -> ProjectExecution:
-        placeholder_urls = {
-            task.id: f"https://github.invalid/issues/{task.id}" for task in plan.tasks
-        }
-        for task in plan.tasks:
-            body = self._issue_body(brief, task, placeholder_urls)
-            require_publication_text("issue title", task.title, max_words=15)
-            require_publication_text("issue body", body, max_words=500)
-
         issue_urls: dict[int, str] = {}
         records = list(execution.tasks)
         for task in plan.tasks:
             body = self._issue_body(brief, task, issue_urls)
-            require_publication_text("issue title", task.title, max_words=15)
-            require_publication_text("issue body", body, max_words=500)
+            check_publication_text("issue title", task.title, max_words=15)
+            check_publication_text("issue body", body, max_words=500)
             issue_url = self._github.create_issue(
                 source_repo,
                 repository=repository,
@@ -1375,7 +1367,7 @@ class ProjectRunner:
     @staticmethod
     def _child_commit_message(task: ProjectTask) -> str:
         message = f"Implement project task {task.id}: {task.title}"
-        require_publication_text("commit message", message, max_words=20)
+        check_publication_text("commit message", message, max_words=20)
         return message
 
     @staticmethod

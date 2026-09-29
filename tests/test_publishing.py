@@ -7,6 +7,7 @@ No network access: every ``git``/``gh`` invocation goes through a fake
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -97,8 +98,9 @@ def test_token_reaches_gh_only_through_the_child_environment(tmp_path: Path) -> 
             assert env is None
 
 
-def test_writing_policy_blocks_publication_before_git_or_github_mutation(
+def test_wording_findings_are_logged_and_do_not_block_publication(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     runner = ScriptedRunner()
     publisher = PullRequestPublisher(
@@ -108,7 +110,7 @@ def test_writing_policy_blocks_publication_before_git_or_github_mutation(
         runner=runner,
     )
 
-    with pytest.raises(GitPublishError, match="writing policy"):
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
         publisher.publish(
             workspace_path=tmp_path,
             branch_name="factory/WI-1",
@@ -118,7 +120,8 @@ def test_writing_policy_blocks_publication_before_git_or_github_mutation(
             body="Use a robust and comprehensive solution.",
         )
 
-    assert runner.calls == []
+    assert runner.calls
+    assert "publication text findings field=pull request body" in caplog.text
 
 
 def test_blank_title_is_blocked_before_git_or_github_mutation(tmp_path: Path) -> None:

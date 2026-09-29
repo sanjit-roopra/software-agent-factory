@@ -19,6 +19,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.writing_policy import (
     SIMPLE_ENGLISH_REVISION,
+    check_publication_text,
     result_writing_findings,
     validate_artifact_writing,
     validate_publication_text,
@@ -218,3 +219,25 @@ def test_lint_reads_each_list_item_as_one_sentence() -> None:
 
     assert report["sentences"] == 4
     assert report["longest_sentence_words"] == len("Run the unit tests first.".split())
+
+
+def test_publication_text_findings_are_logged_not_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
+        findings = check_publication_text("issue body", "A robust plan.", max_words=100)
+
+    assert findings == ("issue body has 1 slop_word finding(s).",)
+    assert "publication text findings field=issue body count=1" in caplog.text
+
+
+def test_clean_publication_text_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
+        assert check_publication_text("issue body", "Add the parser.", max_words=100) == ()
+
+    assert caplog.text == ""
+
+
+def test_blank_publication_text_still_raises() -> None:
+    with pytest.raises(ValueError, match="commit message is empty"):
+        check_publication_text("commit message", "  ", max_words=20)

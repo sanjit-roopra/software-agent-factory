@@ -376,15 +376,21 @@ def validate_publication_text(
     return validate_passages([_passage(field, text, text_type=text_type, max_words=max_words)])
 
 
-def require_publication_text(
+def check_publication_text(
     field: str,
     text: str,
     *,
     text_type: WritingType = "descriptive",
     max_words: int,
-) -> None:
-    """Raise before mutation when factory-authored publication text is invalid."""
+) -> tuple[str, ...]:
+    """Log advisory wording findings for factory-authored publication text.
 
+    Wording never blocks publication. Blank text is a structural error, so it
+    still raises before any mutation.
+    """
+
+    if not text.strip():
+        raise ValueError(f"{field} is empty.")
     findings = validate_publication_text(
         field,
         text,
@@ -392,4 +398,10 @@ def require_publication_text(
         max_words=max_words,
     )
     if findings:
-        raise ValueError(f"{field} did not satisfy writing policy:\n" + "\n".join(findings))
+        logger.warning(
+            "publication text findings field=%s count=%d: %s",
+            field,
+            len(findings),
+            " | ".join(findings),
+        )
+    return findings
