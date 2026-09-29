@@ -785,6 +785,8 @@ class InvocationRecord(ModelBase):
     budget: AttemptBudget | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
+    writing_findings: tuple[str, ...] = ()
+    """Advisory writing-policy findings for the result. They never fail an invocation."""
 
     @model_validator(mode="after")
     def _validate_invocation(self) -> InvocationRecord:

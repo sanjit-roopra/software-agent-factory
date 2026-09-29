@@ -852,3 +852,30 @@ def test_execution_plan_derived_readiness_behavior() -> None:
     assert "ready" not in dumped
     assert "is_ready" not in ready_plan.model_dump_json()
     assert "ready" not in ready_plan.model_dump_json()
+
+
+def _invocation_payload() -> dict[str, object]:
+    return {
+        "invocation_number": 1,
+        "role": "TRIAGE",
+        "model": "m",
+        "reasoning": "low",
+        "started_at": "2026-09-29T10:00:00Z",
+        "completed_at": "2026-09-29T10:00:01Z",
+        "success": True,
+    }
+
+
+def test_invocation_record_defaults_to_no_writing_findings() -> None:
+    record = InvocationRecord.model_validate(_invocation_payload())
+
+    assert record.writing_findings == ()
+
+
+def test_invocation_record_round_trips_writing_findings() -> None:
+    payload = {**_invocation_payload(), "writing_findings": ["summary has 26 words."]}
+
+    record = InvocationRecord.model_validate(payload)
+    reloaded = InvocationRecord.model_validate_json(record.model_dump_json())
+
+    assert reloaded.writing_findings == ("summary has 26 words.",)
