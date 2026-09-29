@@ -101,6 +101,11 @@ _PROVIDER_CREDENTIAL_ENV_VARS: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
+#: Suffix of provider API key variables pi can read beyond
+#: :data:`_PROVIDER_CREDENTIAL_ENV_VARS`; all are removed unless they are the
+#: configured provider's own variable.
+_API_KEY_SUFFIX = "_API_KEY"
+
 #: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
 _DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
 
@@ -567,7 +572,15 @@ class PiAgentRuntime(AgentRuntime):
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
 
         own_var = _PROVIDER_CREDENTIAL_ENV_VARS.get(self._config.provider)
-        for name in (*_PROVIDER_CREDENTIAL_ENV_VARS.values(), self._routing_api_key_env_var):
+        # pi reads many more provider keys than the map names (XAI_API_KEY,
+        # MISTRAL_API_KEY, ...), so every *_API_KEY variable is treated as one.
+        other_api_keys = [name for name in env if name.endswith(_API_KEY_SUFFIX)]
+        credential_vars = {
+            *_PROVIDER_CREDENTIAL_ENV_VARS.values(),
+            self._routing_api_key_env_var,
+            *other_api_keys,
+        }
+        for name in sorted(credential_vars):
             value = env.get(name)
             if not value:
                 continue

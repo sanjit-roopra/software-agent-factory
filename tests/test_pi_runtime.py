@@ -473,6 +473,20 @@ def test_run_child_env_drops_every_provider_api_key_for_github_copilot(
     assert not set(_PROVIDER_KEY_ENV_VARS.values()) & set(env)
 
 
+def test_run_child_env_drops_any_other_api_key_variable_pi_could_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+
+    env = _launch(provider="anthropic").env
+
+    assert "XAI_API_KEY" not in env
+    assert "AZURE_OPENAI_API_KEY" not in env
+    assert env["ANTHROPIC_API_KEY"] == "anthropic-secret"
+
+
 def test_run_child_env_drops_the_default_routing_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -510,6 +524,7 @@ def test_run_child_env_drops_the_configured_routing_api_key(
         "GITHUB_TOKEN",
         "COPILOT_GITHUB_TOKEN",
         "JEV_API_KEY",
+        "XAI_API_KEY",
         *sorted(_PROVIDER_KEY_ENV_VARS.values()),
     ],
 )
