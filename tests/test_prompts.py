@@ -36,6 +36,7 @@ from prompt_fixtures import (
     polish_request,
     re_review_request,
     review_finding,
+    seen_after,
     specification,
     verification,
     verification_repair_request,
@@ -781,18 +782,8 @@ RE_REVIEW_RULE = "Return one disposition for each prior finding id"
 ACCEPTED_DEBT_RULE = "Do not report an unchanged accepted finding again"
 
 
-def _seen_by(*requests: AgentRequest) -> dict[str, str]:
-    """What a session holds after ``requests``: the first in full, the others as continued."""
-    seen = section_hashes(build_prompt_sections(requests[0]))
-    for request in requests[1:]:
-        continuation = build_continuation_prompt(request, seen)
-        assert continuation is not None
-        seen = dict(continuation.sections_seen)
-    return seen
-
-
 def _continue(request: AgentRequest, *earlier: AgentRequest) -> str:
-    continuation = build_continuation_prompt(request, _seen_by(*earlier))
+    continuation = build_continuation_prompt(request, seen_after(*earlier))
     assert continuation is not None
     return continuation.text
 
@@ -977,12 +968,12 @@ def test_the_output_contract_is_always_sent_even_when_it_did_not_change() -> Non
 def test_there_is_no_continuation_when_every_section_is_already_known() -> None:
     request = first_implementer_request()
 
-    assert build_continuation_prompt(request, _seen_by(request)) is None
+    assert build_continuation_prompt(request, seen_after(request)) is None
 
 
 def test_a_request_whose_only_change_is_the_output_contract_has_no_continuation() -> None:
     request = first_review_request()
-    seen = _seen_by(request)
+    seen = seen_after(request)
     seen["Output contract"] = "stale"
 
     assert build_continuation_prompt(request, seen) is None
@@ -992,7 +983,7 @@ def test_the_same_output_rejection_twice_has_no_continuation() -> None:
     """The session holds that rejection already, so the runtime starts a new session."""
     retry = with_output_rejection(first_review_request())
 
-    assert build_continuation_prompt(retry, _seen_by(first_review_request(), retry)) is None
+    assert build_continuation_prompt(retry, seen_after(first_review_request(), retry)) is None
 
 
 def test_every_section_is_new_to_a_session_that_has_seen_nothing() -> None:

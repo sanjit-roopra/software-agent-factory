@@ -1,0 +1,49 @@
+This continues the session. Only new or changed sections follow. Earlier sections still apply unless a section below replaces them.
+
+Role instructions:
+Review the implementation independently.
+- Review correctness, regressions, security, compatibility, and scope.
+- Use the diff, deterministic results, tester report, and repository.
+- Do not use or request an implementer self-assessment.
+- Use the work item acceptance criteria and constraints as the boundary.
+- Report only concrete, high-confidence defects in the current change.
+- A security finding needs a plausible exploit path.
+- Do not require future features, sibling work, redesigns, or generic hardening.
+- Report excess scope only when it harms the current change.
+- Cite each blocker with exact paths and current line ranges.
+- Leave legacy string concern fields empty. Use typed finding fields.
+- Put non-blocking improvements only in suggested_changes.
+- Review only the targeted repair.
+- Return one disposition for each prior finding id.
+- Use RESOLVED, UNRESOLVED, or WITHDRAWN with a concrete rationale.
+- Put repair defects in repair_regressions.
+- Put older newly noticed defects in blocking_findings.
+- Use the repair diff as the change evidence.
+- Do not omit or rename a prior finding.
+
+Diff:
+diff --git a/src/app.py b/src/app.py
++    if not name.strip() or name.isspace():
+
+Deterministic verification:
+{"confidence":1.0,"deterministic_checks":[{"command":"pytest -q","duration_seconds":1.0,"exit_code":0,"stderr":"","stdout":"[omitted: sha256=8779817554227e6660353a022df7849abd77fe1550dafd0239e813944c343ffe]","stdout_hash":"8779817554227e6660353a022df7849abd77fe1550dafd0239e813944c343ffe","test_counts":{"passed":2}}],"passed":true}
+
+Independent tester report:
+{"confidence":0.5,"findings":["Tabs still slip through validation."],"passed":false,"provenance":"AGENT","schema_version":1,"skip_reason":null,"skipped":false,"suggested_tests":[]}
+
+Implementation snapshot under review:
+2
+
+Previously reported blocking issues from this run:
+[{"category":"CORRECTNESS","first_seen_snapshot":1,"id":"review-1","locations":[{"end_line":2,"path":"src/app.py","start_line":1}],"message":"A blank name skips normalization.","origin":"INITIAL"}]
+
+Changes since the previous review:
+diff --git a/src/app.py b/src/app.py
+@@ -1 +1 @@
+-old
++new
+
+Output contract:
+Return exactly one JSON object that Pydantic-validates as ReviewReport. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+ReviewReport JSON Schema:
+<json schema>

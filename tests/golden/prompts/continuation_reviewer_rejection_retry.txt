@@ -1,0 +1,11 @@
+This continues the session. Only new or changed sections follow. Earlier sections still apply unless a section below replaces them.
+
+Previous output rejection:
+Your previous response failed deterministic schema validation.
+1 validation error for ReviewReport
+Correct only the output shape. Return one complete ReviewReport JSON object. Do not add markdown or text outside the JSON.
+
+Output contract:
+Return exactly one JSON object that Pydantic-validates as ReviewReport. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+ReviewReport JSON Schema:
+<json schema>

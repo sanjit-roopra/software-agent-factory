@@ -27,16 +27,24 @@ from prompt_fixtures import (
     DIFF,
     FIXED_TIME,
     REPAIR_DIFF,
+    change_set_correction_request,
     failing_test_report,
+    first_implementer_request,
+    first_review_request,
     make_request,
     plan,
+    polish_request,
+    re_review_request,
     repair_context,
     repository_profile,
     repository_skill,
     review_finding,
+    seen_after,
     specification,
     triage,
     verification,
+    verification_repair_request,
+    with_output_rejection,
 )
 
 from software_agent_factory.agents import AgentRequest
@@ -56,7 +64,11 @@ from software_agent_factory.models import (
     TestReport,
     TriageResult,
 )
-from software_agent_factory.prompts import build_prompt, build_prompt_sections
+from software_agent_factory.prompts import (
+    build_continuation_prompt,
+    build_prompt,
+    build_prompt_sections,
+)
 
 GOLDEN_DIRECTORY = Path(__file__).parent / "golden" / "prompts"
 UPDATE_ENVIRONMENT_VARIABLE = "UPDATE_PROMPT_GOLDENS"
@@ -243,3 +255,37 @@ def test_prompt_section_titles_are_unique(case: str) -> None:
     titles = [section.title for section in build_prompt_sections(CASES[case]())]
 
     assert sorted(titles) == sorted(set(titles))
+
+
+#: Each case is the calls a session already received, then the call being continued.
+CONTINUATION_CASES: dict[str, Callable[[], tuple[AgentRequest, ...]]] = {
+    "continuation_implementer_repair": lambda: (
+        first_implementer_request(),
+        verification_repair_request(),
+    ),
+    "continuation_polish_with_repository_skill": lambda: (
+        first_implementer_request(),
+        polish_request(),
+    ),
+    "continuation_change_set_correction": lambda: (
+        first_implementer_request(),
+        change_set_correction_request(first_implementer_request()),
+    ),
+    "continuation_reviewer_rereview": lambda: (first_review_request(), re_review_request()),
+    "continuation_reviewer_rejection_retry": lambda: (
+        first_review_request(),
+        with_output_rejection(first_review_request()),
+    ),
+}
+
+
+def _continuation_text(case: str) -> str:
+    *earlier, request = CONTINUATION_CASES[case]()
+    continuation = build_continuation_prompt(request, seen_after(*earlier))
+    assert continuation is not None
+    return continuation.text
+
+
+@pytest.mark.parametrize("case", sorted(CONTINUATION_CASES))
+def test_build_continuation_prompt_matches_its_golden_file(case: str) -> None:
+    assert_matches_golden(case, _mask_model_derived_text(_continuation_text(case)))

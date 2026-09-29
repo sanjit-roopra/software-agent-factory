@@ -34,6 +34,11 @@ from software_agent_factory.models import (
     VerificationReport,
     WorkItem,
 )
+from software_agent_factory.prompts import (
+    build_continuation_prompt,
+    build_prompt_sections,
+    section_hashes,
+)
 
 FIXED_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -336,3 +341,13 @@ def accepted_debt_review_request(work_item_id: str = "WI-1", **overrides: object
 def with_output_rejection(request: AgentRequest, reason: str = OUTPUT_REJECTION) -> AgentRequest:
     """The retry inside one round: the same request plus why the last output was rejected."""
     return request.model_copy(update={"repair_context": reason})
+
+
+def seen_after(*requests: AgentRequest) -> dict[str, str]:
+    """What a session holds after ``requests``: the first sent in full, the others continued."""
+    seen = section_hashes(build_prompt_sections(requests[0]))
+    for request in requests[1:]:
+        continuation = build_continuation_prompt(request, seen)
+        assert continuation is not None
+        seen = dict(continuation.sections_seen)
+    return seen
