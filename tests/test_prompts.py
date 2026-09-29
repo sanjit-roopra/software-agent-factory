@@ -8,6 +8,15 @@ see. Nothing here calls a model.
 from __future__ import annotations
 
 import pytest
+from prompt_fixtures import (
+    DIFF,
+    REPAIR_DIFF,
+    make_request,
+    plan,
+    specification,
+    verification,
+    work_item,
+)
 
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.models import (
@@ -17,8 +26,6 @@ from software_agent_factory.models import (
     ChangeSet,
     CommandResult,
     ExecutionPlan,
-    ExpectedScope,
-    PlanStep,
     ProjectBrief,
     RepairContext,
     RepositoryProfile,
@@ -34,7 +41,6 @@ from software_agent_factory.models import (
     TestReport,
     TriageResult,
     VerificationReport,
-    WorkItem,
 )
 from software_agent_factory.prompts import (
     MAX_COLLECTION_ERROR_CHARS,
@@ -47,51 +53,6 @@ from software_agent_factory.prompts import (
     parse_collection_errors,
     summarize_command_result,
 )
-
-DIFF = "diff --git a/src/app.py b/src/app.py\n+    if not name.strip():\n"
-
-
-def _work_item() -> WorkItem:
-    return WorkItem(
-        id="WI-1",
-        title="Reject empty customer names",
-        description="Return HTTP 400 for empty or whitespace-only names.",
-    )
-
-
-def _specification() -> Specification:
-    return Specification(problem="Names must not be blank.", confidence=0.9)
-
-
-def _plan() -> ExecutionPlan:
-    return ExecutionPlan(
-        summary="Add a guard clause.",
-        steps=[PlanStep(id="s1", goal="Validate the name")],
-        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
-    )
-
-
-def _verification() -> VerificationReport:
-    return VerificationReport(
-        passed=True,
-        deterministic_checks=[
-            CommandResult(command="pytest -q", exit_code=0, duration_seconds=1.0)
-        ],
-        confidence=1.0,
-    )
-
-
-def _request(role: AgentRole, **overrides: object) -> AgentRequest:
-    payload: dict[str, object] = {
-        "role": role,
-        "model": "claude-sonnet-5",
-        "reasoning": "high",
-        "work_item": _work_item(),
-        "timeout_seconds": 60,
-    }
-    payload.update(overrides)
-    return AgentRequest(**payload)
-
 
 # ---------------------------------------------------------------------------
 # Artifact contracts
@@ -141,7 +102,7 @@ def test_project_decomposition_prompt_requires_reviewable_dependency_dag() -> No
         repository_path="/repo",
     )
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.PLANNER,
             purpose=AgentPurpose.DECOMPOSE_PROJECT,
             project_brief=brief,
@@ -167,7 +128,7 @@ def test_project_decomposition_prompt_includes_previous_rejection() -> None:
     )
 
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.PLANNER,
             purpose=AgentPurpose.DECOMPOSE_PROJECT,
             project_brief=brief,
@@ -181,7 +142,7 @@ def test_project_decomposition_prompt_includes_previous_rejection() -> None:
 
 def test_repository_skill_prompt_requires_general_practice_scope_and_carries_rejection() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.RESEARCHER,
             purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
             repository_profile=RepositoryProfile(
@@ -200,7 +161,7 @@ def test_repository_skill_prompt_requires_general_practice_scope_and_carries_rej
 
 
 def test_standard_planner_prompt_requires_smallest_implementation() -> None:
-    prompt = build_prompt(_request(AgentRole.PLANNER, specification=_specification()))
+    prompt = build_prompt(make_request(AgentRole.PLANNER, specification=specification()))
 
     assert "smallest implementation" in prompt
     assert "speculative" in prompt
@@ -213,9 +174,9 @@ def test_standard_planner_prompt_requires_smallest_implementation() -> None:
 
 def test_scope_replan_prompt_treats_verified_diff_as_fixed() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.PLANNER,
-            specification=_specification(),
+            specification=specification(),
             diff=DIFF,
             changed_files=["src/app.py", "tests/test_app.py"],
             repair_context=RepairContext(
@@ -248,7 +209,7 @@ def test_scope_replan_prompt_treats_verified_diff_as_fixed() -> None:
     ],
 )
 def test_every_role_prompt_includes_its_complete_json_schema(role: AgentRole) -> None:
-    prompt = build_prompt(_request(role))
+    prompt = build_prompt(make_request(role))
     model_class = artifact_model_for_role(role)
 
     assert f"{model_class.__name__} JSON Schema:" in prompt
@@ -261,9 +222,9 @@ def test_every_role_prompt_includes_its_complete_json_schema(role: AgentRole) ->
 
 def test_researcher_prompt_includes_the_specification_and_triage_result() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.RESEARCHER,
-            specification=_specification(),
+            specification=specification(),
             triage_result=TriageResult(
                 factory_eligible=True,
                 complexity="L2",
@@ -283,13 +244,13 @@ def test_researcher_prompt_includes_the_specification_and_triage_result() -> Non
 
 def test_tester_prompt_carries_diff_changed_files_and_deterministic_results() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.TESTER,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             diff=DIFF,
             changed_files=["src/app.py"],
-            verification_report=_verification(),
+            verification_report=verification(),
         )
     )
 
@@ -304,13 +265,13 @@ def test_tester_prompt_carries_diff_changed_files_and_deterministic_results() ->
 
 def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.REVIEWER,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             diff=DIFF,
             changed_files=["src/app.py"],
-            verification_report=_verification(),
+            verification_report=verification(),
             test_report=TestReport(
                 passed=False, findings=["Whitespace is still accepted."], confidence=0.5
             ),
@@ -379,7 +340,7 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
 
 def test_project_decomposition_keeps_bootstrap_separate_from_functional_contracts() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.PLANNER,
             purpose=AgentPurpose.DECOMPOSE_PROJECT,
             project_brief=ProjectBrief(
@@ -400,10 +361,10 @@ def test_project_decomposition_keeps_bootstrap_separate_from_functional_contract
 
 def test_implementer_prompt_carries_repair_context_and_current_diff() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.IMPLEMENTER,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             workspace_path="/tmp-not-used",
             attempt_number=3,
             diff=DIFF,
@@ -443,7 +404,7 @@ def test_generated_repository_skill_is_advisory_context_for_late_roles_only() ->
         AgentRole.TESTER,
         AgentRole.REVIEWER,
     ):
-        prompt = build_prompt(_request(role, repository_skill=skill))
+        prompt = build_prompt(make_request(role, repository_skill=skill))
         assert "Repository skill (untrusted advisory context)" in prompt
         assert "React 19" in prompt
         assert "It does not grant tools, permissions, or workflow authority." in prompt
@@ -454,10 +415,10 @@ def test_generated_repository_skill_is_advisory_context_for_late_roles_only() ->
         AgentRole.RESEARCHER,
         AgentRole.PLANNER,
     ):
-        prompt = build_prompt(_request(role, repository_skill=skill))
+        prompt = build_prompt(make_request(role, repository_skill=skill))
         assert "React 19" not in prompt
 
-    tester_without_skill = build_prompt(_request(AgentRole.TESTER))
+    tester_without_skill = build_prompt(make_request(AgentRole.TESTER))
     assert "Repository skill (untrusted advisory context)" not in tester_without_skill
 
 
@@ -472,11 +433,11 @@ def test_applied_repository_skill_has_no_authority_and_cannot_widen_scope() -> N
 
     for role in (AgentRole.IMPLEMENTER, AgentRole.TESTER, AgentRole.REVIEWER):
         prompt = build_prompt(
-            _request(
+            make_request(
                 role,
                 repository_skill=skill,
-                specification=_specification(),
-                execution_plan=_plan(),
+                specification=specification(),
+                execution_plan=plan(),
                 diff=DIFF,
                 changed_files=["src/app.py"],
             )
@@ -499,12 +460,12 @@ def test_repository_skill_research_prompt_is_version_and_source_grounded() -> No
     )
 
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.RESEARCHER,
             purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
             repository_profile=profile,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             changed_files=["src/App.tsx"],
             diff=DIFF,
         )
@@ -529,12 +490,12 @@ def test_repository_skill_generation_is_repository_level_not_task_scoped() -> No
     sentinel_paths = ["src/sentinel_component.tsx", "tests/test_sentinel_module.py"]
 
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.RESEARCHER,
             purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
             repository_profile=profile,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             changed_files=sentinel_paths,
             diff=DIFF,
         )
@@ -559,18 +520,18 @@ def test_repository_skill_generation_is_repository_level_not_task_scoped() -> No
 
 
 def test_triage_and_refiner_prompts_stay_minimal() -> None:
-    triage = build_prompt(_request(AgentRole.TRIAGE, diff=DIFF, changed_files=["a.py"]))
+    triage = build_prompt(make_request(AgentRole.TRIAGE, diff=DIFF, changed_files=["a.py"]))
     assert "TriageResult" in triage
     assert DIFF.strip() not in triage
 
-    refiner = build_prompt(_request(AgentRole.REFINER, diff=DIFF))
+    refiner = build_prompt(make_request(AgentRole.REFINER, diff=DIFF))
     assert "Specification" in refiner
     assert DIFF.strip() not in refiner
 
 
 def test_diff_is_bounded_in_prompts() -> None:
     huge = "x" * (MAX_DIFF_CHARS + 500)
-    prompt = build_prompt(_request(AgentRole.TESTER, diff=huge, changed_files=["a.py"]))
+    prompt = build_prompt(make_request(AgentRole.TESTER, diff=huge, changed_files=["a.py"]))
 
     assert "truncated 500 characters" in prompt
     assert len(prompt) < len(huge) + 5000
@@ -578,7 +539,7 @@ def test_diff_is_bounded_in_prompts() -> None:
 
 def test_every_prompt_has_the_shared_writing_rules() -> None:
     for role in AgentRole:
-        prompt = build_prompt(_request(role))
+        prompt = build_prompt(make_request(role))
         assert "Use concise technical English in the spirit of ASD-STE100" in prompt
         assert "Use at most 20 words for an instruction sentence" in prompt
         assert "Preserve facts, uncertainty, identifiers, paths, commands" in prompt
@@ -597,13 +558,13 @@ def test_correct_change_set_prompt_requires_correcting_only_prose() -> None:
         failures=["Describe customer validation."],
     )
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.IMPLEMENTER,
             purpose=AgentPurpose.CORRECT_CHANGE_SET,
             change_set=change_set,
             repair_context=repair_context,
             diff=DIFF,
-            execution_plan=_plan(),
+            execution_plan=plan(),
         )
     )
 
@@ -622,7 +583,7 @@ def test_correct_change_set_prompt_requires_correcting_only_prose() -> None:
 
 def test_embedded_typed_artifacts_render_as_compact_json() -> None:
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.REFINER,
             triage_result=TriageResult(
                 factory_eligible=True,
@@ -636,7 +597,7 @@ def test_embedded_typed_artifacts_render_as_compact_json() -> None:
     )
 
     # Compact JSON uses separators (',', ':') without 2-space line indentation
-    assert '{"acceptance_criteria":[]' in prompt
+    assert '{"acceptance_criteria":["Blank names return HTTP 400."]' in prompt
     assert '"complexity":"L1"' in prompt
     assert '"needs_research":false' in prompt
     assert '{\n  "complexity"' not in prompt
@@ -661,10 +622,10 @@ def test_verification_report_concise_successful_command_evidence() -> None:
         ],
     )
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.TESTER,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             diff=DIFF,
             changed_files=["src/app.py"],
             verification_report=report,
@@ -699,10 +660,10 @@ def test_verification_report_parsed_collection_errors_and_bounded_failure() -> N
         ],
     )
     prompt = build_prompt(
-        _request(
+        make_request(
             AgentRole.TESTER,
-            specification=_specification(),
-            execution_plan=_plan(),
+            specification=specification(),
+            execution_plan=plan(),
             diff=DIFF,
             changed_files=["src/app.py"],
             verification_report=report,
@@ -781,7 +742,6 @@ def test_summarize_command_result_tail_traceback_retention() -> None:
 # Continuation prompt: only what changed since the previous call in a session
 # ---------------------------------------------------------------------------
 
-REPAIR_DIFF = "diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n"
 RESEARCH_QUESTION = "Which validator rejects blank names?"
 TESTER_FINDING = "Whitespace slips through validation."
 PRIOR_FINDING = "A blank name skips normalization."
@@ -797,8 +757,8 @@ REPAIR_LOG_EXCERPT = "AssertionError: expected HTTP 400"
 
 #: Text that only the first call of a session carries.
 FIRST_CALL_TEXT = (
-    _work_item().title,
-    _work_item().description,
+    work_item().title,
+    work_item().description,
     "Names must not be blank.",
     "Add a guard clause.",
     RESEARCH_QUESTION,
@@ -820,28 +780,28 @@ def _finding(message: str, path: str) -> ReviewFinding:
 
 def _continued_implementer(**overrides: object) -> AgentRequest:
     payload: dict[str, object] = {
-        "specification": _specification(),
+        "specification": specification(),
         "research_report": ResearchReport(question=RESEARCH_QUESTION),
-        "execution_plan": _plan(),
+        "execution_plan": plan(),
         "workspace_path": "/w",
         "attempt_number": 2,
     }
     payload.update(overrides)
-    return _request(AgentRole.IMPLEMENTER, **payload)
+    return make_request(AgentRole.IMPLEMENTER, **payload)
 
 
 def _continued_reviewer(**overrides: object) -> AgentRequest:
     payload: dict[str, object] = {
-        "specification": _specification(),
-        "execution_plan": _plan(),
+        "specification": specification(),
+        "execution_plan": plan(),
         "diff": DIFF,
         "changed_files": ["src/app.py"],
-        "verification_report": _verification(),
+        "verification_report": verification(),
         "test_report": TestReport(passed=False, findings=[TESTER_FINDING], confidence=0.5),
         "attempt_number": 3,
     }
     payload.update(overrides)
-    return _request(AgentRole.REVIEWER, **payload)
+    return make_request(AgentRole.REVIEWER, **payload)
 
 
 def _assert_absent(prompt: str, unwanted: tuple[str, ...]) -> None:
@@ -899,7 +859,7 @@ def test_continuation_prompt_for_a_reviewer_re_review_carries_findings_and_new_c
             *FIRST_CALL_TEXT,
             DIFF.strip(),
             TESTER_FINDING,
-            _verification().deterministic_checks[0].command,
+            verification().deterministic_checks[0].command,
         ),
     )
 
@@ -983,6 +943,6 @@ def test_continuation_prompt_is_none_when_nothing_is_round_specific(request_: Ag
     [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.PLANNER, AgentRole.TESTER],
 )
 def test_continuation_prompt_is_none_for_a_role_without_a_session(role: AgentRole) -> None:
-    request = _request(role, repair_context=REJECTION_REASON, diff=DIFF)
+    request = make_request(role, repair_context=REJECTION_REASON, diff=DIFF)
 
     assert build_continuation_prompt(request) is None

@@ -4,60 +4,66 @@ Each case renders one request and compares it with a file in
 ``tests/golden/prompts``. The JSON Schema and the top-level field list of the
 output contract come from the artifact models, so they are masked. Everything
 else, including section order, titles and separators, must match exactly.
+``test_masked_model_text_is_the_models_own_schema_and_fields`` proves the two
+masked parts equal what the models produce, so the mask hides nothing else.
 
 Set ``UPDATE_PROMPT_GOLDENS=1`` to rewrite the files after a deliberate prompt
-change. Review the diff before you commit it.
+change. The run then fails on purpose, so a refresh never passes as a green
+run. Review the diff, then run the tests again without the variable. The
+refresh refuses to run when the ``CI`` variable is set.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from prompt_fixtures import (
+    CHANGED_FILE,
+    DIFF,
+    FIXED_TIME,
+    REPAIR_DIFF,
+    failing_test_report,
+    make_request,
+    plan,
+    repair_context,
+    repository_profile,
+    repository_skill,
+    review_finding,
+    specification,
+    triage,
+    verification,
+)
 
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
-    AttemptTrigger,
     ChangeSet,
-    CommandResult,
     ExecutionPlan,
-    ExpectedScope,
-    PlanStep,
+    ModelBase,
     ProjectBrief,
-    RepairContext,
-    RepositoryProfile,
+    ProjectPlan,
     RepositorySkill,
     ResearchReport,
-    ReviewFinding,
     ReviewFindingCategory,
-    ReviewFindingOrigin,
-    ReviewSourceLocation,
-    SkillGuidance,
+    ReviewReport,
     Specification,
     TestReport,
     TriageResult,
-    VerificationReport,
-    WorkItem,
 )
 from software_agent_factory.prompts import build_prompt
 
 GOLDEN_DIRECTORY = Path(__file__).parent / "golden" / "prompts"
 UPDATE_ENVIRONMENT_VARIABLE = "UPDATE_PROMPT_GOLDENS"
+CI_ENVIRONMENT_VARIABLE = "CI"
 
-CHANGED_FILE = "src/app.py"
-DIFF = "diff --git a/src/app.py b/src/app.py\n+    if not name.strip():\n"
-REPAIR_DIFF = "diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n"
-
-FIXED_TIME = datetime(2026, 1, 1, tzinfo=UTC)
-
-_SCHEMA_LINE = re.compile(r"(JSON Schema:\n)\{.*\}")
-_TOP_LEVEL_FIELDS = re.compile(r"Top-level fields: [^.\n]*\.")
+_SCHEMA_LINE = re.compile(r"(JSON Schema:\n)(\{.*\})")
+_TOP_LEVEL_FIELDS = re.compile(r"Top-level fields: ([^.\n]*)\.")
 
 
 def _mask_model_derived_text(prompt: str) -> str:
@@ -65,105 +71,32 @@ def _mask_model_derived_text(prompt: str) -> str:
     return _TOP_LEVEL_FIELDS.sub("Top-level fields: <fields>.", masked)
 
 
-def _work_item() -> WorkItem:
-    return WorkItem(
-        id="WI-1",
-        title="Reject empty customer names",
-        description="Return HTTP 400 for empty or whitespace-only names.",
-        acceptance_criteria=["Blank names return HTTP 400."],
-        constraints=["Do not change the public API."],
-        created_at=FIXED_TIME,
-    )
+def assert_matches_golden(name: str, text: str) -> None:
+    """Compare ``text`` with ``tests/golden/prompts/<name>.txt``, or rewrite it on request."""
+    golden = GOLDEN_DIRECTORY / f"{name}.txt"
+    if os.environ.get(UPDATE_ENVIRONMENT_VARIABLE) == "1":
+        if os.environ.get(CI_ENVIRONMENT_VARIABLE):
+            pytest.fail(f"{UPDATE_ENVIRONMENT_VARIABLE} must not rewrite golden files in CI")
+        golden.parent.mkdir(parents=True, exist_ok=True)
+        golden.write_text(text, encoding="utf-8")
+        pytest.fail(f"Rewrote {golden.name}. Review the diff, then run the tests without it.")
+
+    assert text == golden.read_text(encoding="utf-8")
 
 
 def _request(role: AgentRole, **overrides: object) -> AgentRequest:
-    payload: dict[str, object] = {
-        "role": role,
-        "model": "claude-sonnet-5",
-        "reasoning": "high",
-        "work_item": _work_item(),
-        "timeout_seconds": 60,
-    }
-    payload.update(overrides)
-    return AgentRequest(**payload)
-
-
-def _specification() -> Specification:
-    return Specification(problem="Names must not be blank.", confidence=0.9)
-
-
-def _triage() -> TriageResult:
-    return TriageResult(
-        factory_eligible=True,
-        complexity="L2",
-        risk="R1",
-        requirements_quality="vague",
-        needs_research=True,
-        confidence=0.4,
-    )
-
-
-def _plan() -> ExecutionPlan:
-    return ExecutionPlan(
-        summary="Add a guard clause.",
-        steps=[PlanStep(id="s1", goal="Validate the name")],
-        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
-    )
-
-
-def _verification() -> VerificationReport:
-    return VerificationReport(
-        passed=True,
-        deterministic_checks=[
-            CommandResult(command="pytest -q", exit_code=0, duration_seconds=1.0, stdout="1 passed")
-        ],
-        confidence=1.0,
-    )
-
-
-def _repair_context() -> RepairContext:
-    return RepairContext(
-        trigger=AttemptTrigger.CI,
-        summary="Continuous integration reported a failing check.",
-        failures=["unit-tests: TEST_FAILURE"],
-        log_excerpt="AssertionError: expected 400",
-    )
-
-
-def _finding(finding_id: str, category: ReviewFindingCategory, path: str) -> ReviewFinding:
-    return ReviewFinding(
-        id=finding_id,
-        category=category,
-        message=f"Finding {finding_id}.",
-        locations=[ReviewSourceLocation(path=path, start_line=1, end_line=2)],
-        origin=ReviewFindingOrigin.INITIAL,
-        first_seen_snapshot=1,
-    )
-
-
-def _skill() -> RepositorySkill:
-    return RepositorySkill(
-        dependency_fingerprint="a" * 64,
-        generated_at=FIXED_TIME,
-        simplify=SkillGuidance(summary="Simplify.", guidance=("Drop dead code.",)),
-        polish=SkillGuidance(summary="Polish.", guidance=("Prefer modern APIs.",)),
-        uncertainties=("Fixture skill has no external sources.",),
-    )
-
-
-def _profile() -> RepositoryProfile:
-    return RepositoryProfile(manifest_fingerprint="a" * 64, dependency_fingerprint="b" * 64)
+    return make_request(role, **overrides)
 
 
 def _reviewer_round(**overrides: object) -> AgentRequest:
     return _request(
         AgentRole.REVIEWER,
-        specification=_specification(),
-        execution_plan=_plan(),
+        specification=specification(),
+        execution_plan=plan(),
         diff=DIFF,
         changed_files=[CHANGED_FILE],
-        verification_report=_verification(),
-        test_report=TestReport(passed=False, findings=["Whitespace is accepted."], confidence=0.5),
+        verification_report=verification(),
+        test_report=failing_test_report(),
         attempt_number=3,
         **overrides,
     )
@@ -171,49 +104,51 @@ def _reviewer_round(**overrides: object) -> AgentRequest:
 
 CASES: dict[str, Callable[[], AgentRequest]] = {
     "triage": lambda: _request(AgentRole.TRIAGE),
-    "refiner": lambda: _request(AgentRole.REFINER, triage_result=_triage()),
+    "refiner": lambda: _request(AgentRole.REFINER, triage_result=triage()),
     "researcher": lambda: _request(
-        AgentRole.RESEARCHER, triage_result=_triage(), specification=_specification()
+        AgentRole.RESEARCHER, triage_result=triage(), specification=specification()
     ),
     "planner_replan": lambda: _request(
         AgentRole.PLANNER,
-        specification=_specification(),
+        specification=specification(),
         research_report=ResearchReport(question="Which validator?", findings=["Use strip()."]),
-        repair_context=_repair_context(),
+        repair_context=repair_context(),
         diff=DIFF,
         changed_files=[CHANGED_FILE],
     ),
     "implementer_first": lambda: _request(
         AgentRole.IMPLEMENTER,
-        specification=_specification(),
-        execution_plan=_plan(),
-        repository_skill=_skill(),
+        specification=specification(),
+        execution_plan=plan(),
+        repository_skill=repository_skill(),
         workspace_path="/w",
         attempt_number=1,
     ),
     "implementer_repair": lambda: _request(
         AgentRole.IMPLEMENTER,
-        specification=_specification(),
-        execution_plan=_plan(),
+        specification=specification(),
+        execution_plan=plan(),
         workspace_path="/w",
         attempt_number=2,
         diff=DIFF,
-        repair_context=_repair_context(),
+        repair_context=repair_context(),
     ),
     "tester": lambda: _request(
         AgentRole.TESTER,
-        specification=_specification(),
-        execution_plan=_plan(),
+        specification=specification(),
+        execution_plan=plan(),
         repair_context="The previous output was not valid JSON.",
         diff=DIFF,
         changed_files=[CHANGED_FILE],
-        verification_report=_verification(),
+        verification_report=verification(),
     ),
     "reviewer_first": lambda: _reviewer_round(),
     "reviewer_rereview": lambda: _reviewer_round(
-        prior_review_findings=[_finding("review-1", ReviewFindingCategory.CORRECTNESS, "src/a.py")],
+        prior_review_findings=[review_finding("review-1")],
         accepted_review_findings=[
-            _finding("review-2", ReviewFindingCategory.COMPATIBILITY, "src/b.py")
+            review_finding(
+                "review-2", category=ReviewFindingCategory.COMPATIBILITY, path="src/b.py"
+            )
         ],
         repair_diff=REPAIR_DIFF,
     ),
@@ -225,7 +160,7 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
         purpose=AgentPurpose.CORRECT_CHANGE_SET,
         change_set=ChangeSet(summary="Fix output shape"),
         workspace_path="/w",
-        repair_context=_repair_context(),
+        repair_context=repair_context(),
     ),
     "decompose_project": lambda: _request(
         AgentRole.PLANNER,
@@ -237,13 +172,13 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
             repository_path="/repo",
             created_at=FIXED_TIME,
         ),
-        repository_profile=_profile(),
+        repository_profile=repository_profile(),
         repair_context="The first plan packed too many outcomes into one task.",
     ),
     "generate_repository_skill": lambda: _request(
         AgentRole.RESEARCHER,
         purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-        repository_profile=_profile(),
+        repository_profile=repository_profile(),
         official_documentation_origins=["https://react.dev"],
         practice_reference_urls=["https://example.com/review.md"],
         repair_context="Practice sources must use the general scope.",
@@ -251,12 +186,44 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
 }
 
 
+EXPECTED_MODELS: dict[str, type[ModelBase]] = {
+    "triage": TriageResult,
+    "refiner": Specification,
+    "researcher": ResearchReport,
+    "planner_replan": ExecutionPlan,
+    "implementer_first": ChangeSet,
+    "implementer_repair": ChangeSet,
+    "tester": TestReport,
+    "reviewer_first": ReviewReport,
+    "reviewer_rereview": ReviewReport,
+    "reviewer_rejection": ReviewReport,
+    "correct_change_set": ChangeSet,
+    "decompose_project": ProjectPlan,
+    "generate_repository_skill": RepositorySkill,
+}
+
+
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_build_prompt_matches_its_golden_file(case: str) -> None:
-    prompt = _mask_model_derived_text(build_prompt(CASES[case]()))
-    golden = GOLDEN_DIRECTORY / f"{case}.txt"
-    if os.environ.get(UPDATE_ENVIRONMENT_VARIABLE):
-        golden.parent.mkdir(parents=True, exist_ok=True)
-        golden.write_text(prompt, encoding="utf-8")
+    assert_matches_golden(case, _mask_model_derived_text(build_prompt(CASES[case]())))
 
-    assert prompt == golden.read_text(encoding="utf-8")
+
+def test_every_case_names_its_expected_model() -> None:
+    assert sorted(EXPECTED_MODELS) == sorted(CASES)
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_masked_model_text_is_the_models_own_schema_and_fields(case: str) -> None:
+    prompt = build_prompt(CASES[case]())
+    model = EXPECTED_MODELS[case]
+
+    schema_match = _SCHEMA_LINE.search(prompt)
+    fields_match = _TOP_LEVEL_FIELDS.search(prompt)
+
+    assert schema_match is not None
+    assert fields_match is not None
+    assert schema_match.group(2) == json.dumps(
+        model.model_json_schema(), separators=(",", ":"), sort_keys=True
+    )
+    assert fields_match.group(1) == ", ".join(model.model_fields)
+    assert "<json schema>" in _mask_model_derived_text(prompt)

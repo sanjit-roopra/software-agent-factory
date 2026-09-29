@@ -11,6 +11,17 @@ from typing import Any, NamedTuple
 
 import pytest
 from factory_testing import FakePiClock, FakePiProcess
+from prompt_fixtures import (
+    DIFF,
+    PLAN_SUMMARY,
+    REPAIR_DIFF,
+    SPECIFICATION_PROBLEM,
+    make_request,
+    plan,
+    review_finding,
+    specification,
+    work_item,
+)
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import (
@@ -26,18 +37,9 @@ from software_agent_factory.models import (
     AgentRole,
     AttemptTrigger,
     ChangeSet,
-    ExecutionPlan,
-    ExpectedScope,
-    PlanStep,
     RepairContext,
     RepositoryProfile,
-    ReviewFinding,
-    ReviewFindingCategory,
-    ReviewFindingOrigin,
-    ReviewSourceLocation,
-    Specification,
     TriageResult,
-    WorkItem,
 )
 from software_agent_factory.pi_rpc import PiRpcClient
 from software_agent_factory.pi_runtime import (
@@ -51,26 +53,6 @@ from software_agent_factory.prompts import build_prompt
 from software_agent_factory.subprocess_utils import sanitize_output
 
 
-def _work_item() -> WorkItem:
-    return WorkItem(
-        id="WI-1",
-        title="Reject empty customer names",
-        description="Return HTTP 400 for empty or whitespace-only customer names.",
-    )
-
-
-def _request(role: AgentRole, **overrides: object) -> AgentRequest:
-    defaults: dict[str, object] = {
-        "role": role,
-        "model": "claude-sonnet-5",
-        "reasoning": "medium",
-        "work_item": _work_item(),
-        "timeout_seconds": 30,
-    }
-    defaults.update(overrides)
-    return AgentRequest(**defaults)
-
-
 def _correction_request(**overrides: object) -> AgentRequest:
     defaults: dict[str, object] = {
         "purpose": AgentPurpose.CORRECT_CHANGE_SET,
@@ -78,7 +60,7 @@ def _correction_request(**overrides: object) -> AgentRequest:
         "workspace_path": "/workspaces/wi-1",
     }
     defaults.update(overrides)
-    return _request(AgentRole.IMPLEMENTER, **defaults)
+    return make_request(AgentRole.IMPLEMENTER, **defaults)
 
 
 def _skill_request(**overrides: object) -> AgentRequest:
@@ -93,7 +75,7 @@ def _skill_request(**overrides: object) -> AgentRequest:
         "workspace_path": "/runs/RUN-1",
     }
     defaults.update(overrides)
-    return _request(AgentRole.RESEARCHER, **defaults)
+    return make_request(AgentRole.RESEARCHER, **defaults)
 
 
 _SESSIONS_DIRECTORY = "pi-sessions"
@@ -238,7 +220,7 @@ def _launch(request: AgentRequest | None = None, **pi_config: object) -> _Launch
         launches.append(_Launch(list(command), cwd, env))
         return process
 
-    _runtime(process_factory=factory, **pi_config).run(request or _request(AgentRole.TRIAGE))
+    _runtime(process_factory=factory, **pi_config).run(request or make_request(AgentRole.TRIAGE))
     assert len(launches) == 1
     return launches[0]
 
@@ -251,7 +233,7 @@ def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
-    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(tmp_path))
+    request = make_request(AgentRole.IMPLEMENTER, workspace_path=str(tmp_path))
 
     launch = _launch(request)
 
@@ -264,7 +246,7 @@ def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
         "--model",
         "claude-sonnet-5",
         "--thinking",
-        "medium",
+        "high",
         "--tools",
         "read,bash,edit,write,grep,find,ls",
         "--no-extensions",
@@ -295,7 +277,7 @@ def test_run_read_only_roles_launch_pi_with_read_only_tools_in_the_process_cwd(
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    launch = _launch(_request(role))
+    launch = _launch(make_request(role))
 
     assert _tools_of(launch.command) == "read,grep,find,ls"
     assert "--no-tools" not in launch.command
@@ -303,7 +285,7 @@ def test_run_read_only_roles_launch_pi_with_read_only_tools_in_the_process_cwd(
 
 
 def test_run_read_only_role_uses_its_workspace_when_the_request_has_one(tmp_path: Path) -> None:
-    launch = _launch(_request(AgentRole.REVIEWER, workspace_path=str(tmp_path)))
+    launch = _launch(make_request(AgentRole.REVIEWER, workspace_path=str(tmp_path)))
 
     assert launch.cwd == tmp_path.resolve()
 
@@ -343,7 +325,7 @@ def test_run_launches_the_configured_executable_and_provider() -> None:
 
 
 def test_run_launches_the_requested_model_and_reasoning_level() -> None:
-    launch = _launch(_request(AgentRole.TRIAGE, model="gpt-5", reasoning="high"))
+    launch = _launch(make_request(AgentRole.TRIAGE, model="gpt-5", reasoning="high"))
 
     assert launch.command[launch.command.index("--model") + 1] == "gpt-5"
     assert launch.command[launch.command.index("--thinking") + 1] == "high"
@@ -426,42 +408,30 @@ def _session_path_of(command: Sequence[str]) -> Path | None:
 
 
 def _implementer(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
-    work_item = _work_item().model_copy(update={"id": work_item_id})
-    return _request(AgentRole.IMPLEMENTER, work_item=work_item, workspace_path="/w", **overrides)
+    return make_request(
+        AgentRole.IMPLEMENTER, work_item=work_item(work_item_id), workspace_path="/w", **overrides
+    )
 
 
 def _reviewer(**overrides: object) -> AgentRequest:
-    return _request(AgentRole.REVIEWER, **overrides)
+    return make_request(AgentRole.REVIEWER, **overrides)
 
 
-_DIFF = "diff --git a/src/app.py b/src/app.py\n+    if not name.strip():\n"
-_REPAIR_DIFF = "diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n"
 _REPAIR_FAILURE = "unit-tests: TEST_FAILURE"
 _PRIOR_FINDING = "Empty values bypass normalization."
-_SPECIFICATION_TEXT = "Names must not be blank."
-_PLAN_TEXT = "Add a guard clause."
 _REJECTION_REASON = "The previous output was not valid JSON."
 
 #: What only the first call of a session carries: the brief, specification and plan.
 _FIRST_CALL_TEXT = (
-    "Reject empty customer names",
-    "Return HTTP 400 for empty or whitespace-only customer names.",
-    _SPECIFICATION_TEXT,
-    _PLAN_TEXT,
+    work_item().title,
+    work_item().description,
+    SPECIFICATION_PROBLEM,
+    PLAN_SUMMARY,
 )
 
 
 def _first_artifacts() -> dict[str, object]:
-    return {
-        "specification": Specification(problem=_SPECIFICATION_TEXT, confidence=0.9),
-        "execution_plan": ExecutionPlan(
-            summary=_PLAN_TEXT,
-            steps=[PlanStep(id="s1", goal="Validate the name")],
-            expected_scope=ExpectedScope(
-                modules=["src"], estimated_files_min=1, estimated_files_max=2
-            ),
-        ),
-    }
+    return {"specification": specification(), "execution_plan": plan()}
 
 
 def _first_implementer_call(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
@@ -479,26 +449,19 @@ def _repair_round(work_item_id: str = "WI-1", **overrides: object) -> AgentReque
         work_item_id,
         **_first_artifacts(),
         attempt_number=2,
-        diff=_DIFF,
+        diff=DIFF,
         repair_context=repair,
         **overrides,
     )
 
 
 def _first_review(**overrides: object) -> AgentRequest:
-    return _reviewer(**_first_artifacts(), diff=_DIFF, changed_files=["src/app.py"], **overrides)
+    return _reviewer(**_first_artifacts(), diff=DIFF, changed_files=["src/app.py"], **overrides)
 
 
 def _re_review() -> AgentRequest:
-    finding = ReviewFinding(
-        id="review-1",
-        category=ReviewFindingCategory.CORRECTNESS,
-        message=_PRIOR_FINDING,
-        locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
-        origin=ReviewFindingOrigin.INITIAL,
-        first_seen_snapshot=1,
-    )
-    return _first_review(prior_review_findings=[finding], repair_diff=_REPAIR_DIFF)
+    finding = review_finding("review-1", message=_PRIOR_FINDING, path="src/app.py")
+    return _first_review(prior_review_findings=[finding], repair_diff=REPAIR_DIFF)
 
 
 def _missing_from(prompt: str, texts: Sequence[str]) -> list[str]:
@@ -522,8 +485,8 @@ def _found_in(prompt: str, texts: Sequence[str]) -> list[str]:
 def test_run_other_roles_never_use_a_persisted_session(role: AgentRole, tmp_path: Path) -> None:
     rig = _SessionRig(tmp_path)
 
-    rig.run(_request(role))
-    rig.run(_request(role))
+    rig.run(make_request(role))
+    rig.run(make_request(role))
 
     assert [command[-1] for command in rig.commands] == ["--no-session", "--no-session"]
     assert "--session" not in rig.commands[0] + rig.commands[1]
@@ -763,7 +726,7 @@ def test_run_implementer_repair_sends_only_the_repair_round_into_the_same_sessio
     first, second = rig.session_paths()
     _first_prompt, repair_prompt = rig.prompts
     assert second == first
-    assert _missing_from(repair_prompt, [_REPAIR_FAILURE, _DIFF.strip()]) == []
+    assert _missing_from(repair_prompt, [_REPAIR_FAILURE, DIFF.strip()]) == []
     assert _found_in(repair_prompt, _FIRST_CALL_TEXT) == []
     assert result.performance is not None
     assert result.performance.prompt_chars == len(repair_prompt)
@@ -779,8 +742,8 @@ def test_run_reviewer_re_review_sends_only_the_findings_and_new_changes(tmp_path
     first, second = rig.session_paths()
     _first_prompt, re_review_prompt = rig.prompts
     assert second == first
-    assert _missing_from(re_review_prompt, [_PRIOR_FINDING, _REPAIR_DIFF.strip()]) == []
-    assert _found_in(re_review_prompt, [*_FIRST_CALL_TEXT, _DIFF.strip()]) == []
+    assert _missing_from(re_review_prompt, [_PRIOR_FINDING, REPAIR_DIFF.strip()]) == []
+    assert _found_in(re_review_prompt, [*_FIRST_CALL_TEXT, DIFF.strip()]) == []
 
 
 def test_run_change_set_correction_sends_only_the_change_set_and_its_context(
@@ -852,7 +815,7 @@ def test_run_role_without_a_session_sends_the_full_prompt_even_with_a_rejection(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
-    request = _request(AgentRole.TESTER, repair_context=_REJECTION_REASON)
+    request = make_request(AgentRole.TESTER, repair_context=_REJECTION_REASON)
 
     rig.run(request)
 
@@ -932,7 +895,7 @@ def _failure_reason_when_pi_writes(stderr: str, **runtime_kwargs: object) -> str
     process.close_stdout()
     process.exit(1)
     runtime = _runtime(process_factory=lambda command, cwd, env: process, **runtime_kwargs)
-    result = runtime.run(_request(AgentRole.TRIAGE))
+    result = runtime.run(make_request(AgentRole.TRIAGE))
     assert result.success is False
     assert result.failure_reason is not None
     return result.failure_reason
@@ -1070,7 +1033,7 @@ def test_run_child_env_drops_the_configured_routing_api_key(
         routing_api_key_env_var="CUSTOM_ROUTING_KEY",
     )
 
-    runtime.run(_request(AgentRole.TRIAGE))
+    runtime.run(make_request(AgentRole.TRIAGE))
 
     assert "CUSTOM_ROUTING_KEY" not in launches[0].env
 
@@ -1197,7 +1160,7 @@ def test_run_redacts_every_known_credential_value_from_failure_reason(
 
 def test_run_implementer_without_workspace_path_raises() -> None:
     runtime = _runtime()
-    request = _request(AgentRole.IMPLEMENTER)
+    request = make_request(AgentRole.IMPLEMENTER)
 
     with pytest.raises(ValueError, match="IMPLEMENTER requests require workspace_path"):
         runtime.run(request)
@@ -1213,7 +1176,7 @@ def test_run_change_set_correction_without_workspace_path_raises_correction_word
 
 def test_run_timeout_seconds_below_one_raises() -> None:
     runtime = _runtime()
-    request = _request(AgentRole.TRIAGE, timeout_seconds=0)
+    request = make_request(AgentRole.TRIAGE, timeout_seconds=0)
 
     with pytest.raises(ValueError, match="timeout_seconds must be at least 1"):
         runtime.run(request)
@@ -1240,7 +1203,7 @@ def test_run_implementer_happy_path_returns_change_set(tmp_path: Path) -> None:
     final_text = json.dumps({"summary": "Reject empty customer names."})
     process = _scripted_process(final_text)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+    request = make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
 
     result = runtime.run(request)
 
@@ -1255,7 +1218,7 @@ def test_run_read_only_role_happy_path_returns_triage_result() -> None:
     final_text = json.dumps(_TRIAGE_JSON)
     process = _scripted_process(final_text)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1267,7 +1230,7 @@ def test_run_read_only_role_happy_path_returns_triage_result() -> None:
 def test_run_sends_prompt_built_from_the_request() -> None:
     process = _scripted_process(json.dumps(_TRIAGE_JSON))
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     runtime.run(request)
 
@@ -1304,7 +1267,7 @@ def test_run_malformed_output_is_retryable_like_copilot(tmp_path: Path) -> None:
     workspace.mkdir()
     process = _scripted_process("not a JSON object at all")
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+    request = make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
 
     result = runtime.run(request)
 
@@ -1327,7 +1290,7 @@ def test_run_malformed_output_fails_with_the_same_wording_as_copilot(text: str) 
     process = _scripted_process(text)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    result = runtime.run(_request(AgentRole.TRIAGE))
+    result = runtime.run(make_request(AgentRole.TRIAGE))
 
     assert result.success is False
     assert result.failure_reason == sanitize_output(str(copilot_error.value), set())
@@ -1347,7 +1310,7 @@ def test_run_assistant_error_yields_failed_result() -> None:
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1364,7 +1327,7 @@ def test_run_assistant_error_without_error_message_uses_default_wording() -> Non
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1381,7 +1344,7 @@ def test_run_assistant_aborted_yields_failed_result() -> None:
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1395,7 +1358,7 @@ def test_run_process_exits_before_settling_yields_failed_result() -> None:
     process.close_stdout()
     process.exit(7)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1409,7 +1372,7 @@ def test_run_invalid_protocol_line_yields_failed_result() -> None:
     process.write_raw_stdout("not json at all\n")
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1426,7 +1389,7 @@ def test_run_command_error_yields_failed_result() -> None:
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1443,7 +1406,7 @@ def test_run_get_messages_non_mapping_data_yields_failed_result() -> None:
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1461,7 +1424,7 @@ def test_run_get_last_assistant_text_non_mapping_data_yields_failed_result() -> 
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1479,7 +1442,7 @@ def test_run_get_last_assistant_text_null_text_is_treated_as_empty() -> None:
     )
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1495,7 +1458,7 @@ def test_run_missing_executable_yields_failed_result() -> None:
         raise FileNotFoundError(command[0])
 
     runtime = _runtime(process_factory=factory, executable="pi-missing")
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1511,7 +1474,7 @@ def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
     process.exit(1)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    result = runtime.run(_request(AgentRole.TRIAGE))
+    result = runtime.run(make_request(AgentRole.TRIAGE))
 
     assert result.failure_reason is not None
     assert result.failure_reason.startswith("pi process exited with code 1")
@@ -1532,7 +1495,7 @@ def test_run_timeout_sends_abort_then_kills_process_group(
     # No agent_settled event is ever written, and the process never exits --
     # simulates pi not settling within the request timeout.
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE, timeout_seconds=1)
+    request = make_request(AgentRole.TRIAGE, timeout_seconds=1)
 
     result = runtime.run(request)
 
@@ -1557,7 +1520,7 @@ def test_run_timeout_gives_best_effort_usage_read_its_own_short_deadline(
     process.write_records({"type": "response", "id": "c1", "success": True})
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
+    runtime.run(make_request(AgentRole.TRIAGE, timeout_seconds=1))
 
     # 1 s request timeout, then the 2 s best-effort window, then nothing more.
     assert pi_fake_clock.now == pytest.approx(1000.0 + 1 + _BEST_EFFORT_USAGE_DEADLINE_SECONDS)
@@ -1610,7 +1573,7 @@ def test_run_timeout_after_malformed_usage_still_aborts_and_kills(
     # No response ever arrives for get_last_assistant_text (c3), and the
     # process never exits on its own.
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE, timeout_seconds=1)
+    request = make_request(AgentRole.TRIAGE, timeout_seconds=1)
 
     result = runtime.run(request)
 
@@ -1639,7 +1602,7 @@ def test_run_timeout_with_undecodable_leftover_output_keeps_partial_usage(
     process.communicate_error = UnicodeDecodeError("utf-8", b"\xe2\x82", 0, 2, "unexpected end")
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
+    result = runtime.run(make_request(AgentRole.TRIAGE, timeout_seconds=1))
 
     assert result.success is False
     assert result.failure_reason == "pi timed out after 1 seconds"
@@ -1683,7 +1646,7 @@ def test_run_does_not_kill_a_pi_that_exits_on_stdin_eof_after_a_timeout(
     process.write_records({"type": "response", "id": "c1", "success": True})
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    result = runtime.run(_request(AgentRole.TRIAGE, timeout_seconds=1))
+    result = runtime.run(make_request(AgentRole.TRIAGE, timeout_seconds=1))
 
     assert result.failure_reason == "pi timed out after 1 seconds"
     assert "abort" in [command.get("type") for command in process.sent_commands()]
@@ -1697,7 +1660,7 @@ def test_run_process_exits_before_settling_reports_unknown_usage() -> None:
     process.close_stdout()
     process.exit(7)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
+    request = make_request(AgentRole.TRIAGE)
 
     result = runtime.run(request)
 
@@ -1726,7 +1689,7 @@ def test_run_success_carries_usage_from_get_messages(tmp_path: Path) -> None:
         model="claude-sonnet-5",
     )
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
+    request = make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace))
 
     result = runtime.run(request)
 
@@ -1775,7 +1738,7 @@ def test_run_resumed_call_reports_only_the_usage_of_its_own_round(tmp_path: Path
     process.exit(0)
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
 
-    result = runtime.run(_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace)))
+    result = runtime.run(make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace)))
 
     assert result.usage is not None
     assert result.usage.total_user_requests == 1
@@ -1802,7 +1765,7 @@ def test_run_timeout_after_settling_keeps_partial_usage(pi_fake_clock: FakePiClo
     )
     # No response ever arrives for get_last_assistant_text (c3).
     runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE, timeout_seconds=1)
+    request = make_request(AgentRole.TRIAGE, timeout_seconds=1)
 
     result = runtime.run(request)
 
