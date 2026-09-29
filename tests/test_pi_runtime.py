@@ -1080,6 +1080,19 @@ def test_usage_from_pi_messages_non_numeric_field_value_stays_unknown() -> None:
     assert usage.output_tokens == 5
 
 
+def test_usage_from_pi_messages_fractional_token_count_stays_unknown() -> None:
+    """Token counts are whole numbers -- a fractional one is malformed, as in
+    the Copilot runtime, and is not truncated or rounded."""
+    messages = [_assistant_message({"input": 10.5, "output": 5.0, "cacheWrite": 2.5})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage.input_tokens is None
+    assert usage.output_tokens == 5
+    assert usage.cache_write_tokens is None
+    assert usage.model_usage[0].input_tokens is None
+
+
 def test_usage_from_pi_messages_negative_field_value_stays_unknown() -> None:
     """A negative token count is malformed -- pi never legitimately reports
     one, and :class:`~software_agent_factory.models.ModelUsage`/

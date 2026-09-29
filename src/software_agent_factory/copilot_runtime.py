@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import subprocess
 import tempfile
 import time
@@ -49,6 +48,7 @@ from .prompts import (
 )
 from .subprocess_utils import build_child_env, sanitize_output
 from .subprocess_utils import kill_process_group as _kill_process_group
+from .usage_values import non_negative_float, non_negative_int
 
 logger = logging.getLogger(__name__)
 
@@ -350,14 +350,14 @@ def parse_copilot_usage(payload: object) -> UsageMetrics | None:
             usage = usage if isinstance(usage, dict) else {}
             parsed = ModelUsage(
                 model=model.strip(),
-                requests=_non_negative_int(requests.get("count")),
-                premium_request_cost=_non_negative_float(requests.get("cost")),
-                input_tokens=_non_negative_int(usage.get("inputTokens")),
-                output_tokens=_non_negative_int(usage.get("outputTokens")),
-                reasoning_tokens=_non_negative_int(usage.get("reasoningTokens")),
-                cache_read_tokens=_non_negative_int(usage.get("cacheReadTokens")),
-                cache_write_tokens=_non_negative_int(usage.get("cacheWriteTokens")),
-                total_nano_aiu=_non_negative_int(raw_metrics.get("totalNanoAiu")),
+                requests=non_negative_int(requests.get("count")),
+                premium_request_cost=non_negative_float(requests.get("cost")),
+                input_tokens=non_negative_int(usage.get("inputTokens")),
+                output_tokens=non_negative_int(usage.get("outputTokens")),
+                reasoning_tokens=non_negative_int(usage.get("reasoningTokens")),
+                cache_read_tokens=non_negative_int(usage.get("cacheReadTokens")),
+                cache_write_tokens=non_negative_int(usage.get("cacheWriteTokens")),
+                total_nano_aiu=non_negative_int(raw_metrics.get("totalNanoAiu")),
             )
             if any(value is not None for value in parsed.model_dump(exclude={"model"}).values()):
                 model_usage.append(parsed)
@@ -371,17 +371,17 @@ def parse_copilot_usage(payload: object) -> UsageMetrics | None:
             if isinstance(current_model, str) and current_model.strip()
             else None
         ),
-        total_premium_request_cost=_non_negative_float(payload.get("totalPremiumRequestCost")),
-        total_user_requests=_non_negative_int(payload.get("totalUserRequests")),
-        total_nano_aiu=_non_negative_int(payload.get("totalNanoAiu")),
-        total_api_duration_ms=_non_negative_int(payload.get("totalApiDurationMs")),
+        total_premium_request_cost=non_negative_float(payload.get("totalPremiumRequestCost")),
+        total_user_requests=non_negative_int(payload.get("totalUserRequests")),
+        total_nano_aiu=non_negative_int(payload.get("totalNanoAiu")),
+        total_api_duration_ms=non_negative_int(payload.get("totalApiDurationMs")),
         input_tokens=_token_detail_count(token_details.get("input")),
         output_tokens=_token_detail_count(token_details.get("output")),
         reasoning_tokens=_token_detail_count(token_details.get("reasoning")),
         cache_read_tokens=_token_detail_count(token_details.get("cache_read")),
         cache_write_tokens=_token_detail_count(token_details.get("cache_write")),
-        last_call_input_tokens=_non_negative_int(payload.get("lastCallInputTokens")),
-        last_call_output_tokens=_non_negative_int(payload.get("lastCallOutputTokens")),
+        last_call_input_tokens=non_negative_int(payload.get("lastCallInputTokens")),
+        last_call_output_tokens=non_negative_int(payload.get("lastCallOutputTokens")),
         model_usage=tuple(model_usage),
     )
     return metrics if _has_reported_usage(metrics) else None
@@ -407,9 +407,9 @@ def _parse_result_usage(stdout: str) -> UsageMetrics | None:
     if latest is None:
         return None
     metrics = UsageMetrics(
-        premium_requests=_non_negative_float(latest.get("premiumRequests")),
-        total_api_duration_ms=_non_negative_int(latest.get("totalApiDurationMs")),
-        session_duration_ms=_non_negative_int(latest.get("sessionDurationMs")),
+        premium_requests=non_negative_float(latest.get("premiumRequests")),
+        total_api_duration_ms=non_negative_int(latest.get("totalApiDurationMs")),
+        session_duration_ms=non_negative_int(latest.get("sessionDurationMs")),
     )
     return metrics if _has_reported_usage(metrics) else None
 
@@ -429,10 +429,10 @@ def _parse_usage_checkpoint(stdout: str) -> UsageMetrics | None:
     if latest is None:
         return None
     metrics = UsageMetrics(
-        premium_requests=_non_negative_float(latest.get("totalPremiumRequests")),
-        total_nano_aiu=_non_negative_int(latest.get("totalNanoAiu")),
-        total_api_duration_ms=_non_negative_int(latest.get("totalApiDurationMs")),
-        session_duration_ms=_non_negative_int(latest.get("sessionDurationMs")),
+        premium_requests=non_negative_float(latest.get("totalPremiumRequests")),
+        total_nano_aiu=non_negative_int(latest.get("totalNanoAiu")),
+        total_api_duration_ms=non_negative_int(latest.get("totalApiDurationMs")),
+        session_duration_ms=non_negative_int(latest.get("sessionDurationMs")),
     )
     return metrics if _has_reported_usage(metrics) else None
 
@@ -476,31 +476,10 @@ def _has_reported_usage(metrics: UsageMetrics) -> bool:
     return any(value is not None for value in numeric_fields) or bool(metrics.model_usage)
 
 
-def _non_negative_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int) and value >= 0:
-        return value
-    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
-        return int(value)
-    return None
-
-
-def _non_negative_float(value: object) -> float | None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(value)
-        or value < 0
-    ):
-        return None
-    return float(value)
-
-
 def _token_detail_count(value: object) -> int | None:
     if not isinstance(value, dict):
         return None
-    return _non_negative_int(value.get("tokenCount"))
+    return non_negative_int(value.get("tokenCount"))
 
 
 def parse_copilot_artifact(

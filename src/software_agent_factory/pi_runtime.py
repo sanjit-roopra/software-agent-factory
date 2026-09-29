@@ -39,7 +39,6 @@ workflow/project/CLI layers convert them with
 from __future__ import annotations
 
 import logging
-import math
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -67,6 +66,7 @@ from .pi_rpc import (
 )
 from .prompts import build_prompt
 from .subprocess_utils import build_child_env, kill_process_group, sanitize_output
+from .usage_values import non_negative_float, non_negative_int
 
 if TYPE_CHECKING:
     from .config import PiConfig
@@ -185,32 +185,6 @@ def _stop_reason_from_messages(
     return None, None
 
 
-def _numeric(value: object) -> int | float | None:
-    """Return ``value`` unchanged when it is a finite, non-negative reported numeric field.
-
-    ``bool`` is excluded even though it is an ``int`` subclass -- pi never
-    reports a token count or cost as ``true``/``false``, so treating one as
-    ``1``/``0`` would be a parsing bug, not a real field. A negative value,
-    ``NaN``, or an infinity is likewise treated as not reported: pi never
-    legitimately reports a negative token count or cost, and
-    :class:`~software_agent_factory.models.UsageMetrics`/
-    :class:`~software_agent_factory.models.ModelUsage` fields reject
-    negative values outright -- letting one reach the aggregate sum would
-    raise instead of degrading to "unknown" (see
-    :func:`_safe_usage_from_pi_messages` for the second, defense-in-depth
-    layer against that).
-    """
-    if isinstance(value, bool):
-        return None
-    if not isinstance(value, (int, float)):
-        return None
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if value < 0:
-        return None
-    return value
-
-
 def _sum_usage_field(usages: Sequence[Mapping[str, Any]], key: str) -> int | None:
     """Sum ``usages[*][key]`` over the messages that reported it.
 
@@ -219,10 +193,12 @@ def _sum_usage_field(usages: Sequence[Mapping[str, Any]], key: str) -> int | Non
     reported it at all; a message reporting ``0`` still makes the field
     "known" (spec: "A field pi did not report stays ``None``, never zero.").
     """
-    reported = [numeric for usage in usages if (numeric := _numeric(usage.get(key))) is not None]
+    reported = [
+        count for usage in usages if (count := non_negative_int(usage.get(key))) is not None
+    ]
     if not reported:
         return None
-    return int(sum(reported))
+    return sum(reported)
 
 
 def _sum_cache_write_field(usages: Sequence[Mapping[str, Any]]) -> int | None:
@@ -232,15 +208,15 @@ def _sum_cache_write_field(usages: Sequence[Mapping[str, Any]]) -> int | None:
     ``cache_write_tokens``. Either key reported on a message is enough to
     make the field "known"; a message reporting neither contributes nothing.
     """
-    total: int | float = 0
+    total = 0
     reported = False
     for usage in usages:
         for key in ("cacheWrite", "cacheWrite1h"):
-            numeric = _numeric(usage.get(key))
-            if numeric is not None:
-                total += numeric
+            count = non_negative_int(usage.get(key))
+            if count is not None:
+                total += count
                 reported = True
-    return int(total) if reported else None
+    return total if reported else None
 
 
 def _sum_cost_field(usages: Sequence[Mapping[str, Any]]) -> float | None:
@@ -249,9 +225,9 @@ def _sum_cost_field(usages: Sequence[Mapping[str, Any]]) -> float | None:
     for usage in usages:
         cost = usage.get("cost")
         if isinstance(cost, Mapping):
-            numeric = _numeric(cost.get("total"))
-            if numeric is not None:
-                reported.append(float(numeric))
+            total = non_negative_float(cost.get("total"))
+            if total is not None:
+                reported.append(total)
     if not reported:
         return None
     return sum(reported)
@@ -294,7 +270,8 @@ def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics:
     that produced no assistant messages is a fact worth recording, not an
     unknown. Callers that must never propagate a ``ValueError``/
     :class:`~pydantic.ValidationError` from a still-malformed record (e.g.
-    one whose numeric fields overflow past what :func:`_numeric` filters)
+    one whose numeric fields overflow past what
+    :func:`~software_agent_factory.usage_values.non_negative_int` filters)
     should call :func:`_safe_usage_from_pi_messages` instead.
     """
     assistant_messages = [
@@ -338,7 +315,9 @@ def usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics:
 def _safe_usage_from_pi_messages(messages: list[dict[str, Any]]) -> UsageMetrics | None:
     """:func:`usage_from_pi_messages`, treating a malformed record as unknown usage.
 
-    :func:`_numeric` already filters out non-finite/negative numeric fields
+    :func:`~software_agent_factory.usage_values.non_negative_int` and
+    :func:`~software_agent_factory.usage_values.non_negative_float` already
+    filter out non-finite/negative/fractional-count numeric fields
     before they ever reach a :class:`~software_agent_factory.models.UsageMetrics`/
     :class:`~software_agent_factory.models.ModelUsage` validator, but this is
     a second, defense-in-depth layer: any ``ValueError`` a still-invalid
