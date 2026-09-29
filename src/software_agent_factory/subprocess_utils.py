@@ -98,7 +98,7 @@ def build_child_env() -> tuple[dict[str, str], set[str]]:
 def redact_secrets(text: str, scrubbed_values: set[str]) -> str:
     """Redact scrubbed credential values and token-shaped substrings from text.
 
-    Leaves whitespace and length untouched, so a caller can redact a whole
+    Does not collapse whitespace or truncate, so a caller can redact a whole
     buffer *before* truncating it: a secret cut in half by the truncation
     would otherwise escape exact-value redaction. Values shorter than four
     characters are ignored (too short to be a credential, too likely to hit
