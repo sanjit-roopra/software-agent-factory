@@ -52,6 +52,14 @@ RoleName: TypeAlias = AgentRole | str
 #: explicitly discourages "enormous prompts").
 MAX_DIFF_CHARS = 20000
 
+_WORK_ITEM_TITLE = "Work item"
+_SPECIFICATION_TITLE = "Specification"
+_EXECUTION_PLAN_TITLE = "Execution plan"
+_TRIAGE_RESULT_TITLE = "Triage result"
+_RESEARCH_REPORT_TITLE = "Research report"
+_DIFF_TITLE = "Diff"
+_VERIFICATION_TITLE = "Deterministic verification"
+_CHANGED_FILES_TITLE = "Changed files"
 _REPAIR_CONTEXT_TITLE = "Repair context"
 _CURRENT_DIFF_TITLE = "Current diff"
 _OUTPUT_REJECTION_TITLE = "Previous output rejection"
@@ -434,7 +442,7 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
 def _artifact_sections(normalized_role: str, request: AgentRequest) -> list[tuple[str, object]]:
     sections: list[tuple[str, object]] = []
     if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-        sections.append(("Work item", _work_item_brief(request.work_item)))
+        sections.append((_WORK_ITEM_TITLE, _work_item_brief(request.work_item)))
         if request.change_set is not None:
             sections.append((_CHANGE_SET_TO_CORRECT_TITLE, request.change_set))
         if request.repair_context is not None:
@@ -520,29 +528,29 @@ def _artifact_sections(normalized_role: str, request: AgentRequest) -> list[tupl
         )
 
     if normalized_role == "TRIAGE":
-        sections.append(("Work item", request.work_item))
+        sections.append((_WORK_ITEM_TITLE, request.work_item))
         return sections
 
     if normalized_role == "REFINER":
-        sections.append(("Work item", request.work_item))
+        sections.append((_WORK_ITEM_TITLE, request.work_item))
         if request.triage_result is not None:
-            sections.append(("Triage result", request.triage_result))
+            sections.append((_TRIAGE_RESULT_TITLE, request.triage_result))
         return sections
 
     if normalized_role == "RESEARCHER":
-        sections.append(("Work item", request.work_item))
+        sections.append((_WORK_ITEM_TITLE, request.work_item))
         if request.triage_result is not None:
-            sections.append(("Triage result", request.triage_result))
+            sections.append((_TRIAGE_RESULT_TITLE, request.triage_result))
         if request.specification is not None:
-            sections.append(("Specification", request.specification))
+            sections.append((_SPECIFICATION_TITLE, request.specification))
         return sections
 
     if normalized_role == "PLANNER":
-        sections.append(("Work item", request.work_item))
+        sections.append((_WORK_ITEM_TITLE, request.work_item))
         if request.specification is not None:
-            sections.append(("Specification", request.specification))
+            sections.append((_SPECIFICATION_TITLE, request.specification))
         if request.research_report is not None:
-            sections.append(("Research report", request.research_report))
+            sections.append((_RESEARCH_REPORT_TITLE, request.research_report))
         if request.repair_context is not None:
             title = (
                 "Clarification context"
@@ -563,13 +571,13 @@ def _artifact_sections(normalized_role: str, request: AgentRequest) -> list[tupl
         return sections
 
     if normalized_role == "IMPLEMENTER":
-        sections.append(("Work item", _work_item_brief(request.work_item)))
+        sections.append((_WORK_ITEM_TITLE, _work_item_brief(request.work_item)))
         if request.specification is not None:
-            sections.append(("Specification", request.specification))
+            sections.append((_SPECIFICATION_TITLE, request.specification))
         if request.research_report is not None:
-            sections.append(("Research report", request.research_report))
+            sections.append((_RESEARCH_REPORT_TITLE, request.research_report))
         if request.execution_plan is not None:
-            sections.append(("Execution plan", request.execution_plan))
+            sections.append((_EXECUTION_PLAN_TITLE, request.execution_plan))
         if request.attempt_number is not None:
             sections.append(("Attempt number", request.attempt_number))
         if request.repair_context is not None:
@@ -579,35 +587,35 @@ def _artifact_sections(normalized_role: str, request: AgentRequest) -> list[tupl
         return sections
 
     if normalized_role == "TESTER":
-        sections.append(("Work item", _work_item_brief(request.work_item)))
+        sections.append((_WORK_ITEM_TITLE, _work_item_brief(request.work_item)))
         if request.specification is not None:
-            sections.append(("Specification", request.specification))
+            sections.append((_SPECIFICATION_TITLE, request.specification))
         if request.execution_plan is not None:
-            sections.append(("Execution plan", request.execution_plan))
+            sections.append((_EXECUTION_PLAN_TITLE, request.execution_plan))
         if request.repair_context is not None:
             sections.append((_OUTPUT_REJECTION_TITLE, request.repair_context))
         if request.changed_files:
-            sections.append(("Changed files", request.changed_files))
+            sections.append((_CHANGED_FILES_TITLE, request.changed_files))
         if request.diff:
-            sections.append(("Diff", _bounded_diff(request.diff)))
+            sections.append((_DIFF_TITLE, _bounded_diff(request.diff)))
         if request.verification_report is not None:
-            sections.append(("Deterministic verification", request.verification_report))
+            sections.append((_VERIFICATION_TITLE, request.verification_report))
         return sections
 
     if normalized_role == "REVIEWER":
-        sections.append(("Work item", _work_item_brief(request.work_item)))
+        sections.append((_WORK_ITEM_TITLE, _work_item_brief(request.work_item)))
         if request.specification is not None:
-            sections.append(("Specification", request.specification))
+            sections.append((_SPECIFICATION_TITLE, request.specification))
         if request.execution_plan is not None:
-            sections.append(("Execution plan", request.execution_plan))
+            sections.append((_EXECUTION_PLAN_TITLE, request.execution_plan))
         if request.repair_context is not None:
             sections.append((_OUTPUT_REJECTION_TITLE, request.repair_context))
         if request.changed_files:
-            sections.append(("Changed files", request.changed_files))
+            sections.append((_CHANGED_FILES_TITLE, request.changed_files))
         if request.diff:
-            sections.append(("Diff", _bounded_diff(request.diff)))
+            sections.append((_DIFF_TITLE, _bounded_diff(request.diff)))
         if request.verification_report is not None:
-            sections.append(("Deterministic verification", request.verification_report))
+            sections.append((_VERIFICATION_TITLE, request.verification_report))
         if request.test_report is not None:
             sections.append(("Independent tester report", request.test_report))
         if request.attempt_number is not None:
