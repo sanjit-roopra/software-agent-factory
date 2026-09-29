@@ -55,6 +55,38 @@ RoleName: TypeAlias = AgentRole | str
 #: explicitly discourages "enormous prompts").
 MAX_DIFF_CHARS = 20000
 
+_REPAIR_CONTEXT_TITLE = "Repair context"
+_CURRENT_DIFF_TITLE = "Current diff"
+_OUTPUT_REJECTION_TITLE = "Previous output rejection"
+_CHANGE_SET_TO_CORRECT_TITLE = "Supplied ChangeSet to correct"
+_CORRECTION_CONTEXT_TITLE = "Correction context"
+_PRIOR_FINDINGS_TITLE = "Previously reported blocking issues from this run"
+_ACCEPTED_DEBT_TITLE = "Controller-accepted review debt"
+_ACCEPTED_DEBT_RULE_TITLE = "Accepted-debt review rule"
+_REPAIR_DIFF_TITLE = "Changes since the previous review"
+
+#: Per role that keeps a session, the section titles that change from one call to
+#: the next. A continued session already holds every other section.
+_ROUND_SPECIFIC_TITLES: dict[str, frozenset[str]] = {
+    "IMPLEMENTER": frozenset(
+        {
+            _REPAIR_CONTEXT_TITLE,
+            _CURRENT_DIFF_TITLE,
+            _CHANGE_SET_TO_CORRECT_TITLE,
+            _CORRECTION_CONTEXT_TITLE,
+        }
+    ),
+    "REVIEWER": frozenset(
+        {
+            _OUTPUT_REJECTION_TITLE,
+            _PRIOR_FINDINGS_TITLE,
+            _ACCEPTED_DEBT_TITLE,
+            _ACCEPTED_DEBT_RULE_TITLE,
+            _REPAIR_DIFF_TITLE,
+        }
+    ),
+}
+
 _ARTIFACT_MODELS: dict[str, type[ModelBase]] = {
     "TRIAGE": TriageResult,
     "REFINER": Specification,
@@ -128,6 +160,75 @@ def build_prompt(request: AgentRequest) -> str:
     )
 
 
+def build_continuation_prompt(request: AgentRequest) -> str | None:
+    """Build the prompt for a call that continues a persisted session, or ``None``.
+
+    The session already holds the opening, the writing rules, the role
+    instructions and every artifact the first call carried: the work item
+    brief, specification, research report, plan, repository skill, full diff,
+    changed files, verification report and tester report. This prompt repeats
+    none of them. It carries the sections that mark a new round, then the
+    output contract:
+
+    - ``IMPLEMENTER``: the repair context (a failed check, a review or CI
+      failure, or a rejection of the previous output) and the current diff.
+      The ChangeSet correction adds the supplied ChangeSet and its context.
+    - ``REVIEWER``: the previous output rejection, the prior blocking findings,
+      the controller-accepted debt with its rule, and the changes since the
+      previous review. With prior findings, it also restates the re-review
+      rules, because the first review told the reviewer to leave the
+      dispositions empty.
+
+    ``attempt_number`` and the snapshot number alone do not make a round.
+    Every other role has no session, so it has no round-specific section.
+    Returns ``None`` when the request holds no round-specific section. The
+    caller then starts a new session and sends :func:`build_prompt`.
+    """
+
+    normalized_role = normalize_role(request.role)
+    titles = _ROUND_SPECIFIC_TITLES.get(normalized_role, frozenset())
+    round_sections = [
+        (title, value)
+        for title, value in _artifact_sections(
+            normalized_role=normalized_role,
+            purpose=request.purpose,
+            work_item=request.work_item,
+            project_brief=request.project_brief,
+            triage_result=request.triage_result,
+            specification=request.specification,
+            research_report=request.research_report,
+            execution_plan=request.execution_plan,
+            change_set=request.change_set,
+            diff=request.diff,
+            changed_files=request.changed_files,
+            verification_report=request.verification_report,
+            test_report=request.test_report,
+            prior_review_findings=request.prior_review_findings,
+            accepted_review_findings=request.accepted_review_findings,
+            repair_diff=request.repair_diff,
+            repair_context=request.repair_context,
+            repository_profile=request.repository_profile,
+            repository_skill=request.repository_skill,
+            official_documentation_origins=request.official_documentation_origins,
+            practice_reference_urls=request.practice_reference_urls,
+            attempt_number=request.attempt_number,
+            research_question=None,
+            research_context=None,
+        )
+        if title in titles
+    ]
+    if not round_sections:
+        return None
+
+    parts = [_section(title, value) for title, value in round_sections]
+    if normalized_role == "REVIEWER" and request.prior_review_findings:
+        parts.insert(0, f"Re-review rules:\n{_REVIEWER_REPAIR_RULES}")
+    parts.append(
+        _output_contract(normalized_role, _model_class_for(normalized_role, request.purpose))
+    )
+    return "\n\n".join(parts)
+
+
 def build_prompt_for_role(
     role: RoleName,
     *,
@@ -160,15 +261,7 @@ def build_prompt_for_role(
     """Build a concise role-specific prompt from only the required artifacts."""
 
     normalized_role = normalize_role(role)
-    model_class: type[ModelBase]
-    if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-        model_class = RepositorySkill
-    elif purpose is AgentPurpose.DECOMPOSE_PROJECT:
-        model_class = ProjectPlan
-    elif purpose is AgentPurpose.CORRECT_CHANGE_SET:
-        model_class = ChangeSet
-    else:
-        model_class = artifact_model_for_role(normalized_role)
+    model_class = _model_class_for(normalized_role, purpose)
 
     sections = [
         _opening(normalized_role, model, reasoning),
@@ -210,6 +303,26 @@ def build_prompt_for_role(
         sections.append(_section(title, value))
 
     return "\n\n".join(section for section in sections if section).strip()
+
+
+#: Reviewer rules that replace the first-review rules when prior findings exist.
+_REVIEWER_REPAIR_RULES = """- Review only the targeted repair.
+- Return one disposition for each prior finding id.
+- Use RESOLVED, UNRESOLVED, or WITHDRAWN with a concrete rationale.
+- Put repair defects in repair_regressions.
+- Put older newly noticed defects in blocking_findings.
+- Use the repair diff as the change evidence.
+- Do not omit or rename a prior finding."""
+
+
+def _model_class_for(normalized_role: str, purpose: AgentPurpose) -> type[ModelBase]:
+    if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
+        return RepositorySkill
+    if purpose is AgentPurpose.DECOMPOSE_PROJECT:
+        return ProjectPlan
+    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
+        return ChangeSet
+    return artifact_model_for_role(normalized_role)
 
 
 def _opening(role: str, model: str, reasoning: str) -> str:
@@ -327,16 +440,7 @@ def _role_instructions(
                 "- Leave prior_finding_dispositions and repair_regressions empty.\n"
                 "- Set approved to true only when blocking_findings is empty."
             )
-        return (
-            f"{common}\n"
-            "- Review only the targeted repair.\n"
-            "- Return one disposition for each prior finding id.\n"
-            "- Use RESOLVED, UNRESOLVED, or WITHDRAWN with a concrete rationale.\n"
-            "- Put repair defects in repair_regressions.\n"
-            "- Put older newly noticed defects in blocking_findings.\n"
-            "- Use the repair diff as the change evidence.\n"
-            "- Do not omit or rename a prior finding."
-        )
+        return f"{common}\n{_REVIEWER_REPAIR_RULES}"
     raise ValueError(f"unsupported agent role: {role!r}")
 
 
@@ -390,9 +494,9 @@ def _artifact_sections(
     if purpose is AgentPurpose.CORRECT_CHANGE_SET:
         sections.append(("Work item", _work_item_brief(work_item)))
         if change_set is not None:
-            sections.append(("Supplied ChangeSet to correct", change_set))
+            sections.append((_CHANGE_SET_TO_CORRECT_TITLE, change_set))
         if repair_context is not None:
-            sections.append(("Correction context", repair_context))
+            sections.append((_CORRECTION_CONTEXT_TITLE, repair_context))
         return sections
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         if project_brief is not None:
@@ -528,9 +632,9 @@ def _artifact_sections(
         if attempt_number is not None:
             sections.append(("Attempt number", attempt_number))
         if repair_context is not None:
-            sections.append(("Repair context", repair_context))
+            sections.append((_REPAIR_CONTEXT_TITLE, repair_context))
         if diff:
-            sections.append(("Current diff", _bounded_diff(diff)))
+            sections.append((_CURRENT_DIFF_TITLE, _bounded_diff(diff)))
         return sections
 
     if normalized_role == "TESTER":
@@ -540,7 +644,7 @@ def _artifact_sections(
         if execution_plan is not None:
             sections.append(("Execution plan", execution_plan))
         if repair_context is not None:
-            sections.append(("Previous output rejection", repair_context))
+            sections.append((_OUTPUT_REJECTION_TITLE, repair_context))
         if changed_files:
             sections.append(("Changed files", changed_files))
         if diff:
@@ -556,7 +660,7 @@ def _artifact_sections(
         if execution_plan is not None:
             sections.append(("Execution plan", execution_plan))
         if repair_context is not None:
-            sections.append(("Previous output rejection", repair_context))
+            sections.append((_OUTPUT_REJECTION_TITLE, repair_context))
         if changed_files:
             sections.append(("Changed files", changed_files))
         if diff:
@@ -570,20 +674,20 @@ def _artifact_sections(
         if prior_review_findings:
             sections.append(
                 (
-                    "Previously reported blocking issues from this run",
+                    _PRIOR_FINDINGS_TITLE,
                     [finding.model_dump(mode="json") for finding in prior_review_findings],
                 )
             )
         if accepted_review_findings:
             sections.append(
                 (
-                    "Controller-accepted review debt",
+                    _ACCEPTED_DEBT_TITLE,
                     [finding.model_dump(mode="json") for finding in accepted_review_findings],
                 )
             )
             sections.append(
                 (
-                    "Accepted-debt review rule",
+                    _ACCEPTED_DEBT_RULE_TITLE,
                     (
                         "Do not report an unchanged accepted finding again. If the current "
                         "repair changed its cited path and the defect remains, report it as a "
@@ -592,7 +696,7 @@ def _artifact_sections(
                 )
             )
         if repair_diff:
-            sections.append(("Changes since the previous review", _bounded_diff(repair_diff)))
+            sections.append((_REPAIR_DIFF_TITLE, _bounded_diff(repair_diff)))
         return sections
 
     raise ValueError(f"unsupported agent role: {normalized_role!r}")

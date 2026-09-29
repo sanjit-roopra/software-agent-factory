@@ -41,6 +41,7 @@ from software_agent_factory.prompts import (
     MAX_COLLECTION_ERRORS,
     MAX_DIFF_CHARS,
     artifact_model_for_role,
+    build_continuation_prompt,
     build_prompt,
     normalize_role,
     parse_collection_errors,
@@ -774,3 +775,214 @@ def test_summarize_command_result_tail_traceback_retention() -> None:
     assert "=== 1 failed, 120 passed in 2.34s ===" in stdout_summary
     # Length is strictly bounded
     assert len(stdout_summary) <= 2100
+
+
+# ---------------------------------------------------------------------------
+# Continuation prompt: only what changed since the previous call in a session
+# ---------------------------------------------------------------------------
+
+REPAIR_DIFF = "diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+RESEARCH_QUESTION = "Which validator rejects blank names?"
+TESTER_FINDING = "Whitespace slips through validation."
+PRIOR_FINDING = "A blank name skips normalization."
+ACCEPTED_FINDING = "A legacy response remains accepted debt."
+REJECTION_REASON = "The previous output was not valid JSON."
+CHANGE_SET_SUMMARY = "Fix the output shape."
+JSON_SCHEMA_MARKER = "JSON Schema:"
+CHANGE_SET_SCHEMA = f"ChangeSet {JSON_SCHEMA_MARKER}"
+REVIEW_REPORT_SCHEMA = f"ReviewReport {JSON_SCHEMA_MARKER}"
+REPAIR_CONTEXT_TITLE = "Repair context"
+REPAIR_FAILURE = "integration-tests: TEST_FAILURE"
+REPAIR_LOG_EXCERPT = "AssertionError: expected HTTP 400"
+
+#: Text that only the first call of a session carries.
+FIRST_CALL_TEXT = (
+    _work_item().title,
+    _work_item().description,
+    "Names must not be blank.",
+    "Add a guard clause.",
+    RESEARCH_QUESTION,
+    "You are the Software Agent Factory",
+    "Use concise technical English",
+)
+
+
+def _finding(message: str, path: str) -> ReviewFinding:
+    return ReviewFinding(
+        id=f"review-{path}",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message=message,
+        locations=[ReviewSourceLocation(path=path, start_line=1, end_line=1)],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+
+
+def _continued_implementer(**overrides: object) -> AgentRequest:
+    payload: dict[str, object] = {
+        "specification": _specification(),
+        "research_report": ResearchReport(question=RESEARCH_QUESTION),
+        "execution_plan": _plan(),
+        "workspace_path": "/w",
+        "attempt_number": 2,
+    }
+    payload.update(overrides)
+    return _request(AgentRole.IMPLEMENTER, **payload)
+
+
+def _continued_reviewer(**overrides: object) -> AgentRequest:
+    payload: dict[str, object] = {
+        "specification": _specification(),
+        "execution_plan": _plan(),
+        "diff": DIFF,
+        "changed_files": ["src/app.py"],
+        "verification_report": _verification(),
+        "test_report": TestReport(passed=False, findings=[TESTER_FINDING], confidence=0.5),
+        "attempt_number": 3,
+    }
+    payload.update(overrides)
+    return _request(AgentRole.REVIEWER, **payload)
+
+
+def _assert_absent(prompt: str, unwanted: tuple[str, ...]) -> None:
+    present = [text for text in unwanted if text in prompt]
+    assert present == []
+
+
+def test_continuation_prompt_for_an_implementer_repair_carries_the_repair_round_only() -> None:
+    prompt = build_continuation_prompt(
+        _continued_implementer(
+            diff=DIFF,
+            repair_context=RepairContext(
+                trigger=AttemptTrigger.VERIFICATION,
+                summary="Deterministic verification failed.",
+                failures=[REPAIR_FAILURE],
+                log_excerpt=REPAIR_LOG_EXCERPT,
+            ),
+        )
+    )
+
+    assert prompt is not None
+    assert REPAIR_CONTEXT_TITLE in prompt
+    assert REPAIR_FAILURE in prompt
+    assert REPAIR_LOG_EXCERPT in prompt
+    assert "Current diff" in prompt
+    assert DIFF.strip() in prompt
+    assert CHANGE_SET_SCHEMA in prompt
+    assert prompt.index(REPAIR_CONTEXT_TITLE) < prompt.index(JSON_SCHEMA_MARKER)
+    _assert_absent(prompt, FIRST_CALL_TEXT)
+
+
+def test_continuation_prompt_for_a_reviewer_re_review_carries_findings_and_new_changes_only() -> (
+    None
+):
+    prompt = build_continuation_prompt(
+        _continued_reviewer(
+            prior_review_findings=[_finding(PRIOR_FINDING, "src/a.py")],
+            accepted_review_findings=[_finding(ACCEPTED_FINDING, "src/b.py")],
+            repair_diff=REPAIR_DIFF,
+        )
+    )
+
+    assert prompt is not None
+    assert "Previously reported blocking issues from this run" in prompt
+    assert PRIOR_FINDING in prompt
+    assert "Controller-accepted review debt" in prompt
+    assert ACCEPTED_FINDING in prompt
+    assert "Accepted-debt review rule" in prompt
+    assert "Changes since the previous review" in prompt
+    assert "@@ -1 +1 @@" in prompt
+    assert REVIEW_REPORT_SCHEMA in prompt
+    _assert_absent(
+        prompt,
+        (
+            *FIRST_CALL_TEXT,
+            DIFF.strip(),
+            TESTER_FINDING,
+            _verification().deterministic_checks[0].command,
+        ),
+    )
+
+
+def test_continuation_prompt_for_a_reviewer_re_review_restates_the_re_review_rules() -> None:
+    """The first review told the model to leave dispositions empty; a re-review must fill them."""
+    prompt = build_continuation_prompt(
+        _continued_reviewer(
+            prior_review_findings=[_finding(PRIOR_FINDING, "src/a.py")],
+            repair_diff=REPAIR_DIFF,
+        )
+    )
+
+    assert prompt is not None
+    assert "Return one disposition for each prior finding id" in prompt
+    assert "Put repair defects in repair_regressions" in prompt
+    assert "Use the repair diff as the change evidence" in prompt
+    assert "Leave prior_finding_dispositions and repair_regressions empty" not in prompt
+
+
+def test_continuation_prompt_for_an_implementer_output_rejection_carries_the_reason() -> None:
+    prompt = build_continuation_prompt(_continued_implementer(repair_context=REJECTION_REASON))
+
+    assert prompt is not None
+    assert REJECTION_REASON in prompt
+    assert CHANGE_SET_SCHEMA in prompt
+    _assert_absent(prompt, FIRST_CALL_TEXT)
+
+
+def test_continuation_prompt_for_a_reviewer_output_rejection_carries_the_reason() -> None:
+    prompt = build_continuation_prompt(_continued_reviewer(repair_context=REJECTION_REASON))
+
+    assert prompt is not None
+    assert "Previous output rejection" in prompt
+    assert REJECTION_REASON in prompt
+    assert REVIEW_REPORT_SCHEMA in prompt
+    _assert_absent(prompt, (*FIRST_CALL_TEXT, DIFF.strip(), "Leave prior_finding_dispositions"))
+
+
+def test_continuation_prompt_for_a_change_set_correction_carries_the_change_set_and_context() -> (
+    None
+):
+    prompt = build_continuation_prompt(
+        _continued_implementer(
+            purpose=AgentPurpose.CORRECT_CHANGE_SET,
+            change_set=ChangeSet(summary=CHANGE_SET_SUMMARY),
+            repair_context=RepairContext(
+                trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
+                summary="Correct only the ChangeSet prose.",
+                failures=[REJECTION_REASON],
+            ),
+        )
+    )
+
+    assert prompt is not None
+    assert "Supplied ChangeSet to correct" in prompt
+    assert CHANGE_SET_SUMMARY in prompt
+    assert "Correction context" in prompt
+    assert REJECTION_REASON in prompt
+    assert CHANGE_SET_SCHEMA in prompt
+    _assert_absent(prompt, FIRST_CALL_TEXT)
+
+
+@pytest.mark.parametrize(
+    "request_",
+    [
+        pytest.param(_continued_implementer(), id="implementer without a repair round"),
+        pytest.param(
+            _continued_implementer(changed_files=["src/app.py"]),
+            id="implementer with only changed files",
+        ),
+        pytest.param(_continued_reviewer(), id="reviewer without findings or new changes"),
+    ],
+)
+def test_continuation_prompt_is_none_when_nothing_is_round_specific(request_: AgentRequest) -> None:
+    assert build_continuation_prompt(request_) is None
+
+
+@pytest.mark.parametrize(
+    "role",
+    [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.PLANNER, AgentRole.TESTER],
+)
+def test_continuation_prompt_is_none_for_a_role_without_a_session(role: AgentRole) -> None:
+    request = _request(role, repair_context=REJECTION_REASON, diff=DIFF)
+
+    assert build_continuation_prompt(request) is None
