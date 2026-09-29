@@ -2,7 +2,7 @@
 
 :meth:`PiAgentRuntime.run` drives one ``pi --mode rpc`` subprocess per call
 (built by ``_build_command``/:func:`~software_agent_factory.agents.workspace_cwd`/
-``_child_env``, Step 3.2) over
+``_child_env_and_scrubbed``, Step 3.2) over
 :class:`~software_agent_factory.pi_rpc.PiRpcClient` (Step 3.1): a ``prompt``
 command, ``wait_for_settled``, one ``get_messages`` call read for both the
 final assistant message's ``stopReason`` (Step 3.4) and its per-model
@@ -83,14 +83,21 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
 
-#: Provider API key env vars a non-``github-copilot`` pi provider (e.g.
-#: ``anthropic``, ``openai``) authenticates from. Never removed from the
-#: child environment by :meth:`PiAgentRuntime._child_env_and_scrubbed` -- pi
-#: needs them to authenticate -- but their values are added to
-#: ``scrubbed_values`` there so :func:`~software_agent_factory.subprocess_utils.sanitize_output`
-#: still redacts them out of a failure reason built from pi's stderr or
-#: protocol output.
-_PROVIDER_API_KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+#: Credential environment variable per pi provider. Only the variable of the
+#: configured ``pi.provider`` stays in the child environment (pi needs it to
+#: authenticate); every other one is removed so a stray credential never
+#: reaches pi or the tools it runs. All their values are still recorded for
+#: redaction (see :meth:`PiAgentRuntime._child_env_and_scrubbed`).
+_PROVIDER_CREDENTIAL_ENV_VARS: dict[str, str] = {
+    "github-copilot": "COPILOT_GITHUB_TOKEN",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+#: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
+_DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
 
 #: Grace period :meth:`PiAgentRuntime._abort_and_kill` waits for pi to exit on
 #: its own after a best-effort ``abort`` command, before escalating to
@@ -348,10 +355,12 @@ class PiAgentRuntime(AgentRuntime):
         data_dir: Path,
         *,
         process_factory: ProcessFactory = _default_process_factory,
+        routing_api_key_env_var: str = _DEFAULT_ROUTING_API_KEY_ENV_VAR,
     ) -> None:
         self._config = config
         self._data_dir = data_dir
         self._process_factory = process_factory
+        self._routing_api_key_env_var = routing_api_key_env_var
 
     def run(self, request: AgentRequest) -> AgentResult:
         validate_runtime_request(request)
@@ -528,49 +537,34 @@ class PiAgentRuntime(AgentRuntime):
             *session_arg,
         ]
 
-    def _child_env(self) -> dict[str, str]:
+    def _child_env_and_scrubbed(self) -> tuple[dict[str, str], set[str]]:
         """Build the scrubbed environment pi's child process runs in.
 
-        ``build_child_env`` scrubs :data:`subprocess_utils.GITHUB_CREDENTIAL_ENV_VARS`;
-        ``COPILOT_GITHUB_TOKEN`` is not in that set, so it survives -- but only
-        when ``self._config.provider`` is ``"github-copilot"``, the provider
-        that authenticates headless from that variable when
-        ``~/.pi/agent/auth.json`` has no interactive login. For any other
-        provider it is removed: it is not the credential that provider reads,
-        and a stray copy would otherwise sit in the child environment for no
-        reason. See :meth:`_child_env_and_scrubbed` for the corresponding
-        ``scrubbed_values``.
-        """
-        env, _scrubbed_values = self._child_env_and_scrubbed()
-        return env
+        ``build_child_env`` scrubs :data:`subprocess_utils.GITHUB_CREDENTIAL_ENV_VARS`.
+        On top of that, only the credential variable of ``self._config.provider``
+        (:data:`_PROVIDER_CREDENTIAL_ENV_VARS`) stays: ``COPILOT_GITHUB_TOKEN``
+        for ``github-copilot`` (it authenticates headless when
+        ``~/.pi/agent/auth.json`` has no interactive login), the matching API
+        key for another known provider. Every other known provider variable
+        and the routing API key (pi never needs it) are removed.
 
-    def _child_env_and_scrubbed(self) -> tuple[dict[str, str], set[str]]:
-        """Same as :meth:`_child_env`, plus the credential values it scrubbed.
-
-        :meth:`run` needs the scrubbed values too, to sanitize them out of any
+        The second return value is the credential values to redact from any
         failure reason built from pi's stderr or protocol output (mirroring
-        ``copilot_runtime.py``'s ``_format_failure_reason``, which sanitizes
-        against ``build_child_env``'s ``scrubbed_values`` the same way).
-        ``COPILOT_GITHUB_TOKEN`` and the provider API keys in
-        :data:`_PROVIDER_API_KEY_ENV_VARS` are credentials ``build_child_env``
-        never scrubs (pi needs them to authenticate), so their *values* are
-        added to ``scrubbed_values`` here even when the variable itself stays
-        in ``env`` -- a credential surviving in the child's environment must
-        still never be able to leak into a sanitized failure reason.
+        ``copilot_runtime.py``'s ``_format_failure_reason``). It holds the
+        values ``build_child_env`` removed plus *every* known credential
+        value, kept or removed, so none can leak into a failure reason.
         """
         env, scrubbed_values = build_child_env()
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
 
-        copilot_token = env.get("COPILOT_GITHUB_TOKEN")
-        if copilot_token:
-            scrubbed_values.add(copilot_token)
-            if self._config.provider != "github-copilot":
-                del env["COPILOT_GITHUB_TOKEN"]
-
-        for name in _PROVIDER_API_KEY_ENV_VARS:
+        own_var = _PROVIDER_CREDENTIAL_ENV_VARS.get(self._config.provider)
+        for name in (*_PROVIDER_CREDENTIAL_ENV_VARS.values(), self._routing_api_key_env_var):
             value = env.get(name)
-            if value:
-                scrubbed_values.add(value)
+            if not value:
+                continue
+            scrubbed_values.add(value)
+            if name != own_var:
+                del env[name]
 
         return env, scrubbed_values
 

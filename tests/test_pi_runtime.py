@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, NamedTuple
 
 import pytest
 
@@ -346,98 +347,187 @@ def test_build_command_appends_session_arg_for_resumed_session() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _child_env: GitHub credential scrub, COPILOT_GITHUB_TOKEN kept, cache retention
+# run: child environment (credential scrub, provider key allowlist, cache retention)
 # ---------------------------------------------------------------------------
 
 
-def test_child_env_scrubs_github_credential_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+#: Provider -> the API-key environment variable pi authenticates it from.
+_PROVIDER_KEY_ENV_VARS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+#: Deliberately not ``ghp_``-shaped, so only exact-value redaction can hide it.
+_PLAIN_SECRET = "plainsecretvalue1234"
+
+
+class _Launch(NamedTuple):
+    command: list[str]
+    cwd: Path
+    env: dict[str, str]
+
+
+@pytest.fixture(autouse=True)
+def _isolated_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no credential variable from the developer's shell."""
+    for name in (
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+        "JEV_API_KEY",
+        *_PROVIDER_KEY_ENV_VARS.values(),
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _launch(runtime_kwargs: dict[str, object] | None = None, **request_overrides: Any) -> _Launch:
+    """Run one triage call and return what the runtime launched pi with."""
+    launches: list[_Launch] = []
+    process = _scripted_process(json.dumps(_TRIAGE_JSON))
+
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
+        launches.append(_Launch(list(command), cwd, env))
+        return process
+
+    runtime = _runtime(process_factory=factory, **(runtime_kwargs or {}))
+    result = runtime.run(_request(AgentRole.TRIAGE, **request_overrides))
+    assert result.success is True
+    return launches[0]
+
+
+def _failure_reason_when_pi_writes(stderr: str, **runtime_kwargs: object) -> str:
+    process = FakeProcess()
+    process.write_records({"type": "response", "id": "c1", "success": True})
+    process.write_stderr(stderr)
+    process.close_stdout()
+    process.exit(1)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process, **runtime_kwargs)
+    result = runtime.run(_request(AgentRole.TRIAGE))
+    assert result.success is False
+    assert result.failure_reason is not None
+    return result.failure_reason
+
+
+def test_run_child_env_scrubs_github_credential_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
     monkeypatch.setenv("GH_TOKEN", "ghp_other_secret")
-    runtime = _runtime()
 
-    env = runtime._child_env()
+    env = _launch().env
 
     assert "GITHUB_TOKEN" not in env
     assert "GH_TOKEN" not in env
 
 
-def test_child_env_keeps_copilot_github_token_for_headless_auth(
+def test_run_child_env_keeps_copilot_github_token_for_headless_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
-    runtime = _runtime()
 
-    env = runtime._child_env()
+    env = _launch().env
 
     assert env["COPILOT_GITHUB_TOKEN"] == "copilot-pat"
     assert "GITHUB_TOKEN" not in env
 
 
-def test_child_env_sets_pi_cache_retention_from_config() -> None:
-    runtime = _runtime(cache_retention="short")
-
-    env = runtime._child_env()
-
-    assert env["PI_CACHE_RETENTION"] == "short"
+def test_run_child_env_sets_pi_cache_retention_from_config() -> None:
+    assert _launch({"cache_retention": "short"}).env["PI_CACHE_RETENTION"] == "short"
 
 
-def test_child_env_defaults_pi_cache_retention_to_long() -> None:
-    runtime = _runtime()
-
-    env = runtime._child_env()
-
-    assert env["PI_CACHE_RETENTION"] == "long"
+def test_run_child_env_defaults_pi_cache_retention_to_long() -> None:
+    assert _launch().env["PI_CACHE_RETENTION"] == "long"
 
 
-def test_child_env_scrubs_copilot_github_token_for_non_copilot_provider(
+def test_run_child_env_drops_copilot_github_token_for_non_copilot_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
-    runtime = _runtime(provider="anthropic")
 
-    env = runtime._child_env()
+    env = _launch({"provider": "anthropic"}).env
 
+    assert "COPILOT_GITHUB_TOKEN" not in env
+
+
+@pytest.mark.parametrize(("provider", "own_var"), sorted(_PROVIDER_KEY_ENV_VARS.items()))
+def test_run_child_env_keeps_only_the_configured_providers_api_key(
+    monkeypatch: pytest.MonkeyPatch, provider: str, own_var: str
+) -> None:
+    for name in _PROVIDER_KEY_ENV_VARS.values():
+        monkeypatch.setenv(name, f"value-of-{name}")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
+
+    env = _launch({"provider": provider}).env
+
+    assert env[own_var] == f"value-of-{own_var}"
+    for name in _PROVIDER_KEY_ENV_VARS.values():
+        if name != own_var:
+            assert name not in env
     assert "COPILOT_GITHUB_TOKEN" not in env
 
 
-def test_child_env_and_scrubbed_adds_copilot_github_token_value_when_kept(
+def test_run_child_env_drops_every_provider_api_key_for_github_copilot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat-secret")
-    runtime = _runtime()  # default provider: github-copilot
+    for name in _PROVIDER_KEY_ENV_VARS.values():
+        monkeypatch.setenv(name, f"value-of-{name}")
 
-    env, scrubbed_values = runtime._child_env_and_scrubbed()
+    env = _launch().env
 
-    assert env["COPILOT_GITHUB_TOKEN"] == "copilot-pat-secret"
-    assert "copilot-pat-secret" in scrubbed_values
+    assert not set(_PROVIDER_KEY_ENV_VARS.values()) & set(env)
 
 
-def test_child_env_and_scrubbed_adds_copilot_github_token_value_when_removed(
+def test_run_child_env_drops_the_default_routing_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat-secret")
-    runtime = _runtime(provider="anthropic")
+    monkeypatch.setenv("JEV_API_KEY", "routing-secret")
 
-    env, scrubbed_values = runtime._child_env_and_scrubbed()
-
-    assert "COPILOT_GITHUB_TOKEN" not in env
-    assert "copilot-pat-secret" in scrubbed_values
+    assert "JEV_API_KEY" not in _launch().env
 
 
-def test_child_env_and_scrubbed_retains_and_scrubs_provider_api_keys(
+def test_run_child_env_drops_the_configured_routing_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fake-key")
-    runtime = _runtime()
+    monkeypatch.setenv("CUSTOM_ROUTING_KEY", "routing-secret")
+    launches: list[_Launch] = []
+    process = _scripted_process(json.dumps(_TRIAGE_JSON))
 
-    env, scrubbed_values = runtime._child_env_and_scrubbed()
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakeProcess:
+        launches.append(_Launch(list(command), cwd, env))
+        return process
 
-    assert env["ANTHROPIC_API_KEY"] == "sk-ant-fake-key"
-    assert env["OPENAI_API_KEY"] == "sk-openai-fake-key"
-    assert "sk-ant-fake-key" in scrubbed_values
-    assert "sk-openai-fake-key" in scrubbed_values
+    runtime = PiAgentRuntime(
+        PiConfig(),
+        data_dir=Path("/data"),
+        process_factory=factory,
+        routing_api_key_env_var="CUSTOM_ROUTING_KEY",
+    )
+
+    runtime.run(_request(AgentRole.TRIAGE))
+
+    assert "CUSTOM_ROUTING_KEY" not in launches[0].env
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    [
+        "GITHUB_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+        "JEV_API_KEY",
+        *sorted(_PROVIDER_KEY_ENV_VARS.values()),
+    ],
+)
+@pytest.mark.parametrize("provider", ["github-copilot", "anthropic", "openai"])
+def test_run_redacts_every_known_credential_value_from_failure_reason(
+    monkeypatch: pytest.MonkeyPatch, env_var: str, provider: str
+) -> None:
+    monkeypatch.setenv(env_var, _PLAIN_SECRET)
+
+    reason = _failure_reason_when_pi_writes(f"auth failed for {_PLAIN_SECRET}", provider=provider)
+
+    assert _PLAIN_SECRET not in reason
+    assert "auth failed for [REDACTED]" in reason
 
 
 # ---------------------------------------------------------------------------
