@@ -344,6 +344,20 @@ _PROVIDER_KEY_ENV_VARS = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
+#: Credential variables pi reads whose names do not end in ``_API_KEY``.
+_NON_API_KEY_CREDENTIAL_ENV_VARS = (
+    "ANTHROPIC_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SECRET_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "HF_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
+
 #: Deliberately not ``ghp_``-shaped, so only exact-value redaction can hide it.
 _PLAIN_SECRET = "plainsecretvalue1234"
 
@@ -373,7 +387,9 @@ def _isolated_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "GH_TOKEN",
         "COPILOT_GITHUB_TOKEN",
         "JEV_API_KEY",
+        "XAI_API_KEY",
         *_PROVIDER_KEY_ENV_VARS.values(),
+        *_NON_API_KEY_CREDENTIAL_ENV_VARS,
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -526,6 +542,84 @@ def test_run_child_env_drops_the_configured_routing_api_key(
     runtime.run(_request(AgentRole.TRIAGE))
 
     assert "CUSTOM_ROUTING_KEY" not in launches[0].env
+
+
+@pytest.mark.parametrize("env_var", _NON_API_KEY_CREDENTIAL_ENV_VARS)
+def test_run_child_env_drops_credentials_without_an_api_key_suffix_for_github_copilot(
+    monkeypatch: pytest.MonkeyPatch, env_var: str
+) -> None:
+    monkeypatch.setenv(env_var, f"value-of-{env_var}")
+
+    assert env_var not in _launch(provider="github-copilot").env
+
+
+def test_run_child_env_keeps_every_credential_variable_of_the_configured_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_OAUTH_TOKEN", "oauth-secret")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "auth-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    monkeypatch.setenv("HF_TOKEN", "hf-secret")
+
+    env = _launch(provider="anthropic").env
+
+    assert env["ANTHROPIC_OAUTH_TOKEN"] == "oauth-secret"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "auth-secret"
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "HF_TOKEN" not in env
+
+
+def test_run_child_env_keeps_the_aws_variables_for_amazon_bedrock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "aws-id")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    monkeypatch.setenv("ANTHROPIC_OAUTH_TOKEN", "oauth-secret")
+
+    env = _launch(provider="amazon-bedrock").env
+
+    assert env["AWS_ACCESS_KEY_ID"] == "aws-id"
+    assert env["AWS_SECRET_ACCESS_KEY"] == "aws-secret"
+    assert "ANTHROPIC_OAUTH_TOKEN" not in env
+
+
+def test_run_child_env_keeps_the_api_key_of_a_provider_missing_from_the_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``xai`` is not in the provider map; its own key is derived from the name
+    and must survive the ``*_API_KEY`` sweep."""
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+
+    env = _launch(provider="xai").env
+
+    assert env["XAI_API_KEY"] == "xai-secret"
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_run_redacts_the_kept_api_key_of_a_provider_missing_from_the_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XAI_API_KEY", _PLAIN_SECRET)
+
+    reason = _failure_reason_when_pi_writes(f"auth failed for {_PLAIN_SECRET}", provider="xai")
+
+    assert _PLAIN_SECRET not in reason
+
+
+def test_run_redacts_credentials_without_an_api_key_suffix_from_the_failure_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_OAUTH_TOKEN", "oauth-secret-value")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-value")
+
+    reason = _failure_reason_when_pi_writes(
+        "oauth-secret-value and aws-secret-value", provider="github-copilot"
+    )
+
+    assert "oauth-secret-value" not in reason
+    assert "aws-secret-value" not in reason
+    assert "[REDACTED] and [REDACTED]" in reason
 
 
 @pytest.mark.parametrize(

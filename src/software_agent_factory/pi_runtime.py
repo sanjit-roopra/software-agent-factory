@@ -64,6 +64,7 @@ from .pi_rpc import (
     PiRpcProtocolError,
     PiRpcTimeout,
 )
+from .pi_providers import PI_PROVIDER_CREDENTIAL_ENV_VARS, pi_provider_credential_vars
 from .prompts import build_prompt
 from .subprocess_utils import (
     build_child_env,
@@ -88,22 +89,9 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
 
-#: Credential environment variable per pi provider. Only the variable of the
-#: configured ``pi.provider`` stays in the child environment (pi needs it to
-#: authenticate); every other one is removed so a stray credential never
-#: reaches pi or the tools it runs. All their values are still recorded for
-#: redaction (see :meth:`PiAgentRuntime._child_env_and_scrubbed`).
-_PROVIDER_CREDENTIAL_ENV_VARS: dict[str, str] = {
-    "github-copilot": "COPILOT_GITHUB_TOKEN",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "google": "GEMINI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-}
-
-#: Suffix of provider API key variables pi can read beyond
-#: :data:`_PROVIDER_CREDENTIAL_ENV_VARS`; all are removed unless they are the
-#: configured provider's own variable.
+#: Suffix of provider API key variables pi can read beyond the ones
+#: :data:`~software_agent_factory.pi_providers.PI_PROVIDER_CREDENTIAL_ENV_VARS`
+#: names; all are removed unless they belong to the configured provider.
 _API_KEY_SUFFIX = "_API_KEY"
 
 #: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
@@ -562,12 +550,14 @@ class PiAgentRuntime(AgentRuntime):
         """Build the scrubbed environment pi's child process runs in.
 
         ``build_child_env`` scrubs :data:`subprocess_utils.GITHUB_CREDENTIAL_ENV_VARS`.
-        On top of that, only the credential variable of ``self._config.provider``
-        (:data:`_PROVIDER_CREDENTIAL_ENV_VARS`) stays: ``COPILOT_GITHUB_TOKEN``
-        for ``github-copilot`` (it authenticates headless when
-        ``~/.pi/agent/auth.json`` has no interactive login), the matching API
-        key for another known provider. Every other known provider variable
-        and the routing API key (pi never needs it) are removed.
+        On top of that, only the credential variables of ``self._config.provider``
+        (:func:`~software_agent_factory.pi_providers.pi_provider_credential_vars`)
+        stay: ``COPILOT_GITHUB_TOKEN`` for ``github-copilot`` (it authenticates
+        headless when ``~/.pi/agent/auth.json`` has no interactive login), the
+        API key, OAuth token or AWS variables of another provider, the derived
+        ``<PROVIDER>_API_KEY`` for a provider the map does not know. Every
+        other known credential variable, every other ``*_API_KEY`` and the
+        routing API key (pi never needs it) are removed.
 
         The second return value is the credential values to redact from any
         failure reason built from pi's stderr or protocol output (mirroring
@@ -578,12 +568,13 @@ class PiAgentRuntime(AgentRuntime):
         env, scrubbed_values = build_child_env()
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
 
-        own_var = _PROVIDER_CREDENTIAL_ENV_VARS.get(self._config.provider)
+        own_vars = set(pi_provider_credential_vars(self._config.provider))
         # pi reads many more provider keys than the map names (XAI_API_KEY,
         # MISTRAL_API_KEY, ...), so every *_API_KEY variable is treated as one.
         other_api_keys = [name for name in env if name.endswith(_API_KEY_SUFFIX)]
         credential_vars = {
-            *_PROVIDER_CREDENTIAL_ENV_VARS.values(),
+            *(name for names in PI_PROVIDER_CREDENTIAL_ENV_VARS.values() for name in names),
+            *own_vars,
             self._routing_api_key_env_var,
             *other_api_keys,
         }
@@ -592,7 +583,7 @@ class PiAgentRuntime(AgentRuntime):
             if not value:
                 continue
             scrubbed_values.add(value)
-            if name != own_var:
+            if name not in own_vars:
                 del env[name]
 
         return env, scrubbed_values
