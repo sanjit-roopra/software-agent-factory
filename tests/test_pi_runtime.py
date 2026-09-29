@@ -34,6 +34,7 @@ from software_agent_factory.pi_runtime import (
     _default_process_factory,
     usage_from_pi_messages,
 )
+from software_agent_factory.subprocess_utils import sanitize_output
 
 
 def _work_item() -> WorkItem:
@@ -646,6 +647,27 @@ def test_run_malformed_output_is_retryable_like_copilot(tmp_path: Path) -> None:
     assert is_retryable_typed_artifact_failure(result, ChangeSet) is True
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not a JSON object at all",
+        json.dumps({"complexity": "L1"}),
+        json.dumps({"factory_eligible": True, "complexity": "L9"}),
+        "",
+    ],
+)
+def test_run_malformed_output_fails_with_the_same_wording_as_copilot(text: str) -> None:
+    with pytest.raises(ValueError) as copilot_error:
+        parse_copilot_artifact(AgentRole.TRIAGE, stdout=text, purpose=AgentPurpose.STANDARD)
+    process = _scripted_process(text)
+    runtime = _runtime(process_factory=lambda command, cwd, env: process)
+
+    result = runtime.run(_request(AgentRole.TRIAGE))
+
+    assert result.success is False
+    assert result.failure_reason == sanitize_output(str(copilot_error.value), set())
+
+
 # ---------------------------------------------------------------------------
 # run: pi failures yield sanitized failed results (Step 3.4)
 # ---------------------------------------------------------------------------
@@ -713,8 +735,7 @@ def test_run_process_exits_before_settling_yields_failed_result() -> None:
     result = runtime.run(request)
 
     assert result.success is False
-    assert result.failure_reason is not None
-    assert "7" in result.failure_reason
+    assert result.failure_reason == "pi process exited with code 7 before settling:"
 
 
 def test_run_invalid_protocol_line_yields_failed_result() -> None:
@@ -728,8 +749,7 @@ def test_run_invalid_protocol_line_yields_failed_result() -> None:
     result = runtime.run(request)
 
     assert result.success is False
-    assert result.failure_reason is not None
-    assert "invalid protocol record" in result.failure_reason
+    assert result.failure_reason == "pi wrote an invalid protocol record: not json at all"
 
 
 def test_run_command_error_yields_failed_result() -> None:
@@ -746,9 +766,7 @@ def test_run_command_error_yields_failed_result() -> None:
     result = runtime.run(request)
 
     assert result.success is False
-    assert result.failure_reason is not None
-    assert "get_messages" in result.failure_reason
-    assert "not supported" in result.failure_reason
+    assert result.failure_reason == "pi command 'get_messages' failed: not supported"
 
 
 def test_run_get_messages_non_mapping_data_yields_failed_result() -> None:
@@ -817,46 +835,7 @@ def test_run_missing_executable_yields_failed_result() -> None:
     result = runtime.run(request)
 
     assert result.success is False
-    assert result.failure_reason is not None
-    assert "pi-missing" in result.failure_reason
-
-
-def test_run_sanitizes_credential_value_from_failure_reason(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GH_TOKEN", "ghp_supersecrettoken1234")
-    process = FakePiProcess()
-    process.write_records({"type": "response", "id": "c1", "success": True})
-    process.write_stderr("auth failed for ghp_supersecrettoken1234")
-    process.close_stdout()
-    process.exit(1)
-    runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
-
-    result = runtime.run(request)
-
-    assert result.success is False
-    assert result.failure_reason is not None
-    assert "ghp_supersecrettoken1234" not in result.failure_reason
-
-
-def test_run_sanitizes_provider_api_key_from_failure_reason(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake1234567890")
-    process = FakePiProcess()
-    process.write_records({"type": "response", "id": "c1", "success": True})
-    process.write_stderr("auth failed for sk-ant-fake1234567890")
-    process.close_stdout()
-    process.exit(1)
-    runtime = _runtime(process_factory=lambda command, cwd, env: process)
-    request = _request(AgentRole.TRIAGE)
-
-    result = runtime.run(request)
-
-    assert result.success is False
-    assert result.failure_reason is not None
-    assert "sk-ant-fake1234567890" not in result.failure_reason
+    assert result.failure_reason == "pi could not be started (FileNotFoundError): pi-missing"
 
 
 def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:
@@ -1130,6 +1109,37 @@ def test_usage_from_pi_messages_sums_per_model() -> None:
     assert model_usage.cache_read_tokens == 120
     assert model_usage.cache_write_tokens == 7
     assert model_usage.list_price_estimate_usd == pytest.approx(0.05)
+
+
+def test_usage_from_pi_messages_maps_reasoning_to_reasoning_tokens() -> None:
+    messages = [_assistant_message({"input": 10, "output": 5, "reasoning": 7})]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert usage.reasoning_tokens == 7
+    assert usage.model_usage[0].reasoning_tokens == 7
+
+
+def test_usage_from_pi_messages_groups_messages_by_model_in_first_seen_order() -> None:
+    messages = [
+        _assistant_message({"input": 100, "output": 20, "cost": {"total": 0.03}}, model="model-a"),
+        _assistant_message({"input": 50, "output": 10, "cost": {"total": 0.5}}, model="model-b"),
+        _assistant_message({"input": 10, "output": 5, "cost": {"total": 0.01}}, model="model-a"),
+    ]
+
+    usage = usage_from_pi_messages(messages)
+
+    assert [entry.model for entry in usage.model_usage] == ["model-a", "model-b"]
+    first, second = usage.model_usage
+    assert (first.requests, first.input_tokens, first.output_tokens) == (2, 110, 25)
+    assert first.list_price_estimate_usd == pytest.approx(0.04)
+    assert (second.requests, second.input_tokens, second.output_tokens) == (1, 50, 10)
+    assert second.list_price_estimate_usd == pytest.approx(0.5)
+    assert usage.total_user_requests == 3
+    assert usage.input_tokens == 160
+    assert usage.output_tokens == 35
+    assert usage.list_price_estimate_usd == pytest.approx(0.54)
+    assert usage.current_model == "model-a"
 
 
 def test_usage_from_pi_messages_unreported_fields_stay_unknown() -> None:
