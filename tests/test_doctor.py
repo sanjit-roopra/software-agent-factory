@@ -383,6 +383,28 @@ def test_check_pi_different_provider_uses_its_own_env_var() -> None:
     assert result.status is CheckStatus.OK
 
 
+def test_check_pi_google_provider_accepts_gemini_api_key() -> None:
+    """``doctor`` and the runtime share one provider -> credential map; the
+    ``google`` provider authenticates from ``GEMINI_API_KEY``."""
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"GEMINI_API_KEY": "secret"}),
+    )
+    result = check_pi(env, PiConfig(provider="google"), required=True)
+    assert result.status is CheckStatus.OK
+
+
+def test_check_pi_anthropic_provider_accepts_an_oauth_token() -> None:
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"ANTHROPIC_OAUTH_TOKEN": "secret"}),
+    )
+    result = check_pi(env, PiConfig(provider="anthropic"), required=True)
+    assert result.status is CheckStatus.OK
+
+
 def test_check_pi_several_failures_names_the_executable_first() -> None:
     """No executable and no credential both apply; the executable check runs
     first in the fixed order, so its message wins."""

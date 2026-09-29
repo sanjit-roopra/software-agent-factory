@@ -53,6 +53,7 @@ import yaml
 from pydantic import ValidationError
 
 from .config import FactoryConfig, PiConfig, load_config
+from .pi_providers import pi_provider_credential_vars
 from .subprocess_utils import parse_version
 
 __all__ = [
@@ -111,15 +112,6 @@ _NODE_MIN_VERSION_TUPLE: tuple[int, ...] = _parsed_node_min_version
 
 #: Remediation for a missing/too-old ``pi`` executable.
 _PI_INSTALL_FIX = f"npm install -g {PI_PACKAGE}"
-
-#: Provider -> the headless API-token environment variable ``check_pi``
-#: accepts in place of an ``auth.json`` entry (``plans/pi-agent-runtime.md``
-#: Step 2.3).
-_PI_PROVIDER_CREDENTIAL_ENV_VARS: dict[str, str] = {
-    "github-copilot": "COPILOT_GITHUB_TOKEN",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
 
 
 class CheckStatus(StrEnum):
@@ -363,8 +355,9 @@ def _pi_provider_credential_present(
 ) -> bool:
     """A credential for ``provider``: an ``auth.json`` entry, or -- when
     ``accept_env_credentials`` is true (the default) -- the matching
-    API-token environment variable for the providers pi's headless login
-    supports.
+    API-token environment variable pi reads for it (any of the variables
+    :func:`~software_agent_factory.pi_providers.pi_provider_credential_vars`
+    names).
 
     ``accept_env_credentials=False`` is for the service-install preflight
     (:func:`run_doctor`'s ``accept_pi_env_credentials``): an environment
@@ -382,8 +375,7 @@ def _pi_provider_credential_present(
             return True
     if not accept_env_credentials:
         return False
-    env_var = _PI_PROVIDER_CREDENTIAL_ENV_VARS.get(provider)
-    return env_var is not None and bool(env.getenv(env_var))
+    return any(env.getenv(name) for name in pi_provider_credential_vars(provider))
 
 
 def _check_pi_component_version(
