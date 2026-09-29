@@ -68,7 +68,7 @@ import logging
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -261,19 +261,28 @@ class _CallContext:
 class _SessionUse:
     """The persisted session one call runs in: its file, its settings, and whether it resumes.
 
-    ``sent_sections`` is what the session has received: before the call, what it
-    held when resumed; after :meth:`PiAgentRuntime._session_and_prompt`, what it
-    holds once this call's prompt has been sent.
+    ``held_sections`` is what the session held before this call: the section
+    hashes of a resumed session, and empty for a new one.
     """
 
     path: Path
     settings: SessionSettings
     continued: bool
-    sent_sections: Mapping[str, str]
+    held_sections: Mapping[str, str]
 
     @property
     def args(self) -> tuple[str, str]:
         return ("--session", str(self.path))
+
+
+@dataclass(frozen=True)
+class _PreparedCall:
+    """What one call sends and where: the session (``None`` for a role without one), the
+    prompt, and the section hashes the session holds once that prompt has been sent."""
+
+    session: _SessionUse | None
+    prompt: str
+    sections_after: Mapping[str, str]
 
 
 def _failure_reason_for(exc: PiRpcError) -> str:
@@ -506,7 +515,8 @@ class PiAgentRuntime(AgentRuntime):
 
     def run(self, request: AgentRequest) -> AgentResult:
         validate_runtime_request(request)
-        session, prompt = self._session_and_prompt(request)
+        prepared = self._prepare_call(request)
+        session, prompt = prepared.session, prepared.prompt
         command = self._build_command(
             request, session_arg=session.args if session else _NO_SESSION_ARG
         )
@@ -530,7 +540,7 @@ class PiAgentRuntime(AgentRuntime):
             return result
         finally:
             if session is not None:
-                self._record_session(request, session, success=settled)
+                self._record_session(request, session, prepared.sections_after, success=settled)
 
     def _session_for(self, request: AgentRequest) -> _SessionUse | None:
         """Return the persisted session this call runs in, ``None`` for a role without one."""
@@ -542,35 +552,39 @@ class PiAgentRuntime(AgentRuntime):
         decision = self._sessions.resolve(request.work_item.id, request.role, settings)
         if isinstance(decision, Continue):
             return _SessionUse(
-                decision.path, settings, continued=True, sent_sections=decision.sent_sections
+                decision.path, settings, continued=True, held_sections=decision.sent_sections
             )
-        return _SessionUse(decision.path, settings, continued=False, sent_sections={})
+        return _SessionUse(decision.path, settings, continued=False, held_sections={})
 
-    def _session_and_prompt(self, request: AgentRequest) -> tuple[_SessionUse | None, str]:
-        """Return the session this call runs in and the prompt it sends.
+    def _prepare_call(self, request: AgentRequest) -> _PreparedCall:
+        """Return the session, the prompt this call sends and what the session then holds.
 
         A resumed session gets only the prompt sections it has not received, or
         received with other content. When there is none, the call moves to a new
         session and sends the full prompt, so no session ever receives an empty
-        round. The returned session carries what the session holds after this
-        call, for the store to record.
+        round.
         """
         session = self._session_for(request)
         if session is None:
-            return None, render_prompt(build_prompt_sections(request))
+            return _PreparedCall(None, render_prompt(build_prompt_sections(request)), {})
         if session.continued:
-            continuation = build_continuation_prompt(request, session.sent_sections)
+            continuation = build_continuation_prompt(request, session.held_sections)
             if continuation is not None:
-                return replace(session, sent_sections=continuation.sections_seen), continuation.text
+                return _PreparedCall(session, continuation.text, continuation.sections_seen)
             new_session = self._sessions.fresh(request.work_item.id, request.role)
             session = _SessionUse(
-                new_session.path, session.settings, continued=False, sent_sections={}
+                new_session.path, session.settings, continued=False, held_sections={}
             )
         sections = build_prompt_sections(request)
-        return replace(session, sent_sections=section_hashes(sections)), render_prompt(sections)
+        return _PreparedCall(session, render_prompt(sections), section_hashes(sections))
 
     def _record_session(
-        self, request: AgentRequest, session: _SessionUse, *, success: bool
+        self,
+        request: AgentRequest,
+        session: _SessionUse,
+        sections_after: Mapping[str, str],
+        *,
+        success: bool,
     ) -> None:
         """Tell the store how the call ended. A record that cannot be written is only logged."""
         try:
@@ -580,7 +594,7 @@ class PiAgentRuntime(AgentRuntime):
                 session.path,
                 session.settings,
                 success=success,
-                sent_sections=session.sent_sections,
+                sent_sections=sections_after,
             )
         except OSError:
             logger.warning("could not record the pi session outcome", exc_info=True)
