@@ -516,8 +516,9 @@ def test_resume_keeps_the_risk_assessment_choice_the_run_started_with(
     publisher = LocalPublisher(crash=True)
     runtime = FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
     controller, store = _controller(started, publisher=publisher, runtime=runtime)
+    item = work_item()
     with pytest.raises(KeyboardInterrupt):
-        controller.run(work_item(), source_repo, run_id="autonomous")
+        controller.run(item, source_repo, run_id="autonomous")
     assert store.load_run("autonomous").state is WorkflowState.PR_READY
 
     resumed_controller, _ = _controller(
@@ -535,8 +536,9 @@ def test_resume_with_the_switch_off_cannot_bypass_an_approval_the_run_started_wi
     started = _with_risk_assessment(_config(tmp_path), enabled=True)
     publisher = LocalPublisher(crash=True)
     controller, store = _controller(started, publisher=publisher)
+    item = work_item()
     with pytest.raises(KeyboardInterrupt):
-        controller.run(work_item(), source_repo, run_id="guarded")
+        controller.run(item, source_repo, run_id="guarded")
     triage = store.load_artifact("guarded", TriageResult)
     store.save_artifact("guarded", triage.model_copy(update={"risk": Risk.R2}))
     calls_before = publisher.calls
