@@ -720,47 +720,28 @@ def test_non_risk_escalations_remain_non_resumable(reason_code: str, tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_triage_contract_requires_risk_rationale_for_r2_and_r3() -> None:
-    # R2 without rationale raises ValidationError
-    with pytest.raises(ValidationError, match="risk_rationale is required"):
-        TriageResult(
-            factory_eligible=True,
-            complexity=Complexity.L1,
-            risk=Risk.R2,
-            needs_research=False,
-            confidence=0.9,
-            risk_rationale=None,
-        )
-
-    # R3 without rationale raises ValidationError
-    with pytest.raises(ValidationError, match="risk_rationale is required"):
-        TriageResult(
-            factory_eligible=True,
-            complexity=Complexity.L2,
-            risk=Risk.R3,
-            needs_research=False,
-            confidence=0.9,
-            risk_rationale=None,
-        )
-
-    # R0 and R1 do not require risk_rationale
-    triage_r0 = TriageResult(
-        factory_eligible=True,
-        complexity=Complexity.L0,
-        risk=Risk.R0,
-        needs_research=False,
-        confidence=0.9,
-    )
-    assert triage_r0.risk_rationale is None
-
-    triage_r1 = TriageResult(
+@pytest.mark.parametrize(
+    ("risk", "lacks_rationale"),
+    [(Risk.R0, False), (Risk.R1, False), (Risk.R2, True), (Risk.R3, True)],
+)
+def test_triage_reports_a_missing_risk_rationale_only_for_r2_and_r3(
+    risk: Risk, lacks_rationale: bool
+) -> None:
+    triage = TriageResult(
         factory_eligible=True,
         complexity=Complexity.L1,
-        risk=Risk.R1,
+        risk=risk,
         needs_research=False,
         confidence=0.9,
     )
-    assert triage_r1.risk_rationale is None
+
+    assert triage.lacks_required_risk_rationale() is lacks_rationale
+    assert (
+        triage.model_copy(
+            update={"risk_rationale": _sample_rationale()}
+        ).lacks_required_risk_rationale()
+        is False
+    )
 
 
 def test_writing_policy_checks_risk_rationale() -> None:

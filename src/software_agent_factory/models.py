@@ -1245,6 +1245,7 @@ class FactoryRun(VersionedModel):
     effective_performance_mode: Literal["standard", "fast"] = "standard"
     performance_model_profile: str | None = None
     performance_fallback_reason: str | None = None
+    risk_assessment_enabled: bool = True
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
     route_decision: RouteDecision | None = None
@@ -1285,11 +1286,14 @@ class TriageResult(VersionedModel):
             return {key: value for key, value in data.items() if key != "requirements_quality"}
         return data
 
-    @model_validator(mode="after")
-    def _validate_risk_rationale(self) -> TriageResult:
-        if self.risk in {Risk.R2, Risk.R3} and self.risk_rationale is None:
-            raise ValueError(f"risk_rationale is required when risk is {self.risk}")
-        return self
+    def lacks_required_risk_rationale(self) -> bool:
+        """Whether risk is R2 or R3 with no rationale.
+
+        Not a model validator: the controller enforces it only while
+        ``risk_assessment.enabled`` is true, and a triage stored with
+        assessment off must still load.
+        """
+        return self.risk in {Risk.R2, Risk.R3} and self.risk_rationale is None
 
 
 class Specification(VersionedModel):

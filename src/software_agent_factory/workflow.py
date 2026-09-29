@@ -696,6 +696,7 @@ class WorkflowController:
             updated_at=created_at,
             state_started_at=created_at,
             requested_performance_mode=self._config.performance.mode,
+            risk_assessment_enabled=self._config.risk_assessment.enabled,
             performance_model_profile=(
                 self._config.performance.fast_model_profile
                 if self._config.performance.mode == "fast"
@@ -703,6 +704,12 @@ class WorkflowController:
             ),
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
         )
+        if not run.risk_assessment_enabled:
+            logger.warning(
+                "run %s: risk assessment is disabled; no risk level stops the run for approval "
+                "and triage writes no risk rationale",
+                run.id,
+            )
 
         try:
             workspace = GitWorktreeWorkspace(
@@ -1893,8 +1900,11 @@ class WorkflowController:
                 ),
             )
             if result.success and result.triage_result is not None:
-                self._store.save_artifact(run.id, result.triage_result)
-                return result.triage_result
+                rejection = self._triage_rationale_rejection(result.triage_result)
+                if rejection is None:
+                    self._store.save_artifact(run.id, result.triage_result)
+                    return result.triage_result
+                result = rejection
             if not is_retryable_typed_artifact_failure(result, TriageResult):
                 break
             assert result.failure_reason is not None
@@ -1907,6 +1917,19 @@ class WorkflowController:
             run,
             WorkflowState.FAILED,
             result.failure_reason or "triage agent failed to produce a result",
+        )
+
+    def _triage_rationale_rejection(self, triage: TriageResult) -> AgentResult | None:
+        """Reject a triage with no risk rationale, but only while risk assessment is on."""
+        if not (self._config.risk_assessment.enabled and triage.lacks_required_risk_rationale()):
+            return None
+        return AgentResult(
+            role=AgentRole.TRIAGE,
+            success=False,
+            failure_reason=(
+                f"TRIAGE response did not validate as {TriageResult.__name__}: "
+                f"risk_rationale is required when risk is {triage.risk}"
+            ),
         )
 
     def _run_refiner(
@@ -2563,6 +2586,7 @@ class WorkflowController:
             workspace_path=workspace_path,
             attempt_number=attempt_number,
             timeout_seconds=self._config.agent_timeout_seconds,
+            risk_assessment_enabled=self._config.risk_assessment.enabled,
         )
 
     def _invoke_agent(
