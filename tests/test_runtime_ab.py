@@ -180,8 +180,10 @@ def test_manifest_rejects_duplicate_issue(tmp_path: Path) -> None:
 
 
 def test_manifest_rejects_empty_task_list(tmp_path: Path) -> None:
+    path = _write_manifest(tmp_path, [])
+
     with pytest.raises(ab.ManifestError, match="no tasks"):
-        ab.load_manifest(_write_manifest(tmp_path, []))
+        ab.load_manifest(path)
 
 
 def test_manifest_rejects_malformed_json(tmp_path: Path) -> None:
@@ -951,9 +953,10 @@ def test_failed_issue_fetch_aborts_before_any_run() -> None:
         raise ab.IssueFetchError(f"cannot fetch {issue}")
 
     runner = RecordingRunner()
+    budget = ab.Budget(max_wall_seconds=1e9)
 
     with pytest.raises(ab.IssueFetchError):
-        _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=1e9), fetch=fetch)
+        _run_benchmark(runner, budget=budget, fetch=fetch)
 
     assert runner.requests == []
 
@@ -1147,8 +1150,11 @@ def test_runner_removes_the_clone_even_when_factory_run_is_interrupted(
                 raise failure
             return super().__call__(args, cwd, env)
 
+    run = _runner(tmp_path, Explodes())
+    request = _request(ab.Runtime.PI)
+
     with pytest.raises(type(failure)):
-        _runner(tmp_path, Explodes())(_request(ab.Runtime.PI))
+        run(request)
 
     assert not (_task_dir(tmp_path) / "repo").exists()
 
@@ -1183,8 +1189,11 @@ def test_runner_refuses_a_non_empty_task_directory(tmp_path: Path) -> None:
     (task_dir / "old-run.json").write_text("{}", encoding="utf-8")
     commands = FakeCommands()
 
+    run = _runner(tmp_path, commands)
+    request = _request(ab.Runtime.PI)
+
     with pytest.raises(ab.WorkdirError, match="issue-10"):
-        _runner(tmp_path, commands)(_request(ab.Runtime.PI))
+        run(request)
 
     assert commands.calls == []
     assert (task_dir / "old-run.json").exists()
@@ -1326,8 +1335,10 @@ def test_issue_fetcher_raises_when_gh_fails(tmp_path: Path) -> None:
     def commands(args: Any, cwd: Path) -> Any:
         return subprocess.CompletedProcess(list(args), 1, "", "not found")
 
+    fetcher = ab.GhIssueFetcher(tmp_path, commands)
+
     with pytest.raises(ab.IssueFetchError, match="issue 42"):
-        ab.GhIssueFetcher(tmp_path, commands)(42)
+        fetcher(42)
 
 
 def test_issue_fetcher_names_the_issue_when_gh_prints_bad_json(tmp_path: Path) -> None:
@@ -1336,8 +1347,10 @@ def test_issue_fetcher_names_the_issue_when_gh_prints_bad_json(tmp_path: Path) -
     def commands(args: Any, cwd: Path, env: Any = None) -> Any:
         return subprocess.CompletedProcess(list(args), 0, "not json", "")
 
+    fetcher = ab.GhIssueFetcher(tmp_path, commands)
+
     with pytest.raises(ab.IssueFetchError, match="issue 42: unexpected gh output"):
-        ab.GhIssueFetcher(tmp_path, commands)(42)
+        fetcher(42)
 
 
 def test_tail_keeps_the_last_500_characters_without_surrounding_whitespace() -> None:
