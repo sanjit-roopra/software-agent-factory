@@ -42,6 +42,7 @@ import logging
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -158,6 +159,66 @@ class _UnexpectedResponse(Exception):
 
     def __init__(self, command: str) -> None:
         super().__init__(f"pi returned an unexpected response for {command}")
+
+
+def _response_data(response: Mapping[str, Any], command: str) -> Mapping[str, Any]:
+    """Return a response's ``data`` mapping (``{}`` when absent).
+
+    Raises :class:`_UnexpectedResponse` when ``data`` is present but not a
+    mapping, instead of letting a bare ``.get()`` call raise
+    ``AttributeError``.
+    """
+    data = response.get("data")
+    if data is not None and not isinstance(data, Mapping):
+        raise _UnexpectedResponse(command)
+    return data or {}
+
+
+def _elapsed_ms(start: float) -> float:
+    return (time.perf_counter() - start) * 1000.0
+
+
+@dataclass(frozen=True)
+class _CallContext:
+    """The per-call values every failed ``AgentResult`` of one ``run`` shares."""
+
+    request: AgentRequest
+    prompt_chars: int
+    boot_ms: float
+    scrubbed_values: set[str]
+
+    def failed(
+        self,
+        message: str,
+        *,
+        usage: UsageMetrics | None = None,
+        response_chars: int = 0,
+    ) -> AgentResult:
+        """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
+
+        ``message`` is sanitized with
+        :func:`~software_agent_factory.subprocess_utils.sanitize_output`
+        against ``scrubbed_values`` so a credential embedded in pi's stderr,
+        an error message, or a protocol excerpt can never reach the stored
+        ``failure_reason``. ``response_chars`` defaults to ``0`` (no assistant
+        text was produced); the malformed-artifact path passes the actual
+        length of the text pi did produce. ``usage`` defaults to ``None``
+        (nothing reported yet); a failure that struck after a successful
+        ``get_messages`` read, or after
+        :meth:`PiAgentRuntime._best_effort_usage`, passes the usage recorded
+        so far (AC6).
+        """
+        return AgentResult(
+            role=self.request.role,
+            success=False,
+            failure_reason=sanitize_output(message, self.scrubbed_values),
+            usage=usage,
+            performance=PerformanceRecord(
+                prompt_chars=self.prompt_chars,
+                response_chars=response_chars,
+                process_boot_ms=self.boot_ms,
+            ),
+        )
 
 
 def _failure_reason_for(exc: PiRpcError) -> str:
@@ -391,17 +452,11 @@ class PiAgentRuntime(AgentRuntime):
         try:
             process = self._process_factory(command, cwd, env)
         except OSError as exc:
-            boot_ms = (time.perf_counter() - boot_start) * 1000.0
-            return self._failed(
-                request,
-                prompt_chars=prompt_chars,
-                boot_ms=boot_ms,
-                scrubbed_values=scrubbed_values,
-                message=(
-                    f"pi could not be started ({type(exc).__name__}): {self._config.executable}"
-                ),
+            ctx = _CallContext(request, prompt_chars, _elapsed_ms(boot_start), scrubbed_values)
+            return ctx.failed(
+                f"pi could not be started ({type(exc).__name__}): {self._config.executable}"
             )
-        boot_ms = (time.perf_counter() - boot_start) * 1000.0
+        ctx = _CallContext(request, prompt_chars, _elapsed_ms(boot_start), scrubbed_values)
 
         client = PiRpcClient(process, redact=lambda text: redact_secrets(text, scrubbed_values))
         usage: UsageMetrics | None = None
@@ -415,114 +470,55 @@ class PiAgentRuntime(AgentRuntime):
                 stop_reason, error_message = _stop_reason_from_messages(messages)
                 failure_message = _stop_reason_failure_message(stop_reason, error_message)
                 if failure_message is not None:
-                    return self._failed(
-                        request,
-                        prompt_chars=prompt_chars,
-                        boot_ms=boot_ms,
-                        scrubbed_values=scrubbed_values,
-                        message=failure_message,
-                        usage=usage,
-                    )
+                    return ctx.failed(failure_message, usage=usage)
                 response = client.request({"type": "get_last_assistant_text"}, deadline=deadline)
+                data = _response_data(response, "get_last_assistant_text")
             except PiRpcTimeout:
                 if usage is None:
                     usage = self._best_effort_usage(client)
                 self._abort_and_kill(client, process)
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=f"pi timed out after {request.timeout_seconds} seconds",
-                    usage=usage,
+                return ctx.failed(
+                    f"pi timed out after {request.timeout_seconds} seconds", usage=usage
                 )
             except PiRpcProcessExited as exc:
                 if usage is None:
                     usage = self._best_effort_usage(client)
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=_failure_reason_for(exc),
-                    usage=usage,
-                )
+                return ctx.failed(_failure_reason_for(exc), usage=usage)
             except PiRpcError as exc:
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=_failure_reason_for(exc),
-                    usage=usage,
-                )
+                return ctx.failed(_failure_reason_for(exc), usage=usage)
             except _UnexpectedResponse as exc:
-                return self._failed(
-                    request,
-                    prompt_chars=prompt_chars,
-                    boot_ms=boot_ms,
-                    scrubbed_values=scrubbed_values,
-                    message=str(exc),
-                    usage=usage,
-                )
+                return ctx.failed(str(exc), usage=usage)
 
-            return self._result_from_response(
-                request,
-                response,
-                prompt_chars=prompt_chars,
-                boot_ms=boot_ms,
-                scrubbed_values=scrubbed_values,
-                usage=usage,
-            )
+            return self._result_from_response(ctx, data, usage=usage)
         finally:
             client.close()
 
+    @staticmethod
     def _result_from_response(
-        self,
-        request: AgentRequest,
-        response: dict[str, Any],
+        ctx: _CallContext,
+        data: Mapping[str, Any],
         *,
-        prompt_chars: int,
-        boot_ms: float,
-        scrubbed_values: set[str],
         usage: UsageMetrics | None,
     ) -> AgentResult:
-        """Turn the ``get_last_assistant_text`` response into a success or failed result."""
-        data = response.get("data")
-        if data is not None and not isinstance(data, Mapping):
-            return self._failed(
-                request,
-                prompt_chars=prompt_chars,
-                boot_ms=boot_ms,
-                scrubbed_values=scrubbed_values,
-                message=str(_UnexpectedResponse("get_last_assistant_text")),
-                usage=usage,
-            )
-        data = data or {}
+        """Turn the ``get_last_assistant_text`` ``data`` into a success or failed result."""
         text = str(data.get("text") or "")
 
         performance = PerformanceRecord(
-            prompt_chars=prompt_chars,
+            prompt_chars=ctx.prompt_chars,
             response_chars=len(text),
-            process_boot_ms=boot_ms,
+            process_boot_ms=ctx.boot_ms,
         )
 
         try:
-            artifact = parse_agent_artifact(request.role, text=text, purpose=request.purpose)
-        except ValueError as exc:
-            return self._failed(
-                request,
-                prompt_chars=prompt_chars,
-                boot_ms=boot_ms,
-                scrubbed_values=scrubbed_values,
-                message=str(exc),
-                response_chars=len(text),
-                usage=usage,
+            artifact = parse_agent_artifact(
+                ctx.request.role, text=text, purpose=ctx.request.purpose
             )
+        except ValueError as exc:
+            return ctx.failed(str(exc), response_chars=len(text), usage=usage)
 
         return build_success_result(
-            request.role,
-            purpose=request.purpose,
+            ctx.request.role,
+            purpose=ctx.request.purpose,
             artifact=artifact,
             performance=performance,
             usage=usage,
@@ -608,42 +604,6 @@ class PiAgentRuntime(AgentRuntime):
 
         return env, scrubbed_values
 
-    def _failed(
-        self,
-        request: AgentRequest,
-        *,
-        prompt_chars: int,
-        boot_ms: float,
-        scrubbed_values: set[str],
-        message: str,
-        response_chars: int = 0,
-        usage: UsageMetrics | None = None,
-    ) -> AgentResult:
-        """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
-
-        ``message`` is sanitized with
-        :func:`~software_agent_factory.subprocess_utils.sanitize_output`
-        against ``scrubbed_values`` so a credential embedded in pi's stderr,
-        an error message, or a protocol excerpt can never reach the stored
-        ``failure_reason``. ``response_chars`` defaults to ``0`` (no assistant
-        text was produced); the malformed-artifact path passes the actual
-        length of the text pi did produce. ``usage`` defaults to ``None``
-        (nothing reported yet); a failure that struck after a successful
-        ``get_messages`` read, or after :meth:`_best_effort_usage`, passes
-        the usage recorded so far (AC6).
-        """
-        return AgentResult(
-            role=request.role,
-            success=False,
-            failure_reason=sanitize_output(message, scrubbed_values),
-            usage=usage,
-            performance=PerformanceRecord(
-                prompt_chars=prompt_chars,
-                response_chars=response_chars,
-                process_boot_ms=boot_ms,
-            ),
-        )
-
     def _get_messages(self, client: PiRpcClient, *, deadline: float) -> list[dict[str, Any]]:
         """Read the settled call's full message list via ``get_messages``.
 
@@ -655,14 +615,10 @@ class PiAgentRuntime(AgentRuntime):
         issuing two RPC round trips for one already-settled conversation.
 
         Raises :class:`_UnexpectedResponse` when the response's ``data`` is
-        present but not a mapping, instead of letting a bare ``.get()`` call
-        raise ``AttributeError``.
+        present but not a mapping (see :func:`_response_data`).
         """
         response = client.request({"type": "get_messages"}, deadline=deadline)
-        data = response.get("data")
-        if data is not None and not isinstance(data, Mapping):
-            raise _UnexpectedResponse("get_messages")
-        data = data or {}
+        data = _response_data(response, "get_messages")
         messages = data.get("messages") or []
         return [message for message in messages if isinstance(message, dict)]
 
