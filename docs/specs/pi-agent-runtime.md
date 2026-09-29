@@ -75,6 +75,11 @@ tracked as a follow-up.
 | `GENERATE_REPOSITORY_SKILL` | Not supported on pi in v1 (no web fetch tool). |
 
 Bash command denial (`git commit`, `git push`, `gh`) and sandboxing are out of scope.
+This means the pi implementer does not meet the ADR-022 rule that implementers
+cannot run `git commit` directly. The Copilot runtime still denies it. There is no
+runtime refusal for pi, because the implementer has every tool and can find
+another way to push. ADR-029 records the gap as an amendment to ADR-022, and issue
+#70 closes it.
 
 ### Sessions
 
