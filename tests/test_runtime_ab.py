@@ -1062,7 +1062,7 @@ def test_markdown_lists_each_role_with_model_tokens_and_cost_per_runtime() -> No
 # --- triage agreement ----------
 
 
-def _triaged(complexity: Complexity, risk: Risk) -> Any:
+def _triaged(complexity: Complexity, risk: Risk) -> ab.RunSample:
     return _sample().model_copy(update={"triage": ab.TriageLevel(complexity=complexity, risk=risk)})
 
 
@@ -1088,6 +1088,43 @@ def test_task_triage_mismatch_when_level_or_risk_differs(
     (task,) = report.tasks
     assert task.triage_mismatch is True
     assert task.triage[ab.Runtime.PI] == ab.TriageLevel(complexity=pi_complexity, risk=pi_risk)
+
+
+@pytest.mark.parametrize(
+    ("copilot", "pi", "expected"),
+    [
+        ((Complexity.L1, Risk.R1), (Complexity.L1, Risk.R1), False),
+        ((Complexity.L1, Risk.R1), None, True),
+        (None, (Complexity.L1, Risk.R1), True),
+        (None, None, False),
+    ],
+)
+def test_task_triage_mismatch_only_when_the_runtimes_differ(
+    copilot: tuple[Complexity, Risk] | None,
+    pi: tuple[Complexity, Risk] | None,
+    expected: bool,
+) -> None:
+    def sample(level: tuple[Complexity, Risk] | None) -> Any:
+        return _sample() if level is None else _triaged(*level)
+
+    report = ab.build_report([_outcome(1, sample(copilot), sample(pi))])
+
+    assert report.tasks[0].triage_mismatch is expected
+
+
+def test_markdown_triage_leaves_out_skipped_tasks() -> None:
+    report = ab.build_report(
+        [
+            _outcome(1, _triaged(Complexity.L0, Risk.R0), _triaged(Complexity.L0, Risk.R0)),
+            ab.TaskOutcome(entry=_entry(99), samples={}),
+        ]
+    )
+
+    lines = ab.render_markdown(report).splitlines()
+    triage = lines[lines.index("## Triage") : lines.index("## Per task")]
+
+    assert "| #1 | L0/R0 | L0/R0 | yes |" in triage
+    assert not any(line.startswith("| #99 ") for line in triage)
 
 
 def test_markdown_lists_triage_per_runtime_and_marks_a_mismatch() -> None:
@@ -1178,6 +1215,21 @@ def test_both_runtimes_of_a_task_run_at_the_same_time() -> None:
     )
 
     assert set(outcomes[0].samples) == set(ab.Runtime)
+
+
+def test_a_runner_that_raises_keeps_the_other_runtime_sample() -> None:
+    def runner(request: Any) -> Any:
+        if request.runtime is ab.Runtime.PI:
+            raise RuntimeError("pi crashed")
+        return _sample(wall=7.0)
+
+    (outcome,) = _run_benchmark(
+        runner, budget=ab.Budget(max_wall_seconds=1e9), manifest=_manifest(count=1)
+    )
+
+    assert outcome.samples[ab.Runtime.COPILOT].wall_seconds == 7.0
+    assert outcome.samples[ab.Runtime.PI].error == "runner raised RuntimeError: pi crashed"
+    assert outcome.excluded is True
 
 
 def test_manifest_title_overrides_fetched_title() -> None:

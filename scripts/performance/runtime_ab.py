@@ -106,7 +106,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -355,8 +355,8 @@ class TaskReport(ModelBase):
     runtimes: dict[Runtime, RuntimeMetrics] = Field(default_factory=dict)
     errors: dict[Runtime, str] = Field(default_factory=dict)
     triage: dict[Runtime, TriageLevel | None] = Field(default_factory=dict)
-    #: The runtimes' triage differs, or one stored none, so they may have used
-    #: different worker models or review rules.
+    #: The runtimes' triage differs (one stored none, or a different level or
+    #: risk), so they may have used different worker models or review rules.
     triage_mismatch: bool = False
 
 
@@ -560,8 +560,7 @@ def _task_report(outcome: TaskOutcome) -> TaskReport:
             if sample.error is not None
         },
         triage=triage,
-        triage_mismatch=bool(levels)
-        and (None in levels or any(level != levels[0] for level in levels)),
+        triage_mismatch=any(level != levels[0] for level in levels[1:]),
     )
 
 
@@ -862,6 +861,18 @@ def _request(entry: ManifestEntry, runtime: Runtime, text: IssueText) -> ReplayR
     )
 
 
+def _result_or_failure(future: Future[RunSample]) -> RunSample:
+    """The runner's sample, or a failed one when it raised.
+
+    One runtime raising must not lose the sample the other runtime already
+    produced. The failed sample excludes the task from both totals.
+    """
+    try:
+        return future.result()
+    except Exception as exc:
+        return _failed_sample(f"runner raised {type(exc).__name__}: {exc}")
+
+
 def run_benchmark(
     manifest: Manifest, *, budget: Budget, runner: Runner, fetch_issue: IssueFetcher
 ) -> list[TaskOutcome]:
@@ -883,7 +894,7 @@ def run_benchmark(
                 runtime: pool.submit(runner, _request(entry, runtime, texts[entry.issue]))
                 for runtime in Runtime
             }
-            samples = {runtime: future.result() for runtime, future in futures.items()}
+            samples = {runtime: _result_or_failure(future) for runtime, future in futures.items()}
         for runtime, sample in samples.items():
             totals.add(runtime, sample)
         outcomes.append(TaskOutcome(entry=entry, samples=samples))
