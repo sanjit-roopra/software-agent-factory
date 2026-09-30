@@ -42,6 +42,7 @@ from software_agent_factory.escalation import (
     parse_plan_decision_answers,
     parse_resume_command,
     poll_escalation_reply,
+    receipt_approves_risk_context,
     resolve_escalation_target,
     validate_reply_candidate,
 )
@@ -366,6 +367,34 @@ def test_parse_plan_decision_answers_requires_exact_ordered_responses() -> None:
         )
         is None
     )
+
+
+def _approval_receipt(fingerprint: str | None) -> AcceptedReplyReceipt:
+    return AcceptedReplyReceipt(
+        comment_id=1,
+        user_login="lead-dev",
+        author_association="MEMBER",
+        created_at=utc_now(),
+        command="@factory resume v1 run=run-1 episode=ep-1",
+        episode_id="ep-1",
+        run_id="run-1",
+        approval_context_fingerprint=fingerprint,
+    )
+
+
+def test_receipt_approves_risk_context_when_the_fingerprints_match() -> None:
+    context = _make_approval_context()
+    assert receipt_approves_risk_context(_approval_receipt(context.context_fingerprint), context)
+
+
+def test_receipt_does_not_approve_a_context_with_another_fingerprint() -> None:
+    context = _make_approval_context()
+    other = _make_approval_context(episode_id="ep-2")
+    assert not receipt_approves_risk_context(_approval_receipt(other.context_fingerprint), context)
+
+
+def test_receipt_without_a_fingerprint_approves_nothing() -> None:
+    assert not receipt_approves_risk_context(_approval_receipt(None), _make_approval_context())
 
 
 # ---------------------------------------------------------------------------

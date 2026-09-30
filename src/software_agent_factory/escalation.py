@@ -502,6 +502,64 @@ def is_valid_risk_approval_context(
     return secrets.compare_digest(context.context_fingerprint, expected_fp)
 
 
+def receipt_approves_risk_context(
+    receipt: AcceptedReplyReceipt, context: RiskApprovalContext
+) -> bool:
+    """Whether ``receipt`` carries the fingerprint of exactly this approval ``context``."""
+    return receipt.approval_context_fingerprint is not None and secrets.compare_digest(
+        receipt.approval_context_fingerprint, context.context_fingerprint
+    )
+
+
+def has_dispatched_risk_approval(
+    run: FactoryRun,
+    store: FileRunStore,
+    *,
+    config: FactoryConfig,
+    work_item: WorkItem,
+    triage_result: TriageResult,
+) -> bool:
+    """Whether a human already approved the persisted work item and triage for ``run``.
+
+    Needs an accepted reply receipt for this run that was acted on (``dispatched_at``)
+    and carries an approval fingerprint. The approval context is rebuilt from
+    ``work_item`` and ``triage_result`` for the receipt's own episode, and the
+    fingerprints must match.
+
+    The approval binds the context the human was shown, not the whole triage: run id,
+    episode id, work item id and title, risk, complexity, and the cleaned, truncated
+    risk rationale. A change to any of those after approval revokes it. The rebuilt
+    context also holds fixed action and condition text, so a release that changes that
+    text makes older approvals fail closed on resume.
+
+    A receipt matches only its own episode, because the episode id is part of the
+    fingerprint. Receipts from earlier episodes are kept across escalations and still
+    count.
+    """
+    if run.escalation is None:
+        return False
+    for receipt in run.escalation.accepted_replies:
+        if (
+            receipt.run_id != run.id
+            or receipt.dispatched_at is None
+            or receipt.approval_context_fingerprint is None
+        ):
+            continue
+        context = build_risk_approval_context(
+            run=run,
+            store=store,
+            config=config,
+            work_item=work_item,
+            triage_result=triage_result,
+            episode_id=receipt.episode_id,
+        )
+        if context is None:
+            continue
+        if receipt_approves_risk_context(receipt, context):
+            return True
+    return False
+
+
 class ValidationResult(tuple[bool, str]):
     """Result of candidate comment validation.
 

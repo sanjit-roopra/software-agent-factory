@@ -433,6 +433,12 @@ The approval context fingerprint binds each displayed decision and authority fie
 The accepted reply receipt records this exact fingerprint.
 The controller verifies the receipt fingerprint against the persisted contract before reopening.
 
+A resume at a delivery checkpoint does not ask for a second approval.
+The controller authorizes an `R2` or `R3` run only when a dispatched accepted receipt matches.
+The receipt fingerprint must equal the approval context rebuilt from the persisted work item and triage.
+A change to an approved field after approval revokes it.
+A release that changes the fixed approval text makes older approvals fail closed.
+
 Reopened work uses the same executor, concurrency limit, and daily run quota.
 The backlog filter continues to block the source issue from fresh dispatch.
 

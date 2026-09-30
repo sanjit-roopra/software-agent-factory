@@ -690,6 +690,7 @@ Each run records `risk_assessment_enabled` in `run.json`. The factory also logs 
 Each run keeps the choice it started with. A resume or a reopen of that run ignores a different setting.
 A project also keeps its starting choice. A resumed project starts its remaining tasks with that choice.
 A resume with `--no-risk-assessment` never removes an approval that a run already needs.
+A resume at a delivery checkpoint accepts an approved `R2` or `R3` run only when the approval fingerprint still matches the persisted work item and triage.
 Use `--no-risk-assessment` on `factory run`, `factory project`, `factory start` or `factory service install` to turn it off for one invocation.
 
 ## Cross-field validation
