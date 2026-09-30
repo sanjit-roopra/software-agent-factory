@@ -37,6 +37,22 @@ Most commands accept these.
 `--data-dir` is how you keep an experiment out of `~/.software-factory`. The
 test suite uses it for exactly that.
 
+## Runtimes
+
+Each command that starts agents takes `--runtime <fake|copilot|pi>`. The default
+is `fake`, which makes no model calls. Pi is the recommended real runtime. See
+[Real pi runs](../get-started/pi.md).
+
+When you select `--runtime pi`, the command writes this warning to stderr and to
+the log. It runs on `run`, `project`, `start` and `service install`.
+
+```text
+warning: the pi runtime's shell tool is unrestricted: git push and gh can run without approval. Follow-up: https://github.com/sanjit-roopra/software-agent-factory/issues/70
+```
+
+An unknown runtime value is rejected. `factory skill refresh` does not accept
+`pi`.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -67,7 +83,7 @@ factory run \
 | `--acceptance-criterion <str>` | no | none | Required outcome. Repeat as needed. |
 | `--constraint <str>` | no | none | Work item constraint. Repeat as needed. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
-| `--runtime <fake\|copilot>` | no | `fake` | `fake` avoids Copilot calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. |
+| `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` avoids model calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. `pi` makes paid calls through pi and prints a startup warning that the pi shell tool is unrestricted. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode. Fast mode applies only to eligible low-risk work. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for this run. See `risk_assessment` in the configuration reference. |
@@ -108,7 +124,7 @@ factory project \
 | `--project-id <str>` | no | random | Stable project identifier. |
 | `--resume` | no | `false` | Reconcile the stored project. Requires `--project-id` and reuses its brief and plan. |
 | `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after integration or confirmed merge. |
-| `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task. `copilot` derives the real plan. |
+| `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` creates one deterministic task. `copilot` and `pi` derive the real plan. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for child runs. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for every child run. |
@@ -168,7 +184,7 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 | --- | --- | --- | --- |
 | `--repo <path>` | yes | none | Path to the target Git repository. |
 | `--github-repo <str>` | yes | none | Backlog repository as `OWNER/NAME`. |
-| `--runtime <fake\|copilot>` | no | `fake` | Agent runtime. |
+| `--runtime <fake\|copilot\|pi>` | no | `fake` | Agent runtime. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile for every dispatched run. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for dispatched runs. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for every dispatched run. |
@@ -234,7 +250,7 @@ factory doctor --json --config ~/my-factory.yaml
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `--runtime <fake\|copilot>` | `fake` | Check prerequisites for this runtime. `copilot` additionally requires the `copilot` executable. |
+| `--runtime <fake\|copilot\|pi>` | `fake` | Check prerequisites for this runtime. `copilot` additionally requires the `copilot` executable. `pi` additionally requires pi, Node and a provider credential. |
 | `--model-profile <name>` | `default` | Validate this configured model profile. |
 | `--json` | off | Emit the report as JSON. |
 | `--config <path>` | packaged | Config YAML. |
@@ -342,7 +358,7 @@ factory skill refresh --repo ~/projects/example --runtime copilot
 | Option | Required | Default | Effect |
 | --- | --- | --- | --- |
 | `--repo <path>` | yes | none | Path to the target Git repository. |
-| `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. |
+| `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. `pi` is not supported. With `--runtime pi` the command fails and names `--runtime copilot`. |
 | `--model-profile <name>` | no | `default` | Select the Researcher configuration used for generation. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
@@ -421,7 +437,7 @@ factory service install \
 | `--github-repo <str>` | yes | none | Backlog repository as `OWNER/NAME`. |
 | `--config <path>` | no | packaged | Config the service loads. Must enable `scheduler.enabled`. |
 | `--data-dir <path>` | no | configured | Data directory for the service. |
-| `--runtime <fake\|copilot>` | no | `fake` | Runtime the service runs with. |
+| `--runtime <fake\|copilot\|pi>` | no | `fake` | Runtime the service runs with. `pi` prints the startup warning. Doctor accepts only a saved pi login for the service. A shell variable does not reach the service. |
 | `--model-profile <name>` | no | `default` | Profile retained in the installed `factory start` arguments. |
 | `--performance-mode <standard\|fast>` | no | configured | Performance mode retained in the installed `factory start` arguments. |
 | `--no-risk-assessment` | no | off | Flag retained in the installed `factory start` arguments. |

@@ -1,5 +1,92 @@
 # Architecture Decisions
 
+## ADR-031: pi is a recommended agent runtime
+
+Status: accepted on 2026-09-30. This amends ADR-017 and ADR-022.
+
+The factory can now run agents with pi (`--runtime pi`) as well as with the Copilot CLI.
+Every command that takes `--runtime` accepts `pi`.
+Both runtimes use the same configured model and reasoning level for each role.
+
+How the factory calls pi:
+
+- Each agent call starts one `pi --mode rpc` process and ends it after the call.
+- Each role gets a fixed tool list. The implementer gets `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls`.
+  Read-only roles get `read`, `grep`, `find` and `ls`.
+- Only the implementer and the reviewer continue a session.
+  A repair round or a re-review continues the session and sends only the prompt sections that are new or changed.
+  A change of model, provider or reasoning level starts a new session.
+  A failed last call, an old session or a missing session file also starts a new session.
+  Triage, refiner, researcher, planner and tester always start without a session.
+- Session files live under `<factory.data_dir>/pi-sessions`, readable only by the owner.
+  Old files expire and the factory removes them.
+- `factory doctor --runtime pi` checks the pi executable, the pi version, the Node version and the provider credential, in that order.
+
+What pi does not do yet:
+
+- Repository skill generation needs web research, and pi has no web tool.
+  `factory skill refresh --runtime pi` fails and names `--runtime copilot`.
+  The optional polish step after a green run is skipped on pi.
+- pi has no equivalent of the Copilot `context_tier` setting, so the factory ignores it.
+
+Spike result (2026-09-28, pi 0.84.4, provider `github-copilot`):
+
+- pi reports cache reads for Claude and OpenAI models, in one process and after a resume from a session file.
+- pi reports cache writes for Claude models only.
+- The raw result is in `scripts/performance/pi_cache_probe_results.json`.
+
+Benchmark result (2026-09-30):
+
+`scripts/performance/runtime_ab.py` replayed three small merged changes (#59, #72, #77) on both runtimes.
+The manifest is `scripts/performance/runtime_ab_manifest_tiny.json`, so the run can be repeated.
+Both runtimes ran each task at the same time, with the same model for each role.
+The benchmark config mapped every worker level to one model and accepted review debt at no risk level.
+So a different triage level did not change the model or the review rules.
+Triage agreed on all three tasks.
+
+| Total | Copilot | pi |
+| --- | --- | --- |
+| Passed | 3 of 3 | 3 of 3 |
+| Input and cache write tokens | 276,576 | 111,637 |
+| Cache read tokens | 649,701 | 263,351 |
+| Output tokens | 20,070 | 14,632 |
+| Cache read share | 70.1% | 70.2% |
+| Wall time | 415 s | 271 s |
+
+The plan set a go bar for the word "recommended".
+pi had to pass at least as often as Copilot and at least once.
+Its input and cache write tokens had to stay at or under 80% of Copilot's.
+Its cache read share also had to be at least 15 points above Copilot's.
+
+The factory drops the cache read share rule.
+pi sends fewer tokens, so it also reads fewer tokens from the cache.
+An equal share then still means fewer tokens in total.
+The report still shows the share, but the go bar does not judge it.
+With the two remaining rules, pi meets the go bar, so the docs call pi recommended.
+
+Three tasks is a small sample.
+The report marks a task where the two triage results differ. The runs of such a task can use different models.
+
+Amendment to ADR-017:
+
+pi reports a price for each call from its own model list.
+The factory stores it as `list_price_estimate_usd`.
+It is an estimate at list price, not spend, because the Copilot plan pays for the calls.
+Every view labels it as an estimate.
+The factory never adds it to Copilot premium requests or to the Copilot usage value.
+The factory does not keep its own price table. A missing price stays unknown.
+The dashboard calls a missing value "unknown", and the probe and the benchmark report call it "unavailable".
+Both words mean the same thing.
+
+Amendment to ADR-022:
+
+Under `--runtime copilot` the implementer cannot run `git commit`, `git push` or `gh`.
+Under `--runtime pi` the implementer has an unrestricted `bash` tool, so it can run them.
+The factory does not refuse pi when merge or pull request delivery is enabled.
+An agent with a shell has many other ways to reach the network. A refusal does not protect much.
+The factory logs a warning at start when `--runtime pi` is selected.
+Issue #70 tracks tool call limits and a sandbox for pi.
+
 ## ADR-030: Risk assessment can be disabled
 
 Status: accepted on 2026-09-29.

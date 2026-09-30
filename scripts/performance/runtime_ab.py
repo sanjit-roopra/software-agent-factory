@@ -139,14 +139,13 @@ type Level = Literal["L0", "L1", "L2", "L3"]
 
 SUCCESS_STATES = frozenset({WorkflowState.PR_READY, WorkflowState.DONE})
 
-#: Go bar (plans/pi-agent-runtime.md, Risks). Shares are fractions of 1.
-CACHE_SHARE_MARGIN = 0.15
-CACHE_SHARE_FLOOR = 0.70
+#: Go bar (plans/pi-agent-runtime.md, Risks, as changed by ADR-031): pi passes at
+#: least as often as Copilot and at least once, and its input plus cache-write
+#: tokens stay at or under this share of Copilot's. Cache-read share is reported
+#: but not judged: pi sends fewer tokens, so an equal share still means less.
 TOKEN_CEILING_PERCENT = 80
-_SHARE_TOLERANCE = 1e-9
 
 CRITERION_PASS_COUNT = "pass_count"
-CRITERION_CACHE_SHARE = "cache_read_share"
 CRITERION_TOKENS = "tokens"
 
 _UNAVAILABLE = "unavailable"
@@ -477,32 +476,6 @@ def _pass_count_criterion(copilot: RuntimeMetrics, pi: RuntimeMetrics) -> Criter
     )
 
 
-def _cache_share_criterion(copilot: RuntimeMetrics, pi: RuntimeMetrics) -> CriterionResult:
-    pi_share = pi.cache_read_share
-    copilot_share = copilot.cache_read_share
-    if pi_share is None:
-        return CriterionResult(
-            name=CRITERION_CACHE_SHARE, met=False, detail="pi cache-read share unavailable"
-        )
-    if copilot_share is None:
-        return CriterionResult(
-            name=CRITERION_CACHE_SHARE,
-            met=pi_share >= CACHE_SHARE_FLOOR - _SHARE_TOLERANCE,
-            detail=(
-                f"Copilot share unavailable; pi {_percent(pi_share)} "
-                f"vs floor {CACHE_SHARE_FLOOR:.0%}"
-            ),
-        )
-    return CriterionResult(
-        name=CRITERION_CACHE_SHARE,
-        met=pi_share - copilot_share >= CACHE_SHARE_MARGIN - _SHARE_TOLERANCE,
-        detail=(
-            f"pi {_percent(pi_share)} vs Copilot {_percent(copilot_share)} "
-            f"plus {CACHE_SHARE_MARGIN * 100:.0f} points"
-        ),
-    )
-
-
 def _input_and_cache_write(metrics: RuntimeMetrics) -> int | None:
     if metrics.tokens.input is None:
         return None
@@ -530,7 +503,6 @@ def evaluate_go_bar(copilot: RuntimeMetrics, pi: RuntimeMetrics) -> GoBarVerdict
     """Apply the plan's go bar to the completed-task totals of both runtimes."""
     criteria = (
         _pass_count_criterion(copilot, pi),
-        _cache_share_criterion(copilot, pi),
         _tokens_criterion(copilot, pi),
     )
     meets = pi.runs > 0 and all(item.met for item in criteria)

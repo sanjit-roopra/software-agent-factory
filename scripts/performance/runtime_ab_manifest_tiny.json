@@ -1,0 +1,22 @@
+{
+  "tasks": [
+    {
+      "issue": 59,
+      "base_sha": "d93aa2669f4b36bd776310bedf4bd099523a9339",
+      "level": "L0",
+      "title": "chore(sonar): set Python version and test sources"
+    },
+    {
+      "issue": 72,
+      "base_sha": "df0a50924a10276c36ca27ab6ede2da552dd58e7",
+      "level": "L0",
+      "title": "chore: stop tracking per-session hook state"
+    },
+    {
+      "issue": 77,
+      "base_sha": "0fb0f14544cd6c1565197d2f35d9d7fbe3ac3637",
+      "level": "L0",
+      "title": "fix(perf): require at least one pi pass for the A/B go bar"
+    }
+  ]
+}
