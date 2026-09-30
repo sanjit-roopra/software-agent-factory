@@ -36,7 +36,7 @@ runtime and writes a side-by-side report. Its budget options are
 
 ## Install pi
 
-You need Node 22.19 or later. You need pi 0.84.0 or later.
+You need Node 22.19 or later. You need pi 0.99.1 or later.
 
 ```bash
 npm install -g @earendil-works/pi-coding-agent
@@ -68,7 +68,7 @@ factory doctor --runtime pi
 Doctor checks four things in this order. It reports the first failure.
 
 1. The `pi` executable is on `PATH`.
-2. The pi version is 0.84.0 or later.
+2. The pi version is 0.99.1 or later.
 3. The Node version is 22.19 or later.
 4. A credential exists for the configured provider.
 

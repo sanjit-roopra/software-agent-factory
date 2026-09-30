@@ -92,11 +92,13 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 5.0
 #: separate native ``arm64``/``x86_64`` archives, no ``universal2``).
 SUPPORTED_MACHINES: frozenset[str] = frozenset({"arm64", "x86_64"})
 
-#: Minimum supported ``pi`` (``@earendil-works/pi-coding-agent``) version
-#: (``plans/pi-agent-runtime.md`` Build-time decisions, 2026-09-28; tested
-#: locally with 0.84.4). Pi's package moves fast, so this is pinned here as
-#: a single source ``check_pi`` compares against.
-PI_MIN_VERSION = "0.84.0"
+#: Minimum supported ``pi`` (``@earendil-works/pi-coding-agent``) version.
+#: 0.99.1 is the first version the implementer command filter
+#: (``pi_extensions/command_filter.mjs``, ADR-032) was verified on: it relies
+#: on pi's ``tool_call`` extension API blocking the call. Pi's package moves
+#: fast, so this is pinned here as a single source ``check_pi`` compares
+#: against.
+PI_MIN_VERSION = "0.99.1"
 _parsed_pi_min_version = parse_version(PI_MIN_VERSION)
 assert _parsed_pi_min_version is not None, f"unparseable PI_MIN_VERSION: {PI_MIN_VERSION!r}"
 _PI_MIN_VERSION_TUPLE: tuple[int, ...] = _parsed_pi_min_version

@@ -54,7 +54,7 @@ Consequences:
 - Heredocs are not a bypass. The filter checks heredoc bodies as commands, so a blocked command in a heredoc fails closed.
   Agents write files with the write tool.
 - The filter depends on the pi `tool_call` extension API. It was verified on pi 0.99.1.
-- `factory doctor` accepts pi from 0.84.0. Pi versions older than 0.99.1 are not verified with the filter.
+- `factory doctor` requires pi 0.99.1 or later, the version the filter was verified on.
 - The filter tests need Node 22 or later.
 
 ## ADR-031: pi is a recommended agent runtime
