@@ -86,6 +86,7 @@ FIXTURE_RUNS: list[dict[str, Any]] = [
         "is_finished": True,
         "is_stale": index == 3,
         "requested_performance_mode": "fast",
+        "risk_assessment_enabled": False,
         "effective_performance_mode": "standard",
         "performance_model_profile": "economy",
         "waiting_for_human": False,
@@ -993,6 +994,7 @@ def test_valid_run_id_reaches_provider(running_server: RunningServer) -> None:
     assert payload["requested_performance_mode"] == "fast"
     assert payload["effective_performance_mode"] == "standard"
     assert payload["performance_model_profile"] == "economy"
+    assert payload["risk_assessment_enabled"] is False
     assert payload["verification"] == {
         "passed": True,
         "check_count": 2,

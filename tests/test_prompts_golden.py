@@ -116,6 +116,7 @@ def _reviewer_round(**overrides: object) -> AgentRequest:
 
 CASES: dict[str, Callable[[], AgentRequest]] = {
     "triage": lambda: _request(AgentRole.TRIAGE),
+    "triage_risk_assessment_off": lambda: _request(AgentRole.TRIAGE, risk_assessment_enabled=False),
     "refiner": lambda: _request(AgentRole.REFINER, triage_result=triage()),
     "researcher": lambda: _request(
         AgentRole.RESEARCHER, triage_result=triage(), specification=specification()
@@ -200,6 +201,7 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
 
 EXPECTED_MODELS: dict[str, type[ModelBase]] = {
     "triage": TriageResult,
+    "triage_risk_assessment_off": TriageResult,
     "refiner": Specification,
     "researcher": ResearchReport,
     "planner_replan": ExecutionPlan,
@@ -239,6 +241,17 @@ def test_masked_model_text_is_the_models_own_schema_and_fields(case: str) -> Non
     )
     assert fields_match.group(1) == ", ".join(model.model_fields)
     assert "<json schema>" in _mask_model_derived_text(prompt)
+
+
+def test_triage_prompt_drops_the_rationale_rules_when_risk_assessment_is_off() -> None:
+    enabled = build_prompt(CASES["triage"]())
+    disabled = build_prompt(CASES["triage_risk_assessment_off"]())
+
+    assert "provide a case-specific causal risk_rationale" in enabled
+    assert "risk_rationale is required" in enabled
+    assert "provide a case-specific causal risk_rationale" not in disabled
+    assert "risk_rationale is required" not in disabled
+    assert "Set complexity and risk.\n- List missing information." in disabled
 
 
 @pytest.mark.parametrize("case", sorted(CASES))

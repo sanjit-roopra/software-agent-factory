@@ -50,6 +50,7 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -69,7 +70,7 @@ from .agents import (
     is_retryable_typed_artifact_failure,
     runtime_exception_failure_reason,
 )
-from .config import FactoryConfig, RoleModelConfig
+from .config import FactoryConfig, RiskAssessmentConfig, RoleModelConfig
 from .delivery import DeliveryTarget, fetch_delivery_target
 from .github import (
     SHA_PATTERN,
@@ -454,6 +455,20 @@ class WorkflowController:
         if self._github is None and (config.escalation.enabled or config.pull_request.enabled):
             self._github = GitHubClient(token=resolve_github_token())
 
+    def with_risk_assessment(self, enabled: bool) -> WorkflowController:
+        """Return a controller that starts new runs with ``risk_assessment.enabled`` set.
+
+        Project resume uses it so tasks not yet dispatched follow the project's
+        persisted choice. Existing runs always follow their own persisted value.
+        """
+        if enabled == self._config.risk_assessment.enabled:
+            return self
+        clone = copy.copy(self)
+        clone._config = self._config.model_copy(
+            update={"risk_assessment": RiskAssessmentConfig(enabled=enabled)}
+        )
+        return clone
+
     # -- public transition API -----------------------------------------
 
     def transition(
@@ -696,6 +711,7 @@ class WorkflowController:
             updated_at=created_at,
             state_started_at=created_at,
             requested_performance_mode=self._config.performance.mode,
+            risk_assessment_enabled=self._config.risk_assessment.enabled,
             performance_model_profile=(
                 self._config.performance.fast_model_profile
                 if self._config.performance.mode == "fast"
@@ -703,6 +719,12 @@ class WorkflowController:
             ),
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
         )
+        if not run.risk_assessment_enabled:
+            logger.warning(
+                "run %s: risk assessment is disabled; no risk level stops the run for approval "
+                "and triage writes no risk rationale",
+                run.id,
+            )
 
         try:
             workspace = GitWorktreeWorkspace(
@@ -1254,7 +1276,7 @@ class WorkflowController:
         if work_item.id != run.work_item_id:
             raise ValueError("persisted work item does not match run")
         triage = self._store.load_artifact(run.id, TriageResult)
-        if not triage.factory_eligible or self._router.requires_human_approval(triage.risk):
+        if not triage.factory_eligible or self._approval_required(run, triage.risk):
             raise ValueError("persisted triage does not authorize delivery")
         route_decision: RouteDecision | None = None
         try:
@@ -1520,7 +1542,7 @@ class WorkflowController:
                     raise self._halt(
                         run, WorkflowState.NEEDS_HUMAN, "triage marked this work item ineligible"
                     )
-                if self._router.requires_human_approval(triage_result.risk):
+                if self._approval_required(run, triage_result.risk):
                     raise self._halt(
                         run,
                         WorkflowState.NEEDS_HUMAN,
@@ -1889,12 +1911,16 @@ class WorkflowController:
                     update={
                         "attempt_number": attempt_number,
                         "repair_context": repair_context,
+                        "risk_assessment_enabled": run.risk_assessment_enabled,
                     }
                 ),
             )
             if result.success and result.triage_result is not None:
-                self._store.save_artifact(run.id, result.triage_result)
-                return result.triage_result
+                rejection = self._triage_rationale_rejection(run, result.triage_result)
+                if rejection is None:
+                    self._store.save_artifact(run.id, result.triage_result)
+                    return result.triage_result
+                result = rejection
             if not is_retryable_typed_artifact_failure(result, TriageResult):
                 break
             assert result.failure_reason is not None
@@ -1907,6 +1933,29 @@ class WorkflowController:
             run,
             WorkflowState.FAILED,
             result.failure_reason or "triage agent failed to produce a result",
+        )
+
+    def _approval_required(self, run: FactoryRun, risk: Risk) -> bool:
+        """Whether ``risk`` stops ``run`` for a human.
+
+        The choice the run started with wins over the current configuration, so one
+        run never changes policy on resume or reopen.
+        """
+        return run.risk_assessment_enabled and self._config.risk[risk].human_approval
+
+    def _triage_rationale_rejection(
+        self, run: FactoryRun, triage: TriageResult
+    ) -> AgentResult | None:
+        """Reject a triage with no risk rationale, but only while risk assessment is on."""
+        if not (run.risk_assessment_enabled and triage.lacks_required_risk_rationale()):
+            return None
+        return AgentResult(
+            role=AgentRole.TRIAGE,
+            success=False,
+            failure_reason=(
+                f"TRIAGE response did not validate as {TriageResult.__name__}: "
+                f"risk_rationale is required when risk is {triage.risk}"
+            ),
         )
 
     def _run_refiner(

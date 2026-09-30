@@ -185,11 +185,16 @@ def build_prompt_sections(request: AgentRequest) -> list[PromptSection]:
                 normalized_role,
                 request.purpose,
                 repair_review=bool(request.prior_review_findings),
+                risk_assessment=request.risk_assessment_enabled,
             ),
             titled=False,
         ),
         PromptSection(
-            _OUTPUT_CONTRACT_TITLE, _output_contract(normalized_role, model_class), titled=False
+            _OUTPUT_CONTRACT_TITLE,
+            _output_contract(
+                normalized_role, model_class, risk_assessment=request.risk_assessment_enabled
+            ),
+            titled=False,
         ),
     ]
     artifacts = _artifact_sections(normalized_role, request)
@@ -316,6 +321,7 @@ def _role_instructions(
     purpose: AgentPurpose,
     *,
     repair_review: bool = False,
+    risk_assessment: bool = True,
 ) -> str:
     if purpose is AgentPurpose.CORRECT_CHANGE_SET:
         return """Correct only the prose fields in the supplied ChangeSet.
@@ -350,12 +356,7 @@ def _role_instructions(
 - Do not change dependencies, commands, permissions, workflow state, or quality gates.
 - Preserve declared ranges when an exact version is unknown. Record the uncertainty."""
     if role == "TRIAGE":
-        return """Assess the work item.
-- Decide whether the factory can do the work.
-- Set complexity and risk.
-- If risk is R2 or R3, provide a case-specific causal risk_rationale.
-- List missing information.
-- Request research only when planning needs external evidence."""
+        return _triage_instructions(risk_assessment)
     if role == "REFINER":
         return """Write an explicit specification.
 - Separate facts, assumptions, and unknowns.
@@ -422,7 +423,22 @@ def _role_instructions(
     raise ValueError(f"unsupported agent role: {role!r}")
 
 
-def _output_contract(role: str, model_class: type[ModelBase]) -> str:
+def _triage_instructions(risk_assessment: bool) -> str:
+    rationale_rule = (
+        "\n- If risk is R2 or R3, provide a case-specific causal risk_rationale."
+        if risk_assessment
+        else ""
+    )
+    return f"""Assess the work item.
+- Decide whether the factory can do the work.
+- Set complexity and risk.{rationale_rule}
+- List missing information.
+- Request research only when planning needs external evidence."""
+
+
+def _output_contract(
+    role: str, model_class: type[ModelBase], *, risk_assessment: bool = True
+) -> str:
     fields = ", ".join(model_class.model_fields)
     contract = (
         f"Return exactly one JSON object that Pydantic-validates as "
@@ -432,9 +448,10 @@ def _output_contract(role: str, model_class: type[ModelBase]) -> str:
     if role == "TRIAGE":
         contract = (
             f"{contract} Use exact enum values only: complexity must be one of "
-            "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3. "
-            "When risk is R2 or R3, risk_rationale is required."
+            "L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3."
         )
+        if risk_assessment:
+            contract = f"{contract} When risk is R2 or R3, risk_rationale is required."
     limits = writing_limits_text(model_class)
     if limits:
         contract = f"{contract}\n{limits}"

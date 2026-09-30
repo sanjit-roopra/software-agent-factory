@@ -125,6 +125,9 @@ class AgentRequest(ModelBase):
     attempt_number: int | None = None
     timeout_seconds: int
     project_brief: ProjectBrief | None = None
+    #: False when ``risk_assessment.enabled`` is off: the TRIAGE prompt then stops
+    #: asking for a ``risk_rationale``.
+    risk_assessment_enabled: bool = True
 
     @model_validator(mode="after")
     def _validate_purpose(self) -> AgentRequest:

@@ -301,7 +301,8 @@ class ProjectRunner:
         self._runtime = runtime
         self._project_store = project_store or FileProjectStore(config.data_dir)
         self._github = github_client or GitHubClient(token=resolve_github_token())
-        self._controller = controller or WorkflowController(config, run_store, runtime)
+        self._configured_controller = controller or WorkflowController(config, run_store, runtime)
+        self._controller = self._configured_controller
         self._repository_verifier = repository_verifier or RepositoryVerifier()
         self._router = ModelRouter(config)
         self._delivery_repository_resolver = delivery_repository_resolver
@@ -375,6 +376,7 @@ class ProjectRunner:
                     "delivery_base_branch": delivery.base_branch,
                     "delivery_repository": delivery.repository,
                     "delivery_policy_fingerprint": delivery_policy_fingerprint(self._config),
+                    "risk_assessment_enabled": self._config.risk_assessment.enabled,
                     "updated_at": utc_now(),
                 }
             )
@@ -517,6 +519,7 @@ class ProjectRunner:
                 update={"state": ProjectState.RUNNING, "updated_at": utc_now()}
             )
             self._project_store.save_execution(execution)
+            self._controller = self._controller_for_persisted_risk_assessment(execution)
             try:
                 execution = self._execute_plan(
                     brief,
@@ -542,6 +545,14 @@ class ProjectRunner:
         finally:
             project_workspace.release_lock()
         return execution
+
+    def _controller_for_persisted_risk_assessment(
+        self, execution: ProjectExecution
+    ) -> WorkflowController:
+        """Give tasks not yet dispatched the risk assessment choice the project started with."""
+        if execution.risk_assessment_enabled == self._config.risk_assessment.enabled:
+            return self._configured_controller
+        return self._configured_controller.with_risk_assessment(execution.risk_assessment_enabled)
 
     def _check_delivery_identity(
         self, execution: ProjectExecution, delivery: DeliverySettings

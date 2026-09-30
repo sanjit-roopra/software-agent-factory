@@ -184,6 +184,7 @@ class ServiceInstallRequest:
     runtime: ServiceRuntime = ServiceRuntime.FAKE
     model_profile: str = "default"
     performance_mode: ServicePerformanceMode | None = None
+    risk_assessment_disabled: bool = False
     label: str = DEFAULT_LABEL
     allow_source_dev: bool = False
     #: The operator's ``PI_CODING_AGENT_DIR`` at install time, or ``None`` if
@@ -353,6 +354,8 @@ def build_program_arguments(request: ServiceInstallRequest) -> list[str]:
     args += ["--model-profile", request.model_profile]
     if request.performance_mode is not None:
         args += ["--performance-mode", request.performance_mode.value]
+    if request.risk_assessment_disabled:
+        args.append("--no-risk-assessment")
     args += ["--runtime", request.runtime.value]
     return args
 

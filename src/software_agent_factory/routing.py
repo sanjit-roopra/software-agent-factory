@@ -103,7 +103,7 @@ class ModelRouter:
         return distinct_models[min(model_index, len(distinct_models) - 1)]
 
     def requires_human_approval(self, risk: Risk) -> bool:
-        return self._config.risk[risk].human_approval
+        return self._config.requires_human_approval(risk)
 
     def _distinct_worker_models(
         self,
@@ -788,7 +788,7 @@ def assess_safety_floors(
 
     requires_human = False
     if work_item.risk is not None:
-        requires_human = config.risk[work_item.risk].human_approval
+        requires_human = config.requires_human_approval(work_item.risk)
 
     has_acceptance_criteria = bool(work_item.acceptance_criteria)
     has_verify_commands = bool(config.repository.commands.verify)
@@ -850,8 +850,8 @@ def assess_safety_floors(
 
         # Configured risk policy decides which routes are legal:
         # An option whose risk requires human approval cannot run via SINGLE or CRITIQUE
-        option_requires_human = (
-            opt_cfg.risk is not None and config.risk[opt_cfg.risk].human_approval
+        option_requires_human = opt_cfg.risk is not None and config.requires_human_approval(
+            opt_cfg.risk
         )
 
         # FULL route is allowed unless constrained by complexity above

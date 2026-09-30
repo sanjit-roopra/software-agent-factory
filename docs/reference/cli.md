@@ -70,6 +70,7 @@ factory run \
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` avoids Copilot calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode. Fast mode applies only to eligible low-risk work. |
+| `--no-risk-assessment` | no | off | Turn off risk assessment for this run. See `risk_assessment` in the configuration reference. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -110,6 +111,7 @@ factory project \
 | `--runtime <fake\|copilot>` | no | `fake` | `fake` creates one deterministic task. `copilot` derives the real plan. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for child runs. |
+| `--no-risk-assessment` | no | off | Turn off risk assessment for every child run. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
 
@@ -169,6 +171,7 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 | `--runtime <fake\|copilot>` | no | `fake` | Agent runtime. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile for every dispatched run. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for dispatched runs. |
+| `--no-risk-assessment` | no | off | Turn off risk assessment for every dispatched run. |
 | `--once` | no | off | Run one bounded tick instead of polling forever. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
@@ -421,6 +424,7 @@ factory service install \
 | `--runtime <fake\|copilot>` | no | `fake` | Runtime the service runs with. |
 | `--model-profile <name>` | no | `default` | Profile retained in the installed `factory start` arguments. |
 | `--performance-mode <standard\|fast>` | no | configured | Performance mode retained in the installed `factory start` arguments. |
+| `--no-risk-assessment` | no | off | Flag retained in the installed `factory start` arguments. |
 | `--executable <path>` | no | this build | Explicit `factory` executable to run. |
 | `--label <str>` | no | `com.github.software-agent-factory` | LaunchAgent label. |
 | `--allow-source-dev` | no | off | Permit an executable in an otherwise-refused location, such as a source checkout. |

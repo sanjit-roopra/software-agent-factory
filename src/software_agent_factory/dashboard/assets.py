@@ -575,6 +575,7 @@ APP_JS = """\
       ["Requested performance mode", detail.requested_performance_mode],
       ["Effective performance mode", detail.effective_performance_mode],
       ["Performance model profile", detail.performance_model_profile],
+      ["Risk assessment", detail.risk_assessment_enabled === false ? "disabled" : "enabled"],
       ["Created", detail.created_at],
       ["Updated", detail.updated_at],
       ["Completed", detail.completed_at],

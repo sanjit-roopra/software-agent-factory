@@ -1,5 +1,58 @@
 # Architecture Decisions
 
+## ADR-030: Risk assessment can be disabled
+
+Status: accepted on 2026-09-29.
+
+The risk model stops a run at `NEEDS_HUMAN` when the risk level is `R2` or `R3`.
+Triage must also write a `risk_rationale` for these levels.
+In a benchmark, both agent runtimes rated a local tooling cleanup as `R2`.
+The run stopped with "risk R2 requires human approval".
+
+Some operators want an autonomous factory.
+They do not want the approval gate or the rationale.
+
+The factory now has the `risk_assessment.enabled` setting.
+The default is `true`, so the behavior and the prompts do not change.
+The `--no-risk-assessment` option turns the setting off for one invocation.
+It exists on `factory run`, `factory project`, `factory start` and `factory service install`.
+
+When the setting is `false`:
+
+- Triage still returns `risk`, because routing uses it.
+- Explicit work item risk still raises the lowest route option, as before.
+- No risk level needs human approval, in the controller and in route option checks.
+- The factory creates no risk escalation and no approval request.
+- The triage prompt does not ask for a `risk_rationale`.
+- A triage result for `R2` or `R3` without a rationale is valid.
+
+These rules stay active in both modes:
+
+- Ineligible work items still stop for a human.
+- Protected file, scope and verification gates still apply.
+- Independent review still applies.
+- Route ratchets still upgrade a route after a failure.
+
+The rule "`R2` or `R3` needs a `risk_rationale`" moved out of the `TriageResult` model.
+The controller now checks it after each triage call.
+It applies the check only when the setting is `true`.
+A missing rationale is then a structural failure with one retry, as before.
+The model no longer rejects the result, so a triage stored without assessment loads again.
+
+A run keeps the choice it started with.
+The controller reads `risk_assessment_enabled` from the run for every gate check, also on resume and reopen.
+A project stores the same choice, and a resumed project starts its remaining tasks with it.
+So one project never runs under two policies.
+A resume with `--no-risk-assessment` cannot remove an approval that a run already needs.
+
+Each run stores `risk_assessment_enabled`.
+The controller logs a warning when a run starts with the setting off.
+`factory status --json` and the dashboard show the value, so an operator can audit it.
+
+This trades a human check on sensitive work for autonomy.
+The operator accepts that trade when they turn the setting off.
+Runs that need a human check must keep the default.
+
 ## ADR-029: Writing rules are advisory
 
 Status: accepted on 2026-09-29. This amends ADR-023.

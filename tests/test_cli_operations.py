@@ -865,6 +865,7 @@ def test_service_install_runtime_and_flags_are_forwarded(
             "economy",
             "--performance-mode",
             "fast",
+            "--no-risk-assessment",
             "--allow-source-dev",
             "--label",
             "com.example.factory-test",
@@ -878,6 +879,7 @@ def test_service_install_runtime_and_flags_are_forwarded(
     assert request.runtime is ServiceRuntime.COPILOT
     assert request.model_profile == "economy"
     assert request.performance_mode is ServicePerformanceMode.FAST
+    assert request.risk_assessment_disabled is True
     assert request.allow_source_dev is True
     assert request.label == "com.example.factory-test"
     payload = json.loads(result.output)
