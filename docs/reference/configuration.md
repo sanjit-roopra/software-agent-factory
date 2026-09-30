@@ -501,6 +501,30 @@ escalation:
 
 When enabled, `authorized_identities` must contain at least one entry.
 
+## pi
+
+Settings for `--runtime pi`. See [Real pi runs](../get-started/pi.md). The block
+is optional. The packaged configuration omits it and every key has a default.
+
+```yaml
+pi:
+  executable: "pi"
+  provider: "github-copilot"
+  session_reuse_max_age_seconds: 3600
+  cache_retention: "long"
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `executable` | non-empty string | `pi` | The pi program. Doctor looks for it on `PATH`. |
+| `provider` | non-empty string | `github-copilot` | The pi provider passed with `--provider`. Doctor checks for a credential for it. |
+| `session_reuse_max_age_seconds` | int > 0 | `3600` | Longest gap after which the Implementer or Reviewer can continue its saved session. The factory never continues an older session. |
+| `cache_retention` | `short` or `long` | `long` | Value of `PI_CACHE_RETENTION` for the pi process. |
+
+The `models` block sets the model and reasoning level for each role on pi, as it
+does on Copilot. Pi ignores `context_tier`. See
+[Model selection](model-selection.md#models-on-the-pi-runtime).
+
 ## routing
 
 Policy for adaptive execution routing with Jev.

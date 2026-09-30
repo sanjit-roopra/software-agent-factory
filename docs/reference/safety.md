@@ -17,7 +17,8 @@ provides authority.**
 - Choose which model runs.
 - Pass or waive a quality gate.
 - Claim a task, or take a task from another run.
-- Push, merge, or change branch protection.
+- Push, merge, or change branch protection. The pi runtime does not enforce the
+  push limit. See [The pi runtime does not block git or gh](#the-pi-runtime-does-not-block-git-or-gh).
 - Deploy anything.
 - See production credentials.
 - Decide whether their own output is accepted.
@@ -53,6 +54,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | Trigger | Talks to |
 | --- | --- |
 | `--runtime copilot` | GitHub Copilot, through the `copilot` CLI. Paid. |
+| `--runtime pi` | The configured `pi.provider`, through the `pi` CLI. The default provider is GitHub Copilot. Paid. |
 | `pull_request.enabled` | GitHub, through `gh`. |
 | `ci.enabled` | GitHub, through `gh`. |
 | `merge.enabled` | GitHub, through `gh`, with a separate repository and check allowlist. |
@@ -69,8 +71,8 @@ data directory.
 
 ## Money
 
-`--runtime copilot` is the only thing that spends. It is never the default, on
-any command.
+`--runtime copilot` and `--runtime pi` are the only things that spend. Neither is
+the default on any command.
 
 Repository guidance is researched once per repository and dependency
 fingerprint, then reused, so a normal run spends nothing on it. Reuse is not a
@@ -94,12 +96,20 @@ in raw runtime units. The dashboard can derive an AI usage value in USD from
 nano-AIU for display, but it is not necessarily the invoice charge. Use GitHub
 Copilot billing for authoritative spend.
 
+The pi runtime reports a list-price estimate in USD. Pi computes it from its own
+price list. It is not spend. The factory never adds it to the Copilot usage
+value.
+
 ## Credentials
 
 - The `copilot` child process starts with GitHub credential variables removed:
   `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
   `GITHUB_PAT`, `GIT_ASKPASS` and the Actions token variables. Agents never
   receive GitHub credentials.
+- The `pi` child process also starts with GitHub credential variables removed.
+  Only the credential variables of the configured `pi.provider` stay. For
+  `github-copilot`, that is `COPILOT_GITHUB_TOKEN`. Other provider keys and the
+  routing API key are removed.
 - Only controller code passes a token to `gh`. It uses the subprocess
   environment, never as a command-line argument where it lands in the process
   list.
@@ -146,6 +156,34 @@ Copilot billing for authoritative spend.
 - Exact, human-authorized dependency/CI files can pass sensitive-scope checks
   only when also explicitly named in the plan. This never exempts protected
   files, migration/infrastructure changes, risk approval or ordinary scope limits.
+
+## The pi runtime does not block git or gh
+
+The Copilot runtime denies `git commit`, `git push` and `gh` commands to every
+agent. The pi runtime does not. Under `--runtime pi`, the Implementer has an
+unrestricted `bash` tool. It can run `git commit`, `git push` and `gh` commands.
+
+[ADR-031](../decisions.md#adr-031-pi-is-a-recommended-agent-runtime) records this gap. It amends the rule in
+[ADR-022](../decisions.md#adr-022-opt-in-autonomous-project-delivery) that
+Implementers cannot run `git commit` directly. The gap exists only on pi.
+
+The factory adds no other check for pi. An agent that has every tool can find
+another way to push. Pi runs with a tool allowlist:
+
+| Role | Pi tools |
+| --- | --- |
+| Implementer | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` |
+| Triage, refiner, researcher, planner, tester, reviewer | `read`, `grep`, `find`, `ls` |
+| Change-set correction | none |
+
+The factory also starts pi without extensions, skills, prompt templates and
+context files. Selecting `--runtime pi` prints a startup warning that links the
+follow-up work. Issue
+[#70](https://github.com/sanjit-roopra/software-agent-factory/issues/70) tracks
+command denial and sandboxing for pi.
+
+Use the pi runtime only on repositories where you accept this risk. The
+controller gates still run. They do not stop a push made from the shell.
 
 ## Quality gates
 

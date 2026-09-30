@@ -14,5 +14,9 @@ Read three pages in order.
 : Switch to `--runtime copilot`. Learn what it spends, what it can touch, and
   how it fails.
 
+[Real pi runs](pi.md)
+: Switch to `--runtime pi`, the recommended real runtime. Install pi, log in,
+  and learn its limits.
+
 When a run finishes, continue to [Configure a repository](../guides/configure-repository.md).
 Configure the real lint, test, and build commands for your project.

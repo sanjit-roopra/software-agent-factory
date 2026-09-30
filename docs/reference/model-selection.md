@@ -274,6 +274,26 @@ Do not treat nominal context as effective repository understanding:
 Use targeted search, repository maps and typed artifacts first. Treat 1M as a
 burst option for a curated evidence pack, not the default for every stage.
 
+## Models on the pi runtime
+
+`--runtime pi` uses the same configured model and reasoning level for each role.
+The factory passes the model id to pi with `--model` and the reasoning level with
+`--thinking`. It does not change either value.
+
+The model id must be one that the pi provider lists. The default provider is
+`github-copilot`. To see the ids, run this command:
+
+```bash
+pi --list-models
+```
+
+Use only ids from that list. Copilot and pi can name the same model differently,
+so check the list before you switch runtimes.
+
+Pi has no equivalent of the Copilot `--context` option. The factory ignores
+`context_tier` on pi and writes a debug log line. On Copilot, the setting still
+applies.
+
 ## Comparable benchmark snapshot
 
 No public benchmark covers every model under one identical benchmark framework.

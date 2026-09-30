@@ -186,5 +186,6 @@ GitHub billing remains authoritative.
 
 ## Next
 
+- [Real pi runs](pi.md), the recommended runtime
 - [Configure a repository](../guides/configure-repository.md)
 - [Safety and trust boundaries](../reference/safety.md)

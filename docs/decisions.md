@@ -15,7 +15,8 @@ How the factory calls pi:
   Read-only roles get `read`, `grep`, `find` and `ls`.
 - Only the implementer and the reviewer continue a session.
   A repair round or a re-review continues the session and sends only the prompt sections that are new or changed.
-  Any change of model, reasoning level, workspace or tools starts a new session.
+  A change of model, provider or reasoning level starts a new session.
+  A failed last call, an old session or a missing session file also starts a new session.
   Triage, refiner, researcher, planner and tester always start without a session.
 - Session files live under `<factory.data_dir>/pi-sessions`, readable only by the owner.
   Old files expire and the factory removes them.

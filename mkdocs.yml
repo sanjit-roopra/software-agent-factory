@@ -121,6 +121,7 @@ nav:
       - Install: get-started/install.md
       - First offline run: get-started/first-run.md
       - Real Copilot runs: get-started/copilot.md
+      - Real pi runs: get-started/pi.md
   - Guides:
       - guides/index.md
       - Configure a repository: guides/configure-repository.md
