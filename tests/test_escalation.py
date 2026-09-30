@@ -35,9 +35,11 @@ from software_agent_factory.escalation import (
     ValidationResult,
     build_escalation_comment,
     build_plan_decision_context,
+    build_risk_approval_context,
     classify_halt_reason,
     deliver_escalation_notification,
     format_escalation_marker,
+    has_dispatched_risk_approval,
     is_authorized_author,
     parse_plan_decision_answers,
     parse_resume_command,
@@ -395,6 +397,70 @@ def test_receipt_does_not_approve_a_context_with_another_fingerprint() -> None:
 
 def test_receipt_without_a_fingerprint_approves_nothing() -> None:
     assert not receipt_approves_risk_context(_approval_receipt(None), _make_approval_context())
+
+
+def _has_approval_from_earlier_episode(tmp_path: Path, *, receipt_episode_id: str) -> bool:
+    """Run is now in episode B; the dispatched receipt's fingerprint was computed for episode A."""
+    store = FileRunStore(tmp_path)
+    work_item = WorkItem(id="task-r2", title="High risk task", description="Do it safely")
+    triage_result = TriageResult(
+        factory_eligible=True,
+        complexity=Complexity.L1,
+        risk=Risk.R2,
+        needs_research=False,
+        confidence=0.9,
+        risk_rationale=RiskRationale(
+            intended_outcome="Update production database schema.",
+            sensitive_boundary="Production database trust boundary.",
+            necessity="Work item requires migrating production customer records.",
+            credible_scenario="Data migration error could corrupt customer accounts.",
+            known_mitigations=["Run migration inside atomic transaction."],
+            residual_risk="Potential brief transaction lock delay on high-load tables.",
+        ),
+    )
+    run = FactoryRun(
+        id="run-r2",
+        work_item_id=work_item.id,
+        state=WorkflowState.NEEDS_HUMAN,
+        escalation=EscalationRecord(episode_id="B", episode_number=2),
+    )
+    store.save_run(run)
+    store.save_artifact(run.id, work_item)
+    store.save_artifact(run.id, triage_result)
+    config = _make_config(tmp_path)
+
+    context_a = build_risk_approval_context(
+        run, store, config=config, work_item=work_item, triage_result=triage_result, episode_id="A"
+    )
+    assert context_a is not None
+    receipt = AcceptedReplyReceipt(
+        comment_id=1,
+        user_login="lead-dev",
+        author_association="MEMBER",
+        created_at=utc_now(),
+        dispatched_at=utc_now(),
+        command=f"@factory resume v1 run={run.id} episode={receipt_episode_id}",
+        episode_id=receipt_episode_id,
+        run_id=run.id,
+        approval_context_fingerprint=context_a.context_fingerprint,
+    )
+    assert run.escalation is not None
+    run = run.model_copy(
+        update={"escalation": run.escalation.model_copy(update={"accepted_replies": [receipt]})}
+    )
+    return has_dispatched_risk_approval(
+        run, store, config=config, work_item=work_item, triage_result=triage_result
+    )
+
+
+def test_dispatched_approval_from_an_earlier_episode_still_counts(tmp_path: Path) -> None:
+    assert _has_approval_from_earlier_episode(tmp_path, receipt_episode_id="A")
+
+
+def test_approval_fingerprint_from_another_episode_than_the_receipts_does_not_count(
+    tmp_path: Path,
+) -> None:
+    assert not _has_approval_from_earlier_episode(tmp_path, receipt_episode_id="B")
 
 
 # ---------------------------------------------------------------------------
