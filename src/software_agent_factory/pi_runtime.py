@@ -119,7 +119,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Pi ``--tools`` value per :class:`AgentCapability`, per the "Role tool
-#: allowlists (v1)" table in ``docs/specs/pi-agent-runtime.md``.
+#: allowlists (v1)" table in ``docs/specs/pi-agent-runtime.md``. Only
+#: ``IMPLEMENTER_WRITE`` also gets the command filter extension
+#: (:data:`_COMMAND_FILTER_PATH`), added by
+#: :meth:`PiAgentRuntime._build_command`, because only it has ``bash``.
 #: ``AgentCapability.WEB_RESEARCH`` has no entry: pi has no web-fetch tool,
 #: so :meth:`PiAgentRuntime._build_command` raises before this lookup runs.
 _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
@@ -127,6 +130,11 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.READ_ONLY: ("--tools", "read,grep,find,ls"),
     AgentCapability.NO_TOOLS: ("--no-tools",),
 }
+
+#: The pi extension that filters the implementer's ``bash`` commands
+#: (``docs/specs/pi-command-filter.md``). Resolved from ``__file__`` so it is
+#: the same file in a wheel and in a PyInstaller onedir bundle.
+_COMMAND_FILTER_PATH = Path(__file__).parent / "pi_extensions" / "command_filter.mjs"
 
 #: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
 _DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
@@ -492,7 +500,8 @@ class PiAgentRuntime(AgentRuntime):
     factory's configured data directory. The per-work-item session store lives
     under ``<data_dir>/pi-sessions`` and reuses a session for
     ``config.session_reuse_max_age_seconds``. ``clock`` replaces the store's
-    UTC clock, for tests.
+    UTC clock, for tests. ``command_filter_path`` is the extension loaded for
+    the implementer; tests point it at another file.
     """
 
     def __init__(
@@ -503,9 +512,11 @@ class PiAgentRuntime(AgentRuntime):
         process_factory: ProcessFactory = _default_process_factory,
         routing_api_key_env_var: str = _DEFAULT_ROUTING_API_KEY_ENV_VAR,
         clock: Callable[[], datetime] | None = None,
+        command_filter_path: Path = _COMMAND_FILTER_PATH,
     ) -> None:
         self._config = config
         self._process_factory = process_factory
+        self._command_filter_path = command_filter_path
         self._routing_api_key_env_var = routing_api_key_env_var
         self._sessions = PiSessionStore(
             data_dir / "pi-sessions",
@@ -524,6 +535,12 @@ class PiAgentRuntime(AgentRuntime):
         env, scrubbed_values = self._child_env_and_scrubbed()
         prompt_chars = len(prompt)
 
+        if self._filter_is_missing(request):
+            ctx = _CallContext(request, prompt_chars, 0.0, scrubbed_values)
+            return ctx.failed(
+                f"pi command filter extension is missing: {self._command_filter_path}"
+            )
+
         boot_start = time.perf_counter()
         try:
             process = self._process_factory(command, cwd, env)
@@ -541,6 +558,17 @@ class PiAgentRuntime(AgentRuntime):
         finally:
             if session is not None:
                 self._record_session(request, session, prepared.sections_after, success=settled)
+
+    def _filter_is_missing(self, request: AgentRequest) -> bool:
+        """True for an implementer call whose command filter file does not exist.
+
+        The filter is what restricts the implementer's ``bash``, so the call
+        fails instead of running pi without it.
+        """
+        return (
+            capability_for(request) is AgentCapability.IMPLEMENTER_WRITE
+            and not self._command_filter_path.is_file()
+        )
 
     def _session_for(self, request: AgentRequest) -> _SessionUse | None:
         """Return the persisted session this call runs in, ``None`` for a role without one."""
@@ -689,6 +717,9 @@ class PiAgentRuntime(AgentRuntime):
         ``session_arg`` is ``["--no-session"]`` or ``["--session", <path>]``;
         :meth:`run` passes the second form for a role that keeps a session
         (see :func:`~software_agent_factory.pi_sessions.persists_session`).
+        The implementer (the only role with ``bash``) also loads the command
+        filter with ``-e``: ``--no-extensions`` only stops discovery, so an
+        explicit ``-e`` extension still loads.
         """
         capability = capability_for(request)
         if capability is AgentCapability.WEB_RESEARCH:
@@ -709,6 +740,11 @@ class PiAgentRuntime(AgentRuntime):
             request.reasoning,
             *_TOOL_ARGS[capability],
             "--no-extensions",
+            *(
+                ("-e", str(self._command_filter_path))
+                if capability is AgentCapability.IMPLEMENTER_WRITE
+                else ()
+            ),
             "--no-skills",
             "--no-prompt-templates",
             "--no-context-files",
@@ -727,7 +763,9 @@ class PiAgentRuntime(AgentRuntime):
         API key, OAuth token or AWS variables of another provider, the derived
         ``<PROVIDER>_API_KEY`` for a provider the map does not list. Every
         other known credential variable, every other ``*_API_KEY`` and the
-        routing API key (pi never needs it) are removed.
+        routing API key (pi never needs it) are removed. ``SSH_AUTH_SOCK`` is
+        removed too, so the implementer's ``bash`` cannot reach the operator's
+        ssh agent; it is not a secret value, so it is not redacted.
 
         The second return value is the credential values to redact from any
         failure reason built from pi's stderr or protocol output (mirroring
@@ -737,6 +775,7 @@ class PiAgentRuntime(AgentRuntime):
         """
         env, scrubbed_values = build_child_env()
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
+        env.pop("SSH_AUTH_SOCK", None)
 
         own_vars = set(pi_provider_credential_vars(self._config.provider))
         # A provider newer than the map may read a key the map does not name,

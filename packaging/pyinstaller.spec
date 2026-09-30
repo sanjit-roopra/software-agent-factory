@@ -25,6 +25,10 @@ package_data = [
         str(package_root / "_vendor" / "simple_english" / "slop.tsv"),
         "software_agent_factory/_vendor/simple_english",
     ),
+    (
+        str(package_root / "pi_extensions" / "command_filter.mjs"),
+        "software_agent_factory/pi_extensions",
+    ),
 ]
 
 build_info_path = package_root / "build-info.json"

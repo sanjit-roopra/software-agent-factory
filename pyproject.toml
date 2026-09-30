@@ -95,6 +95,7 @@ software_agent_factory = [
   "_vendor/simple_english/slop.tsv",
   "build-info.json",
   "default_config.yaml",
+  "pi_extensions/command_filter.mjs",
 ]
 
 [tool.pytest.ini_options]

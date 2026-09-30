@@ -760,6 +760,8 @@ def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets
     assert '"default_config.yaml"' in spec_text
     assert '"simple_english" / "slop.tsv"' in spec_text
     assert '"simple_english" / "LICENSE"' in spec_text
+    assert '"pi_extensions" / "command_filter.mjs"' in spec_text
+    assert '"software_agent_factory/pi_extensions"' in spec_text
     assert 'project_root / "NOTICE.md"' in spec_text
     assert 'build_info_path = package_root / "build-info.json"' in spec_text
     assert 'collect_submodules("software_agent_factory")' in spec_text
@@ -768,4 +770,5 @@ def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets
 
     pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "dashboard/static" not in pyproject_text
+    assert '"pi_extensions/command_filter.mjs"' in pyproject_text
     assert 'factory = "software_agent_factory.__main__:main"' in pyproject_text
