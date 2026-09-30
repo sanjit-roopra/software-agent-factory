@@ -1,0 +1,178 @@
+// Factory command filter for the pi IMPLEMENTER.
+//
+// Blocks the shell commands the Copilot runtime also denies. It has the same strength as
+// Copilot's pattern rules: it reads command positions, and it is not a security boundary.
+// Plain ESM with no dependencies, so pi loads it without a build step.
+
+const RULES = [
+  {
+    name: "git commit",
+    program: "git",
+    subcommand: "commit",
+    instead: "The factory commits and pushes your changes; leave them in the worktree.",
+  },
+  {
+    name: "git push",
+    program: "git",
+    subcommand: "push",
+    instead: "The factory commits and pushes your changes; leave them in the worktree.",
+  },
+  { name: "gh", program: "gh", instead: "The factory handles GitHub." },
+  {
+    name: "curl",
+    program: "curl",
+    instead: "Network fetches are not allowed; work with files in the worktree.",
+  },
+  {
+    name: "wget",
+    program: "wget",
+    instead: "Network fetches are not allowed; work with files in the worktree.",
+  },
+];
+
+const PREFIX = "Blocked by the factory command filter:";
+const SUFFIX = "Do not retry or rephrase this command.";
+const MISSING_COMMAND_REASON = `${PREFIX} the bash call has no readable command string.`;
+
+// --- Tokenizer -------------------------------------------------------------------------
+// Turns a shell string into argv lists, one per simple command. Quotes are removed, and
+// command substitutions become commands of their own. It is not a full shell parser.
+
+const SEPARATORS = new Set([";", "&", "|", "\n", "(", ")"]);
+
+function closingParen(text, start) {
+  let depth = 1;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    if (text[i] === ")" && --depth === 0) return i;
+  }
+  return text.length;
+}
+
+export function parseCommands(text) {
+  const commands = [];
+  let words = [];
+  let word = null; // null means no word is in progress; "" is an empty quoted word
+  let quote = null;
+
+  const endWord = () => {
+    if (word !== null) words.push(word);
+    word = null;
+  };
+  const endSegment = () => {
+    endWord();
+    if (words.length > 0) commands.push(words);
+    words = [];
+  };
+  const substitute = (body) => {
+    commands.push(...parseCommands(body));
+    word ??= "";
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else word += ch;
+    } else if (ch === "\\" && i + 1 < text.length) {
+      word = (word ?? "") + text[++i];
+    } else if (ch === "$" && text[i + 1] === "(") {
+      const end = closingParen(text, i + 2);
+      substitute(text.slice(i + 2, end));
+      i = end;
+    } else if (ch === "`") {
+      const end = text.indexOf("`", i + 1) === -1 ? text.length : text.indexOf("`", i + 1);
+      substitute(text.slice(i + 1, end));
+      i = end;
+    } else if (ch === '"') {
+      quote = quote === '"' ? null : '"';
+      word ??= "";
+    } else if (quote === '"') {
+      word += ch;
+    } else if (ch === "'") {
+      quote = "'";
+      word ??= "";
+    } else if (ch === " " || ch === "\t") {
+      endWord();
+    } else if (SEPARATORS.has(ch)) {
+      endSegment();
+    } else {
+      word = (word ?? "") + ch;
+    }
+  }
+  endSegment();
+  return commands;
+}
+
+// --- Command normalisation ------------------------------------------------------------
+// Reduces an argv list to the command that really runs: drops VAR=value assignments and
+// env/command prefixes, and opens sh -c / bash -c bodies.
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const PREFIX_PROGRAMS = new Set(["env", "command"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+
+const baseName = (path) => path.split("/").pop();
+
+function stripPrefixes(argv) {
+  let args = argv;
+  for (;;) {
+    const first = args.findIndex((arg) => !ASSIGNMENT.test(arg));
+    args = first === -1 ? [] : args.slice(first);
+    if (args.length === 0 || !PREFIX_PROGRAMS.has(baseName(args[0]))) return args;
+    args = args.slice(1);
+    while (args[0]?.startsWith("-")) args = args.slice(1);
+  }
+}
+
+function realCommands(argv) {
+  const args = stripPrefixes(argv);
+  if (args.length === 0) return [];
+  if (SHELLS.has(baseName(args[0]))) {
+    const flag = args.findIndex((arg) => SHELL_COMMAND_FLAG.test(arg));
+    if (flag !== -1 && flag + 1 < args.length) {
+      return parseCommands(args[flag + 1]).flatMap(realCommands);
+    }
+  }
+  return [args];
+}
+
+// --- Rules ----------------------------------------------------------------------------
+
+const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
+
+function gitSubcommand(args) {
+  let i = 1;
+  while (i < args.length && args[i].startsWith("-")) {
+    i += GIT_OPTIONS_WITH_VALUE.has(args[i]) ? 2 : 1;
+  }
+  return args[i];
+}
+
+function matchingRule(args) {
+  const program = baseName(args[0]);
+  return RULES.find(
+    (rule) =>
+      rule.program === program &&
+      (rule.subcommand === undefined || gitSubcommand(args) === rule.subcommand),
+  );
+}
+
+export function blockedReason(command) {
+  for (const argv of parseCommands(command).flatMap(realCommands)) {
+    const rule = matchingRule(argv);
+    if (rule) return `${PREFIX} '${rule.name}' is not allowed. ${rule.instead} ${SUFFIX}`;
+  }
+  return null;
+}
+
+// --- pi extension ---------------------------------------------------------------------
+
+export default (pi) =>
+  pi.on("tool_call", async (event) => {
+    if (event.toolName !== "bash") return undefined;
+    const command = event.input?.command;
+    const reason = typeof command === "string" ? blockedReason(command) : MISSING_COMMAND_REASON;
+    return reason === null ? undefined : { block: true, reason };
+  });

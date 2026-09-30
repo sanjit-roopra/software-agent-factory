@@ -32,6 +32,7 @@ ALLOWED_ACTIONS = frozenset(
         "actions/dependency-review-action",
         "actions/deploy-pages",
         "actions/download-artifact",
+        "actions/setup-node",
         "actions/setup-python",
         "actions/upload-artifact",
         "actions/upload-pages-artifact",
