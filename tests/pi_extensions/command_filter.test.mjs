@@ -58,6 +58,7 @@ const BLOCKED = [
   ["{v}>/dev/null curl x", "curl"],
   ["git --attr-source HEAD push", "git push"],
   ["env -uSSH_AUTH_SOCK git push", "git push"],
+  ["env -\u{1F600}S 'git push'", "git push"],
   ["env -uHTTPS_PROXY curl x", "curl"],
   ["env -uTMP git push", "git push"],
   ["env -S '-i git push'", "git push"],

@@ -198,6 +198,14 @@ function longOption(arg) {
     : { name: arg.slice(0, equals), value: arg.slice(equals + 1) };
 }
 
+// Index of the first value-taking letter in a short bundle, in UTF-16 units like slice().
+function valueLetterIndex(arg) {
+  for (let j = 1; j < arg.length; j++) {
+    if (ENV_SHORT_WITH_VALUE.has(arg[j])) return j;
+  }
+  return -1;
+}
+
 // Reads the env option at args[i]. Returns how many words it uses, and its value when
 // it is -S / --split-string, whose value is a command line.
 function envOption(args, i) {
@@ -211,7 +219,7 @@ function envOption(args, i) {
       splitValue: name === "--split-string" ? optionValue : null,
     };
   }
-  const letterIndex = [...arg].findIndex((letter, j) => j > 0 && ENV_SHORT_WITH_VALUE.has(letter));
+  const letterIndex = valueLetterIndex(arg);
   if (letterIndex === -1) return { consumed: 1, splitValue: null };
   const attached = arg.slice(letterIndex + 1);
   const value = attached === "" ? (args[i + 1] ?? "") : attached;
