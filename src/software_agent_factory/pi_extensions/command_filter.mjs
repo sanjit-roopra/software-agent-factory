@@ -28,7 +28,7 @@ const MISSING_COMMAND_REASON = `${REASON_PREFIX} the bash call has no readable c
 
 const SEPARATORS = new Set([";", "&", "|", "\n", "(", ")"]);
 const REDIRECT_OPERATOR = /^[<>]{1,3}[&|]?/; // <, >, >>, <<, <<<, >&, >|, <&
-const FILE_DESCRIPTOR = /^\d+$/;
+const FILE_DESCRIPTOR = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/; // 2 or {fd}
 
 function closingParen(text, start) {
   let depth = 1;
@@ -94,7 +94,7 @@ export function parseCommands(text) {
     } else if (ch === "#" && word === null) {
       while (i + 1 < text.length && text[i + 1] !== "\n") i++; // a comment runs to the newline
     } else if (ch === "<" || ch === ">") {
-      if (word !== null && FILE_DESCRIPTOR.test(word)) word = null; // the 2 of 2>&1
+      if (word !== null && FILE_DESCRIPTOR.test(word)) word = null; // the 2 of 2>&1, the {fd} of {fd}>out
       else endWord();
       i += text.slice(i).match(REDIRECT_OPERATOR)[0].length - 1;
       dropNextWord = true;
@@ -115,17 +115,35 @@ export function parseCommands(text) {
 // env/command prefixes, and opens sh -c / bash -c bodies.
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const ENV_OPTIONS_WITH_VALUE = new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]);
+const ENV_OPTIONS_WITH_VALUE = new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-P"]);
+// Short env options that take a value: a bundle like -iu consumes the next word too.
+const ENV_BUNDLE_WITH_VALUE = /^-[A-Za-z]*[uCSP]$/;
 const COMMAND_LOOKUP_FLAG = /^-[A-Za-z]*[vV][A-Za-z]*$/; // command -v and -V only look a name up
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
 
 const baseName = (path) => path.split("/").pop();
 
-function splitOptions(args, optionsWithValue) {
+function splitOptions(args, optionsWithValue, bundleWithValue = null) {
   let i = 0;
-  while (i < args.length && args[i].startsWith("-")) i += optionsWithValue.has(args[i]) ? 2 : 1;
+  while (i < args.length && args[i].startsWith("-")) {
+    const takesValue = optionsWithValue.has(args[i]) || bundleWithValue?.test(args[i]);
+    i += takesValue ? 2 : 1;
+  }
   return { options: args.slice(0, i), rest: args.slice(i) };
+}
+
+// env -S / --split-string takes a command line as its value, so its words run first.
+const ENV_SPLIT_STRING = /^(?:-[A-Za-z]*S|--split-string=?)(.*)$/s;
+
+function envSplitStringArgs(options) {
+  for (let i = 0; i < options.length; i++) {
+    const match = ENV_SPLIT_STRING.exec(options[i]);
+    if (!match) continue;
+    const joinedOption = /^-[A-Za-z]*S$/.test(options[i]) || options[i] === "--split-string";
+    return parseCommands(joinedOption ? (options[i + 1] ?? "") : match[1])[0] ?? [];
+  }
+  return [];
 }
 
 function stripPrefixes(argv) {
@@ -136,7 +154,12 @@ function stripPrefixes(argv) {
     if (args.length === 0) return args;
     const program = baseName(args[0]);
     if (program === "env") {
-      args = splitOptions(args.slice(1), ENV_OPTIONS_WITH_VALUE).rest;
+      const { options, rest } = splitOptions(
+        args.slice(1),
+        ENV_OPTIONS_WITH_VALUE,
+        ENV_BUNDLE_WITH_VALUE,
+      );
+      args = [...envSplitStringArgs(options), ...rest];
     } else if (program === "command") {
       const { options, rest } = splitOptions(args.slice(1), new Set());
       if (options.some((option) => COMMAND_LOOKUP_FLAG.test(option))) return [];
@@ -168,6 +191,7 @@ const GIT_OPTIONS_WITH_VALUE = new Set([
   "--git-dir",
   "--work-tree",
   "--namespace",
+  "--attr-source",
   "--exec-path",
   "--super-prefix",
   "--config-env",
