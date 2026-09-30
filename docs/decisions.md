@@ -1,8 +1,57 @@
 # Architecture Decisions
 
+## ADR-032: pi implementer shell commands match the Copilot deny list
+
+Status: accepted on 2026-09-30. This amends ADR-031.
+
+ADR-031 left the pi implementer with an unrestricted `bash` tool.
+Pi has no approval layer, so the implementer was able to run `git commit`, `git push`, `gh`, `curl` or `wget`.
+The Copilot runtime denies these commands.
+The factory printed a startup warning and issue #70 tracked the gap.
+
+The factory now gives pi the same limits as Copilot, and no more.
+
+- The implementer loads a pi extension that the factory owns, `command_filter.mjs`.
+  The factory passes it with `-e`. Other extension discovery stays off.
+- The extension blocks each `bash` call that runs `git commit`, `git push`, any `gh` command, `curl` or `wget`.
+  It finds them in compound commands, in `sh -c` and `bash -c` bodies, after `env` and `command` prefixes and after git global options.
+- The agent gets a reason that says what to do instead and not to retry.
+- The list matches the Copilot implementer deny list. A test keeps the two lists in step.
+- If the packaged filter file is missing, the implementer call fails before pi starts. It never runs unfiltered.
+- The factory removes `SSH_AUTH_SOCK` from the pi child environment, so git over SSH cannot use ssh-agent keys.
+  Key files and HTTPS credential helpers are out of scope, as with Copilot.
+- Read-only roles have no `bash` tool on pi. This does not change.
+- The startup warning for `--runtime pi` is removed.
+
+There is no operating system sandbox. Copilot has none either.
+
+Rejected options:
+
+- A macOS `sandbox-exec` profile around pi.
+  It goes beyond Copilot.
+  Git index writes fail unless `.git/worktrees` and `.git/objects` are writable.
+  It needs deny rules for ssh-agent and the Keychain.
+  It also needs macOS in CI.
+- Docker. It needs an image, a way to pass credentials and a boot cost for every call.
+
+Consequences:
+
+- pi and Copilot have the same command limits.
+- The filter is pattern-strength, like the Copilot rules. It is not a security boundary.
+- These limits are accepted:
+    - Script files that run the commands.
+    - Wrappers such as `sudo`, `xargs`, `exec` and `nohup`.
+    - Shell keywords such as `if`, `then` and `{ }`.
+    - Heredoc bodies. The filter checks them as commands, so they fail closed. Agents write files with the write tool.
+- The filter depends on the pi `tool_call` extension API. It was verified on pi 0.99.1.
+- The filter tests need Node 22 or later.
+
 ## ADR-031: pi is a recommended agent runtime
 
 Status: accepted on 2026-09-30. This amends ADR-017 and ADR-022.
+
+*Amended in part by [ADR-032](#adr-032-pi-implementer-shell-commands-match-the-copilot-deny-list):
+the pi implementer no longer has an unrestricted `bash` tool. The rest of this decision still stands.*
 
 The factory can now run agents with pi (`--runtime pi`) as well as with the Copilot CLI.
 Every command that takes `--runtime` accepts `pi`.
@@ -81,11 +130,10 @@ Both words mean the same thing.
 Amendment to ADR-022:
 
 Under `--runtime copilot` the implementer cannot run `git commit`, `git push` or `gh`.
-Under `--runtime pi` the implementer has an unrestricted `bash` tool, so it can run them.
+Under `--runtime pi` this decision first left the implementer with an unrestricted `bash` tool.
+[ADR-032](#adr-032-pi-implementer-shell-commands-match-the-copilot-deny-list) replaced that with a command filter.
 The factory does not refuse pi when merge or pull request delivery is enabled.
 An agent with a shell has many other ways to reach the network. A refusal does not protect much.
-The factory logs a warning at start when `--runtime pi` is selected.
-Issue #70 tracks tool call limits and a sandbox for pi.
 
 ## ADR-030: Risk assessment can be disabled
 
