@@ -5,7 +5,7 @@
 
 The pi runtime (ADR-031, recommended runtime) gives the IMPLEMENTER an unrestricted `bash` tool. pi has no approval layer, so an implementer can run `git commit`, `git push`, `gh`, `curl` or `wget`. The Copilot runtime denies these with pattern rules. This change gives pi the same restrictions, and no more.
 
-A factory-owned pi extension inspects every `bash` tool call from the implementer. It blocks denied commands with a reason that tells the agent what to do instead. The factory also removes `SSH_AUTH_SOCK` from pi's environment, so `git push` over SSH has no keys. The unconditional `--runtime pi` startup warning goes away.
+A factory-owned pi extension inspects every `bash` tool call from the implementer. It blocks denied commands with a reason that tells the agent what to do instead. The factory also removes `SSH_AUTH_SOCK` from pi's environment, so `git push` over SSH cannot use ssh-agent keys. The unconditional `--runtime pi` startup warning goes away.
 
 An OS sandbox for pi is out of scope. Copilot has none either.
 
@@ -25,6 +25,9 @@ An OS sandbox for pi is out of scope. Copilot has none either.
 
 - Blocked: `git commit`, `git push`, any `gh` command, `curl`, `wget`. This mirrors the Copilot deny list (`shell(git commit)`, `shell(git push)`, `shell(gh:*)`, `url`).
 - The filter checks each command segment. Segments are split on `;`, `&&`, `||`, `|`, newlines, `$(…)` and backticks. It unwraps `sh -c`/`bash -c` bodies, `env`/`command` prefixes and variable assignments. It skips `git` global options (`-C`, `-c`, `--git-dir`). It matches the program by its base name, so `/usr/bin/git push` counts.
+- The filter ignores redirects such as `> out.txt` and `2>&1`. A redirect target is a file, not a command.
+- The filter skips `#` comments up to the end of the line.
+- The filter checks heredoc bodies as commands. This is an accepted limit. Agents write file content with the write tool instead.
 - Quoted arguments of other programs are not commands. For example, `echo "git push"` and `grep -rn gh src` pass.
 - A `bash` call with a missing or non-string command is blocked.
 - Reason format: `Blocked by the factory command filter: '<rule>' is not allowed. <what to do instead>. Do not retry or rephrase this command.`

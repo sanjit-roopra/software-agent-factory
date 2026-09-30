@@ -136,6 +136,12 @@ _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
 #: the same file in a wheel and in a PyInstaller onedir bundle.
 _COMMAND_FILTER_PATH = Path(__file__).parent / "pi_extensions" / "command_filter.mjs"
 
+
+def _needs_command_filter(capability: AgentCapability) -> bool:
+    """True for the one capability with a ``bash`` tool, the implementer's."""
+    return capability is AgentCapability.IMPLEMENTER_WRITE
+
+
 #: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
 _DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
 
@@ -535,8 +541,8 @@ class PiAgentRuntime(AgentRuntime):
         env, scrubbed_values = self._child_env_and_scrubbed()
         prompt_chars = len(prompt)
 
-        if self._filter_is_missing(request):
-            ctx = _CallContext(request, prompt_chars, 0.0, scrubbed_values)
+        if self._filter_is_missing(capability_for(request)):
+            ctx = _CallContext(request, prompt_chars, boot_ms=0.0, scrubbed_values=scrubbed_values)
             return ctx.failed(
                 f"pi command filter extension is missing: {self._command_filter_path}"
             )
@@ -559,16 +565,13 @@ class PiAgentRuntime(AgentRuntime):
             if session is not None:
                 self._record_session(request, session, prepared.sections_after, success=settled)
 
-    def _filter_is_missing(self, request: AgentRequest) -> bool:
+    def _filter_is_missing(self, capability: AgentCapability) -> bool:
         """True for an implementer call whose command filter file does not exist.
 
         The filter is what restricts the implementer's ``bash``, so the call
         fails instead of running pi without it.
         """
-        return (
-            capability_for(request) is AgentCapability.IMPLEMENTER_WRITE
-            and not self._command_filter_path.is_file()
-        )
+        return _needs_command_filter(capability) and not self._command_filter_path.is_file()
 
     def _session_for(self, request: AgentRequest) -> _SessionUse | None:
         """Return the persisted session this call runs in, ``None`` for a role without one."""
@@ -740,11 +743,7 @@ class PiAgentRuntime(AgentRuntime):
             request.reasoning,
             *_TOOL_ARGS[capability],
             "--no-extensions",
-            *(
-                ("-e", str(self._command_filter_path))
-                if capability is AgentCapability.IMPLEMENTER_WRITE
-                else ()
-            ),
+            *(("-e", str(self._command_filter_path)) if _needs_command_filter(capability) else ()),
             "--no-skills",
             "--no-prompt-templates",
             "--no-context-files",
@@ -764,8 +763,9 @@ class PiAgentRuntime(AgentRuntime):
         ``<PROVIDER>_API_KEY`` for a provider the map does not list. Every
         other known credential variable, every other ``*_API_KEY`` and the
         routing API key (pi never needs it) are removed. ``SSH_AUTH_SOCK`` is
-        removed too, so the implementer's ``bash`` cannot reach the operator's
-        ssh agent; it is not a secret value, so it is not redacted.
+        removed too, which removes ssh-agent access only: key files and
+        credential helpers are out of scope, as they are for Copilot. It is
+        not a secret value, so it is not redacted.
 
         The second return value is the credential values to redact from any
         failure reason built from pi's stderr or protocol output (mirroring
