@@ -898,9 +898,10 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     """``factory service install --runtime pi`` must forward the pi runtime
     into both the doctor preflight and the install request, mirroring
     ``test_service_install_runtime_and_flags_are_forwarded``'s coverage of
-    ``--runtime copilot``. It must also warn about the unrestricted shell tool
-    on stderr (AC19) and tell the doctor preflight to reject env-var
-    credentials, since a launchd job never inherits the operator's shell."""
+    ``--runtime copilot``. It must not warn about an unrestricted shell tool
+    (the pi implementer has a command filter) and must tell the doctor
+    preflight to reject env-var credentials, since a launchd job never inherits the
+    operator's shell."""
     captured: dict[str, object] = {}
 
     def fake_run_doctor(**kwargs: object) -> DoctorReport:
@@ -938,8 +939,7 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     request = captured["request"]
     assert request.runtime is ServiceRuntime.PI
     assert "runtime: pi" in result.output
-    assert "unrestricted" in result.stderr
-    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
+    assert "unrestricted" not in result.stderr
 
 
 def test_service_install_carries_pi_coding_agent_dir_into_the_request(

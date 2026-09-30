@@ -124,12 +124,6 @@ DEFAULT_LABEL = "com.github.software-agent-factory"
 #: run inside the repository, a worktree or the operator's shell cwd.
 SKILL_GENERATION_DIRNAME = "skill-generation"
 
-#: Tracks the missing tool-call restriction/sandboxing the pi runtime does
-#: not yet have (``plans/pi-agent-runtime.md`` Build-time decisions, AC18/19).
-PI_UNRESTRICTED_SHELL_FOLLOWUP_URL = (
-    "https://github.com/sanjit-roopra/software-agent-factory/issues/70"
-)
-
 #: Shared ``--runtime`` help text for every command whose runtime choice
 #: builds an :class:`~software_agent_factory.agents.AgentRuntime` (``run``,
 #: ``project``, ``start``, ``skill refresh``). One source keeps the three
@@ -143,8 +137,7 @@ NO_RISK_ASSESSMENT_HELP = (
 )
 
 RUNTIME_OPTION_HELP = (
-    "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or "
-    "'pi' (paid; unrestricted shell tool)."
+    "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or 'pi' (paid)."
 )
 
 #: ``--runtime`` help text for ``skill refresh``, which rejects ``pi``
@@ -324,7 +317,6 @@ def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime
         runtime_cls = _seam("CopilotAgentRuntime")
         return runtime_cls()  # type: ignore[no-any-return]
     if choice is RuntimeChoice.PI:
-        _warn_pi_unrestricted_shell()
         pi_runtime_cls = _seam("PiAgentRuntime")
         return pi_runtime_cls(  # type: ignore[no-any-return]
             config.pi,
@@ -333,22 +325,6 @@ def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime
         )
     fake_runtime_cls = _seam("FakeAgentRuntime")
     return fake_runtime_cls()  # type: ignore[no-any-return]
-
-
-def _warn_pi_unrestricted_shell() -> None:
-    """The pi shell tool has no approval layer yet (follow-up: AC18/#70).
-
-    Written to both the structured file log (``logger.warning``) and stderr
-    (``typer.echo``, mirroring :func:`_warn_fake_backlog_claims`) so the
-    warning reaches the operator's terminal even when nobody is tailing the
-    log file.
-    """
-    message = (
-        "the pi runtime's shell tool is unrestricted: git push and gh can run "
-        f"without approval. Follow-up: {PI_UNRESTRICTED_SHELL_FOLLOWUP_URL}"
-    )
-    logger.warning(message)
-    typer.echo(f"warning: {message}", err=True)
 
 
 def _warn_fake_backlog_claims() -> None:
@@ -1297,8 +1273,6 @@ def service_install_command(
         )
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
-    if runtime is RuntimeChoice.PI:
-        _warn_pi_unrestricted_shell()
 
     run_doctor_fn = _seam("run_doctor")
     report = run_doctor_fn(

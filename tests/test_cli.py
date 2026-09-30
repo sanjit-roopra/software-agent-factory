@@ -902,7 +902,7 @@ def pi_runtime_calls(monkeypatch: pytest.MonkeyPatch) -> list[PiRuntimeCall]:
 
 @pytest.fixture
 def pi_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Capture the CLI's ``logger.warning`` messages (the structured-log side of AC19)."""
+    """Capture the CLI's ``logger.warning`` messages (to assert the pi runtime logs no warning)."""
     warnings: list[str] = []
 
     class _RecordingLogger:
@@ -985,11 +985,11 @@ def test_run_with_pi_runtime_passes_the_routing_key_variable_name_to_be_scrubbed
 
 
 @pytest.mark.usefixtures("pi_runtime_calls")
-def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
+def test_run_with_pi_runtime_does_not_warn_about_an_unrestricted_shell(
     source_repo: Path, data_dir: Path, path_with, pi_warnings: list[str]
 ) -> None:
-    """AC19: selecting pi logs a warning naming the unrestricted shell tool
-    and linking the follow-up issue (AC18, #70), before the run happens."""
+    """The pi implementer has a command filter, so selecting pi must neither
+    log nor print an "unrestricted shell" warning."""
     path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
 
     result = runner.invoke(
@@ -1010,15 +1010,8 @@ def test_run_with_pi_runtime_warns_about_the_unrestricted_shell(
     )
 
     assert result.exit_code == 0, result.output
-    assert any(
-        "unrestricted" in warning
-        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
-        for warning in pi_warnings
-    ), pi_warnings
-    # AC19: the warning must also reach the operator's terminal, not just the
-    # structured file log.
-    assert "unrestricted" in result.stderr
-    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
+    assert not any("unrestricted" in warning for warning in pi_warnings), pi_warnings
+    assert "unrestricted" not in result.stderr
 
 
 def test_project_with_pi_runtime_selects_the_real_runtime(
@@ -1026,7 +1019,6 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
     data_dir: Path,
     path_with,
     pi_runtime_calls: list[PiRuntimeCall],
-    pi_warnings: list[str],
 ) -> None:
     path_with("pi")  # project's prerequisite gate; the pi runtime itself is stubbed
 
@@ -1052,13 +1044,6 @@ def test_project_with_pi_runtime_selects_the_real_runtime(
     )
 
     assert result.exit_code == 0, result.output
-    assert any(
-        "unrestricted" in warning
-        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
-        for warning in pi_warnings
-    ), pi_warnings
-    assert "unrestricted" in result.stderr
-    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
     assert len(pi_runtime_calls) == 1
     assert "state: DONE" in result.output
 
@@ -1224,7 +1209,6 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     monkeypatch: pytest.MonkeyPatch,
     path_with,
     pi_runtime_calls: list[PiRuntimeCall],
-    pi_warnings: list[str],
 ) -> None:
     path_with("gh", "pi")  # start's prerequisite gate; the tracker itself is stubbed
     _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
@@ -1250,13 +1234,6 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     assert result.exit_code == 0, result.output
     assert len(pi_runtime_calls) == 1
     assert "dispatched: acme/repo#11" in result.output
-    assert any(
-        "unrestricted" in warning
-        and "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in warning
-        for warning in pi_warnings
-    ), pi_warnings
-    assert "unrestricted" in result.stderr
-    assert "https://github.com/sanjit-roopra/software-agent-factory/issues/70" in result.stderr
 
 
 def test_start_accepts_fast_performance_mode(
