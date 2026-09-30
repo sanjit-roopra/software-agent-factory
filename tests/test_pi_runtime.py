@@ -58,6 +58,7 @@ from software_agent_factory.models import (
 from software_agent_factory.pi_rpc import PiRpcClient
 from software_agent_factory.pi_runtime import (
     _BEST_EFFORT_USAGE_DEADLINE_SECONDS,
+    _COMMAND_FILTER_PATH,
     PiAgentRuntime,
     ProcessFactory,
     _default_process_factory,
@@ -106,12 +107,17 @@ def _isolated_data_dir(tmp_path: Path) -> None:
 
 
 def _runtime(
-    *, process_factory: ProcessFactory | None = None, **overrides: object
+    *,
+    process_factory: ProcessFactory | None = None,
+    command_filter_path: Path | None = None,
+    **overrides: object,
 ) -> PiAgentRuntime:
     config = PiConfig(**overrides)
     kwargs: dict[str, object] = {}
     if process_factory is not None:
         kwargs["process_factory"] = process_factory
+    if command_filter_path is not None:
+        kwargs["command_filter_path"] = command_filter_path
     return PiAgentRuntime(config, data_dir=_DATA_DIR[0], **kwargs)
 
 
@@ -217,9 +223,15 @@ class _Launch(NamedTuple):
     env: dict[str, str]
 
 
-def _launch(request: AgentRequest | None = None, **pi_config: object) -> _Launch:
+def _launch(
+    request: AgentRequest | None = None,
+    *,
+    command_filter_path: Path | None = None,
+    **pi_config: object,
+) -> _Launch:
     """Run ``request`` (default: a triage call) and return what pi was launched with.
 
+    ``command_filter_path`` replaces the packaged command filter file.
     ``pi_config`` overrides :class:`PiConfig` fields (``provider``, ...).
 
     The process factory is the seam: it records the ``(command, cwd, env)``
@@ -227,14 +239,17 @@ def _launch(request: AgentRequest | None = None, **pi_config: object) -> _Launch
     Whether the call then succeeds depends on the role's artifact, which these
     launch assertions do not care about.
     """
+    request = request or make_request(AgentRole.TRIAGE)
     launches: list[_Launch] = []
-    process = _scripted_process(json.dumps(_TRIAGE_JSON))
+    process = _scripted_process(_TEXT_BY_ROLE.get(request.role, json.dumps(_TRIAGE_JSON)))
 
     def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
         launches.append(_Launch(list(command), cwd, env))
         return process
 
-    _runtime(process_factory=factory, **pi_config).run(request or make_request(AgentRole.TRIAGE))
+    _runtime(process_factory=factory, command_filter_path=command_filter_path, **pi_config).run(
+        request
+    )
     assert len(launches) == 1
     return launches[0]
 
@@ -264,6 +279,8 @@ def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
         "--tools",
         "read,bash,edit,write,grep,find,ls",
         "--no-extensions",
+        "-e",
+        str(_COMMAND_FILTER_PATH),
         "--no-skills",
         "--no-prompt-templates",
         "--no-context-files",
@@ -312,6 +329,64 @@ def test_run_change_set_correction_launches_pi_without_tools_in_the_workspace(
     assert "--no-tools" in launch.command
     assert "--tools" not in launch.command
     assert launch.cwd == tmp_path.resolve()
+
+
+def test_packaged_command_filter_file_exists() -> None:
+    assert _COMMAND_FILTER_PATH.is_file()
+
+
+@pytest.mark.parametrize(
+    "request_",
+    [
+        make_request(AgentRole.TRIAGE),
+        make_request(AgentRole.REVIEWER),
+        _correction_request(),
+    ],
+    ids=["read-only-triage", "read-only-reviewer", "no-tools-correction"],
+)
+def test_run_only_the_implementer_loads_the_command_filter(request_: AgentRequest) -> None:
+    command = _launch(request_).command
+
+    assert "-e" not in command
+    assert "--no-extensions" in command
+
+
+def test_run_implementer_uses_the_injected_command_filter_path(tmp_path: Path) -> None:
+    command_filter_path = tmp_path / "filter.mjs"
+    command_filter_path.write_text("export default () => {};", encoding="utf-8")
+
+    command = _launch(
+        make_request(AgentRole.IMPLEMENTER, workspace_path=str(tmp_path)),
+        command_filter_path=command_filter_path,
+    ).command
+
+    assert command[command.index("-e") + 1] == str(command_filter_path)
+
+
+def test_run_implementer_fails_without_starting_pi_when_the_command_filter_is_missing(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "gone" / "command_filter.mjs"
+    started: list[Sequence[str]] = []
+
+    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
+        started.append(command)
+        raise AssertionError("pi must not be started without its command filter")
+
+    result = _runtime(process_factory=factory, command_filter_path=missing).run(
+        make_request(AgentRole.IMPLEMENTER, workspace_path=str(tmp_path))
+    )
+
+    assert result.success is False
+    assert result.failure_reason is not None
+    assert str(missing) in result.failure_reason
+    assert started == []
+
+
+def test_run_read_only_role_does_not_need_the_command_filter_file(tmp_path: Path) -> None:
+    launch = _launch(make_request(AgentRole.TRIAGE), command_filter_path=tmp_path / "gone.mjs")
+
+    assert "-e" not in launch.command
 
 
 def test_run_rejects_skill_generation_before_starting_pi() -> None:
@@ -1119,6 +1194,14 @@ def test_run_child_env_scrubs_github_credential_env_vars(monkeypatch: pytest.Mon
 
     assert "GITHUB_TOKEN" not in env
     assert "GH_TOKEN" not in env
+
+
+def test_run_child_env_drops_the_ssh_agent_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+
+    env = _launch().env
+
+    assert "SSH_AUTH_SOCK" not in env
 
 
 def test_run_child_env_keeps_copilot_github_token_for_headless_auth(

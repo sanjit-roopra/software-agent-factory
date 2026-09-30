@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -32,6 +33,7 @@ ALLOWED_ACTIONS = frozenset(
         "actions/dependency-review-action",
         "actions/deploy-pages",
         "actions/download-artifact",
+        "actions/setup-node",
         "actions/setup-python",
         "actions/upload-artifact",
         "actions/upload-pages-artifact",
@@ -768,3 +770,37 @@ def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets
     pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "dashboard/static" not in pyproject_text
     assert 'factory = "software_agent_factory.__main__:main"' in pyproject_text
+
+
+def test_pi_command_filter_is_packaged() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["software_agent_factory"]
+    spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
+
+    assert "pi_extensions/command_filter.mjs" in package_data
+    assert '"pi_extensions" / "command_filter.mjs"' in spec_text
+    assert '"software_agent_factory/pi_extensions"' in spec_text
+
+
+def _jobs_running_the_full_test_suite() -> dict[tuple[str, str], list[dict[str, str]]]:
+    """Map (workflow, job) to its steps for every job with a step that runs all of pytest."""
+    jobs: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for name in ("ci.yml", "release.yml"):
+        _, workflow = _load_workflow(name)
+        for job_name, job in workflow["jobs"].items():
+            steps = job.get("steps", [])
+            if any(
+                "pytest -q" in step.get("run", "") and "tests/" not in step["run"] for step in steps
+            ):
+                jobs[(name, job_name)] = steps
+    return jobs
+
+
+def test_jobs_that_run_the_full_test_suite_set_up_node_for_the_pi_command_filter_tests() -> None:
+    jobs = _jobs_running_the_full_test_suite()
+
+    assert set(jobs) == {("ci.yml", "tests"), ("release.yml", "validate-tag")}
+    for (workflow_name, job_name), steps in jobs.items():
+        assert any(step.get("uses", "").startswith("actions/setup-node@") for step in steps), (
+            f"{workflow_name} job {job_name} runs the full test suite without setting up Node.js"
+        )
