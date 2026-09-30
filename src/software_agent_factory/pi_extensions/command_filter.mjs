@@ -28,7 +28,7 @@ const MISSING_COMMAND_REASON = `${REASON_PREFIX} the bash call has no readable c
 
 const SEPARATORS = new Set([";", "&", "|", "\n", "(", ")"]);
 const REDIRECT_OPERATOR = /^[<>]{1,3}[&|]?/; // <, >, >>, <<, <<<, >&, >|, <&
-const FILE_DESCRIPTOR = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/; // 2 or {fd}
+const FILE_DESCRIPTOR = /^(?:\d+|\{[A-Za-z_]\w*\})$/; // 2 or {fd}
 
 function closingParen(text, start) {
   let depth = 1;
@@ -39,90 +39,149 @@ function closingParen(text, start) {
   return text.length;
 }
 
-export function parseCommands(text) {
-  const commands = [];
-  let words = [];
-  let word = null; // null means no word is in progress; "" is an empty quoted word
-  let quote = null;
-  let dropNextWord = false; // the word after a redirect operator is a file, not an argument
+// One pass over a shell string. Each step consumes at least one character.
+class Tokenizer {
+  constructor(text) {
+    this.text = text;
+    this.pos = 0;
+    this.commands = [];
+    this.words = [];
+    this.word = null; // null means no word is in progress; "" is an empty quoted word
+    this.quote = null;
+    this.dropNextWord = false; // the word after a redirect operator is a file, not an argument
+  }
 
-  const endWord = () => {
-    if (word !== null) {
-      if (dropNextWord) dropNextWord = false;
-      else words.push(word);
-    }
-    word = null;
-  };
-  const endSegment = () => {
-    endWord();
-    dropNextWord = false;
-    if (words.length > 0) commands.push(words);
-    words = [];
-  };
-  const substitute = (body) => {
-    commands.push(...parseCommands(body));
-    word ??= "";
-  };
+  run() {
+    while (this.pos < this.text.length) this.step(this.text[this.pos]);
+    this.endSegment();
+    return this.commands;
+  }
 
-  // The else-if order matters: quote states are tested before the unquoted-only branches.
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      else word += ch;
-    } else if (ch === "\\" && text[i + 1] === "\n") {
-      i++; // a backslash-newline joins the lines
-    } else if (ch === "\\" && i + 1 < text.length) {
-      word = (word ?? "") + text[++i];
-    } else if (ch === "$" && text[i + 1] === "(") {
-      const closingParenIndex = closingParen(text, i + 2);
-      substitute(text.slice(i + 2, closingParenIndex));
-      i = closingParenIndex;
-    } else if (ch === "`") {
-      const closingBacktickIndex =
-        text.indexOf("`", i + 1) === -1 ? text.length : text.indexOf("`", i + 1);
-      substitute(text.slice(i + 1, closingBacktickIndex));
-      i = closingBacktickIndex;
-    } else if (ch === '"') {
-      quote = quote === '"' ? null : '"';
-      word ??= "";
-    } else if (quote === '"') {
-      word += ch;
-    } else if (ch === "'") {
-      quote = "'";
-      word ??= "";
-    } else if (ch === "#" && word === null) {
-      while (i + 1 < text.length && text[i + 1] !== "\n") i++; // a comment runs to the newline
+  // The order matters: quote states are tested before the unquoted-only cases.
+  step(ch) {
+    if (this.quote === "'") return this.singleQuoted(ch);
+    if (ch === "\\") return this.backslash();
+    if (ch === "$" && this.text[this.pos + 1] === "(") return this.dollarParen();
+    if (ch === "`") return this.backtick();
+    if (ch === '"') return this.doubleQuote();
+    if (this.quote === '"') return this.append(ch);
+    return this.unquoted(ch);
+  }
+
+  unquoted(ch) {
+    if (ch === "'") {
+      this.quote = "'";
+      this.word ??= "";
+      this.pos++;
+    } else if (ch === "#" && this.word === null) {
+      this.comment();
     } else if (ch === "<" || ch === ">") {
-      // The 2 of 2>&1 and the {fd} of {fd}>out belong to the redirect, not the command.
-      if (word !== null && FILE_DESCRIPTOR.test(word)) word = null;
-      else endWord();
-      i += text.slice(i).match(REDIRECT_OPERATOR)[0].length - 1;
-      dropNextWord = true;
+      this.redirect();
     } else if (ch === " " || ch === "\t") {
-      endWord();
+      this.endWord();
+      this.pos++;
     } else if (SEPARATORS.has(ch)) {
-      endSegment();
+      this.endSegment();
+      this.pos++;
     } else {
-      word = (word ?? "") + ch;
+      this.append(ch);
     }
   }
-  endSegment();
-  return commands;
+
+  append(ch) {
+    this.word = (this.word ?? "") + ch;
+    this.pos++;
+  }
+
+  singleQuoted(ch) {
+    if (ch === "'") this.quote = null;
+    else this.word += ch;
+    this.pos++;
+  }
+
+  doubleQuote() {
+    this.quote = this.quote === '"' ? null : '"';
+    this.word ??= "";
+    this.pos++;
+  }
+
+  backslash() {
+    const next = this.text[this.pos + 1];
+    if (next === "\n") {
+      this.pos += 2; // a backslash-newline joins the lines
+    } else if (next === undefined) {
+      this.append("\\");
+    } else {
+      this.word = (this.word ?? "") + next;
+      this.pos += 2;
+    }
+  }
+
+  dollarParen() {
+    const close = closingParen(this.text, this.pos + 2);
+    this.substitute(this.text.slice(this.pos + 2, close));
+    this.pos = close + 1;
+  }
+
+  backtick() {
+    const found = this.text.indexOf("`", this.pos + 1);
+    const close = found === -1 ? this.text.length : found;
+    this.substitute(this.text.slice(this.pos + 1, close));
+    this.pos = close + 1;
+  }
+
+  comment() {
+    const newline = this.text.indexOf("\n", this.pos); // a comment runs to the newline
+    this.pos = newline === -1 ? this.text.length : newline;
+  }
+
+  redirect() {
+    // The 2 of 2>&1 and the {fd} of {fd}>out belong to the redirect, not the command.
+    if (this.word !== null && FILE_DESCRIPTOR.test(this.word)) this.word = null;
+    else this.endWord();
+    this.pos += this.text.slice(this.pos).match(REDIRECT_OPERATOR)[0].length;
+    this.dropNextWord = true;
+  }
+
+  substitute(body) {
+    this.commands.push(...parseCommands(body));
+    this.word ??= "";
+  }
+
+  endWord() {
+    if (this.word !== null) {
+      if (this.dropNextWord) this.dropNextWord = false;
+      else this.words.push(this.word);
+    }
+    this.word = null;
+  }
+
+  endSegment() {
+    this.endWord();
+    this.dropNextWord = false;
+    if (this.words.length > 0) this.commands.push(this.words);
+    this.words = [];
+  }
+}
+
+export function parseCommands(text) {
+  return new Tokenizer(text).run();
 }
 
 // --- Command normalisation ------------------------------------------------------------
 // Reduces an argv list to the command that really runs: drops VAR=value assignments and
 // env/command prefixes, and opens sh -c / bash -c bodies.
 
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const ASSIGNMENT = /^[A-Za-z_]\w*=/;
 // env options that take a value (GNU and BSD). In a short bundle such as -iu, the first
 // value letter takes the rest of the word, or the next word when nothing is attached.
 const ENV_SHORT_WITH_VALUE = new Set(["u", "C", "S", "P"]);
 const ENV_LONG_WITH_VALUE = new Set(["--unset", "--chdir", "--split-string"]);
-const COMMAND_LOOKUP_FLAG = /^-[A-Za-z]*[vV][A-Za-z]*$/; // command -v and -V only look a name up
+const SHORT_OPTION_BUNDLE = /^-[A-Za-z]+$/;
+// command -v and -V only look a name up.
+const isCommandLookupFlag = (arg) => SHORT_OPTION_BUNDLE.test(arg) && /[vV]/.test(arg);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
-const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+const isShellCommandFlag = (arg) => SHORT_OPTION_BUNDLE.test(arg) && arg.includes("c");
 
 const baseName = (path) => path.split("/").pop();
 
@@ -132,44 +191,50 @@ function splitOptions(args) {
   return { options: args.slice(0, i), rest: args.slice(i) };
 }
 
+function longOption(arg) {
+  const equals = arg.indexOf("=");
+  return equals === -1
+    ? { name: arg, value: null }
+    : { name: arg.slice(0, equals), value: arg.slice(equals + 1) };
+}
+
+// Reads the env option at args[i]. Returns how many words it uses, and its value when
+// it is -S / --split-string, whose value is a command line.
+function envOption(args, i) {
+  const arg = args[i];
+  if (arg.startsWith("--")) {
+    const { name, value } = longOption(arg);
+    const takesNext = ENV_LONG_WITH_VALUE.has(name) && value === null;
+    const optionValue = takesNext ? (args[i + 1] ?? "") : value;
+    return {
+      consumed: takesNext ? 2 : 1,
+      splitValue: name === "--split-string" ? optionValue : null,
+    };
+  }
+  const letterIndex = [...arg].findIndex((letter, j) => j > 0 && ENV_SHORT_WITH_VALUE.has(letter));
+  if (letterIndex === -1) return { consumed: 1, splitValue: null };
+  const attached = arg.slice(letterIndex + 1);
+  const value = attached === "" ? (args[i + 1] ?? "") : attached;
+  return {
+    consumed: attached === "" ? 2 : 1,
+    splitValue: arg[letterIndex] === "S" ? value : null,
+  };
+}
+
+const endsEnvOptions = (arg) => arg === "-" || arg === "--";
+
 // Returns what env runs. A -S / --split-string value is a command line: its words go
 // back through env option parsing, as GNU env does, and then run before the rest.
 function envCommand(args) {
-  const splitString = (value, restIndex) => [
-    "env",
-    ...(parseCommands(value)[0] ?? []),
-    ...args.slice(restIndex),
-  ];
   let i = 0;
-  while (i < args.length && args[i].startsWith("-") && args[i] !== "-") {
-    const arg = args[i];
-    if (arg === "--") return args.slice(i + 1);
-    if (arg.startsWith("--")) {
-      const equals = arg.indexOf("=");
-      const name = equals === -1 ? arg : arg.slice(0, equals);
-      const attached = equals !== -1;
-      if (name === "--split-string") {
-        return attached
-          ? splitString(arg.slice(equals + 1), i + 1)
-          : splitString(args[i + 1] ?? "", i + 2);
-      }
-      i += ENV_LONG_WITH_VALUE.has(name) && !attached ? 2 : 1;
-      continue;
-    }
-    let consumed = 1;
-    for (let j = 1; j < arg.length; j++) {
-      if (!ENV_SHORT_WITH_VALUE.has(arg[j])) continue;
-      const attachedValue = arg.slice(j + 1);
-      if (attachedValue === "") consumed = 2;
-      if (arg[j] === "S") {
-        const value = attachedValue === "" ? (args[i + 1] ?? "") : attachedValue;
-        return splitString(value, i + consumed);
-      }
-      break;
+  while (i < args.length && args[i].startsWith("-") && !endsEnvOptions(args[i])) {
+    const { consumed, splitValue } = envOption(args, i);
+    if (splitValue !== null) {
+      return ["env", ...(parseCommands(splitValue)[0] ?? []), ...args.slice(i + consumed)];
     }
     i += consumed;
   }
-  return args[i] === "-" ? args.slice(i + 1) : args.slice(i);
+  return i < args.length && endsEnvOptions(args[i]) ? args.slice(i + 1) : args.slice(i);
 }
 
 function stripPrefixes(argv) {
@@ -183,7 +248,7 @@ function stripPrefixes(argv) {
       args = envCommand(args.slice(1));
     } else if (program === "command") {
       const { options, rest } = splitOptions(args.slice(1));
-      if (options.some((option) => COMMAND_LOOKUP_FLAG.test(option))) return [];
+      if (options.some(isCommandLookupFlag)) return [];
       args = rest;
     } else {
       return args;
@@ -195,7 +260,7 @@ function realCommands(argv) {
   const args = stripPrefixes(argv);
   if (args.length === 0) return [];
   if (SHELLS.has(baseName(args[0]))) {
-    const commandFlagIndex = args.findIndex((arg) => SHELL_COMMAND_FLAG.test(arg));
+    const commandFlagIndex = args.findIndex(isShellCommandFlag);
     if (commandFlagIndex !== -1 && commandFlagIndex + 1 < args.length) {
       return parseCommands(args[commandFlagIndex + 1]).flatMap(realCommands);
     }
@@ -247,10 +312,11 @@ export function blockedReason(command) {
 
 // --- pi extension ---------------------------------------------------------------------
 
-export default (pi) =>
+export default function registerCommandFilter(pi) {
   pi.on("tool_call", async (event) => {
     if (event.toolName !== "bash") return undefined;
     const command = event.input?.command;
     const reason = typeof command === "string" ? blockedReason(command) : MISSING_COMMAND_REASON;
     return reason === null ? undefined : { block: true, reason };
   });
+}
