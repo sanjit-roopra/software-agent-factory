@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -8,11 +9,14 @@ from software_agent_factory.config import FactoryConfig, RiskAssessmentConfig
 from software_agent_factory.delivery import DeliveryTarget
 from software_agent_factory.github import GitHubError, UnexpectedRepositoryError
 from software_agent_factory.models import (
+    AcceptedReplyReceipt,
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
     CICheckEvidence,
     CIReport,
+    Complexity,
+    EscalationStatus,
     FactoryRun,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
@@ -24,6 +28,7 @@ from software_agent_factory.models import (
     Risk,
     TriageResult,
     WorkflowState,
+    utc_now,
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
@@ -551,6 +556,145 @@ def test_resume_with_the_switch_off_cannot_bypass_an_approval_the_run_started_wi
     assert recovered.state is not WorkflowState.DONE
     assert recovered.risk_assessment_enabled is True
     assert publisher.calls == calls_before
+
+
+def _human_approved_r2_interrupted_at(
+    tmp_path: Path, source_repo: Path, boundary: str, *, run_id: str = "approved"
+) -> tuple[WorkflowController, LocalPublisher, FileRunStore, FactoryConfig]:
+    """Halt an R2 run for approval, record the reply receipt, reopen it, then crash in delivery.
+
+    The receipt is written the way the reply poller persists it; ``reopen`` is the real path.
+    """
+    config = _config(tmp_path)
+    config = config.model_copy(
+        update={"escalation": config.escalation.model_copy(update={"enabled": True})}
+    )
+    publisher = LocalPublisher(crash=boundary == "publish")
+    observer = Observer(crash=boundary == "observe")
+    runtime = FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
+    controller, store = _controller(config, publisher=publisher, observer=observer, runtime=runtime)
+    halted = controller.run(work_item(), source_repo, run_id=run_id)
+    assert halted.state is WorkflowState.NEEDS_HUMAN
+    escalation = halted.escalation
+    assert escalation is not None and escalation.approval_context is not None
+    receipt = AcceptedReplyReceipt(
+        comment_id=1,
+        user_login="lead-dev",
+        author_association="MEMBER",
+        created_at=utc_now(),
+        command=f"@factory resume v1 run={run_id} episode={escalation.episode_id}",
+        episode_id=escalation.episode_id,
+        run_id=run_id,
+        approval_context_fingerprint=escalation.approval_context.context_fingerprint,
+    )
+    store.save_run(
+        halted.model_copy(
+            update={
+                "escalation": escalation.model_copy(
+                    update={
+                        "status": EscalationStatus.REOPENED,
+                        "accepted_replies": [receipt],
+                        "reopen_count": 1,
+                    }
+                )
+            }
+        )
+    )
+    with pytest.raises(KeyboardInterrupt):
+        controller.reopen(run_id, source_repo)
+    return controller, publisher, store, config
+
+
+@pytest.mark.parametrize(
+    ("boundary", "checkpoint"),
+    [("publish", WorkflowState.PR_READY), ("observe", WorkflowState.CI_RUNNING)],
+)
+def test_resume_continues_delivery_for_a_human_approved_risk(
+    tmp_path: Path, source_repo: Path, boundary: str, checkpoint: WorkflowState
+) -> None:
+    _, publisher, store, config = _human_approved_r2_interrupted_at(tmp_path, source_repo, boundary)
+    assert store.load_run("approved").state is checkpoint
+
+    resumed_controller, _ = _controller(
+        config,
+        publisher=publisher,
+        runtime=FakeAgentRuntime(triage=triage_hook(risk=Risk.R2)),
+    )
+    recovered = resumed_controller.resume("approved", source_repo)
+
+    assert recovered.state is WorkflowState.DONE
+
+
+def _resume_after_tampering(
+    tmp_path: Path, source_repo: Path, tamper: Callable[[FileRunStore], None]
+) -> tuple[FactoryRun, LocalPublisher, int]:
+    _, publisher, store, config = _human_approved_r2_interrupted_at(
+        tmp_path, source_repo, "publish"
+    )
+    tamper(store)
+    calls_before = publisher.calls
+    resumed_controller, _ = _controller(config, publisher=publisher)
+    return resumed_controller.resume("approved", source_repo), publisher, calls_before
+
+
+def _assert_delivery_refused(
+    recovered: FactoryRun, publisher: LocalPublisher, calls_before: int
+) -> None:
+    assert recovered.state is WorkflowState.NEEDS_HUMAN
+    assert "persisted triage does not authorize delivery" in recovered.failure_reason
+    assert publisher.calls == calls_before
+
+
+def test_resume_refuses_when_the_triage_changed_after_the_approval(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    def tamper(store: FileRunStore) -> None:
+        triage = store.load_artifact("approved", TriageResult)
+        assert triage.risk_rationale is not None
+        rationale = triage.risk_rationale.model_copy(
+            update={"residual_risk": "Nobody reviews the release."}
+        )
+        store.save_artifact("approved", triage.model_copy(update={"risk_rationale": rationale}))
+
+    _assert_delivery_refused(*_resume_after_tampering(tmp_path, source_repo, tamper))
+
+
+def test_resume_refuses_when_the_approved_complexity_changed(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    def tamper(store: FileRunStore) -> None:
+        triage = store.load_artifact("approved", TriageResult)
+        store.save_artifact("approved", triage.model_copy(update={"complexity": Complexity.L3}))
+
+    _assert_delivery_refused(*_resume_after_tampering(tmp_path, source_repo, tamper))
+
+
+def test_resume_refuses_an_approval_receipt_that_was_never_dispatched(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    def tamper(store: FileRunStore) -> None:
+        run = store.load_run("approved")
+        assert run.escalation is not None
+        receipts = [
+            receipt.model_copy(update={"dispatched_at": None})
+            for receipt in run.escalation.accepted_replies
+        ]
+        escalation = run.escalation.model_copy(update={"accepted_replies": receipts})
+        store.save_run(run.model_copy(update={"escalation": escalation}))
+
+    _assert_delivery_refused(*_resume_after_tampering(tmp_path, source_repo, tamper))
+
+
+def test_resume_refuses_a_risk_that_needs_approval_when_no_receipt_exists(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    def tamper(store: FileRunStore) -> None:
+        run = store.load_run("approved")
+        assert run.escalation is not None
+        escalation = run.escalation.model_copy(update={"accepted_replies": []})
+        store.save_run(run.model_copy(update={"escalation": escalation}))
+
+    _assert_delivery_refused(*_resume_after_tampering(tmp_path, source_repo, tamper))
 
 
 def test_resume_refuses_policy_changes_without_mutating_checkpoint(

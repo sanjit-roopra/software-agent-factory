@@ -1276,7 +1276,11 @@ class WorkflowController:
         if work_item.id != run.work_item_id:
             raise ValueError("persisted work item does not match run")
         triage = self._store.load_artifact(run.id, TriageResult)
-        if not triage.factory_eligible or self._approval_required(run, triage.risk):
+        authorized = triage.factory_eligible and (
+            not self._approval_required(run, triage.risk)
+            or self._risk_approval_recorded(run, work_item, triage)
+        )
+        if not authorized:
             raise ValueError("persisted triage does not authorize delivery")
         route_decision: RouteDecision | None = None
         try:
@@ -1942,6 +1946,42 @@ class WorkflowController:
         run never changes policy on resume or reopen.
         """
         return run.risk_assessment_enabled and self._config.risk[risk].human_approval
+
+    def _risk_approval_recorded(
+        self, run: FactoryRun, work_item: WorkItem, triage: TriageResult
+    ) -> bool:
+        """Whether a human already approved exactly this persisted triage for ``run``.
+
+        Needs an accepted reply receipt that was acted on (``dispatched_at``) whose
+        fingerprint matches the approval context rebuilt from the work item and triage
+        now on disk. A triage changed after the approval therefore is not authorized.
+        """
+        import secrets
+
+        from .escalation import build_risk_approval_context
+
+        if run.escalation is None:
+            return False
+        for receipt in run.escalation.accepted_replies:
+            if (
+                receipt.run_id != run.id
+                or receipt.dispatched_at is None
+                or receipt.approval_context_fingerprint is None
+            ):
+                continue
+            context = build_risk_approval_context(
+                run,
+                self._store,
+                config=self._config,
+                work_item=work_item,
+                triage_result=triage,
+                episode_id=receipt.episode_id,
+            )
+            if context is not None and secrets.compare_digest(
+                receipt.approval_context_fingerprint, context.context_fingerprint
+            ):
+                return True
+        return False
 
     def _triage_rationale_rejection(
         self, run: FactoryRun, triage: TriageResult
