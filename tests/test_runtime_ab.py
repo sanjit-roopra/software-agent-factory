@@ -503,7 +503,7 @@ def test_go_bar_met() -> None:
     report = _bar_report(copilot, pi)
 
     assert report.verdict.meets is True
-    assert _criteria(report) == {"pass_count": True, "cache_read_share": True, "tokens": True}
+    assert _criteria(report) == {"pass_count": True, "tokens": True}
 
 
 def test_go_bar_pass_count_fails_alone() -> None:
@@ -513,7 +513,7 @@ def test_go_bar_pass_count_fails_alone() -> None:
     report = _bar_report(copilot, pi)
 
     assert report.verdict.meets is False
-    assert _criteria(report) == {"pass_count": False, "cache_read_share": True, "tokens": True}
+    assert _criteria(report) == {"pass_count": False, "tokens": True}
 
 
 def test_go_bar_pass_count_needs_at_least_one_pi_pass() -> None:
@@ -523,17 +523,7 @@ def test_go_bar_pass_count_needs_at_least_one_pi_pass() -> None:
     report = _bar_report(copilot, pi)
 
     assert report.verdict.meets is False
-    assert _criteria(report) == {"pass_count": False, "cache_read_share": True, "tokens": True}
-
-
-def test_go_bar_cache_share_fails_alone() -> None:
-    copilot = _copilot_sample()
-    pi = _tokens_sample(input=700, cache_read=1000)
-
-    report = _bar_report(copilot, pi)
-
-    assert report.verdict.meets is False
-    assert _criteria(report) == {"pass_count": True, "cache_read_share": False, "tokens": True}
+    assert _criteria(report) == {"pass_count": False, "tokens": True}
 
 
 def test_go_bar_tokens_fail_alone() -> None:
@@ -543,19 +533,7 @@ def test_go_bar_tokens_fail_alone() -> None:
     report = _bar_report(copilot, pi)
 
     assert report.verdict.meets is False
-    assert _criteria(report) == {"pass_count": True, "cache_read_share": True, "tokens": False}
-
-
-@pytest.mark.parametrize(
-    ("pi_input", "expected"),
-    [(175, True), (176, False)],
-    ids=["exactly 15 points over", "just short of 15 points"],
-)
-def test_go_bar_share_needs_fifteen_points_over_copilot(pi_input: int, expected: bool) -> None:
-    copilot = _tokens_sample(input=500, cache_read=500)
-    pi = _tokens_sample(input=pi_input, cache_read=325)
-
-    assert _criteria(_bar_report(copilot, pi))["cache_read_share"] is expected
+    assert _criteria(report) == {"pass_count": True, "tokens": False}
 
 
 @pytest.mark.parametrize(
@@ -570,30 +548,23 @@ def test_go_bar_token_ceiling_counts_input_plus_cache_write(
     assert _criteria(_bar_report(copilot, pi))["tokens"] is expected
 
 
-@pytest.mark.parametrize(
-    ("pi_input", "expected"), [(300, True), (301, False)], ids=["at 70 percent", "below 70 percent"]
-)
-def test_go_bar_pi_needs_70_percent_share_when_copilot_share_unavailable(
-    pi_input: int, expected: bool
-) -> None:
-    copilot = _tokens_sample(input=1000, cache_read=None, cache_write=None)
-    pi = _tokens_sample(input=pi_input, cache_read=700)
+def test_go_bar_ignores_cache_read_share() -> None:
+    # Decision 2026-09-30 (ADR-031): pi sends fewer tokens, so an equal or lower
+    # cache-read share still means fewer tokens. The share is reported, not judged.
+    copilot = _tokens_sample(input=100, cache_read=9000)
+    pi = _tokens_sample(input=50, cache_read=100)
 
     report = _bar_report(copilot, pi)
 
-    assert _criteria(report)["cache_read_share"] is expected
-    assert report.verdict.meets is expected
+    assert set(_criteria(report)) == {"pass_count", "tokens"}
+    assert report.verdict.meets is True
 
 
-def test_go_bar_fails_when_pi_reports_no_cache_counts() -> None:
+def test_go_bar_meets_when_pi_reports_no_cache_counts() -> None:
     copilot = _copilot_sample()
     pi = _tokens_sample(input=100, cache_read=None, cache_write=None)
 
-    report = _bar_report(copilot, pi)
-
-    assert _criteria(report)["cache_read_share"] is False
-    detail = {item.name: item.detail for item in report.verdict.criteria}["cache_read_share"]
-    assert "unavailable" in detail
+    assert _bar_report(copilot, pi).verdict.meets is True
 
 
 def test_go_bar_token_criterion_fails_when_input_tokens_unreported() -> None:
