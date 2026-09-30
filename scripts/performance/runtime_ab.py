@@ -77,6 +77,9 @@ Reporting rules:
 * Cache-read share is ``cache_read / (input + cache_read + cache_write)``. It
   is ``None`` (unavailable) when the runtime reported no cache-read count and
   ``0.0`` when it reported one that is zero.
+* A "By role" table splits the compared tasks per role and model for each
+  runtime: calls, failed calls, tokens and cost. It shows where the tokens go
+  and which calls one runtime made that the other did not.
 * Each runtime keeps its own cost unit. Copilot reports premium requests and
   nano-AIU. pi reports a list-price USD estimate that is never spend. The two
   are never added together.
@@ -332,9 +335,22 @@ class GoBarVerdict(ModelBase):
     criteria: tuple[CriterionResult, ...]
 
 
+class RoleMetrics(ModelBase):
+    """Agent calls of one role and model in one runtime, summed over the compared tasks."""
+
+    runtime: Runtime
+    role: AgentRole
+    model: str
+    calls: int
+    failed: int
+    tokens: TokenCounts
+    cost: RuntimeCost
+
+
 class RuntimeAbReport(ModelBase):
     tasks: tuple[TaskReport, ...]
     totals: dict[Runtime, RuntimeMetrics]
+    roles: tuple[RoleMetrics, ...] = ()
     verdict: GoBarVerdict
 
 
@@ -377,6 +393,37 @@ def _metrics(runtime: Runtime, samples: Sequence[RunSample]) -> RuntimeMetrics:
         cost=_cost(runtime, usage),
         wall_seconds=sum(sample.wall_seconds for sample in samples),
         repair_rounds=sum(sample.repair_rounds for sample in samples),
+    )
+
+
+def _role_metrics(runtime: Runtime, samples: Sequence[RunSample]) -> list[RoleMetrics]:
+    groups: dict[tuple[AgentRole, str], list[InvocationRecord]] = {}
+    for sample in samples:
+        for invocation in sample.invocations:
+            groups.setdefault((invocation.role, invocation.model), []).append(invocation)
+    metrics = []
+    for (role, model), invocations in groups.items():
+        usage = summarize_usage(invocations)
+        metrics.append(
+            RoleMetrics(
+                runtime=runtime,
+                role=role,
+                model=model,
+                calls=len(invocations),
+                failed=sum(1 for invocation in invocations if not invocation.success),
+                tokens=_tokens(usage),
+                cost=_cost(runtime, usage),
+            )
+        )
+    return metrics
+
+
+def _role_order(metrics: RoleMetrics) -> tuple[int, str, int]:
+    """Workflow order of the role, then model, then Copilot before pi."""
+    return (
+        list(AgentRole).index(metrics.role),
+        metrics.model,
+        list(Runtime).index(metrics.runtime),
     )
 
 
@@ -484,16 +531,19 @@ def build_report(outcomes: Sequence[TaskOutcome]) -> RuntimeAbReport:
     (``excluded``), is left out of both, so neither runtime is counted alone.
     """
     compared = [outcome for outcome in outcomes if not outcome.excluded]
-    totals = {
-        runtime: _metrics(
-            runtime,
-            [outcome.samples[runtime] for outcome in compared if runtime in outcome.samples],
-        )
+    samples = {
+        runtime: [outcome.samples[runtime] for outcome in compared if runtime in outcome.samples]
         for runtime in Runtime
     }
+    totals = {runtime: _metrics(runtime, samples[runtime]) for runtime in Runtime}
+    roles = sorted(
+        (row for runtime in Runtime for row in _role_metrics(runtime, samples[runtime])),
+        key=_role_order,
+    )
     return RuntimeAbReport(
         tasks=tuple(_task_report(outcome) for outcome in outcomes),
         totals=totals,
+        roles=tuple(roles),
         verdict=evaluate_go_bar(totals[Runtime.COPILOT], totals[Runtime.PI]),
     )
 
@@ -535,6 +585,30 @@ def _metrics_row(label: str, runtime: Runtime, metrics: RuntimeMetrics) -> str:
         _format_cost(runtime, metrics.cost),
         f"{metrics.wall_seconds:.1f}",
         str(metrics.repair_rounds),
+    )
+    return "| " + " | ".join(cells) + " |"
+
+
+_ROLE_TABLE_HEADER = (
+    "| Role | Model | Runtime | Calls | Failed | Input | Output | Cache read | Cache write "
+    "| Cost |\n"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+)
+
+
+def _role_row(metrics: RoleMetrics) -> str:
+    tokens = metrics.tokens
+    cells = (
+        metrics.role.value,
+        metrics.model,
+        metrics.runtime.value,
+        str(metrics.calls),
+        str(metrics.failed),
+        _count(tokens.input),
+        _count(tokens.output),
+        _count(tokens.cache_read),
+        _count(tokens.cache_write),
+        _format_cost(metrics.runtime, metrics.cost),
     )
     return "| " + " | ".join(cells) + " |"
 
@@ -586,6 +660,14 @@ def render_markdown(report: RuntimeAbReport) -> str:
         "",
         _TABLE_HEADER,
         *(_metrics_row("total", runtime, metrics) for runtime, metrics in report.totals.items()),
+        "",
+        "## By role",
+        "",
+        "Agent calls per role and model over the compared tasks. A failed call that reported "
+        "no usage shows unavailable tokens.",
+        "",
+        _ROLE_TABLE_HEADER,
+        *(_role_row(metrics) for metrics in report.roles),
         "",
         "## Per task",
         "",
