@@ -342,7 +342,7 @@ class RoleMetrics(ModelBase):
     role: AgentRole
     model: str
     calls: int
-    failed: int
+    failed_calls: int
     tokens: TokenCounts
     cost: RuntimeCost
 
@@ -350,7 +350,7 @@ class RoleMetrics(ModelBase):
 class RuntimeAbReport(ModelBase):
     tasks: tuple[TaskReport, ...]
     totals: dict[Runtime, RuntimeMetrics]
-    roles: tuple[RoleMetrics, ...] = ()
+    roles: tuple[RoleMetrics, ...]
     verdict: GoBarVerdict
 
 
@@ -401,30 +401,30 @@ def _role_metrics(runtime: Runtime, samples: Sequence[RunSample]) -> list[RoleMe
     for sample in samples:
         for invocation in sample.invocations:
             groups.setdefault((invocation.role, invocation.model), []).append(invocation)
-    metrics = []
+    rows = []
     for (role, model), invocations in groups.items():
         usage = summarize_usage(invocations)
-        metrics.append(
+        rows.append(
             RoleMetrics(
                 runtime=runtime,
                 role=role,
                 model=model,
                 calls=len(invocations),
-                failed=sum(1 for invocation in invocations if not invocation.success),
+                failed_calls=sum(1 for invocation in invocations if not invocation.success),
                 tokens=_tokens(usage),
                 cost=_cost(runtime, usage),
             )
         )
-    return metrics
+    return rows
 
 
-def _role_order(metrics: RoleMetrics) -> tuple[int, str, int]:
+_ROLE_RANK = {role: rank for rank, role in enumerate(AgentRole)}
+_RUNTIME_RANK = {runtime: rank for rank, runtime in enumerate(Runtime)}
+
+
+def _role_sort_key(row: RoleMetrics) -> tuple[int, str, int]:
     """Workflow order of the role, then model, then Copilot before pi."""
-    return (
-        list(AgentRole).index(metrics.role),
-        metrics.model,
-        list(Runtime).index(metrics.runtime),
-    )
+    return (_ROLE_RANK[row.role], row.model, _RUNTIME_RANK[row.runtime])
 
 
 def _percent(share: float | None) -> str:
@@ -531,14 +531,14 @@ def build_report(outcomes: Sequence[TaskOutcome]) -> RuntimeAbReport:
     (``excluded``), is left out of both, so neither runtime is counted alone.
     """
     compared = [outcome for outcome in outcomes if not outcome.excluded]
-    samples = {
+    samples_by_runtime = {
         runtime: [outcome.samples[runtime] for outcome in compared if runtime in outcome.samples]
         for runtime in Runtime
     }
-    totals = {runtime: _metrics(runtime, samples[runtime]) for runtime in Runtime}
+    totals = {runtime: _metrics(runtime, samples_by_runtime[runtime]) for runtime in Runtime}
     roles = sorted(
-        (row for runtime in Runtime for row in _role_metrics(runtime, samples[runtime])),
-        key=_role_order,
+        (row for runtime in Runtime for row in _role_metrics(runtime, samples_by_runtime[runtime])),
+        key=_role_sort_key,
     )
     return RuntimeAbReport(
         tasks=tuple(_task_report(outcome) for outcome in outcomes),
@@ -571,22 +571,31 @@ _TABLE_HEADER = (
 )
 
 
-def _metrics_row(label: str, runtime: Runtime, metrics: RuntimeMetrics) -> str:
-    tokens = metrics.tokens
-    cells = (
-        label,
-        runtime.value,
-        f"{metrics.passes}/{metrics.runs}",
+def _token_cells(tokens: TokenCounts) -> tuple[str, str, str, str]:
+    return (
         _count(tokens.input),
         _count(tokens.output),
         _count(tokens.cache_read),
         _count(tokens.cache_write),
+    )
+
+
+def _markdown_row(cells: Sequence[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _metrics_row(label: str, runtime: Runtime, metrics: RuntimeMetrics) -> str:
+    cells = (
+        label,
+        runtime.value,
+        f"{metrics.passes}/{metrics.runs}",
+        *_token_cells(metrics.tokens),
         _percent(metrics.cache_read_share),
         _format_cost(runtime, metrics.cost),
         f"{metrics.wall_seconds:.1f}",
         str(metrics.repair_rounds),
     )
-    return "| " + " | ".join(cells) + " |"
+    return _markdown_row(cells)
 
 
 _ROLE_TABLE_HEADER = (
@@ -597,20 +606,16 @@ _ROLE_TABLE_HEADER = (
 
 
 def _role_row(metrics: RoleMetrics) -> str:
-    tokens = metrics.tokens
     cells = (
         metrics.role.value,
         metrics.model,
         metrics.runtime.value,
         str(metrics.calls),
-        str(metrics.failed),
-        _count(tokens.input),
-        _count(tokens.output),
-        _count(tokens.cache_read),
-        _count(tokens.cache_write),
+        str(metrics.failed_calls),
+        *_token_cells(metrics.tokens),
         _format_cost(metrics.runtime, metrics.cost),
     )
-    return "| " + " | ".join(cells) + " |"
+    return _markdown_row(cells)
 
 
 def _task_label(task: TaskReport) -> str:
@@ -663,8 +668,8 @@ def render_markdown(report: RuntimeAbReport) -> str:
         "",
         "## By role",
         "",
-        "Agent calls per role and model over the compared tasks. A failed call that reported "
-        "no usage shows unavailable tokens.",
+        "Agent calls per role and model over the compared tasks. Tokens are summed over the "
+        "calls that reported usage; a row where no call reported usage shows unavailable.",
         "",
         _ROLE_TABLE_HEADER,
         *(_role_row(metrics) for metrics in report.roles),

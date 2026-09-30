@@ -834,6 +834,8 @@ def test_markdown_lists_skipped_tasks() -> None:
 
 # --- per-role breakdown ----------
 
+_UNSUPPORTED = "not supported on this runtime"
+
 
 def _role_call(
     role: AgentRole, model: str, *, success: bool = True, **usage: Any
@@ -843,41 +845,109 @@ def _role_call(
             "role": role,
             "model": model,
             "success": success,
-            "failure_reason": None if success else "not supported",
+            "failure_reason": None if success else _UNSUPPORTED,
         }
     )
 
 
-def _role_rows(report: Any, runtime: Any) -> dict[tuple[str, str], Any]:
-    return {(row.role.value, row.model): row for row in report.roles if row.runtime is runtime}
+def _role_rows(report: Any, runtime: Any) -> dict[tuple[AgentRole, str], Any]:
+    return {(row.role, row.model): row for row in report.roles if row.runtime is runtime}
 
 
-def test_role_breakdown_sums_calls_tokens_and_failures_per_role_and_model() -> None:
-    copilot = _sample(
-        invocations=(
-            _role_call(AgentRole.PLANNER, "opus", input_tokens=10, output_tokens=2),
-            _role_call(AgentRole.IMPLEMENTER, "flash", input_tokens=100, output_tokens=5),
-            _role_call(AgentRole.IMPLEMENTER, "flash", input_tokens=40, output_tokens=1),
-        )
+def _role_report(
+    copilot_calls: tuple[InvocationRecord, ...], pi_calls: tuple[InvocationRecord, ...]
+) -> Any:
+    return ab.build_report(
+        [_outcome(1, _sample(invocations=copilot_calls), _sample(invocations=pi_calls))]
     )
-    pi = _sample(
-        invocations=(
-            _role_call(AgentRole.PLANNER, "opus", input_tokens=12, output_tokens=3),
+
+
+def test_role_breakdown_sums_calls_and_tokens_per_role_and_model() -> None:
+    report = _role_report(
+        (
+            _role_call(
+                AgentRole.IMPLEMENTER,
+                "flash",
+                input_tokens=100,
+                output_tokens=5,
+                cache_read_tokens=900,
+                cache_write_tokens=0,
+            ),
+            _role_call(
+                AgentRole.IMPLEMENTER,
+                "flash",
+                input_tokens=40,
+                output_tokens=1,
+                cache_read_tokens=100,
+                cache_write_tokens=20,
+            ),
+        ),
+        (_role_call(AgentRole.IMPLEMENTER, "flash", input_tokens=7, output_tokens=2),),
+    )
+
+    row = _role_rows(report, ab.Runtime.COPILOT)[(AgentRole.IMPLEMENTER, "flash")]
+    assert row.calls == 2
+    assert row.tokens == ab.TokenCounts(input=140, output=6, cache_read=1000, cache_write=20)
+
+
+def test_role_breakdown_keeps_two_models_of_one_role_apart() -> None:
+    report = _role_report(
+        (
+            _role_call(AgentRole.IMPLEMENTER, "flash", input_tokens=100),
+            _role_call(AgentRole.IMPLEMENTER, "opus", input_tokens=30),
+        ),
+        (_role_call(AgentRole.IMPLEMENTER, "flash"),),
+    )
+
+    rows = _role_rows(report, ab.Runtime.COPILOT)
+    assert rows[(AgentRole.IMPLEMENTER, "flash")].tokens.input == 100
+    assert rows[(AgentRole.IMPLEMENTER, "opus")].tokens.input == 30
+
+
+def test_role_breakdown_counts_failed_calls_without_usage_as_unavailable() -> None:
+    report = _role_report(
+        (_role_call(AgentRole.PLANNER, "opus", input_tokens=10),),
+        (
             _role_call(AgentRole.RESEARCHER, "opus", success=False),
-        )
+            _role_call(AgentRole.RESEARCHER, "opus", success=False),
+        ),
     )
 
-    report = ab.build_report([_outcome(1, copilot, pi)])
+    researcher = _role_rows(report, ab.Runtime.PI)[(AgentRole.RESEARCHER, "opus")]
+    assert (researcher.calls, researcher.failed_calls) == (2, 2)
+    assert researcher.tokens == ab.TokenCounts()
+    assert (AgentRole.RESEARCHER, "opus") not in _role_rows(report, ab.Runtime.COPILOT)
 
-    copilot_rows = _role_rows(report, ab.Runtime.COPILOT)
-    pi_rows = _role_rows(report, ab.Runtime.PI)
-    implementer = copilot_rows[("IMPLEMENTER", "flash")]
-    assert (implementer.calls, implementer.failed) == (2, 0)
-    assert (implementer.tokens.input, implementer.tokens.output) == (140, 6)
-    researcher = pi_rows[("RESEARCHER", "opus")]
-    assert (researcher.calls, researcher.failed) == (1, 1)
-    assert researcher.tokens.input is None
-    assert ("RESEARCHER", "opus") not in copilot_rows
+
+def test_role_breakdown_keeps_each_runtime_cost_unit() -> None:
+    report = _role_report(
+        (_role_call(AgentRole.REVIEWER, "sol", premium_requests=3.0, total_nano_aiu=500),),
+        (_role_call(AgentRole.REVIEWER, "sol", list_price_estimate_usd=0.25),),
+    )
+
+    copilot = _role_rows(report, ab.Runtime.COPILOT)[(AgentRole.REVIEWER, "sol")]
+    pi = _role_rows(report, ab.Runtime.PI)[(AgentRole.REVIEWER, "sol")]
+    assert copilot.cost == ab.RuntimeCost(premium_requests=3.0, total_nano_aiu=500)
+    assert pi.cost == ab.RuntimeCost(list_price_estimate_usd=0.25)
+
+
+def test_role_breakdown_follows_workflow_order_then_model_then_copilot_first() -> None:
+    report = _role_report(
+        (
+            _role_call(AgentRole.REVIEWER, "sol"),
+            _role_call(AgentRole.IMPLEMENTER, "opus"),
+            _role_call(AgentRole.IMPLEMENTER, "flash"),
+        ),
+        (_role_call(AgentRole.REVIEWER, "sol"), _role_call(AgentRole.TRIAGE, "terra")),
+    )
+
+    assert [(row.role, row.model, row.runtime) for row in report.roles] == [
+        (AgentRole.TRIAGE, "terra", ab.Runtime.PI),
+        (AgentRole.IMPLEMENTER, "flash", ab.Runtime.COPILOT),
+        (AgentRole.IMPLEMENTER, "opus", ab.Runtime.COPILOT),
+        (AgentRole.REVIEWER, "sol", ab.Runtime.COPILOT),
+        (AgentRole.REVIEWER, "sol", ab.Runtime.PI),
+    ]
 
 
 def test_role_breakdown_leaves_out_excluded_tasks() -> None:
@@ -890,27 +960,72 @@ def test_role_breakdown_leaves_out_excluded_tasks() -> None:
     assert row.calls == 1
 
 
-def test_markdown_lists_each_role_with_model_and_tokens_per_runtime() -> None:
-    copilot = _sample(
-        invocations=(_role_call(AgentRole.PLANNER, "opus", input_tokens=10, output_tokens=2),)
+def test_role_breakdown_is_empty_when_every_task_is_excluded() -> None:
+    report = ab.build_report([_outcome(1, _sample(), _failed())])
+
+    assert report.roles == ()
+    assert "## By role" in ab.render_markdown(report)
+
+
+def _role_cell(markdown: str, role: str, runtime: Any, column: str) -> str:
+    lines = markdown.splitlines()
+    section = lines[lines.index("## By role") :]
+    columns = _cells(next(line for line in section if line.startswith("| Role |")))
+    for line in section:
+        cells = _cells(line)
+        if len(cells) == len(columns) and (
+            cells[columns.index("Role")],
+            cells[columns.index("Runtime")],
+        ) == (role, runtime.value):
+            return cells[columns.index(column)]
+    raise AssertionError(f"no By role row for {role} {runtime.value}")
+
+
+def test_markdown_lists_each_role_with_model_tokens_and_cost_per_runtime() -> None:
+    report = _role_report(
+        (
+            _role_call(
+                AgentRole.PLANNER,
+                "opus",
+                input_tokens=10,
+                output_tokens=2,
+                cache_read_tokens=30,
+                cache_write_tokens=4,
+                premium_requests=15.0,
+                total_nano_aiu=99,
+            ),
+        ),
+        (_role_call(AgentRole.PLANNER, "opus", success=False),),
     )
-    pi = _sample(invocations=(_role_call(AgentRole.PLANNER, "opus", success=False),))
 
-    lines = ab.render_markdown(ab.build_report([_outcome(1, copilot, pi)])).splitlines()
+    markdown = ab.render_markdown(report)
 
-    start = lines.index("## By role")
-    header = next(line for line in lines[start:] if line.startswith("| Role |"))
-    columns = _cells(header)
-    rows = {
-        (cells[0], cells[2]): cells
-        for cells in (_cells(line) for line in lines[start:] if line.startswith("| PLANNER |"))
+    copilot = {
+        column: _role_cell(markdown, "PLANNER", ab.Runtime.COPILOT, column)
+        for column in (
+            "Model",
+            "Calls",
+            "Failed",
+            "Input",
+            "Output",
+            "Cache read",
+            "Cache write",
+            "Cost",
+        )
     }
-    copilot_row = rows[("PLANNER", "copilot")]
-    assert copilot_row[columns.index("Model")] == "opus"
-    assert copilot_row[columns.index("Input")] == "10"
-    assert copilot_row[columns.index("Output")] == "2"
-    assert rows[("PLANNER", "pi")][columns.index("Failed")] == "1"
-    assert rows[("PLANNER", "pi")][columns.index("Input")] == "unavailable"
+    assert copilot == {
+        "Model": "opus",
+        "Calls": "1",
+        "Failed": "0",
+        "Input": "10",
+        "Output": "2",
+        "Cache read": "30",
+        "Cache write": "4",
+        "Cost": "15 premium requests / 99 nano-AIU",
+    }
+    assert _role_cell(markdown, "PLANNER", ab.Runtime.PI, "Failed") == "1"
+    assert _role_cell(markdown, "PLANNER", ab.Runtime.PI, "Input") == "unavailable"
+    assert _role_cell(markdown, "PLANNER", ab.Runtime.PI, "Cost") == "unavailable"
 
 
 # --- driver: budget and replay ----------
