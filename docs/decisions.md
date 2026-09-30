@@ -38,6 +38,7 @@ Spike result (2026-09-28, pi 0.84.4, provider `github-copilot`):
 Benchmark result (2026-09-30):
 
 `scripts/performance/runtime_ab.py` replayed three small merged changes (#59, #72, #77) on both runtimes.
+The manifest is `scripts/performance/runtime_ab_manifest_tiny.json`, so the run can be repeated.
 Both runtimes ran each task at the same time, with the same model for each role.
 The benchmark config mapped every worker level to one model and accepted review debt at no risk level.
 So a different triage level did not change the model or the review rules.
