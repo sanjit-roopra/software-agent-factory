@@ -11,13 +11,17 @@ The factory printed a startup warning and issue #70 tracked the gap.
 
 The factory now gives pi the same limits as Copilot, and no more.
 
-- The implementer loads a pi extension that the factory owns, `command_filter.mjs`.
+- The implementer loads the command filter, a pi extension that the factory owns (`command_filter.mjs`).
   The factory passes it with `-e`. Other extension discovery stays off.
-- The extension blocks each `bash` call that runs `git commit`, `git push`, any `gh` command, `curl` or `wget`.
+- The command filter blocks each `bash` call that runs `git commit`, `git push`, any `gh` command, `curl` or `wget`.
   It finds them in compound commands, in `sh -c` and `bash -c` bodies, after `env` and `command` prefixes and after git global options.
 - The agent gets a reason that says what to do instead and not to retry.
-- The list matches the Copilot implementer deny list. A test keeps the two lists in step.
-- If the packaged filter file is missing, the implementer call fails before pi starts. It never runs unfiltered.
+- The list matches the Copilot implementer deny list. Pi blocks `curl` and `wget` in place of the Copilot `url` deny.
+  A test keeps the two lists in step.
+- If the packaged filter file is missing, the implementer call fails before pi starts.
+- If pi cannot load the extension, pi exits with an error. If the filter code throws an error, pi blocks the tool call.
+  Both behaviors were verified on pi 0.99.1.
+- Not covered: a future pi version that changes or ignores the `tool_call` block result.
 - The factory removes `SSH_AUTH_SOCK` from the pi child environment, so git over SSH cannot use ssh-agent keys.
   Key files and HTTPS credential helpers are out of scope, as with Copilot.
 - Read-only roles have no `bash` tool on pi. This does not change.
@@ -38,12 +42,19 @@ Consequences:
 
 - pi and Copilot have the same command limits.
 - The filter is pattern-strength, like the Copilot rules. It is not a security boundary.
-- These limits are accepted:
+- These are examples of what the filter does not stop. The list is not complete:
     - Script files that run the commands.
     - Wrappers such as `sudo`, `xargs`, `exec` and `nohup`.
     - Shell keywords such as `if`, `then` and `{ }`.
-    - Heredoc bodies. The filter checks them as commands, so they fail closed. Agents write files with the write tool.
+    - Git aliases, such as `git -c alias.p=push p`.
+    - Git plumbing, such as `git send-pack` and `git update-ref`.
+    - `eval` and `source`.
+    - Interpreter one-liners, such as `python -c` and `node -e`.
+    - Network clients other than `curl` and `wget`, such as `nc`, `ssh` and `git fetch`.
+- Heredocs are not a bypass. The filter checks heredoc bodies as commands, so a blocked command in a heredoc fails closed.
+  Agents write files with the write tool.
 - The filter depends on the pi `tool_call` extension API. It was verified on pi 0.99.1.
+- `factory doctor` accepts pi from 0.84.0. Pi versions older than 0.99.1 are not verified with the filter.
 - The filter tests need Node 22 or later.
 
 ## ADR-031: pi is a recommended agent runtime

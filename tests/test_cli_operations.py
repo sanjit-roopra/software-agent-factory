@@ -939,7 +939,7 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     request = captured["request"]
     assert request.runtime is ServiceRuntime.PI
     assert "runtime: pi" in result.output
-    assert "unrestricted" not in result.stderr
+    assert not [line for line in result.stderr.splitlines() if line.lstrip().startswith("warning:")]
 
 
 def test_service_install_carries_pi_coding_agent_dir_into_the_request(

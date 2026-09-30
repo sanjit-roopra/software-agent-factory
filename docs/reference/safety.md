@@ -18,7 +18,8 @@ provides authority.**
 - Pass or waive a quality gate.
 - Claim a task, or take a task from another run.
 - Push, merge, or change branch protection. On the pi runtime, a command filter
-  blocks `git push`. See [The pi command filter](#the-pi-command-filter).
+  blocks `git push`. The filter matches command patterns and is not a security
+  boundary. See [The pi command filter](#the-pi-command-filter).
 - Deploy anything.
 - See production credentials.
 - Decide whether their own output is accepted.
@@ -161,7 +162,8 @@ value.
 
 The Copilot runtime denies `git commit`, `git push`, `gh` commands and web
 fetches to the Implementer. The pi runtime applies the same limits with a
-command filter. [ADR-032](../decisions.md#adr-032-pi-implementer-shell-commands-match-the-copilot-deny-list)
+command filter. For web fetches, the filter blocks only `curl` and `wget`. It
+does not block other network access. [ADR-032](../decisions.md#adr-032-pi-implementer-shell-commands-match-the-copilot-deny-list)
 records the decision. It amends [ADR-031](../decisions.md#adr-031-pi-is-a-recommended-agent-runtime).
 
 ### Tools for each role
@@ -193,8 +195,9 @@ commands:
 - `wget`
 
 These commands match the Copilot Implementer deny list. That list holds
-`shell(git commit)`, `shell(git push)`, `shell(gh:*)` and `url`. A test keeps the
-two lists in step.
+`shell(git commit)`, `shell(git push)`, `shell(gh:*)` and `url`. Pi blocks `curl`
+and `wget` in place of the Copilot `url` deny. A test keeps the two lists in
+step.
 
 The filter finds a blocked command in these places:
 
@@ -212,8 +215,19 @@ and `grep -rn gh src` pass.
 ### If the filter file is missing
 
 The factory ships `command_filter.mjs` inside the package. If the file is
-missing, the Implementer call fails before pi starts. The factory never runs the
-Implementer without the filter.
+missing, the Implementer call fails before pi starts.
+
+If pi cannot load the extension, pi exits with an error. If the filter code
+throws an error, pi blocks the tool call. Both behaviors were verified on pi
+0.99.1.
+
+One case is not covered. If a future pi version changes or ignores the result
+that blocks a `tool_call`, the filter stops working.
+
+### Verified pi version
+
+The filter was verified on pi 0.99.1. `factory doctor` accepts pi from 0.84.0.
+Pi versions older than 0.99.1 are not verified with the filter.
 
 ### SSH keys
 
@@ -223,19 +237,29 @@ helpers are out of scope. Copilot has the same limit.
 
 ### What the filter does not stop
 
-The filter has the same strength as the Copilot pattern rules. It is not a
-security boundary. The factory adds no operating system sandbox. Copilot has
-none either.
+The filter has the same strength as the Copilot pattern rules. It matches
+command patterns only. It is not a security boundary. The factory adds no
+operating system sandbox. Copilot has none either.
 
-These cases are accepted limits:
+Examples of what the filter does not stop:
 
 - A script file that runs a blocked command.
 - A wrapper program, such as `sudo`, `xargs`, `exec` or `nohup`.
 - A shell keyword before the command, such as `if`, `then` or `{ }`.
+- A git alias that runs a blocked command, such as `git -c alias.p=push p`.
+- Git plumbing that publishes or moves refs, such as `git send-pack` or
+  `git update-ref`.
+- `eval` and `source`, which run text or a file as commands.
+- An interpreter one-liner, such as `python -c` or `node -e`.
+- A network client other than `curl` and `wget`, such as `nc`, `ssh` or
+  `git fetch`.
 
-The filter checks heredoc bodies as commands. A heredoc that holds a blocked
-command is blocked, even when it is only text. The Implementer writes files with
-the `write` tool instead.
+This list is not complete. A pattern filter cannot cover every way to reach a
+blocked action.
+
+Heredocs are not a bypass. The filter checks heredoc bodies as commands. A
+heredoc that holds a blocked command is blocked, even when it is only text. The
+Implementer writes files with the `write` tool instead.
 
 Use the pi runtime only on repositories where you accept these limits. The
 controller gates still run.

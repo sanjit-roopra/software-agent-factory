@@ -134,7 +134,7 @@ See [Configuration](../reference/configuration.md#pi) for the `pi` settings.
   for the current dependency state, the factory records a warning and skips polish.
 - Run `factory skill refresh --runtime copilot` once. Later pi runs reuse the
   stored skill.
-- A command filter blocks `git commit`, `git push`, `gh`, `curl` and `wget` for the Implementer, as Copilot does. See [The pi command filter](../reference/safety.md#the-pi-command-filter).
+- A command filter blocks `git commit`, `git push`, `gh`, `curl` and `wget` for the Implementer, as Copilot does. The filter matches command patterns. It is not a security boundary, and it does not block other network access. See [The pi command filter](../reference/safety.md#the-pi-command-filter).
 - The Copilot `context_tier` setting has no pi equivalent. Pi ignores it.
 
 ## Next

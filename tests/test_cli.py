@@ -985,33 +985,45 @@ def test_run_with_pi_runtime_passes_the_routing_key_variable_name_to_be_scrubbed
 
 
 @pytest.mark.usefixtures("pi_runtime_calls")
-def test_run_with_pi_runtime_does_not_warn_about_an_unrestricted_shell(
-    source_repo: Path, data_dir: Path, path_with, pi_warnings: list[str]
+@pytest.mark.parametrize("command", ["run", "project", "start"])
+def test_pi_runtime_prints_no_startup_warning(
+    command: str,
+    source_repo: Path,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path_with,
+    pi_warnings: list[str],
 ) -> None:
-    """The pi implementer has a command filter, so selecting pi must neither
-    log nor print an "unrestricted shell" warning."""
-    path_with("pi")  # run's prerequisite gate; the pi runtime itself is stubbed
+    """``run``, ``project`` and ``start`` share ``_build_runtime``. The pi
+    implementer has a command filter, so selecting pi must neither log nor
+    print any warning (whatever its wording)."""
+    if command == "start":
+        path_with("gh", "pi")  # start's prerequisite gate; the tracker itself is stubbed
+        _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
+        config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+        args = [
+            "--github-repo",
+            "acme/repo",
+            "--once",
+            "--config",
+            str(config_path),
+        ]
+    else:
+        path_with("pi")  # prerequisite gate; the pi runtime itself is stubbed
+        args = ["--title", "Test task", "--description", "A demonstration task"]
+        args += ["--data-dir", str(data_dir)]
+        if command == "project":
+            args += ["--acceptance-criterion", "Blank names return HTTP 400."]
 
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            "--repo",
-            str(source_repo),
-            "--title",
-            "Test task",
-            "--description",
-            "A demonstration task",
-            "--runtime",
-            "pi",
-            "--data-dir",
-            str(data_dir),
-        ],
-    )
+    result = runner.invoke(app, [command, "--repo", str(source_repo), "--runtime", "pi", *args])
 
     assert result.exit_code == 0, result.output
-    assert not any("unrestricted" in warning for warning in pi_warnings), pi_warnings
-    assert "unrestricted" not in result.stderr
+    assert pi_warnings == []
+    stderr_warnings = [
+        line for line in result.stderr.splitlines() if line.lstrip().startswith("warning:")
+    ]
+    assert stderr_warnings == []
 
 
 def test_project_with_pi_runtime_selects_the_real_runtime(
