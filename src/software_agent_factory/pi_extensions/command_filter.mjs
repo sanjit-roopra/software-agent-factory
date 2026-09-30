@@ -94,7 +94,8 @@ export function parseCommands(text) {
     } else if (ch === "#" && word === null) {
       while (i + 1 < text.length && text[i + 1] !== "\n") i++; // a comment runs to the newline
     } else if (ch === "<" || ch === ">") {
-      if (word !== null && FILE_DESCRIPTOR.test(word)) word = null; // the 2 of 2>&1, the {fd} of {fd}>out
+      // The 2 of 2>&1 and the {fd} of {fd}>out belong to the redirect, not the command.
+      if (word !== null && FILE_DESCRIPTOR.test(word)) word = null;
       else endWord();
       i += text.slice(i).match(REDIRECT_OPERATOR)[0].length - 1;
       dropNextWord = true;
@@ -115,35 +116,60 @@ export function parseCommands(text) {
 // env/command prefixes, and opens sh -c / bash -c bodies.
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const ENV_OPTIONS_WITH_VALUE = new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-P"]);
-// Short env options that take a value: a bundle like -iu consumes the next word too.
-const ENV_BUNDLE_WITH_VALUE = /^-[A-Za-z]*[uCSP]$/;
+// env options that take a value (GNU and BSD). In a short bundle such as -iu, the first
+// value letter takes the rest of the word, or the next word when nothing is attached.
+const ENV_SHORT_WITH_VALUE = new Set(["u", "C", "S", "P"]);
+const ENV_LONG_WITH_VALUE = new Set(["--unset", "--chdir", "--split-string"]);
 const COMMAND_LOOKUP_FLAG = /^-[A-Za-z]*[vV][A-Za-z]*$/; // command -v and -V only look a name up
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
 
 const baseName = (path) => path.split("/").pop();
 
-function splitOptions(args, optionsWithValue, bundleWithValue = null) {
+function splitOptions(args) {
   let i = 0;
-  while (i < args.length && args[i].startsWith("-")) {
-    const takesValue = optionsWithValue.has(args[i]) || bundleWithValue?.test(args[i]);
-    i += takesValue ? 2 : 1;
-  }
+  while (i < args.length && args[i].startsWith("-")) i++;
   return { options: args.slice(0, i), rest: args.slice(i) };
 }
 
-// env -S / --split-string takes a command line as its value, so its words run first.
-const ENV_SPLIT_STRING = /^(?:-[A-Za-z]*S|--split-string=?)(.*)$/s;
-
-function envSplitStringArgs(options) {
-  for (let i = 0; i < options.length; i++) {
-    const match = ENV_SPLIT_STRING.exec(options[i]);
-    if (!match) continue;
-    const joinedOption = /^-[A-Za-z]*S$/.test(options[i]) || options[i] === "--split-string";
-    return parseCommands(joinedOption ? (options[i + 1] ?? "") : match[1])[0] ?? [];
+// Returns what env runs. A -S / --split-string value is a command line: its words go
+// back through env option parsing, as GNU env does, and then run before the rest.
+function envCommand(args) {
+  const splitString = (value, restIndex) => [
+    "env",
+    ...(parseCommands(value)[0] ?? []),
+    ...args.slice(restIndex),
+  ];
+  let i = 0;
+  while (i < args.length && args[i].startsWith("-") && args[i] !== "-") {
+    const arg = args[i];
+    if (arg === "--") return args.slice(i + 1);
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=");
+      const name = equals === -1 ? arg : arg.slice(0, equals);
+      const attached = equals !== -1;
+      if (name === "--split-string") {
+        return attached
+          ? splitString(arg.slice(equals + 1), i + 1)
+          : splitString(args[i + 1] ?? "", i + 2);
+      }
+      i += ENV_LONG_WITH_VALUE.has(name) && !attached ? 2 : 1;
+      continue;
+    }
+    let consumed = 1;
+    for (let j = 1; j < arg.length; j++) {
+      if (!ENV_SHORT_WITH_VALUE.has(arg[j])) continue;
+      const attachedValue = arg.slice(j + 1);
+      if (attachedValue === "") consumed = 2;
+      if (arg[j] === "S") {
+        const value = attachedValue === "" ? (args[i + 1] ?? "") : attachedValue;
+        return splitString(value, i + consumed);
+      }
+      break;
+    }
+    i += consumed;
   }
-  return [];
+  return args[i] === "-" ? args.slice(i + 1) : args.slice(i);
 }
 
 function stripPrefixes(argv) {
@@ -154,14 +180,9 @@ function stripPrefixes(argv) {
     if (args.length === 0) return args;
     const program = baseName(args[0]);
     if (program === "env") {
-      const { options, rest } = splitOptions(
-        args.slice(1),
-        ENV_OPTIONS_WITH_VALUE,
-        ENV_BUNDLE_WITH_VALUE,
-      );
-      args = [...envSplitStringArgs(options), ...rest];
+      args = envCommand(args.slice(1));
     } else if (program === "command") {
-      const { options, rest } = splitOptions(args.slice(1), new Set());
+      const { options, rest } = splitOptions(args.slice(1));
       if (options.some((option) => COMMAND_LOOKUP_FLAG.test(option))) return [];
       args = rest;
     } else {
