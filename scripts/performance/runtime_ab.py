@@ -69,6 +69,16 @@ Budget: stop starting a new task once any given limit is reached by the running
 total: Copilot premium requests, pi list-price USD estimate or wall seconds.
 Both runtimes always finish the task they started, so the comparison stays fair.
 An excluded task still counts against the budget, since it may have spent money.
+Wall seconds add up both runtimes, although they run at the same time.
+
+Parallel runs. Both runtimes of one task run at the same time, each in its own
+clone and data directory. The next task starts when both are done.
+
+Triage. Each runtime runs its own triage, and the complexity and risk it
+chooses pick the worker model and the review rules. The report lists both
+per task and marks a task where they differ, because its runs may not be
+comparable. A benchmark config that maps every worker level to one model and
+accepts review debt at every risk level removes most of that effect.
 
 Reporting rules:
 
@@ -96,6 +106,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -108,9 +119,12 @@ from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.models import (
     AgentRole,
     AttemptTrigger,
+    Complexity,
     FactoryRun,
     InvocationRecord,
     ModelBase,
+    Risk,
+    TriageResult,
     VerificationReport,
     WorkflowState,
 )
@@ -229,6 +243,17 @@ def load_manifest(path: Path) -> Manifest:
     return Manifest(tasks=tuple(entries))
 
 
+class TriageLevel(ModelBase):
+    """The complexity and risk triage chose. They pick the worker model and review rules."""
+
+    complexity: Complexity
+    risk: Risk
+
+    @property
+    def label(self) -> str:
+        return f"{self.complexity.value}/{self.risk.value}"
+
+
 class RunSample(ModelBase):
     """What one runtime produced for one task."""
 
@@ -236,6 +261,7 @@ class RunSample(ModelBase):
     wall_seconds: float = Field(ge=0.0)
     repair_rounds: int = Field(ge=0)
     invocations: tuple[InvocationRecord, ...] = ()
+    triage: TriageLevel | None = None
     error: str | None = None
 
     @property
@@ -285,7 +311,14 @@ def load_sample(store: FileRunStore, run_id: str) -> RunSample:
         verification_passed: bool | None = store.load_artifact(run_id, VerificationReport).passed
     except FileNotFoundError:
         verification_passed = None
-    return sample_from_run(run, verification_passed=verification_passed)
+    sample = sample_from_run(run, verification_passed=verification_passed)
+    try:
+        triage = store.load_artifact(run_id, TriageResult)
+    except FileNotFoundError:
+        return sample
+    return sample.model_copy(
+        update={"triage": TriageLevel(complexity=triage.complexity, risk=triage.risk)}
+    )
 
 
 class TokenCounts(ModelBase):
@@ -321,6 +354,10 @@ class TaskReport(ModelBase):
     excluded: bool
     runtimes: dict[Runtime, RuntimeMetrics] = Field(default_factory=dict)
     errors: dict[Runtime, str] = Field(default_factory=dict)
+    triage: dict[Runtime, TriageLevel | None] = Field(default_factory=dict)
+    #: The runtimes' triage differs (one stored none, or a different level or
+    #: risk), so they may have used different worker models or review rules.
+    triage_mismatch: bool = False
 
 
 class CriterionResult(ModelBase):
@@ -506,6 +543,8 @@ def evaluate_go_bar(copilot: RuntimeMetrics, pi: RuntimeMetrics) -> GoBarVerdict
 
 def _task_report(outcome: TaskOutcome) -> TaskReport:
     entry = outcome.entry
+    triage = {runtime: sample.triage for runtime, sample in outcome.samples.items()}
+    levels = list(triage.values())
     return TaskReport(
         issue=entry.issue,
         level=entry.level,
@@ -520,6 +559,8 @@ def _task_report(outcome: TaskOutcome) -> TaskReport:
             for runtime, sample in outcome.samples.items()
             if sample.error is not None
         },
+        triage=triage,
+        triage_mismatch=any(level != levels[0] for level in levels[1:]),
     )
 
 
@@ -630,6 +671,23 @@ def _task_rows(task: TaskReport) -> list[str]:
     return [_metrics_row(label, runtime, metrics) for runtime, metrics in task.runtimes.items()]
 
 
+def _triage_rows(report: RuntimeAbReport) -> list[str]:
+    rows = []
+    for task in report.tasks:
+        if task.skipped:
+            continue
+        cells = (
+            _task_label(task),
+            *(
+                _UNAVAILABLE if (level := task.triage.get(runtime)) is None else level.label
+                for runtime in Runtime
+            ),
+            "no" if task.triage_mismatch else "yes",
+        )
+        rows.append(_markdown_row(cells))
+    return rows
+
+
 def _excluded_note(report: RuntimeAbReport) -> list[str]:
     if not any(task.excluded for task in report.tasks):
         return []
@@ -673,6 +731,15 @@ def render_markdown(report: RuntimeAbReport) -> str:
         "",
         _ROLE_TABLE_HEADER,
         *(_role_row(metrics) for metrics in report.roles),
+        "",
+        "## Triage",
+        "",
+        "Complexity/risk each runtime's triage chose. When they differ the runs may have used "
+        "different worker models or review rules.",
+        "",
+        "| Task | copilot | pi | Same |",
+        "| --- | --- | --- | --- |",
+        *_triage_rows(report),
         "",
         "## Per task",
         "",
@@ -794,12 +861,26 @@ def _request(entry: ManifestEntry, runtime: Runtime, text: IssueText) -> ReplayR
     )
 
 
+def _result_or_failure(future: Future[RunSample]) -> RunSample:
+    """The runner's sample, or a failed one when it raised.
+
+    One runtime raising must not lose the sample the other runtime already
+    produced. The failed sample excludes the task from both totals.
+    """
+    try:
+        return future.result()
+    except Exception as exc:
+        return _failed_sample(f"runner raised {type(exc).__name__}: {exc}")
+
+
 def run_benchmark(
     manifest: Manifest, *, budget: Budget, runner: Runner, fetch_issue: IssueFetcher
 ) -> list[TaskOutcome]:
     """Replay each task once per runtime; skip the rest once the budget is reached.
 
     Issue text is fetched for every task first, so a fetch failure costs nothing.
+    Both runtimes of one task run at the same time, each in its own clone and
+    data directory; the next task starts when both are done.
     """
     texts = {entry.issue: fetch_issue(entry.issue) for entry in manifest.tasks}
     totals = BudgetTotals()
@@ -808,10 +889,14 @@ def run_benchmark(
         if budget_reached(budget, totals):
             outcomes.append(TaskOutcome(entry=entry))
             continue
-        samples: dict[Runtime, RunSample] = {}
-        for runtime in Runtime:
-            samples[runtime] = runner(_request(entry, runtime, texts[entry.issue]))
-            totals.add(runtime, samples[runtime])
+        with ThreadPoolExecutor(max_workers=len(Runtime)) as pool:
+            futures = {
+                runtime: pool.submit(runner, _request(entry, runtime, texts[entry.issue]))
+                for runtime in Runtime
+            }
+            samples = {runtime: _result_or_failure(future) for runtime, future in futures.items()}
+        for runtime, sample in samples.items():
+            totals.add(runtime, sample)
         outcomes.append(TaskOutcome(entry=entry, samples=samples))
     return outcomes
 
