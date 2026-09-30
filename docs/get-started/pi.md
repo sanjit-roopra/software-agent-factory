@@ -13,14 +13,6 @@ benchmark below. [ADR-031](../decisions.md#adr-031-pi-is-a-recommended-agent-run
     The factory does not estimate spend before a run. `--runtime fake` stays the
     default on every command.
 
-!!! warning "The pi shell tool is not restricted"
-
-    Copilot blocks `git commit`, `git push` and `gh` commands from the Implementer.
-    Pi does not block them. Run pi only on repositories where this is acceptable.
-    Read [Safety and trust boundaries](../reference/safety.md#the-pi-runtime-does-not-block-git-or-gh).
-    Issue [#70](https://github.com/sanjit-roopra/software-agent-factory/issues/70)
-    tracks the fix.
-
 ## Why pi
 
 Pi keeps a saved session for each work item and role. The Implementer and the
@@ -44,7 +36,7 @@ runtime and writes a side-by-side report. Its budget options are
 
 ## Install pi
 
-You need Node 22.19 or later. You need pi 0.84.0 or later.
+You need Node 22.19 or later. You need pi 0.99.1 or later.
 
 ```bash
 npm install -g @earendil-works/pi-coding-agent
@@ -76,7 +68,7 @@ factory doctor --runtime pi
 Doctor checks four things in this order. It reports the first failure.
 
 1. The `pi` executable is on `PATH`.
-2. The pi version is 0.84.0 or later.
+2. The pi version is 0.99.1 or later.
 3. The Node version is 22.19 or later.
 4. A credential exists for the configured provider.
 
@@ -93,8 +85,7 @@ uv run factory run \
   --runtime pi
 ```
 
-The command prints a warning that the pi shell tool is unrestricted. It links
-issue #70. The states, artifacts and gates are the same as with Copilot.
+The states, artifacts and gates are the same as with Copilot.
 
 Every command that accepts `--runtime` accepts `pi`. These are `run`, `project`,
 `start`, `doctor` and `service install`. See [CLI reference](../reference/cli.md).
@@ -143,7 +134,7 @@ See [Configuration](../reference/configuration.md#pi) for the `pi` settings.
   for the current dependency state, the factory records a warning and skips polish.
 - Run `factory skill refresh --runtime copilot` once. Later pi runs reuse the
   stored skill.
-- The pi shell tool is unrestricted. See [issue #70](https://github.com/sanjit-roopra/software-agent-factory/issues/70).
+- A command filter blocks `git commit`, `git push`, `gh`, `curl` and `wget` for the Implementer, as Copilot does. The filter matches command patterns. It is not a security boundary, and it does not block other network access. See [The pi command filter](../reference/safety.md#the-pi-command-filter).
 - The Copilot `context_tier` setting has no pi equivalent. Pi ignores it.
 
 ## Next

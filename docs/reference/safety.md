@@ -17,8 +17,9 @@ provides authority.**
 - Choose which model runs.
 - Pass or waive a quality gate.
 - Claim a task, or take a task from another run.
-- Push, merge, or change branch protection. The pi runtime does not enforce the
-  push limit. See [The pi runtime does not block git or gh](#the-pi-runtime-does-not-block-git-or-gh).
+- Push, merge, or change branch protection. On the pi runtime, a command filter
+  blocks `git push`. The filter matches command patterns and is not a security
+  boundary. See [The pi command filter](#the-pi-command-filter).
 - Deploy anything.
 - See production credentials.
 - Decide whether their own output is accepted.
@@ -157,18 +158,17 @@ value.
   only when also explicitly named in the plan. This never exempts protected
   files, migration/infrastructure changes, risk approval or ordinary scope limits.
 
-## The pi runtime does not block git or gh
+## The pi command filter
 
-The Copilot runtime denies `git commit`, `git push` and `gh` commands to every
-agent. The pi runtime does not. Under `--runtime pi`, the Implementer has an
-unrestricted `bash` tool. It can run `git commit`, `git push` and `gh` commands.
+The Copilot runtime denies `git commit`, `git push`, `gh` commands and web
+fetches to the Implementer. The pi runtime applies the same limits with a
+command filter. For web fetches, the filter blocks only `curl` and `wget`. It
+does not block other network access. [ADR-032](../decisions.md#adr-032-pi-implementer-shell-commands-match-the-copilot-deny-list)
+records the decision. It amends [ADR-031](../decisions.md#adr-031-pi-is-a-recommended-agent-runtime).
 
-[ADR-031](../decisions.md#adr-031-pi-is-a-recommended-agent-runtime) records this gap. It amends the rule in
-[ADR-022](../decisions.md#adr-022-opt-in-autonomous-project-delivery) that
-Implementers cannot run `git commit` directly. The gap exists only on pi.
+### Tools for each role
 
-The factory adds no other check for pi. An agent that has every tool can find
-another way to push. Pi runs with a tool allowlist:
+Pi runs with a tool allowlist. Only the Implementer has a `bash` tool.
 
 | Role | Pi tools |
 | --- | --- |
@@ -176,14 +176,92 @@ another way to push. Pi runs with a tool allowlist:
 | Triage, refiner, researcher, planner, tester, reviewer | `read`, `grep`, `find`, `ls` |
 | Change-set correction | none |
 
-The factory also starts pi without extensions, skills, prompt templates and
-context files. Selecting `--runtime pi` prints a startup warning that links the
-follow-up work. Issue
-[#70](https://github.com/sanjit-roopra/software-agent-factory/issues/70) tracks
-command denial and sandboxing for pi.
+The factory starts pi without extensions, skills, prompt templates and context
+files. The one exception is the command filter, which only the Implementer loads.
 
-Use the pi runtime only on repositories where you accept this risk. The
-controller gates still run. They do not stop a push made from the shell.
+### What the filter blocks
+
+Under `--runtime pi`, the Implementer loads `command_filter.mjs`. This pi
+extension belongs to the factory. The factory passes it to pi with `-e`. Pi
+still finds no other extensions.
+
+The filter checks every `bash` call. It blocks a call that runs any of these
+commands:
+
+- `git commit`
+- `git push`
+- any `gh` command
+- `curl`
+- `wget`
+
+These commands match the Copilot Implementer deny list. That list holds
+`shell(git commit)`, `shell(git push)`, `shell(gh:*)` and `url`. Pi blocks `curl`
+and `wget` in place of the Copilot `url` deny. A test keeps the two lists in
+step.
+
+The filter finds a blocked command in these places:
+
+- Inside a compound command, such as `make && git push`.
+- Inside a `sh -c` or `bash -c` body.
+- After an `env` or `command` prefix.
+- After git global options, such as `git -C repo push`.
+
+A blocked call does not run. The agent gets a reason that names the rule and
+says what to do instead. The reason also tells the agent not to retry.
+
+Commands that only mention a blocked word still run. For example, `echo "git push"`
+and `grep -rn gh src` pass.
+
+### If the filter file is missing
+
+The factory ships `command_filter.mjs` inside the package. If the file is
+missing, the Implementer call fails before pi starts.
+
+If pi cannot load the extension, pi exits with an error. If the filter code
+throws an error, pi blocks the tool call. Both behaviors were verified on pi
+0.99.1.
+
+One case is not covered. If a future pi version changes or ignores the result
+that blocks a `tool_call`, the filter stops working.
+
+### Verified pi version
+
+The filter was verified on pi 0.99.1. `factory doctor` requires pi 0.99.1 or later.
+
+### SSH keys
+
+The factory removes `SSH_AUTH_SOCK` from the environment of the pi process. Git
+over SSH then cannot use keys from ssh-agent. Key files and HTTPS credential
+helpers are out of scope. Copilot has the same limit.
+
+### What the filter does not stop
+
+The filter has the same strength as the Copilot pattern rules. It matches
+command patterns only. It is not a security boundary. The factory adds no
+operating system sandbox. Copilot has none either.
+
+Examples of what the filter does not stop:
+
+- A script file that runs a blocked command.
+- A wrapper program, such as `sudo`, `xargs`, `exec` or `nohup`.
+- A shell keyword before the command, such as `if`, `then` or `{ }`.
+- A git alias that runs a blocked command, such as `git -c alias.p=push p`.
+- Git plumbing that publishes or moves refs, such as `git send-pack` or
+  `git update-ref`.
+- `eval` and `source`, which run text or a file as commands.
+- An interpreter one-liner, such as `python -c` or `node -e`.
+- A network client other than `curl` and `wget`, such as `nc`, `ssh` or
+  `git fetch`.
+
+This list is not complete. A pattern filter cannot cover every way to reach a
+blocked action.
+
+Heredocs are not a bypass. The filter checks heredoc bodies as commands. A
+heredoc that holds a blocked command is blocked, even when it is only text. The
+Implementer writes files with the `write` tool instead.
+
+Use the pi runtime only on repositories where you accept these limits. The
+controller gates still run.
 
 ## Quality gates
 

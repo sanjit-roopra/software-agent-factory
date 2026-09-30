@@ -208,7 +208,7 @@ def _pi_ready_runner() -> FakeRunner:
     return FakeRunner(
         responses={
             "/usr/local/bin/pi": subprocess.CompletedProcess(
-                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.99.1\n", stderr=""
             ),
             "/usr/local/bin/node": subprocess.CompletedProcess(
                 ["/usr/local/bin/node", "--version"], 0, stdout="v22.19.0\n", stderr=""
@@ -240,15 +240,15 @@ def test_check_pi_old_pi_version_is_error_naming_found_and_required() -> None:
     runner = FakeRunner(
         responses={
             "/usr/local/bin/pi": subprocess.CompletedProcess(
-                ["/usr/local/bin/pi", "--version"], 0, stdout="0.80.0\n", stderr=""
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.99.0\n", stderr=""
             )
         }
     )
     env, _ = make_env(available={"pi": "/usr/local/bin/pi"}, runner=runner)
     result = check_pi(env, PiConfig(), required=True)
     assert result.status is CheckStatus.ERROR
-    assert "0.80.0" in result.message
-    assert "0.84.0" in result.message
+    assert "0.99.0" in result.message
+    assert "0.99.1" in result.message
     assert "npm install -g @earendil-works/pi-coding-agent" in (result.remediation or "")
     # Node/credential are unreachable once the pi version check fails first.
     assert runner.calls == [("/usr/local/bin/pi", "--version")]
@@ -272,7 +272,7 @@ def test_check_pi_missing_node_is_error() -> None:
     runner = FakeRunner(
         responses={
             "/usr/local/bin/pi": subprocess.CompletedProcess(
-                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.99.1\n", stderr=""
             )
         }
     )
@@ -286,7 +286,7 @@ def test_check_pi_old_node_version_is_error_naming_found_and_required() -> None:
     runner = FakeRunner(
         responses={
             "/usr/local/bin/pi": subprocess.CompletedProcess(
-                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.99.1\n", stderr=""
             ),
             "/usr/local/bin/node": subprocess.CompletedProcess(
                 ["/usr/local/bin/node", "--version"], 0, stdout="v18.2.0\n", stderr=""
@@ -452,12 +452,12 @@ def test_check_pi_several_failures_names_the_executable_first() -> None:
 
 
 def test_check_pi_minimum_pi_version_is_ok() -> None:
-    """Exact boundary: ``PI_MIN_VERSION`` itself (``"0.84.0"``) must pass, not
+    """Exact boundary: ``PI_MIN_VERSION`` itself (``"0.99.1"``) must pass, not
     just versions strictly above it."""
     runner = FakeRunner(
         responses={
             "/usr/local/bin/pi": subprocess.CompletedProcess(
-                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.0\n", stderr=""
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.99.1\n", stderr=""
             ),
             "/usr/local/bin/node": subprocess.CompletedProcess(
                 ["/usr/local/bin/node", "--version"], 0, stdout="v22.19.0\n", stderr=""
@@ -479,7 +479,7 @@ def test_check_pi_minimum_node_version_is_ok() -> None:
     runner = FakeRunner(
         responses={
             "/usr/local/bin/pi": subprocess.CompletedProcess(
-                ["/usr/local/bin/pi", "--version"], 0, stdout="0.84.4\n", stderr=""
+                ["/usr/local/bin/pi", "--version"], 0, stdout="0.99.1\n", stderr=""
             ),
             "/usr/local/bin/node": subprocess.CompletedProcess(
                 ["/usr/local/bin/node", "--version"], 0, stdout="v22.19.0\n", stderr=""

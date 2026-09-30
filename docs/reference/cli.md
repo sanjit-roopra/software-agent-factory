@@ -43,13 +43,6 @@ Each command that starts agents takes `--runtime <fake|copilot|pi>`. The default
 is `fake`, which makes no model calls. Pi is the recommended real runtime. See
 [Real pi runs](../get-started/pi.md).
 
-When you select `--runtime pi`, the command writes this warning to stderr and to
-the log. It runs on `run`, `project`, `start` and `service install`.
-
-```text
-warning: the pi runtime's shell tool is unrestricted: git push and gh can run without approval. Follow-up: https://github.com/sanjit-roopra/software-agent-factory/issues/70
-```
-
 An unknown runtime value is rejected. `factory skill refresh` does not accept
 `pi`.
 
@@ -83,7 +76,7 @@ factory run \
 | `--acceptance-criterion <str>` | no | none | Required outcome. Repeat as needed. |
 | `--constraint <str>` | no | none | Work item constraint. Repeat as needed. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
-| `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` avoids model calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. `pi` makes paid calls through pi and prints a startup warning that the pi shell tool is unrestricted. |
+| `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` avoids model calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. `pi` makes paid calls through pi. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
 | `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode. Fast mode applies only to eligible low-risk work. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for this run. See `risk_assessment` in the configuration reference. |
