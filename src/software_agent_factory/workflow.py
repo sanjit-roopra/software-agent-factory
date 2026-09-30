@@ -1265,26 +1265,37 @@ class WorkflowController:
         finally:
             workspace.release_lock()
 
+    def _triage_authorizes_delivery(
+        self, run: FactoryRun, work_item: WorkItem, triage: TriageResult
+    ) -> bool:
+        """Whether the persisted triage lets a resumed run deliver.
+
+        A risk that needs human approval authorizes delivery only when a dispatched
+        approval receipt still matches the approval context (see
+        :func:`~software_agent_factory.escalation.has_dispatched_risk_approval`).
+        """
+        from .escalation import has_dispatched_risk_approval
+
+        if not triage.factory_eligible:
+            return False
+        if not self._approval_required(run, triage.risk):
+            return True
+        return has_dispatched_risk_approval(
+            run,
+            self._store,
+            config=self._config,
+            work_item=work_item,
+            triage_result=triage,
+        )
+
     def _restore_delivery_context(
         self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
     ) -> _RunContext:
         work_item = self._store.load_artifact(run.id, WorkItem)
         if work_item.id != run.work_item_id:
             raise ValueError("persisted work item does not match run")
-        from .escalation import has_dispatched_risk_approval
-
         triage = self._store.load_artifact(run.id, TriageResult)
-        authorized = triage.factory_eligible and (
-            not self._approval_required(run, triage.risk)
-            or has_dispatched_risk_approval(
-                run,
-                self._store,
-                config=self._config,
-                work_item=work_item,
-                triage_result=triage,
-            )
-        )
-        if not authorized:
+        if not self._triage_authorizes_delivery(run, work_item, triage):
             raise ValueError("persisted triage does not authorize delivery")
         route_decision: RouteDecision | None = None
         try:

@@ -584,7 +584,8 @@ def _human_approved_r2_interrupted_at(
     halted = controller.run(work_item(), source_repo, run_id=APPROVED_RUN_ID)
     assert halted.state is WorkflowState.NEEDS_HUMAN
     escalation = halted.escalation
-    assert escalation is not None and escalation.approval_context is not None
+    assert escalation is not None
+    assert escalation.approval_context is not None
     receipt = AcceptedReplyReceipt(
         comment_id=1,
         user_login="lead-dev",
