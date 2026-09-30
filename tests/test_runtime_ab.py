@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -21,8 +22,11 @@ from software_agent_factory.models import (
     AgentRole,
     AttemptRecord,
     AttemptTrigger,
+    Complexity,
     FactoryRun,
     InvocationRecord,
+    Risk,
+    TriageResult,
     UsageMetrics,
     VerificationReport,
     WorkflowState,
@@ -722,6 +726,33 @@ def test_load_sample_reads_run_and_verification_from_store(tmp_path: Path) -> No
     assert sample.passed is False
 
 
+def _triage(complexity: Complexity, risk: Risk) -> TriageResult:
+    return TriageResult(
+        factory_eligible=True,
+        complexity=complexity,
+        risk=risk,
+        needs_research=False,
+        confidence=0.9,
+    )
+
+
+def test_load_sample_reads_the_triage_level_and_risk(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(_run(WorkflowState.PR_READY))
+    store.save_artifact("run-1", _triage(Complexity.L1, Risk.R2))
+
+    sample = ab.load_sample(store, "run-1")
+
+    assert sample.triage == ab.TriageLevel(complexity=Complexity.L1, risk=Risk.R2)
+
+
+def test_load_sample_without_triage_has_no_triage_level(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(_run(WorkflowState.PR_READY))
+
+    assert ab.load_sample(store, "run-1").triage is None
+
+
 def test_load_sample_does_not_pass_a_run_without_a_verification_artifact(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path)
     store.save_run(_run(WorkflowState.PR_READY))
@@ -1028,6 +1059,56 @@ def test_markdown_lists_each_role_with_model_tokens_and_cost_per_runtime() -> No
     assert _role_cell(markdown, "PLANNER", ab.Runtime.PI, "Cost") == "unavailable"
 
 
+# --- triage agreement ----------
+
+
+def _triaged(complexity: Complexity, risk: Risk) -> Any:
+    return _sample().model_copy(update={"triage": ab.TriageLevel(complexity=complexity, risk=risk)})
+
+
+def test_task_triage_matches_when_both_runtimes_agree() -> None:
+    report = ab.build_report(
+        [_outcome(1, _triaged(Complexity.L1, Risk.R1), _triaged(Complexity.L1, Risk.R1))]
+    )
+
+    (task,) = report.tasks
+    assert task.triage_mismatch is False
+
+
+@pytest.mark.parametrize(
+    ("pi_complexity", "pi_risk"), [(Complexity.L2, Risk.R1), (Complexity.L1, Risk.R2)]
+)
+def test_task_triage_mismatch_when_level_or_risk_differs(
+    pi_complexity: Complexity, pi_risk: Risk
+) -> None:
+    report = ab.build_report(
+        [_outcome(1, _triaged(Complexity.L1, Risk.R1), _triaged(pi_complexity, pi_risk))]
+    )
+
+    (task,) = report.tasks
+    assert task.triage_mismatch is True
+    assert task.triage[ab.Runtime.PI] == ab.TriageLevel(complexity=pi_complexity, risk=pi_risk)
+
+
+def test_markdown_lists_triage_per_runtime_and_marks_a_mismatch() -> None:
+    report = ab.build_report(
+        [_outcome(22, _triaged(Complexity.L2, Risk.R2), _triaged(Complexity.L1, Risk.R1))]
+    )
+
+    lines = ab.render_markdown(report).splitlines()
+
+    start = lines.index("## Triage")
+    assert "| #22 | L2/R2 | L1/R1 | no |" in lines[start:]
+
+
+def test_markdown_triage_is_unavailable_when_a_runtime_stored_none() -> None:
+    report = ab.build_report([_outcome(5, _triaged(Complexity.L0, Risk.R0), _sample())])
+
+    lines = ab.render_markdown(report).splitlines()
+
+    assert "| #5 | L0/R0 | unavailable | no |" in lines[lines.index("## Triage") :]
+
+
 # --- driver: budget and replay ----------
 
 
@@ -1068,18 +1149,35 @@ def test_every_task_runs_once_per_runtime_with_the_same_issue_text() -> None:
 
     outcomes = _run_benchmark(runner, budget=ab.Budget(max_wall_seconds=1e9))
 
-    assert [(r.entry.issue, r.runtime) for r in runner.requests] == [
-        (10, ab.Runtime.COPILOT),
-        (10, ab.Runtime.PI),
-        (11, ab.Runtime.COPILOT),
-        (11, ab.Runtime.PI),
-        (12, ab.Runtime.COPILOT),
-        (12, ab.Runtime.PI),
+    # Both runtimes of one task run at the same time, so only the task order is fixed.
+    assert sorted((r.entry.issue, r.runtime.value) for r in runner.requests) == [
+        (10, "copilot"),
+        (10, "pi"),
+        (11, "copilot"),
+        (11, "pi"),
+        (12, "copilot"),
+        (12, "pi"),
     ]
+    assert [r.entry.issue for r in runner.requests] == [10, 10, 11, 11, 12, 12]
     assert all(set(outcome.samples) == set(ab.Runtime) for outcome in outcomes)
     first, second = runner.requests[:2]
     assert (first.title, first.description) == (second.title, second.description)
     assert (first.title, first.description) == ("Issue 10", "Body of 10")
+
+
+def test_both_runtimes_of_a_task_run_at_the_same_time() -> None:
+    both_started = threading.Barrier(len(ab.Runtime), timeout=5)
+
+    def runner(request: Any) -> Any:
+        # Sequential runs would wait here alone until the barrier times out.
+        both_started.wait()
+        return _sample()
+
+    outcomes = _run_benchmark(
+        runner, budget=ab.Budget(max_wall_seconds=1e9), manifest=_manifest(count=1)
+    )
+
+    assert set(outcomes[0].samples) == set(ab.Runtime)
 
 
 def test_manifest_title_overrides_fetched_title() -> None:
