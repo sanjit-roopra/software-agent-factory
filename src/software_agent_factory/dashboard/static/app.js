@@ -204,15 +204,23 @@
     throw apiError(ERROR_CONNECTION, "network error");
   }
 
+  // An error answer may carry a body that says more, such as which compared run is gone.
+  function onUnreadableBody() {
+    return null;
+  }
+
   function readResponse(response) {
     if (response.status === 401) {
       throw apiError(ERROR_UNAUTHORIZED, "unauthorized");
     }
     if (!response.ok) {
-      const kind = response.status >= 500 ? ERROR_CONNECTION : ERROR_REQUEST;
-      const error = apiError(kind, "request failed: " + response.status);
-      error.status = response.status;
-      throw error;
+      return response.json().catch(onUnreadableBody).then(function (body) {
+        const kind = response.status >= 500 ? ERROR_CONNECTION : ERROR_REQUEST;
+        const error = apiError(kind, "request failed: " + response.status);
+        error.status = response.status;
+        error.body = body;
+        throw error;
+      });
     }
     return response.json().catch(onNetworkError);
   }
@@ -321,10 +329,11 @@
   }
 
   // A region is dirty while the operator works in it: a focused field or an
-  // open dialog. A refresh must not re-render a dirty region.
+  // open dialog. A refresh must not re-render a dirty region. A picker is not a
+  // field here: it only skips its own redraw, so its view keeps refreshing.
   function isDirty(region) {
     const active = document.activeElement;
-    if (active && region.contains(active) && active.matches("input, textarea, select")) {
+    if (active && region.contains(active) && active.matches("input, textarea")) {
       return true;
     }
     return region.querySelector("dialog[open]") !== null;
@@ -354,6 +363,10 @@
 
   function preferDefined(value, fallback) {
     return value === undefined ? fallback : value;
+  }
+
+  function runIdOf(entry) {
+    return preferDefined(entry.run_id, entry.id);
   }
 
   function displayValue(value, fallback = EMPTY_VALUE) {
@@ -651,7 +664,7 @@
   }
 
   function runRowSpec(run) {
-    const runId = preferDefined(run.run_id, run.id);
+    const runId = runIdOf(run);
     return {
       runId: runId,
       cells: [
@@ -893,7 +906,7 @@
 
   function identityFields(detail) {
     return [
-      ["Run", preferDefined(detail.run_id, detail.id)],
+      ["Run", runIdOf(detail)],
       ["Work item", detail.work_item_id],
       ["GitHub issue", detail.source_external_id],
       ["Title", detail.title],
@@ -1757,7 +1770,7 @@
   // ---- Run detail: render ------------------------------------------------
 
   function knownRunId(detail) {
-    const runId = preferDefined(detail.run_id, detail.id);
+    const runId = runIdOf(detail);
     return typeof runId === "string" && RUN_ID_PATTERN.test(runId) ? runId : null;
   }
 
@@ -1830,7 +1843,7 @@
   // The list rows carry no model, so an option names the model profile the run
   // was started with. The models each run used show in the table once chosen.
   function runOption(run) {
-    const runId = preferDefined(run.run_id, run.id);
+    const runId = runIdOf(run);
     const parts = [run.created_at, run.state, run.title || runId];
     if (run.performance_model_profile) {
       parts.push("profile " + run.performance_model_profile);
@@ -1858,8 +1871,12 @@
     return node;
   }
 
-  // Rebuilt only when the options or the pick changed.
+  // Rebuilt only when the options or the pick changed. A picker the operator has
+  // open is left alone, and the next refresh after it loses focus catches it up.
   function renderPicker(select, options, selected) {
+    if (select === document.activeElement) {
+      return;
+    }
     const signature = JSON.stringify([options, selected]);
     if (select.dataset.signature === signature) {
       return;
@@ -1957,61 +1974,33 @@
     setCompareStatus(roles.length === 0 ? NO_ROLES_TEXT : null);
   }
 
-  function missingRunsText(aExists, bExists) {
-    if (!aExists && !bExists) {
+  // The compare answer names the missing runs by side, "a" or "b". Null when it
+  // names none.
+  function missingRunsText(missing) {
+    const sides = asArray(missing);
+    const a = sides.includes("a");
+    const b = sides.includes("b");
+    if (a && b) {
       return "Runs A and B are no longer available.";
     }
-    if (!aExists) {
+    if (a) {
       return "Run A is no longer available.";
     }
-    if (!bExists) {
-      return "Run B is no longer available.";
-    }
-    return COMPARE_UNAVAILABLE_TEXT;
+    return b ? "Run B is no longer available." : null;
   }
 
-  // Never rejects: only a 404 means the run is gone.
-  function runExists(runId) {
-    return apiFetch(runDetailPath(runId)).then(
-      function () {
-        return true;
-      },
-      function (error) {
-        return error.status !== NOT_FOUND_STATUS;
-      }
-    );
-  }
-
-  // The compare answer is one 404 for either run, so each run is asked for.
-  function reportMissingRuns(request) {
-    return Promise.all([
-      runExists(request.compare.a), runExists(request.compare.b)
-    ]).then(function (exists) {
-      if (isLatest(request)) {
-        setCompareStatus(missingRunsText(exists[0], exists[1]));
-      }
-    });
-  }
-
-  function rethrow(error) {
-    return function () {
-      throw error;
-    };
-  }
-
-  // A loaded table stays visible after a failure, except when a run is gone. The
-  // error still goes on, so the refresh dispatcher sets its notice as it does for
-  // every view.
+  // A loaded table stays visible after a failure, unless the answer says a run is
+  // gone. The error still goes on, so the refresh dispatcher sets its notice as it
+  // does for every view.
   function onCompareFailure(request) {
     return function (error) {
-      if (!isLatest(request)) {
-        throw error;
-      }
-      if (error.status === NOT_FOUND_STATUS) {
-        return reportMissingRuns(request).then(rethrow(error));
-      }
-      if (document.getElementById("compare-content").hidden) {
-        setCompareStatus(COMPARE_UNAVAILABLE_TEXT);
+      if (isLatest(request)) {
+        const gone = error.status === NOT_FOUND_STATUS ? missingRunsText(error.body?.missing) : null;
+        if (gone !== null) {
+          setCompareStatus(gone);
+        } else if (document.getElementById("compare-content").hidden) {
+          setCompareStatus(COMPARE_UNAVAILABLE_TEXT);
+        }
       }
       throw error;
     };
@@ -2082,10 +2071,14 @@
   }
 
   // A run is never compared with itself, so a repeated id leaves run B empty.
+  function normalizeSelection(a, b) {
+    return { a: a, b: b === a ? null : b };
+  }
+
   function compareSelection(route) {
     const a = validCompareId(route.a);
     const b = validCompareId(route.b);
-    return { a: a, b: b === a ? null : b };
+    return normalizeSelection(a, b);
   }
 
   // The list filter needs the whole newest page, so it asks for the largest one.
@@ -2141,9 +2134,7 @@
     run: function (request) {
       return request.runId === null ? [pingServer()] : [refreshRunDetail(request)];
     },
-    compare: function (request) {
-      return refreshCompare(request);
-    },
+    compare: refreshCompare,
     projects: function (request) {
       return [refreshProjects(request)];
     },
@@ -2183,13 +2174,11 @@
 
   // Refreshes only the open view, and skips it while the operator works in it.
   // The notice shows the outcome of the latest refresh and clears on success.
-  // An operator action that changed the view passes force: its own focused
-  // field must not stop the refresh it asked for.
-  function refreshView(force) {
+  function refreshView() {
     renderNotice();
     const view = state.view;
     const refresher = REFRESHERS[view];
-    if (!refresher || (force !== true && isDirty(document.getElementById(VIEWS[view].section)))) {
+    if (!refresher || isDirty(document.getElementById(VIEWS[view].section))) {
       return Promise.resolve();
     }
     const request = beginRequest(view);
@@ -2272,25 +2261,26 @@
   }
 
   function readCompareSelection() {
-    const a = document.getElementById("compare-a").value || null;
-    const b = document.getElementById("compare-b").value || null;
-    return { a: a, b: b === a ? null : b };
+    const a = validCompareId(document.getElementById("compare-a").value);
+    const b = validCompareId(document.getElementById("compare-b").value);
+    return normalizeSelection(a, b);
   }
 
   function compareHash(selection) {
     if (selection.b !== null) {
-      return COMPARE_HASH + "/" + (selection.a ?? "") + "/" + selection.b;
+      return COMPARE_HASH + "/" + encodeURIComponent(selection.a ?? "") + "/" +
+        encodeURIComponent(selection.b);
     }
-    return selection.a === null ? COMPARE_HASH : COMPARE_HASH + "/" + selection.a;
+    return selection.a === null ? COMPARE_HASH : COMPARE_HASH + "/" + encodeURIComponent(selection.a);
   }
 
   // A pick updates the address without a route change, so focus stays on the
-  // picker. The refresh is forced because the picker has focus.
+  // picker.
   function onComparePick() {
     state.compare = readCompareSelection();
     globalThis.history.replaceState(null, "", compareHash(state.compare));
     resetCompareStatus(state.compare);
-    void refreshView(true);
+    void refreshView();
   }
 
   function bindControls() {

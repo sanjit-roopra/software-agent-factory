@@ -673,13 +673,14 @@ class MonitoringSnapshot(VersionedModel):
     actually corrupt, missing, or simply too large to fully scan in one call.
 
     The key figures are derived from ``generated_at`` on every call, never
-    stored (ADR-017). ``needs_human_count`` is ``counts.escalated``: the runs in
-    ``NEEDS_HUMAN``, the state the dashboard's "Needs you" panel reads.
+    stored (ADR-017). ``needs_human_count`` is the same count as ``counts.escalated``:
+    the runs in ``NEEDS_HUMAN``, which the dashboard shows as "Needs you".
     ``failed_last_24h`` counts ``FAILED`` runs whose ``completed_at`` is strictly
     after ``generated_at`` minus 24 hours. ``tokens_last_24h`` adds the reported
     tokens of every invocation whose ``completed_at`` is strictly after that
-    cutoff; a value a call did not report adds nothing. All three cover only the
-    scanned subset.
+    cutoff; a value a call did not report adds nothing. It is ``None`` when calls
+    completed after the cutoff and none reported a counted token class, and ``0`` when
+    no call did (unknown is never zero). All three cover only the scanned subset.
     """
 
     generated_at: UtcDateTime
@@ -694,7 +695,7 @@ class MonitoringSnapshot(VersionedModel):
     counts: RunStateCounts
     needs_human_count: int = Field(default=0, ge=0)
     failed_last_24h: int = Field(default=0, ge=0)
-    tokens_last_24h: int = Field(default=0, ge=0)
+    tokens_last_24h: int | None = Field(default=0, ge=0)
     attempts_by_role: dict[str, int] = Field(default_factory=dict)
     attempts_by_model: dict[str, int] = Field(default_factory=dict)
     metrics: AggregateMetrics
@@ -1096,24 +1097,43 @@ def _failed_since(runs: list[FactoryRun], cutoff: datetime) -> int:
     )
 
 
-def _reported_tokens(usage: UsageMetrics) -> int:
-    """One invocation's tokens across ``KEY_FIGURE_TOKEN_FIELDS``; unreported classes add 0."""
+def _reported_tokens(usage: UsageMetrics | None) -> int | None:
+    """One invocation's tokens across ``KEY_FIGURE_TOKEN_FIELDS``, or ``None`` if it reported none.
+
+    A class the call did not report adds nothing, but a call that reported no class at all is
+    unknown, not zero (ADR-017).
+    """
+    if usage is None:
+        return None
     resolved = resolve_usage(usage)
-    return sum(
+    values = [
         value
         for field in KEY_FIGURE_TOKEN_FIELDS
         if (value := getattr(resolved, field)) is not None
-    )
+    ]
+    return sum(values) if values else None
 
 
-def _tokens_since(runs: list[FactoryRun], cutoff: datetime) -> int:
-    """Reported tokens of every invocation that completed strictly after ``cutoff``."""
-    return sum(
-        _reported_tokens(invocation.usage)
+def _tokens_since(runs: list[FactoryRun], cutoff: datetime) -> int | None:
+    """Reported tokens of every invocation that completed strictly after ``cutoff``.
+
+    ``0`` when no invocation completed after ``cutoff``. ``None`` when some did and none of
+    them reported a counted token class.
+    """
+    recent = [
+        invocation
         for run in runs
         for invocation in run.invocation_records
-        if invocation.usage is not None and invocation.completed_at > cutoff
-    )
+        if invocation.completed_at > cutoff
+    ]
+    if not recent:
+        return 0
+    reported = [
+        tokens
+        for invocation in recent
+        if (tokens := _reported_tokens(invocation.usage)) is not None
+    ]
+    return sum(reported) if reported else None
 
 
 def _compute_attempt_tallies(

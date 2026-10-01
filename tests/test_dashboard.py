@@ -938,13 +938,16 @@ def test_summary_never_includes_run_list(running_server: RunningServer) -> None:
     assert payload["health"]["success"] is True
 
 
-def test_summary_passes_the_key_figures_through() -> None:
+@pytest.mark.parametrize(
+    "tokens", [pytest.param(1200, id="reported"), pytest.param(None, id="unknown-stays-null")]
+)
+def test_summary_passes_the_key_figures_through(tokens: int | None) -> None:
     def provider(*, limit: int, offset: int) -> dict[str, Any]:
         return {
             **fake_snapshot_provider(limit=limit, offset=offset),
             "needs_human_count": 1,
             "failed_last_24h": 2,
-            "tokens_last_24h": 1200,
+            "tokens_last_24h": tokens,
         }
 
     config = DashboardConfig(
@@ -962,7 +965,7 @@ def test_summary_passes_the_key_figures_through() -> None:
 
     assert payload["needs_human_count"] == 1
     assert payload["failed_last_24h"] == 2
-    assert payload["tokens_last_24h"] == 1200
+    assert payload["tokens_last_24h"] == tokens
 
 
 def test_summary_reports_null_health_when_not_configured() -> None:
@@ -3216,7 +3219,11 @@ def test_compare_of_two_runs_without_calls_has_no_roles(compare_server: RunningS
 def test_compare_drops_fields_the_sanitizer_does_not_allow(compare_server: RunningServer) -> None:
     response = _compare(compare_server, _RUN_A, _RUN_B)
 
-    assert _SECRET_TEXT not in response.read_body.decode()  # type: ignore[attr-defined]
+    body = response.read_body.decode()  # type: ignore[attr-defined]
+    assert response.status == 200
+    # A positive field first, so an empty answer cannot pass for "nothing leaked".
+    assert json.loads(body)["a"]["title"] == "Task of run-A"
+    assert _SECRET_TEXT not in body
 
 
 _BAD_REQUESTS = [
@@ -3269,14 +3276,21 @@ def test_compare_with_a_missing_id_parameter_is_400(
     assert response.status == 400
 
 
-@pytest.mark.parametrize(("a", "b"), [(_RUN_A, _MISSING_RUN), (_MISSING_RUN, _RUN_A)])
-def test_compare_with_an_unknown_run_is_404_without_run_data(
-    compare_server: RunningServer, a: str, b: str
+@pytest.mark.parametrize(
+    ("a", "b", "missing"),
+    [
+        pytest.param(_RUN_A, _MISSING_RUN, ["b"], id="b-missing"),
+        pytest.param(_MISSING_RUN, _RUN_A, ["a"], id="a-missing"),
+        pytest.param(_MISSING_RUN, "other-missing-run", ["a", "b"], id="both-missing"),
+    ],
+)
+def test_compare_with_an_unknown_run_is_404_naming_the_missing_side(
+    compare_server: RunningServer, a: str, b: str, missing: list[str]
 ) -> None:
     response = _compare(compare_server, a, b)
 
     assert response.status == 404
-    assert _body_json(response) == {"error": "not found"}
+    assert _body_json(response) == {"error": "not found", "missing": missing}
 
 
 def test_compare_without_a_token_is_401(compare_server: RunningServer) -> None:

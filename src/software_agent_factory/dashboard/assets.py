@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from importlib import resources
 
+from .snapshot import MAX_PAGE_LIMIT
+
 #: Name of the ``<meta>`` tag the initial HTML uses to hand the token to
 #: ``app.js`` without ever placing it in an inline ``<script>`` (the CSP
 #: below forbids inline/eval script execution entirely).
@@ -61,7 +63,7 @@ def render_index_html(*, token: str) -> str:
             <a id="figure-needs-you-link" href="#runs?filter=needs-you">Show runs that need you</a>
           </li>
           <li class="stat">
-            <p class="stat-label">Failed in the last 24 hours</p>
+            <p class="stat-label">Failed runs in the last 24 hours</p>
             <p id="figure-failed" class="stat-value">&mdash;</p>
           </li>
           <li class="stat">
@@ -77,7 +79,7 @@ def render_index_html(*, token: str) -> str:
       <div class="card">
         <h2 id="run-list-heading">Run list</h2>
         <p id="runs-filter" hidden>
-          Showing only runs that need you, from the newest 100 runs.
+          Showing only runs that need you, from the newest {MAX_PAGE_LIMIT} runs.
           <a href="#runs">Show all runs</a>
         </p>
         <div id="runs-toolbar">
@@ -179,12 +181,15 @@ def render_index_html(*, token: str) -> str:
             <select id="compare-b"></select>
           </div>
         </div>
-        <p id="compare-status" aria-live="polite">Choose two runs to compare.</p>
+        <p id="compare-status" role="status" aria-live="polite">Choose two runs to compare.</p>
       </div>
       <div id="compare-content" class="card" hidden>
         <div class="table-wrap">
           <table id="compare-table">
             <caption>The roles of run A and run B side by side</caption>
+            <colgroup span="1"></colgroup>
+            <colgroup span="6"></colgroup>
+            <colgroup span="6"></colgroup>
             <thead>
               <tr>
                 <th scope="col" rowspan="2">Role</th>

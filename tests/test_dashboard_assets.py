@@ -21,6 +21,8 @@ from dashboard_js import (
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.responses import ConflictReason
 from software_agent_factory.dashboard.security import TOKEN_HEADER
+from software_agent_factory.dashboard.snapshot import MAX_PAGE_LIMIT
+from software_agent_factory.observability import MonitoringSnapshot
 from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
 # --------------------------------------------------------------------------
@@ -252,7 +254,7 @@ def test_one_poll_refreshes_only_the_open_view() -> None:
     assert code.count("setInterval(") == 1
     assert "globalThis.setInterval(pollView, POLL_INTERVAL_MS);" in code
     refreshers = object_literal_source(js, "REFRESHERS")
-    assert re.findall(r"(\w+): function", refreshers) == [
+    assert re.findall(r"(\w+): (?:function|refreshCompare)", refreshers) == [
         "runs",
         "run",
         "compare",
@@ -284,7 +286,7 @@ def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
     js = dashboard_assets.APP_JS
     guard = function_source(js, "isDirty")
     assert "region.contains(active)" in guard
-    assert 'active.matches("input, textarea, select")' in guard
+    assert 'active.matches("input, textarea")' in guard
     assert 'region.querySelector("dialog[open]") !== null' in guard
     refresh_view = function_source(js, "refreshView")
     assert "isDirty(document.getElementById(VIEWS[view].section))" in refresh_view
@@ -330,7 +332,11 @@ def test_a_failed_refresh_leaves_the_views_as_they_were() -> None:
 def test_notices_live_in_one_polite_status_region() -> None:
     notice = r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"\s+tabindex="-1"></p>'
     assert re.search(notice, _INDEX_HTML)
-    assert _INDEX_HTML.count('role="status"') == 1
+    # The compare status line is the only other status region (slice 5 review).
+    assert re.findall(r'<p\s+id="([^"]+)"\s+role="status"', _INDEX_HTML) == [
+        "notice",
+        "compare-status",
+    ]
 
 
 def test_notice_texts_report_a_lost_connection_and_a_restart() -> None:
@@ -1317,7 +1323,7 @@ def test_the_runs_view_holds_one_key_figure_for_each_summary_number() -> None:
     assert labels == [
         "Active runs",
         "Needs you",
-        "Failed in the last 24 hours",
+        "Failed runs in the last 24 hours",
         "Tokens in the last 24 hours",
     ]
 
@@ -1343,12 +1349,25 @@ def test_each_key_figure_reads_its_summary_field() -> None:
         )
 
 
+def test_the_key_figure_fields_the_page_reads_are_snapshot_fields() -> None:
+    figures = _constant_source("KEY_FIGURES")
+    for field in ("needs_human_count", "failed_last_24h", "tokens_last_24h"):
+        assert field in MonitoringSnapshot.model_fields
+        assert f"summary?.{field};" in figures
+
+
 def test_key_figures_show_whole_numbers_with_a_thousands_separator() -> None:
     render = function_source(_JS, "renderKeyFigures")
     assert (
         "setText(document.getElementById(figure.id), displayNumber(figure.read(summary)))" in render
     )
     assert 'value.toLocaleString("en-US")' in function_source(_JS, "displayNumber")
+
+
+def test_an_unknown_token_figure_shows_not_reported_and_not_zero() -> None:
+    display = function_source(_JS, "displayNumber")
+    assert "if (!isFiniteNumber(value)) { return NOT_REPORTED; }" in display
+    assert 'const NOT_REPORTED = "not reported";' in _JS
 
 
 def test_the_summary_feeds_the_key_figures_and_the_totals() -> None:
@@ -1468,7 +1487,7 @@ def test_the_compare_view_is_a_pair_of_labelled_pickers_a_status_line_and_a_tabl
             _COMPARE_HTML,
         )
     assert re.search(
-        r'<p id="compare-status" aria-live="polite">Choose two runs to compare.</p>',
+        r'<p id="compare-status" role="status" aria-live="polite">Choose two runs to compare.</p>',
         _COMPARE_HTML,
     )
     assert re.search(r'<div id="compare-content" class="card" hidden>', _COMPARE_HTML)
@@ -1500,7 +1519,7 @@ def test_the_compare_table_names_every_column_and_row_for_a_screen_reader() -> N
 
 def test_a_picker_option_shows_the_start_time_state_task_and_model_profile() -> None:
     assert function_source(_JS, "runOption") == (
-        "function runOption(run) { const runId = preferDefined(run.run_id, run.id); "
+        "function runOption(run) { const runId = runIdOf(run); "
         "const parts = [run.created_at, run.state, run.title || runId]; "
         "if (run.performance_model_profile) { "
         'parts.push("profile " + run.performance_model_profile); } '
@@ -1513,8 +1532,11 @@ def test_run_a_is_not_offered_as_run_b() -> None:
     assert "pickerOptions(runs, selection.a, null), selection.a" in renderer
     assert "pickerOptions(runs, selection.b, selection.a)" in renderer
     assert "option.value !== excluded" in function_source(_JS, "pickerOptions")
-    assert "return { a: a, b: b === a ? null : b };" in function_source(_JS, "readCompareSelection")
-    assert "return { a: a, b: b === a ? null : b };" in function_source(_JS, "compareSelection")
+    assert function_source(_JS, "normalizeSelection") == (
+        "function normalizeSelection(a, b) { return { a: a, b: b === a ? null : b }; }"
+    )
+    assert "return normalizeSelection(a, b);" in function_source(_JS, "readCompareSelection")
+    assert "return normalizeSelection(a, b);" in function_source(_JS, "compareSelection")
 
 
 def test_a_picked_run_missing_from_the_list_keeps_its_option() -> None:
@@ -1601,10 +1623,7 @@ def test_the_pickers_always_load_and_the_comparison_loads_once_both_runs_are_cho
         "if (isCompleteSelection(request.compare)) { tasks.push(refreshComparison(request)); }"
         in refresh
     )
-    assert (
-        "compare: function (request) { return refreshCompare(request); }"
-        in object_literal_source(_JS, "REFRESHERS")
-    )
+    assert "compare: refreshCompare," in object_literal_source(_JS, "REFRESHERS")
     compare_path = function_source(_JS, "refreshComparison")
     assert "encodeURIComponent(request.compare.a)" in compare_path
     assert '"&b=" + encodeURIComponent(request.compare.b)' in compare_path
@@ -1614,63 +1633,60 @@ def test_the_pickers_always_load_and_the_comparison_loads_once_both_runs_are_cho
     )
 
 
-def test_a_pick_updates_the_address_without_a_route_change_and_forces_the_refresh() -> None:
+def test_a_pick_updates_the_address_without_a_route_change_and_refreshes() -> None:
     pick = function_source(_JS, "onComparePick")
     assert "state.compare = readCompareSelection();" in pick
     assert 'globalThis.history.replaceState(null, "", compareHash(state.compare));' in pick
     assert "location.hash" not in pick
-    assert pick.endswith("void refreshView(true); }")
+    assert pick.endswith("void refreshView(); }")
     bindings = function_source(_JS, "bindControls")
     for picker in ("compare-a", "compare-b"):
         assert (
             f'document.getElementById("{picker}").addEventListener("change", onComparePick);'
             in bindings
         )
-    refresh = function_source(_JS, "refreshView")
-    assert "force !== true && isDirty(" in refresh
+    assert "force" not in function_source(_JS, "refreshView")
 
 
 def test_the_compare_address_carries_run_a_then_run_b() -> None:
     assert function_source(_JS, "compareHash") == (
         "function compareHash(selection) { if (selection.b !== null) { "
-        'return COMPARE_HASH + "/" + (selection.a ?? "") + "/" + selection.b; } '
-        'return selection.a === null ? COMPARE_HASH : COMPARE_HASH + "/" + selection.a; }'
+        'return COMPARE_HASH + "/" + encodeURIComponent(selection.a ?? "") + "/" + '
+        "encodeURIComponent(selection.b); } "
+        "return selection.a === null ? COMPARE_HASH : "
+        'COMPARE_HASH + "/" + encodeURIComponent(selection.a); }'
     )
     assert 'const COMPARE_HASH = "#compare";' in _JS
 
 
-def test_a_response_keeps_its_status_so_a_404_can_be_told_from_other_errors() -> None:
+def test_a_response_keeps_its_status_and_body_so_a_404_can_name_the_missing_run() -> None:
     reader = function_source(_JS, "readResponse")
     assert "error.status = response.status;" in reader
+    assert "error.body = body;" in reader
+    assert "response.json().catch(" in reader
     assert "const NOT_FOUND_STATUS = 404;" in _JS
 
 
-def test_a_deleted_run_is_named_in_the_status_line() -> None:
-    assert 'return "Runs A and B are no longer available.";' in function_source(
-        _JS, "missingRunsText"
-    )
-    assert 'return "Run A is no longer available.";' in function_source(_JS, "missingRunsText")
-    assert 'return "Run B is no longer available.";' in function_source(_JS, "missingRunsText")
-    report = function_source(_JS, "reportMissingRuns")
-    assert "runExists(request.compare.a), runExists(request.compare.b)" in report
-    assert (
-        "if (isLatest(request)) { setCompareStatus(missingRunsText(exists[0], exists[1])); }"
-        in report
-    )
-    exists = function_source(_JS, "runExists")
-    assert "return error.status !== NOT_FOUND_STATUS;" in exists
-    assert "runDetailPath(runId)" in exists
+def test_a_deleted_run_is_named_in_the_status_line_from_the_answer() -> None:
+    text = function_source(_JS, "missingRunsText")
+    assert 'return "Runs A and B are no longer available.";' in text
+    assert 'return "Run A is no longer available.";' in text
+    assert 'return b ? "Run B is no longer available." : null;' in text
+    assert 'sides.includes("a")' in text
+    assert 'sides.includes("b")' in text
+    for retired in ("reportMissingRuns", "runExists", "rethrow"):
+        assert retired not in _JS
 
 
 def test_a_failed_comparison_still_reaches_the_refresh_dispatcher() -> None:
     failure = function_source(_JS, "onCompareFailure")
-    assert "return reportMissingRuns(request).then(rethrow(error));" in failure
-    assert failure.count("throw error;") == 2
-    assert 'document.getElementById("compare-content").hidden' in failure
-    assert "if (!isLatest(request)) { throw error; }" in failure
-    assert function_source(_JS, "rethrow") == (
-        "function rethrow(error) { return function () { throw error; }; }"
+    assert failure.count("throw error;") == 1
+    assert failure.endswith("throw error; }; }")
+    assert "if (isLatest(request)) {" in failure
+    assert (
+        "error.status === NOT_FOUND_STATUS ? missingRunsText(error.body?.missing) : null" in failure
     )
+    assert "if (gone !== null) { setCompareStatus(gone); }" in failure
     assert "onCompareFailure(request)" in function_source(_JS, "refreshComparison")
 
 
@@ -1678,7 +1694,7 @@ def test_a_loaded_table_stays_after_a_failure_that_is_not_a_missing_run() -> Non
     failure = function_source(_JS, "onCompareFailure")
     # Only a table that is still hidden gets the "unavailable" line; a shown one stays.
     assert (
-        'if (document.getElementById("compare-content").hidden) '
+        'else if (document.getElementById("compare-content").hidden) '
         "{ setCompareStatus(COMPARE_UNAVAILABLE_TEXT); }"
     ) in failure
     assert "replaceChildren" not in failure
@@ -1707,3 +1723,41 @@ def test_the_compare_view_has_styles_that_use_only_theme_tokens() -> None:
     assert select_rule is not None
     assert "background: var(--surface);" in select_rule.group(1)
     assert "color: var(--text);" in select_rule.group(1)
+
+
+def test_a_focused_picker_skips_only_its_own_redraw_so_the_comparison_still_refreshes() -> None:
+    picker = function_source(_JS, "renderPicker")
+    assert picker.startswith("function renderPicker(select, options, selected) { ")
+    assert "if (select === document.activeElement) { return; }" in picker
+    assert picker.index("document.activeElement") < picker.index("select.replaceChildren(")
+    assert "isDirty" not in function_source(_JS, "refreshCompare")
+    assert "isDirty" not in function_source(_JS, "renderComparison")
+    assert 'matches("input, textarea")' in function_source(_JS, "isDirty")
+
+
+def test_the_compare_pickers_take_only_valid_ids_from_the_page() -> None:
+    read = function_source(_JS, "readCompareSelection")
+    assert 'validCompareId(document.getElementById("compare-a").value)' in read
+    assert 'validCompareId(document.getElementById("compare-b").value)' in read
+
+
+def test_one_helper_reads_a_run_id_from_a_run_or_a_detail() -> None:
+    assert function_source(_JS, "runIdOf") == (
+        "function runIdOf(entry) { return preferDefined(entry.run_id, entry.id); }"
+    )
+    assert re.findall(r"preferDefined\(\w+\.run_id, \w+\.id\)", _JS) == [
+        "preferDefined(entry.run_id, entry.id)"
+    ]
+
+
+def test_the_run_list_note_names_the_page_limit_the_server_applies() -> None:
+    assert f"from the newest {MAX_PAGE_LIMIT} runs." in _RUNS_HTML
+
+
+def test_the_compare_status_is_announced_as_a_status() -> None:
+    assert re.search(r'<p id="compare-status" role="status" aria-live="polite">', _COMPARE_HTML)
+
+
+def test_each_run_heading_spans_its_own_group_of_columns() -> None:
+    table = _COMPARE_HTML.split("<thead>")[0]
+    assert re.findall(r'<colgroup span="(\d+)"></colgroup>', table) == ["1", "6", "6"]

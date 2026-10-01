@@ -47,10 +47,10 @@ _logger = logging.getLogger("software_agent_factory.dashboard")
 _audit_logger = logging.getLogger("software_agent_factory.dashboard.audit")
 
 #: Hard ceiling on the number of query-string fields ``parse_qs`` will
-#: accept. The dashboard only ever reads ``token``/``limit``/``offset``, so
-#: anything beyond a handful of fields is either a mistake or an attempt to
-#: force excessive parsing work; either way it is rejected with a clean 400
-#: rather than left to raise an uncaught ``ValueError`` mid-request.
+#: accept. The dashboard only ever reads ``token``, ``limit``, ``offset`` and the
+#: compare ids ``a`` and ``b``, so anything beyond a handful of fields is either a
+#: mistake or an attempt to force excessive parsing work; either way it is rejected
+#: with a clean 400 rather than left to raise an uncaught ``ValueError`` mid-request.
 _MAX_QUERY_FIELDS = 16
 
 
@@ -73,6 +73,13 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 )
 
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
+
+
+class _UnknownRun:
+    """What a read of a run returns when the provider does not know the run."""
+
+
+_UNKNOWN_RUN = _UnknownRun()
 #: The decoded path, so a run id such as ``../etc`` reaches the id check as a ``400`` and is
 #: not mistaken for an unknown route.
 _ACTION_PREFIX = "/api/runs/"
@@ -478,11 +485,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if a_id == b_id or not (is_valid_run_id(a_id) and is_valid_run_id(b_id)):
             self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid run ids"}, send_body)
             return
-        a_detail = self._load_run(a_id, sanitize_run_detail, send_body)
+        a_detail = self._read_run(a_id, sanitize_run_detail, send_body)
         if a_detail is None:
             return
-        b_detail = self._load_run(b_id, sanitize_run_detail, send_body)
+        b_detail = self._read_run(b_id, sanitize_run_detail, send_body)
         if b_detail is None:
+            return
+        if isinstance(a_detail, _UnknownRun) or isinstance(b_detail, _UnknownRun):
+            # The labels name the request side only, so the answer holds no run data.
+            missing = [
+                label
+                for label, detail in (("a", a_detail), ("b", b_detail))
+                if isinstance(detail, _UnknownRun)
+            ]
+            self._respond_json(
+                HTTPStatus.NOT_FOUND, {"error": "not found", "missing": missing}, send_body
+            )
             return
         self._respond_json(HTTPStatus.OK, compare_view(a_id, a_detail, b_id, b_detail), send_body)
 
@@ -491,10 +509,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     ) -> dict[str, Any] | None:
         """One valid run id's detail through ``build``, or ``None`` after answering why not.
 
-        An unknown run is ``404``. A provider that fails or returns data ``build`` cannot
-        sanitize is ``503``. The answer never holds run data. ``build`` must go through
-        :func:`sanitize_run_detail`, so only allowlisted fields ever leave this process, no
-        matter what the provider handed back.
+        An unknown run is ``404``. See :meth:`_read_run` for the rest.
+        """
+        detail = self._read_run(run_id, build, send_body)
+        if isinstance(detail, _UnknownRun):
+            self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
+            return None
+        return detail
+
+    def _read_run(
+        self, run_id: str, build: Callable[[Any], dict[str, Any]], send_body: bool
+    ) -> dict[str, Any] | _UnknownRun | None:
+        """One valid run id's detail through ``build``, ``_UnknownRun`` or ``None``.
+
+        An unknown run is the caller's to answer. A provider that fails or returns data
+        ``build`` cannot sanitize is ``503``, answered here, and gives ``None``. The answer
+        never holds run data. ``build`` must go through :func:`sanitize_run_detail`, so only
+        allowlisted fields ever leave this process, no matter what the provider handed back.
         """
         try:
             detail = self.server.run_detail_provider(run_id)
@@ -505,8 +536,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             )
             return None
         if detail is None:
-            self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
-            return None
+            return _UNKNOWN_RUN
         try:
             return build(detail)
         except TypeError:

@@ -71,7 +71,6 @@ from software_agent_factory.observability import (
     DEFAULT_MAX_SCANNED_RUNS,
     DEFAULT_SCAN_CACHE_TTL,
     DEFAULT_STALE_AFTER,
-    KEY_FIGURE_TOKEN_FIELDS,
     MonitoringSnapshot,
     OperationalHealthReport,
     OrphanedWorkspaceFinding,
@@ -327,13 +326,15 @@ def test_key_figures_are_zero_for_an_empty_store(tmp_path: Path) -> None:
         pytest.param(WINDOW - timedelta(minutes=1), 1, id="23h59-ago-counted"),
         pytest.param(WINDOW + timedelta(minutes=1), 0, id="24h01-ago-not-counted"),
         pytest.param(WINDOW, 0, id="exactly-24h-ago-not-counted"),
+        pytest.param(None, 0, id="no-completion-time-not-counted"),
     ],
 )
 def test_failed_last_24h_counts_only_failures_completed_after_the_cutoff(
-    tmp_path: Path, age: timedelta, expected: int
+    tmp_path: Path, age: timedelta | None, expected: int
 ) -> None:
+    completed_at = None if age is None else KEY_FIGURES_NOW - age
     store = _fake_store(tmp_path)
-    store.add_run(_run("failed", state=WorkflowState.FAILED, completed_at=KEY_FIGURES_NOW - age))
+    store.add_run(_run("failed", state=WorkflowState.FAILED, completed_at=completed_at))
 
     snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
 
@@ -425,10 +426,70 @@ def test_tokens_last_24h_counts_only_reported_values(tmp_path: Path) -> None:
     assert snapshot.tokens_last_24h == 7
 
 
-def test_key_figure_token_fields_match_the_dashboard_totals_cell() -> None:
-    from software_agent_factory.dashboard.aggregate import TOTAL_TOKEN_FIELDS
+def test_tokens_last_24h_is_unknown_when_no_recent_call_reported_a_token_class(
+    tmp_path: Path,
+) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    outside = KEY_FIGURES_NOW - WINDOW - timedelta(minutes=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls(
+            "run",
+            _token_call(1, recent, usage=None),
+            _token_call(2, recent, usage=UsageMetrics(reasoning_tokens=9)),
+            _token_call(3, outside, usage=UsageMetrics(input_tokens=500)),
+        )
+    )
 
-    assert set(TOTAL_TOKEN_FIELDS) == set(KEY_FIGURE_TOKEN_FIELDS)
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h is None
+
+
+def test_tokens_last_24h_is_zero_when_a_call_reported_zero(tmp_path: Path) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls("run", _token_call(1, recent, usage=UsageMetrics(input_tokens=0)))
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == 0
+
+
+def test_tokens_last_24h_is_zero_when_no_call_is_recent(tmp_path: Path) -> None:
+    outside = KEY_FIGURES_NOW - WINDOW - timedelta(minutes=1)
+    store = _fake_store(tmp_path)
+    store.add_run(_run_with_calls("run", _token_call(1, outside, usage=None)))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == 0
+
+
+def test_key_figures_cover_every_scanned_run_whatever_the_page(tmp_path: Path) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    for number in range(3):
+        store.add_run(
+            _run_with_calls(
+                f"active-{number}", _token_call(1, recent, usage=UsageMetrics(input_tokens=10))
+            )
+        )
+    store.add_run(_run("needs-you", state=WorkflowState.NEEDS_HUMAN))
+    store.add_run(_run("failed", state=WorkflowState.FAILED, completed_at=recent))
+
+    one = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW, limit=1)
+    many = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW, limit=100)
+
+    assert one.page.returned == 1
+    assert (one.needs_human_count, one.failed_last_24h, one.tokens_last_24h) == (1, 1, 30)
+    assert (one.needs_human_count, one.failed_last_24h, one.tokens_last_24h) == (
+        many.needs_human_count,
+        many.failed_last_24h,
+        many.tokens_last_24h,
+    )
 
 
 def test_key_figures_example_from_the_plan(tmp_path: Path) -> None:
