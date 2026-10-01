@@ -440,8 +440,11 @@ only as:
   ingests it and is the single writer of `run.json`. No endpoint may change
   configuration or workflow state in any other way. The two routes land in
   slice 4 of issue #80; until then the dashboard is read-only
-- token protected. Holding the per-start token replaces the ADR-024 author
-  checks for a local approval
+- token protected. The per-start token guards the HTTP route only. The factory
+  service never checks it and trusts any request file in the run directory. So
+  write access to `<data_dir>/runs` is the real authority for a local approval,
+  the same as write access to `run.json`. Agents work in their own workspace,
+  and the factory does not give them the data directory
 - served from the Python standard library, with no web framework, no npm, no
   bundler and no build step
 - no logs and no diffs rendered by default

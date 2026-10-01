@@ -66,9 +66,18 @@ The write path has one writer:
 Authority for a local approval:
 
 - ADR-024 checks the GitHub comment author. A local approval has no author to check.
-- Holding the per-start dashboard token replaces those author checks.
+- The per-start dashboard token guards the HTTP route only (slice 4).
   The token is random, per start, printed to stdout and never logged.
-  The dashboard binds to `127.0.0.1`, so only a process on the operator's machine can hold it.
+  The dashboard binds to `127.0.0.1`, so only a process on the operator's machine can reach the route.
+- The factory service never checks the token.
+  It trusts any well-formed request file in the run directory.
+  The file name is `dashboard-approval-<episode>-<fingerprint prefix>.json`.
+- So the real authority is write access to `<data_dir>/runs`.
+  Anyone who can write there can approve a run.
+  Anyone who can write `run.json` can already do the same.
+- The control that stops an implementer agent from approving its own R2 or R3 risk is the workspace.
+  Agents work in their own workspace, and the factory does not give them the data directory.
+  This is not a sandbox. The code sets the working directory and does not block other paths.
 - The receipt records the source `dashboard` and the login `dashboard-local`.
   It also records the time and the context fingerprint, and the service writes a log event.
 - A `POST` also needs the token in a header, an exact `Origin` and a JSON body of at most 16 KB.
@@ -76,10 +85,13 @@ Authority for a local approval:
 
 Consequences:
 
-- Anyone who can read the token can approve a run on that machine.
-  The risk is the same as for anyone who can read the operator's files.
+- Anyone who can write the run directory can approve a run, with or without the token.
+  The risk is the same as for anyone who can write `run.json`.
 - Receipts and plan answers carry a `source` field. Models use `extra="forbid"`.
+  The factory writes `source` only for dashboard receipts and answers. GitHub is the default and is left out.
   After a dashboard receipt exists, rolling back to code without `source` needs a hand edit of `run.json`.
+  `plan-decision-answers.json` in the run directory can also hold `source: dashboard`. It needs the same edit.
+  Older code ignores the `dashboard-approval-*.json` request files.
 - Slice 3 of issue #80 adds the request file and the service ingest.
   The HTTP routes for the two actions land in slice 4.
   Until slice 4 ships, the dashboard stays read-only and no route creates a request.
