@@ -81,13 +81,8 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 - Binds `127.0.0.1` and nothing else.
 - Reads with `GET`. The only writes are the two actions below.
 - Requires a token generated for that process. The tokenized URL is printed to
-  stdout once and never written to the log. The page removes the token from its
-  address after it loads.
+  stdout once and never written to the log.
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
-
-The page removes the token from its address so the token does not stay in your
-browser history. Reload the page from the link the command printed. A reload of
-the shortened address fails with `401`.
 
 It shows project state, issue references, pull requests, merge progress, and
 workflow state. Run details show model use, performance mode, retries, safe

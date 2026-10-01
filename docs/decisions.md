@@ -85,9 +85,9 @@ Authority for a local approval:
   It also records the time and the context fingerprint, and the service writes a log event.
 - A `POST` also needs the token in a header, an exact `Origin` and a JSON body of at most 16 KB.
   Other write methods return `405`.
-- The page removes the token from its address after it loads, so the token does not stay in browser history.
-  The token is still in the page, and a reload of the shortened address returns `401`.
-  The operator opens the printed link again.
+- The per-start token stays in the page URL and in the browser history.
+  Anyone who can read the operator's browser history or terminal can approve while that dashboard runs.
+  A server-set cookie can remove the token from the URL (follow-up).
 
 Consequences:
 

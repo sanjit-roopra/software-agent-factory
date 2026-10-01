@@ -11,7 +11,6 @@
   const ERROR_CONNECTION = "connection";
   const ERROR_REQUEST = "request";
 
-  const TOKEN_QUERY_PARAM = "token";
   const THEME_STORAGE_KEY = "factory-dashboard-theme";
   const THEME_ATTRIBUTE = "data-theme";
   const THEME_LIGHT = "light";
@@ -1786,19 +1785,6 @@
     void refreshView();
   }
 
-  // The token reached the page in its address. Take it out of the address so it
-  // does not stay in the history. The hash route stays.
-  function stripTokenFromUrl() {
-    const url = new URL(globalThis.location.href);
-    if (!url.searchParams.has(TOKEN_QUERY_PARAM)) {
-      return;
-    }
-    url.searchParams.delete(TOKEN_QUERY_PARAM);
-    globalThis.history.replaceState(
-      globalThis.history.state, "", url.pathname + url.search + url.hash
-    );
-  }
-
   // A deep link opens with the run list one step back, so Back leaves the deep
   // view for the list. A tab is seeded once: the session flag keeps a reload,
   // or a reload after in-page navigation, from adding another entry.
@@ -1869,7 +1855,6 @@
 
   function start() {
     applyStoredTheme();
-    stripTokenFromUrl();
     bindControls();
     seedBackHistory();
     applyRoute(false);

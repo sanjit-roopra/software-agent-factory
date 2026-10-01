@@ -14,7 +14,7 @@ from dashboard_js import function_source, normalized, object_literal_source, str
 
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.actions import ConflictReason
-from software_agent_factory.dashboard.security import TOKEN_HEADER, TOKEN_QUERY_PARAM
+from software_agent_factory.dashboard.security import TOKEN_HEADER
 from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
 # --------------------------------------------------------------------------
@@ -1218,22 +1218,6 @@ def test_a_route_change_still_moves_focus_to_the_heading_and_sets_the_title() ->
     assert "if (moveFocus) { document.getElementById(VIEWS[route.view].heading).focus(); }" in (
         apply_route
     )
-
-
-def test_the_token_leaves_the_address_but_the_hash_route_stays() -> None:
-    strip = function_source(_JS, "stripTokenFromUrl")
-    assert f'const TOKEN_QUERY_PARAM = "{TOKEN_QUERY_PARAM}";' in _JS
-    assert "url.searchParams.has(TOKEN_QUERY_PARAM)" in strip
-    assert "url.searchParams.delete(TOKEN_QUERY_PARAM)" in strip
-    assert "globalThis.history.replaceState(" in strip
-    assert "url.pathname + url.search + url.hash" in strip
-    assert "globalThis.history.state" in strip
-
-
-def test_start_removes_the_token_before_it_seeds_history_and_opens_the_route() -> None:
-    start = function_source(_JS, "start")
-    strip = start.index("stripTokenFromUrl();")
-    assert strip < start.index("seedBackHistory();") < start.index("applyRoute(false);")
 
 
 def test_the_script_reads_the_token_from_the_page_and_never_from_the_address() -> None:

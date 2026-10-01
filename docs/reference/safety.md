@@ -453,8 +453,7 @@ write actions, not a control plane.
 - Binds `127.0.0.1` only. Not configurable.
 - Reads with `GET`. Two `POST` routes are the only writes: approve a risk
   approval, and answer plan decisions (ADR-033).
-- Token generated per process, printed once, never logged. The page removes it
-  from its address after it loads, so it does not stay in browser history.
+- Token generated per process, printed once, never logged.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object
