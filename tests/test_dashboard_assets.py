@@ -151,7 +151,7 @@ def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
     mark = function_source(js, "markNavLink")
     assert 'link.setAttribute("aria-current", "page")' in mark
     assert 'link.removeAttribute("aria-current")' in mark
-    assert 'link.dataset.route === VIEWS[name].nav' in function_source(js, "showView")
+    assert "link.dataset.route === VIEWS[name].nav" in function_source(js, "showView")
     assert (
         "if (moveFocus) { document.getElementById(VIEWS[route.view].heading).focus(); }"
         in function_source(js, "applyRoute")
@@ -379,7 +379,7 @@ def test_a_refresh_stays_in_flight_until_every_task_ends() -> None:
 
 def test_a_reused_row_drops_a_stale_run_id() -> None:
     patch = function_source(dashboard_assets.APP_JS, "patchRow")
-    assert 'delete row.dataset.runId;' in patch
+    assert "delete row.dataset.runId;" in patch
 
 
 def test_a_successful_refresh_clears_the_notice() -> None:
