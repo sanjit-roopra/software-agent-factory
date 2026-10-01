@@ -1078,7 +1078,7 @@ def deliver_escalation_notification(
                 update={
                     "status": EscalationStatus.NOTIFICATION_FAILED,
                     "remote_resume_enabled": False,
-                    "reply_cursor": "closed",
+                    "reply_cursor": REPLY_CURSOR_CLOSED,
                     "updated_at": utc_now(),
                 }
             )
@@ -1099,7 +1099,7 @@ def deliver_escalation_notification(
                 "delivery_error": "no valid escalation target resolved",
                 "status": EscalationStatus.NOTIFICATION_FAILED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "updated_at": utc_now(),
             }
         )
@@ -1130,7 +1130,7 @@ def deliver_escalation_notification(
     )
     comment_body = str(rendered_notice)
     remote_resume_enabled = getattr(rendered_notice, "remote_resume_enabled", False)
-    reply_cursor = None if remote_resume_enabled else "closed"
+    reply_cursor = None if remote_resume_enabled else REPLY_CURSOR_CLOSED
 
     factory_login: str | None = None
     factory_id: int | None = None
@@ -1226,7 +1226,7 @@ def deliver_escalation_notification(
                 ),
                 "status": EscalationStatus.NOTIFICATION_FAILED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "last_notified_at": None,
                 "updated_at": utc_now(),
             }
@@ -1250,7 +1250,7 @@ def deliver_escalation_notification(
                 ),
                 "status": EscalationStatus.NOTIFICATION_FAILED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "last_notified_at": None,
                 "updated_at": utc_now(),
             }
@@ -1306,7 +1306,7 @@ def deliver_escalation_notification(
                 "remote_resume_enabled": (
                     False if is_terminal else escalation.remote_resume_enabled
                 ),
-                "reply_cursor": "closed" if is_terminal else escalation.reply_cursor,
+                "reply_cursor": REPLY_CURSOR_CLOSED if is_terminal else escalation.reply_cursor,
                 "updated_at": utc_now(),
             }
         )

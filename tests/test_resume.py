@@ -58,8 +58,10 @@ def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
         elif isinstance(node, ast.ImportFrom):
             if node.level == 0:
                 imported.add(node.module or "")
-            else:
-                imported.add(f".{node.module or ''}")
+            elif node.module:
+                imported.add(f".{node.module}")
+            else:  # ``from . import x`` names the module ``.x``
+                imported.update(f".{alias.name}" for alias in node.names)
 
     forbidden = {
         "subprocess",
@@ -73,7 +75,10 @@ def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
         ".workspace",
         ".agents",
     }
-    assert imported.isdisjoint(forbidden)
+    named = {
+        name for name in imported if any(name == f or name.startswith(f + ".") for f in forbidden)
+    }
+    assert not named
 
 
 # -- answer rules ------------------------------------------------------------
@@ -553,6 +558,38 @@ def test_a_request_made_inside_the_reply_window_reopens_after_the_window_ended(
     assert receipt is not None
     assert receipt.accepted_at == NOW
     assert _stored_request(store, run).status == "pending"
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        NOW - timedelta(hours=1, seconds=1),  # before the escalation was made
+        NOW + timedelta(seconds=1),  # after the service read it
+    ],
+)
+def test_a_request_stamped_outside_the_episode_and_the_clock_is_stale(
+    tmp_path: Path, stamp: datetime
+) -> None:
+    run = _run()  # the escalation was made one hour before NOW
+    store = _store(tmp_path, run)
+    _submit(store, run, created_at=stamp)
+
+    assert ingest_dashboard_request(run, store, _config(), NOW) is None
+
+    assert store.load_run(RUN_ID) == run
+    stale = _stored_request(store, run)
+    assert (stale.status, stale.reason) == ("stale", "expired")
+
+
+@pytest.mark.parametrize("stamp", [NOW - timedelta(hours=1), NOW])
+def test_a_request_stamped_at_the_edges_of_the_episode_and_the_clock_reopens(
+    tmp_path: Path, stamp: datetime
+) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    _submit(store, run, created_at=stamp)
+
+    assert ingest_dashboard_request(run, store, _config(), NOW) is not None
 
 
 @pytest.mark.parametrize(

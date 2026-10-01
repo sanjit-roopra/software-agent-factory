@@ -1175,6 +1175,7 @@ DashboardRequestAction = Literal[
 DashboardRequestStatus = Literal["pending", "stale"]
 #: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
 ResumeRefusal = Literal["expired", "reopen_limit", "context_changed", "state_changed"]
+#: A new ``ResumeRefusal`` value changes the stored request schema: older code rejects it.
 DashboardRequestStaleReason = ResumeRefusal
 
 

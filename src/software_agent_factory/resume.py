@@ -513,8 +513,26 @@ def _dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) 
     )
 
 
+def unsettled_requests(
+    run: FactoryRun, requests: Sequence[DashboardResumeRequest]
+) -> list[DashboardResumeRequest]:
+    """The ``requests`` ingest can still settle: not already accepted by ``run`` itself.
+
+    A request the run accepted stays pending by design, so ingest has nothing left to do
+    for it. ``run`` is the snapshot the caller read.
+    """
+    escalation = run.escalation
+    if escalation is None:
+        return list(requests)
+    return [
+        request
+        for request in requests
+        if not _dashboard_already_accepted(escalation, request.context_fingerprint)
+    ]
+
+
 def _request_refusal(
-    run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig
+    run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig, now: datetime
 ) -> tuple[ResumeRefusal | None, list[PlanDecisionAnswer] | None]:
     """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
     # The window is judged when the human made the request, not when the service reads it.
@@ -523,6 +541,9 @@ def _request_refusal(
         return refusal, None
     escalation = run.escalation
     assert escalation is not None  # resume_refusal returned None
+    # The stamp decides the window, so a stamp the episode or the clock cannot have is refused.
+    if request.created_at < escalation.created_at or request.created_at > now:
+        return "expired", None
     if request.run_id != run.id or request.action is not escalation.resume_classification:
         return "context_changed", None
     if request.action is not ResumeClassification.PLAN_DECISION:
@@ -561,6 +582,7 @@ def ingest_dashboard_request(
     ``context_changed``. A request the run already accepted stays pending, and so does a
     request nobody has read yet: capacity and quota never make a request stale, because the
     reply window is judged when the request was made, not at ``now``.
+    A request stamped before its escalation or after ``now`` is stale as ``expired``.
 
     A caller that already read the requests of the episode can pass them as ``requests``, to
     save a second directory listing. Requests of another episode in it are ignored.
@@ -586,7 +608,7 @@ def ingest_dashboard_request(
         return None
     if _dashboard_already_accepted(escalation, fingerprint):
         return None
-    reason, answers = _request_refusal(run, current, config)
+    reason, answers = _request_refusal(run, current, config, now)
     if reason is not None:
         logger.info("dashboard request for run %s is stale: %s", run.id, reason)
         _mark_stale(store, run.id, current, reason)

@@ -12,6 +12,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1184,7 +1185,7 @@ def test_a_request_made_while_the_github_reply_is_accepted_goes_stale_in_that_cy
     assert _sources(store, answered) == ["github"]
 
 
-def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_without_a_slot(
+def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_in_the_next_cycle(
     source_repo: Path, data_dir: Path, make_service
 ) -> None:
     config = _escalation_config(data_dir, escalation_enabled=False, max_concurrent_tasks=1)
@@ -1203,6 +1204,43 @@ def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_without_a_sl
     assert (stale.status, stale.reason) == ("stale", "state_changed")
 
 
+class _LoadCountingStore(FileRunStore):
+    """A run store that counts how often each run is loaded."""
+
+    def __init__(self, data_dir: Path) -> None:
+        super().__init__(data_dir)
+        self.loads: Counter[str] = Counter()
+
+    def load_run(self, run_id: str) -> FactoryRun:
+        self.loads[run_id] += 1
+        return super().load_run(run_id)
+
+
+def test_a_finished_run_whose_request_it_accepted_is_not_read_again_by_later_cycles(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False)
+    store = FileRunStore(data_dir)
+    run = _halt_for_approval(config, store, source_repo, 1)
+    _approve(store, run)
+    service = make_service(config)
+    service.reconcile_escalation()
+    service.drain(60)
+    assert store.load_run(run.id).state is WorkflowState.PR_READY
+    assert _request_status(store, run) == "pending"  # an accepted request stays pending
+
+    counting = _LoadCountingStore(data_dir)
+    service.store = counting
+    service.reconcile_escalation()
+    first_cycle = counting.loads[run.id]
+    service.reconcile_escalation()
+
+    # Each cycle loads the run once to list it; a re-ingest would load it again.
+    assert counting.loads[run.id] == 2 * first_cycle
+    assert first_cycle == 1
+    assert _request_status(store, run) == "pending"
+
+
 def test_a_request_made_inside_the_reply_window_reopens_after_the_quota_delayed_it_past_the_window(
     source_repo: Path, data_dir: Path, make_service
 ) -> None:
@@ -1216,6 +1254,9 @@ def test_a_request_made_inside_the_reply_window_reopens_after_the_quota_delayed_
     _approve(store, aged, created_at=utc_now() - timedelta(hours=36))
 
     make_service(tight).reconcile_escalation()
+    held = store.load_run(aged.id)
+    assert held.state is WorkflowState.NEEDS_HUMAN
+    assert held.escalation is not None and held.escalation.accepted_replies == []
     assert _request_status(store, aged) == "pending"
 
     later = make_service(_escalation_config(data_dir, escalation_enabled=False, max_runs_per_day=5))

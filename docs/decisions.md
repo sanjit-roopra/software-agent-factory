@@ -57,6 +57,9 @@ The write path has one writer:
   the context changed or the run is no longer waiting.
   The service then marks it `stale` with a reason code.
   If a GitHub reply was accepted first, the request goes stale.
+- The reply window is judged when a dashboard request was made.
+  A GitHub reply is judged when the poller reads it, as before.
+  So a full service or a spent daily quota can make a GitHub reply expire, but never a dashboard request.
 - The reopen checks are the ones in ADR-024: reopen limit, quota, concurrency,
   approval context match, and delivery resume for R2 and R3 runs.
   A dashboard request does not need `remote_resume_enabled`.
@@ -92,6 +95,10 @@ Consequences:
   After a dashboard receipt exists, rolling back to code without `source` needs a hand edit of `run.json`.
   `plan-decision-answers.json` in the run directory can also hold `source: dashboard`. It needs the same edit.
   Older code ignores the `dashboard-approval-*.json` request files.
+- The `created_at` of a request decides its reply window.
+  Ingest marks a request stale as `expired` if it is older than its escalation or newer than the service clock.
+  Back-dating a request needs write access to the data directory, which can already edit `run.json`.
+  The slice 4 route stamps `created_at` from the server clock and never reads it from the request body.
 - Slice 3 of issue #80 adds the request file and the service ingest.
   The HTTP routes for the two actions land in slice 4.
   Until slice 4 ships, the dashboard stays read-only and no route creates a request.

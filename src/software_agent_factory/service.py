@@ -66,7 +66,7 @@ from .models import (
     utc_now,
 )
 from .observability import log_run_event
-from .resume import awaits_human, ingest_dashboard_request
+from .resume import awaits_human, ingest_dashboard_request, unsettled_requests
 from .scheduler import (
     DispatchOutcome,
     ReconciliationAction,
@@ -484,8 +484,10 @@ class FactoryService:
         """Mark the pending requests of runs that no longer wait for a human as stale.
 
         A GitHub reply, a failure or an expiry can end the wait after a request was made, or
-        just before it. Ingest marks such a request stale as ``state_changed`` and leaves one
-        this run accepted itself pending. This needs no slot and no quota, and reads only the
+        just before it. Ingest marks such a request stale as ``state_changed`` (``context_changed``
+        for another context of the episode) and leaves one this run accepted itself pending.
+        Requests the run already accepted are dropped first, so a finished run is not read
+        again every cycle. This needs no slot and no quota, and reads only the
         requests of each escalated run's current episode: one directory listing per run, and
         a file is parsed only when it exists. ``list_runs`` already reads every run file in
         the cycle, which costs more.
@@ -493,7 +495,7 @@ class FactoryService:
         for run in runs:
             if run.escalation is None or awaits_human(run):
                 continue
-            pending = self._pending_requests(run)
+            pending = unsettled_requests(run, self._pending_requests(run))
             if pending:
                 ingest_dashboard_request(run, self.store, self.config, utc_now(), requests=pending)
 

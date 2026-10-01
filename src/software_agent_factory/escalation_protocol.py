@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
-from .models import EscalationRecord, EscalationStatus
+from .models import REPLY_CURSOR_CLOSED, EscalationRecord, EscalationStatus
 
 #: Characters allowed in a run id or an episode id inside a reply command.
 _ID_CHARS = "A-Za-z0-9._-"
@@ -113,7 +113,7 @@ def reply_closed_cause(
         return _STATUS_CAUSES.get(record.status, _STATUS_UNKNOWN)
     if not record.remote_resume_enabled:
         return _NO_INSTRUCTIONS
-    if record.reply_cursor == "closed":
+    if record.reply_cursor == REPLY_CURSOR_CLOSED:
         return _CURSOR_CLOSED
     if reply_window_hours is not None and now > record.created_at + timedelta(
         hours=reply_window_hours
