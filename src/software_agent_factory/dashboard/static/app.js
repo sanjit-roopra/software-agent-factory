@@ -728,7 +728,7 @@
     card.appendChild(element("h4", "", "Models used"));
     card.appendChild(element("p", "project-meta", usageSummary(project.totals)));
     if (models.length === 0) {
-      card.appendChild(element("p", "", "No model invocations yet."));
+      card.appendChild(element("p", "", "No calls yet."));
     } else {
       card.appendChild(wrapTable(modelsTable(models)));
     }
@@ -797,14 +797,14 @@
       ["Created", detail.created_at],
       ["Updated", detail.updated_at],
       ["Completed", detail.completed_at],
-      ["Invocations", detail.invocation_count],
-      ["Active invocation", activeInvocationText(detail.active_invocation)]
+      ["Calls", detail.invocation_count],
+      ["Active call", activeInvocationText(detail.active_invocation)]
     ];
   }
 
   function usageFields(usage) {
     return [
-      ["Usage reported", usage.reported_invocations],
+      ["Calls with usage", usage.reported_invocations],
       ["Input tokens", displayNumber(usage.input_tokens)],
       ["Output tokens", displayNumber(usage.output_tokens)],
       ["Reasoning tokens", displayNumber(usage.reasoning_tokens)],

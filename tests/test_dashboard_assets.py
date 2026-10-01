@@ -622,25 +622,42 @@ def test_the_visual_header_row_is_hidden_from_assistive_technology() -> None:
     assert re.search(r'<div\s+class="timeline-head"\s+aria-hidden="true">', _RUN_DETAIL_HTML)
 
 
+_TABLE_ROLE_CALL = re.compile(
+    r"""setAttribute\(\s*["']role["']\s*,\s*["'](?:table|row|cell|columnheader|grid)["']"""
+)
+
+
+def test_the_table_role_check_matches_the_calls_it_is_meant_to_catch() -> None:
+    assert _TABLE_ROLE_CALL.search('row.setAttribute("role", "row");')
+    assert _TABLE_ROLE_CALL.search("cell.setAttribute( 'role' , 'columnheader' )")
+    assert not _TABLE_ROLE_CALL.search('status.setAttribute("role", "status");')
+
+
 def test_a_timeline_row_is_not_given_table_roles() -> None:
     timeline = _RUN_DETAIL_HTML.split('class="timeline"')[1].split("</section>")[0]
     for role in ("table", "row", "cell", "columnheader", "grid"):
         assert f'role="{role}"' not in timeline
-        assert f'role="{role}"' not in dashboard_assets.APP_JS
+    assert _TABLE_ROLE_CALL.search(strip_comments(dashboard_assets.APP_JS)) is None
 
 
 def test_each_call_cell_starts_with_a_hidden_label_for_its_column() -> None:
     js = dashboard_assets.APP_JS
     assert '"visually-hidden", label + ": "' in function_source(js, "buildCell")
     assert "buildCell(label)" in function_source(js, "buildCall")
+
+
+def test_the_call_cell_labels_match_the_visible_column_headers() -> None:
     labels = re.findall(r'"([^"]+)"', _constant_source("CALL_COLUMNS"))
     head = _RUN_DETAIL_HTML.split('class="timeline-head"')[1].split("</div>")[0]
     visible = re.findall(r"<span>([^<]*)</span>", head)
     assert labels[0] == "Call number"
     assert labels[1:] == visible[1:]
     assert len(labels) == len(visible)
-    # The value is the last child of the cell, after the hidden label.
-    assert "cells[index].lastElementChild" in function_source(js, "patchCall")
+
+
+def test_patching_a_call_writes_the_value_after_the_hidden_label() -> None:
+    # The value is the last child of the cell, so the label stays in place.
+    assert "cells[index].lastElementChild" in function_source(dashboard_assets.APP_JS, "patchCall")
 
 
 def test_the_hidden_label_style_hides_text_visually_but_not_from_screen_readers() -> None:
@@ -924,3 +941,20 @@ def test_the_timeline_scrolls_inside_its_card() -> None:
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"\.timeline\s*\{[^}]*min-width:\s*\d+rem;", css)
     assert re.search(r"\.call-row\s*\{[^}]*display:\s*grid;", css)
+
+
+@pytest.mark.parametrize(
+    "old", ["Invocations", "Active invocation", "Usage reported", "invocations yet"]
+)
+def test_the_page_says_call_where_the_wire_says_invocation(old: str) -> None:
+    assert old not in strip_comments(dashboard_assets.APP_JS)
+
+
+def test_the_run_detail_and_project_labels_say_call() -> None:
+    js = dashboard_assets.APP_JS
+    assert '["Calls", detail.invocation_count]' in function_source(js, "identityFields")
+    assert '["Active call", activeInvocationText(detail.active_invocation)]' in function_source(
+        js, "identityFields"
+    )
+    assert '["Calls with usage", usage.reported_invocations]' in function_source(js, "usageFields")
+    assert '"No calls yet."' in function_source(js, "projectCard")

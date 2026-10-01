@@ -1506,7 +1506,7 @@ def test_app_js_never_uses_dangerous_rendering_apis(forbidden: str) -> None:
 def test_app_js_renders_server_text_with_textcontent() -> None:
     js = dashboard_assets.APP_JS
     assert "textContent" in js
-    assert "Active invocation" in js
+    assert "Active call" in js
     assert "model.status" in js
 
 
