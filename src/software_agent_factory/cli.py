@@ -1062,9 +1062,10 @@ def dashboard_command(
 
     def run_detail_provider(run_id: str) -> object | None:
         # Returns None (rendered as 404) for a run that does not exist or
-        # cannot be read, and only ever carries allowlisted summary fields
-        # plus attempt metadata -- never a log, a diff, a prompt or a raw
-        # artifact body.
+        # cannot be read. The detail carries raw failure reasons and the
+        # escalation text, so ``dashboard.view.run_detail_view`` must redact and
+        # bound them before they reach a client. It never carries a log, a
+        # diff, a prompt or a raw artifact body.
         return build_run_detail(
             store,
             run_id,

@@ -1,9 +1,9 @@
 """The "Needs you" view model: how an operator continues a halted run.
 
-Pure: no I/O, and it imports only ``models``, ``redaction`` and the leaves
-``escalation_protocol`` and ``validators`` (no ``escalation``, which pulls in the GitHub
-client). ``next_step`` reads a run detail whose escalation block already went through the
-sanitizer allowlist. It still redacts every free-text field itself, so it is safe on its own.
+Pure: no I/O, and it imports only ``models`` and the leaves ``escalation_protocol`` and
+``validators`` (no ``escalation``, which pulls in the GitHub client). ``next_step`` reads a
+run detail that already went through :mod:`software_agent_factory.dashboard.sanitize`. That
+step redacted and bounded every free text, so this module copies text and never redacts it.
 
 Whether a reply can reach the run is not decided here. The escalation block carries
 ``reply_closed_cause``, which :func:`software_agent_factory.escalation_protocol.reply_closed_cause`
@@ -22,7 +22,6 @@ from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
 from ..models import ResumeClassification, WorkflowState
-from ..redaction import bounded_reason, redact_secrets
 from .validators import (
     RESUME_CLASSIFICATIONS,
     is_context_fingerprint,
@@ -52,34 +51,6 @@ ANSWER_PLACEHOLDER = "<answer>"
 
 #: The cause shown when the escalation block does not say whether a reply is open.
 UNKNOWN_REPLY_STATE = "the reply state is not known"
-
-
-def _text_list(value: Any) -> list[str] | None:
-    """Redacted copy of a non-empty list of strings, else ``None``."""
-    if not isinstance(value, list) or not value:
-        return None
-    if not all(isinstance(item, str) and item for item in value):
-        return None
-    return [redact_secrets(item) for item in value]
-
-
-def clean_approval_scope(value: Any) -> dict[str, Any] | None:
-    """The approval scope with every text redacted, or ``None`` when it is malformed."""
-    if not isinstance(value, dict):
-        return None
-    requested = value.get("decision_requested")
-    lists = {
-        key: _text_list(value.get(key))
-        for key in ("authorized_actions", "unauthorized_actions", "conditions_in_force")
-    }
-    if not isinstance(requested, str) or not requested or None in lists.values():
-        return None
-    return {"decision_requested": redact_secrets(requested), **lists}
-
-
-def clean_decisions(value: Any) -> list[str]:
-    """The decision questions, redacted. Malformed input gives an empty list."""
-    return _text_list(value) or []
 
 
 def _count_or_none(value: Any) -> int | None:
@@ -140,9 +111,8 @@ def _cannot_continue(
     step = _halt_step("cannot_continue", f"{sentence} {CANNOT_CONTINUE}", escalation)
     reason = run.get("failure_reason")
     if isinstance(reason, str) and reason:
-        text, cut = bounded_reason(reason, run_id=run_id_of(run))
-        step["failure_reason"] = text
-        step["failure_reason_truncated"] = cut or run.get("failure_reason_truncated") is True
+        step["failure_reason"] = reason
+        step["failure_reason_truncated"] = run.get("failure_reason_truncated") is True
     return step
 
 
@@ -182,18 +152,13 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     if closed is not None:
         return _unavailable(run, escalation, f"Remote approval is not available because {closed}.")
     ids = _reply_ids(run, escalation)
-    scope = clean_approval_scope(escalation.get("approval_scope"))
-    if ids is None or scope is None:
+    scope = escalation.get("approval_scope")
+    if ids is None or not isinstance(scope, dict):
         return _unavailable(run, escalation, "Remote approval is not available.")
     run_id, episode_id, fingerprint = ids
     step = _halt_step("approve", _reason_sentence(escalation), escalation)
     step.update(
-        approval_scope={
-            "decision_requested": scope["decision_requested"],
-            "authorized_actions": scope["authorized_actions"],
-            "unauthorized_actions": scope["unauthorized_actions"],
-            "conditions_in_force": scope["conditions_in_force"],
-        },
+        approval_scope=scope,
         episode_id=episode_id,
         context_fingerprint=fingerprint,
         reply_text=format_resume_command(run_id, episode_id),
@@ -206,8 +171,12 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     if closed is not None:
         return _unavailable(run, escalation, f"Remote answers are not available because {closed}.")
     ids = _reply_ids(run, escalation)
-    questions = clean_decisions(escalation.get("decisions"))
-    if ids is None or not 1 <= len(questions) <= MAX_PLAN_DECISIONS:
+    questions = escalation.get("decisions")
+    if (
+        ids is None
+        or not isinstance(questions, list)
+        or not 1 <= len(questions) <= MAX_PLAN_DECISIONS
+    ):
         return _unavailable(run, escalation, "Remote answers are not available.")
     run_id, episode_id, fingerprint = ids
     template = [f"{n}. {ANSWER_PLACEHOLDER}" for n in range(1, len(questions) + 1)]

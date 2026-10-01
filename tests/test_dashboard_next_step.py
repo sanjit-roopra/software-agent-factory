@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from software_agent_factory.dashboard import next_step as next_step_module
+from software_agent_factory.dashboard import sanitize
 from software_agent_factory.dashboard.next_step import (
     FALLBACK_SENTENCE,
     REASON_SENTENCES,
     next_step,
 )
-from software_agent_factory.dashboard.sanitize import GUIDANCE_COPY, sanitize_run_detail
+from software_agent_factory.dashboard.sanitize import (
+    GUIDANCE_COPY,
+    MAX_SCOPE_ITEMS,
+    sanitize_run_detail,
+)
 from software_agent_factory.dashboard.view import run_detail_view
 from software_agent_factory.escalation import parse_plan_decision_answers, parse_resume_command
 from software_agent_factory.models import (
@@ -29,6 +36,7 @@ from software_agent_factory.models import (
     WorkflowState,
 )
 from software_agent_factory.observability import build_run_detail
+from software_agent_factory.redaction import REASON_LIMIT
 from software_agent_factory.store import FileRunStore
 
 RUN_ID = "run-20261001-abc"
@@ -84,6 +92,12 @@ def _plan_run(decisions: list[str] | None = None, **kwargs: Any) -> dict[str, An
         "decisions", ["Use SQLite?", "Keep the old API?"] if decisions is None else decisions
     )
     return _run(resume_classification="PLAN_DECISION", **kwargs)
+
+
+def _step(run: dict[str, Any]) -> dict[str, Any]:
+    """The next step as the page gets it: after the sanitizer redacted and bounded the text."""
+    step: dict[str, Any] = run_detail_view(run)["next_step"]
+    return step
 
 
 def test_risk_approval_halt_gives_approve_with_scope_reopens_and_reply() -> None:
@@ -171,13 +185,23 @@ def test_failed_run_sentence_names_the_failure() -> None:
     assert step["resume_classification"] is None
 
 
-def test_cannot_continue_failure_reason_is_redacted_and_keeps_the_truncated_flag() -> None:
-    run = _run("FAILED", resume_classification=None, failure_reason=f"x {SECRET}")
+def test_cannot_continue_failure_reason_is_the_sanitized_text_and_its_truncated_flag() -> None:
+    run = _run("FAILED", resume_classification=None, failure_reason=f"{SECRET} " + "x" * 2000)
+
+    step = _step(run)
+
+    assert step["failure_reason"].startswith("[REDACTED] ")
+    assert len(step["failure_reason"]) <= REASON_LIMIT
+    assert step["failure_reason_truncated"] is True
+
+
+def test_next_step_copies_the_failure_reason_it_is_given_without_changing_it() -> None:
+    run = _run("FAILED", resume_classification=None, failure_reason="already bounded")
     run["failure_reason_truncated"] = True
 
     step = next_step(run)
 
-    assert step["failure_reason"] == "x [REDACTED]"
+    assert step["failure_reason"] == "already bounded"
     assert step["failure_reason_truncated"] is True
 
 
@@ -190,7 +214,7 @@ def test_needs_human_without_an_escalation_record_cannot_continue() -> None:
 
 @pytest.mark.parametrize("scope", [None, {}, {**SCOPE, "authorized_actions": "not a list"}])
 def test_risk_approval_without_a_valid_approval_context_is_unavailable(scope: Any) -> None:
-    step = next_step(_run(approval_scope=scope))
+    step = _step(_run(approval_scope=scope))
 
     assert step["kind"] == "remote_approval_unavailable"
     assert step["sentence"] == (
@@ -212,11 +236,11 @@ def test_plan_decision_without_decisions_is_unavailable() -> None:
 
 @pytest.mark.parametrize("decisions", ["not a list", [7], ["fine", ""]])
 def test_malformed_decisions_are_unavailable(decisions: Any) -> None:
-    assert next_step(_plan_run(decisions=decisions))["kind"] == "remote_approval_unavailable"
+    assert _step(_plan_run(decisions=decisions))["kind"] == "remote_approval_unavailable"
 
 
 def test_more_decisions_than_the_answer_parser_accepts_are_unavailable() -> None:
-    step = next_step(_plan_run(decisions=[f"Question {n}?" for n in range(25)]))
+    step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(25)]))
 
     assert step["kind"] == "remote_approval_unavailable"
 
@@ -335,7 +359,7 @@ def test_secret_in_the_approval_scope_is_redacted() -> None:
         "conditions_in_force": [f"Keep {SECRET}"],
     }
 
-    step = next_step(_risk_run(approval_scope=scope))
+    step = _step(_risk_run(approval_scope=scope))
 
     assert "ghp_abcdefgh12345678" not in repr(step)
     assert step["approval_scope"]["decision_requested"] == "Approve [REDACTED]"
@@ -345,7 +369,7 @@ def test_secret_in_the_approval_scope_is_redacted() -> None:
 
 
 def test_secret_in_a_decision_question_is_redacted() -> None:
-    step = next_step(_plan_run(decisions=[f"Which {SECRET} ?", "Fine?"]))
+    step = _step(_plan_run(decisions=[f"Which {SECRET} ?", "Fine?"]))
 
     assert "ghp_abcdefgh12345678" not in repr(step)
     assert step["decisions"][0] == {"number": 1, "question": "Which [REDACTED] ?"}
@@ -538,3 +562,51 @@ def test_the_sanitizer_drops_a_reply_closed_cause_that_is_not_text(cause: Any) -
     detail = {"run_id": RUN_ID, "escalation": {"reply_closed_cause": cause}}
 
     assert "reply_closed_cause" not in sanitize_run_detail(detail)["escalation"]
+
+
+def test_each_escalation_text_is_cut_to_the_reason_limit_and_names_the_run() -> None:
+    long = "x" * 2000
+    scope = {
+        "decision_requested": long,
+        "authorized_actions": [long],
+        "unauthorized_actions": [long],
+        "conditions_in_force": [long],
+    }
+
+    approve = _step(_risk_run(approval_scope=scope))
+    answer = _step(_plan_run(decisions=[long, "Fine?"]))
+
+    texts = [
+        approve["approval_scope"]["decision_requested"],
+        approve["approval_scope"]["authorized_actions"][0],
+        approve["approval_scope"]["unauthorized_actions"][0],
+        approve["approval_scope"]["conditions_in_force"][0],
+        answer["decisions"][0]["question"],
+    ]
+    for text in texts:
+        assert len(text) <= REASON_LIMIT
+        assert f"`factory show {RUN_ID}`" in text
+
+
+def test_an_approval_scope_list_over_the_cap_is_dropped_whole() -> None:
+    items = [f"Allowed {n}." for n in range(MAX_SCOPE_ITEMS)]
+    at_cap = _step(_risk_run(approval_scope={**SCOPE, "authorized_actions": items}))
+    over_cap = _step(_risk_run(approval_scope={**SCOPE, "authorized_actions": [*items, "More."]}))
+
+    assert at_cap["approval_scope"]["authorized_actions"] == items
+    assert over_cap["kind"] == "remote_approval_unavailable"
+    assert over_cap["approval_scope"] is None
+
+
+def test_sanitize_does_not_import_next_step_and_next_step_does_not_redact() -> None:
+    def imported(module: Any) -> set[str]:
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.add(f"{'.' * node.level}{node.module or ''}")
+                names.update(f"{'.' * node.level}{node.module or ''}.{a.name}" for a in node.names)
+        return names
+
+    assert not {name for name in imported(sanitize) if "next_step" in name}
+    assert not {name for name in imported(next_step_module) if "redaction" in name}

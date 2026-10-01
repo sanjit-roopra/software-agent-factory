@@ -13,7 +13,9 @@ A failure reason is free-form text that could contain repository content, and
 nothing in this package can verify a provider redacted it. So the run, attempt
 and call ``failure_reason`` are redacted here and cut to a bounded length by
 :func:`software_agent_factory.redaction.bounded_reason`. Each carries a
-``failure_reason_truncated`` flag. ``reasoning`` on a call is the reasoning
+``failure_reason_truncated`` flag. The escalation's approval scope and decision
+questions are free text too, so each string gets the same redact and cut, and
+an over-long list is dropped whole. ``reasoning`` on a call is the reasoning
 level (for example ``high``), never model text: it is kept only when it is a
 short token.
 
@@ -38,7 +40,6 @@ from .aggregate import (
     TOKEN_CLASS_FIELDS,
     call_total_tokens,
 )
-from .next_step import clean_approval_scope, clean_decisions
 from .snapshot import to_json_safe
 from .validators import (
     ESCALATION_STATUSES,
@@ -571,27 +572,59 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
 }
 
 
-def _sanitize_escalation(escalation: dict[str, Any]) -> dict[str, Any]:
+#: The most items kept in one approval scope list. A longer list is dropped whole, because
+#: a part of what an approval allows would mislead the person who reads it.
+MAX_SCOPE_ITEMS = 24
+
+
+def _text_list(value: Any, run_id: str | None, limit: int) -> list[str] | None:
+    """Redacted, bounded copy of a list of 1 to ``limit`` non-empty strings, else ``None``."""
+    if not isinstance(value, list) or not 0 < len(value) <= limit:
+        return None
+    if not all(isinstance(item, str) and item for item in value):
+        return None
+    return [bounded_reason(item, run_id=run_id)[0] for item in value]
+
+
+def _clean_approval_scope(value: Any, run_id: str | None) -> dict[str, Any] | None:
+    """The approval scope with every text redacted and bounded, or ``None`` when malformed."""
+    if not isinstance(value, dict):
+        return None
+    requested = value.get("decision_requested")
+    lists = {
+        key: _text_list(value.get(key), run_id, MAX_SCOPE_ITEMS)
+        for key in ("authorized_actions", "unauthorized_actions", "conditions_in_force")
+    }
+    if not isinstance(requested, str) or not requested or None in lists.values():
+        return None
+    return {"decision_requested": bounded_reason(requested, run_id=run_id)[0], **lists}
+
+
+def _sanitize_escalation(escalation: dict[str, Any], run_id: str | None) -> dict[str, Any]:
     safe = _allowlist(escalation, ESCALATION_FIELDS)
     _drop_invalid(safe, _ESCALATION_CHECKS)
-    _clean_escalation_text(safe)
+    _clean_escalation_text(safe, run_id)
     return safe
 
 
-def _clean_escalation_text(safe: dict[str, Any]) -> None:
-    """Redact the approval scope and the decision questions, or drop them when malformed."""
+def _clean_escalation_text(safe: dict[str, Any], run_id: str | None) -> None:
+    """Redact and bound the approval scope and the decision questions, or drop them when malformed.
+
+    Decisions are all or nothing: a reply must answer every numbered question, so a
+    list over :data:`MAX_PLAN_DECISIONS` is dropped, never cut.
+    """
     if "approval_scope" in safe:
-        scope = clean_approval_scope(safe["approval_scope"])
+        scope = _clean_approval_scope(safe["approval_scope"], run_id)
         if scope is None:
             del safe["approval_scope"]
         else:
             safe["approval_scope"] = scope
     if "decisions" in safe:
-        decisions = clean_decisions(safe["decisions"])
-        if decisions:
-            safe["decisions"] = decisions
-        else:
+        decisions = _text_list(safe["decisions"], run_id, MAX_PLAN_DECISIONS)
+        if decisions is None:
             del safe["decisions"]
+        else:
+            safe["decisions"] = decisions
 
 
 def sanitize_run_detail(raw: Any) -> dict[str, Any]:
@@ -615,7 +648,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     run_id = run_id_of(data)
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     sanitized.update(_sanitize_calls(data, run_id))
-    sanitized.update(_sanitize_detail_sections(data))
+    sanitized.update(_sanitize_detail_sections(data, run_id))
     return sanitized
 
 
@@ -635,7 +668,7 @@ def _sanitize_calls(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
     return sanitized
 
 
-def _sanitize_detail_sections(data: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_detail_sections(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
     """Guidance, verification, artifacts and escalation, each when provided."""
     sanitized: dict[str, Any] = {}
     guidance = data.get("guidance")
@@ -653,7 +686,7 @@ def _sanitize_detail_sections(data: dict[str, Any]) -> dict[str, Any]:
         )
     escalation = data.get("escalation")
     if isinstance(escalation, dict):
-        sanitized["escalation"] = _sanitize_escalation(escalation)
+        sanitized["escalation"] = _sanitize_escalation(escalation, run_id)
     return sanitized
 
 
