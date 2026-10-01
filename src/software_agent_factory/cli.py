@@ -306,7 +306,7 @@ def _configure_logging(config: FactoryConfig) -> None:
 
     A logging destination that cannot be created is reported as a warning
     rather than aborting the command: losing the on-disk log copy must never
-    stop the factory (or the read-only dashboard) from running.
+    stop the factory (or the dashboard) from running.
     """
     try:
         from .observability import configure_factory_logging
@@ -1058,12 +1058,13 @@ def dashboard_command(
         help="Hard cap on how many run files one dashboard request parses.",
     ),
 ) -> None:
-    """Serve the read-only local dashboard until interrupted (ADR-016).
+    """Serve the local dashboard until interrupted (ADR-016, ADR-033).
 
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
-    socket. The server binds ``127.0.0.1`` and nothing else, answers ``GET``
-    only, and is protected by a token generated for this process; the
+    socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
+    and two ``POST`` routes that queue an approval or plan answers for the
+    factory service. It is protected by a token generated for this process; the
     tokenized URL is printed to stdout once and never written to the log.
     Ctrl-C stops it and closes the socket.
     """
@@ -1247,7 +1248,7 @@ def dashboard_command(
         raise _fail(f"could not bind the dashboard to {LOOPBACK_HOST}:{port}: {exc}") from None
 
     typer.echo(f"dashboard: {server.dashboard_url}")
-    typer.echo("read-only, loopback only. press Ctrl-C to stop.")
+    typer.echo("loopback only. it can queue an approval or answers. press Ctrl-C to stop.")
     if open_browser:
         webbrowser.open(server.dashboard_url)
 

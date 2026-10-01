@@ -438,8 +438,7 @@ only as:
 - read-only, except two named write actions: approve a risk approval, and
   answer plan decisions. They only create a request file. The factory service
   ingests it and is the single writer of `run.json`. No endpoint may change
-  configuration or workflow state in any other way. The two routes land in
-  slice 4 of issue #80; until then the dashboard is read-only
+  configuration or workflow state in any other way
 - token protected. The per-start token guards the HTTP route only. The factory
   service never checks it and trusts any request file in the run directory. So
   write access to `<data_dir>/runs` is the real authority for a local approval,

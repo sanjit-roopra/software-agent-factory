@@ -1,4 +1,4 @@
-"""HTTP request handling for the read-only local dashboard.
+"""HTTP request handling for the local dashboard.
 
 Routing, auth (token/Host/Origin), method enforcement and security headers
 all live here. ``GET`` serves reads. The only ``POST`` routes are the approve and

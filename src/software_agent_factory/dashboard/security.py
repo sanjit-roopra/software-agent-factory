@@ -1,4 +1,4 @@
-"""Security primitives for the read-only local dashboard (ADR-016).
+"""Security primitives for the local dashboard (ADR-016, ADR-033).
 
 Everything in this module is deliberately small and dependency-free: token
 generation/comparison, loopback bind-host validation and strict same-origin

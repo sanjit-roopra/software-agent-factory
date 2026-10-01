@@ -445,14 +445,16 @@ findings. Repairing one is an explicit operator action.
 
 ## The dashboard
 
-The only exception to the V1 ban on web UIs, and deliberately a viewer rather
-than a control plane.
+The only exception to the V1 ban on web UIs. It is a viewer with two named
+write actions, not a control plane.
 
 - Started only by `factory dashboard`. It is the only command that opens a
   socket.
 - Binds `127.0.0.1` only. Not configurable.
-- `GET` only.
-- Token generated per process, printed once, never logged.
+- Reads with `GET`. Two `POST` routes are the only writes: approve a risk
+  approval, and answer plan decisions (ADR-033).
+- Token generated per process, printed once, never logged. The page removes it
+  from its address after it loads, so it does not stay in browser history.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object
@@ -462,7 +464,14 @@ than a control plane.
 - Failure reasons and escalation text are redacted first, then cut to 500
   characters with the start and the end kept. A cut reason names
   `factory show <run>` for the full text (ADR-033).
-- Cannot approve, retry, cancel or reconfigure anything.
+- A write needs the token in a header. A token in the address never counts.
+  It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
+  current episode and context fingerprint. The page asks you to confirm an
+  approval before it sends anything.
+- A write never changes `run.json`. It creates one request file. The factory
+  service checks it again with the ADR-024 reopen checks and reopens the run.
+  Write access to `<data_dir>/runs` is the real authority for a local approval.
+- Cannot retry, cancel or reconfigure anything.
 - Python standard library only. No framework, no npm, no bundler, no build step.
 
 ## The service

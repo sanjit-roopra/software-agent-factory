@@ -58,7 +58,10 @@ class DashboardConfig:
 
 
 class DashboardServer(ThreadingHTTPServer):
-    """A loopback-only, read-only HTTP server for the local dashboard."""
+    """A loopback-only HTTP server for the local dashboard.
+
+    It reads with ``GET``. Its only writes are the two ``POST`` action routes (ADR-033).
+    """
 
     daemon_threads = True
     allow_reuse_address = True
