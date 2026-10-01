@@ -24,7 +24,7 @@ adds the run totals and the next step to what these functions return.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -547,19 +547,24 @@ def _is_github_login(value: Any) -> bool:
     )
 
 
+def _one_of(allowed: Collection[str | None]) -> Callable[[Any], bool]:
+    """Accept a string or None from ``allowed``; an unhashable value is invalid, not an error."""
+    return lambda value: (value is None or isinstance(value, str)) and value in allowed
+
+
 _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
-    "status": lambda value: value in _ESCALATION_STATUSES,
-    "target_type": lambda value: value in {None, "PULL_REQUEST", "ISSUE"},
+    "status": _one_of(_ESCALATION_STATUSES),
+    "target_type": _one_of({None, "PULL_REQUEST", "ISSUE"}),
     "comment_url": is_safe_https_url,
-    "reason_code": lambda value: value in GUIDANCE_COPY,
-    "resume_classification": lambda value: value in RESUME_CLASSIFICATIONS,
+    "reason_code": _one_of(GUIDANCE_COPY.keys()),
+    "resume_classification": _one_of(RESUME_CLASSIFICATIONS),
     "waiting_for_human": lambda value: isinstance(value, bool),
     "is_resumed": lambda value: isinstance(value, bool),
     "episode_number": is_count,
     "reopen_count": is_count,
     "accepted_reply_count": is_count,
     "last_responder": _is_github_login,
-    "last_action": lambda value: value in {None, "ANSWER", "RESUME"},
+    "last_action": _one_of({None, "ANSWER", "RESUME"}),
     "episode_id": is_episode_id,
     "context_fingerprint": is_context_fingerprint,
     "reopen_max": is_count,

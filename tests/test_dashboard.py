@@ -1289,6 +1289,18 @@ def test_new_dashboard_fields_reject_untrusted_values() -> None:
     assert SECRET_MARKER not in json.dumps(payload)
 
 
+@pytest.mark.parametrize(
+    "field", ["status", "target_type", "reason_code", "resume_classification", "last_action"]
+)
+@pytest.mark.parametrize("value", [["NOTIFIED"], {"a": 1}])
+def test_an_unhashable_escalation_value_is_dropped_not_raised(field: str, value: object) -> None:
+    payload = sanitize_run_detail(
+        {**FIXTURE_DETAILS["run-001"], "escalation": {"status": "NOTIFIED", field: value}}
+    )
+
+    assert field not in payload["escalation"]
+
+
 def test_sanitize_run_detail_preserves_resumed_escalation_status() -> None:
     """Dashboard sanitizer must preserve the valid RESUMED escalation status."""
     payload = sanitize_run_detail(
