@@ -43,6 +43,8 @@
   const COPIED_TEXT = "Copied";
   const COPY_FAILED_TEXT = "Copy failed, select the text and copy it.";
   const COPIED_VISIBLE_MS = 2000;
+  const MS_PER_SECOND = 1000;
+  const SECONDS_PER_MINUTE = 60;
   // Field names match the server's TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS.
   const TOKEN_CLASSES = [
     { key: "input_tokens", label: "Input tokens" },
@@ -653,7 +655,7 @@
     return "No tasks.";
   }
 
-  function pendingTasksRow(projectState) {
+  function emptyTasksRow(projectState) {
     const row = document.createElement("tr");
     const cell = row.appendChild(element("td", "", emptyTasksText(projectState)));
     cell.colSpan = TASK_HEADERS.length;
@@ -677,7 +679,7 @@
     table.appendChild(tableHeader(TASK_HEADERS));
     const body = table.appendChild(document.createElement("tbody"));
     if (tasks.length === 0) {
-      body.appendChild(pendingTasksRow(projectState));
+      body.appendChild(emptyTasksRow(projectState));
     }
     for (const task of tasks) {
       body.appendChild(taskRow(task));
@@ -921,11 +923,13 @@
     if (!isFiniteNumber(ms)) {
       return NOT_REPORTED;
     }
-    if (ms < 1000) {
+    if (ms < MS_PER_SECOND) {
       return ms + " ms";
     }
-    const seconds = Math.round(ms / 1000);
-    return seconds < 60 ? seconds + " s" : Math.floor(seconds / 60) + " min " + (seconds % 60) + " s";
+    const seconds = Math.round(ms / MS_PER_SECOND);
+    return seconds < SECONDS_PER_MINUTE
+      ? seconds + " s"
+      : Math.floor(seconds / SECONDS_PER_MINUTE) + " min " + (seconds % SECONDS_PER_MINUTE) + " s";
   }
 
   function outcomeOf(status) {

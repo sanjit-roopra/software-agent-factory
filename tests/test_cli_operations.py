@@ -43,6 +43,7 @@ from software_agent_factory.models import (
     ModelUsage,
     ProjectExecution,
     ProjectState,
+    ProjectTaskExecution,
     ResumeClassification,
     UsageMetrics,
     WorkflowState,
@@ -597,27 +598,36 @@ def test_dashboard_providers_serve_real_snapshot_health_and_detail(
     assert [attempt.role for attempt in detail.attempts]
 
 
+def _save_needs_human_run(
+    data_dir: Path, run_id: str, at: datetime, **escalation_overrides: object
+) -> None:
+    """Save a NEEDS_HUMAN run whose notified escalation cannot resume."""
+    fields: dict[str, object] = {
+        "episode_id": "ep-1",
+        "status": EscalationStatus.NOTIFIED,
+        "resume_classification": ResumeClassification.NOT_RESUMABLE,
+        "reason_code": "MANUAL_INSPECTION",
+        **escalation_overrides,
+    }
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id=run_id,
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=at,
+            updated_at=at,
+            escalation=EscalationRecord.model_validate(fields),
+        )
+    )
+
+
 def test_dashboard_detail_carries_the_configured_reopen_limit(
     tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:
     # The default limit is 3, which is also the highest the config accepts.
     config_path = write_config(tmp_path / "factory.yaml", data_dir, escalation={"max_reopens": 2})
     now = datetime(2026, 10, 1, tzinfo=UTC)
-    FileRunStore(data_dir).save_run(
-        FactoryRun(
-            id="run-needs-human",
-            work_item_id="WI-1",
-            state=WorkflowState.NEEDS_HUMAN,
-            created_at=now,
-            updated_at=now,
-            escalation=EscalationRecord(
-                episode_id="ep-1",
-                status=EscalationStatus.NOTIFIED,
-                resume_classification=ResumeClassification.NOT_RESUMABLE,
-                reason_code="MANUAL_INSPECTION",
-            ),
-        )
-    )
+    _save_needs_human_run(data_dir, "run-needs-human", now)
 
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
 
@@ -647,22 +657,8 @@ def test_dashboard_detail_closes_the_reply_from_the_configured_window_and_switch
 ) -> None:
     config_path = write_config(tmp_path / "factory.yaml", data_dir, escalation=escalation)
     old = datetime(2020, 1, 1, tzinfo=UTC)
-    FileRunStore(data_dir).save_run(
-        FactoryRun(
-            id="run-old-notice",
-            work_item_id="WI-1",
-            state=WorkflowState.NEEDS_HUMAN,
-            created_at=old,
-            updated_at=old,
-            escalation=EscalationRecord(
-                episode_id="ep-1",
-                status=EscalationStatus.NOTIFIED,
-                resume_classification=ResumeClassification.NOT_RESUMABLE,
-                reason_code="MANUAL_INSPECTION",
-                remote_resume_enabled=True,
-                created_at=old,
-            ),
-        )
+    _save_needs_human_run(
+        data_dir, "run-old-notice", old, remote_resume_enabled=True, created_at=old
     )
 
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
@@ -686,23 +682,13 @@ def test_dashboard_detail_closes_the_reply_from_the_configured_allowed_hosts(
         },
     )
     now = datetime.now(UTC)
-    FileRunStore(data_dir).save_run(
-        FactoryRun(
-            id="run-other-host",
-            work_item_id="WI-1",
-            state=WorkflowState.NEEDS_HUMAN,
-            created_at=now,
-            updated_at=now,
-            escalation=EscalationRecord(
-                episode_id="ep-1",
-                status=EscalationStatus.NOTIFIED,
-                resume_classification=ResumeClassification.NOT_RESUMABLE,
-                reason_code="MANUAL_INSPECTION",
-                remote_resume_enabled=True,
-                target_host="github.com",
-                created_at=now,
-            ),
-        )
+    _save_needs_human_run(
+        data_dir,
+        "run-other-host",
+        now,
+        remote_resume_enabled=True,
+        target_host="github.com",
+        created_at=now,
     )
 
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
@@ -735,6 +721,48 @@ def test_dashboard_project_totals_count_usage_a_call_reported_only_per_model(
                     ),
                 )
             ],
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+
+    payload = fake_dashboard[0].config.project_provider()
+    project = project_view(payload["projects"][0])
+    assert project["totals"]["tokens"]["input_tokens"] == {"total": 40, "reported_count": 1}
+
+
+def test_dashboard_project_totals_count_usage_a_task_run_call_reported_only_per_model(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id="run-task-usage",
+            work_item_id="WI-1",
+            state=WorkflowState.PR_CREATED,
+            created_at=now,
+            updated_at=now,
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.PLANNER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=now,
+                    completed_at=now,
+                    success=True,
+                    usage=UsageMetrics(
+                        model_usage=(ModelUsage(model="gpt-5.6-sol", input_tokens=40),)
+                    ),
+                )
+            ],
+        )
+    )
+    FileProjectStore(data_dir).save_execution(
+        ProjectExecution(
+            project_id="project-task-usage",
+            state=ProjectState.RUNNING,
+            tasks=(ProjectTaskExecution(task_id=1, work_item_id="WI-1", run_id="run-task-usage"),),
         )
     )
 

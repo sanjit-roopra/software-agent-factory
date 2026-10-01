@@ -1253,44 +1253,42 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
 
 _PARITY_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
-#: Per case: record changes, config changes, whether the reply is open, and whether
-#: ``validate_reply_candidate`` runs the case. The validator does not read the reply cursor
-#: or the config switch: the poller guards both before it calls the validator.
-_PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool, bool]] = {
-    "open": ({}, {}, True, True),
-    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}, True, True),
-    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, False, True),
-    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, False, True),
-    "expired": ({"status": EscalationStatus.EXPIRED}, {}, False, True),
-    "reopened": ({"status": EscalationStatus.REOPENED}, {}, False, True),
-    "resumed": ({"status": EscalationStatus.RESUMED}, {}, False, True),
-    "notice-fallback": (
-        {"remote_resume_enabled": False, "reply_cursor": "closed"},
-        {},
-        False,
-        True,
-    ),
-    "no-reply-instructions": ({"remote_resume_enabled": False}, {}, False, True),
-    "cursor-closed": ({"reply_cursor": "closed"}, {}, False, False),
-    "window-passed": ({"created_at": _PARITY_NOW - timedelta(hours=25)}, {}, False, True),
-    "reopen-limit": ({"reopen_count": 3}, {}, False, True),
-    "reopens-left": ({"reopen_count": 2}, {}, True, True),
-    "escalation-off": ({}, {"escalation_enabled": False}, False, False),
-    "host-not-allowed": ({"target_host": "ghe.example.com"}, {}, False, True),
+#: Per case: record changes, config changes and whether the reply is open.
+_PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {
+    "open": ({}, {}, True),
+    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}, True),
+    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, False),
+    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, False),
+    "expired": ({"status": EscalationStatus.EXPIRED}, {}, False),
+    "reopened": ({"status": EscalationStatus.REOPENED}, {}, False),
+    "resumed": ({"status": EscalationStatus.RESUMED}, {}, False),
+    "notice-fallback": ({"remote_resume_enabled": False, "reply_cursor": "closed"}, {}, False),
+    "no-reply-instructions": ({"remote_resume_enabled": False}, {}, False),
+    "cursor-closed": ({"reply_cursor": "closed"}, {}, False),
+    "window-passed": ({"created_at": _PARITY_NOW - timedelta(hours=25)}, {}, False),
+    "reopen-limit": ({"reopen_count": 3}, {}, False),
+    "reopens-left": ({"reopen_count": 2}, {}, True),
+    "escalation-off": ({}, {"escalation_enabled": False}, False),
+    "host-not-allowed": ({"target_host": "ghe.example.com"}, {}, False),
     "host-allowed": (
         {"target_host": "ghe.example.com"},
         {"allowed_hosts": ["github.com", "ghe.example.com"]},
         True,
-        True,
     ),
 }
 
+#: The validator does not read the reply cursor or the config switch: the poller guards
+#: both before it calls the validator.
+_VALIDATOR_PARITY_CASES = {
+    case: values
+    for case, values in _PARITY_CASES.items()
+    if case not in {"cursor-closed", "escalation-off"}
+}
 
-@pytest.mark.parametrize("case", _PARITY_CASES, ids=list(_PARITY_CASES))
-def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_open(
-    case: str, tmp_path: Path
-) -> None:
-    record_changes, config_changes, expect_open, validator_applies = _PARITY_CASES[case]
+
+def _parity_run(
+    tmp_path: Path, record_changes: dict[str, object], config_changes: dict[str, object]
+) -> tuple[FactoryConfig, FileRunStore, FactoryRun]:
     config = _make_config(tmp_path, max_reopens=3, reply_window_hours=24, **config_changes)  # type: ignore[arg-type]
     store = FileRunStore(tmp_path)
     escalation = EscalationRecord.model_validate(
@@ -1314,43 +1312,13 @@ def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_ope
         escalation=escalation,
     )
     store.save_run(run)
-    comment = _make_comment_payload(
-        555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
-    )
-    client = GitHubClient(
-        runner=FakeRunner(
-            [
-                FakeCompletedProcess(0, json.dumps(comment)),  # validator re-fetch
-                FakeCompletedProcess(0, json.dumps([comment])),  # poller list
-                FakeCompletedProcess(0, json.dumps(comment)),  # poller re-fetch
-            ]
-        )
-    )
+    return config, store, run
 
-    if validator_applies:
-        candidate = GitHubComment(
-            id=555,
-            user_login="lead-dev",
-            user_id=1001,
-            user_type="User",
-            author_association="MEMBER",
-            created_at=_PARITY_NOW,
-            updated_at=_PARITY_NOW,
-            body="@factory resume v1 run=run-parity episode=ep-1234",
-        )
-        verdict = validate_reply_candidate(
-            candidate,
-            run=run,
-            config=config,
-            client=client,
-            repo_path=tmp_path,
-            now=_PARITY_NOW,
-        )
-        assert verdict.is_valid is expect_open
 
-    receipt = poll_escalation_reply(run, store, config, client, tmp_path, now=_PARITY_NOW)
-    cause = reply_closed_cause(
-        escalation,
+def _parity_cause(run: FactoryRun, config: FactoryConfig) -> str | None:
+    assert run.escalation is not None
+    return reply_closed_cause(
+        run.escalation,
         max_reopens=config.escalation.max_reopens,
         reply_window_hours=config.escalation.reply_window_hours,
         enabled=config.escalation.enabled,
@@ -1358,8 +1326,63 @@ def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_ope
         now=_PARITY_NOW,
     )
 
+
+@pytest.mark.parametrize("case", _PARITY_CASES, ids=list(_PARITY_CASES))
+def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_open(
+    case: str, tmp_path: Path
+) -> None:
+    record_changes, config_changes, expect_open = _PARITY_CASES[case]
+    config, store, run = _parity_run(tmp_path, record_changes, config_changes)
+    comment = _make_comment_payload(
+        555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
+    )
+    client = GitHubClient(
+        runner=FakeRunner(
+            [
+                FakeCompletedProcess(0, json.dumps([comment])),  # poller list
+                FakeCompletedProcess(0, json.dumps(comment)),  # poller re-fetch
+            ]
+        )
+    )
+
+    receipt = poll_escalation_reply(run, store, config, client, tmp_path, now=_PARITY_NOW)
+
     assert (receipt is not None) is expect_open
-    assert (cause is None) is expect_open
+    assert (_parity_cause(run, config) is None) is expect_open
+
+
+@pytest.mark.parametrize("case", _VALIDATOR_PARITY_CASES, ids=list(_VALIDATOR_PARITY_CASES))
+def test_the_reply_validator_accepts_a_reply_exactly_when_the_protocol_says_it_is_open(
+    case: str, tmp_path: Path
+) -> None:
+    record_changes, config_changes, expect_open = _VALIDATOR_PARITY_CASES[case]
+    config, _store, run = _parity_run(tmp_path, record_changes, config_changes)
+    comment = _make_comment_payload(
+        555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
+    )
+    client = GitHubClient(runner=FakeRunner([FakeCompletedProcess(0, json.dumps(comment))]))
+    candidate = GitHubComment(
+        id=555,
+        user_login="lead-dev",
+        user_id=1001,
+        user_type="User",
+        author_association="MEMBER",
+        created_at=_PARITY_NOW,
+        updated_at=_PARITY_NOW,
+        body="@factory resume v1 run=run-parity episode=ep-1234",
+    )
+
+    verdict = validate_reply_candidate(
+        candidate,
+        run=run,
+        config=config,
+        client=client,
+        repo_path=tmp_path,
+        now=_PARITY_NOW,
+    )
+
+    assert verdict.is_valid is expect_open
+    assert (_parity_cause(run, config) is None) is expect_open
 
 
 def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -> None:

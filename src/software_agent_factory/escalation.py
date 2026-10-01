@@ -33,6 +33,7 @@ from .escalation_protocol import (
     RESUME_COMMAND_PATTERN,
     format_answer_command,
     format_resume_command,
+    notice_host,
 )
 from .github import (
     GitHubClient,
@@ -1614,9 +1615,7 @@ def validate_reply_candidate(
         return ValidationResult(False, f"comment {comment.id} has already been accepted")
 
     # Target host check
-    target_host = escalation.target_host or (
-        config.escalation.allowed_hosts[0] if config.escalation.allowed_hosts else "github.com"
-    )
+    target_host = notice_host(escalation, config.escalation.allowed_hosts)
     allowed_hosts = {h.casefold() for h in config.escalation.allowed_hosts}
     if target_host.casefold() not in allowed_hosts:
         return ValidationResult(False, f"target host {target_host!r} is not allowed")
@@ -1793,9 +1792,7 @@ def poll_escalation_reply(
         store.save_run(run)
         return None
 
-    target_host = escalation.target_host or (
-        config.escalation.allowed_hosts[0] if config.escalation.allowed_hosts else "github.com"
-    )
+    target_host = notice_host(escalation, config.escalation.allowed_hosts)
     allowed_hosts = {h.casefold() for h in config.escalation.allowed_hosts}
     if target_host.casefold() not in allowed_hosts:
         return None

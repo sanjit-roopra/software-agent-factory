@@ -124,7 +124,7 @@ def _unavailable(run: dict[str, Any], escalation: dict[str, Any], what: str) -> 
     return _halt_step("remote_approval_unavailable", sentence, escalation)
 
 
-def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
+def _reply_closed_cause_or_unknown(escalation: dict[str, Any]) -> str | None:
     """Why the factory would ignore a reply now, or ``None`` when it would read it.
 
     The cause comes from :func:`software_agent_factory.escalation_protocol.reply_closed_cause`,
@@ -149,7 +149,7 @@ def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, st
 
 
 def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
-    closed = _closed_reply_cause(escalation)
+    closed = _reply_closed_cause_or_unknown(escalation)
     if closed is not None:
         return _unavailable(run, escalation, f"Remote approval is not available because {closed}.")
     ids = _reply_ids(run, escalation)
@@ -168,7 +168,7 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
-    closed = _closed_reply_cause(escalation)
+    closed = _reply_closed_cause_or_unknown(escalation)
     if closed is not None:
         return _unavailable(run, escalation, f"Remote answers are not available because {closed}.")
     ids = _reply_ids(run, escalation)

@@ -81,7 +81,7 @@ REPLY_CLOSED_CAUSES: frozenset[str] = frozenset(
 )
 
 
-def _notice_host(record: EscalationRecord, allowed_hosts: Sequence[str]) -> str:
+def notice_host(record: EscalationRecord, allowed_hosts: Sequence[str]) -> str:
     """The host the poller would read replies from: the stored one, else the first allowed."""
     return record.target_host or (allowed_hosts[0] if allowed_hosts else "github.com")
 
@@ -120,7 +120,7 @@ def reply_closed_cause(
         return _WINDOW_EXPIRED
     if max_reopens is not None and record.reopen_count >= max_reopens:
         return _REOPEN_LIMIT
-    if allowed_hosts is not None and _notice_host(record, allowed_hosts).casefold() not in {
+    if allowed_hosts is not None and notice_host(record, allowed_hosts).casefold() not in {
         host.casefold() for host in allowed_hosts
     }:
         return _HOST_NOT_ALLOWED

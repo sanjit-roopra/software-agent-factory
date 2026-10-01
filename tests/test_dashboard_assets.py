@@ -539,7 +539,7 @@ def test_an_empty_task_list_says_planning_only_in_a_planning_state() -> None:
     assert "Planning is in progress" in message
     assert '"No tasks."' in message
     assert js.count("Planning is in progress") == 1
-    assert "emptyTasksText(projectState)" in function_source(js, "pendingTasksRow")
+    assert "emptyTasksText(projectState)" in function_source(js, "emptyTasksRow")
     assert "tasksTable(asArray(project.tasks), project.state)" in function_source(js, "projectCard")
 
 
