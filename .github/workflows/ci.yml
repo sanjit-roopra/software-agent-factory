@@ -148,6 +148,7 @@ jobs:
           )
           uv run --no-sync --no-build python -m venv packaging/venvs/wheel-smoke
           packaging/venvs/wheel-smoke/bin/pip install dist/*.whl
+          packaging/venvs/wheel-smoke/bin/python -c "import software_agent_factory.dashboard.assets"
           packaging/venvs/wheel-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/wheel-smoke/bin/factory \
             --workspace-root packaging/wheel-smoke \

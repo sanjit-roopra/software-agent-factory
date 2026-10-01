@@ -19,11 +19,13 @@ import socket
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import pytest
+from dashboard_js import function_source, normalized, strip_comments
 
 from software_agent_factory.dashboard import (
     DashboardConfig,
@@ -709,6 +711,7 @@ def test_assets_are_served(running_server: RunningServer) -> None:
     )
     assert js_response.status == 200
     assert "javascript" in js_response.getheader("Content-Type", "")
+    assert js_response.read_body == _static_bytes("app.js")  # type: ignore[attr-defined]
 
     css_response = running_server.request(
         "GET",
@@ -717,6 +720,11 @@ def test_assets_are_served(running_server: RunningServer) -> None:
     )
     assert css_response.status == 200
     assert "css" in css_response.getheader("Content-Type", "")
+    assert css_response.read_body == _static_bytes("style.css")  # type: ignore[attr-defined]
+
+
+def _static_bytes(name: str) -> bytes:
+    return resources.files("software_agent_factory.dashboard").joinpath("static", name).read_bytes()
 
 
 # --------------------------------------------------------------------------
@@ -1420,22 +1428,21 @@ def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count
 
 
 def test_dashboard_ui_labeling_for_unresolved_decisions_and_finding_count() -> None:
-    normalized_js = " ".join(dashboard_assets.APP_JS.split())
+    js = dashboard_assets.APP_JS
 
-    expected_expression = (
-        '[ detail.guidance && (detail.guidance.reason_code === "UNRESOLVED_DECISIONS" || '
-        'detail.guidance.decision_count !== undefined) ? "Decision count" : "Finding count", '
-        'detail.guidance ? detail.guidance.reason_code === "UNRESOLVED_DECISIONS" || '
-        "detail.guidance.decision_count !== undefined ? detail.guidance.decision_count "
-        ": detail.guidance.finding_count : null ]"
+    # One condition decides both the label and the value, so they cannot drift apart.
+    assert function_source(js, "isDecisionGuidance") == (
+        "function isDecisionGuidance(guidance) { "
+        'return guidance.reason_code === "UNRESOLVED_DECISIONS" || '
+        "guidance.decision_count !== undefined; }"
     )
-    assert expected_expression in normalized_js
-
-    # Structural guard: verify label and value branches cannot be swapped or reversed
-    assert '? "Decision count" : "Finding count"' in normalized_js
-    assert '? "Finding count" : "Decision count"' not in normalized_js
-    assert "? detail.guidance.decision_count : detail.guidance.finding_count" in normalized_js
-    assert "? detail.guidance.finding_count : detail.guidance.decision_count" not in normalized_js
+    assert function_source(js, "countField") == (
+        "function countField(guidance) { if (isDecisionGuidance(guidance)) { "
+        'return ["Decision count", guidance.decision_count]; } '
+        'return ["Finding count", guidance.finding_count]; }'
+    )
+    assert normalized(js).count('"UNRESOLVED_DECISIONS"') == 1
+    assert "countField(guidance)," in function_source(js, "guidanceFields")
 
 
 # --------------------------------------------------------------------------
@@ -1485,13 +1492,25 @@ def test_run_detail_provider_failure_returns_503_without_traceback() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_app_js_never_uses_dangerous_rendering_apis() -> None:
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "createContextualFragment",
+        "srcdoc",
+        r"document\.write",
+        r"\beval\(",
+        r"\bnew Function\(",
+    ],
+)
+def test_app_js_never_uses_dangerous_rendering_apis(forbidden: str) -> None:
+    assert re.search(forbidden, strip_comments(dashboard_assets.APP_JS)) is None
+
+
+def test_app_js_renders_server_text_with_textcontent() -> None:
     js = dashboard_assets.APP_JS
-    assert "innerHTML" not in js
-    assert "outerHTML" not in js
-    assert "document.write" not in js
-    assert "eval(" not in js
-    assert "new Function(" not in js
     assert "textContent" in js
     assert "Active invocation" in js
     assert "model.status" in js
@@ -1692,17 +1711,6 @@ def test_dashboard_explains_and_renders_usage_value() -> None:
     assert "AI usage value (USD)" in js
 
 
-def _normalized(text: str) -> str:
-    return " ".join(text.split())
-
-
-def _js_function_source(js: str, name: str) -> str:
-    """The normalized source of ``function name(...) { ... }`` (no nested braces)."""
-    match = re.search(rf"function {name}\([^)]*\) \{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}", js)
-    assert match is not None, f"{name} not found in the dashboard script"
-    return _normalized(match.group(0))
-
-
 def test_sanitize_invocation_keeps_list_price_estimate_beside_unchanged_usage_value() -> None:
     invocation = sanitize_invocation(
         {
@@ -1742,46 +1750,45 @@ def test_dashboard_list_price_estimate_falls_back_to_unknown_and_never_replaces_
     the row wiring instead of grepping for loose substrings."""
     js = dashboard_assets.APP_JS
 
-    assert _js_function_source(js, "displayListPriceEstimate") == (
-        'function displayListPriceEstimate(value) { if (typeof value !== "number" || '
-        '!Number.isFinite(value)) { return "unknown"; } return displayUsd(value); }'
+    assert function_source(js, "displayListPriceEstimate") == (
+        "function displayListPriceEstimate(value) { "
+        'if (!isFiniteNumber(value)) { return "unknown"; } return displayUsd(value); }'
     )
-    normalized = _normalized(js)
-    # Both usage tables put the AI usage value, then the premium-request cost, then
+    # Every usage table puts the AI usage value, then the premium-request cost, then
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
-    row_wiring = (
-        "textCell(row, displayUsd(usage.usage_value_usd)); "
-        "textCell(row, usage.total_premium_request_cost); "
-        "textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
-    )
-    assert normalized.count(row_wiring) == 2
-    assert "displayListPriceEstimate(usage.usage_value_usd)" not in normalized
-    assert "displayUsd(usage.list_price_estimate_usd)" not in normalized
-    assert normalized.count("displayUsd(usage.usage_value_usd)") == 2
+    assert (
+        "appendCell(row, displayUsd(usage.usage_value_usd)); "
+        "appendCell(row, usage.total_premium_request_cost); "
+        "appendCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
+    ) in function_source(js, "modelRow")
+    assert (
+        "displayUsd(usage.usage_value_usd), "
+        "usage.total_premium_request_cost, "
+        "displayListPriceEstimate(usage.list_price_estimate_usd)"
+    ) in function_source(js, "invocationRowSpec")
+    code = normalized(js)
+    assert "displayListPriceEstimate(usage.usage_value_usd)" not in code
+    assert "displayUsd(usage.list_price_estimate_usd)" not in code
 
 
 def test_dashboard_run_detail_lists_list_price_estimate_after_the_usage_value_rows() -> None:
-    normalized = _normalized(dashboard_assets.APP_JS)
+    usage_fields = function_source(dashboard_assets.APP_JS, "usageFields")
 
-    value_row = (
-        '[ "AI usage value (USD)", detail.usage ? '
-        "displayUsd(detail.usage.usage_value_usd) : null ],"
-    )
+    value_row = '["AI usage value (USD)", displayUsd(usage.usage_value_usd)],'
     estimate_row = (
-        '[ "List-price estimate", displayListPriceEstimate(detail.usage ? '
-        "detail.usage.list_price_estimate_usd : null) ],"
+        '["List-price estimate", displayListPriceEstimate(usage.list_price_estimate_usd)]'
     )
-    assert value_row in normalized
-    assert estimate_row in normalized
-    assert normalized.index(value_row) < normalized.index(estimate_row)
+    assert value_row in usage_fields
+    assert estimate_row in usage_fields
+    assert usage_fields.index(value_row) < usage_fields.index(estimate_row)
 
 
 def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> None:
     """Both usage tables list the AI usage value, the premium-request column, then
     the estimate last, in the order their row builders fill the cells."""
     html = dashboard_assets.render_index_html(token="tok")
-    normalized_js = _normalized(dashboard_assets.APP_JS)
+    js = dashboard_assets.APP_JS
 
     invocations_head = re.search(
         r'<table id="invocations-table">\s*<thead>(.*?)</thead>', html, flags=re.DOTALL
@@ -1793,10 +1800,13 @@ def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> Non
         "Premium-request cost",
         "List-price estimate",
     ]
-    assert (
-        '"AI usage value (USD)", "Premium-request units", "List-price estimate" ].forEach('
-        in normalized_js
-    )
+    model_headers = re.search(r"const MODEL_HEADERS = \[(.*?)\];", js, flags=re.DOTALL)
+    assert model_headers is not None
+    assert re.findall(r'"([^"]*)"', model_headers.group(1))[-3:] == [
+        "AI usage value (USD)",
+        "Premium-request units",
+        "List-price estimate",
+    ]
 
 
 def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -> None:
@@ -1804,14 +1814,16 @@ def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -
     ``displayListPriceEstimate`` "unknown" fallback the detail/invocation
     views use, rather than the generic renderer's ``[object Object]`` for a
     field nested two levels deep (``metrics.usage.list_price_estimate_usd``)."""
-    normalized = _normalized(dashboard_assets.APP_JS)
+    js = dashboard_assets.APP_JS
 
-    assert (
-        "var listPriceEstimate = totals.metrics.usage ? "
-        "totals.metrics.usage.list_price_estimate_usd : null; "
-        "totals.metrics = Object.assign({}, totals.metrics, { "
-        "list_price_estimate_usd: displayListPriceEstimate(listPriceEstimate) });"
-    ) in normalized
+    assert function_source(js, "withListPriceEstimate") == (
+        "function withListPriceEstimate(metrics) { return { ...metrics, "
+        "list_price_estimate_usd: "
+        "displayListPriceEstimate(metrics.usage?.list_price_estimate_usd) }; }"
+    )
+    assert "totals.metrics = withListPriceEstimate(totals.metrics);" in function_source(
+        js, "renderTotals"
+    )
 
 
 # --------------------------------------------------------------------------

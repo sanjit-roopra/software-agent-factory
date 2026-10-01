@@ -3,10 +3,10 @@
 Exercises exactly what a downloaded release promises and nothing that costs
 money or touches the network: ``--version``, ``--help``, ``doctor``,
 ``runs``, ``status``, a full ``--runtime fake`` run, the read-only
-``service status`` query, and the explicit prerequisite failure a machine
-without ``git`` must produce. No command here installs, loads or removes a
-launchd service, so running this on a developer machine cannot disturb an
-existing one.
+``service status`` query, the dashboard's packaged script and stylesheet, and
+the explicit prerequisite failure a machine without ``git`` must produce. No
+command here installs, loads or removes a launchd service, so running this on
+a developer machine cannot disturb an existing one.
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import threading
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 SMOKE_PARENT_MARKER = ".software-agent-factory-smoke-parent"
@@ -253,6 +256,61 @@ def _smoke_status(executable: Path, data_dir: Path) -> None:
         raise SystemExit(f"factory status did not report the smoke run:\n{result.stdout}")
 
 
+#: Seconds to wait for ``factory dashboard`` to print its URL.
+DASHBOARD_START_TIMEOUT_SECONDS = 30
+DASHBOARD_REQUEST_TIMEOUT_SECONDS = 10
+DASHBOARD_STOP_TIMEOUT_SECONDS = 10
+DASHBOARD_ASSETS = ("/assets/app.js", "/assets/style.css")
+
+
+def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
+    """``factory dashboard`` must serve its packaged script and stylesheet.
+
+    The assets are package data. A wheel, sdist or frozen bundle that misses
+    them fails here instead of on a user's first ``factory dashboard``.
+    """
+    process = subprocess.Popen(
+        [str(executable), "dashboard", "--data-dir", str(data_dir), "--port", "0"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        url = _read_dashboard_url(process)
+        parts = urlsplit(url)
+        for asset in DASHBOARD_ASSETS:
+            request = urllib.request.Request(  # noqa: S310 - fixed loopback URL
+                f"{parts.scheme}://{parts.netloc}{asset}?{parts.query}"
+            )
+            with urllib.request.urlopen(
+                request, timeout=DASHBOARD_REQUEST_TIMEOUT_SECONDS
+            ) as response:  # noqa: S310
+                body = response.read()
+            if response.status != 200 or not body:
+                raise SystemExit(f"factory dashboard did not serve {asset}")
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=DASHBOARD_STOP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def _read_dashboard_url(process: subprocess.Popen[str]) -> str:
+    assert process.stdout is not None
+    timer = threading.Timer(DASHBOARD_START_TIMEOUT_SECONDS, process.kill)
+    timer.start()
+    try:
+        line: str = process.stdout.readline()
+    finally:
+        timer.cancel()
+    prefix = "dashboard: "
+    if not line.startswith(prefix):
+        stderr = process.stderr.read() if process.stderr else ""
+        raise SystemExit(f"factory dashboard did not start:\n{line}{stderr}")
+    return line[len(prefix) :].strip()
+
+
 def _smoke_service_status_is_read_only(executable: Path) -> None:
     """``factory service status`` must answer without touching launchd state.
 
@@ -406,6 +464,7 @@ def main() -> int:
         _smoke_missing_git_prerequisite(executable, repo, workspace_root)
         _smoke_fake_run(executable, repo, data_dir)
         _smoke_status(executable, data_dir)
+        _smoke_dashboard_assets(executable, data_dir)
         success = True
         return 0
     finally:
