@@ -18,6 +18,13 @@
   const DARK_QUERY = "(prefers-color-scheme: dark)";
 
   const RUN_ID_PATTERN = /^[\w-]{1,128}$/;
+  const FILTER_NEEDS_YOU = "needs-you";
+  const COMPARE_HASH = "#compare";
+  // MAX_PAGE_LIMIT in dashboard/snapshot.py: the most runs one request returns.
+  const MAX_RUNS_LIMIT = 100;
+  const NOT_FOUND_STATUS = 404;
+  const NEEDS_YOU_TEXT = "Needs you";
+  const LOADING_TEXT = "Loading\u2026";
   const TITLE_SUFFIX = " \u2014 Factory dashboard";
   const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);
   const VIEWS = {
@@ -119,9 +126,11 @@
   // actionMessage is the result of the last approve or answer. draft holds the
   // answers typed so far and the run, episode and context they were typed for, so
   // a form that is drawn again for the same context gets them back.
+  // filter is the run list filter from the hash, and compare holds the ids picked
+  // on the Compare view: both come from the route and the pickers, never from the server.
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
-    actionMessage: "", draft: null
+    actionMessage: "", draft: null, filter: null, compare: { a: null, b: null }
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -201,7 +210,9 @@
     }
     if (!response.ok) {
       const kind = response.status >= 500 ? ERROR_CONNECTION : ERROR_REQUEST;
-      throw apiError(kind, "request failed: " + response.status);
+      const error = apiError(kind, "request failed: " + response.status);
+      error.status = response.status;
+      throw error;
     }
     return response.json().catch(onNetworkError);
   }
@@ -238,7 +249,9 @@
       seq: requests[view].seq,
       offset: state.offset,
       limit: state.limit,
-      runId: state.runId
+      runId: state.runId,
+      filter: state.filter,
+      compare: state.compare
     };
   }
 
@@ -437,8 +450,30 @@
     }
   }
 
-  // An entry is either a plain value or an object with a value and a class name.
+  // A link entry holds the link text, the address and the text only a screen
+  // reader hears after it. The link node stays, so a refresh keeps its focus.
+  function patchLinkCell(cell, entry) {
+    let link = cell.firstElementChild;
+    if (link?.tagName !== "A") {
+      clearChildren(cell);
+      link = cell.appendChild(element("a"));
+      link.append(element("span"), element("span", "visually-hidden"));
+    }
+    if (link.getAttribute("href") !== entry.href) {
+      link.setAttribute("href", entry.href);
+    }
+    setText(link.firstElementChild, entry.value);
+    setText(link.lastElementChild, entry.hidden);
+    cell.className = "";
+  }
+
+  // An entry is a plain value, an object with a value and a class name, or a
+  // link entry.
   function patchCell(cell, entry) {
+    if (isPlainObject(entry) && entry.href !== undefined) {
+      patchLinkCell(cell, entry);
+      return;
+    }
     const isObject = entry !== null && typeof entry === "object";
     setText(cell, displayValue(isObject ? entry.value : entry));
     cell.className = isObject ? entry.className : "";
@@ -564,6 +599,28 @@
     renderKeyValueList(document.getElementById("totals-body"), totals, "No totals available.");
   }
 
+  // ---- Key figures -------------------------------------------------------
+
+  // Each figure reads one field of the summary. The server derives the three
+  // 24 hour figures, so the page only formats them.
+  const KEY_FIGURES = [
+    { id: "figure-active", read: function (summary) { return summary?.counts?.active; } },
+    { id: "figure-needs-you", read: function (summary) { return summary?.needs_human_count; } },
+    { id: "figure-failed", read: function (summary) { return summary?.failed_last_24h; } },
+    { id: "figure-tokens", read: function (summary) { return summary?.tokens_last_24h; } }
+  ];
+
+  function renderKeyFigures(summary) {
+    for (const figure of KEY_FIGURES) {
+      setText(document.getElementById(figure.id), displayNumber(figure.read(summary)));
+    }
+  }
+
+  function renderSummary(summary) {
+    renderKeyFigures(summary);
+    renderTotals(summary);
+  }
+
   // ---- Runs view ---------------------------------------------------------
 
   function staleCell(isStale) {
@@ -571,6 +628,26 @@
       return { value: "yes", className: "stale-yes" };
     }
     return { value: "no", className: "" };
+  }
+
+  function needsYou(run) {
+    return run.waiting_for_human === true;
+  }
+
+  // The badge is text, so it does not rely on its color.
+  function needsYouCell(run) {
+    return needsYou(run) ? { value: NEEDS_YOU_TEXT, className: "badge-needs-you" } : "";
+  }
+
+  function compareCell(runId) {
+    if (typeof runId !== "string") {
+      return "";
+    }
+    return {
+      value: "Compare with\u2026",
+      href: COMPARE_HASH + "/" + encodeURIComponent(runId),
+      hidden: " " + runId
+    };
   }
 
   function runRowSpec(run) {
@@ -585,9 +662,22 @@
         run.created_at,
         run.idle_seconds,
         run.attempt_count,
-        staleCell(preferDefined(run.is_stale, run.stale))
+        staleCell(preferDefined(run.is_stale, run.stale)),
+        needsYouCell(run),
+        compareCell(runId)
       ]
     };
+  }
+
+  // Runs that need the operator come first. A filter keeps only those.
+  function orderRuns(runs, filter) {
+    const waiting = runs.filter(needsYou);
+    if (filter !== null) {
+      return waiting;
+    }
+    return [...waiting, ...runs.filter(function (run) {
+      return !needsYou(run);
+    })];
   }
 
   function hasMoreRuns(page, shown, total, request) {
@@ -612,18 +702,32 @@
     document.getElementById("runs-next").disabled = !hasMoreRuns(page, shown, total, request);
   }
 
+  function emptyRunsText(request) {
+    if (request.filter !== null) {
+      return "No runs need you.";
+    }
+    return request.offset === 0 ? "No runs yet." : "No runs on this page.";
+  }
+
   function renderRunsStatus(shown, request) {
     const status = document.getElementById("runs-status");
     status.hidden = shown > 0;
-    status.textContent = request.offset === 0 ? "No runs yet." : "No runs on this page.";
+    status.textContent = emptyRunsText(request);
     document.querySelector("#view-runs .table-wrap").hidden = shown === 0;
   }
 
+  // A filter shows its own line and hides the pager, as it reads one big page.
+  function renderRunsFilter(filter) {
+    document.getElementById("runs-filter").hidden = filter === null;
+    document.getElementById("runs-toolbar").hidden = filter !== null;
+  }
+
   function renderRuns(payload, request) {
-    const runs = asArray(payload.runs);
+    const runs = orderRuns(asArray(payload.runs), request.filter);
     syncRows(document.getElementById("runs-body"), runs.map(runRowSpec));
     renderRunsPager(payload.page || {}, runs.length, request);
     renderRunsStatus(runs.length, request);
+    renderRunsFilter(request.filter);
   }
 
   function refreshRuns(request) {
@@ -634,7 +738,7 @@
   }
 
   function refreshTotals(request) {
-    return apiFetch("/api/summary").then(whenLatest(request, renderTotals));
+    return apiFetch("/api/summary").then(whenLatest(request, renderSummary));
   }
 
   function refreshHealth(request) {
@@ -991,20 +1095,33 @@
     };
   }
 
-  function totalsCards(totals) {
+  // Calls, failed calls and duration, in that order.
+  function headlineCards(totals) {
     const calls = totals.calls;
     return [
       { label: "Calls", value: displayNumber(calls), note: "", help: "" },
       figureCard("Failed calls", totals.failed_calls, calls, displayNumber),
-      figureCard("Duration", totals.duration_ms, calls, durationText),
-      ...TOKEN_CLASSES.map(function (tokenClass) {
-        return figureCard(tokenClass.label, totals.tokens?.[tokenClass.key], calls, displayNumber);
-      }),
-      ...COST_UNITS.map(function (unit) {
-        const card = figureCard(unit.label, totals.costs?.[unit.key], calls, unit.phrase);
-        return { ...card, help: unit.help };
-      })
+      figureCard("Duration", totals.duration_ms, calls, durationText)
     ];
+  }
+
+  function tokenCards(totals) {
+    return TOKEN_CLASSES.map(function (tokenClass) {
+      return figureCard(
+        tokenClass.label, totals.tokens?.[tokenClass.key], totals.calls, displayNumber
+      );
+    });
+  }
+
+  function costCards(totals) {
+    return COST_UNITS.map(function (unit) {
+      const card = figureCard(unit.label, totals.costs?.[unit.key], totals.calls, unit.phrase);
+      return { ...card, help: unit.help };
+    });
+  }
+
+  function totalsCards(totals) {
+    return [...headlineCards(totals), ...tokenCards(totals), ...costCards(totals)];
   }
 
   function buildStat() {
@@ -1665,33 +1782,284 @@
     setRunDetailStatus(null);
   }
 
+  function runDetailPath(runId) {
+    return "/api/runs/" + encodeURIComponent(runId);
+  }
+
   // A failure shows the status line only while no detail has loaded; a loaded
   // card stays visible.
   function refreshRunDetail(request) {
-    const path = "/api/runs/" + encodeURIComponent(request.runId);
-    return apiFetch(path).then(whenLatest(request, renderRunDetail), function (error) {
-      if (isLatest(request) && document.getElementById("run-detail-content").hidden) {
-        setRunDetailStatus("Run detail is currently unavailable.");
+    return apiFetch(runDetailPath(request.runId))
+      .then(whenLatest(request, renderRunDetail), function (error) {
+        if (isLatest(request) && document.getElementById("run-detail-content").hidden) {
+          setRunDetailStatus("Run detail is currently unavailable.");
+        }
+        throw error;
+      });
+  }
+
+  // ---- Compare view ------------------------------------------------------
+
+  // Run A, run B and the roles the two runs used, from /api/compare. A role one
+  // run did not use has no entry for it. The six cells of a run are Calls, Failed
+  // calls, Models, Tokens, Duration and Cost: keep COMPARE_RUN_COLUMNS in step
+  // with the table head in the page.
+  const COMPARE_RUN_COLUMNS = 6;
+  const CHOOSE_TWO_TEXT = "Choose two runs to compare.";
+  const COMPARE_UNAVAILABLE_TEXT = "The comparison is currently unavailable.";
+  const NO_CALLS_TEXT = "no calls";
+  const NO_ROLES_TEXT = "Neither run has made a call yet.";
+  const PICKER_PLACEHOLDER = "Choose a run";
+
+  function isCompleteSelection(selection) {
+    return selection.a !== null && selection.b !== null;
+  }
+
+  // A message shows in the status line and hides the table; null shows the table.
+  function setCompareStatus(message) {
+    const status = document.getElementById("compare-status");
+    setText(status, message === null ? "" : message);
+    status.hidden = message === null;
+    document.getElementById("compare-content").hidden = message !== null;
+  }
+
+  function resetCompareStatus(selection) {
+    setCompareStatus(isCompleteSelection(selection) ? LOADING_TEXT : CHOOSE_TWO_TEXT);
+  }
+
+  // The list rows carry no model, so an option names the model profile the run
+  // was started with. The models each run used show in the table once chosen.
+  function runOption(run) {
+    const runId = preferDefined(run.run_id, run.id);
+    const parts = [run.created_at, run.state, run.title || runId];
+    if (run.performance_model_profile) {
+      parts.push("profile " + run.performance_model_profile);
+    }
+    return { value: runId, label: parts.map(displayValue).join(" | ") };
+  }
+
+  // A picked run that the list no longer holds keeps an option, so the picker
+  // still shows what was picked.
+  function pickerOptions(runs, selected, excluded) {
+    const options = runs.map(runOption).filter(function (option) {
+      return typeof option.value === "string" && option.value !== excluded;
+    });
+    if (selected !== null && !options.some(function (option) {
+      return option.value === selected;
+    })) {
+      options.unshift({ value: selected, label: selected });
+    }
+    return options;
+  }
+
+  function optionNode(value, label) {
+    const node = element("option", "", label);
+    node.value = value;
+    return node;
+  }
+
+  // Rebuilt only when the options or the pick changed.
+  function renderPicker(select, options, selected) {
+    const signature = JSON.stringify([options, selected]);
+    if (select.dataset.signature === signature) {
+      return;
+    }
+    select.dataset.signature = signature;
+    select.replaceChildren(
+      optionNode("", PICKER_PLACEHOLDER),
+      ...options.map(function (option) {
+        return optionNode(option.value, option.label);
+      })
+    );
+    select.value = selected ?? "";
+  }
+
+  // Run A is not offered as run B.
+  function renderCompareRuns(payload, request) {
+    const runs = asArray(payload.runs);
+    const selection = request.compare;
+    renderPicker(
+      document.getElementById("compare-a"), pickerOptions(runs, selection.a, null), selection.a
+    );
+    renderPicker(
+      document.getElementById("compare-b"),
+      pickerOptions(runs, selection.b, selection.a),
+      selection.b
+    );
+  }
+
+  function textCell(text) {
+    return element("td", "", text);
+  }
+
+  function figureText(card) {
+    return card.note === "" ? card.value : card.value + " (" + card.note + ")";
+  }
+
+  // Only the figures a run reported are listed. With none, the cell says so.
+  function figureListCell(cards) {
+    const reported = cards.filter(function (card) {
+      return card.value !== NOT_REPORTED;
+    });
+    if (reported.length === 0) {
+      return textCell(NOT_REPORTED);
+    }
+    const cell = element("td");
+    const list = cell.appendChild(element("ul", "figure-list"));
+    for (const card of reported) {
+      list.appendChild(element("li", "", card.label + ": " + figureText(card)));
+    }
+    return cell;
+  }
+
+  // The same figures as the run detail totals, one cell each.
+  function appendRunCells(row, entry) {
+    if (!isPlainObject(entry)) {
+      row.appendChild(element("td", "no-calls", NO_CALLS_TEXT)).colSpan = COMPARE_RUN_COLUMNS;
+      return;
+    }
+    const [calls, failed, duration] = headlineCards(entry);
+    row.append(
+      textCell(figureText(calls)),
+      textCell(figureText(failed)),
+      textCell(displayValue(joinList(entry.models))),
+      figureListCell(tokenCards(entry)),
+      textCell(figureText(duration)),
+      figureListCell(costCards(entry))
+    );
+  }
+
+  function compareRow(role) {
+    const row = element("tr");
+    const head = row.appendChild(element("th", "", displayValue(role.role)));
+    head.scope = "row";
+    appendRunCells(row, role.a);
+    appendRunCells(row, role.b);
+    return row;
+  }
+
+  function runHeading(letter, run) {
+    const title = run?.title ? " \u2014 " + run.title : "";
+    return "Run " + letter + ": " + displayValue(run?.run_id) + title;
+  }
+
+  // The table is rebuilt only when the comparison changed.
+  function renderComparison(payload) {
+    const roles = asArray(payload.roles);
+    setText(document.getElementById("compare-a-head"), runHeading("A", payload.a));
+    setText(document.getElementById("compare-b-head"), runHeading("B", payload.b));
+    const body = document.getElementById("compare-body");
+    const signature = JSON.stringify(payload);
+    if (body.dataset.signature !== signature) {
+      body.dataset.signature = signature;
+      body.replaceChildren(...roles.map(compareRow));
+    }
+    setCompareStatus(roles.length === 0 ? NO_ROLES_TEXT : null);
+  }
+
+  function missingRunsText(aExists, bExists) {
+    if (!aExists && !bExists) {
+      return "Runs A and B are no longer available.";
+    }
+    if (!aExists) {
+      return "Run A is no longer available.";
+    }
+    if (!bExists) {
+      return "Run B is no longer available.";
+    }
+    return COMPARE_UNAVAILABLE_TEXT;
+  }
+
+  // Never rejects: only a 404 means the run is gone.
+  function runExists(runId) {
+    return apiFetch(runDetailPath(runId)).then(
+      function () {
+        return true;
+      },
+      function (error) {
+        return error.status !== NOT_FOUND_STATUS;
+      }
+    );
+  }
+
+  // The compare answer is one 404 for either run, so each run is asked for.
+  function reportMissingRuns(request) {
+    return Promise.all([
+      runExists(request.compare.a), runExists(request.compare.b)
+    ]).then(function (exists) {
+      if (isLatest(request)) {
+        setCompareStatus(missingRunsText(exists[0], exists[1]));
+      }
+    });
+  }
+
+  function rethrow(error) {
+    return function () {
+      throw error;
+    };
+  }
+
+  // A loaded table stays visible after a failure, except when a run is gone. The
+  // error still goes on, so the refresh dispatcher sets its notice as it does for
+  // every view.
+  function onCompareFailure(request) {
+    return function (error) {
+      if (!isLatest(request)) {
+        throw error;
+      }
+      if (error.status === NOT_FOUND_STATUS) {
+        return reportMissingRuns(request).then(rethrow(error));
+      }
+      if (document.getElementById("compare-content").hidden) {
+        setCompareStatus(COMPARE_UNAVAILABLE_TEXT);
       }
       throw error;
-    });
+    };
+  }
+
+  function refreshComparison(request) {
+    const path = "/api/compare?a=" + encodeURIComponent(request.compare.a) +
+      "&b=" + encodeURIComponent(request.compare.b);
+    return apiFetch(path).then(whenLatest(request, renderComparison), onCompareFailure(request));
+  }
+
+  function refreshCompareRuns(request) {
+    const query = "limit=" + MAX_RUNS_LIMIT + "&offset=0";
+    return apiFetch("/api/runs?" + query).then(whenLatest(request, renderCompareRuns));
+  }
+
+  // The pickers always load. The comparison loads once both runs are chosen.
+  function refreshCompare(request) {
+    const tasks = [refreshCompareRuns(request)];
+    if (isCompleteSelection(request.compare)) {
+      tasks.push(refreshComparison(request));
+    }
+    return tasks;
   }
 
   // ---- Routing -----------------------------------------------------------
 
+  // The one filter a hash can ask for, or null for any other query.
+  function routeFilter(query) {
+    const filter = new URLSearchParams(query).get("filter");
+    return filter === FILTER_NEEDS_YOU ? filter : null;
+  }
+
   // Returns null for an empty or unknown hash. The run id is only checked
   // for shape later, so a bad id still opens the run view with "Unknown run".
+  // Compare takes up to two ids, run A then run B, checked for shape later too.
   function parseRoute(hash) {
-    const parts = hash.replace(/^#/, "").split("/");
+    const [path, query] = hash.replace(/^#/, "").split("?");
+    const parts = path.split("/");
     const name = parts[0];
     if (name === "run" && parts.length === 2) {
       return { view: "run", runId: parts[1] };
     }
-    if (name === "compare" && (parts.length === 1 || parts.length === 3)) {
-      return { view: "compare" };
+    if (name === "compare" && parts.length <= 3) {
+      return { view: "compare", a: parts[1], b: parts[2] };
     }
     if (parts.length === 1 && SIMPLE_VIEWS.has(name)) {
-      return { view: name };
+      return { view: name, filter: routeFilter(query) };
     }
     return null;
   }
@@ -1707,6 +2075,26 @@
 
   function validRunId(route) {
     return route.view === "run" && RUN_ID_PATTERN.test(route.runId) ? route.runId : null;
+  }
+
+  function validCompareId(value) {
+    return typeof value === "string" && RUN_ID_PATTERN.test(value) ? value : null;
+  }
+
+  // A run is never compared with itself, so a repeated id leaves run B empty.
+  function compareSelection(route) {
+    const a = validCompareId(route.a);
+    const b = validCompareId(route.b);
+    return { a: a, b: b === a ? null : b };
+  }
+
+  // The list filter needs the whole newest page, so it asks for the largest one.
+  function applyRunsFilter(filter) {
+    state.filter = filter;
+    state.limit = filter === null ? PAGE_SIZE : MAX_RUNS_LIMIT;
+    if (filter !== null) {
+      state.offset = 0;
+    }
   }
 
   function markNavLink(link, isActive) {
@@ -1744,8 +2132,8 @@
     setRunDetailStatus("Loading\u2026");
   }
 
-  // What each view refreshes. Compare has nothing to load. A run view with an
-  // unknown id has no run id in the request and loads nothing.
+  // What each view refreshes. A run view with an unknown id has no run id in
+  // the request and loads nothing.
   const REFRESHERS = {
     runs: function (request) {
       return [refreshRuns(request), refreshTotals(request)];
@@ -1753,8 +2141,8 @@
     run: function (request) {
       return request.runId === null ? [pingServer()] : [refreshRunDetail(request)];
     },
-    compare: function () {
-      return [pingServer()];
+    compare: function (request) {
+      return refreshCompare(request);
     },
     projects: function (request) {
       return [refreshProjects(request)];
@@ -1795,11 +2183,13 @@
 
   // Refreshes only the open view, and skips it while the operator works in it.
   // The notice shows the outcome of the latest refresh and clears on success.
-  function refreshView() {
+  // An operator action that changed the view passes force: its own focused
+  // field must not stop the refresh it asked for.
+  function refreshView(force) {
     renderNotice();
     const view = state.view;
     const refresher = REFRESHERS[view];
-    if (!refresher || isDirty(document.getElementById(VIEWS[view].section))) {
+    if (!refresher || (force !== true && isDirty(document.getElementById(VIEWS[view].section)))) {
       return Promise.resolve();
     }
     const request = beginRequest(view);
@@ -1820,11 +2210,16 @@
     const route = resolveRoute();
     state.view = route.view;
     state.runId = validRunId(route);
+    applyRunsFilter(route.filter ?? null);
+    state.compare = compareSelection(route);
     supersede(route.view);
     resetActionState();
     showView(route.view);
     if (route.view === "run") {
       prepareRunDetailView(route.runId);
+    }
+    if (route.view === "compare") {
+      resetCompareStatus(state.compare);
     }
     document.title = routeTitle(route);
     if (moveFocus) {
@@ -1876,6 +2271,28 @@
     globalThis.location.hash = "run/" + encodeURIComponent(runId);
   }
 
+  function readCompareSelection() {
+    const a = document.getElementById("compare-a").value || null;
+    const b = document.getElementById("compare-b").value || null;
+    return { a: a, b: b === a ? null : b };
+  }
+
+  function compareHash(selection) {
+    if (selection.b !== null) {
+      return COMPARE_HASH + "/" + (selection.a ?? "") + "/" + selection.b;
+    }
+    return selection.a === null ? COMPARE_HASH : COMPARE_HASH + "/" + selection.a;
+  }
+
+  // A pick updates the address without a route change, so focus stays on the
+  // picker. The refresh is forced because the picker has focus.
+  function onComparePick() {
+    state.compare = readCompareSelection();
+    globalThis.history.replaceState(null, "", compareHash(state.compare));
+    resetCompareStatus(state.compare);
+    void refreshView(true);
+  }
+
   function bindControls() {
     document.getElementById("runs-prev").addEventListener("click", function () {
       goToOffset(Math.max(0, state.offset - state.limit));
@@ -1890,10 +2307,13 @@
     });
     document.getElementById("runs-body").addEventListener("click", function (event) {
       const row = event.target.closest("tr[data-run-id]");
-      if (row) {
+      // A link in the row goes where it points, not to the run.
+      if (row && !event.target.closest("a")) {
         navigateToRun(row.dataset.runId);
       }
     });
+    document.getElementById("compare-a").addEventListener("change", onComparePick);
+    document.getElementById("compare-b").addEventListener("change", onComparePick);
     globalThis.matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle);
     updateThemeToggle();
     globalThis.addEventListener("hashchange", function () {
