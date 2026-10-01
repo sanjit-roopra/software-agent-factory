@@ -2,7 +2,9 @@
 
 This module imports only ``re``. It must stay free of ``subprocess`` and of
 every other factory module, so a read-only surface such as the dashboard can
-redact text without loading process-spawning code.
+redact text without importing a process-spawning module itself. The package
+``__init__`` still imports ``verification``, so this does not keep
+``subprocess`` out of the running process.
 
 Redaction always runs before any cut. A secret then cannot be split by the
 cut and leave a readable fragment.
@@ -65,6 +67,9 @@ def bounded_reason(
     a marker between them. The marker names ``factory show <run_id>`` when
     ``run_id`` is given, and ``factory show <run>`` otherwise. The result,
     marker included, is never longer than ``limit``.
+
+    Raises ``ValueError`` when ``limit`` is too small to hold the marker plus
+    at least one character of head and one of tail.
     """
     redacted = redact_secrets(text)
     if len(redacted) <= limit:
