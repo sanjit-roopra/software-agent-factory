@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1005,3 +1006,69 @@ def test_a_request_mismatch_names_the_first_difference_in_the_documented_order(
     )
 
     assert mismatch == expected
+
+
+def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
+    fields: dict[str, Any] = {
+        "episode_id": EPISODE,
+        "action": RISK,
+        "reply_window_hours": 24,
+        "max_reopens": 3,
+        "now": NOW,
+        **overrides,
+    }
+    if "fingerprint" not in fields:
+        fields["fingerprint"] = _fingerprint(run)
+    return resume.request_refusal(run, **fields)
+
+
+@pytest.mark.parametrize(
+    ("run", "overrides", "expected"),
+    [
+        pytest.param(_run(RISK), {}, None, id="a request the service would take"),
+        pytest.param(_run(RISK, status=EscalationStatus.REOPENED), {}, "state_changed", id="state"),
+        pytest.param(
+            _run(RISK, state=WorkflowState.IMPLEMENTING),
+            {"episode_id": "ep-old"},
+            "state_changed",
+            id="state before the episode",
+        ),
+        pytest.param(
+            _run(RISK, approval_context=None),
+            {"fingerprint": "b" * 64},
+            "context_changed",
+            id="context before the fingerprint",
+        ),
+        pytest.param(
+            _run(RISK, created_at=NOW - timedelta(hours=25), reopen_count=3),
+            {},
+            "expired",
+            id="window before the reopen limit",
+        ),
+        pytest.param(
+            _run(RISK, created_at=NOW - timedelta(hours=25)),
+            {"episode_id": "ep-old"},
+            "expired",
+            id="window before the episode",
+        ),
+        pytest.param(
+            _run(RISK, reopen_count=3),
+            {"action": PLAN},
+            "reopen_limit",
+            id="reopen limit before the action",
+        ),
+        pytest.param(_run(RISK), {"episode_id": "ep-old"}, "episode", id="episode"),
+        pytest.param(_run(RISK), {"fingerprint": "b" * 64}, "fingerprint", id="fingerprint"),
+        pytest.param(_run(RISK), {"action": PLAN}, "action", id="action"),
+    ],
+)
+def test_a_request_refusal_names_one_reason_in_the_service_order(
+    run: FactoryRun, overrides: dict[str, Any], expected: str | None
+) -> None:
+    assert _request_refusal_of(run, **overrides) == expected
+
+
+def test_a_request_refusal_skips_a_limit_that_is_unknown() -> None:
+    run = _run(RISK, created_at=NOW - timedelta(hours=500), reopen_count=9)
+
+    assert _request_refusal_of(run, reply_window_hours=None, max_reopens=None) is None

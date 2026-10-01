@@ -746,8 +746,8 @@ def _precedence_cases() -> list[Any]:
     window_ended = {"created_at": NOW - timedelta(hours=25)}
     # Each row has two faults. The first one in the documented order is the one reported:
     # transport (415, 413) before the body (400), the body before the run (404), the run
-    # before the conflicts, the conflicts in this order -- not waiting, episode,
-    # fingerprint, action, window, reopen limit -- and the answer count after them all.
+    # before the conflicts, the conflicts in the service's order -- not waiting, window,
+    # reopen limit, episode, fingerprint, action -- and the answer count after them all.
     return [
         pytest.param(
             _run(),
@@ -768,8 +768,20 @@ def _precedence_cases() -> list[Any]:
         pytest.param(
             _run(**window_ended),
             lambda rig: rig.answer(rig.body(answers=two_answers)),
-            (409, {REASON: WRONG_ACTION}),
-            id="wrong action and ended window: the action",
+            (409, {REASON: EXPIRED}),
+            id="wrong action and ended window: the window",
+        ),
+        pytest.param(
+            _run(**window_ended),
+            lambda rig: rig.approve(rig.body(episode_id=OLD_EPISODE)),
+            (409, {REASON: EXPIRED}),
+            id="stale episode and ended window: the window",
+        ),
+        pytest.param(
+            _run(reopen_count=3),
+            lambda rig: rig.approve(rig.body(episode_id=OLD_EPISODE)),
+            (409, {REASON: "reopen_limit"}),
+            id="stale episode and reopen limit: the reopen limit",
         ),
         pytest.param(
             _run(reopen_count=3, **window_ended),
@@ -1132,11 +1144,9 @@ ALLOWED_PACKAGE_MODULES = {"models", RESUME, "escalation_protocol", "redaction",
 #: one of their results. A write function, or the whole module, is not on the list.
 ALLOWED_RESUME_NAMES = {
     "RequestMismatch",
-    "awaits_human",
     "build_plan_answers",
     "clean_plan_answer",
-    "request_mismatch",
-    "resume_refusal_within",
+    "request_refusal",
 }
 WHOLE_MODULE = "*"
 
@@ -1176,8 +1186,8 @@ def _package_imports(source: str) -> set[tuple[str, str]]:
     ("source", "expected"),
     [
         (
-            "from ..resume import awaits_human, request_mismatch",
-            {(RESUME, "awaits_human"), (RESUME, "request_mismatch")},
+            "from ..resume import clean_plan_answer, request_refusal",
+            {(RESUME, "clean_plan_answer"), (RESUME, "request_refusal")},
         ),
         ("from ..resume.sub import thing", {(RESUME, "thing")}),
         ("from .. import workflow", {("workflow", WHOLE_MODULE)}),

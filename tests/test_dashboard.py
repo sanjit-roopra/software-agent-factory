@@ -2185,7 +2185,7 @@ def test_a_queued_request_from_the_reader_makes_the_next_step_pending() -> None:
 
     step = _next_step_over_http(reader)
 
-    assert step["kind"] == "approved_pending"
+    assert step["kind"] == "queued"
     assert step["sentence"].startswith("Approved at 2026-10-01 09:30 UTC, queued")
     assert asked == [("run-001", "ep-1")]
 

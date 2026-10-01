@@ -896,8 +896,8 @@ def test_the_comment_link_shows_only_for_an_https_url() -> None:
 
 def test_the_approval_scope_lists_the_decision_actions_and_conditions() -> None:
     scope = function_source(dashboard_assets.APP_JS, "approvalScopeSection")
+    assert "decisionRequestedLine(scope)" in scope
     for wired in (
-        "scope.decision_requested",
         '"Authorized actions", scope.authorized_actions',
         '"Excluded actions", scope.unauthorized_actions',
         '"Conditions in force", scope.conditions_in_force',
@@ -998,6 +998,19 @@ def test_each_conflict_reason_has_the_message_the_plan_names() -> None:
     assert 'const RUN_CHANGED_TEXT = "the run changed, review again";' in _JS
 
 
+def test_answers_say_answers_where_the_conflict_message_names_the_action() -> None:
+    literal = object_literal_source(_JS, "ANSWER_CONFLICT_MESSAGES")
+    assert "...CONFLICT_MESSAGES" in literal
+    assert _plain_strings(literal) == {
+        "existing_request": "answers already sent",
+        "expired": "answers expired, send them again",
+    }
+    pick = function_source(_JS, "conflictMessages")
+    assert "action === ANSWER_ACTION ? ANSWER_CONFLICT_MESSAGES : CONFLICT_MESSAGES" in pick
+    assert 'const ANSWER_ACTION = "answer";' in _JS
+    assert "action: ANSWER_ACTION" in function_source(_JS, "sendAnswers")
+
+
 def test_the_page_maps_every_conflict_reason_the_server_sends() -> None:
     literal = object_literal_source(_JS, "CONFLICT_MESSAGES")
     keys = set(re.findall(r"(\w+): ", literal))
@@ -1018,7 +1031,7 @@ def test_any_other_status_and_a_failed_network_say_the_request_failed() -> None:
 def test_a_400_names_the_decision_and_a_409_uses_its_reason() -> None:
     message = function_source(_JS, "failureMessage")
     assert "outcome.status === 409" in message
-    assert "lookupMessage(CONFLICT_MESSAGES, outcome.body.reason)" in message
+    assert "lookupMessage(conflictMessages(action), outcome.body.reason)" in message
     assert "outcome.status === 400 && isDecisionNumber(outcome.body.decision)" in message
     assert '"decision " + outcome.body.decision + ": use " + ANSWER_HINT' in message
     assert "lookupMessage(STATUS_MESSAGES, outcome.status)" in message
@@ -1074,8 +1087,13 @@ def test_the_approve_dialog_is_a_labelled_native_modal_that_lists_the_scope() ->
         'dialog.appendChild(element("h2", "", "Approve this run?")).id = APPROVE_TITLE_ID' in fill
     )
     assert '"Agent work starts on this run once you confirm."' in fill
+    assert "decisionRequestedLine(actions)" in fill
     assert 'listSection("Authorized actions", actions.authorized_actions)' in fill
     assert 'listSection("Excluded actions", actions.unauthorized_actions)' in fill
+    assert 'listSection("Conditions in force", actions.conditions_in_force)' in fill
+    assert '"Decision requested: " + displayValue(scope.decision_requested)' in function_source(
+        _JS, "decisionRequestedLine"
+    )
     assert 'const APPROVE_TITLE_ID = "approve-dialog-title";' in _JS
 
 
@@ -1164,10 +1182,34 @@ def test_submit_waits_until_every_answer_is_filled_in() -> None:
 
 def test_typed_answers_return_to_a_form_that_is_drawn_again() -> None:
     section = function_source(_JS, "answerSection")
-    assert "const typed = typedAnswers(runId);" in section
+    assert "const typed = typedAnswers(step, runId);" in section
     assert 'typed[index] ?? ""' in section
-    assert "rememberAnswers(runId, inputs);" in section
-    assert "state.draft?.runId === runId" in function_source(_JS, "typedAnswers")
+    assert "rememberAnswers(step, runId, inputs);" in section
+    assert "state.draft?.key === draftKey(step, runId)" in function_source(_JS, "typedAnswers")
+
+
+def test_typed_answers_belong_to_one_run_episode_and_context() -> None:
+    key = function_source(_JS, "draftKey")
+    assert "JSON.stringify([runId, step.episode_id, step.context_fingerprint])" in key
+    assert "key: draftKey(step, runId)" in function_source(_JS, "rememberAnswers")
+    assert "typedAnswers(step, runId)" in function_source(_JS, "answerSection")
+    assert "rememberAnswers(step, runId, inputs)" in function_source(_JS, "answerSection")
+
+
+def test_an_answer_that_arrives_after_the_operator_left_only_gives_the_controls_back() -> None:
+    on_run = function_source(_JS, "isOnRun")
+    assert 'state.view === "run" && state.runId === runId' in on_run
+    left = function_source(_JS, "leftTheRun")
+    assert "if (isOnRun(request.runId)) { return false; }" in left
+    assert left.index("isOnRun(") < left.index("setDisabled(request.controls, false)")
+    assert "setActionMessage" not in left
+    assert ".focus()" not in left
+    for handler in ("onActionAccepted", "onActionRejected"):
+        source = function_source(_JS, handler)
+        assert "if (leftTheRun(request)) { return; }" in source
+        # Nothing that speaks, moves focus or refreshes runs before the guard.
+        guard = source.index("leftTheRun(")
+        assert not any(word in source[:guard] for word in ("setActionMessage", "focus", "refresh"))
 
 
 def test_the_decision_list_gives_way_to_the_form_that_asks_each_question() -> None:
@@ -1183,7 +1225,7 @@ def test_an_action_is_offered_only_for_the_kinds_that_have_one() -> None:
     assert 'typeof step.context_fingerprint === "string"' in action
     assert 'step.kind === "approve"' in action
     assert 'step.kind === "answer"' in action
-    assert "approved_pending" not in action
+    assert "queued" not in action
     assert "remote_approval_unavailable" not in action
 
 

@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeIs, get_args
 
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
@@ -386,9 +386,8 @@ def request_mismatch(
 ) -> RequestMismatch | None:
     """The first way a request differs from what ``escalation`` asks now, or ``None``.
 
-    The order is the one the dashboard explains and the service settles by: the episode,
-    then the context fingerprint, then the action. The dashboard asks it of a request it
-    is about to store, the service of one it has read, so both judge the same thing.
+    The order is the episode, then the context fingerprint, then the action. It is the
+    second half of :func:`request_refusal`, which both the dashboard and the service call.
     """
     if episode_id != escalation.episode_id:
         return "episode"
@@ -397,6 +396,38 @@ def request_mismatch(
     if action is not escalation.resume_classification:
         return "action"
     return None
+
+
+def _is_mismatch(reason: ResumeRefusal | RequestMismatch) -> TypeIs[RequestMismatch]:
+    return reason in get_args(RequestMismatch)
+
+
+def request_refusal(
+    run: FactoryRun,
+    *,
+    episode_id: str,
+    fingerprint: str | None,
+    action: ResumeClassification,
+    reply_window_hours: float | None,
+    max_reopens: int | None,
+    now: datetime,
+) -> ResumeRefusal | RequestMismatch | None:
+    """The one reason a request for ``run`` is not taken at ``now``, or ``None``.
+
+    The order is the service's: :func:`resume_refusal_within` first (state, context, window,
+    reopens), then :func:`request_mismatch` (episode, fingerprint, action). The dashboard
+    asks it of a request it is about to store and the service of one it has read, so both
+    give the same reason for the same request. The stamp of a stored request is judged by
+    the service alone, after the refusals and before the mismatch.
+    """
+    refusal = resume_refusal_within(
+        run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
+    )
+    if refusal is not None:
+        return refusal
+    escalation = run.escalation
+    assert escalation is not None  # resume_refusal_within returned None
+    return request_mismatch(escalation, episode_id, fingerprint, action)
 
 
 class ResumeStore(Protocol):
@@ -596,18 +627,23 @@ def _request_refusal(
 ) -> tuple[ResumeRefusal | None, list[PlanDecisionAnswer] | None]:
     """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
     # The window is judged when the human made the request, not when the service reads it.
-    refusal = resume_refusal(run, config, request.created_at)
-    if refusal is not None:
+    refusal = request_refusal(
+        run,
+        episode_id=request.episode_id,
+        fingerprint=request.context_fingerprint,
+        action=request.action,
+        reply_window_hours=config.escalation.reply_window_hours,
+        max_reopens=config.escalation.max_reopens,
+        now=request.created_at,
+    )
+    if refusal is not None and not _is_mismatch(refusal):
         return refusal, None
     escalation = run.escalation
-    assert escalation is not None  # resume_refusal returned None
+    assert escalation is not None  # request_refusal found a waiting run
     # The stamp decides the window, so a stamp the episode or the clock cannot have is refused.
     if request.created_at < escalation.created_at or request.created_at > now:
         return "expired", None
-    mismatch = request_mismatch(
-        escalation, request.episode_id, request.context_fingerprint, request.action
-    )
-    if request.run_id != run.id or mismatch is not None:
+    if request.run_id != run.id or refusal is not None:
         return "context_changed", None
     if request.action is not ResumeClassification.PLAN_DECISION:
         return None, None

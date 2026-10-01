@@ -4,7 +4,7 @@
 the factory service reads later. This module checks the body and the run, and hands the
 request to the injected :class:`~software_agent_factory.dashboard.snapshot.ResumeRequester`.
 It never changes a run. It reads the run through the same rules the service uses
-(:func:`software_agent_factory.resume.resume_refusal_within` and the answer rules), so a
+(:func:`software_agent_factory.resume.request_refusal` and the answer rules), so a
 request that passes here is one the service would accept now. It imports only the read
 functions of ``resume``: the write functions stay with the service, and a test checks it.
 
@@ -32,11 +32,9 @@ from ..models import (
 )
 from ..resume import (
     RequestMismatch,
-    awaits_human,
     build_plan_answers,
     clean_plan_answer,
-    request_mismatch,
-    resume_refusal_within,
+    request_refusal,
 )
 from .snapshot import ResumeRequester, ResumeRunReader, is_valid_run_id
 from .validators import is_episode_id
@@ -52,21 +50,18 @@ ConflictReason = Literal[
     "existing_request",
 ]
 
-#: What a request names wrongly, as the code the page gets.
-_MISMATCH_REASONS: dict[RequestMismatch, ConflictReason] = {
-    "episode": "stale_episode",
-    "fingerprint": "stale_fingerprint",
-    "action": "wrong_action",
-}
-
-#: The service's refusal codes as the codes the page gets. ``state_changed`` and
-#: ``context_changed`` are the service's words for a run that stopped waiting and a context
-#: that no longer matches.
-_REFUSAL_REASONS: dict[ResumeRefusal, ConflictReason] = {
+#: The reasons :func:`~software_agent_factory.resume.request_refusal` gives, as the codes the
+#: page gets. A request that names the wrong episode, context or action is a stale one.
+#: ``state_changed`` and ``context_changed`` are the service's words for a run that stopped
+#: waiting and a context that no longer matches.
+_CONFLICT_REASONS: dict[ResumeRefusal | RequestMismatch, ConflictReason] = {
     "state_changed": "not_waiting",
     "context_changed": "stale_fingerprint",
     "expired": "expired",
     "reopen_limit": "reopen_limit",
+    "episode": "stale_episode",
+    "fingerprint": "stale_fingerprint",
+    "action": "wrong_action",
 }
 
 
@@ -159,20 +154,17 @@ def _conflict_reason(
     fields: _Fields,
     now: datetime,
 ) -> ConflictReason | None:
-    """Why the service would not take this request now, in the order the page explains it."""
-    escalation = run.escalation
-    if escalation is None or not awaits_human(run):
-        return "not_waiting"
-    mismatch = request_mismatch(escalation, fields.episode_id, fields.context_fingerprint, kind)
-    if mismatch is not None:
-        return _MISMATCH_REASONS[mismatch]
-    refusal = resume_refusal_within(
+    """Why the service would not take this request now, by the rule it applies."""
+    reason = request_refusal(
         run,
+        episode_id=fields.episode_id,
+        fingerprint=fields.context_fingerprint,
+        action=kind,
         reply_window_hours=actions.reply_window_hours,
         max_reopens=actions.max_reopens,
         now=now,
     )
-    return None if refusal is None else _REFUSAL_REASONS[refusal]
+    return None if reason is None else _CONFLICT_REASONS[reason]
 
 
 def _plan_answers(escalation: EscalationRecord, texts: Sequence[str]) -> list[PlanDecisionAnswer]:
@@ -199,8 +191,9 @@ def accept_action(
 
     Raises :class:`ActionRejected` for every refusal, and nothing has been written then.
     The order is the contract: the body (``400``), the run id (``400``) and the run
-    (``404``), then the conflicts (``409``) in :func:`_conflict_reason` order, and last
-    the create-only write, where an existing request is a ``409`` too.
+    (``404``), then the conflicts (``409``) in the order of
+    :func:`~software_agent_factory.resume.request_refusal`, and last the create-only write,
+    where an existing request is a ``409`` too.
     """
     fields = _parse_fields(kind, body)
     if not is_valid_run_id(raw_run_id):

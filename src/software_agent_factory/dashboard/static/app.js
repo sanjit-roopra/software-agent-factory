@@ -117,7 +117,8 @@
 
   const token = readToken();
   // actionMessage is the result of the last approve or answer. draft holds the
-  // answers typed so far, so a form that is drawn again gets them back.
+  // answers typed so far and the run, episode and context they were typed for, so
+  // a form that is drawn again for the same context gets them back.
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null
@@ -1144,15 +1145,17 @@
     return element("p", "", "Reopens used " + step.reopens_used + " of " + step.reopens_max);
   }
 
+  function decisionRequestedLine(scope) {
+    return element("p", "", "Decision requested: " + displayValue(scope.decision_requested));
+  }
+
   function approvalScopeSection(scope) {
     if (!isPlainObject(scope)) {
       return null;
     }
     const section = element("div", "next-step-section");
     section.appendChild(element("h3", "", "Approval scope"));
-    section.appendChild(
-      element("p", "", "Decision requested: " + displayValue(scope.decision_requested))
-    );
+    section.appendChild(decisionRequestedLine(scope));
     section.appendChild(listSection("Authorized actions", scope.authorized_actions));
     section.appendChild(listSection("Excluded actions", scope.unauthorized_actions));
     section.appendChild(listSection("Conditions in force", scope.conditions_in_force));
@@ -1246,6 +1249,7 @@
   const ANSWER_HINT =
     "1 to " + MAX_ANSWER_CHARS + " characters, one line, no paths, links or secrets";
   const ACCEPTED_STATUS = 202;
+  const ANSWER_ACTION = "answer";
   const FAILURE_TEXT = "the request failed, try again";
   const RUN_CHANGED_TEXT = "the run changed, review again";
   const APPROVE_TITLE_ID = "approve-dialog-title";
@@ -1269,6 +1273,12 @@
     stale_fingerprint: RUN_CHANGED_TEXT,
     not_waiting: RUN_CHANGED_TEXT
   };
+  // The same for answers: only the two reasons that name the action differ.
+  const ANSWER_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "answers already sent",
+    expired: "answers expired, send them again"
+  };
 
   function setActionMessage(text) {
     state.actionMessage = text;
@@ -1283,9 +1293,13 @@
     return Number.isInteger(value) && value > 0;
   }
 
-  function failureMessage(outcome) {
+  function conflictMessages(action) {
+    return action === ANSWER_ACTION ? ANSWER_CONFLICT_MESSAGES : CONFLICT_MESSAGES;
+  }
+
+  function failureMessage(outcome, action) {
     if (outcome.status === 409) {
-      return lookupMessage(CONFLICT_MESSAGES, outcome.body.reason);
+      return lookupMessage(conflictMessages(action), outcome.body.reason);
     }
     if (outcome.status === 400 && isDecisionNumber(outcome.body.decision)) {
       return "decision " + outcome.body.decision + ": use " + ANSWER_HINT;
@@ -1333,9 +1347,26 @@
     document.querySelector("#next-step-body .next-step-sentence")?.focus();
   }
 
+  function isOnRun(runId) {
+    return state.view === "run" && state.runId === runId;
+  }
+
+  // An answer that arrives after the operator left the run has nobody to tell: it
+  // only gives the controls back. The panel is drawn again when they return.
+  function leftTheRun(request) {
+    if (isOnRun(request.runId)) {
+      return false;
+    }
+    setDisabled(request.controls, false);
+    return true;
+  }
+
   // The panel is drawn again from the server, so it shows the queued state. The
   // focused field is released first: a refresh skips a view while one has focus.
   function onActionAccepted(request) {
+    if (leftTheRun(request)) {
+      return;
+    }
     state.draft = null;
     document.activeElement?.blur();
     request.dialog?.close("accepted");
@@ -1349,9 +1380,12 @@
 
   // A 409 means the run moved on, so the panel is drawn again to show how.
   function onActionRejected(request, outcome) {
+    if (leftTheRun(request)) {
+      return;
+    }
     setDisabled(request.controls, false);
     request.dialog?.close(FOCUS_ON_MESSAGE);
-    setActionMessage(failureMessage(outcome));
+    setActionMessage(failureMessage(outcome, request.action));
     focusAfterFailure(request, outcome);
     if (outcome.status === 409) {
       void refreshView();
@@ -1385,8 +1419,10 @@
     const actions = isPlainObject(scope) ? scope : {};
     dialog.appendChild(element("h2", "", "Approve this run?")).id = APPROVE_TITLE_ID;
     dialog.appendChild(element("p", "", "Agent work starts on this run once you confirm."));
+    dialog.appendChild(decisionRequestedLine(actions));
     dialog.appendChild(listSection("Authorized actions", actions.authorized_actions));
     dialog.appendChild(listSection("Excluded actions", actions.unauthorized_actions));
+    dialog.appendChild(listSection("Conditions in force", actions.conditions_in_force));
   }
 
   // A native modal: focus moves in, Tab stays inside and Escape closes it. Focus
@@ -1438,13 +1474,18 @@
     });
   }
 
-  function typedAnswers(runId) {
-    return state.draft?.runId === runId ? state.draft.values : [];
+  // Answers belong to one run, episode and context: a form for another one starts empty.
+  function draftKey(step, runId) {
+    return JSON.stringify([runId, step.episode_id, step.context_fingerprint]);
   }
 
-  function rememberAnswers(runId, inputs) {
+  function typedAnswers(step, runId) {
+    return state.draft?.key === draftKey(step, runId) ? state.draft.values : [];
+  }
+
+  function rememberAnswers(step, runId, inputs) {
     state.draft = {
-      runId: runId,
+      key: draftKey(step, runId),
       values: inputs.map(function (input) {
         return input.value;
       })
@@ -1473,7 +1514,7 @@
   function sendAnswers(step, runId, submit, inputs) {
     void sendAction({
       runId: runId,
-      action: "answer",
+      action: ANSWER_ACTION,
       payload: {
         ...contextPayload(step),
         answers: inputs.map(function (input) {
@@ -1492,7 +1533,7 @@
     const form = section.appendChild(element("form", "answer-form"));
     form.noValidate = true;
     form.setAttribute("aria-labelledby", ANSWER_TITLE_ID);
-    const typed = typedAnswers(runId);
+    const typed = typedAnswers(step, runId);
     for (const [index, decision] of asArray(step.decisions).entries()) {
       form.appendChild(answerField(decision, index, typed[index] ?? ""));
     }
@@ -1500,7 +1541,7 @@
     const submit = form.appendChild(actionButton("Submit answers", "submit"));
     submit.disabled = !answersReady(inputs);
     form.addEventListener("input", function () {
-      rememberAnswers(runId, inputs);
+      rememberAnswers(step, runId, inputs);
       submit.disabled = !answersReady(inputs);
     });
     form.addEventListener("submit", function (event) {

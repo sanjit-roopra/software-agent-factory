@@ -13,6 +13,7 @@ import pytest
 from software_agent_factory.dashboard import next_step as next_step_module
 from software_agent_factory.dashboard import sanitize
 from software_agent_factory.dashboard.next_step import (
+    ANSWER_STALE_SENTENCES,
     FALLBACK_SENTENCE,
     REASON_SENTENCES,
     REFUSAL_CAUSES,
@@ -230,7 +231,7 @@ def test_risk_approval_without_a_valid_approval_context_is_unavailable(scope: An
 
     assert step["kind"] == "remote_approval_unavailable"
     assert step["sentence"] == (
-        f"{REASON_SENTENCES['RISK_APPROVAL']} Remote approval is not available."
+        f"{REASON_SENTENCES['RISK_APPROVAL']} Approval is not available."
         f" Inspect the run with `factory show {RUN_ID}`."
     )
     assert step["reply_text"] is None
@@ -241,7 +242,7 @@ def test_plan_decision_without_decisions_is_unavailable() -> None:
     step = next_step(_plan_run(decisions=[]))
 
     assert step["kind"] == "remote_approval_unavailable"
-    assert "Remote answers are not available." in step["sentence"]
+    assert "Answers are not available." in step["sentence"]
     assert f"`factory show {RUN_ID}`" in step["sentence"]
     assert step["decisions"] == []
 
@@ -314,14 +315,38 @@ def test_a_closed_github_reply_still_offers_the_action_without_reply_text(cause:
     assert [d["question"] for d in answer["decisions"]] == ["Use SQLite?", "Keep the old API?"]
 
 
-def test_a_closed_github_reply_hides_the_comment_link() -> None:
-    url = "https://github.com/o/r/pull/1#c-1"
+COMMENT_URL = "https://github.com/o/r/pull/1#c-1"
+REPLY_CLOSED = "escalation is switched off"
 
-    closed = next_step(_risk_run(reply_closed_cause="escalation is switched off", comment_url=url))
-    open_ = next_step(_risk_run(comment_url=url))
+
+def test_a_closed_github_reply_hides_the_comment_link() -> None:
+    closed = next_step(_risk_run(reply_closed_cause=REPLY_CLOSED, comment_url=COMMENT_URL))
+    open_ = next_step(_risk_run(comment_url=COMMENT_URL))
 
     assert closed["comment_url"] is None
-    assert open_["comment_url"] == url
+    assert open_["comment_url"] == COMMENT_URL
+
+
+def _run_and_requests(kind: str, **escalation: Any) -> tuple[dict[str, Any], list[Any]]:
+    """A run whose next step has this kind, and the queued requests that make it so."""
+    if kind == "cannot_continue":
+        return _run(resume_classification="NOT_RESUMABLE", **escalation), []
+    if kind == "remote_approval_unavailable":
+        return _risk_run(dashboard_action_refusal="expired", **escalation), []
+    return _risk_run(**escalation), [_request()]
+
+
+@pytest.mark.parametrize(("closed", "shown"), [(REPLY_CLOSED, None), (None, COMMENT_URL)])
+@pytest.mark.parametrize("kind", ["cannot_continue", "remote_approval_unavailable", "queued"])
+def test_the_comment_link_follows_the_github_reply_on_every_kind(
+    kind: str, closed: str | None, shown: str | None
+) -> None:
+    run, requests = _run_and_requests(kind, comment_url=COMMENT_URL, reply_closed_cause=closed)
+
+    step = next_step(run, requests)
+
+    assert step["kind"] == kind
+    assert step["comment_url"] == shown
 
 
 def test_an_open_github_reply_offers_both_the_action_and_the_reply_text() -> None:
@@ -360,8 +385,8 @@ def test_a_refused_dashboard_action_is_unavailable_and_says_why(refusal: str, ph
     answer = next_step(_plan_run(dashboard_action_refusal=refusal))
 
     assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
-    assert f"Remote approval is not available because {phrase}." in approve["sentence"]
-    assert f"Remote answers are not available because {phrase}." in answer["sentence"]
+    assert f"Approval is not available because {phrase}." in approve["sentence"]
+    assert f"Answers are not available because {phrase}." in answer["sentence"]
     assert approve["reply_text"] is answer["reply_text"] is None
     assert approve["approval_scope"] is answer["approval_scope"] is None
     assert answer["decisions"] == []
@@ -399,21 +424,23 @@ def test_a_malformed_refusal_is_treated_as_refused(refusal: Any) -> None:
     assert approve["reply_text"] is answer["reply_text"] is None
 
 
-def test_the_action_is_hidden_once_the_reopen_limit_is_reached() -> None:
-    for used in (3, 5):
-        approve = next_step(_risk_run(reopen_count=used, reopen_max=3))
-        answer = next_step(_plan_run(reopen_count=used, reopen_max=3))
+def test_the_action_is_hidden_once_the_provider_reports_the_reopen_limit() -> None:
+    approve = next_step(_risk_run(reopen_count=3, dashboard_action_refusal="reopen_limit"))
+    answer = next_step(_plan_run(reopen_count=3, dashboard_action_refusal="reopen_limit"))
 
-        assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
-        assert approve["reply_text"] is answer["reply_text"] is None
-        assert "because the reopen limit is reached." in approve["sentence"]
-        assert "because the reopen limit is reached." in answer["sentence"]
-        assert f"factory show {RUN_ID}" in approve["sentence"]
+    assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
+    assert approve["reply_text"] is answer["reply_text"] is None
+    assert "because the reopen limit is reached." in approve["sentence"]
+    assert "because the reopen limit is reached." in answer["sentence"]
+    assert f"factory show {RUN_ID}" in approve["sentence"]
 
 
-def test_the_action_stays_while_a_reopen_is_left_or_the_numbers_are_unknown() -> None:
-    assert next_step(_risk_run(reopen_count=2, reopen_max=3))["kind"] == "approve"
-    assert next_step(_plan_run(reopen_count=None, reopen_max=None))["kind"] == "answer"
+def test_the_reopen_count_alone_neither_shows_nor_hides_the_action() -> None:
+    at_the_limit = next_step(_risk_run(reopen_count=3, reopen_max=3))
+    numbers_unknown = next_step(_plan_run(reopen_count=None, reopen_max=None))
+
+    assert (at_the_limit["kind"], numbers_unknown["kind"]) == ("approve", "answer")
+    assert at_the_limit["reply_text"] is not None
 
 
 def test_the_reopen_limit_phrase_is_one_the_factory_reports() -> None:
@@ -788,7 +815,7 @@ def _request(
 def test_a_pending_approval_shows_when_it_was_queued_and_how_to_start_the_service() -> None:
     step = next_step(_risk_run(), [_request()])
 
-    assert step["kind"] == "approved_pending"
+    assert step["kind"] == "queued"
     assert (
         step["sentence"] == f"Approved at {QUEUED_AT}, queued for the factory service. {START_HINT}"
     )
@@ -802,7 +829,7 @@ def test_a_pending_approval_shows_when_it_was_queued_and_how_to_start_the_servic
 def test_pending_plan_answers_use_their_own_wording() -> None:
     step = next_step(_plan_run(), [_request("PLAN_DECISION")])
 
-    assert step["kind"] == "approved_pending"
+    assert step["kind"] == "queued"
     assert step["sentence"] == f"Answers sent at {QUEUED_AT}, queued for the factory service"
     assert step["decisions"] == []
 
@@ -816,7 +843,7 @@ def test_the_queued_time_is_shown_in_utc_whatever_offset_the_store_wrote() -> No
 def test_a_pending_request_still_shows_when_the_reply_is_closed() -> None:
     run = _risk_run(reply_closed_cause="the reply window expired", reopen_count=3)
 
-    assert next_step(run, [_request()])["kind"] == "approved_pending"
+    assert next_step(run, [_request()])["kind"] == "queued"
 
 
 @pytest.mark.parametrize(
@@ -837,8 +864,25 @@ def test_a_stale_request_adds_its_reason_to_the_normal_panel(reason: str, senten
     assert step["approval_scope"] == SCOPE
 
 
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("expired", "answers expired, send them again"),
+        ("reopen_limit", "reopen limit reached, inspect with factory show"),
+        ("context_changed", "the run changed, review again"),
+        ("state_changed", "the run state changed, review again"),
+    ],
+)
+def test_a_stale_request_for_answers_says_answers(reason: str, sentence: str) -> None:
+    step = next_step(_plan_run(), [_request("PLAN_DECISION", status="stale", reason=reason)])
+
+    assert step["kind"] == "answer"
+    assert step["stale_sentence"] == sentence
+
+
 def test_every_stale_reason_has_a_sentence() -> None:
     assert set(STALE_SENTENCES) == {"expired", "reopen_limit", "context_changed", "state_changed"}
+    assert set(ANSWER_STALE_SENTENCES) == set(STALE_SENTENCES)
 
 
 def test_a_stale_request_for_an_old_context_still_explains_the_new_panel() -> None:
@@ -932,7 +976,7 @@ def test_the_view_asks_only_a_waiting_run_with_a_valid_episode_for_requests() ->
     active = run_detail_view(_run("IMPLEMENTING"), requests_for)
     no_episode = run_detail_view(_risk_run(episode_id="ep one"), requests_for)
 
-    assert waiting["next_step"]["kind"] == "approved_pending"
+    assert waiting["next_step"]["kind"] == "queued"
     assert active["next_step"]["kind"] == "none"
     assert no_episode["next_step"]["kind"] == "remote_approval_unavailable"
     assert asked == [(RUN_ID, EPISODE_ID)]
@@ -949,7 +993,7 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "remote_approval_unavailable",
         "approve",
         "answer",
-        "approved_pending",
+        "queued",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'
 

@@ -79,6 +79,10 @@ STALE_SENTENCES: dict[str, str] = {
     "context_changed": "the run changed, review again",
     "state_changed": "the run state changed, review again",
 }
+#: The same, for a request that carried plan answers: only the expired sentence differs.
+ANSWER_STALE_SENTENCES: dict[str, str] = dict(
+    STALE_SENTENCES, expired="answers expired, send them again"
+)
 
 #: Why the page offers no action, one phrase per refusal code. Two reuse the reply phrases.
 REFUSAL_CAUSES: dict[str, str] = {
@@ -97,7 +101,7 @@ class NextStepKind(StrEnum):
     REMOTE_APPROVAL_UNAVAILABLE = "remote_approval_unavailable"
     APPROVE = "approve"
     ANSWER = "answer"
-    APPROVED_PENDING = "approved_pending"
+    QUEUED = "queued"
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,12 @@ def _reason_sentence(escalation: dict[str, Any]) -> str:
     )
 
 
+def _comment_url(escalation: dict[str, Any]) -> str | None:
+    """The link to the GitHub comment, only while a reply there would be read."""
+    url = escalation.get("comment_url")
+    return url if _reply_open(escalation) and is_safe_https_url(url) else None
+
+
 def _halt_step(kind: NextStepKind, sentence: str, escalation: dict[str, Any]) -> dict[str, Any]:
     """A step for a halted run: the facts every kind shows."""
     code = escalation.get("reason_code")
@@ -158,9 +168,7 @@ def _halt_step(kind: NextStepKind, sentence: str, escalation: dict[str, Any]) ->
         ),
         reopens_used=_count_or_none(escalation.get("reopen_count")),
         reopens_max=_count_or_none(escalation.get("reopen_max")),
-        comment_url=(
-            escalation["comment_url"] if is_safe_https_url(escalation.get("comment_url")) else None
-        ),
+        comment_url=_comment_url(escalation),
     )
     return step
 
@@ -184,35 +192,25 @@ def _unavailable(run: dict[str, Any], escalation: dict[str, Any], what: str) -> 
     return _halt_step(NextStepKind.REMOTE_APPROVAL_UNAVAILABLE, sentence, escalation)
 
 
-def _reopens_exhausted(escalation: dict[str, Any]) -> bool:
-    used = _count_or_none(escalation.get("reopen_count"))
-    maximum = _count_or_none(escalation.get("reopen_max"))
-    return used is not None and maximum is not None and used >= maximum
-
-
 def _reply_open(escalation: dict[str, Any]) -> bool:
     """Whether the factory would read a GitHub reply now.
 
     The cause comes from :func:`software_agent_factory.escalation_protocol.reply_closed_cause`,
     computed with the config when the run detail is built. Only ``None`` means open. A block
-    without that field, or with any other value, is treated as closed. An open reply is
-    still closed once the reopen count has reached its maximum.
+    without that field, or with any other value, is treated as closed.
     """
-    return escalation.get("reply_closed_cause", UNKNOWN_REPLY_STATE) is None and not (
-        _reopens_exhausted(escalation)
-    )
+    return escalation.get("reply_closed_cause", UNKNOWN_REPLY_STATE) is None
 
 
 def _action_refusal_cause(escalation: dict[str, Any]) -> str | None:
     """Why the page offers no action, or ``None`` when the service would take a request.
 
     ``dashboard_action_refusal`` must be present: ``None`` means the service would accept,
-    one of the four codes means it would not. A missing or unknown value is refused. A
-    reopen count at its maximum is refused even when the field says ``None``.
+    one of the four codes means it would not. A missing or unknown value is refused.
     """
     refusal = escalation.get("dashboard_action_refusal", UNKNOWN_ACTION_STATE)
     if refusal is None:
-        return REOPEN_LIMIT_CAUSE if _reopens_exhausted(escalation) else None
+        return None
     if isinstance(refusal, str) and refusal in REFUSAL_CAUSES:
         return REFUSAL_CAUSES[refusal]
     return UNKNOWN_ACTION_STATE
@@ -231,22 +229,20 @@ def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, st
 def _github_reply(
     step: dict[str, Any], escalation: dict[str, Any], reply_text: str
 ) -> dict[str, Any]:
-    """Add the copyable reply and the comment link when a GitHub reply would be read."""
+    """Add the copyable reply when a GitHub reply would be read."""
     if _reply_open(escalation):
         step["reply_text"] = reply_text
-    else:
-        step["comment_url"] = None
     return step
 
 
 def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     refused = _action_refusal_cause(escalation)
     if refused is not None:
-        return _unavailable(run, escalation, f"Remote approval is not available because {refused}.")
+        return _unavailable(run, escalation, f"Approval is not available because {refused}.")
     ids = _reply_ids(run, escalation)
     scope = escalation.get("approval_scope")
     if ids is None or not isinstance(scope, dict):
-        return _unavailable(run, escalation, "Remote approval is not available.")
+        return _unavailable(run, escalation, "Approval is not available.")
     run_id, episode_id, fingerprint = ids
     step = _halt_step(NextStepKind.APPROVE, _reason_sentence(escalation), escalation)
     step.update(approval_scope=scope, episode_id=episode_id, context_fingerprint=fingerprint)
@@ -256,7 +252,7 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
 def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     refused = _action_refusal_cause(escalation)
     if refused is not None:
-        return _unavailable(run, escalation, f"Remote answers are not available because {refused}.")
+        return _unavailable(run, escalation, f"Answers are not available because {refused}.")
     ids = _reply_ids(run, escalation)
     questions = escalation.get("decisions")
     if (
@@ -264,7 +260,7 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(questions, list)
         or not 1 <= len(questions) <= MAX_PLAN_DECISIONS
     ):
-        return _unavailable(run, escalation, "Remote answers are not available.")
+        return _unavailable(run, escalation, "Answers are not available.")
     run_id, episode_id, fingerprint = ids
     template = [f"{n}. {ANSWER_PLACEHOLDER}" for n in range(1, len(questions) + 1)]
     step = _halt_step(NextStepKind.ANSWER, _reason_sentence(escalation), escalation)
@@ -336,6 +332,15 @@ def _queued_request(
     return None
 
 
+def _stale_sentence(request: _Request) -> str:
+    sentences = (
+        STALE_SENTENCES
+        if request.action == ResumeClassification.RISK_APPROVAL
+        else ANSWER_STALE_SENTENCES
+    )
+    return sentences[str(request.reason)]
+
+
 def _resume_step(
     run: dict[str, Any], escalation: dict[str, Any], requests: list[_Request]
 ) -> dict[str, Any]:
@@ -344,7 +349,7 @@ def _resume_step(
     ids = _reply_ids(run, escalation)
     queued = _queued_request(requests, classification, ids[2]) if ids is not None else None
     if queued is not None:
-        step = _halt_step(NextStepKind.APPROVED_PENDING, _queued_sentence(queued), escalation)
+        step = _halt_step(NextStepKind.QUEUED, _queued_sentence(queued), escalation)
         step.update(
             episode_id=escalation.get("episode_id"),
             context_fingerprint=queued.fingerprint,
@@ -358,7 +363,7 @@ def _resume_step(
     )
     stale = [r for r in requests if r.status == "stale" and r.action == classification]
     if stale:
-        step["stale_sentence"] = STALE_SENTENCES[str(stale[-1].reason)]
+        step["stale_sentence"] = _stale_sentence(stale[-1])
     return step
 
 
