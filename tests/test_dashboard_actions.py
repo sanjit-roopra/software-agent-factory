@@ -13,7 +13,6 @@ import json
 import logging
 import socket
 import threading
-import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,11 +22,16 @@ from typing import Any
 import pytest
 
 from software_agent_factory import dashboard
-from software_agent_factory.cli import resume_requester, resume_run_reader
+from software_agent_factory.cli import (
+    build_resume_request_reader,
+    build_resume_requester,
+    build_resume_run_reader,
+)
 from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
 from software_agent_factory.dashboard.actions import ResumeActions
-from software_agent_factory.dashboard.handler import MAX_BODY_BYTES, DashboardRequestHandler
+from software_agent_factory.dashboard.handler import MAX_BODY_BYTES
 from software_agent_factory.dashboard.security import TOKEN_HEADER
+from software_agent_factory.dashboard.server import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from software_agent_factory.dashboard.snapshot import ResumeRequestResult
 from software_agent_factory.models import (
     Complexity,
@@ -35,6 +39,7 @@ from software_agent_factory.models import (
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
+    PlanDecisionAnswer,
     PlanDecisionContext,
     ResumeClassification,
     Risk,
@@ -266,6 +271,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
         reply_window_hours: float | None = 24,
         requester: Callable[[str, DashboardResumeRequest], ResumeRequestResult] | None = None,
         actions: bool = True,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> Rig:
         stored = run if run is not None else _run()
         store = FileRunStore(tmp_path)
@@ -276,14 +282,15 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                 snapshot_provider=lambda *, limit, offset: {},
                 run_detail_provider=lambda run_id: None,
                 resume_actions=ResumeActions(
-                    run_reader=resume_run_reader(store),
-                    requester=requester or resume_requester(store),
+                    run_reader=build_resume_run_reader(store),
+                    requester=requester or build_resume_requester(store),
                     reply_window_hours=reply_window_hours,
                     max_reopens=max_reopens,
                     clock=lambda: NOW,
                 )
                 if actions
                 else None,
+                request_timeout_seconds=request_timeout_seconds,
             )
         )
         thread = threading.Thread(
@@ -500,47 +507,41 @@ def test_a_refused_write_leaves_the_connection_usable(make_rig: RigFactory) -> N
 
 
 SHORT_TIMEOUT = 0.3
-CLOSE_BOUND = 3.0
 
 
-def _declare_a_body_and_send_none(rig: Rig, **header_overrides: str | None) -> tuple[bytes, float]:
+def _declare_a_body_and_send_none(rig: Rig, **header_overrides: str | None) -> bytes:
     """Declare 100 body bytes, send none, and read until the server closes the connection."""
     lines = [f"POST {_path(APPROVE)} HTTP/1.1", f"{HOST_HEADER}: {LOOPBACK}:{rig.port}"]
     lines += [f"{name}: {value}" for name, value in rig.headers(**header_overrides).items()]
     lines.append("Content-Length: 100")
-    started = time.monotonic()
     received = b""
     with socket.create_connection((LOOPBACK, rig.port), timeout=5) as sock:
         sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         while chunk := sock.recv(4096):
             received += chunk
-    return received, time.monotonic() - started
+    return received
 
 
 def test_a_body_that_never_arrives_is_408_and_the_connection_closes(
-    make_rig: RigFactory, monkeypatch: pytest.MonkeyPatch
+    make_rig: RigFactory,
 ) -> None:
-    monkeypatch.setattr(DashboardRequestHandler, "timeout", SHORT_TIMEOUT)
-    rig = make_rig()
+    rig = make_rig(request_timeout_seconds=SHORT_TIMEOUT)
     before = _tree(rig.data_dir)
 
-    received, elapsed = _declare_a_body_and_send_none(rig)
+    received = _declare_a_body_and_send_none(rig)
 
     assert received.startswith(b"HTTP/1.1 408 ")
-    assert elapsed < CLOSE_BOUND
     assert _tree(rig.data_dir) == before
 
 
 def test_a_refused_write_that_never_sends_its_body_closes_the_connection(
-    make_rig: RigFactory, monkeypatch: pytest.MonkeyPatch
+    make_rig: RigFactory,
 ) -> None:
-    monkeypatch.setattr(DashboardRequestHandler, "timeout", SHORT_TIMEOUT)
-    rig = make_rig()
+    rig = make_rig(request_timeout_seconds=SHORT_TIMEOUT)
 
-    received, elapsed = _declare_a_body_and_send_none(rig, **{TOKEN_HEADER: WRONG_TOKEN})
+    received = _declare_a_body_and_send_none(rig, **{TOKEN_HEADER: WRONG_TOKEN})
 
     assert received.startswith(b"HTTP/1.1 401 ")
-    assert elapsed < CLOSE_BOUND
 
 
 # -- rejected: body -----------------------------------------------------------------------
@@ -934,18 +935,18 @@ def test_the_production_reader_reads_a_stored_run(tmp_path: Path) -> None:
     run = _run()
     store.save_run(run)
 
-    assert resume_run_reader(store)(RUN_ID) == run
+    assert build_resume_run_reader(store)(RUN_ID) == run
 
 
 def test_the_production_reader_gives_none_for_an_unknown_run(tmp_path: Path) -> None:
-    assert resume_run_reader(FileRunStore(tmp_path))(MISSING_RUN) is None
+    assert build_resume_run_reader(FileRunStore(tmp_path))(MISSING_RUN) is None
 
 
 def test_the_production_reader_gives_none_for_a_corrupt_run_file(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path)
     store.save_run(_run()).write_text("{not json", encoding=ENCODING)
 
-    assert resume_run_reader(store)(RUN_ID) is None
+    assert build_resume_run_reader(store)(RUN_ID) is None
 
 
 def test_the_production_requester_reports_created_then_exists(tmp_path: Path) -> None:
@@ -953,16 +954,44 @@ def test_the_production_requester_reports_created_then_exists(tmp_path: Path) ->
     run = _run()
     store.save_run(run)
     request = _approval_request(run)
-    requester = resume_requester(store)
+    requester = build_resume_requester(store)
 
     assert [requester(RUN_ID, request), requester(RUN_ID, request)] == ["created", "exists"]
+
+
+def test_the_production_request_reader_lists_the_requests_of_one_episode_without_answers(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path)
+    run = _run(PLAN)
+    store.save_run(run)
+    marker = "private answer"
+    request = DashboardResumeRequest(
+        run_id=RUN_ID,
+        episode_id=EPISODE,
+        context_fingerprint=_fingerprint(run),
+        action=PLAN,
+        answers=[PlanDecisionAnswer(decision_number=1, answer=marker)],
+        created_at=NOW,
+    )
+    assert build_resume_requester(store)(RUN_ID, request) == "created"
+    read = build_resume_request_reader(store)
+
+    requests = read(RUN_ID, EPISODE)
+
+    assert [(r["action"], r["status"], r["context_fingerprint"]) for r in requests] == [
+        ("PLAN_DECISION", "pending", _fingerprint(run))
+    ]
+    assert "answers" not in requests[0]
+    assert marker not in repr(requests)
+    assert read(RUN_ID, OLD_EPISODE) == []
 
 
 def test_the_production_requester_reports_a_missing_run(tmp_path: Path) -> None:
     run = _run()
     request = _approval_request(run)
 
-    assert resume_requester(FileRunStore(tmp_path))(RUN_ID, request) == "run_missing"
+    assert build_resume_requester(FileRunStore(tmp_path))(RUN_ID, request) == "run_missing"
 
 
 # -- other writes stay blocked ------------------------------------------------------------

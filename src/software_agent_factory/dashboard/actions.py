@@ -18,7 +18,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
-from typing import Literal
 
 from ..models import (
     CONTEXT_FINGERPRINT_PATTERN,
@@ -36,19 +35,9 @@ from ..resume import (
     clean_plan_answer,
     request_refusal,
 )
+from .responses import ConflictReason, WriteRejected
 from .snapshot import ResumeRequester, ResumeRunReader, is_valid_run_id
 from .validators import is_episode_id
-
-#: Why a well-formed request is refused with ``409``. The page maps each code to a sentence.
-ConflictReason = Literal[
-    "not_waiting",
-    "stale_episode",
-    "stale_fingerprint",
-    "wrong_action",
-    "reopen_limit",
-    "expired",
-    "existing_request",
-]
 
 #: The reasons :func:`~software_agent_factory.resume.request_refusal` gives, as the codes the
 #: page gets. A request that names the wrong episode, context or action is a stale one.
@@ -81,34 +70,12 @@ class ResumeActions:
     clock: Callable[[], datetime] = utc_now
 
 
-class ActionRejected(Exception):  # noqa: N818 - a response, not an error condition
-    """A request the dashboard refuses. ``payload`` is the JSON body of the response."""
-
-    def __init__(
-        self,
-        status: HTTPStatus,
-        error: str,
-        *,
-        reason: ConflictReason | None = None,
-        decision: int | None = None,
-    ) -> None:
-        super().__init__(error)
-        self.status = status
-        #: The status and, for a ``409``, its reason: what the audit event records.
-        self.result = f"{status.value} {reason}" if reason is not None else str(status.value)
-        self.payload: dict[str, object] = {"error": error}
-        if reason is not None:
-            self.payload["reason"] = reason
-        if decision is not None:
-            self.payload["decision"] = decision
+def _bad_request(error: str, *, decision: int | None = None) -> WriteRejected:
+    return WriteRejected(HTTPStatus.BAD_REQUEST, error, decision=decision)
 
 
-def _bad_request(error: str, *, decision: int | None = None) -> ActionRejected:
-    return ActionRejected(HTTPStatus.BAD_REQUEST, error, decision=decision)
-
-
-def _conflict(reason: ConflictReason) -> ActionRejected:
-    return ActionRejected(HTTPStatus.CONFLICT, "conflict", reason=reason)
+def _conflict(reason: ConflictReason) -> WriteRejected:
+    return WriteRejected(HTTPStatus.CONFLICT, "conflict", reason=reason)
 
 
 @dataclass(frozen=True)
@@ -189,7 +156,7 @@ def accept_action(
 ) -> dict[str, object]:
     """Check one approve or answer request and store it. Returns the ``202`` body.
 
-    Raises :class:`ActionRejected` for every refusal, and nothing has been written then.
+    Raises :class:`WriteRejected` for every refusal, and nothing has been written then.
     The order is the contract: the body (``400``), the run id (``400``) and the run
     (``404``), then the conflicts (``409``) in the order of
     :func:`~software_agent_factory.resume.request_refusal`, and last the create-only write,
@@ -200,13 +167,14 @@ def accept_action(
         raise _bad_request("the run id is not valid")
     run = actions.run_reader(raw_run_id)
     if run is None:
-        raise ActionRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+    escalation = run.escalation
+    if escalation is None:
+        raise _conflict("not_waiting")
     now = actions.clock()
     reason = _conflict_reason(actions, run, kind, fields, now)
     if reason is not None:
         raise _conflict(reason)
-    escalation = run.escalation
-    assert escalation is not None  # a run that awaits a human has one
     answers = (
         _plan_answers(escalation, fields.answers)
         if kind is ResumeClassification.PLAN_DECISION
@@ -222,7 +190,7 @@ def accept_action(
     )
     result = actions.requester(raw_run_id, request)
     if result == "run_missing":
-        raise ActionRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
     if result == "exists":
         raise _conflict("existing_request")
     return {"status": "accepted", "requested_at": now.isoformat()}

@@ -1244,11 +1244,14 @@
 
   // ---- Run detail: approve and answer ------------------------------------
 
-  // Mirrors MAX_PLAN_DECISION_ANSWER_CHARS in resume.py. The server checks again.
+  // Mirror MAX_PLAN_DECISION_ANSWER_CHARS in resume.py. The server checks again.
+  const MIN_ANSWER_CHARS = 1;
   const MAX_ANSWER_CHARS = 500;
-  const ANSWER_HINT =
-    "1 to " + MAX_ANSWER_CHARS + " characters, one line, no paths, links or secrets";
+  const ANSWER_HINT = MIN_ANSWER_CHARS + " to " + MAX_ANSWER_CHARS +
+    " characters, one line, no paths, links or secrets";
   const ACCEPTED_STATUS = 202;
+  const BAD_REQUEST_STATUS = 400;
+  const CONFLICT_STATUS = 409;
   const ANSWER_ACTION = "answer";
   const FAILURE_TEXT = "the request failed, try again";
   const RUN_CHANGED_TEXT = "the run changed, review again";
@@ -1256,6 +1259,8 @@
   const ANSWER_TITLE_ID = "answer-title";
   // A dialog closed with this value leaves focus to the message, not to Approve.
   const FOCUS_ON_MESSAGE = "message";
+  // A dialog closed with this value was closed by an accepted request.
+  const CLOSED_ACCEPTED = "accepted";
   // Statuses with their own wording. A 400 names the decision and a 409 uses its
   // reason code, so neither is listed here. Any other status is FAILURE_TEXT.
   const STATUS_MESSAGES = {
@@ -1298,10 +1303,10 @@
   }
 
   function failureMessage(outcome, action) {
-    if (outcome.status === 409) {
+    if (outcome.status === CONFLICT_STATUS) {
       return lookupMessage(conflictMessages(action), outcome.body.reason);
     }
-    if (outcome.status === 400 && isDecisionNumber(outcome.body.decision)) {
+    if (outcome.status === BAD_REQUEST_STATUS && isDecisionNumber(outcome.body.decision)) {
       return "decision " + outcome.body.decision + ": use " + ANSWER_HINT;
     }
     return lookupMessage(STATUS_MESSAGES, outcome.status);
@@ -1353,54 +1358,56 @@
 
   // An answer that arrives after the operator left the run has nobody to tell: it
   // only gives the controls back. The panel is drawn again when they return.
-  function leftTheRun(request) {
-    if (isOnRun(request.runId)) {
+  function leftTheRun(submission) {
+    if (isOnRun(submission.runId)) {
       return false;
     }
-    setDisabled(request.controls, false);
+    setDisabled(submission.controls, false);
     return true;
   }
 
   // The panel is drawn again from the server, so it shows the queued state. The
   // focused field is released first: a refresh skips a view while one has focus.
-  function onActionAccepted(request) {
-    if (leftTheRun(request)) {
+  function onActionAccepted(submission) {
+    if (leftTheRun(submission)) {
       return;
     }
     state.draft = null;
     document.activeElement?.blur();
-    request.dialog?.close("accepted");
+    submission.dialog?.close(CLOSED_ACCEPTED);
     void refreshView().then(focusQueuedSentence);
   }
 
-  function focusAfterFailure(request, outcome) {
-    const field = outcome.status === 400 ? request.fields?.[outcome.body.decision - 1] : undefined;
+  function focusAfterFailure(submission, outcome) {
+    const named = outcome.status === BAD_REQUEST_STATUS;
+    const field = named ? submission.fields?.[outcome.body.decision - 1] : undefined;
     (field || document.getElementById("notice")).focus();
   }
 
   // A 409 means the run moved on, so the panel is drawn again to show how.
-  function onActionRejected(request, outcome) {
-    if (leftTheRun(request)) {
+  function onActionRejected(submission, outcome) {
+    if (leftTheRun(submission)) {
       return;
     }
-    setDisabled(request.controls, false);
-    request.dialog?.close(FOCUS_ON_MESSAGE);
-    setActionMessage(failureMessage(outcome, request.action));
-    focusAfterFailure(request, outcome);
-    if (outcome.status === 409) {
+    setDisabled(submission.controls, false);
+    submission.dialog?.close(FOCUS_ON_MESSAGE);
+    setActionMessage(failureMessage(outcome, submission.action));
+    focusAfterFailure(submission, outcome);
+    if (outcome.status === CONFLICT_STATUS) {
       void refreshView();
     }
   }
 
   // The controls stay disabled while the request runs, and after it was accepted.
-  function sendAction(request) {
+  function sendAction(submission) {
     setActionMessage("");
-    setDisabled(request.controls, true);
-    return postAction(request.runId, request.action, request.payload).then(function (outcome) {
+    setDisabled(submission.controls, true);
+    const { runId, action, payload } = submission;
+    return postAction(runId, action, payload).then(function (outcome) {
       if (outcome.status === ACCEPTED_STATUS) {
-        onActionAccepted(request);
+        onActionAccepted(submission);
       } else {
-        onActionRejected(request, outcome);
+        onActionRejected(submission, outcome);
       }
     });
   }
@@ -1470,7 +1477,7 @@
   function answersReady(inputs) {
     return inputs.every(function (input) {
       const length = input.value.trim().length;
-      return length >= 1 && length <= MAX_ANSWER_CHARS;
+      return length >= MIN_ANSWER_CHARS && length <= MAX_ANSWER_CHARS;
     });
   }
 

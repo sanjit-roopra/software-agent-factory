@@ -16,12 +16,14 @@ import logging
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
+from io import BufferedIOBase
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..models import ResumeClassification
 from . import assets
-from .actions import ActionRejected, ResumeActions, accept_action
+from .actions import ResumeActions, accept_action
+from .responses import WriteRejected
 from .sanitize import sanitize_health, sanitize_run_summary
 from .security import (
     TOKEN_QUERY_PARAM,
@@ -82,9 +84,12 @@ MAX_BODY_BYTES = 16 * 1024
 #: A refused write whose body is still unread is read and dropped after the answer when it is
 #: no larger than this, so the connection stays in step. A larger one closes the connection.
 _MAX_DISCARDED_BODY_BYTES = 4 * MAX_BODY_BYTES
-#: Seconds a connection may stay silent: the stdlib applies it to every read of the socket.
-#: Without it a client that declares a body and sends none holds a thread and its socket open.
-_REQUEST_TIMEOUT_SECONDS = 10
+#: A ``Content-Length`` with more digits than this is too large to be a size we would accept.
+#: It also keeps ``int`` cheap and safe.
+_MAX_LENGTH_DIGITS = 12
+#: The length of a ``Content-Length`` with too many digits: over every limit, so the write is
+#: refused as too large and its body is never dropped.
+_OVERSIZED_LENGTH = _MAX_DISCARDED_BODY_BYTES + 1
 _MAX_LOGGED_RUN_ID_LENGTH = 128
 _LOG_UNSAFE_PATTERN = re.compile(r"[^\x20-\x7e]")
 _MAX_LOGGED_PATH_LENGTH = 200
@@ -120,18 +125,67 @@ def _log_safe_method(raw_method: str | None) -> str:
     return _log_safe_text(raw_method, _MAX_LOGGED_METHOD_LENGTH)
 
 
+def _declared_length(raw: str | None) -> int | None:
+    """The body length a ``Content-Length`` header declares, or ``None`` when it has none."""
+    if raw is None or not (raw.isascii() and raw.isdigit()):
+        return None
+    return int(raw) if len(raw) <= _MAX_LENGTH_DIGITS else _OVERSIZED_LENGTH
+
+
+class _WriteBody:
+    """The body of one write: its declared length, read at most once, and what is left of it.
+
+    The length is parsed once, from the header. After a refusal the unread part is still on
+    the wire: :meth:`remaining_to_drain` says how much to drop so the connection stays in step.
+    """
+
+    def __init__(self, raw_length: str | None) -> None:
+        self.length = _declared_length(raw_length)
+        self._unread = self.length
+
+    def read(self, rfile: BufferedIOBase) -> bytes:
+        """The whole body. A missing length is ``400``, a long one ``413``, a silent one ``408``."""
+        length = self.length
+        if length is None:
+            raise WriteRejected(HTTPStatus.BAD_REQUEST, "invalid content length")
+        if length > MAX_BODY_BYTES:
+            raise WriteRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
+        # Until the read ends, the place of the stream is not known.
+        self._unread = None
+        try:
+            raw = rfile.read(length)
+        except TimeoutError:
+            # A read that timed out cannot be read again, so there is nothing to drop either.
+            raise WriteRejected(HTTPStatus.REQUEST_TIMEOUT, "the body did not arrive") from None
+        self._unread = 0
+        return raw
+
+    def remaining_to_drain(self) -> int | None:
+        """How many bytes to drop after the answer, or ``None`` when they cannot be dropped.
+
+        A body whose size is unknown or large, or whose read failed, cannot be dropped: the
+        connection must close instead, so the next request is never read from the middle of it.
+        """
+        unread = self._unread
+        if unread is None or unread > _MAX_DISCARDED_BODY_BYTES:
+            return None
+        return unread
+
+
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     """Handles one dashboard request. ``self.server`` is a ``DashboardServer``."""
 
     server: DashboardServer
     server_version = "SoftwareAgentFactoryDashboard/1"
     protocol_version = "HTTP/1.1"
-    #: A class attribute, so a test can shorten it.
-    timeout = _REQUEST_TIMEOUT_SECONDS
-    #: Whether the current write's body has been read. Set at the start of every write.
-    _body_read = False
 
     # -- stdlib method hooks -------------------------------------------------
+
+    def setup(self) -> None:
+        super().setup()
+        # Every read of the socket gives up after this long. Without it a client that
+        # declares a body and sends none holds a thread and its socket open.
+        self.connection.settimeout(self.server.request_timeout_seconds)
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming convention
         self._dispatch(send_body=True)
@@ -140,12 +194,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self._dispatch(send_body=False)
 
     def do_POST(self) -> None:  # noqa: N802
-        actions = self.server.resume_actions
-        match = _ACTION_PATTERN.fullmatch(self._decoded_path())
-        if actions is None or match is None:
+        route = self._action_route()
+        if route is None:
             self._method_not_allowed()
             return
-        self._serve_action(actions, match.group(1), match.group(2))
+        self._serve_action(*route)
 
     def do_PUT(self) -> None:  # noqa: N802
         self._method_not_allowed()
@@ -219,18 +272,26 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except ValueError:  # e.g. an unterminated IPv6 literal in the target
             return ""
 
+    def _action_route(self) -> tuple[ResumeActions, str, str] | None:
+        """The actions, run id and action name this path names, or ``None`` when it names none.
+
+        Only a server that has actions routes the approve and answer paths.
+        """
+        actions = self.server.resume_actions
+        match = _ACTION_PATTERN.fullmatch(self._decoded_path())
+        if actions is None or match is None:
+            return None
+        return actions, match.group(1), match.group(2)
+
     def _method_not_allowed(self) -> None:
         # The body of a refused write, if any, stays unread.
         self.close_connection = True
-        is_action = (
-            self.server.resume_actions is not None
-            and _ACTION_PATTERN.fullmatch(self._decoded_path()) is not None
-        )
+        allow = "POST" if self._action_route() is not None else "GET, HEAD"
         self._respond_json(
             HTTPStatus.METHOD_NOT_ALLOWED,
             {"error": "method not allowed"},
             send_body=True,
-            extra_headers=(("Allow", "POST" if is_action else "GET, HEAD"),),
+            extra_headers=(("Allow", allow),),
         )
 
     def _token_is_valid(self, query: dict[str, list[str]]) -> bool:
@@ -446,11 +507,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_action(self, actions: ResumeActions, raw_run_id: str, action_name: str) -> None:
         """Run one approve or answer request and write its one audit event."""
-        self._body_read = False
+        body = _WriteBody(self.headers.get("Content-Length"))
         status, payload, result = self._action_outcome(
-            actions, raw_run_id, _ACTION_KINDS[action_name]
+            actions, raw_run_id, _ACTION_KINDS[action_name], body
         )
-        unread = self._unread_body_length()
+        to_drop = body.remaining_to_drain()
+        if to_drop is None:
+            self.close_connection = True
         _audit_logger.info(
             "dashboard %s run=%s result=%s",
             action_name,
@@ -458,23 +521,32 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             result,
         )
         self._respond_json(status, payload, send_body=True)
-        # After the answer, so a client that lies about its length only blocks itself, for
-        # at most the timeout. Then the connection closes: its next request would start
-        # in the middle of the body.
+        self._drop_body(to_drop or 0)
+
+    def _drop_body(self, count: int) -> None:
+        """Read and discard the unread rest of a refused write's body, after the answer.
+
+        After the answer, so a client that lies about its length only blocks itself, for at
+        most the timeout. Then the connection closes: its next request would start in the
+        middle of the body.
+        """
         try:
-            self.rfile.read(unread)
+            self.rfile.read(count)
         except TimeoutError:
             self.close_connection = True
 
     def _action_outcome(
-        self, actions: ResumeActions, raw_run_id: str, kind: ResumeClassification
+        self,
+        actions: ResumeActions,
+        raw_run_id: str,
+        kind: ResumeClassification,
+        body: _WriteBody,
     ) -> tuple[HTTPStatus, dict[str, object], str]:
         """The status, JSON body and audit result of one write. Never raises."""
         try:
             self._check_write_headers()
-            body = self._read_json_body()
-            payload = accept_action(actions, kind, raw_run_id, body)
-        except ActionRejected as rejected:
+            payload = accept_action(actions, kind, raw_run_id, self._read_json_body(body))
+        except WriteRejected as rejected:
             return rejected.status, rejected.payload, rejected.result
         except Exception:  # noqa: BLE001 - never leak internals to the client
             _logger.exception("Unhandled dashboard error for an action on a run")
@@ -486,56 +558,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         """``Host``, ``Origin`` and the token header, in that order. A write needs all three."""
         bound_host, port = self.server.address
         if not host_header_is_valid(self.headers.get("Host"), bound_host, port):
-            raise ActionRejected(HTTPStatus.BAD_REQUEST, "invalid host")
+            raise WriteRejected(HTTPStatus.BAD_REQUEST, "invalid host")
         if not required_origin_is_valid(self.headers.get("Origin"), bound_host, port):
-            raise ActionRejected(HTTPStatus.FORBIDDEN, "invalid origin")
+            raise WriteRejected(HTTPStatus.FORBIDDEN, "invalid origin")
         if not header_token_matches(self.server.token, self.headers):
-            raise ActionRejected(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            raise WriteRejected(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
-    def _content_length(self) -> int | None:
-        """The declared body length, or ``None`` when it is missing or not a number."""
-        raw = self.headers.get("Content-Length")
-        if raw is None or not (raw.isascii() and raw.isdigit()):
-            return None
-        # Too many digits to be a size we would accept; also keeps ``int`` cheap and safe.
-        return int(raw) if len(raw) <= 12 else _MAX_DISCARDED_BODY_BYTES + 1
-
-    def _read_json_body(self) -> object:
+    def _read_json_body(self, body: _WriteBody) -> object:
         """The decoded JSON body of a write: ``415``, ``413`` or ``400`` when it cannot be."""
         media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if media_type != "application/json":
-            raise ActionRejected(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "send application/json")
-        length = self._content_length()
-        if length is None:
-            raise ActionRejected(HTTPStatus.BAD_REQUEST, "invalid content length")
-        if length > MAX_BODY_BYTES:
-            raise ActionRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
-        try:
-            raw = self.rfile.read(length)
-        except TimeoutError:
-            # A read that timed out cannot be read again, so there is nothing to drop either.
-            self._body_read = True
-            self.close_connection = True
-            raise ActionRejected(HTTPStatus.REQUEST_TIMEOUT, "the body did not arrive") from None
-        self._body_read = True
+            raise WriteRejected(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "send application/json")
+        raw = body.read(self.rfile)
         try:
             return json.loads(raw)
         except (ValueError, RecursionError):  # bad bytes, bad JSON or absurdly deep nesting
-            raise ActionRejected(HTTPStatus.BAD_REQUEST, "the body is not valid JSON") from None
-
-    def _unread_body_length(self) -> int:
-        """How many bytes of a refused write are still to be dropped after the answer.
-
-        A body that cannot be dropped, because its size is unknown or large, closes the
-        connection instead, so the next request is never read from the middle of a body.
-        """
-        if self._body_read:
-            return 0
-        length = self._content_length()
-        if length is None or length > _MAX_DISCARDED_BODY_BYTES:
-            self.close_connection = True
-            return 0
-        return length
+            raise WriteRejected(HTTPStatus.BAD_REQUEST, "the body is not valid JSON") from None
 
     # -- response helpers -------------------------------------------------------
 

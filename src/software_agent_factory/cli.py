@@ -72,7 +72,12 @@ if TYPE_CHECKING:
 
     from .agents import AgentRuntime
     from .config import FactoryConfig
-    from .dashboard.snapshot import ResumeRequester, ResumeRequestResult, ResumeRunReader
+    from .dashboard.snapshot import (
+        ResumeRequester,
+        ResumeRequestReader,
+        ResumeRequestResult,
+        ResumeRunReader,
+    )
     from .models import (
         DashboardResumeRequest,
         FactoryRun,
@@ -999,7 +1004,7 @@ def status_command(
         typer.echo(line)
 
 
-def resume_run_reader(store: FileRunStore) -> ResumeRunReader:
+def build_resume_run_reader(store: FileRunStore) -> ResumeRunReader:
     """The run reader of the dashboard's approve and answer routes. Read only.
 
     A run that is missing or cannot be read is an unknown run: the route answers ``404``.
@@ -1014,7 +1019,7 @@ def resume_run_reader(store: FileRunStore) -> ResumeRunReader:
     return read
 
 
-def resume_requester(store: FileRunStore) -> ResumeRequester:
+def build_resume_requester(store: FileRunStore) -> ResumeRequester:
     """The requester of the dashboard's approve and answer routes.
 
     The one write the dashboard makes: a create-only request file. The service reads it
@@ -1029,6 +1034,21 @@ def resume_requester(store: FileRunStore) -> ResumeRequester:
         return "created" if created else "exists"
 
     return create
+
+
+def build_resume_request_reader(store: FileRunStore) -> ResumeRequestReader:
+    """The request reader of the run detail. Read only, and it leaves the answers out.
+
+    The page shows when and whether a request was queued, never what was answered.
+    """
+
+    def read(run_id: str, episode_id: str) -> list[dict[str, object]]:
+        return [
+            request.model_dump(mode="json", exclude={"answers"})
+            for request in store.list_dashboard_requests(run_id, episode_id)
+        ]
+
+    return read
 
 
 @app.command("dashboard")
@@ -1113,14 +1133,6 @@ def dashboard_command(
             escalation_enabled=factory_config.escalation.enabled,
             allowed_hosts=factory_config.escalation.allowed_hosts,
         )
-
-    def resume_request_reader(run_id: str, episode_id: str) -> list[dict[str, object]]:
-        # Read only. The answers stay behind: the page shows when and whether a
-        # request was queued, never what was answered.
-        return [
-            request.model_dump(mode="json", exclude={"answers"})
-            for request in store.list_dashboard_requests(run_id, episode_id)
-        ]
 
     def health_provider() -> object:
         return build_operational_health(
@@ -1233,10 +1245,10 @@ def dashboard_command(
                 run_detail_provider=run_detail_provider,
                 health_provider=health_provider,
                 project_provider=project_provider,
-                resume_request_reader=resume_request_reader,
+                resume_request_reader=build_resume_request_reader(store),
                 resume_actions=ResumeActions(
-                    run_reader=resume_run_reader(store),
-                    requester=resume_requester(store),
+                    run_reader=build_resume_run_reader(store),
+                    requester=build_resume_requester(store),
                     reply_window_hours=factory_config.escalation.reply_window_hours,
                     max_reopens=factory_config.escalation.max_reopens,
                 ),

@@ -31,6 +31,9 @@ DEFAULT_PORT = 0
 
 DEFAULT_HOST = "127.0.0.1"
 
+#: Seconds a connection may stay silent before the server drops it.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
+
 
 @dataclass(frozen=True, kw_only=True)
 class DashboardConfig:
@@ -41,7 +44,9 @@ class DashboardConfig:
     accidentally stand up a dashboard with no data source. ``health_provider``
     is optional -- a dashboard with no configured health source simply
     reports ``health: null`` rather than refusing to start. ``resume_actions`` turns on
-    the approve and answer routes; without it every ``POST`` is ``405``. Pass fakes in
+    the approve and answer routes; without it every ``POST`` is ``405``.
+    ``request_timeout_seconds`` is how long a connection may stay silent: a client that
+    declares a body and sends none gets ``408`` after it. Pass fakes in
     tests and thin wrappers around ``observability.build_monitoring_snapshot``
     / a safe run lookup / ``doctor.run_doctor`` in production wiring.
     """
@@ -55,6 +60,7 @@ class DashboardConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     token: str | None = None
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -75,6 +81,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.project_provider: ProjectProvider | None = config.project_provider
         self.resume_request_reader: ResumeRequestReader | None = config.resume_request_reader
         self.resume_actions: ResumeActions | None = config.resume_actions
+        self.request_timeout_seconds: float = config.request_timeout_seconds
         super().__init__((bind_host, config.port), DashboardRequestHandler)
 
     @property

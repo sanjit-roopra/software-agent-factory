@@ -13,7 +13,7 @@ import pytest
 from dashboard_js import function_source, normalized, object_literal_source, strip_comments
 
 from software_agent_factory.dashboard import assets as dashboard_assets
-from software_agent_factory.dashboard.actions import ConflictReason
+from software_agent_factory.dashboard.responses import ConflictReason
 from software_agent_factory.dashboard.security import TOKEN_HEADER
 from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
@@ -1030,14 +1030,31 @@ def test_any_other_status_and_a_failed_network_say_the_request_failed() -> None:
 
 def test_a_400_names_the_decision_and_a_409_uses_its_reason() -> None:
     message = function_source(_JS, "failureMessage")
-    assert "outcome.status === 409" in message
+    assert "outcome.status === CONFLICT_STATUS" in message
     assert "lookupMessage(conflictMessages(action), outcome.body.reason)" in message
-    assert "outcome.status === 400 && isDecisionNumber(outcome.body.decision)" in message
+    assert (
+        "outcome.status === BAD_REQUEST_STATUS && isDecisionNumber(outcome.body.decision)"
+        in message
+    )
     assert '"decision " + outcome.body.decision + ": use " + ANSWER_HINT' in message
     assert "lookupMessage(STATUS_MESSAGES, outcome.status)" in message
 
 
+def test_the_status_codes_and_the_close_value_are_named_constants() -> None:
+    for line in (
+        "const ACCEPTED_STATUS = 202;",
+        "const BAD_REQUEST_STATUS = 400;",
+        "const CONFLICT_STATUS = 409;",
+        'const CLOSED_ACCEPTED = "accepted";',
+    ):
+        assert line in _JS
+    for name in ("failureMessage", "focusAfterFailure", "onActionRejected", "sendAction"):
+        assert not re.search(r"status === \d{3}", function_source(_JS, name))
+    assert '"accepted"' not in function_source(_JS, "onActionAccepted")
+
+
 def test_the_answer_limit_matches_the_server_rule() -> None:
+    assert "const MIN_ANSWER_CHARS = 1;" in _JS
     assert f"const MAX_ANSWER_CHARS = {MAX_PLAN_DECISION_ANSWER_CHARS};" in _JS
     assert "no paths, links or secrets" in _JS
 
@@ -1062,9 +1079,9 @@ def test_the_request_body_names_the_episode_and_the_fingerprint_the_panel_showed
 
 def test_a_button_is_disabled_while_the_request_runs() -> None:
     send = function_source(_JS, "sendAction")
-    assert send.index("setDisabled(request.controls, true)") < send.index("postAction(")
+    assert send.index("setDisabled(submission.controls, true)") < send.index("postAction(")
     rejected = function_source(_JS, "onActionRejected")
-    assert "setDisabled(request.controls, false)" in rejected
+    assert "setDisabled(submission.controls, false)" in rejected
     assert "setDisabled(" not in function_source(_JS, "onActionAccepted")
 
 
@@ -1113,14 +1130,14 @@ def test_focus_moves_into_the_dialog_and_returns_to_approve_on_escape_or_cancel(
 def test_an_error_closes_the_dialog_without_taking_focus_from_the_message() -> None:
     assert 'const FOCUS_ON_MESSAGE = "message";' in _JS
     rejected = function_source(_JS, "onActionRejected")
-    assert "request.dialog?.close(FOCUS_ON_MESSAGE)" in rejected
+    assert "submission.dialog?.close(FOCUS_ON_MESSAGE)" in rejected
     assert rejected.index("close(FOCUS_ON_MESSAGE)") < rejected.index("focusAfterFailure(")
 
 
 def test_after_an_error_focus_moves_to_the_named_field_or_to_the_message() -> None:
     focus = function_source(_JS, "focusAfterFailure")
-    assert "outcome.status === 400" in focus
-    assert "request.fields?.[outcome.body.decision - 1]" in focus
+    assert "outcome.status === BAD_REQUEST_STATUS" in focus
+    assert "submission.fields?.[outcome.body.decision - 1]" in focus
     assert '(field || document.getElementById("notice")).focus()' in focus
 
 
@@ -1136,7 +1153,7 @@ def test_an_accepted_request_draws_the_panel_again_and_moves_focus_to_its_senten
     accepted = function_source(_JS, "onActionAccepted")
     assert "state.draft = null;" in accepted
     assert "document.activeElement?.blur();" in accepted
-    assert 'request.dialog?.close("accepted");' in accepted
+    assert "submission.dialog?.close(CLOSED_ACCEPTED);" in accepted
     assert "refreshView().then(focusQueuedSentence)" in accepted
     sentence = function_source(_JS, "buildNextStep")
     assert "sentence.tabIndex = -1;" in sentence
@@ -1144,7 +1161,7 @@ def test_an_accepted_request_draws_the_panel_again_and_moves_focus_to_its_senten
 
 def test_a_conflict_draws_the_panel_again_so_the_operator_can_review() -> None:
     rejected = function_source(_JS, "onActionRejected")
-    assert "if (outcome.status === 409) { void refreshView(); }" in rejected
+    assert "if (outcome.status === CONFLICT_STATUS) { void refreshView(); }" in rejected
 
 
 def test_the_answer_form_has_a_labelled_one_line_field_for_each_decision() -> None:
@@ -1159,8 +1176,8 @@ def test_the_answer_form_has_a_labelled_one_line_field_for_each_decision() -> No
     assert 'input.setAttribute("aria-describedby", hint.id);' in field
     assert 'element("p", "field-hint", ANSWER_HINT)' in field
     assert (
-        'const ANSWER_HINT = "1 to " + MAX_ANSWER_CHARS + " characters, one line, '
-        'no paths, links or secrets";'
+        'const ANSWER_HINT = MIN_ANSWER_CHARS + " to " + MAX_ANSWER_CHARS + '
+        '" characters, one line, no paths, links or secrets";'
     ) in normalized(_JS)
     section = function_source(_JS, "answerSection")
     assert 'form.setAttribute("aria-labelledby", ANSWER_TITLE_ID);' in section
@@ -1171,7 +1188,7 @@ def test_submit_waits_until_every_answer_is_filled_in() -> None:
     ready = function_source(_JS, "answersReady")
     assert "inputs.every(" in ready
     assert "input.value.trim().length" in ready
-    assert "length >= 1 && length <= MAX_ANSWER_CHARS" in ready
+    assert "length >= MIN_ANSWER_CHARS && length <= MAX_ANSWER_CHARS" in ready
     section = function_source(_JS, "answerSection")
     assert "submit.disabled = !answersReady(inputs);" in section
     assert section.count("submit.disabled = !answersReady(inputs);") == 2
@@ -1200,13 +1217,13 @@ def test_an_answer_that_arrives_after_the_operator_left_only_gives_the_controls_
     on_run = function_source(_JS, "isOnRun")
     assert 'state.view === "run" && state.runId === runId' in on_run
     left = function_source(_JS, "leftTheRun")
-    assert "if (isOnRun(request.runId)) { return false; }" in left
-    assert left.index("isOnRun(") < left.index("setDisabled(request.controls, false)")
+    assert "if (isOnRun(submission.runId)) { return false; }" in left
+    assert left.index("isOnRun(") < left.index("setDisabled(submission.controls, false)")
     assert "setActionMessage" not in left
     assert ".focus()" not in left
     for handler in ("onActionAccepted", "onActionRejected"):
         source = function_source(_JS, handler)
-        assert "if (leftTheRun(request)) { return; }" in source
+        assert "if (leftTheRun(submission)) { return; }" in source
         # Nothing that speaks, moves focus or refreshes runs before the guard.
         guard = source.index("leftTheRun(")
         assert not any(word in source[:guard] for word in ("setActionMessage", "focus", "refresh"))
