@@ -72,6 +72,8 @@
       }
     }
   ];
+  // SUCCESS and FAILED are STATUS_SUCCESS and STATUS_FAILED in dashboard/aggregate.py.
+  // The rest are the liveness statuses in ACTIVE_INVOCATION_STATUSES in dashboard/sanitize.py.
   const OUTCOMES = new Map([
     ["SUCCESS", { text: "success", className: "status-ok" }],
     ["FAILED", { text: "failed", className: "status-error" }],
@@ -316,7 +318,7 @@
   }
 
   function isPlainObject(value) {
-    return value !== null && typeof value === "object";
+    return value !== null && typeof value === "object" && !Array.isArray(value);
   }
 
   function asArray(value) {
@@ -1110,8 +1112,10 @@
     return section;
   }
 
-  function resumeClassLine(step) {
-    return step.resume_class ? element("p", "", "Resume class: " + step.resume_class) : null;
+  function resumeClassificationLine(step) {
+    return step.resume_classification
+      ? element("p", "", "Resume classification: " + step.resume_classification)
+      : null;
   }
 
   function reopensLine(step) {
@@ -1131,7 +1135,7 @@
       element("p", "", "Decision requested: " + displayValue(scope.decision_requested))
     );
     section.appendChild(listSection("Authorized actions", scope.authorized_actions));
-    section.appendChild(listSection("Excluded actions", scope.excluded_actions));
+    section.appendChild(listSection("Excluded actions", scope.unauthorized_actions));
     section.appendChild(listSection("Conditions in force", scope.conditions_in_force));
     return section;
   }
@@ -1217,7 +1221,7 @@
 
   function nextStepSections(step, runId) {
     return [
-      resumeClassLine(step),
+      resumeClassificationLine(step),
       reopensLine(step),
       approvalScopeSection(step.approval_scope),
       decisionsSection(step.decisions),

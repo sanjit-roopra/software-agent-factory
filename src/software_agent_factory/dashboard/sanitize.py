@@ -16,6 +16,9 @@ and call ``failure_reason`` are redacted here and cut to a bounded length by
 ``failure_reason_truncated`` flag. ``reasoning`` on a call is the reasoning
 level (for example ``high``), never model text: it is kept only when it is a
 short token.
+
+Nothing here composes a view model. :mod:`software_agent_factory.dashboard.view`
+adds the run totals and the next step to what these functions return.
 """
 
 from __future__ import annotations
@@ -27,16 +30,25 @@ from typing import Any
 
 from ..redaction import bounded_reason
 from ..store import ARTIFACT_FILENAMES
-from .aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS, call_total_tokens, run_totals
-from .next_step import (
-    clean_approval_scope,
-    clean_decisions,
-    is_context_fingerprint,
-    is_opaque_id,
-    is_safe_https_url,
-    next_step,
+from .aggregate import (
+    COST_UNIT_FIELDS,
+    STATUS_FAILED,
+    STATUS_SUCCESS,
+    TOKEN_CLASS_FIELDS,
+    call_total_tokens,
 )
-from .snapshot import is_valid_run_id, to_json_safe
+from .next_step import clean_approval_scope, clean_decisions
+from .snapshot import to_json_safe
+from .validators import (
+    RESUME_CLASSIFICATIONS,
+    is_context_fingerprint,
+    is_count,
+    is_episode_id,
+    is_number,
+    is_positive_int,
+    is_safe_https_url,
+    run_id_of,
+)
 
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
 _MODEL_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
@@ -342,25 +354,23 @@ def sanitize_performance(raw: Any) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key in ("prompt_chars", "response_chars"):
         val = data.get(key)
-        if isinstance(val, int) and not isinstance(val, bool) and val >= 0:
+        if is_count(val):
             sanitized[key] = val
     for key in ("process_boot_ms", "first_event_ms"):
         val = data.get(key)
-        if isinstance(val, (int, float)) and not isinstance(val, bool) and val >= 0:
+        if is_number(val) and val >= 0:
             sanitized[key] = float(val)
     durations = data.get("durations_ms")
     if isinstance(durations, dict):
         sanitized["durations_ms"] = {
             str(k)[:64]: float(v)
             for k, v in list(durations.items())[:100]
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+            if is_number(v) and v >= 0
         }
     counters = data.get("counters")
     if isinstance(counters, dict):
         sanitized["counters"] = {
-            str(k)[:64]: int(v)
-            for k, v in list(counters.items())[:100]
-            if isinstance(v, int) and not isinstance(v, bool) and v >= 0
+            str(k)[:64]: int(v) for k, v in list(counters.items())[:100] if is_count(v)
         }
     return sanitized
 
@@ -378,9 +388,7 @@ def sanitize_run_summary(raw: Any) -> dict[str, Any]:
 
 
 def _positive_int(value: Any) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-        return value
-    return None
+    return value if is_positive_int(value) else None
 
 
 def _short_token(value: Any) -> str | None:
@@ -412,12 +420,6 @@ def _duration_ms(started_at: Any, completed_at: Any) -> int | None:
     return (end - start) // timedelta(milliseconds=1)
 
 
-def _marker_run_id(data: dict[str, Any]) -> str | None:
-    """The run id a cut reason names in its ``factory show`` marker."""
-    candidate = data.get("run_id", data.get("id"))
-    return candidate if isinstance(candidate, str) and is_valid_run_id(candidate) else None
-
-
 def _reason_fields(value: Any, run_id: str | None) -> dict[str, Any]:
     """Redacted, bounded ``failure_reason`` and its ``failure_reason_truncated`` flag."""
     if not isinstance(value, str) or not value:
@@ -442,7 +444,7 @@ def sanitize_usage(raw: Any) -> dict[str, Any]:
         return {}
     sanitized: dict[str, Any] = {}
     for key, value in _allowlist(data, USAGE_FIELDS).items():
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        if is_number(value) and value >= 0:
             sanitized[key] = value
     total_nano_aiu = sanitized.get("total_nano_aiu")
     if total_nano_aiu is not None:
@@ -459,7 +461,7 @@ def _call_usage(raw: Any) -> dict[str, Any]:
 
 def _outcome_status(success: Any) -> str | None:
     if isinstance(success, bool):
-        return "SUCCESS" if success else "FAILED"
+        return STATUS_SUCCESS if success else STATUS_FAILED
     return None
 
 
@@ -513,14 +515,6 @@ def _call_order(call: dict[str, Any]) -> tuple[bool, int]:
     return (number is None, number or 0)
 
 
-def _is_count(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 def _drop_invalid(sanitized: dict[str, Any], checks: dict[str, Callable[[Any], bool]]) -> None:
     """Remove each checked key whose value fails its check."""
     for key, is_valid in checks.items():
@@ -530,9 +524,9 @@ def _drop_invalid(sanitized: dict[str, Any], checks: dict[str, Callable[[Any], b
 
 _VERIFICATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "passed": lambda value: isinstance(value, bool),
-    "check_count": _is_count,
-    "failed_check_count": _is_count,
-    "coverage_change": lambda value: value is None or _is_number(value),
+    "check_count": is_count,
+    "failed_check_count": is_count,
+    "coverage_change": lambda value: value is None or is_number(value),
 }
 
 
@@ -545,7 +539,6 @@ def _sanitize_verification(verification: dict[str, Any]) -> dict[str, Any]:
 _ESCALATION_STATUSES = frozenset(
     {"PENDING_NOTIFICATION", "NOTIFIED", "NOTIFICATION_FAILED", "REOPENED", "RESUMED", "EXPIRED"}
 )
-_RESUME_CLASSIFICATIONS = frozenset({"RISK_APPROVAL", "PLAN_DECISION", "NOT_RESUMABLE"})
 
 
 def _is_github_login(value: Any) -> bool:
@@ -559,17 +552,17 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "target_type": lambda value: value in {None, "PULL_REQUEST", "ISSUE"},
     "comment_url": is_safe_https_url,
     "reason_code": lambda value: value in GUIDANCE_COPY,
-    "resume_classification": lambda value: value in _RESUME_CLASSIFICATIONS,
+    "resume_classification": lambda value: value in RESUME_CLASSIFICATIONS,
     "waiting_for_human": lambda value: isinstance(value, bool),
     "is_resumed": lambda value: isinstance(value, bool),
-    "episode_number": _is_count,
-    "reopen_count": _is_count,
-    "accepted_reply_count": _is_count,
+    "episode_number": is_count,
+    "reopen_count": is_count,
+    "accepted_reply_count": is_count,
     "last_responder": _is_github_login,
     "last_action": lambda value: value in {None, "ANSWER", "RESUME"},
-    "episode_id": is_opaque_id,
+    "episode_id": is_episode_id,
     "context_fingerprint": is_context_fingerprint,
-    "reopen_max": _is_count,
+    "reopen_max": is_count,
 }
 
 
@@ -614,11 +607,10 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
     if "performance" in sanitized:
         sanitized["performance"] = sanitize_performance(sanitized["performance"])
-    run_id = _marker_run_id(data)
+    run_id = run_id_of(data)
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     sanitized.update(_sanitize_calls(data, run_id))
     sanitized.update(_sanitize_detail_sections(data))
-    sanitized["next_step"] = next_step(sanitized)
     return sanitized
 
 
@@ -632,7 +624,6 @@ def _sanitize_calls(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
     if isinstance(invocations, list):
         calls = sorted((sanitize_invocation(item, run_id) for item in invocations), key=_call_order)
         sanitized["invocations"] = calls
-        sanitized["totals"] = run_totals(calls)
     active_invocation = data.get("active_invocation")
     if isinstance(active_invocation, dict):
         sanitized["active_invocation"] = sanitize_active_invocation(active_invocation, run_id)
@@ -683,7 +674,7 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
         result["artifact"] = artifact
     if reason_code != "UNRESOLVED_DECISIONS":
         count = data.get("finding_count")
-        if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 12:
+        if is_count(count) and count <= 12:
             result["finding_count"] = count
         finding_ids = data.get("finding_ids")
         if isinstance(finding_ids, list):
@@ -701,17 +692,12 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
                 key: value
                 for key, value in category_counts.items()
                 if key in {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"}
-                and isinstance(value, int)
-                and not isinstance(value, bool)
-                and 0 <= value <= 12
+                and is_count(value)
+                and value <= 12
             }
     else:
         decision_count = data.get("decision_count")
-        if (
-            isinstance(decision_count, int)
-            and not isinstance(decision_count, bool)
-            and 0 <= decision_count <= 24
-        ):
+        if is_count(decision_count) and decision_count <= 24:
             result["decision_count"] = decision_count
     return result
 
@@ -740,7 +726,6 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
             if "usage" in model_data:
                 model_data["usage"] = sanitize_usage(model_data["usage"])
             sanitized["models"].append(model_data)
-        sanitized["totals"] = run_totals(sanitized["models"])
     return sanitized
 
 

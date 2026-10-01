@@ -1,7 +1,7 @@
 """The "Needs you" view model: how an operator continues a halted run.
 
-Pure: no I/O, and it imports only ``models`` and ``redaction`` (no
-``escalation``, which pulls in the GitHub client). ``next_step`` reads a run
+Pure: no I/O, and it imports only ``models``, ``redaction`` and the leaf
+``validators`` (no ``escalation``, which pulls in the GitHub client). ``next_step`` reads a run
 detail whose escalation block already went through the sanitizer allowlist.
 It still redacts every free-text field itself, so it is safe on its own.
 
@@ -14,12 +14,18 @@ parser is never put into a reply: the step becomes
 
 from __future__ import annotations
 
-import re
-from typing import Any, TypeGuard
-from urllib.parse import urlsplit
+from typing import Any
 
 from ..models import EscalationStatus, ResumeClassification, WorkflowState
 from ..redaction import bounded_reason, redact_secrets
+from .validators import (
+    RESUME_CLASSIFICATIONS,
+    is_context_fingerprint,
+    is_count,
+    is_episode_id,
+    is_safe_https_url,
+    run_id_of,
+)
 
 #: Why a run stopped, one plain sentence per halt reason code.
 REASON_SENTENCES: dict[str, str] = {
@@ -41,10 +47,6 @@ CANNOT_CONTINUE = "This run cannot continue."
 MAX_DECISIONS = 24
 ANSWER_PLACEHOLDER = "<answer>"
 
-_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
-_FINGERPRINT_PATTERN = re.compile(r"[A-Za-z0-9]{64}")
-_RESUME_CLASSES = frozenset(item.value for item in ResumeClassification)
-
 #: Why a reply cannot reach a halted run, by escalation status. The reply poller
 #: (``escalation.poll_escalation_reply``) reads replies only while the status is
 #: ``NOTIFIED``.
@@ -55,31 +57,6 @@ _CLOSED_REPLY_CAUSES: dict[str, str] = {
     EscalationStatus.REOPENED: "the run already resumed from a reply",
     EscalationStatus.RESUMED: "the run already resumed from a reply",
 }
-
-
-def is_safe_https_url(value: Any) -> bool:
-    if not isinstance(value, str) or len(value) > 2048 or value != value.strip():
-        return False
-    try:
-        parsed = urlsplit(value)
-        _ = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme == "https"
-        and parsed.hostname is not None
-        and parsed.username is None
-        and parsed.password is None
-    )
-
-
-def is_opaque_id(value: Any) -> TypeGuard[str]:
-    """A run or episode id the reply parsers accept."""
-    return isinstance(value, str) and _ID_PATTERN.fullmatch(value) is not None
-
-
-def is_context_fingerprint(value: Any) -> TypeGuard[str]:
-    return isinstance(value, str) and _FINGERPRINT_PATTERN.fullmatch(value) is not None
 
 
 def _text_list(value: Any) -> list[str] | None:
@@ -110,8 +87,8 @@ def clean_decisions(value: Any) -> list[str]:
     return _text_list(value) or []
 
 
-def _int_or_none(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+def _count_or_none(value: Any) -> int | None:
+    return value if is_count(value) else None
 
 
 def _empty(kind: str) -> dict[str, Any]:
@@ -119,7 +96,7 @@ def _empty(kind: str) -> dict[str, Any]:
         "kind": kind,
         "sentence": None,
         "reason_code": None,
-        "resume_class": None,
+        "resume_classification": None,
         "approval_scope": None,
         "decisions": [],
         "reopens_used": None,
@@ -145,14 +122,16 @@ def _reason_sentence(escalation: dict[str, Any]) -> str:
 def _halt_step(kind: str, sentence: str, escalation: dict[str, Any]) -> dict[str, Any]:
     """A step for a halted run: the facts every kind shows."""
     code = escalation.get("reason_code")
-    resume_class = escalation.get("resume_classification")
+    resume_classification = escalation.get("resume_classification")
     step = _empty(kind)
     step.update(
         sentence=sentence,
         reason_code=code if isinstance(code, str) and code else None,
-        resume_class=resume_class if resume_class in _RESUME_CLASSES else None,
-        reopens_used=_int_or_none(escalation.get("reopen_count")),
-        reopens_max=_int_or_none(escalation.get("reopen_max")),
+        resume_classification=(
+            resume_classification if resume_classification in RESUME_CLASSIFICATIONS else None
+        ),
+        reopens_used=_count_or_none(escalation.get("reopen_count")),
+        reopens_max=_count_or_none(escalation.get("reopen_max")),
         comment_url=(
             escalation["comment_url"] if is_safe_https_url(escalation.get("comment_url")) else None
         ),
@@ -166,23 +145,18 @@ def _cannot_continue(
     step = _halt_step("cannot_continue", f"{sentence} {CANNOT_CONTINUE}", escalation)
     reason = run.get("failure_reason")
     if isinstance(reason, str) and reason:
-        text, cut = bounded_reason(reason, run_id=_run_id(run))
+        text, cut = bounded_reason(reason, run_id=run_id_of(run))
         step["failure_reason"] = text
         step["failure_reason_truncated"] = cut or run.get("failure_reason_truncated") is True
     return step
 
 
 def _unavailable(run: dict[str, Any], escalation: dict[str, Any], what: str) -> dict[str, Any]:
-    target = _run_id(run) or "<run>"
+    target = run_id_of(run) or "<run>"
     sentence = (
         f"{_reason_sentence(escalation)} {what} Inspect the run with `factory show {target}`."
     )
     return _halt_step("remote_approval_unavailable", sentence, escalation)
-
-
-def _run_id(run: dict[str, Any]) -> str | None:
-    candidate = run.get("run_id", run.get("id"))
-    return candidate if is_opaque_id(candidate) else None
 
 
 def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
@@ -196,8 +170,8 @@ def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
     if status != EscalationStatus.NOTIFIED:
         cause = _CLOSED_REPLY_CAUSES.get(status) if isinstance(status, str) else None
         return cause or "the notice status is not known"
-    used = _int_or_none(escalation.get("reopen_count"))
-    limit = _int_or_none(escalation.get("reopen_max"))
+    used = _count_or_none(escalation.get("reopen_count"))
+    limit = _count_or_none(escalation.get("reopen_max"))
     if used is not None and limit is not None and used >= limit:
         return "the reopen limit is reached"
     return None
@@ -205,10 +179,10 @@ def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
 
 def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, str, str] | None:
     """Run id, episode id and fingerprint, all safe to put in a reply."""
-    run_id = _run_id(run)
+    run_id = run_id_of(run)
     episode_id = escalation.get("episode_id")
     fingerprint = escalation.get("context_fingerprint")
-    if run_id is None or not is_opaque_id(episode_id) or not is_context_fingerprint(fingerprint):
+    if run_id is None or not is_episode_id(episode_id) or not is_context_fingerprint(fingerprint):
         return None
     return run_id, episode_id, fingerprint
 
@@ -227,7 +201,7 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         approval_scope={
             "decision_requested": scope["decision_requested"],
             "authorized_actions": scope["authorized_actions"],
-            "excluded_actions": scope["unauthorized_actions"],
+            "unauthorized_actions": scope["unauthorized_actions"],
             "conditions_in_force": scope["conditions_in_force"],
         },
         episode_id=episode_id,
@@ -266,9 +240,9 @@ def next_step(run: dict[str, Any]) -> dict[str, Any]:
         return _cannot_continue(run, FAILED_SENTENCE, {})
     if state != WorkflowState.NEEDS_HUMAN:
         return _empty("none")
-    resume_class = escalation.get("resume_classification")
-    if resume_class == ResumeClassification.RISK_APPROVAL:
+    resume_classification = escalation.get("resume_classification")
+    if resume_classification == ResumeClassification.RISK_APPROVAL:
         return _approve(run, escalation)
-    if resume_class == ResumeClassification.PLAN_DECISION:
+    if resume_classification == ResumeClassification.PLAN_DECISION:
         return _answer(run, escalation)
     return _cannot_continue(run, _reason_sentence(escalation), escalation)

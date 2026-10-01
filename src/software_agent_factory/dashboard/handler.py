@@ -18,12 +18,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import assets
-from .sanitize import (
-    sanitize_health,
-    sanitize_project,
-    sanitize_run_detail,
-    sanitize_run_summary,
-)
+from .sanitize import sanitize_health, sanitize_run_summary
 from .security import (
     TOKEN_HEADER,
     TOKEN_QUERY_PARAM,
@@ -32,6 +27,7 @@ from .security import (
     token_matches,
 )
 from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
+from .view import project_view, run_detail_view
 
 if TYPE_CHECKING:
     from .server import DashboardServer
@@ -338,7 +334,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             payload = to_json_safe(provider())
             raw_projects = payload.get("projects", []) if isinstance(payload, dict) else []
             projects = (
-                [sanitize_project(project) for project in raw_projects]
+                [project_view(project) for project in raw_projects]
                 if isinstance(raw_projects, list)
                 else []
             )
@@ -376,7 +372,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             # Same data-minimization guarantee as run summaries: only the
             # allowlisted detail/attempt fields ever leave this process, no
             # matter what the provider actually handed back.
-            sanitized = sanitize_run_detail(detail)
+            sanitized = run_detail_view(detail)
         except TypeError:
             _logger.exception(
                 "Run detail provider returned unsanitizable data for run %s", raw_run_id

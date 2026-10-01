@@ -11,6 +11,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from .validators import is_number
+
+#: The two outcomes a finished call reports. ``OUTCOMES`` in ``static/app.js``
+#: keys on these same strings.
+STATUS_SUCCESS = "SUCCESS"
+STATUS_FAILED = "FAILED"
+
 #: Token classes and cost units a call always reports. An unreported value is
 #: ``None``, never ``0``.
 TOKEN_CLASS_FIELDS: tuple[str, ...] = (
@@ -41,7 +48,7 @@ TOTAL_TOKEN_FIELDS: tuple[str, ...] = (
 
 def _figure(values: Iterable[Any]) -> dict[str, Any]:
     """Sum the reported (numeric, non-bool) values; ``None`` when none were."""
-    reported = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    reported = [v for v in values if is_number(v)]
     return {"total": sum(reported) if reported else None, "reported_count": len(reported)}
 
 
@@ -60,14 +67,15 @@ def run_totals(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Total sanitized finished calls by token class and by cost unit.
 
     ``calls`` is the finished calls only; the active call has no usage yet.
-    ``failed_calls`` counts calls whose ``status`` is ``FAILED`` out of those
-    that reported a ``SUCCESS`` or ``FAILED`` status.
+    ``failed_calls`` counts calls whose ``status`` is ``STATUS_FAILED`` out of those
+    that reported a ``STATUS_SUCCESS`` or ``STATUS_FAILED`` status.
     """
-    statuses = [call.get("status") for call in calls if call.get("status") in ("SUCCESS", "FAILED")]
+    outcomes = (STATUS_SUCCESS, STATUS_FAILED)
+    statuses = [call.get("status") for call in calls if call.get("status") in outcomes]
     return {
         "calls": len(calls),
         "failed_calls": {
-            "total": statuses.count("FAILED") if statuses else None,
+            "total": statuses.count(STATUS_FAILED) if statuses else None,
             "reported_count": len(statuses),
         },
         "duration_ms": _figure(call.get("duration_ms") for call in calls),

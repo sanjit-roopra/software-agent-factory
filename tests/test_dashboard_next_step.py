@@ -14,6 +14,7 @@ from software_agent_factory.dashboard.next_step import (
     next_step,
 )
 from software_agent_factory.dashboard.sanitize import GUIDANCE_COPY, sanitize_run_detail
+from software_agent_factory.dashboard.view import run_detail_view
 from software_agent_factory.escalation import parse_plan_decision_answers, parse_resume_command
 from software_agent_factory.models import (
     Complexity,
@@ -46,7 +47,7 @@ def _run(
     state: str = "NEEDS_HUMAN",
     *,
     reason_code: str | None = "RISK_APPROVAL",
-    resume_class: str | None = "RISK_APPROVAL",
+    resume_classification: str | None = "RISK_APPROVAL",
     failure_reason: str | None = None,
     **escalation: Any,
 ) -> dict[str, Any]:
@@ -56,11 +57,11 @@ def _run(
         "failure_reason": failure_reason,
         "failure_reason_truncated": False,
     }
-    if resume_class is not None:
+    if resume_classification is not None:
         run["escalation"] = {
             "status": "NOTIFIED",
             "reason_code": reason_code,
-            "resume_classification": resume_class,
+            "resume_classification": resume_classification,
             "episode_id": EPISODE_ID,
             "context_fingerprint": FINGERPRINT,
             "reopen_count": 0,
@@ -80,7 +81,7 @@ def _plan_run(decisions: list[str] | None = None, **kwargs: Any) -> dict[str, An
     kwargs.setdefault(
         "decisions", ["Use SQLite?", "Keep the old API?"] if decisions is None else decisions
     )
-    return _run(resume_class="PLAN_DECISION", **kwargs)
+    return _run(resume_classification="PLAN_DECISION", **kwargs)
 
 
 def test_risk_approval_halt_gives_approve_with_scope_reopens_and_reply() -> None:
@@ -88,11 +89,11 @@ def test_risk_approval_halt_gives_approve_with_scope_reopens_and_reply() -> None
 
     assert step["kind"] == "approve"
     assert step["sentence"] == REASON_SENTENCES["RISK_APPROVAL"]
-    assert step["resume_class"] == "RISK_APPROVAL"
+    assert step["resume_classification"] == "RISK_APPROVAL"
     assert step["approval_scope"] == {
         "decision_requested": "Approve advancing the run to REFINING.",
         "authorized_actions": ["Refine the requirements.", "Run agents in a workspace."],
-        "excluded_actions": ["Approval does not change scope."],
+        "unauthorized_actions": ["Approval does not change scope."],
         "conditions_in_force": ["Quality gates must pass."],
     }
     assert step["decisions"] == []
@@ -113,7 +114,7 @@ def test_plan_decision_halt_gives_answer_with_numbered_decisions() -> None:
 
     assert step["kind"] == "answer"
     assert step["sentence"] == REASON_SENTENCES["UNRESOLVED_DECISIONS"]
-    assert step["resume_class"] == "PLAN_DECISION"
+    assert step["resume_classification"] == "PLAN_DECISION"
     assert step["decisions"] == [
         {"number": 1, "question": "Use SQLite?"},
         {"number": 2, "question": "Keep the old API?"},
@@ -136,20 +137,20 @@ def test_answer_template_round_trips_through_the_answer_parser() -> None:
 
 
 @pytest.mark.parametrize(
-    ("state", "resume_class", "reason_code"),
+    ("state", "resume_classification", "reason_code"),
     [
         ("NEEDS_HUMAN", "NOT_RESUMABLE", "SCOPE_REVIEW"),
         ("FAILED", None, None),
     ],
 )
 def test_runs_that_cannot_continue_say_so_and_show_the_failure_reason(
-    state: str, resume_class: str | None, reason_code: str | None
+    state: str, resume_classification: str | None, reason_code: str | None
 ) -> None:
     step = next_step(
         _run(
             state,
             reason_code=reason_code,
-            resume_class=resume_class,
+            resume_classification=resume_classification,
             failure_reason="scope drift in src/app.py",
         )
     )
@@ -162,14 +163,14 @@ def test_runs_that_cannot_continue_say_so_and_show_the_failure_reason(
 
 
 def test_failed_run_sentence_names_the_failure() -> None:
-    step = next_step(_run("FAILED", resume_class=None, failure_reason="boom"))
+    step = next_step(_run("FAILED", resume_classification=None, failure_reason="boom"))
 
     assert step["sentence"] == "The run failed. This run cannot continue."
-    assert step["resume_class"] is None
+    assert step["resume_classification"] is None
 
 
 def test_cannot_continue_failure_reason_is_redacted_and_keeps_the_truncated_flag() -> None:
-    run = _run("FAILED", resume_class=None, failure_reason=f"x {SECRET}")
+    run = _run("FAILED", resume_classification=None, failure_reason=f"x {SECRET}")
     run["failure_reason_truncated"] = True
 
     step = next_step(run)
@@ -179,7 +180,7 @@ def test_cannot_continue_failure_reason_is_redacted_and_keeps_the_truncated_flag
 
 
 def test_needs_human_without_an_escalation_record_cannot_continue() -> None:
-    step = next_step(_run(resume_class=None, failure_reason="stopped"))
+    step = next_step(_run(resume_classification=None, failure_reason="stopped"))
 
     assert step["kind"] == "cannot_continue"
     assert step["failure_reason"] == "stopped"
@@ -234,11 +235,17 @@ def test_an_unsafe_or_missing_episode_or_fingerprint_makes_the_reply_unavailable
     assert next_step(_plan_run(**override))["kind"] == "remote_approval_unavailable"
 
 
-def test_an_unsafe_run_id_makes_the_reply_unavailable() -> None:
+@pytest.mark.parametrize("run_id", ["run one", "run.one"])
+def test_a_run_id_the_dashboard_route_would_reject_makes_the_reply_unavailable(
+    run_id: str,
+) -> None:
     run = _risk_run()
-    run["run_id"] = "run one"
+    run["run_id"] = run_id
 
-    assert next_step(run)["kind"] == "remote_approval_unavailable"
+    step = next_step(run)
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "`factory show <run>`" in step["sentence"]
 
 
 @pytest.mark.parametrize(
@@ -312,7 +319,7 @@ def test_a_run_without_a_state_has_no_next_step() -> None:
 
 @pytest.mark.parametrize("code", sorted(REASON_SENTENCES))
 def test_each_reason_code_has_its_own_plain_sentence(code: str) -> None:
-    step = next_step(_run(reason_code=code, resume_class="NOT_RESUMABLE"))
+    step = next_step(_run(reason_code=code, resume_classification="NOT_RESUMABLE"))
 
     assert step["sentence"] == f"{REASON_SENTENCES[code]} This run cannot continue."
     assert REASON_SENTENCES[code].startswith("The run ")
@@ -326,7 +333,7 @@ def test_every_reason_sentence_belongs_to_a_known_reason_code() -> None:
 
 @pytest.mark.parametrize("code", ["SOMETHING_NEW", "", None])
 def test_an_unknown_reason_code_gets_the_fallback_sentence(code: str | None) -> None:
-    step = next_step(_run(reason_code=code, resume_class="NOT_RESUMABLE"))
+    step = next_step(_run(reason_code=code, resume_classification="NOT_RESUMABLE"))
 
     assert step["sentence"] == f"{FALLBACK_SENTENCE} This run cannot continue."
 
@@ -344,7 +351,7 @@ def test_secret_in_the_approval_scope_is_redacted() -> None:
     assert "ghp_abcdefgh12345678" not in repr(step)
     assert step["approval_scope"]["decision_requested"] == "Approve [REDACTED]"
     assert step["approval_scope"]["authorized_actions"] == ["Use [REDACTED]"]
-    assert step["approval_scope"]["excluded_actions"] == ["No [REDACTED]"]
+    assert step["approval_scope"]["unauthorized_actions"] == ["No [REDACTED]"]
     assert step["approval_scope"]["conditions_in_force"] == ["Keep [REDACTED]"]
 
 
@@ -403,7 +410,7 @@ def test_sanitized_run_detail_carries_the_next_step_and_redacts_the_escalation()
         },
     }
 
-    sanitized = sanitize_run_detail(detail)
+    sanitized = run_detail_view(detail)
 
     assert sanitized["next_step"]["kind"] == "approve"
     assert sanitized["next_step"]["reopens_used"] == 1
@@ -435,7 +442,7 @@ def test_sanitized_run_detail_drops_malformed_escalation_context() -> None:
 
 
 def test_sanitized_run_detail_for_an_active_run_has_no_next_step() -> None:
-    sanitized = sanitize_run_detail({"run_id": RUN_ID, "state": "IMPLEMENTING"})
+    sanitized = run_detail_view({"run_id": RUN_ID, "state": "IMPLEMENTING"})
 
     assert sanitized["next_step"]["kind"] == "none"
 
@@ -483,7 +490,7 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
     store.save_run(run)
 
     detail = build_run_detail(store, RUN_ID, max_reopens=3)
-    step = sanitize_run_detail(detail)["next_step"]
+    step = run_detail_view(detail)["next_step"]
 
     assert step["kind"] == "approve"
     assert (step["reopens_used"], step["reopens_max"]) == (1, 3)

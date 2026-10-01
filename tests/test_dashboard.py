@@ -62,6 +62,7 @@ from software_agent_factory.dashboard.snapshot import (
     is_valid_run_id,
     to_json_safe,
 )
+from software_agent_factory.dashboard.view import project_view, run_detail_view
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -2526,7 +2527,12 @@ def test_cut_marker_uses_a_placeholder_when_the_run_id_is_unknown_or_invalid() -
     assert (
         "factory show <run>" in sanitize_attempt({"failure_reason": long_reason})["failure_reason"]
     )
-    detail = sanitize_run_detail({"run_id": "bad id\n", "failure_reason": long_reason})
+
+
+@pytest.mark.parametrize("run_id", ["bad id\n", "run.001"])
+def test_cut_marker_ignores_a_run_id_the_dashboard_route_would_reject(run_id: str) -> None:
+    detail = sanitize_run_detail({"run_id": run_id, "failure_reason": "a" * 600})
+
     assert "factory show <run>" in detail["failure_reason"]
 
 
@@ -2651,19 +2657,31 @@ def test_run_detail_api_carries_totals_by_unit(running_server: RunningServer) ->
     assert totals["costs"]["usage_value_usd"] == {"total": None, "reported_count": 0}
 
 
+def test_sanitizing_a_run_detail_composes_no_view_model() -> None:
+    sanitized = sanitize_run_detail(FIXTURE_DETAILS["run-001"])
+
+    assert "totals" not in sanitized
+    assert "next_step" not in sanitized
+    assert sanitized["invocations"]
+
+
 def test_run_detail_without_a_calls_list_has_no_totals() -> None:
-    assert "totals" not in sanitize_run_detail({"run_id": "run-001"})
+    assert "totals" not in run_detail_view({"run_id": "run-001"})
 
 
 def test_run_detail_with_no_calls_yet_has_every_total_unreported() -> None:
-    totals = sanitize_run_detail({"run_id": "run-001", "invocations": []})["totals"]
+    totals = run_detail_view({"run_id": "run-001", "invocations": []})["totals"]
 
     assert totals["calls"] == 0
     assert totals["duration_ms"] == {"total": None, "reported_count": 0}
 
 
+def test_sanitizing_a_project_composes_no_totals() -> None:
+    assert "totals" not in sanitize_project({"project_id": "project-001", "models": []})
+
+
 def test_project_carries_totals_over_its_models() -> None:
-    project = sanitize_project(
+    project = project_view(
         {
             "project_id": "project-001",
             "models": [
@@ -2739,7 +2757,7 @@ def test_a_call_that_reports_usage_only_per_model_still_counts_in_the_totals(
         invocation_records=[_usage_call(1, per_model_only), _usage_call(2, aggregate)],
     )
 
-    shown = sanitize_run_detail(detail)
+    shown = run_detail_view(detail)
 
     first, second = shown["invocations"]
     assert first["usage"]["input_tokens"] == 110
@@ -2768,7 +2786,7 @@ def test_run_usage_and_run_totals_report_the_same_figures(tmp_path: Path) -> Non
         invocation_records=[_usage_call(1, per_model_only), _usage_call(2, per_model_only)],
     )
 
-    shown = sanitize_run_detail(detail)
+    shown = run_detail_view(detail)
 
     assert shown["usage"]["input_tokens"] == shown["totals"]["tokens"]["input_tokens"]["total"]
     assert (

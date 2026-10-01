@@ -767,7 +767,7 @@ def test_a_cut_reason_is_marked_and_names_factory_show() -> None:
     "kind_wiring",
     [
         ('step.kind !== "none"', "isStepVisible"),
-        ("resumeClassLine(step)", "nextStepSections"),
+        ("resumeClassificationLine(step)", "nextStepSections"),
         ("reopensLine(step)", "nextStepSections"),
         ("approvalScopeSection(step.approval_scope)", "nextStepSections"),
         ("decisionsSection(step.decisions)", "nextStepSections"),
@@ -796,6 +796,11 @@ def test_the_needs_you_panel_is_rebuilt_only_when_the_step_changes() -> None:
     assert "panel.dataset.signature !== signature" in source
 
 
+def test_a_plain_object_is_never_an_array() -> None:
+    check = function_source(dashboard_assets.APP_JS, "isPlainObject")
+    assert "!Array.isArray(value)" in check
+
+
 def test_the_comment_link_shows_only_for_an_https_url() -> None:
     link = function_source(dashboard_assets.APP_JS, "commentLinkLine")
     assert "!isHttpsUrl(url)" in link
@@ -807,7 +812,7 @@ def test_the_approval_scope_lists_the_decision_actions_and_conditions() -> None:
     for wired in (
         "scope.decision_requested",
         '"Authorized actions", scope.authorized_actions',
-        '"Excluded actions", scope.excluded_actions',
+        '"Excluded actions", scope.unauthorized_actions',
         '"Conditions in force", scope.conditions_in_force',
     ):
         assert wired in scope
