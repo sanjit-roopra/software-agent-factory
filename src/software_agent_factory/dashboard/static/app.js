@@ -114,8 +114,8 @@
     updateThemeToggle();
   }
 
-  // Runs before anything else so a remembered theme shows without a flash. With
-  // no valid stored value the CSS follows the system theme on its own.
+  // Applies the stored theme first thing on start. With no valid stored value
+  // the CSS follows the system theme on its own.
   function applyStoredTheme() {
     const initialTheme = readStoredTheme();
     if (initialTheme) {
@@ -226,7 +226,8 @@
     setText(document.getElementById("notice"), noticeMessage());
   }
 
-  function onRefreshSuccess() {
+  // Runs when the server answered: after a success, or after a 4xx.
+  function onServerReachable() {
     state.noticeKind = null;
     lastSuccessAt = Date.now();
     renderNotice();
@@ -240,7 +241,7 @@
       state.noticeKind = error.kind;
       renderNotice();
     } else if (error.kind === ERROR_REQUEST) {
-      onRefreshSuccess();
+      onServerReachable();
     } else {
       console.error(error);
     }
@@ -1030,8 +1031,8 @@
   }
 
   // Waits for every task, so the request stays in flight until the last one
-  // ends, then reports the first failure if there was one.
-  function allSettled(tasks) {
+  // ends, then rejects with the first failure, or resolves with nothing.
+  function rejectOnFirstFailure(tasks) {
     return Promise.allSettled(tasks).then(function (results) {
       const failed = results.find(function (result) {
         return result.status === "rejected";
@@ -1041,8 +1042,8 @@
   }
 
   function settle(request, tasks) {
-    return allSettled(tasks)
-      .then(whenLatest(request, onRefreshSuccess), whenLatest(request, onRefreshFailure))
+    return rejectOnFirstFailure(tasks)
+      .then(whenLatest(request, onServerReachable), whenLatest(request, onRefreshFailure))
       .catch(function () {
         // A failure while drawing the view must not escape as an unhandled
         // rejection; the next poll tries again.

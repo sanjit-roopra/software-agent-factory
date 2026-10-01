@@ -5,7 +5,7 @@
 
 The operator watches and compares factory runs in `factory dashboard`. The current page cannot answer basic questions. Which model did each call use? How many tokens and how much cost did each call and run use? Why did a run stop, and how does the operator continue it? How does a Copilot run compare with a pi run of the same task? The data is already in `run.json`. The page does not show it in a usable way.
 
-The redesign puts usability first. For each run, the operator sees a call timeline and token and cost totals. A failed call or run shows a redacted reason. A halted run shows a "What next" panel that explains the next step. Two runs can be compared side by side, per role. The page has a modern layout with light and dark themes, and it updates live. The design takes ideas from modern admin dashboards (side navigation, a row of key figures, cards). It does not copy any template.
+The redesign puts usability first. For each run, the operator sees a call timeline and token and cost totals. A failed call or run shows a redacted reason. A halted run shows a "Needs you" panel that explains the next step. Two runs can be compared side by side, per role. The page has a modern layout with light and dark themes, and it updates live. The design takes ideas from modern admin dashboards (side navigation, a row of key figures, cards). It does not copy any template.
 
 The operator can also approve a risk halt or answer plan decisions from the dashboard. The dashboard only creates an approval request file. The running factory service turns it into a receipt and reopens the run through the same controller path as an authorized GitHub reply. This adds the first write path to the dashboard, so a new ADR replaces the read-only rule of ADR-016.
 
@@ -44,8 +44,8 @@ Out of scope: changes to what runtimes record, hosting beyond localhost, retryin
 **Slices (one PR each)**
 
 1. Shell, themes, hash routes and refresh with connection notices.
-2. Run detail: call timeline, totals, redacted reasons, a read-only "Needs you" panel.
-3. Approval core with no HTTP: ADR-033, receipt source, request file, service ingest.
+2. Run detail: call timeline, totals, redacted reasons, a read-only "Needs you" panel. Carries the data minimization part of ADR-033: the ADR text, `docs/architecture.md` and `docs/reference/safety.md`.
+3. Approval core with no HTTP: the write path part of ADR-033, `AGENTS.md`, receipt source, request file, service ingest.
 4. Approve and answer from the page.
 5. Two-run comparison and key figures.
 
@@ -90,7 +90,7 @@ Out of scope: changes to what runtimes record, hosting beyond localhost, retryin
 | Which actions | `requires-stakeholder-input` | human | Risk approval and plan answers only. `FAILED` and `NOT_RESUMABLE` runs get guidance only. |
 | How an approval reaches the controller | `requires-stakeholder-input` | human | Local receipt. The running service calls `controller.reopen`. The dashboard never runs agents. |
 | Opt-in flag for actions | `requires-stakeholder-input` | human | No flag. Always on for anyone with the per-start token. |
-| Slicing | `requires-stakeholder-input` | human | Four slices, one PR each. The write path is slice 4 with its own ADR. |
+| Slicing | `requires-stakeholder-input` | human | Five slices, one PR each. Slice 2 carries the data minimization part of ADR-033. The write path part of ADR-033 starts in slice 3. The page that approves is slice 4. |
 | Live update mechanism | `inferable` | inference | The existing 5-second poll is standard library only. SSE adds a long-lived connection for no user gain. Alternative (SSE) rejected: ADR-016 favors the smallest server. |
 | Theme selection | `inferable` | inference | Follow the system setting with a remembered toggle. This is the common convention. Alternative (toggle only) is ruled out by "light and dark mode". |
 | Cost display across runtimes | `inferable` | inference | ADR-017 forbids adding units. Show each reported unit, labeled. |

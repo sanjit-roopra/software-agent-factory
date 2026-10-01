@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from dashboard_js import function_source, normalized
+from dashboard_js import function_source, strip_comments
 
 from software_agent_factory.dashboard import assets as dashboard_assets
 
@@ -210,7 +210,7 @@ def test_each_local_storage_call_sits_inside_try_catch(call: str, function: str)
 
 
 def test_local_storage_is_touched_only_by_the_listed_calls() -> None:
-    assert dashboard_assets.APP_JS.count("localStorage.") == len(STORAGE_CALLS)
+    assert strip_comments(dashboard_assets.APP_JS).count("localStorage.") == len(STORAGE_CALLS)
 
 
 def test_a_blocked_or_unreadable_store_means_no_remembered_theme() -> None:
@@ -250,9 +250,7 @@ def test_the_toggle_applies_the_next_theme_and_then_stores_it() -> None:
     ) in bindings
 
 
-def test_without_a_pick_the_theme_follows_the_system_and_the_toggle_label_follows_the_theme() -> (
-    None
-):
+def test_without_a_pick_the_theme_follows_the_system() -> None:
     js = dashboard_assets.APP_JS
     assert (
         "return globalThis.matchMedia(DARK_QUERY).matches ? THEME_DARK : THEME_LIGHT;"
@@ -261,12 +259,18 @@ def test_without_a_pick_the_theme_follows_the_system_and_the_toggle_label_follow
     assert "document.documentElement.getAttribute(THEME_ATTRIBUTE) || systemTheme()" in (
         function_source(js, "currentTheme")
     )
-    assert 'toggle.textContent = "Switch to " + otherTheme(currentTheme()) + " theme";' in (
-        function_source(js, "updateThemeToggle")
-    )
-    assert "document.documentElement.setAttribute(THEME_ATTRIBUTE, theme);" in (
-        function_source(js, "applyTheme")
-    )
-    assert 'matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle)' in normalized(
-        function_source(js, "bindControls")
-    )
+
+
+def test_the_toggle_label_names_the_other_theme() -> None:
+    source = function_source(dashboard_assets.APP_JS, "updateThemeToggle")
+    assert 'toggle.textContent = "Switch to " + otherTheme(currentTheme()) + " theme";' in source
+
+
+def test_apply_theme_sets_the_theme_attribute() -> None:
+    source = function_source(dashboard_assets.APP_JS, "applyTheme")
+    assert "document.documentElement.setAttribute(THEME_ATTRIBUTE, theme);" in source
+
+
+def test_a_system_theme_change_refreshes_the_toggle_label() -> None:
+    bindings = function_source(dashboard_assets.APP_JS, "bindControls")
+    assert 'matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle)' in bindings

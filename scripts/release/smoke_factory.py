@@ -258,6 +258,8 @@ def _smoke_status(executable: Path, data_dir: Path) -> None:
 
 #: Seconds to wait for ``factory dashboard`` to print its URL.
 DASHBOARD_START_TIMEOUT_SECONDS = 30
+DASHBOARD_REQUEST_TIMEOUT_SECONDS = 10
+DASHBOARD_STOP_TIMEOUT_SECONDS = 10
 DASHBOARD_ASSETS = ("/assets/app.js", "/assets/style.css")
 
 
@@ -280,14 +282,16 @@ def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
             request = urllib.request.Request(  # noqa: S310 - fixed loopback URL
                 f"{parts.scheme}://{parts.netloc}{asset}?{parts.query}"
             )
-            with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+            with urllib.request.urlopen(
+                request, timeout=DASHBOARD_REQUEST_TIMEOUT_SECONDS
+            ) as response:  # noqa: S310
                 body = response.read()
             if response.status != 200 or not body:
                 raise SystemExit(f"factory dashboard did not serve {asset}")
     finally:
         process.terminate()
         try:
-            process.wait(timeout=10)
+            process.wait(timeout=DASHBOARD_STOP_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
 

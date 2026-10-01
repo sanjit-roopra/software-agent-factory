@@ -56,6 +56,25 @@ def strip_comments(js: str) -> str:
     return "".join(kept)
 
 
+def _balanced_source(code: str, start: int, open_index: int, label: str) -> str:
+    """Normalized ``code[start:close]`` where ``close`` ends the block opened at ``open_index``."""
+    depth = 0
+    index = open_index
+    while index < len(code):
+        char = code[index]
+        if char in _QUOTES:
+            index = _skip_string(code, index)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return normalized(code[start : index + 1])
+        index += 1
+    raise AssertionError(f"{label} has unbalanced braces")
+
+
 def function_source(js: str, name: str) -> str:
     """Normalized source of ``function name(...) { ... }``, comments removed.
 
@@ -70,17 +89,17 @@ def function_source(js: str, name: str) -> str:
     index = code.find("{", code.index(")", start.end()))
     if index == -1:
         raise AssertionError(f"function {name} has no body")
-    depth = 0
-    while index < len(code):
-        char = code[index]
-        if char in _QUOTES:
-            index = _skip_string(code, index)
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return normalized(code[start.start() : index + 1])
-        index += 1
-    raise AssertionError(f"function {name} has unbalanced braces")
+    return _balanced_source(code, start.start(), index, f"function {name}")
+
+
+def object_literal_source(js: str, name: str) -> str:
+    """Normalized source of ``const name = { ... };``, comments removed.
+
+    Like ``function_source``: the closing brace is found by balancing braces.
+    Raises when the constant is missing or its braces do not balance.
+    """
+    code = strip_comments(js)
+    start = re.search(rf"const {re.escape(name)} = \{{", code)
+    if start is None:
+        raise AssertionError(f"object {name} not found in the dashboard script")
+    return _balanced_source(code, start.start(), start.end() - 1, f"object {name}")

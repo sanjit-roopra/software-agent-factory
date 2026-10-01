@@ -762,6 +762,103 @@ def test_smoke_missing_git_prerequisite_rejects_a_traceback(tmp_path: Path) -> N
         module._smoke_missing_git_prerequisite(stub, repo, tmp_path)
 
 
+_DASHBOARD_STUB = """#!{python}
+import http.server, os, pathlib, sys
+
+STATUS, BODY = {status}, {body!r}
+pathlib.Path({pid_file!r}).write_text(str(os.getpid()))
+if {bad_first_line}:
+    print("boom: no url here", flush=True)
+    print("stub stderr text", file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(STATUS)
+        self.send_header("Content-Length", str(len(BODY)))
+        self.end_headers()
+        self.wfile.write(BODY)
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+print(f"dashboard: http://127.0.0.1:{{server.server_port}}/?token=t", flush=True)
+server.serve_forever()
+"""
+
+
+def _dashboard_stub(
+    tmp_path: Path, *, status: int = 200, body: bytes = b"asset", bad_first_line: bool = False
+) -> tuple[Path, Path]:
+    """A stub ``factory`` that serves every path on a free loopback port.
+
+    Returns the executable and the file the stub writes its pid to.
+    """
+    pid_file = tmp_path / "stub.pid"
+    stub = tmp_path / "factory"
+    stub.write_text(
+        _DASHBOARD_STUB.format(
+            python=sys.executable,
+            status=status,
+            body=body,
+            pid_file=str(pid_file),
+            bad_first_line=bad_first_line,
+        ),
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return stub, pid_file
+
+
+def _assert_process_gone(pid_file: Path) -> None:
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text(encoding="utf-8")), 0)
+
+
+def test_smoke_dashboard_assets_accepts_a_dashboard_that_serves_both_assets(
+    tmp_path: Path,
+) -> None:
+    module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
+    stub, pid_file = _dashboard_stub(tmp_path)
+
+    module._smoke_dashboard_assets(stub, tmp_path)
+
+    _assert_process_gone(pid_file)
+
+
+def test_smoke_dashboard_assets_rejects_a_first_line_without_the_url(tmp_path: Path) -> None:
+    module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
+    stub, pid_file = _dashboard_stub(tmp_path, bad_first_line=True)
+
+    with pytest.raises(SystemExit, match="did not start:\nboom: no url here\nstub stderr text"):
+        module._smoke_dashboard_assets(stub, tmp_path)
+
+    _assert_process_gone(pid_file)
+
+
+def test_smoke_dashboard_assets_rejects_a_status_other_than_200(tmp_path: Path) -> None:
+    module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
+    stub, pid_file = _dashboard_stub(tmp_path, status=204, body=b"")
+
+    with pytest.raises(SystemExit, match="did not serve /assets/app.js"):
+        module._smoke_dashboard_assets(stub, tmp_path)
+
+    _assert_process_gone(pid_file)
+
+
+def test_smoke_dashboard_assets_rejects_an_empty_asset(tmp_path: Path) -> None:
+    module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
+    stub, pid_file = _dashboard_stub(tmp_path, body=b"")
+
+    with pytest.raises(SystemExit, match="did not serve /assets/app.js"):
+        module._smoke_dashboard_assets(stub, tmp_path)
+
+    _assert_process_gone(pid_file)
+
+
 def test_pyinstaller_spec_bundles_config_and_build_info() -> None:
     spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
 
