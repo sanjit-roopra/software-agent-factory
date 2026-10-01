@@ -515,7 +515,7 @@ def test_one_premium_requests_label_is_used_everywhere() -> None:
     assert model_headers is not None
     assert '"Premium requests"' in model_headers.group(1)
     assert "Premium requests are a separate legacy metric." in js
-    assert '<th scope="col">Premium requests</th>' in _INDEX_HTML
+    assert 'label: "Premium requests"' in _constant_source("COST_UNITS")
 
 
 def test_unreported_cost_and_tokens_use_one_not_reported_constant() -> None:
@@ -551,3 +551,307 @@ def test_the_run_view_uses_one_run_detail_stem_for_ids_functions_and_styles() ->
     for element_id in ("view-run-detail", "run-detail-status", "run-detail-content"):
         assert f'id="{element_id}"' in _INDEX_HTML
     assert '<dl id="run-detail-body"></dl>' in _INDEX_HTML
+
+
+# --------------------------------------------------------------------------
+# Run detail: timeline, totals and the "Needs you" panel (slice 2 of #80)
+# --------------------------------------------------------------------------
+
+_RUN_DETAIL_HTML = _INDEX_HTML.split('<section id="view-run-detail"')[1].split("</section>\n\n")[0]
+
+
+def _constant_source(name: str) -> str:
+    """Normalized ``const NAME = ...;`` from the script, up to its closing line."""
+    code = strip_comments(dashboard_assets.APP_JS)
+    found = re.search(rf"const {name} = .*?\n  \S*;", code, re.DOTALL)
+    assert found is not None, f"constant {name} not found in the dashboard script"
+    return normalized(found.group(0))
+
+
+def test_app_js_never_writes_html() -> None:
+    js = dashboard_assets.APP_JS
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "srcdoc"):
+        assert sink not in js
+
+
+def test_every_element_id_the_script_reads_exists_in_the_page() -> None:
+    ids_read = set(re.findall(r'getElementById\("([^"]+)"\)', dashboard_assets.APP_JS))
+    ids_in_page = set(re.findall(r'\bid="([^"]+)"', _INDEX_HTML))
+    assert ids_read
+    assert ids_read <= ids_in_page
+
+
+@pytest.mark.parametrize(
+    "element_id",
+    [
+        "next-step",
+        "next-step-body",
+        "run-totals",
+        "timeline-status",
+        "timeline-wrap",
+        "timeline-body",
+        "attempts-body",
+    ],
+)
+def test_the_run_detail_view_holds_every_region_the_script_renders_into(element_id: str) -> None:
+    assert f'id="{element_id}"' in _RUN_DETAIL_HTML
+
+
+def test_the_timeline_heads_the_default_columns_in_order() -> None:
+    head = _RUN_DETAIL_HTML.split('class="timeline-head"')[1].split("</div>")[0]
+    assert re.findall(r"<span>([^<]*)</span>", head) == [
+        "#",
+        "Role",
+        "Model",
+        "Outcome",
+        "Duration",
+        "Total tokens",
+        "Cost",
+    ]
+
+
+def test_the_timeline_says_there_are_no_calls_yet_until_a_call_arrives() -> None:
+    assert re.search(r'<p\s+id="timeline-status">No calls yet\.</p>', _RUN_DETAIL_HTML)
+    source = function_source(dashboard_assets.APP_JS, "renderTimeline")
+    assert 'document.getElementById("timeline-status").hidden = calls.length > 0;' in source
+    assert 'document.getElementById("timeline-wrap").hidden = calls.length === 0;' in source
+
+
+def test_the_script_names_the_same_token_classes_and_cost_units_as_the_server() -> None:
+    from software_agent_factory.dashboard.aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS
+
+    assert re.findall(r'key: "([a-z_]+_tokens)"', _constant_source("TOKEN_CLASSES")) == list(
+        TOKEN_CLASS_FIELDS
+    )
+    assert re.findall(r'key: "([a-z_]+)"', _constant_source("COST_UNITS")) == list(COST_UNIT_FIELDS)
+
+
+def test_each_cost_unit_has_its_own_phrase_and_a_one_line_help_text() -> None:
+    units = _constant_source("COST_UNITS")
+    assert units.count("help:") == 3
+    assert units.count("phrase:") == 3
+    assert '" USD AI usage"' in units
+    assert '" USD list price"' in units
+    assert "premium request" in function_source(dashboard_assets.APP_JS, "premiumRequestsPhrase")
+    for help_text in re.findall(r'help:\s*"([^"]+)"', units):
+        assert help_text.endswith(".")
+        assert help_text.count(".") == 1
+
+
+def test_a_call_row_wires_the_default_columns_from_the_call_fields() -> None:
+    cells = function_source(dashboard_assets.APP_JS, "callCells")
+    for wired in (
+        "displayValue(call.invocation_number)",
+        "displayValue(call.role)",
+        "displayValue(call.model)",
+        "outcomeOf(call.status).text",
+        "durationText(call.duration_ms)",
+        "displayNumber(totalTokens(usage))",
+        "costText(usage)",
+    ):
+        assert wired in cells
+
+
+def test_an_expanded_call_shows_purpose_reasoning_start_five_token_classes_and_the_reason() -> None:
+    js = dashboard_assets.APP_JS
+    fields = function_source(js, "callFields")
+    for wired in (
+        '"Purpose", displayValue(call.purpose, NOT_REPORTED)',
+        '"Reasoning level", displayValue(call.reasoning, NOT_REPORTED)',
+        '"Started", displayValue(call.started_at, NOT_REPORTED)',
+        "TOKEN_CLASSES.map(",
+        "displayNumber(usage[tokenClass.key])",
+        "reasonFields(call.failure_reason, call.failure_reason_truncated, runId)",
+    ):
+        assert wired in fields
+
+
+def test_an_outcome_shows_its_text_next_to_its_color() -> None:
+    js = dashboard_assets.APP_JS
+    outcomes = _constant_source("OUTCOMES")
+    assert 'SUCCESS", { text: "success", className: "status-ok"' in outcomes
+    assert 'FAILED", { text: "failed", className: "status-error"' in outcomes
+    assert '"running", { text: "running", className: "status-active"' in outcomes
+    assert "UNREPORTED_OUTCOME = { text: NOT_REPORTED" in js
+    css = dashboard_assets.STYLE_CSS
+    for name, token in (
+        ("status-ok", "--ok"),
+        ("status-error", "--error"),
+        ("status-warn", "--warn"),
+        ("status-active", "--accent"),
+    ):
+        assert re.search(rf"\.{name}\s*\{{[^}}]*color:\s*var\({token}\);", css)
+
+
+def test_a_total_cost_and_a_call_cost_skip_the_unreported_units() -> None:
+    cost = function_source(dashboard_assets.APP_JS, "costText")
+    assert "isFiniteNumber(usage[unit.key])" in cost
+    assert 'join(", ")' in cost
+    assert "return NOT_REPORTED;" in cost
+    total = function_source(dashboard_assets.APP_JS, "totalTokens")
+    assert "TOKEN_CLASSES.map(" in total
+    assert "filter(isFiniteNumber)" in total
+    assert "return null;" in total
+
+
+def test_totals_name_the_calls_that_reported_a_partial_figure() -> None:
+    js = dashboard_assets.APP_JS
+    note = function_source(js, "partialNote")
+    assert 'reported + " of " + calls + " calls reported"' in note
+    assert "reported === 0" in note
+    assert "reported >= calls" in note
+    card = function_source(js, "figureCard")
+    assert "isFiniteNumber(total) ? format(total) : NOT_REPORTED" in card
+    assert "partialNote(figure?.reported_count, calls)" in card
+
+
+def test_totals_cards_cover_calls_failures_duration_tokens_and_each_cost_unit() -> None:
+    cards = function_source(dashboard_assets.APP_JS, "totalsCards")
+    for wired in (
+        'label: "Calls"',
+        'figureCard("Failed calls", totals.failed_calls',
+        'figureCard("Duration", totals.duration_ms',
+        "totals.tokens?.[tokenClass.key]",
+        "totals.costs?.[unit.key]",
+        "help: unit.help",
+    ):
+        assert wired in cards
+
+
+def test_the_run_detail_render_patches_every_region_in_place() -> None:
+    source = function_source(dashboard_assets.APP_JS, "renderRunDetail")
+    for call in (
+        'syncStats(document.getElementById("run-totals"), totalsCards(detail.totals || {}))',
+        "renderTimeline(detail, runId)",
+        "renderNextStep(detail, runId)",
+        "reasonFields(detail.failure_reason, detail.failure_reason_truncated, runId)",
+    ):
+        assert call in source
+    for clearing in ("clearChildren(", "replaceChildren(", "innerHTML"):
+        assert clearing not in source
+        assert clearing not in function_source(dashboard_assets.APP_JS, "renderTimeline")
+
+
+def test_an_expanded_call_stays_open_across_a_refresh() -> None:
+    js = dashboard_assets.APP_JS
+    patch = function_source(js, "patchCall")
+    # Only a different call number closes the row; the same node is reused otherwise.
+    assert 'const key = runId + "/" + displayValue(call.invocation_number);' in patch
+    assert (
+        "if (details.dataset.call !== key) { details.dataset.call = key; details.open = false; }"
+        in patch
+    )
+    timeline = function_source(js, "renderTimeline")
+    assert "callAt(body, index)" in timeline
+    assert "trimChildren(body, calls.length)" in timeline
+    assert '"details"' in function_source(js, "buildCall")
+    assert '"summary"' in function_source(js, "buildCall")
+
+
+def test_the_running_call_joins_the_timeline_after_the_finished_calls() -> None:
+    timeline = function_source(dashboard_assets.APP_JS, "renderTimeline")
+    assert "asArray(detail.invocations)" in timeline
+    assert "detail.active_invocation" in timeline
+
+
+def test_a_cut_reason_is_marked_and_names_factory_show() -> None:
+    js = dashboard_assets.APP_JS
+    fields = function_source(js, "reasonFields")
+    assert 'const fields = [["Failure reason", reason]];' in fields
+    assert "truncated === true" in fields
+    assert '"Reason was cut"' in fields
+    note = function_source(js, "cutNote")
+    assert "factory show" in note
+    assert '"<run>"' in note
+
+
+@pytest.mark.parametrize(
+    "kind_wiring",
+    [
+        ('step.kind !== "none"', "isStepVisible"),
+        ("resumeClassLine(step)", "nextStepSections"),
+        ("reopensLine(step)", "nextStepSections"),
+        ("approvalScopeSection(step.approval_scope)", "nextStepSections"),
+        ("decisionsSection(step.decisions)", "nextStepSections"),
+        ("failureSection(step, runId)", "nextStepSections"),
+        ("commentLinkLine(step.comment_url)", "nextStepSections"),
+        ("replySection(step.reply_text)", "nextStepSections"),
+    ],
+)
+def test_the_needs_you_panel_renders_each_part_of_the_next_step(
+    kind_wiring: tuple[str, str],
+) -> None:
+    wired, function = kind_wiring
+    assert wired in function_source(dashboard_assets.APP_JS, function)
+
+
+def test_no_needs_you_panel_is_shown_for_a_run_that_needs_nothing() -> None:
+    source = function_source(dashboard_assets.APP_JS, "renderNextStep")
+    assert "panel.hidden = !visible;" in source
+    assert "clearChildren(body)" in source
+    assert re.search(r'<section\s+id="next-step"[^>]*\bhidden>', _RUN_DETAIL_HTML)
+
+
+def test_the_needs_you_panel_is_rebuilt_only_when_the_step_changes() -> None:
+    source = function_source(dashboard_assets.APP_JS, "renderNextStep")
+    assert "JSON.stringify([runId, step])" in source
+    assert "panel.dataset.signature !== signature" in source
+
+
+def test_the_comment_link_shows_only_for_an_https_url() -> None:
+    link = function_source(dashboard_assets.APP_JS, "commentLinkLine")
+    assert "!isHttpsUrl(url)" in link
+    assert "createLink(url)" in link
+
+
+def test_the_approval_scope_lists_the_decision_actions_and_conditions() -> None:
+    scope = function_source(dashboard_assets.APP_JS, "approvalScopeSection")
+    for wired in (
+        "scope.decision_requested",
+        '"Authorized actions", scope.authorized_actions',
+        '"Excluded actions", scope.excluded_actions',
+        '"Conditions in force", scope.conditions_in_force',
+    ):
+        assert wired in scope
+
+
+def test_plan_decisions_show_as_a_numbered_list() -> None:
+    source = function_source(dashboard_assets.APP_JS, "decisionsSection")
+    assert 'listSection("Decisions", items.map(' in source
+    assert "decision.question" in source
+    assert '"ol"' in function_source(dashboard_assets.APP_JS, "listSection")
+
+
+def test_reopens_show_as_used_of_max() -> None:
+    source = function_source(dashboard_assets.APP_JS, "reopensLine")
+    assert '"Reopens used " + step.reopens_used + " of " + step.reopens_max' in source
+
+
+def test_the_reply_has_a_copy_button_that_announces_copied() -> None:
+    js = dashboard_assets.APP_JS
+    assert 'const COPIED_TEXT = "Copied";' in js
+    control = function_source(js, "copyControl")
+    assert 'setAttribute("role", "status")' in control
+    assert "copyText(text).then(announceCopied(status), announceCopyFailed(status))" in control
+    assert "setText(status, COPIED_TEXT)" in function_source(js, "announceCopied")
+    assert "setText(status, COPY_FAILED_TEXT)" in function_source(js, "announceCopyFailed")
+    assert "writeText(text)" in function_source(js, "copyText")
+    assert '"pre"' in function_source(js, "replySection")
+
+
+def test_a_run_that_cannot_continue_says_so_and_shows_the_failure_reason() -> None:
+    source = function_source(dashboard_assets.APP_JS, "failureSection")
+    assert "step.failure_reason" in source
+    assert "reasonFields(step.failure_reason, step.failure_reason_truncated, runId)" in source
+
+
+def test_the_run_attempts_table_shows_the_failure_reason() -> None:
+    assert '<th scope="col">Failure reason</th>' in _RUN_DETAIL_HTML
+    assert "attempt.failure_reason" in function_source(dashboard_assets.APP_JS, "attemptRowSpec")
+
+
+def test_the_timeline_scrolls_inside_its_card_and_keeps_new_colors_on_tokens() -> None:
+    assert re.search(r'<div\s+class="table-wrap"\s+id="timeline-wrap"\s+hidden>', _RUN_DETAIL_HTML)
+    css = dashboard_assets.STYLE_CSS
+    assert re.search(r"\.timeline\s*\{[^}]*min-width:\s*\d+rem;", css)
+    assert re.search(r"\.call-row\s*\{[^}]*display:\s*grid;", css)

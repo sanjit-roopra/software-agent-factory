@@ -33,7 +33,54 @@
   };
 
   const TOTALS_EXCLUDED_KEYS = new Set(["health", "runs", "page"]);
-  const INVOCATION_USAGE_COLUMNS = 7;
+  const CALL_CELL_COUNT = 7;
+  const OUTCOME_CELL = 3;
+  const STAT_PART_CLASSES = ["stat-label", "stat-value", "stat-note", "stat-help"];
+  const COPIED_TEXT = "Copied";
+  const COPY_FAILED_TEXT = "Copy failed, select the text and copy it.";
+  const COPIED_VISIBLE_MS = 2000;
+  // Field names match the server's TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS.
+  const TOKEN_CLASSES = [
+    { key: "input_tokens", label: "Input tokens" },
+    { key: "output_tokens", label: "Output tokens" },
+    { key: "reasoning_tokens", label: "Reasoning tokens" },
+    { key: "cache_read_tokens", label: "Cache read tokens" },
+    { key: "cache_write_tokens", label: "Cache write tokens" }
+  ];
+  // Each cost unit stays in its own unit and is never added to another.
+  const COST_UNITS = [
+    {
+      key: "total_premium_request_cost",
+      label: "Premium requests",
+      help: "Count of Copilot premium requests the calls reported.",
+      phrase: premiumRequestsPhrase
+    },
+    {
+      key: "usage_value_usd",
+      label: "AI usage value (USD)",
+      help: "Copilot AI usage in USD at 1 credit = 1 cent; your invoice may be lower or zero.",
+      phrase: function (value) {
+        return usdAmount(value) + " USD AI usage";
+      }
+    },
+    {
+      key: "list_price_estimate_usd",
+      label: "List-price estimate (USD)",
+      help: "Estimate in USD from list prices, not what a provider billed.",
+      phrase: function (value) {
+        return usdAmount(value) + " USD list price";
+      }
+    }
+  ];
+  const OUTCOMES = new Map([
+    ["SUCCESS", { text: "success", className: "status-ok" }],
+    ["FAILED", { text: "failed", className: "status-error" }],
+    ["running", { text: "running", className: "status-active" }],
+    ["stale", { text: "stale", className: "status-warn" }],
+    ["crashed", { text: "crashed", className: "status-error" }],
+    ["abandoned", { text: "abandoned", className: "status-warn" }]
+  ]);
+  const UNREPORTED_OUTCOME = { text: NOT_REPORTED, className: "" };
   const TASK_HEADERS = [
     "Task", "Title", "State", "Run", "Issue", "Pull request", "Merged commit"
   ];
@@ -268,6 +315,10 @@
     return typeof value === "string" && value.startsWith("https://");
   }
 
+  function isPlainObject(value) {
+    return value !== null && typeof value === "object";
+  }
+
   function asArray(value) {
     return Array.isArray(value) ? value : [];
   }
@@ -280,8 +331,8 @@
     return value === undefined ? fallback : value;
   }
 
-  function displayValue(value) {
-    return value === undefined || value === null || value === "" ? EMPTY_VALUE : String(value);
+  function displayValue(value, fallback = EMPTY_VALUE) {
+    return value === undefined || value === null || value === "" ? fallback : String(value);
   }
 
   function displayUsd(value) {
@@ -844,59 +895,395 @@
         attempt.triggered_by,
         attempt.outcome,
         attempt.started_at,
-        attempt.completed_at
+        attempt.completed_at,
+        { value: attempt.failure_reason, className: "reason-cell" }
       ]
     };
   }
 
-  function invocationRowSpec(invocation) {
-    const usage = invocation.usage || {};
-    return {
-      cells: [
-        invocation.invocation_number,
-        invocation.role,
-        invocation.model,
-        invocation.context_tier,
-        invocation.success,
-        displayNumber(usage.input_tokens),
-        displayNumber(usage.output_tokens),
-        usage.total_api_duration_ms,
-        usage.session_duration_ms,
-        displayUsd(usage.usage_value_usd),
-        displayNumber(usage.total_premium_request_cost),
-        displayUsd(usage.list_price_estimate_usd)
-      ]
-    };
+  // ---- Run detail: values ------------------------------------------------
+
+  function premiumRequestsPhrase(value) {
+    return displayNumber(value) + (value === 1 ? " premium request" : " premium requests");
   }
 
-  function activeInvocationRowSpec(active) {
-    const unreported = Array.from({ length: INVOCATION_USAGE_COLUMNS }, function () {
+  function usdAmount(value) {
+    return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  }
+
+  function durationText(ms) {
+    if (!isFiniteNumber(ms)) {
       return NOT_REPORTED;
+    }
+    if (ms < 1000) {
+      return ms + " ms";
+    }
+    const seconds = Math.round(ms / 1000);
+    return seconds < 60 ? seconds + " s" : Math.floor(seconds / 60) + " min " + (seconds % 60) + " s";
+  }
+
+  function outcomeOf(status) {
+    return OUTCOMES.get(status) || UNREPORTED_OUTCOME;
+  }
+
+  // The sum of the token classes the call reported, or null when it reported none.
+  function totalTokens(usage) {
+    const reported = TOKEN_CLASSES.map(function (tokenClass) {
+      return usage[tokenClass.key];
+    }).filter(isFiniteNumber);
+    if (reported.length === 0) {
+      return null;
+    }
+    return reported.reduce(function (sum, value) {
+      return sum + value;
+    }, 0);
+  }
+
+  // Every cost unit the call reported, each in its own unit.
+  function costText(usage) {
+    const phrases = COST_UNITS.filter(function (unit) {
+      return isFiniteNumber(usage[unit.key]);
+    }).map(function (unit) {
+      return unit.phrase(usage[unit.key]);
     });
+    if (phrases.length === 0) {
+      return NOT_REPORTED;
+    }
+    return phrases.join(", ");
+  }
+
+  function cutNote(runId) {
+    return "Run factory show " + (runId || "<run>") + " for the full text.";
+  }
+
+  // The reason text, and a note that names `factory show` when it was cut.
+  function reasonFields(reason, truncated, runId) {
+    if (typeof reason !== "string" || reason === "") {
+      return [];
+    }
+    const fields = [["Failure reason", reason]];
+    if (truncated === true) {
+      fields.push(["Reason was cut", cutNote(runId)]);
+    }
+    return fields;
+  }
+
+  // ---- Run detail: totals ------------------------------------------------
+
+  function partialNote(reported, calls) {
+    if (!isFiniteNumber(reported) || !isFiniteNumber(calls)) {
+      return "";
+    }
+    if (reported === 0 || reported >= calls) {
+      return "";
+    }
+    return reported + " of " + calls + " calls reported";
+  }
+
+  function figureCard(label, figure, calls, format) {
+    const total = figure?.total;
     return {
-      className: "invocation-active",
-      cells: [
-        active.invocation_number,
-        active.role,
-        active.model,
-        active.context_tier,
-        active.status,
-        ...unreported
-      ]
+      label: label,
+      value: isFiniteNumber(total) ? format(total) : NOT_REPORTED,
+      note: partialNote(figure?.reported_count, calls),
+      help: ""
     };
   }
 
-  function invocationSpecs(detail) {
-    const specs = asArray(detail.invocations).map(invocationRowSpec);
-    if (detail.active_invocation) {
-      specs.push(activeInvocationRowSpec(detail.active_invocation));
+  function totalsCards(totals) {
+    const calls = totals.calls;
+    return [
+      { label: "Calls", value: displayNumber(calls), note: "", help: "" },
+      figureCard("Failed calls", totals.failed_calls, calls, displayNumber),
+      figureCard("Duration", totals.duration_ms, calls, durationText),
+      ...TOKEN_CLASSES.map(function (tokenClass) {
+        return figureCard(tokenClass.label, totals.tokens?.[tokenClass.key], calls, displayNumber);
+      }),
+      ...COST_UNITS.map(function (unit) {
+        const card = figureCard(unit.label, totals.costs?.[unit.key], calls, unit.phrase);
+        return { ...card, help: unit.help };
+      })
+    ];
+  }
+
+  function buildStat() {
+    const card = element("div", "stat");
+    for (const className of STAT_PART_CLASSES) {
+      card.appendChild(element("p", className));
     }
-    return specs;
+    return card;
+  }
+
+  function statAt(parent, index) {
+    return parent.children[index] || parent.appendChild(buildStat());
+  }
+
+  // A note or help line shows only while it has text.
+  function patchOptional(node, text) {
+    setText(node, text);
+    node.hidden = text === "";
+  }
+
+  function patchStat(card, spec) {
+    setText(card.children[0], spec.label);
+    setText(card.children[1], spec.value);
+    patchOptional(card.children[2], spec.note);
+    patchOptional(card.children[3], spec.help);
+  }
+
+  function syncStats(container, specs) {
+    trimChildren(container, specs.length);
+    for (const [index, spec] of specs.entries()) {
+      patchStat(statAt(container, index), spec);
+    }
+  }
+
+  // ---- Run detail: call timeline -----------------------------------------
+
+  function callCells(call) {
+    const usage = call.usage || {};
+    return [
+      displayValue(call.invocation_number),
+      displayValue(call.role),
+      displayValue(call.model),
+      outcomeOf(call.status).text,
+      durationText(call.duration_ms),
+      displayNumber(totalTokens(usage)),
+      costText(usage)
+    ];
+  }
+
+  function callFields(call, runId) {
+    const usage = call.usage || {};
+    return [
+      ["Purpose", displayValue(call.purpose, NOT_REPORTED)],
+      ["Reasoning level", displayValue(call.reasoning, NOT_REPORTED)],
+      ["Started", displayValue(call.started_at, NOT_REPORTED)],
+      ...TOKEN_CLASSES.map(function (tokenClass) {
+        return [tokenClass.label, displayNumber(usage[tokenClass.key])];
+      }),
+      ...reasonFields(call.failure_reason, call.failure_reason_truncated, runId)
+    ];
+  }
+
+  // A call is a native details element: the summary holds the default columns,
+  // the body holds the rest.
+  function buildCall() {
+    const details = element("details", "call");
+    const summary = details.appendChild(element("summary", "call-row"));
+    for (let index = 0; index < CALL_CELL_COUNT; index += 1) {
+      summary.appendChild(element("span"));
+    }
+    details.appendChild(element("dl", "call-fields"));
+    return details;
+  }
+
+  function callAt(parent, index) {
+    return parent.children[index] || parent.appendChild(buildCall());
+  }
+
+  // The same node is reused for the same call, so an open row stays open
+  // across a refresh. A different call in the slot starts closed.
+  function patchCall(details, call, runId) {
+    const key = runId + "/" + displayValue(call.invocation_number);
+    if (details.dataset.call !== key) {
+      details.dataset.call = key;
+      details.open = false;
+    }
+    const cells = details.firstElementChild.children;
+    for (const [index, text] of callCells(call).entries()) {
+      setText(cells[index], text);
+    }
+    cells[OUTCOME_CELL].className = outcomeOf(call.status).className;
+    syncDefinitionList(details.lastElementChild, callFields(call, runId));
+  }
+
+  // Finished calls come sorted by number; the running call comes last.
+  function renderTimeline(detail, runId) {
+    const active = detail.active_invocation ? [detail.active_invocation] : [];
+    const calls = [...asArray(detail.invocations), ...active];
+    const body = document.getElementById("timeline-body");
+    trimChildren(body, calls.length);
+    for (const [index, call] of calls.entries()) {
+      patchCall(callAt(body, index), call, runId);
+    }
+    document.getElementById("timeline-status").hidden = calls.length > 0;
+    document.getElementById("timeline-wrap").hidden = calls.length === 0;
+  }
+
+  // ---- Run detail: "Needs you" panel -------------------------------------
+
+  function listSection(title, items, ordered) {
+    const section = element("div", "next-step-section");
+    section.appendChild(element("h3", "", title));
+    const list = section.appendChild(element(ordered ? "ol" : "ul"));
+    for (const item of asArray(items)) {
+      list.appendChild(element("li", "", item));
+    }
+    return section;
+  }
+
+  function resumeClassLine(step) {
+    return step.resume_class ? element("p", "", "Resume class: " + step.resume_class) : null;
+  }
+
+  function reopensLine(step) {
+    if (!isFiniteNumber(step.reopens_used) || !isFiniteNumber(step.reopens_max)) {
+      return null;
+    }
+    return element("p", "", "Reopens used " + step.reopens_used + " of " + step.reopens_max);
+  }
+
+  function approvalScopeSection(scope) {
+    if (!isPlainObject(scope)) {
+      return null;
+    }
+    const section = element("div", "next-step-section");
+    section.appendChild(element("h3", "", "Approval scope"));
+    section.appendChild(
+      element("p", "", "Decision requested: " + displayValue(scope.decision_requested))
+    );
+    section.appendChild(listSection("Authorized actions", scope.authorized_actions));
+    section.appendChild(listSection("Excluded actions", scope.excluded_actions));
+    section.appendChild(listSection("Conditions in force", scope.conditions_in_force));
+    return section;
+  }
+
+  function decisionsSection(decisions) {
+    const items = asArray(decisions);
+    if (items.length === 0) {
+      return null;
+    }
+    return listSection("Decisions", items.map(function (decision) {
+      return displayValue(decision.question);
+    }), true);
+  }
+
+  function failureSection(step, runId) {
+    const fields = reasonFields(step.failure_reason, step.failure_reason_truncated, runId);
+    if (fields.length === 0) {
+      return null;
+    }
+    const section = element("div", "next-step-section");
+    for (const field of fields) {
+      section.appendChild(element("p", "reason-text", field[0] + ": " + field[1]));
+    }
+    return section;
+  }
+
+  function commentLinkLine(url) {
+    if (!isHttpsUrl(url)) {
+      return null;
+    }
+    const line = element("p", "", "Comment: ");
+    line.appendChild(createLink(url));
+    return line;
+  }
+
+  function copyText(text) {
+    const clipboard = globalThis.navigator?.clipboard;
+    if (!clipboard) {
+      return Promise.reject(new Error("clipboard unavailable"));
+    }
+    return clipboard.writeText(text);
+  }
+
+  // The status text clears after a moment, so a second copy is announced again.
+  function announceCopied(status) {
+    return function () {
+      setText(status, COPIED_TEXT);
+      globalThis.setTimeout(function () {
+        setText(status, "");
+      }, COPIED_VISIBLE_MS);
+    };
+  }
+
+  function announceCopyFailed(status) {
+    return function () {
+      setText(status, COPY_FAILED_TEXT);
+    };
+  }
+
+  // The status node exists before the click, so a screen reader announces its text.
+  function copyControl(text) {
+    const row = element("div", "copy-row");
+    const button = row.appendChild(element("button", "", "Copy reply"));
+    button.type = "button";
+    const status = row.appendChild(element("span", "copy-status"));
+    status.setAttribute("role", "status");
+    button.addEventListener("click", function () {
+      copyText(text).then(announceCopied(status), announceCopyFailed(status));
+    });
+    return row;
+  }
+
+  function replySection(text) {
+    if (typeof text !== "string" || text === "") {
+      return null;
+    }
+    const section = element("div", "next-step-section");
+    section.appendChild(element("h3", "", "Reply to continue"));
+    section.appendChild(element("pre", "reply-text", text));
+    section.appendChild(copyControl(text));
+    return section;
+  }
+
+  function nextStepSections(step, runId) {
+    return [
+      resumeClassLine(step),
+      reopensLine(step),
+      approvalScopeSection(step.approval_scope),
+      decisionsSection(step.decisions),
+      failureSection(step, runId),
+      commentLinkLine(step.comment_url),
+      replySection(step.reply_text)
+    ].filter(Boolean);
+  }
+
+  function buildNextStep(body, step, runId) {
+    clearChildren(body);
+    body.appendChild(element("p", "next-step-sentence", displayValue(step.sentence)));
+    for (const section of nextStepSections(step, runId)) {
+      body.appendChild(section);
+    }
+  }
+
+  function isStepVisible(step) {
+    return isPlainObject(step) && step.kind !== "none";
+  }
+
+  // The panel is rebuilt only when the step changes, so a refresh keeps the
+  // focused copy button and its "Copied" status.
+  function renderNextStep(detail, runId) {
+    const panel = document.getElementById("next-step");
+    const body = document.getElementById("next-step-body");
+    const step = detail.next_step;
+    const visible = isStepVisible(step);
+    panel.hidden = !visible;
+    if (!visible) {
+      clearChildren(body);
+      delete panel.dataset.signature;
+      return;
+    }
+    const signature = JSON.stringify([runId, step]);
+    if (panel.dataset.signature !== signature) {
+      panel.dataset.signature = signature;
+      buildNextStep(body, step, runId);
+    }
+  }
+
+  // ---- Run detail: render ------------------------------------------------
+
+  function knownRunId(detail) {
+    const runId = preferDefined(detail.run_id, detail.id);
+    return typeof runId === "string" && RUN_ID_PATTERN.test(runId) ? runId : null;
   }
 
   function renderRunDetail(detail) {
+    const runId = knownRunId(detail);
     const fields = [
       ...identityFields(detail),
+      ...reasonFields(detail.failure_reason, detail.failure_reason_truncated, runId),
       ...usageFields(detail.usage || {}),
       ...guidanceFields(detail),
       ...evidenceFields(detail),
@@ -907,7 +1294,9 @@
     syncRows(
       document.getElementById("attempts-body"), asArray(detail.attempts).map(attemptRowSpec)
     );
-    syncRows(document.getElementById("invocations-body"), invocationSpecs(detail));
+    syncStats(document.getElementById("run-totals"), totalsCards(detail.totals || {}));
+    renderTimeline(detail, runId);
+    renderNextStep(detail, runId);
     setRunDetailStatus(null);
   }
 
