@@ -20,7 +20,7 @@ Commands:
   doctor      Check this machine's prerequisites for the configured feature set.
   status      Report derived run metrics and operational health, read-only.
   skill       Inspect, validate and refresh repository guidance.
-  dashboard   Serve the read-only local dashboard until interrupted.
+  dashboard   Serve the local dashboard until interrupted.
   service     Manage the opt-in per-user macOS launchd service.
 ```
 
@@ -370,7 +370,7 @@ record. Normal run telemetry remains in the run artifact.
 
 ## factory dashboard
 
-Serve the read-only local dashboard until interrupted.
+Serve the local dashboard until interrupted.
 
 ```bash
 factory dashboard
@@ -399,10 +399,18 @@ Included or pooled credits can cover it.
 Input and output token counts remain separate metrics.
 Legacy premium-request units also remain separate and are never multiplied.
 
-Blocks in the foreground. Binds `127.0.0.1` and nothing else, answers `GET`
-only, and requires a token generated for that process. The tokenized URL is
-printed to stdout once and never written to the log. Ctrl-C stops it and closes
-the socket.
+The Compare view shows two runs side by side. For each agent role, it lists calls,
+failed calls, models, tokens, duration and cost for run A and run B. Each run keeps
+its cost in its own units. The `/api/compare` route serves this view.
+The Runs view starts with four key figures. They are active runs, runs that need
+you, failed runs in the last 24 hours and tokens in the last 24 hours. The token
+figure shows `not reported` when no recent call reported tokens.
+
+Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
+generated for that process. It answers `GET` for reads. Two `POST` routes are the
+only writes: approve a risk halt and answer plan decisions (ADR-033). The
+tokenized URL is printed to stdout once and never written to the log. Ctrl-C stops
+it and closes the socket.
 
 This is the only command that opens a socket.
 

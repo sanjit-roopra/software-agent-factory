@@ -183,8 +183,8 @@ The polish attempt applies simplify first and polish second.
 This bounded attempt runs after the first successful verification.
 Full deterministic verification runs again before testing and review.
 
-The dashboard never writes: it cannot generate, refresh, edit or delete a
-skill or an overlay.
+The dashboard never writes a skill or an overlay. It cannot generate, refresh,
+edit or delete one.
 
 See also [Safety and trust boundaries](../reference/safety.md) and the `polish`
 section of the [configuration reference](../reference/configuration.md#polish).

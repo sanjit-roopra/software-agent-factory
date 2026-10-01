@@ -38,7 +38,7 @@ item is deferred. Staging and deployment remain deferred.
 | 15.8 | Postgres run store | deferred |
 | 15.9 | Temporal / durable workflow engine | deferred |
 | 15.10 | Jira and other trackers | deferred |
-| 15.11 | Read-only local dashboard | done (`factory dashboard`) |
+| 15.11 | Local dashboard | done (`factory dashboard`) |
 | 15.12 | Kubernetes workers | deferred |
 | 16 | Repository capability layer + bounded post-green polish | done |
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
@@ -101,8 +101,8 @@ constraints for V1:
 - a generic workflow DSL or plugin architecture
 - LangGraph
 
-The read-only local dashboard is the single, documented exception to the V1 ban
-on web UIs. Its bounds are recorded in
+The local dashboard is the single, documented exception to the V1 ban on web UIs.
+Its only writes are two resume request actions (ADR-033). Its bounds are recorded in
 [ADR-016](../decisions.md#adr-016-the-local-dashboard-is-a-bounded-exception-to-the-v1-ban).
 
 ## How scope changes
