@@ -841,7 +841,7 @@ def test_smoke_dashboard_assets_rejects_a_first_line_without_the_url(tmp_path: P
 
 def test_smoke_dashboard_assets_rejects_a_status_other_than_200(tmp_path: Path) -> None:
     module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
-    stub, pid_file = _dashboard_stub(tmp_path, status=204, body=b"")
+    stub, pid_file = _dashboard_stub(tmp_path, status=202, body=b"asset")
 
     with pytest.raises(SystemExit, match="did not serve /assets/app.js"):
         module._smoke_dashboard_assets(stub, tmp_path)

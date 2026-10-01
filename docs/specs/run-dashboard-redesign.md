@@ -45,8 +45,8 @@ Out of scope: changes to what runtimes record, hosting beyond localhost, retryin
 
 1. Shell, themes, hash routes and refresh with connection notices.
 2. Run detail: call timeline, totals, redacted reasons, a read-only "Needs you" panel. Carries the data minimization part of ADR-033: the ADR text, `docs/architecture.md` and `docs/reference/safety.md`.
-3. Approval core with no HTTP: the write path part of ADR-033, `AGENTS.md`, receipt source, request file, service ingest.
-4. Approve and answer from the page.
+3. Approval core with no HTTP: the write path part of ADR-033, `AGENTS.md`, the write path edits to `docs/architecture.md`, receipt source, request file, service ingest.
+4. Approve and answer from the page, with the write path edits to `docs/guides/operations.md` and `docs/reference/safety.md`.
 5. Two-run comparison and key figures.
 
 ## Acceptance Criteria
