@@ -453,6 +453,19 @@ class VerificationSummary(ModelBase):
     coverage_change: float | None = None
 
 
+class ApprovalScopeSummary(ModelBase):
+    """What approving a risk halt asks for, allows, excludes and keeps in force.
+
+    Free text carried raw from the stored approval context; the dashboard
+    sanitizer redacts it before display.
+    """
+
+    decision_requested: str
+    authorized_actions: list[str]
+    unauthorized_actions: list[str]
+    conditions_in_force: list[str]
+
+
 class EscalationSummary(ModelBase):
     status: EscalationStatus
     target_type: str | None = None
@@ -469,6 +482,11 @@ class EscalationSummary(ModelBase):
     last_response_at: UtcDateTime | None = None
     is_resumed: bool = False
     resumed_at: UtcDateTime | None = None
+    episode_id: str | None = None
+    context_fingerprint: str | None = None
+    reopen_max: int | None = Field(default=None, ge=1)
+    approval_scope: ApprovalScopeSummary | None = None
+    decisions: list[str] = Field(default_factory=list)
 
 
 class RunDetail(ModelBase):
@@ -478,9 +496,11 @@ class RunDetail(ModelBase):
     Same data-minimization rule as :class:`RunSummary`, applied to a single
     run: no command logs, no patch text, no prompts, no agent reasoning text
     and no raw artifact bodies. ``failure_reason`` (here and on each attempt
-    and invocation) is the one free-text exception: it is carried raw so the
+    and invocation) is a free-text exception: it is carried raw so the
     dashboard sanitizer can redact and bound it, so this model must not be
-    shown to a user without that step. ``commit_sha`` and ``pull_request_url``
+    shown to a user without that step. The escalation's approval scope and
+    plan decision questions are the other free-text exception, with the same
+    rule. ``commit_sha`` and ``pull_request_url``
     are controller-produced identifiers, not repository content, so both are
     included.
     """
@@ -1302,9 +1322,13 @@ def _artifact_inventory(store: RunStoreProtocol, run_id: str) -> list[str]:
 def _escalation_summary(
     run: FactoryRun,
     escalation: EscalationRecord | None,
+    max_reopens: int | None = None,
 ) -> EscalationSummary | None:
     if escalation is None:
         return None
+    approval = escalation.approval_context
+    plan = escalation.plan_decision_context
+    context = approval or plan
     last_reply = escalation.accepted_replies[-1] if escalation.accepted_replies else None
     is_resumed = escalation.status in {EscalationStatus.REOPENED, EscalationStatus.RESUMED}
     return EscalationSummary(
@@ -1329,6 +1353,20 @@ def _escalation_summary(
         last_response_at=last_reply.created_at if last_reply is not None else None,
         is_resumed=is_resumed,
         resumed_at=escalation.updated_at if is_resumed else None,
+        episode_id=escalation.episode_id,
+        context_fingerprint=context.context_fingerprint if context is not None else None,
+        reopen_max=max_reopens,
+        approval_scope=(
+            ApprovalScopeSummary(
+                decision_requested=approval.decision_requested,
+                authorized_actions=approval.authorized_actions,
+                unauthorized_actions=approval.unauthorized_actions,
+                conditions_in_force=approval.conditions_in_force,
+            )
+            if approval is not None
+            else None
+        ),
+        decisions=list(plan.decisions) if plan is not None else [],
     )
 
 
@@ -1401,6 +1439,7 @@ def build_run_detail(
     *,
     now: datetime | None = None,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
+    max_reopens: int | None = None,
 ) -> RunDetail | None:
     """Derive one run's read-only detail view, or ``None`` if it is not
     readable.
@@ -1433,7 +1472,7 @@ def build_run_detail(
         merge_commit_sha=run.merge_commit_sha,
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),
-        escalation=_escalation_summary(run, run.escalation),
+        escalation=_escalation_summary(run, run.escalation, max_reopens),
         attempts=[
             RunAttemptSummary(
                 attempt_number=attempt.attempt_number,

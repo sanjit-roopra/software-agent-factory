@@ -24,11 +24,18 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import urlsplit
 
 from ..redaction import bounded_reason
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS, run_totals
+from .next_step import (
+    clean_approval_scope,
+    clean_decisions,
+    is_context_fingerprint,
+    is_opaque_id,
+    is_safe_https_url,
+    next_step,
+)
 from .snapshot import is_valid_run_id, to_json_safe
 
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
@@ -111,6 +118,11 @@ ESCALATION_FIELDS: frozenset[str] = frozenset(
         "last_response_at",
         "is_resumed",
         "resumed_at",
+        "episode_id",
+        "context_fingerprint",
+        "reopen_max",
+        "approval_scope",
+        "decisions",
     }
 )
 
@@ -302,22 +314,6 @@ GUIDANCE_COPY: dict[str, tuple[str, str, str, str | None]] = {
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
-
-
-def _is_safe_https_url(value: Any) -> bool:
-    if not isinstance(value, str) or len(value) > 2048 or value != value.strip():
-        return False
-    try:
-        parsed = urlsplit(value)
-        _ = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme == "https"
-        and parsed.hostname is not None
-        and parsed.username is None
-        and parsed.password is None
-    )
 
 
 def _sanitize_summary_fields(data: dict[str, Any], sanitized: dict[str, Any]) -> None:
@@ -558,7 +554,7 @@ def _is_github_login(value: Any) -> bool:
 _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "status": lambda value: value in _ESCALATION_STATUSES,
     "target_type": lambda value: value in {None, "PULL_REQUEST", "ISSUE"},
-    "comment_url": _is_safe_https_url,
+    "comment_url": is_safe_https_url,
     "reason_code": lambda value: value in GUIDANCE_COPY,
     "resume_classification": lambda value: value in _RESUME_CLASSIFICATIONS,
     "waiting_for_human": lambda value: isinstance(value, bool),
@@ -568,13 +564,33 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "accepted_reply_count": _is_count,
     "last_responder": _is_github_login,
     "last_action": lambda value: value in {None, "ANSWER", "RESUME"},
+    "episode_id": is_opaque_id,
+    "context_fingerprint": is_context_fingerprint,
+    "reopen_max": _is_count,
 }
 
 
 def _sanitize_escalation(escalation: dict[str, Any]) -> dict[str, Any]:
     safe = _allowlist(escalation, ESCALATION_FIELDS)
     _drop_invalid(safe, _ESCALATION_CHECKS)
+    _clean_escalation_text(safe)
     return safe
+
+
+def _clean_escalation_text(safe: dict[str, Any]) -> None:
+    """Redact the approval scope and the decision questions, or drop them when malformed."""
+    if "approval_scope" in safe:
+        scope = clean_approval_scope(safe["approval_scope"])
+        if scope is None:
+            del safe["approval_scope"]
+        else:
+            safe["approval_scope"] = scope
+    if "decisions" in safe:
+        decisions = clean_decisions(safe["decisions"])
+        if decisions:
+            safe["decisions"] = decisions
+        else:
+            del safe["decisions"]
 
 
 def sanitize_run_detail(raw: Any) -> dict[str, Any]:
@@ -599,6 +615,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     sanitized.update(_sanitize_calls(data, run_id))
     sanitized.update(_sanitize_detail_sections(data))
+    sanitized["next_step"] = next_step(sanitized)
     return sanitized
 
 

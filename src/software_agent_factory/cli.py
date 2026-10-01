@@ -1064,7 +1064,12 @@ def dashboard_command(
         # cannot be read, and only ever carries allowlisted summary fields
         # plus attempt metadata -- never a log, a diff, a prompt or a raw
         # artifact body.
-        return build_run_detail(store, run_id, stale_after=stale_after)
+        return build_run_detail(
+            store,
+            run_id,
+            stale_after=stale_after,
+            max_reopens=factory_config.escalation.max_reopens,
+        )
 
     def health_provider() -> object:
         return build_operational_health(

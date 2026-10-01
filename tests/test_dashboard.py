@@ -1223,6 +1223,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             "attempts",
             "invocations",
             "totals",
+            "next_step",
         }
         assert "logs" not in payload
         assert "diff" not in payload

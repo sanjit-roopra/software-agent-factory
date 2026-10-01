@@ -45,6 +45,7 @@ from software_agent_factory.models import (
     InvocationRecord,
     ModelUsage,
     PerformanceRecord,
+    PlanDecisionContext,
     PlanStep,
     ResumeClassification,
     ReviewAcceptance,
@@ -57,6 +58,7 @@ from software_agent_factory.models import (
     ReviewLedger,
     ReviewSourceLocation,
     Risk,
+    RiskApprovalContext,
     RiskRationale,
     RunLease,
     TriageResult,
@@ -1701,6 +1703,91 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
     assert "stdout" not in json.dumps(payload)
     assert "secret output" not in json.dumps(payload)
     assert "patch.diff" not in payload["artifacts"]
+
+
+def _risk_context() -> RiskApprovalContext:
+    return RiskApprovalContext(
+        risk=Risk.R2,
+        complexity=Complexity.L1,
+        work_item_id="WI-1",
+        work_item_title="Task",
+        risk_rationale=RiskRationale(
+            intended_outcome="o",
+            sensitive_boundary="b",
+            necessity="n",
+            credible_scenario="c",
+            known_mitigations=["m"],
+            residual_risk="r",
+        ),
+        decision_requested="Approve advancing the run to REFINING.",
+        authorized_actions=["Run agents."],
+        unauthorized_actions=["Change scope."],
+        conditions_in_force=["Quality gates stay on."],
+        context_fingerprint="a" * 64,
+    )
+
+
+def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path / "data")
+    run = _run("run-risk", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "escalation": EscalationRecord(
+                episode_id="ep-1",
+                resume_classification=ResumeClassification.RISK_APPROVAL,
+                reason_code="RISK_APPROVAL",
+                approval_context=_risk_context(),
+            ),
+        }
+    )
+    store.save_run(run)
+
+    detail = build_run_detail(store, run.id, max_reopens=3)
+
+    assert detail is not None and detail.escalation is not None
+    assert detail.escalation.episode_id == "ep-1"
+    assert detail.escalation.context_fingerprint == "a" * 64
+    assert detail.escalation.reopen_max == 3
+    assert detail.escalation.approval_scope is not None
+    assert detail.escalation.approval_scope.model_dump() == {
+        "decision_requested": "Approve advancing the run to REFINING.",
+        "authorized_actions": ["Run agents."],
+        "unauthorized_actions": ["Change scope."],
+        "conditions_in_force": ["Quality gates stay on."],
+    }
+    assert detail.escalation.decisions == []
+
+
+def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path / "data")
+    run = _run("run-plan", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "escalation": EscalationRecord(
+                episode_id="ep-2",
+                resume_classification=ResumeClassification.PLAN_DECISION,
+                reason_code="UNRESOLVED_DECISIONS",
+                plan_decision_context=PlanDecisionContext(
+                    plan_fingerprint="b" * 64,
+                    decisions=["Use SQLite?", "Keep the API?"],
+                    context_fingerprint="c" * 64,
+                ),
+            ),
+        }
+    )
+    store.save_run(run)
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None and detail.escalation is not None
+    assert detail.escalation.decisions == ["Use SQLite?", "Keep the API?"]
+    assert detail.escalation.context_fingerprint == "c" * 64
+    assert detail.escalation.approval_scope is None
+    assert detail.escalation.reopen_max is None
 
 
 def test_build_run_detail_shows_live_active_invocation(
