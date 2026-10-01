@@ -19,6 +19,7 @@ import socket
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -709,6 +710,7 @@ def test_assets_are_served(running_server: RunningServer) -> None:
     )
     assert js_response.status == 200
     assert "javascript" in js_response.getheader("Content-Type", "")
+    assert js_response.read_body == _static_bytes("app.js")  # type: ignore[attr-defined]
 
     css_response = running_server.request(
         "GET",
@@ -717,6 +719,11 @@ def test_assets_are_served(running_server: RunningServer) -> None:
     )
     assert css_response.status == 200
     assert "css" in css_response.getheader("Content-Type", "")
+    assert css_response.read_body == _static_bytes("style.css")  # type: ignore[attr-defined]
+
+
+def _static_bytes(name: str) -> bytes:
+    return resources.files("software_agent_factory.dashboard").joinpath("static", name).read_bytes()
 
 
 # --------------------------------------------------------------------------

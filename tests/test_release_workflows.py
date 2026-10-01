@@ -753,9 +753,7 @@ def test_smoke_missing_git_prerequisite_rejects_a_traceback(tmp_path: Path) -> N
         module._smoke_missing_git_prerequisite(stub, repo, tmp_path)
 
 
-def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets() -> None:
-    """The dashboard is asset-free (HTML/CSS/JS are Python constants), so the
-    spec must not reference a static directory that does not exist."""
+def test_pyinstaller_spec_bundles_config_and_build_info() -> None:
     spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
 
     assert '"default_config.yaml"' in spec_text
@@ -764,11 +762,9 @@ def test_pyinstaller_spec_bundles_config_and_build_info_without_dashboard_assets
     assert 'project_root / "NOTICE.md"' in spec_text
     assert 'build_info_path = package_root / "build-info.json"' in spec_text
     assert 'collect_submodules("software_agent_factory")' in spec_text
-    assert "dashboard/static" not in spec_text
     assert "__main__.py" in spec_text
 
     pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "dashboard/static" not in pyproject_text
     assert 'factory = "software_agent_factory.__main__:main"' in pyproject_text
 
 
@@ -780,6 +776,18 @@ def test_pi_command_filter_is_packaged() -> None:
     assert "pi_extensions/command_filter.mjs" in package_data
     assert '"pi_extensions" / "command_filter.mjs"' in spec_text
     assert '"software_agent_factory/pi_extensions"' in spec_text
+
+
+def test_dashboard_static_assets_are_packaged() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["software_agent_factory"]
+    spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
+
+    for name in ("app.js", "style.css"):
+        assert f"dashboard/static/{name}" in package_data
+        assert f'"dashboard" / "static" / "{name}"' in spec_text
+        assert (ROOT / "src/software_agent_factory/dashboard/static" / name).is_file()
+    assert '"software_agent_factory/dashboard/static"' in spec_text
 
 
 def _jobs_running_the_full_test_suite() -> dict[tuple[str, str], list[dict[str, str]]]:

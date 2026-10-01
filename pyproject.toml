@@ -96,6 +96,8 @@ software_agent_factory = [
   "build-info.json",
   "default_config.yaml",
   "pi_extensions/command_filter.mjs",
+  "dashboard/static/app.js",
+  "dashboard/static/style.css",
 ]
 
 [tool.pytest.ini_options]

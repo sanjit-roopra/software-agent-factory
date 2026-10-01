@@ -29,6 +29,14 @@ package_data = [
         str(package_root / "pi_extensions" / "command_filter.mjs"),
         "software_agent_factory/pi_extensions",
     ),
+    (
+        str(package_root / "dashboard" / "static" / "app.js"),
+        "software_agent_factory/dashboard/static",
+    ),
+    (
+        str(package_root / "dashboard" / "static" / "style.css"),
+        "software_agent_factory/dashboard/static",
+    ),
 ]
 
 build_info_path = package_root / "build-info.json"
