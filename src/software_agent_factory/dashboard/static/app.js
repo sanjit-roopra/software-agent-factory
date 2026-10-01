@@ -11,6 +11,7 @@
   const ERROR_CONNECTION = "connection";
   const ERROR_REQUEST = "request";
 
+  const TOKEN_QUERY_PARAM = "token";
   const THEME_STORAGE_KEY = "factory-dashboard-theme";
   const THEME_ATTRIBUTE = "data-theme";
   const THEME_LIGHT = "light";
@@ -116,8 +117,11 @@
   }
 
   const token = readToken();
+  // actionMessage is the result of the last approve or answer. draft holds the
+  // answers typed so far, so a form that is drawn again gets them back.
   const state = {
-    offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null
+    offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
+    actionMessage: "", draft: null
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -270,7 +274,7 @@
       return "Dashboard restarted, reload the page.";
     }
     if (state.noticeKind !== ERROR_CONNECTION) {
-      return "";
+      return state.actionMessage;
     }
     if (lastSuccessAt === null) {
       return "Connection lost, not updated yet";
@@ -1236,12 +1240,315 @@
     return section;
   }
 
+  // ---- Run detail: approve and answer ------------------------------------
+
+  // Mirrors MAX_PLAN_DECISION_ANSWER_CHARS in resume.py. The server checks again.
+  const MAX_ANSWER_CHARS = 500;
+  const ANSWER_HINT =
+    "1 to " + MAX_ANSWER_CHARS + " characters, one line, no paths, links or secrets";
+  const ACCEPTED_STATUS = 202;
+  const FAILURE_TEXT = "the request failed, try again";
+  const RUN_CHANGED_TEXT = "the run changed, review again";
+  const APPROVE_TITLE_ID = "approve-dialog-title";
+  const ANSWER_TITLE_ID = "answer-title";
+  // A dialog closed with this value leaves focus to the message, not to Approve.
+  const FOCUS_ON_MESSAGE = "message";
+  // Statuses with their own wording. A 400 names the decision and a 409 uses its
+  // reason code, so neither is listed here. Any other status is FAILURE_TEXT.
+  const STATUS_MESSAGES = {
+    401: "dashboard restarted, reload the page",
+    403: "open the dashboard from the link it printed",
+    404: "this run no longer exists"
+  };
+  // The reason codes of a 409, as dashboard/actions.py sends them.
+  const CONFLICT_MESSAGES = {
+    existing_request: "already approved",
+    reopen_limit: "reopen limit reached",
+    wrong_action: "this run needs a different action, reload the page",
+    expired: "approval expired, approve again",
+    stale_episode: RUN_CHANGED_TEXT,
+    stale_fingerprint: RUN_CHANGED_TEXT,
+    not_waiting: RUN_CHANGED_TEXT
+  };
+
+  function setActionMessage(text) {
+    state.actionMessage = text;
+    renderNotice();
+  }
+
+  function lookupMessage(table, key) {
+    return Object.hasOwn(table, key) ? table[key] : FAILURE_TEXT;
+  }
+
+  function isDecisionNumber(value) {
+    return Number.isInteger(value) && value > 0;
+  }
+
+  function failureMessage(outcome) {
+    if (outcome.status === 409) {
+      return lookupMessage(CONFLICT_MESSAGES, outcome.body.reason);
+    }
+    if (outcome.status === 400 && isDecisionNumber(outcome.body.decision)) {
+      return "decision " + outcome.body.decision + ": use " + ANSWER_HINT;
+    }
+    return lookupMessage(STATUS_MESSAGES, outcome.status);
+  }
+
+  // Every answer, whatever its status, resolves with the status and the JSON
+  // body (an object, maybe empty). A network failure or a timeout is status 0.
+  function readOutcome(response) {
+    return response.json().catch(function () {
+      return {};
+    }).then(function (body) {
+      return { status: response.status, body: isPlainObject(body) ? body : {} };
+    });
+  }
+
+  function postAction(runId, action, payload) {
+    const controller = new AbortController();
+    const timer = globalThis.setTimeout(function () {
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
+    return fetch("/api/runs/" + encodeURIComponent(runId) + "/" + action, {
+      method: "POST",
+      headers: { "X-Factory-Token": token, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      credentials: "same-origin",
+      signal: controller.signal
+    })
+      .then(readOutcome, function () {
+        return { status: 0, body: {} };
+      })
+      .finally(function () {
+        globalThis.clearTimeout(timer);
+      });
+  }
+
+  function setDisabled(controls, disabled) {
+    for (const control of controls) {
+      control.disabled = disabled;
+    }
+  }
+
+  function focusQueuedSentence() {
+    document.querySelector("#next-step-body .next-step-sentence")?.focus();
+  }
+
+  // The panel is drawn again from the server, so it shows the queued state. The
+  // focused field is released first: a refresh skips a view while one has focus.
+  function onActionAccepted(request) {
+    state.draft = null;
+    document.activeElement?.blur();
+    request.dialog?.close("accepted");
+    void refreshView().then(focusQueuedSentence);
+  }
+
+  function focusAfterFailure(request, outcome) {
+    const field = outcome.status === 400 ? request.fields?.[outcome.body.decision - 1] : undefined;
+    (field || document.getElementById("notice")).focus();
+  }
+
+  // A 409 means the run moved on, so the panel is drawn again to show how.
+  function onActionRejected(request, outcome) {
+    setDisabled(request.controls, false);
+    request.dialog?.close(FOCUS_ON_MESSAGE);
+    setActionMessage(failureMessage(outcome));
+    focusAfterFailure(request, outcome);
+    if (outcome.status === 409) {
+      void refreshView();
+    }
+  }
+
+  // The controls stay disabled while the request runs, and after it was accepted.
+  function sendAction(request) {
+    setActionMessage("");
+    setDisabled(request.controls, true);
+    return postAction(request.runId, request.action, request.payload).then(function (outcome) {
+      if (outcome.status === ACCEPTED_STATUS) {
+        onActionAccepted(request);
+      } else {
+        onActionRejected(request, outcome);
+      }
+    });
+  }
+
+  function contextPayload(step) {
+    return { episode_id: step.episode_id, context_fingerprint: step.context_fingerprint };
+  }
+
+  function actionButton(label, type) {
+    const button = element("button", "", label);
+    button.type = type;
+    return button;
+  }
+
+  function fillApproveDialog(dialog, scope) {
+    const actions = isPlainObject(scope) ? scope : {};
+    dialog.appendChild(element("h2", "", "Approve this run?")).id = APPROVE_TITLE_ID;
+    dialog.appendChild(element("p", "", "Agent work starts on this run once you confirm."));
+    dialog.appendChild(listSection("Authorized actions", actions.authorized_actions));
+    dialog.appendChild(listSection("Excluded actions", actions.unauthorized_actions));
+  }
+
+  // A native modal: focus moves in, Tab stays inside and Escape closes it. Focus
+  // goes back to Approve unless a failure sent it to the message.
+  function buildApproveDialog(step, runId, opener) {
+    const dialog = element("dialog", "approve-dialog");
+    dialog.setAttribute("aria-labelledby", APPROVE_TITLE_ID);
+    fillApproveDialog(dialog, step.approval_scope);
+    const buttons = dialog.appendChild(element("div", "dialog-actions"));
+    const confirm = buttons.appendChild(actionButton("Confirm approval", "button"));
+    const cancel = buttons.appendChild(actionButton("Cancel", "button"));
+    cancel.autofocus = true;
+    cancel.addEventListener("click", function () {
+      dialog.close();
+    });
+    confirm.addEventListener("click", function () {
+      void sendAction({
+        runId: runId,
+        action: "approve",
+        payload: contextPayload(step),
+        controls: [confirm, opener],
+        dialog: dialog
+      });
+    });
+    dialog.addEventListener("close", function () {
+      if (dialog.returnValue === "") {
+        opener.focus();
+      }
+    });
+    return dialog;
+  }
+
+  function approveSection(step, runId) {
+    const section = element("div", "next-step-section");
+    const opener = section.appendChild(actionButton("Approve", "button"));
+    const dialog = section.appendChild(buildApproveDialog(step, runId, opener));
+    opener.addEventListener("click", function () {
+      setActionMessage("");
+      dialog.returnValue = "";
+      dialog.showModal();
+    });
+    return section;
+  }
+
+  function answersReady(inputs) {
+    return inputs.every(function (input) {
+      const length = input.value.trim().length;
+      return length >= 1 && length <= MAX_ANSWER_CHARS;
+    });
+  }
+
+  function typedAnswers(runId) {
+    return state.draft?.runId === runId ? state.draft.values : [];
+  }
+
+  function rememberAnswers(runId, inputs) {
+    state.draft = {
+      runId: runId,
+      values: inputs.map(function (input) {
+        return input.value;
+      })
+    };
+  }
+
+  // A label and a one-line input, with the limits in text the input points to.
+  function answerField(decision, index, initial) {
+    const row = element("div", "answer-field");
+    const input = element("input");
+    const hint = element("p", "field-hint", ANSWER_HINT);
+    const question = displayValue(decision.question);
+    const label = element("label", "", "Decision " + displayValue(decision.number) + ": " + question);
+    input.id = "answer-" + index;
+    hint.id = "answer-hint-" + index;
+    label.htmlFor = input.id;
+    input.type = "text";
+    input.maxLength = MAX_ANSWER_CHARS;
+    input.autocomplete = "off";
+    input.value = initial;
+    input.setAttribute("aria-describedby", hint.id);
+    row.append(label, input, hint);
+    return row;
+  }
+
+  function sendAnswers(step, runId, submit, inputs) {
+    void sendAction({
+      runId: runId,
+      action: "answer",
+      payload: {
+        ...contextPayload(step),
+        answers: inputs.map(function (input) {
+          return input.value;
+        })
+      },
+      controls: [submit, ...inputs],
+      fields: inputs
+    });
+  }
+
+  // One field for each decision. Submit waits until every field is filled.
+  function answerSection(step, runId) {
+    const section = element("div", "next-step-section");
+    section.appendChild(element("h3", "", "Answer the decisions")).id = ANSWER_TITLE_ID;
+    const form = section.appendChild(element("form", "answer-form"));
+    form.noValidate = true;
+    form.setAttribute("aria-labelledby", ANSWER_TITLE_ID);
+    const typed = typedAnswers(runId);
+    for (const [index, decision] of asArray(step.decisions).entries()) {
+      form.appendChild(answerField(decision, index, typed[index] ?? ""));
+    }
+    const inputs = [...form.querySelectorAll("input")];
+    const submit = form.appendChild(actionButton("Submit answers", "submit"));
+    submit.disabled = !answersReady(inputs);
+    form.addEventListener("input", function () {
+      rememberAnswers(runId, inputs);
+      submit.disabled = !answersReady(inputs);
+    });
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (answersReady(inputs)) {
+        sendAnswers(step, runId, submit, inputs);
+      }
+    });
+    return section;
+  }
+
+  function staleLine(sentence) {
+    return typeof sentence === "string" && sentence !== ""
+      ? element("p", "stale-sentence", sentence)
+      : null;
+  }
+
+  // The context the request must carry is the one the panel was drawn from.
+  function actionSection(step, runId) {
+    const hasContext = typeof step.episode_id === "string" &&
+      typeof step.context_fingerprint === "string";
+    if (runId === null || !hasContext) {
+      return null;
+    }
+    if (step.kind === "approve") {
+      return approveSection(step, runId);
+    }
+    return step.kind === "answer" ? answerSection(step, runId) : null;
+  }
+
+  // Leaving a view drops its message and closes a dialog that is still open.
+  function resetActionState() {
+    state.actionMessage = "";
+    for (const dialog of document.querySelectorAll("dialog[open]")) {
+      dialog.close(FOCUS_ON_MESSAGE);
+    }
+  }
+
+  // The answer form asks each question itself, so the list is for the other kinds.
   function nextStepSections(step, runId) {
     return [
+      staleLine(step.stale_sentence),
       resumeClassificationLine(step),
       reopensLine(step),
       approvalScopeSection(step.approval_scope),
-      decisionsSection(step.decisions),
+      step.kind === "answer" ? null : decisionsSection(step.decisions),
+      actionSection(step, runId),
       failureSection(step, runId),
       commentLinkLine(step.comment_url),
       replySection(step.reply_text)
@@ -1250,7 +1557,10 @@
 
   function buildNextStep(body, step, runId) {
     clearChildren(body);
-    body.appendChild(element("p", "next-step-sentence", displayValue(step.sentence)));
+    const sentence = body.appendChild(
+      element("p", "next-step-sentence", displayValue(step.sentence))
+    );
+    sentence.tabIndex = -1;
     for (const section of nextStepSections(step, runId)) {
       body.appendChild(section);
     }
@@ -1464,6 +1774,7 @@
     state.view = route.view;
     state.runId = validRunId(route);
     supersede(route.view);
+    resetActionState();
     showView(route.view);
     if (route.view === "run") {
       prepareRunDetailView(route.runId);
@@ -1473,6 +1784,19 @@
       document.getElementById(VIEWS[route.view].heading).focus();
     }
     void refreshView();
+  }
+
+  // The token reached the page in its address. Take it out of the address so it
+  // does not stay in the history. The hash route stays.
+  function stripTokenFromUrl() {
+    const url = new URL(globalThis.location.href);
+    if (!url.searchParams.has(TOKEN_QUERY_PARAM)) {
+      return;
+    }
+    url.searchParams.delete(TOKEN_QUERY_PARAM);
+    globalThis.history.replaceState(
+      globalThis.history.state, "", url.pathname + url.search + url.hash
+    );
   }
 
   // A deep link opens with the run list one step back, so Back leaves the deep
@@ -1545,6 +1869,7 @@
 
   function start() {
     applyStoredTheme();
+    stripTokenFromUrl();
     bindControls();
     seedBackHistory();
     applyRoute(false);

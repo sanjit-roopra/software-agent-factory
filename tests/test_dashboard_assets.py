@@ -7,11 +7,15 @@ No JavaScript runner is available (ADR-016), so these tests read ``app.js``,
 from __future__ import annotations
 
 import re
+from typing import get_args
 
 import pytest
 from dashboard_js import function_source, normalized, object_literal_source, strip_comments
 
 from software_agent_factory.dashboard import assets as dashboard_assets
+from software_agent_factory.dashboard.actions import ConflictReason
+from software_agent_factory.dashboard.security import TOKEN_HEADER, TOKEN_QUERY_PARAM
+from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
 # --------------------------------------------------------------------------
 # Shell, navigation and hash routes (asset tests; no JS runner, ADR-016)
@@ -322,7 +326,8 @@ def test_a_failed_refresh_leaves_the_views_as_they_were() -> None:
 
 
 def test_notices_live_in_one_polite_status_region() -> None:
-    assert re.search(r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"></p>', _INDEX_HTML)
+    notice = r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"\s+tabindex="-1"></p>'
+    assert re.search(notice, _INDEX_HTML)
     assert _INDEX_HTML.count('role="status"') == 1
 
 
@@ -958,3 +963,293 @@ def test_the_run_detail_and_project_labels_say_call() -> None:
     )
     assert '["Calls with usage", usage.reported_invocations]' in function_source(js, "usageFields")
     assert '"No calls yet."' in function_source(js, "projectCard")
+
+
+# --------------------------------------------------------------------------
+# Approve and answer from the run detail (slice 4 of #80, ADR-033)
+# --------------------------------------------------------------------------
+
+_JS = dashboard_assets.APP_JS
+
+
+def _plain_strings(literal: str) -> dict[str, str]:
+    """The ``key: "text"`` pairs of an object literal, with numeric or word keys."""
+    return dict(re.findall(r'(\w+): "([^"]+)"', literal))
+
+
+def test_each_status_has_the_message_the_plan_names() -> None:
+    assert _plain_strings(object_literal_source(_JS, "STATUS_MESSAGES")) == {
+        "401": "dashboard restarted, reload the page",
+        "403": "open the dashboard from the link it printed",
+        "404": "this run no longer exists",
+    }
+
+
+def test_each_conflict_reason_has_the_message_the_plan_names() -> None:
+    literal = object_literal_source(_JS, "CONFLICT_MESSAGES")
+    assert _plain_strings(literal) == {
+        "existing_request": "already approved",
+        "reopen_limit": "reopen limit reached",
+        "wrong_action": "this run needs a different action, reload the page",
+        "expired": "approval expired, approve again",
+    }
+    run_changed = {"stale_episode", "stale_fingerprint", "not_waiting"}
+    assert set(re.findall(r"(\w+): RUN_CHANGED_TEXT", literal)) == run_changed
+    assert 'const RUN_CHANGED_TEXT = "the run changed, review again";' in _JS
+
+
+def test_the_page_maps_every_conflict_reason_the_server_sends() -> None:
+    literal = object_literal_source(_JS, "CONFLICT_MESSAGES")
+    keys = set(re.findall(r"(\w+): ", literal))
+    assert keys == set(get_args(ConflictReason))
+
+
+def test_any_other_status_and_a_failed_network_say_the_request_failed() -> None:
+    assert 'const FAILURE_TEXT = "the request failed, try again";' in _JS
+    lookup = function_source(_JS, "lookupMessage")
+    assert lookup == (
+        "function lookupMessage(table, key) { "
+        "return Object.hasOwn(table, key) ? table[key] : FAILURE_TEXT; }"
+    )
+    post = function_source(_JS, "postAction")
+    assert "return { status: 0, body: {} };" in post
+
+
+def test_a_400_names_the_decision_and_a_409_uses_its_reason() -> None:
+    message = function_source(_JS, "failureMessage")
+    assert "outcome.status === 409" in message
+    assert "lookupMessage(CONFLICT_MESSAGES, outcome.body.reason)" in message
+    assert "outcome.status === 400 && isDecisionNumber(outcome.body.decision)" in message
+    assert '"decision " + outcome.body.decision + ": use " + ANSWER_HINT' in message
+    assert "lookupMessage(STATUS_MESSAGES, outcome.status)" in message
+
+
+def test_the_answer_limit_matches_the_server_rule() -> None:
+    assert f"const MAX_ANSWER_CHARS = {MAX_PLAN_DECISION_ANSWER_CHARS};" in _JS
+    assert "no paths, links or secrets" in _JS
+
+
+def test_a_write_carries_the_token_header_a_json_body_and_the_encoded_run_id() -> None:
+    post = function_source(_JS, "postAction")
+    assert 'method: "POST"' in post
+    assert f'"{TOKEN_HEADER}": token' in post
+    assert '"Content-Type": "application/json"' in post
+    assert "body: JSON.stringify(payload)" in post
+    assert '"/api/runs/" + encodeURIComponent(runId) + "/" + action' in post
+    assert "signal: controller.signal" in post
+
+
+def test_the_request_body_names_the_episode_and_the_fingerprint_the_panel_showed() -> None:
+    payload = function_source(_JS, "contextPayload")
+    assert "episode_id: step.episode_id" in payload
+    assert "context_fingerprint: step.context_fingerprint" in payload
+    assert "...contextPayload(step)" in function_source(_JS, "sendAnswers")
+    assert "payload: contextPayload(step)" in function_source(_JS, "buildApproveDialog")
+
+
+def test_a_button_is_disabled_while_the_request_runs() -> None:
+    send = function_source(_JS, "sendAction")
+    assert send.index("setDisabled(request.controls, true)") < send.index("postAction(")
+    rejected = function_source(_JS, "onActionRejected")
+    assert "setDisabled(request.controls, false)" in rejected
+    assert "setDisabled(" not in function_source(_JS, "onActionAccepted")
+
+
+def test_nothing_is_sent_before_the_operator_confirms() -> None:
+    sends = [m.start() for m in re.finditer(r"sendAction\(", strip_comments(_JS))]
+    assert len(sends) == 3  # the definition and the two callers
+    approve = function_source(_JS, "buildApproveDialog")
+    assert approve.index('confirm.addEventListener("click"') < approve.index("sendAction(")
+    opener = function_source(_JS, "approveSection")
+    assert "sendAction" not in opener
+    assert "dialog.showModal()" in opener
+
+
+def test_the_approve_dialog_is_a_labelled_native_modal_that_lists_the_scope() -> None:
+    build = function_source(_JS, "buildApproveDialog")
+    assert 'element("dialog", "approve-dialog")' in build
+    assert 'dialog.setAttribute("aria-labelledby", APPROVE_TITLE_ID)' in build
+    fill = function_source(_JS, "fillApproveDialog")
+    assert (
+        'dialog.appendChild(element("h2", "", "Approve this run?")).id = APPROVE_TITLE_ID' in fill
+    )
+    assert '"Agent work starts on this run once you confirm."' in fill
+    assert 'listSection("Authorized actions", actions.authorized_actions)' in fill
+    assert 'listSection("Excluded actions", actions.unauthorized_actions)' in fill
+    assert 'const APPROVE_TITLE_ID = "approve-dialog-title";' in _JS
+
+
+def test_focus_moves_into_the_dialog_and_returns_to_approve_on_escape_or_cancel() -> None:
+    build = function_source(_JS, "buildApproveDialog")
+    assert "cancel.autofocus = true;" in build
+    assert 'cancel.addEventListener("click", function () { dialog.close(); });' in build
+    assert (
+        'dialog.addEventListener("close", function () { if (dialog.returnValue === "") {' in build
+    )
+    assert "opener.focus();" in build
+    # Opening resets the return value, so an earlier failure cannot hold focus back.
+    opener = function_source(_JS, "approveSection")
+    assert opener.index('dialog.returnValue = "";') < opener.index("dialog.showModal()")
+
+
+def test_an_error_closes_the_dialog_without_taking_focus_from_the_message() -> None:
+    assert 'const FOCUS_ON_MESSAGE = "message";' in _JS
+    rejected = function_source(_JS, "onActionRejected")
+    assert "request.dialog?.close(FOCUS_ON_MESSAGE)" in rejected
+    assert rejected.index("close(FOCUS_ON_MESSAGE)") < rejected.index("focusAfterFailure(")
+
+
+def test_after_an_error_focus_moves_to_the_named_field_or_to_the_message() -> None:
+    focus = function_source(_JS, "focusAfterFailure")
+    assert "outcome.status === 400" in focus
+    assert "request.fields?.[outcome.body.decision - 1]" in focus
+    assert '(field || document.getElementById("notice")).focus()' in focus
+
+
+def test_results_go_in_the_one_status_region_and_a_connection_notice_wins() -> None:
+    assert _INDEX_HTML.count('role="status"') == 1
+    assert "state.actionMessage = text; renderNotice();" in function_source(_JS, "setActionMessage")
+    message = function_source(_JS, "noticeMessage")
+    assert message.index("ERROR_UNAUTHORIZED") < message.index("return state.actionMessage")
+    assert message.index("ERROR_CONNECTION") < message.index("return state.actionMessage")
+
+
+def test_an_accepted_request_draws_the_panel_again_and_moves_focus_to_its_sentence() -> None:
+    accepted = function_source(_JS, "onActionAccepted")
+    assert "state.draft = null;" in accepted
+    assert "document.activeElement?.blur();" in accepted
+    assert 'request.dialog?.close("accepted");' in accepted
+    assert "refreshView().then(focusQueuedSentence)" in accepted
+    sentence = function_source(_JS, "buildNextStep")
+    assert "sentence.tabIndex = -1;" in sentence
+
+
+def test_a_conflict_draws_the_panel_again_so_the_operator_can_review() -> None:
+    rejected = function_source(_JS, "onActionRejected")
+    assert "if (outcome.status === 409) { void refreshView(); }" in rejected
+
+
+def test_the_answer_form_has_a_labelled_one_line_field_for_each_decision() -> None:
+    field = function_source(_JS, "answerField")
+    assert (
+        'element("label", "", "Decision " + displayValue(decision.number) + ": " + question)'
+        in field
+    )
+    assert "label.htmlFor = input.id;" in field
+    assert 'input.type = "text";' in field
+    assert "input.maxLength = MAX_ANSWER_CHARS;" in field
+    assert 'input.setAttribute("aria-describedby", hint.id);' in field
+    assert 'element("p", "field-hint", ANSWER_HINT)' in field
+    assert (
+        'const ANSWER_HINT = "1 to " + MAX_ANSWER_CHARS + " characters, one line, '
+        'no paths, links or secrets";'
+    ) in normalized(_JS)
+    section = function_source(_JS, "answerSection")
+    assert 'form.setAttribute("aria-labelledby", ANSWER_TITLE_ID);' in section
+    assert "asArray(step.decisions).entries()" in section
+
+
+def test_submit_waits_until_every_answer_is_filled_in() -> None:
+    ready = function_source(_JS, "answersReady")
+    assert "inputs.every(" in ready
+    assert "input.value.trim().length" in ready
+    assert "length >= 1 && length <= MAX_ANSWER_CHARS" in ready
+    section = function_source(_JS, "answerSection")
+    assert "submit.disabled = !answersReady(inputs);" in section
+    assert section.count("submit.disabled = !answersReady(inputs);") == 2
+    assert 'form.addEventListener("input", function () {' in section
+    assert "if (answersReady(inputs)) { sendAnswers(step, runId, submit, inputs); }" in section
+    assert "event.preventDefault();" in section
+
+
+def test_typed_answers_return_to_a_form_that_is_drawn_again() -> None:
+    section = function_source(_JS, "answerSection")
+    assert "const typed = typedAnswers(runId);" in section
+    assert 'typed[index] ?? ""' in section
+    assert "rememberAnswers(runId, inputs);" in section
+    assert "state.draft?.runId === runId" in function_source(_JS, "typedAnswers")
+
+
+def test_the_decision_list_gives_way_to_the_form_that_asks_each_question() -> None:
+    sections = function_source(_JS, "nextStepSections")
+    assert 'step.kind === "answer" ? null : decisionsSection(step.decisions)' in sections
+    assert "actionSection(step, runId)" in sections
+    assert "staleLine(step.stale_sentence)" in sections
+
+
+def test_an_action_is_offered_only_for_the_kinds_that_have_one() -> None:
+    action = function_source(_JS, "actionSection")
+    assert 'typeof step.episode_id === "string"' in action
+    assert 'typeof step.context_fingerprint === "string"' in action
+    assert 'step.kind === "approve"' in action
+    assert 'step.kind === "answer"' in action
+    assert "approved_pending" not in action
+    assert "remote_approval_unavailable" not in action
+
+
+def test_a_stale_reason_shows_as_its_own_sentence() -> None:
+    stale = function_source(_JS, "staleLine")
+    assert 'element("p", "stale-sentence", sentence)' in stale
+    assert 'typeof sentence === "string"' in stale
+
+
+def test_the_dirty_guard_keeps_the_dialog_and_the_focused_field_from_a_refresh() -> None:
+    guard = function_source(_JS, "isDirty")
+    assert 'region.querySelector("dialog[open]") !== null' in guard
+    assert 'active.matches("input, textarea, select")' in guard
+
+
+def test_leaving_the_view_drops_the_message_and_closes_an_open_dialog() -> None:
+    reset = function_source(_JS, "resetActionState")
+    assert 'state.actionMessage = "";' in reset
+    assert 'document.querySelectorAll("dialog[open]")' in reset
+    assert "dialog.close(FOCUS_ON_MESSAGE)" in reset
+    assert "resetActionState();" in function_source(_JS, "applyRoute")
+
+
+def test_the_status_region_can_take_focus_for_a_message() -> None:
+    notice = r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"\s+tabindex="-1"></p>'
+    assert re.search(notice, _INDEX_HTML)
+
+
+def test_a_route_change_still_moves_focus_to_the_heading_and_sets_the_title() -> None:
+    apply_route = function_source(_JS, "applyRoute")
+    assert "document.title = routeTitle(route);" in apply_route
+    assert "if (moveFocus) { document.getElementById(VIEWS[route.view].heading).focus(); }" in (
+        apply_route
+    )
+
+
+def test_the_token_leaves_the_address_but_the_hash_route_stays() -> None:
+    strip = function_source(_JS, "stripTokenFromUrl")
+    assert f'const TOKEN_QUERY_PARAM = "{TOKEN_QUERY_PARAM}";' in _JS
+    assert "url.searchParams.has(TOKEN_QUERY_PARAM)" in strip
+    assert "url.searchParams.delete(TOKEN_QUERY_PARAM)" in strip
+    assert "globalThis.history.replaceState(" in strip
+    assert "url.pathname + url.search + url.hash" in strip
+    assert "globalThis.history.state" in strip
+
+
+def test_start_removes_the_token_before_it_seeds_history_and_opens_the_route() -> None:
+    start = function_source(_JS, "start")
+    strip = start.index("stripTokenFromUrl();")
+    assert strip < start.index("seedBackHistory();") < start.index("applyRoute(false);")
+
+
+def test_the_script_reads_the_token_from_the_page_and_never_from_the_address() -> None:
+    assert function_source(_JS, "readToken").count("location") == 0
+    assert "location.search" not in _JS
+
+
+def test_the_dialog_and_the_form_have_styles_and_a_disabled_button_looks_disabled() -> None:
+    css = dashboard_assets.STYLE_CSS
+    for selector in (".approve-dialog", ".dialog-actions", ".answer-field input", ".field-hint"):
+        assert re.search(rf"{re.escape(selector)}\s*\{{", css)
+    assert re.search(r"button:disabled\s*\{[^}]*cursor:\s*not-allowed;", css)
+    assert re.search(r"\.approve-dialog\s*\{[^}]*background:\s*var\(--surface\);", css)
+    assert re.search(r"\.approve-dialog\s*\{[^}]*color:\s*var\(--text\);", css)
+
+
+def test_the_sidebar_no_longer_claims_the_dashboard_is_read_only() -> None:
+    assert "Read-only" not in _INDEX_HTML
+    assert "no mutation" not in _INDEX_HTML
