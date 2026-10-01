@@ -199,12 +199,7 @@ def _risk_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> RiskApprov
             work_item_title="Task",
             risk=Risk.R2.value,
             complexity=Complexity.L1.value,
-            intended_outcome=rationale.intended_outcome,
-            sensitive_boundary=rationale.sensitive_boundary,
-            necessity=rationale.necessity,
-            credible_scenario=rationale.credible_scenario,
-            known_mitigations=rationale.known_mitigations,
-            residual_risk=rationale.residual_risk,
+            rationale=rationale,
             decision_requested=decision,
             next_state=WorkflowState.REFINING.value,
             authorized_actions=authorized,
@@ -757,11 +752,11 @@ def test_a_request_of_another_episode_is_not_read(tmp_path: Path) -> None:
 def test_accept_resume_needs_an_escalation() -> None:
     run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
     reply = ReplyIdentity("github", 1, "lead-dev", None, "", NOW)
+    store = FileRunStore(Path("unused"))
+    config = _config()
 
     with pytest.raises(ValueError, match="no escalation"):
-        accept_resume(
-            run, FileRunStore(Path("unused")), _config(), reply=reply, answers=None, now=NOW
-        )
+        accept_resume(run, store, config, reply=reply, answers=None, now=NOW)
 
 
 def test_accept_resume_rejects_answers_without_a_plan_context(tmp_path: Path) -> None:
@@ -769,9 +764,10 @@ def test_accept_resume_rejects_answers_without_a_plan_context(tmp_path: Path) ->
     store = _store(tmp_path, run)
     reply = ReplyIdentity("github", 1, "lead-dev", None, "", NOW)
     answers = [PlanDecisionAnswer(decision_number=1, answer="x")]
+    config = _config()
 
     with pytest.raises(ValueError, match="no plan decision context"):
-        accept_resume(run, store, _config(), reply=reply, answers=answers, now=NOW)
+        accept_resume(run, store, config, reply=reply, answers=answers, now=NOW)
 
     assert store.load_run(RUN_ID) == run
 

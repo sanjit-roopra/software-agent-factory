@@ -439,22 +439,7 @@ class FactoryService:
                 continue
             if run.escalation is None or run.escalation.status is not EscalationStatus.REOPENED:
                 continue
-
-            # Fail closed immediately if configuration changed after persistence
-            if run.escalation.reopen_count > self.config.escalation.max_reopens:
-                logger.warning(
-                    "run %s reopen limit reduced below reopen_count (%s > %s); failing reopen",
-                    run.id,
-                    run.escalation.reopen_count,
-                    self.config.escalation.max_reopens,
-                )
-                if self.controller is not None:
-                    max_limit = self.config.escalation.max_reopens
-                    self.controller._fail_reopen(
-                        run,
-                        f"run {run.id} exceeded maximum reopens ({max_limit})",
-                        reason_code="ATTEMPT_BUDGET_EXHAUSTED",
-                    )
+            if self._fail_reopen_over_limit(run):
                 continue
 
             if not budget.has_slot():
@@ -468,6 +453,27 @@ class FactoryService:
             logger.info("reconciling and dispatching resume-pending run %s", run.id)
             self._dispatch_reopen(run.id, run.work_item_id)
             budget.take_slot()
+
+    def _fail_reopen_over_limit(self, run: FactoryRun) -> bool:
+        """Fail closed when configuration changed after persistence; True if the run failed."""
+        escalation = run.escalation
+        assert escalation is not None  # the caller checked
+        max_limit = self.config.escalation.max_reopens
+        if escalation.reopen_count <= max_limit:
+            return False
+        logger.warning(
+            "run %s reopen limit reduced below reopen_count (%s > %s); failing reopen",
+            run.id,
+            escalation.reopen_count,
+            max_limit,
+        )
+        if self.controller is not None:
+            self.controller._fail_reopen(
+                run,
+                f"run {run.id} exceeded maximum reopens ({max_limit})",
+                reason_code="ATTEMPT_BUDGET_EXHAUSTED",
+            )
+        return True
 
     def _pending_requests(self, run: FactoryRun) -> list[DashboardResumeRequest]:
         """The pending dashboard requests for the current episode of ``run``."""
@@ -601,20 +607,19 @@ class FactoryService:
         for run in runs:
             if run.state is not WorkflowState.NEEDS_HUMAN or run.escalation is None:
                 continue
-            if run.escalation.status is EscalationStatus.NOTIFIED:
-                if (
-                    run.escalation.resume_classification
-                    not in {
-                        ResumeClassification.RISK_APPROVAL,
-                        ResumeClassification.PLAN_DECISION,
-                    }
-                    or run.escalation.reply_cursor == REPLY_CURSOR_CLOSED
-                ):
-                    if run.escalation.reply_cursor != REPLY_CURSOR_CLOSED:
-                        escalation = run.escalation.model_copy(
-                            update={"reply_cursor": REPLY_CURSOR_CLOSED, "updated_at": utc_now()}
-                        )
-                        self.store.save_run(run.model_copy(update={"escalation": escalation}))
+            if (
+                run.escalation.status is EscalationStatus.NOTIFIED
+                and run.escalation.resume_classification
+                not in {
+                    ResumeClassification.RISK_APPROVAL,
+                    ResumeClassification.PLAN_DECISION,
+                }
+                and run.escalation.reply_cursor != REPLY_CURSOR_CLOSED
+            ):
+                escalation = run.escalation.model_copy(
+                    update={"reply_cursor": REPLY_CURSOR_CLOSED, "updated_at": utc_now()}
+                )
+                self.store.save_run(run.model_copy(update={"escalation": escalation}))
 
     def _next_runs_to_poll(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:
         """Pick this cycle's runs for reply polling, rotating so none starves."""

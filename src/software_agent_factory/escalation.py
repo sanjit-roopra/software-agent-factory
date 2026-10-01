@@ -307,26 +307,6 @@ def build_risk_approval_context(
         "Approval does not reset run history or attempt budgets.",
     ]
 
-    fingerprint = compute_approval_context_fingerprint(
-        run_id=run.id,
-        episode_id=current_episode_id,
-        work_item_id=clean_id,
-        work_item_title=clean_title,
-        risk=triage_result.risk.value,
-        complexity=triage_result.complexity.value,
-        intended_outcome=clean_outcome,
-        sensitive_boundary=clean_boundary,
-        necessity=clean_necessity,
-        credible_scenario=clean_scenario,
-        known_mitigations=clean_mitigations,
-        residual_risk=clean_residual,
-        decision_requested=decision_requested,
-        next_state=WorkflowState.REFINING.value,
-        authorized_actions=authorized_actions,
-        unauthorized_actions=unauthorized_actions,
-        conditions_in_force=conditions_in_force,
-    )
-
     clean_rationale = RiskRationale(
         intended_outcome=clean_outcome,
         sensitive_boundary=clean_boundary,
@@ -334,6 +314,21 @@ def build_risk_approval_context(
         credible_scenario=clean_scenario,
         known_mitigations=clean_mitigations,
         residual_risk=clean_residual,
+    )
+
+    fingerprint = compute_approval_context_fingerprint(
+        run_id=run.id,
+        episode_id=current_episode_id,
+        work_item_id=clean_id,
+        work_item_title=clean_title,
+        risk=triage_result.risk.value,
+        complexity=triage_result.complexity.value,
+        rationale=clean_rationale,
+        decision_requested=decision_requested,
+        next_state=WorkflowState.REFINING.value,
+        authorized_actions=authorized_actions,
+        unauthorized_actions=unauthorized_actions,
+        conditions_in_force=conditions_in_force,
     )
 
     return RiskApprovalContext(

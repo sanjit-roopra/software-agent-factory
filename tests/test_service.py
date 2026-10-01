@@ -882,7 +882,8 @@ def test_a_notice_is_delivered_even_when_no_slot_is_free(
 def _approval_request(run: FactoryRun, **overrides: object) -> DashboardResumeRequest:
     """The dashboard request for the current approval context of ``run``."""
     escalation = run.escalation
-    assert escalation is not None and escalation.approval_context is not None
+    assert escalation is not None
+    assert escalation.approval_context is not None
     fields: dict[str, object] = {
         "run_id": run.id,
         "episode_id": escalation.episode_id,
@@ -901,7 +902,8 @@ def _approve(store: FileRunStore, run: FactoryRun, **overrides: object) -> Dashb
 
 def _stored_request(store: FileRunStore, run: FactoryRun) -> DashboardResumeRequest:
     escalation = run.escalation
-    assert escalation is not None and escalation.approval_context is not None
+    assert escalation is not None
+    assert escalation.approval_context is not None
     request = store.load_dashboard_request(
         run.id, escalation.episode_id, escalation.approval_context.context_fingerprint
     )
@@ -953,7 +955,8 @@ def test_service_reopens_a_risk_approval_from_the_dashboard(
     assert finished.escalation.status is EscalationStatus.RESUMED
     assert finished.escalation.reopen_count == 1
     assert len(finished.attempt_records) == 1
-    assert github.listed_issues == [] and github.posted == []
+    assert github.listed_issues == []
+    assert github.posted == []
 
 
 def test_service_reopens_a_run_with_the_plan_answers_of_the_dashboard(
@@ -989,7 +992,8 @@ def test_service_reopens_a_run_with_the_plan_answers_of_the_dashboard(
     halted = WorkflowController(config, store, runtime).run(
         work_item("WI-plan"), source_repo, run_id="run-plan"
     )
-    assert halted.escalation is not None and halted.escalation.plan_decision_context is not None
+    assert halted.escalation is not None
+    assert halted.escalation.plan_decision_context is not None
     store.create_dashboard_request(
         halted.id,
         DashboardResumeRequest(
@@ -1256,7 +1260,8 @@ def test_a_request_made_inside_the_reply_window_reopens_after_the_quota_delayed_
     make_service(tight).reconcile_escalation()
     held = store.load_run(aged.id)
     assert held.state is WorkflowState.NEEDS_HUMAN
-    assert held.escalation is not None and held.escalation.accepted_replies == []
+    assert held.escalation is not None
+    assert held.escalation.accepted_replies == []
     assert _request_status(store, aged) == "pending"
 
     later = make_service(_escalation_config(data_dir, escalation_enabled=False, max_runs_per_day=5))

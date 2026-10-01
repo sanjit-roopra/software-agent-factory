@@ -741,18 +741,20 @@ def test_concurrent_dashboard_requests_create_exactly_one_file(tmp_path: Path) -
 
 def test_dashboard_request_for_a_missing_run_raises_and_creates_nothing(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path / "data")
+    request = _request()
 
     with pytest.raises(FileNotFoundError):
-        store.create_dashboard_request("run-1", _request())
+        store.create_dashboard_request("run-1", request)
 
     assert not (store.runs_dir / "run-1").exists()
 
 
 def test_dashboard_request_for_another_run_is_rejected(tmp_path: Path) -> None:
     store = _store_with_run(tmp_path)
+    request = _request(run_id="run-2")
 
     with pytest.raises(ValueError, match="not run-1"):
-        store.create_dashboard_request("run-1", _request(run_id="run-2"))
+        store.create_dashboard_request("run-1", request)
 
     assert _request_files(store) == []
 
@@ -867,9 +869,10 @@ def test_replacing_a_dashboard_request_overwrites_it_in_place(tmp_path: Path) ->
 
 def test_replacing_a_dashboard_request_that_does_not_exist_raises(tmp_path: Path) -> None:
     store = _store_with_run(tmp_path)
+    request = _request()
 
     with pytest.raises(FileNotFoundError, match="dashboard-approval-episode-1"):
-        store.replace_dashboard_request("run-1", _request())
+        store.replace_dashboard_request("run-1", request)
 
     assert _request_files(store) == []
 

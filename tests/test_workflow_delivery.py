@@ -600,7 +600,8 @@ def _github_approved_interrupted_at(
     """
     controller, delivery, halted = _halted_for_approval(tmp_path, source_repo, boundary, risk)
     escalation = halted.escalation
-    assert escalation is not None and escalation.approval_context is not None
+    assert escalation is not None
+    assert escalation.approval_context is not None
     receipt = AcceptedReplyReceipt(
         comment_id=1,
         user_login="lead-dev",
@@ -640,7 +641,8 @@ def _dashboard_approved_interrupted_at(
     controller, delivery, halted = _halted_for_approval(tmp_path, source_repo, boundary, risk)
     _, _, store, config = delivery
     escalation = halted.escalation
-    assert escalation is not None and escalation.approval_context is not None
+    assert escalation is not None
+    assert escalation.approval_context is not None
     request = DashboardResumeRequest(
         run_id=APPROVED_RUN_ID,
         episode_id=escalation.episode_id,

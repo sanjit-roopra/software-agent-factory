@@ -42,6 +42,7 @@ from .models import (
     ResumeRefusal,
     Risk,
     RiskApprovalContext,
+    RiskRationale,
     WorkflowState,
 )
 
@@ -158,12 +159,7 @@ def compute_approval_context_fingerprint(
     work_item_title: str,
     risk: str,
     complexity: str,
-    intended_outcome: str,
-    sensitive_boundary: str,
-    necessity: str,
-    credible_scenario: str,
-    known_mitigations: Sequence[str],
-    residual_risk: str,
+    rationale: RiskRationale,
     decision_requested: str,
     next_state: str,
     authorized_actions: Sequence[str],
@@ -179,12 +175,12 @@ def compute_approval_context_fingerprint(
             "work_item_title": work_item_title,
             "risk": risk,
             "complexity": complexity,
-            "intended_outcome": intended_outcome,
-            "sensitive_boundary": sensitive_boundary,
-            "necessity": necessity,
-            "credible_scenario": credible_scenario,
-            "known_mitigations": list(known_mitigations),
-            "residual_risk": residual_risk,
+            "intended_outcome": rationale.intended_outcome,
+            "sensitive_boundary": rationale.sensitive_boundary,
+            "necessity": rationale.necessity,
+            "credible_scenario": rationale.credible_scenario,
+            "known_mitigations": list(rationale.known_mitigations),
+            "residual_risk": rationale.residual_risk,
             "decision_requested": decision_requested,
             "next_state": next_state,
             "authorized_actions": list(authorized_actions),
@@ -234,12 +230,7 @@ def is_valid_risk_approval_context(
         work_item_title=context.work_item_title,
         risk=context.risk.value,
         complexity=context.complexity.value,
-        intended_outcome=rationale.intended_outcome,
-        sensitive_boundary=rationale.sensitive_boundary,
-        necessity=rationale.necessity,
-        credible_scenario=rationale.credible_scenario,
-        known_mitigations=rationale.known_mitigations,
-        residual_risk=rationale.residual_risk,
+        rationale=rationale,
         decision_requested=context.decision_requested,
         next_state=context.next_state.value,
         authorized_actions=context.authorized_actions,
@@ -421,47 +412,9 @@ def _accept(
     assert escalation is not None  # resume_refusal returned None
     if not _same_context(escalation, seen):
         return "context_changed"
-    approval = escalation.approval_context
-    plan = escalation.plan_decision_context
-    is_risk = escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-    is_plan = escalation.resume_classification is ResumeClassification.PLAN_DECISION
-    receipt = AcceptedReplyReceipt(
-        source=reply.source,
-        comment_id=reply.comment_id,
-        user_login=reply.user_login,
-        user_id=reply.user_id,
-        author_association=reply.author_association,
-        created_at=reply.created_at,
-        accepted_at=now,
-        command=(
-            format_resume_command(fresh.id, escalation.episode_id)
-            if is_risk
-            else format_answer_command(fresh.id, escalation.episode_id)
-        ),
-        episode_id=escalation.episode_id,
-        run_id=fresh.id,
-        approval_context_fingerprint=approval.context_fingerprint if is_risk and approval else None,
-        plan_decision_context_fingerprint=plan.context_fingerprint if is_plan and plan else None,
-    )
+    receipt = _build_receipt(fresh, escalation, reply, now)
     if answers is not None:
-        if plan is None:
-            raise ValueError(f"run {run.id} has no plan decision context for the answers")
-        store.save_artifact(
-            fresh.id,
-            PlanDecisionAnswers(
-                run_id=fresh.id,
-                episode_id=escalation.episode_id,
-                plan_fingerprint=plan.plan_fingerprint,
-                context_fingerprint=plan.context_fingerprint,
-                source=reply.source,
-                comment_id=reply.comment_id,
-                user_login=reply.user_login,
-                user_id=reply.user_id,
-                author_association=reply.author_association,
-                answers=answers,
-                accepted_at=now,
-            ),
-        )
+        _save_plan_answers(store, fresh, escalation, reply, answers, now)
     reopened = escalation.model_copy(
         update={
             "accepted_replies": [*escalation.accepted_replies, receipt],
@@ -479,6 +432,66 @@ def _accept(
             if request.status == "pending":
                 _mark_stale(store, fresh.id, request, "state_changed")
     return receipt
+
+
+def _build_receipt(
+    fresh: FactoryRun,
+    escalation: EscalationRecord,
+    reply: ReplyIdentity,
+    now: datetime,
+) -> AcceptedReplyReceipt:
+    """The receipt for ``reply``, carrying the fingerprint of the context the human saw."""
+    approval = escalation.approval_context
+    plan = escalation.plan_decision_context
+    is_risk = escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+    is_plan = escalation.resume_classification is ResumeClassification.PLAN_DECISION
+    return AcceptedReplyReceipt(
+        source=reply.source,
+        comment_id=reply.comment_id,
+        user_login=reply.user_login,
+        user_id=reply.user_id,
+        author_association=reply.author_association,
+        created_at=reply.created_at,
+        accepted_at=now,
+        command=(
+            format_resume_command(fresh.id, escalation.episode_id)
+            if is_risk
+            else format_answer_command(fresh.id, escalation.episode_id)
+        ),
+        episode_id=escalation.episode_id,
+        run_id=fresh.id,
+        approval_context_fingerprint=approval.context_fingerprint if is_risk and approval else None,
+        plan_decision_context_fingerprint=plan.context_fingerprint if is_plan and plan else None,
+    )
+
+
+def _save_plan_answers(
+    store: ResumeStore,
+    fresh: FactoryRun,
+    escalation: EscalationRecord,
+    reply: ReplyIdentity,
+    answers: list[PlanDecisionAnswer],
+    now: datetime,
+) -> None:
+    plan = escalation.plan_decision_context
+    if plan is None:
+        raise ValueError(f"run {fresh.id} has no plan decision context for the answers")
+    store.save_artifact(
+        fresh.id,
+        PlanDecisionAnswers(
+            run_id=fresh.id,
+            episode_id=escalation.episode_id,
+            plan_fingerprint=plan.plan_fingerprint,
+            context_fingerprint=plan.context_fingerprint,
+            source=reply.source,
+            comment_id=reply.comment_id,
+            user_login=reply.user_login,
+            user_id=reply.user_id,
+            author_association=reply.author_association,
+            answers=answers,
+            accepted_at=now,
+        ),
+    )
 
 
 def accept_resume(
@@ -565,6 +578,25 @@ def _mark_stale(
     store.replace_dashboard_request(run_id, request.marked_stale(reason))
 
 
+def _settle_other_contexts(
+    store: ResumeStore,
+    run_id: str,
+    escalation: EscalationRecord,
+    fingerprint: str | None,
+    requests: Sequence[DashboardResumeRequest],
+) -> DashboardResumeRequest | None:
+    """Mark the pending requests for another context stale; return the one for ``fingerprint``."""
+    current: DashboardResumeRequest | None = None
+    for request in requests:
+        if request.status != "pending" or request.episode_id != escalation.episode_id:
+            continue
+        if request.context_fingerprint == fingerprint:
+            current = request
+        else:
+            _mark_stale(store, run_id, request, "context_changed")
+    return current
+
+
 def ingest_dashboard_request(
     run: FactoryRun,
     store: ResumeStore,
@@ -594,16 +626,9 @@ def ingest_dashboard_request(
     if escalation is None:
         return None
     fingerprint = _current_context_fingerprint(escalation)
-    current: DashboardResumeRequest | None = None
     if requests is None:
         requests = store.list_dashboard_requests(run.id, escalation.episode_id)
-    for request in requests:
-        if request.status != "pending" or request.episode_id != escalation.episode_id:
-            continue
-        if request.context_fingerprint == fingerprint:
-            current = request
-        else:
-            _mark_stale(store, run.id, request, "context_changed")
+    current = _settle_other_contexts(store, run.id, escalation, fingerprint, requests)
     if current is None or fingerprint is None:
         return None
     if _dashboard_already_accepted(escalation, fingerprint):
