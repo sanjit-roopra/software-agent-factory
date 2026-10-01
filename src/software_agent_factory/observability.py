@@ -96,6 +96,7 @@ from .models import (
     ModelBase,
     PerformanceRecord,
     ResumeClassification,
+    ResumeRefusal,
     ReviewFindingCategory,
     ReviewImpasse,
     Risk,
@@ -108,6 +109,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
+from .resume import resume_refusal_within
 from .store import ARTIFACT_FILENAMES
 from .verification import redact_secrets
 
@@ -489,6 +491,9 @@ class EscalationSummary(ModelBase):
     context_fingerprint: str | None = None
     reopen_max: int | None = Field(default=None, ge=1)
     reply_closed_cause: str | None = None
+    #: Why the dashboard could not queue a resume now, or ``None`` when it can. Unlike
+    #: ``reply_closed_cause`` this ignores the GitHub-only gates.
+    dashboard_action_refusal: ResumeRefusal | None = None
     approval_scope: ApprovalScopeSummary | None = None
     decisions: list[str] = Field(default_factory=list)
 
@@ -1389,6 +1394,9 @@ def _escalation_summary(
             enabled=escalation_enabled,
             allowed_hosts=allowed_hosts,
             now=now,
+        ),
+        dashboard_action_refusal=resume_refusal_within(
+            run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
         ),
         approval_scope=(
             ApprovalScopeSummary(

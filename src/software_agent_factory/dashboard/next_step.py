@@ -5,9 +5,15 @@ Pure: no I/O, and it imports only ``models`` and the leaves ``escalation_protoco
 run detail that already went through :mod:`software_agent_factory.dashboard.sanitize`. That
 step redacted and bounded every free text, so this module copies text and never redacts it.
 
-Whether a reply can reach the run is not decided here. The escalation block carries
+Whether the page may offer an action is not decided here. The escalation block carries
+``dashboard_action_refusal``, which :func:`software_agent_factory.resume.resume_refusal_within`
+computed from the stored run and the config: the rules the service applies to a dashboard
+request. A block without it, or with an unknown value, is treated as refused.
+
+Whether a GitHub reply can reach the run is a separate question. The block carries
 ``reply_closed_cause``, which :func:`software_agent_factory.escalation_protocol.reply_closed_cause`
-computed from the stored record and the config. A block without it is treated as closed.
+computed. The copyable reply text and the comment link show only while that is ``None``; the
+dashboard action does not depend on it.
 
 A request the dashboard queued is read through the injected ``ResumeRequestReader``. Only its
 status, stale reason, action, context fingerprint and time are used; the answers in it are never
@@ -60,6 +66,8 @@ START_HINT = "If factory start is not running, start it."
 
 #: The cause shown when the escalation block does not say whether a reply is open.
 UNKNOWN_REPLY_STATE = "the reply state is not known"
+#: The cause shown when the escalation block does not say whether the dashboard may act.
+UNKNOWN_ACTION_STATE = "the run state is not known"
 #: The cause shown when the reopen count has reached its maximum. It is one of
 #: ``escalation_protocol.REPLY_CLOSED_CAUSES``; a test pins that.
 REOPEN_LIMIT_CAUSE = "the reopen limit is reached"
@@ -70,6 +78,14 @@ STALE_SENTENCES: dict[str, str] = {
     "reopen_limit": "reopen limit reached, inspect with factory show",
     "context_changed": "the run changed, review again",
     "state_changed": "the run state changed, review again",
+}
+
+#: Why the page offers no action, one phrase per refusal code. Two reuse the reply phrases.
+REFUSAL_CAUSES: dict[str, str] = {
+    "expired": "the reply window expired",
+    "reopen_limit": REOPEN_LIMIT_CAUSE,
+    "context_changed": "the run changed",
+    "state_changed": "the run state changed",
 }
 
 
@@ -174,19 +190,32 @@ def _reopens_exhausted(escalation: dict[str, Any]) -> bool:
     return used is not None and maximum is not None and used >= maximum
 
 
-def _reply_closed_cause_or_unknown(escalation: dict[str, Any]) -> str | None:
-    """Why the factory would ignore a reply now, or ``None`` when it would read it.
+def _reply_open(escalation: dict[str, Any]) -> bool:
+    """Whether the factory would read a GitHub reply now.
 
     The cause comes from :func:`software_agent_factory.escalation_protocol.reply_closed_cause`,
-    computed with the config when the run detail is built. ``None`` means open. A block
-    without that field, or with a value that is not ``None`` or a non-empty string, is
-    treated as closed, because the reply state is then unknown. An open reply is still
-    closed once the reopen count has reached its maximum.
+    computed with the config when the run detail is built. Only ``None`` means open. A block
+    without that field, or with any other value, is treated as closed. An open reply is
+    still closed once the reopen count has reached its maximum.
     """
-    cause = escalation.get("reply_closed_cause", UNKNOWN_REPLY_STATE)
-    if cause is None:
+    return escalation.get("reply_closed_cause", UNKNOWN_REPLY_STATE) is None and not (
+        _reopens_exhausted(escalation)
+    )
+
+
+def _action_refusal_cause(escalation: dict[str, Any]) -> str | None:
+    """Why the page offers no action, or ``None`` when the service would take a request.
+
+    ``dashboard_action_refusal`` must be present: ``None`` means the service would accept,
+    one of the four codes means it would not. A missing or unknown value is refused. A
+    reopen count at its maximum is refused even when the field says ``None``.
+    """
+    refusal = escalation.get("dashboard_action_refusal", UNKNOWN_ACTION_STATE)
+    if refusal is None:
         return REOPEN_LIMIT_CAUSE if _reopens_exhausted(escalation) else None
-    return cause if isinstance(cause, str) and cause else UNKNOWN_REPLY_STATE
+    if isinstance(refusal, str) and refusal in REFUSAL_CAUSES:
+        return REFUSAL_CAUSES[refusal]
+    return UNKNOWN_ACTION_STATE
 
 
 def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -199,29 +228,35 @@ def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, st
     return run_id, episode_id, fingerprint
 
 
+def _github_reply(
+    step: dict[str, Any], escalation: dict[str, Any], reply_text: str
+) -> dict[str, Any]:
+    """Add the copyable reply and the comment link when a GitHub reply would be read."""
+    if _reply_open(escalation):
+        step["reply_text"] = reply_text
+    else:
+        step["comment_url"] = None
+    return step
+
+
 def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
-    closed = _reply_closed_cause_or_unknown(escalation)
-    if closed is not None:
-        return _unavailable(run, escalation, f"Remote approval is not available because {closed}.")
+    refused = _action_refusal_cause(escalation)
+    if refused is not None:
+        return _unavailable(run, escalation, f"Remote approval is not available because {refused}.")
     ids = _reply_ids(run, escalation)
     scope = escalation.get("approval_scope")
     if ids is None or not isinstance(scope, dict):
         return _unavailable(run, escalation, "Remote approval is not available.")
     run_id, episode_id, fingerprint = ids
     step = _halt_step(NextStepKind.APPROVE, _reason_sentence(escalation), escalation)
-    step.update(
-        approval_scope=scope,
-        episode_id=episode_id,
-        context_fingerprint=fingerprint,
-        reply_text=format_resume_command(run_id, episode_id),
-    )
-    return step
+    step.update(approval_scope=scope, episode_id=episode_id, context_fingerprint=fingerprint)
+    return _github_reply(step, escalation, format_resume_command(run_id, episode_id))
 
 
 def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
-    closed = _reply_closed_cause_or_unknown(escalation)
-    if closed is not None:
-        return _unavailable(run, escalation, f"Remote answers are not available because {closed}.")
+    refused = _action_refusal_cause(escalation)
+    if refused is not None:
+        return _unavailable(run, escalation, f"Remote answers are not available because {refused}.")
     ids = _reply_ids(run, escalation)
     questions = escalation.get("decisions")
     if (
@@ -237,9 +272,9 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         decisions=[{"number": n, "question": q} for n, q in enumerate(questions, start=1)],
         episode_id=episode_id,
         context_fingerprint=fingerprint,
-        reply_text="\n".join([format_answer_command(run_id, episode_id), *template]),
     )
-    return step
+    reply = "\n".join([format_answer_command(run_id, episode_id), *template])
+    return _github_reply(step, escalation, reply)
 
 
 def _parsed_requests(raw: Iterable[Any]) -> list[_Request]:

@@ -41,6 +41,7 @@ from software_agent_factory.resume import (
     compute_plan_decision_context_fingerprint,
     ingest_dashboard_request,
     resume_refusal,
+    resume_refusal_within,
 )
 from software_agent_factory.store import FileRunStore
 
@@ -948,3 +949,14 @@ def test_the_dashboard_package_never_names_a_resume_write_function() -> None:
         if found & _WRITE_FUNCTIONS:
             named[path.name] = found & _WRITE_FUNCTIONS
     assert named == {}
+
+
+def test_refusal_within_skips_a_limit_that_is_unknown() -> None:
+    run = _run(created_at=NOW - timedelta(hours=500), reopen_count=9)
+
+    assert resume_refusal_within(run, reply_window_hours=None, max_reopens=None, now=NOW) is None
+    assert resume_refusal_within(run, reply_window_hours=24, max_reopens=None, now=NOW) == "expired"
+    assert (
+        resume_refusal_within(run, reply_window_hours=None, max_reopens=3, now=NOW)
+        == "reopen_limit"
+    )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from software_agent_factory.dashboard import sanitize
 from software_agent_factory.dashboard.next_step import (
     FALLBACK_SENTENCE,
     REASON_SENTENCES,
+    REFUSAL_CAUSES,
     REOPEN_LIMIT_CAUSE,
     STALE_SENTENCES,
     NextStepKind,
@@ -25,6 +26,7 @@ from software_agent_factory.dashboard.sanitize import (
     MAX_SCOPE_ITEMS,
     sanitize_run_detail,
 )
+from software_agent_factory.dashboard.validators import RESUME_REFUSALS
 from software_agent_factory.dashboard.view import run_detail_view
 from software_agent_factory.escalation import parse_plan_decision_answers, parse_resume_command
 from software_agent_factory.escalation_protocol import REPLY_CLOSED_CAUSES
@@ -42,6 +44,10 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import build_run_detail
 from software_agent_factory.redaction import REASON_LIMIT
+from software_agent_factory.resume import (
+    compute_approval_context_fingerprint,
+    compute_plan_decision_context_fingerprint,
+)
 from software_agent_factory.store import FileRunStore
 
 RUN_ID = "run-20261001-abc"
@@ -81,6 +87,7 @@ def _run(
             "reopen_count": 0,
             "reopen_max": 3,
             "reply_closed_cause": None,
+            "dashboard_action_refusal": None,
             **escalation,
         }
     return run
@@ -289,39 +296,106 @@ def test_a_run_id_the_dashboard_route_would_reject_makes_the_reply_unavailable(
 @pytest.mark.parametrize(
     "cause",
     [
+        "escalation is switched off",
         "the notice is not sent yet",
         "the notice has no reply instructions",
         "the reply window expired",
+        "the notice host is no longer allowed",
     ],
 )
-def test_a_reply_the_factory_would_ignore_is_unavailable_and_says_why(cause: str) -> None:
+def test_a_closed_github_reply_still_offers_the_action_without_reply_text(cause: str) -> None:
     approve = next_step(_risk_run(reply_closed_cause=cause))
     answer = next_step(_plan_run(reply_closed_cause=cause))
 
-    assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
-    assert f"Remote approval is not available because {cause}." in approve["sentence"]
-    assert f"Remote answers are not available because {cause}." in answer["sentence"]
+    assert approve["kind"] == "approve"
+    assert answer["kind"] == "answer"
     assert approve["reply_text"] is answer["reply_text"] is None
+    assert approve["approval_scope"] == SCOPE
+    assert [d["question"] for d in answer["decisions"]] == ["Use SQLite?", "Keep the old API?"]
 
 
-def test_an_escalation_without_a_reply_state_is_treated_as_closed() -> None:
+def test_a_closed_github_reply_hides_the_comment_link() -> None:
+    url = "https://github.com/o/r/pull/1#c-1"
+
+    closed = next_step(_risk_run(reply_closed_cause="escalation is switched off", comment_url=url))
+    open_ = next_step(_risk_run(comment_url=url))
+
+    assert closed["comment_url"] is None
+    assert open_["comment_url"] == url
+
+
+def test_an_open_github_reply_offers_both_the_action_and_the_reply_text() -> None:
+    approve = next_step(_risk_run())
+    answer = next_step(_plan_run())
+
+    assert (approve["kind"], answer["kind"]) == ("approve", "answer")
+    assert approve["reply_text"] is not None
+    assert answer["reply_text"] is not None
+
+
+@pytest.mark.parametrize("cause", [None, "", 5, ["closed"], {"a": 1}, False])
+def test_an_unknown_or_malformed_reply_state_hides_only_the_reply_text(cause: Any) -> None:
     run = _risk_run()
     del run["escalation"]["reply_closed_cause"]
+    if cause is not None:
+        run["escalation"]["reply_closed_cause"] = cause
+
+    step = next_step(run)
+
+    assert step["kind"] == "approve"
+    assert step["reply_text"] is None
+
+
+@pytest.mark.parametrize(
+    ("refusal", "phrase"),
+    [
+        ("expired", "the reply window expired"),
+        ("reopen_limit", "the reopen limit is reached"),
+        ("context_changed", "the run changed"),
+        ("state_changed", "the run state changed"),
+    ],
+)
+def test_a_refused_dashboard_action_is_unavailable_and_says_why(refusal: str, phrase: str) -> None:
+    approve = next_step(_risk_run(dashboard_action_refusal=refusal))
+    answer = next_step(_plan_run(dashboard_action_refusal=refusal))
+
+    assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
+    assert f"Remote approval is not available because {phrase}." in approve["sentence"]
+    assert f"Remote answers are not available because {phrase}." in answer["sentence"]
+    assert approve["reply_text"] is answer["reply_text"] is None
+    assert approve["approval_scope"] is answer["approval_scope"] is None
+    assert answer["decisions"] == []
+
+
+def test_every_refusal_code_has_a_phrase() -> None:
+    assert set(REFUSAL_CAUSES) == set(RESUME_REFUSALS)
+
+
+def test_a_refusal_overrides_an_open_github_reply() -> None:
+    step = next_step(_risk_run(reply_closed_cause=None, dashboard_action_refusal="expired"))
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert step["reply_text"] is None
+
+
+def test_an_escalation_without_a_refusal_field_is_treated_as_refused() -> None:
+    run = _risk_run()
+    del run["escalation"]["dashboard_action_refusal"]
 
     step = next_step(run)
 
     assert step["kind"] == "remote_approval_unavailable"
-    assert "because the reply state is not known." in step["sentence"]
+    assert "because the run state is not known." in step["sentence"]
 
 
-@pytest.mark.parametrize("cause", ["", 5, ["closed"], {"a": 1}, False])
-def test_a_malformed_reply_state_is_treated_as_closed(cause: Any) -> None:
-    approve = next_step(_risk_run(reply_closed_cause=cause))
-    answer = next_step(_plan_run(reply_closed_cause=cause))
+@pytest.mark.parametrize("refusal", ["", "nope", 5, ["expired"], {"a": 1}, False])
+def test_a_malformed_refusal_is_treated_as_refused(refusal: Any) -> None:
+    approve = next_step(_risk_run(dashboard_action_refusal=refusal))
+    answer = next_step(_plan_run(dashboard_action_refusal=refusal))
 
     assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
-    assert "because the reply state is not known." in approve["sentence"]
-    assert "because the reply state is not known." in answer["sentence"]
+    assert "because the run state is not known." in approve["sentence"]
+    assert "because the run state is not known." in answer["sentence"]
     assert approve["reply_text"] is answer["reply_text"] is None
 
 
@@ -456,6 +530,7 @@ def test_sanitized_run_detail_carries_the_next_step_and_redacts_the_escalation()
             "reopen_count": 1,
             "reopen_max": 3,
             "reply_closed_cause": None,
+            "dashboard_action_refusal": None,
             "comment_url": "https://github.com/o/r/pull/1#c-1",
             "approval_scope": {**SCOPE, "decision_requested": f"Approve {SECRET}"},
             "raw_prompt": "dropped",
@@ -532,11 +607,24 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
                 work_item_id="WI-1",
                 work_item_title="Task",
                 risk_rationale=scope,
-                decision_requested=f"Approve {SECRET}",
+                decision_requested="Approve it.",
                 authorized_actions=["Run agents."],
                 unauthorized_actions=["Change scope."],
                 conditions_in_force=["Gates stay on."],
-                context_fingerprint=FINGERPRINT,
+                context_fingerprint=compute_approval_context_fingerprint(
+                    run_id=RUN_ID,
+                    episode_id=EPISODE_ID,
+                    work_item_id="WI-1",
+                    work_item_title="Task",
+                    risk=Risk.R2.value,
+                    complexity=Complexity.L1.value,
+                    rationale=scope,
+                    decision_requested="Approve it.",
+                    next_state=WorkflowState.REFINING.value,
+                    authorized_actions=["Run agents."],
+                    unauthorized_actions=["Change scope."],
+                    conditions_in_force=["Gates stay on."],
+                ),
             ),
         ),
     )
@@ -549,12 +637,12 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
 
     assert step["kind"] == "approve"
     assert (step["reopens_used"], step["reopens_max"]) == (1, 3)
-    assert step["approval_scope"]["decision_requested"] == "Approve [REDACTED]"
+    assert step["approval_scope"]["decision_requested"] == "Approve it."
     assert step["comment_url"] == "https://github.com/o/r/pull/1#c-1"
     assert parse_resume_command(step["reply_text"]) == (RUN_ID, EPISODE_ID)
 
 
-def test_a_stored_notice_with_no_reply_instructions_is_unavailable_end_to_end(
+def test_a_stored_notice_with_no_reply_instructions_still_offers_the_action_end_to_end(
     tmp_path: Path,
 ) -> None:
     store = FileRunStore(tmp_path / "data")
@@ -576,7 +664,12 @@ def test_a_stored_notice_with_no_reply_instructions_is_unavailable_end_to_end(
                 plan_decision_context=PlanDecisionContext(
                     plan_fingerprint="p" * 64,
                     decisions=["Use SQLite?"],
-                    context_fingerprint=FINGERPRINT,
+                    context_fingerprint=compute_plan_decision_context_fingerprint(
+                        run_id=RUN_ID,
+                        episode_id=EPISODE_ID,
+                        plan_fingerprint="p" * 64,
+                        decisions=["Use SQLite?"],
+                    ),
                 ),
             ),
         )
@@ -584,8 +677,8 @@ def test_a_stored_notice_with_no_reply_instructions_is_unavailable_end_to_end(
 
     step = run_detail_view(build_run_detail(store, RUN_ID, max_reopens=3))["next_step"]
 
-    assert step["kind"] == "remote_approval_unavailable"
-    assert "because the notice has no reply instructions." in step["sentence"]
+    assert step["kind"] == "answer"
+    assert step["reply_text"] is None
 
 
 @pytest.mark.parametrize("cause", [*sorted(REPLY_CLOSED_CAUSES), None])
@@ -600,6 +693,22 @@ def test_the_sanitizer_drops_a_reply_closed_cause_that_is_not_a_known_phrase(cau
     detail = {"run_id": RUN_ID, "escalation": {"reply_closed_cause": cause}}
 
     assert "reply_closed_cause" not in sanitize_run_detail(detail)["escalation"]
+
+
+@pytest.mark.parametrize("refusal", [*sorted(RESUME_REFUSALS), None])
+def test_the_sanitizer_keeps_every_known_refusal_and_none(refusal: str | None) -> None:
+    detail = {"run_id": RUN_ID, "escalation": {"dashboard_action_refusal": refusal}}
+
+    assert sanitize_run_detail(detail)["escalation"]["dashboard_action_refusal"] == refusal
+
+
+@pytest.mark.parametrize(
+    "refusal", ["", 5, ["expired"], {"a": 1}, "a code the service never sends"]
+)
+def test_the_sanitizer_drops_a_refusal_that_is_not_a_known_code(refusal: Any) -> None:
+    detail = {"run_id": RUN_ID, "escalation": {"dashboard_action_refusal": refusal}}
+
+    assert "dashboard_action_refusal" not in sanitize_run_detail(detail)["escalation"]
 
 
 def test_each_escalation_text_is_cut_to_the_reason_limit_and_names_the_run() -> None:
@@ -843,3 +952,94 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "approved_pending",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'
+
+
+# -- the provider computes the dashboard rules, not the GitHub reply gate ----
+
+
+STORED_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+
+def _stored_plan_run(tmp_path: Path, **record: Any) -> FileRunStore:
+    store = FileRunStore(tmp_path / "data")
+    decisions = ["Use SQLite?"]
+    context = PlanDecisionContext(
+        plan_fingerprint="p" * 64,
+        decisions=decisions,
+        context_fingerprint=compute_plan_decision_context_fingerprint(
+            run_id=RUN_ID, episode_id=EPISODE_ID, plan_fingerprint="p" * 64, decisions=decisions
+        ),
+    )
+    fields: dict[str, Any] = {
+        "episode_id": EPISODE_ID,
+        "status": EscalationStatus.NOTIFIED,
+        "resume_classification": ResumeClassification.PLAN_DECISION,
+        "reason_code": "UNRESOLVED_DECISIONS",
+        "created_at": STORED_NOW - timedelta(hours=1),
+        "remote_resume_enabled": True,
+        "plan_decision_context": context,
+    }
+    store.save_run(
+        FactoryRun(
+            id=RUN_ID,
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=STORED_NOW,
+            updated_at=STORED_NOW,
+            escalation=EscalationRecord.model_validate({**fields, **record}),
+        )
+    )
+    return store
+
+
+def _stored_step(store: FileRunStore, **limits: Any) -> dict[str, Any]:
+    limits = {"max_reopens": 3, "reply_window_hours": 24, "escalation_enabled": True, **limits}
+    detail = build_run_detail(store, RUN_ID, now=STORED_NOW, **limits)
+    step: dict[str, Any] = run_detail_view(detail)["next_step"]
+    return step
+
+
+def test_a_stored_run_with_escalation_off_still_offers_the_action_and_no_reply_text(
+    tmp_path: Path,
+) -> None:
+    step = _stored_step(_stored_plan_run(tmp_path), escalation_enabled=False)
+
+    assert step["kind"] == "answer"
+    assert step["reply_text"] is None
+
+
+def test_a_stored_run_offers_both_the_action_and_the_reply_text_while_github_is_open(
+    tmp_path: Path,
+) -> None:
+    step = _stored_step(_stored_plan_run(tmp_path))
+
+    assert step["kind"] == "answer"
+    assert step["reply_text"] is not None
+
+
+def test_a_stored_run_past_its_reply_window_has_no_action_and_says_it_expired(
+    tmp_path: Path,
+) -> None:
+    store = _stored_plan_run(tmp_path, created_at=STORED_NOW - timedelta(hours=25))
+
+    step = _stored_step(store)
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "because the reply window expired." in step["sentence"]
+    assert step["reply_text"] is None
+
+
+def test_a_stored_run_at_the_reopen_limit_has_no_action(tmp_path: Path) -> None:
+    step = _stored_step(_stored_plan_run(tmp_path, reopen_count=3))
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "because the reopen limit is reached." in step["sentence"]
+
+
+def test_a_stored_run_that_is_not_waiting_has_no_action(tmp_path: Path) -> None:
+    store = _stored_plan_run(tmp_path, status=EscalationStatus.RESUMED)
+
+    step = _stored_step(store)
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "because the run state changed." in step["sentence"]

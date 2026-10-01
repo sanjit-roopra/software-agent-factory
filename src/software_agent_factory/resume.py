@@ -324,15 +324,36 @@ def resume_refusal(run: FactoryRun, config: FactoryConfig, now: datetime) -> Res
     dashboard request when its human made it. ``remote_resume_enabled`` is not part of this
     check: it covers GitHub replies only.
     """
+    return resume_refusal_within(
+        run,
+        reply_window_hours=config.escalation.reply_window_hours,
+        max_reopens=config.escalation.max_reopens,
+        now=now,
+    )
+
+
+def resume_refusal_within(
+    run: FactoryRun,
+    *,
+    reply_window_hours: float | None,
+    max_reopens: int | None,
+    now: datetime,
+) -> ResumeRefusal | None:
+    """:func:`resume_refusal` for a caller that holds the two limits, not the whole config.
+
+    A limit that is ``None`` is unknown and is not checked, as in
+    :func:`.escalation_protocol.reply_closed_cause`.
+    """
     escalation = run.escalation
     if escalation is None or not awaits_human(run):
         return "state_changed"
     if not _has_valid_resume_context(run):
         return "context_changed"
-    window_end = escalation.created_at + timedelta(hours=config.escalation.reply_window_hours)
-    if now > window_end:
+    if reply_window_hours is not None and now > escalation.created_at + timedelta(
+        hours=reply_window_hours
+    ):
         return "expired"
-    if escalation.reopen_count >= config.escalation.max_reopens:
+    if max_reopens is not None and escalation.reopen_count >= max_reopens:
         return "reopen_limit"
     return None
 

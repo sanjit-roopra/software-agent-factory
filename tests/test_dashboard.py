@@ -2121,6 +2121,7 @@ def _waiting_detail(run_id: str) -> dict[str, Any] | None:
             "reopen_count": 0,
             "reopen_max": 3,
             "reply_closed_cause": None,
+            "dashboard_action_refusal": None,
             "approval_scope": {
                 "decision_requested": "Approve it.",
                 "authorized_actions": ["Run agents."],
