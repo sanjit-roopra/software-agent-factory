@@ -83,6 +83,7 @@ from software_agent_factory.observability import (
     _compute_aggregate_metrics,
     build_monitoring_snapshot,
     build_operational_health,
+    build_run_detail,
     configure_factory_logging,
     log_run_event,
     resolve_usage,
@@ -2153,6 +2154,40 @@ def test_build_run_detail_labels_plan_decision_answer_action(tmp_path: Path) -> 
     assert detail is not None
     assert detail.escalation is not None
     assert detail.escalation.last_action == "ANSWER"
+
+
+def test_run_detail_reports_dashboard_local_as_last_responder(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(
+        FactoryRun(
+            id="r1",
+            work_item_id="task-1",
+            state=WorkflowState.REFINING,
+            escalation=EscalationRecord(
+                episode_id="ep-1",
+                status=EscalationStatus.REOPENED,
+                resume_classification=ResumeClassification.RISK_APPROVAL,
+                accepted_replies=[
+                    AcceptedReplyReceipt(
+                        source="dashboard",
+                        user_login="dashboard-local",
+                        created_at=T0,
+                        command="@factory resume v1 run=r1 episode=ep-1",
+                        episode_id="ep-1",
+                        run_id="r1",
+                    )
+                ],
+            ),
+        )
+    )
+
+    detail = build_run_detail(store, "r1")
+
+    assert detail is not None
+    assert detail.escalation is not None
+    assert detail.escalation.accepted_reply_count == 1
+    assert detail.escalation.last_responder == "dashboard-local"
+    assert detail.escalation.last_action == "RESUME"
 
 
 def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(

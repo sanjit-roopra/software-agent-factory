@@ -984,6 +984,8 @@ def _check_reply_source(source: ReplySource, comment_id: int | None, user_login:
     """Shared rule: a GitHub reply has a comment id, a dashboard reply has the fixed login."""
     if source == "github" and comment_id is None:
         raise ValueError("a github reply needs a comment_id")
+    if source == "dashboard" and comment_id is not None:
+        raise ValueError("a dashboard reply has no GitHub comment_id")
     if source == "dashboard" and user_login != DASHBOARD_USER_LOGIN:
         raise ValueError(f"a dashboard reply must use user_login {DASHBOARD_USER_LOGIN!r}")
 
