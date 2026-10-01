@@ -232,12 +232,18 @@
     renderNotice();
   }
 
+  // Only a restarted server or a lost connection changes the notice. Any other
+  // HTTP error still proves the server answered. An error without a kind is a
+  // bug in this page, not a connection problem.
   function onRefreshFailure(error) {
-    if (error.kind === ERROR_REQUEST) {
-      return;
+    if (error.kind === ERROR_UNAUTHORIZED || error.kind === ERROR_CONNECTION) {
+      state.noticeKind = error.kind;
+      renderNotice();
+    } else if (error.kind === ERROR_REQUEST) {
+      onRefreshSuccess();
+    } else {
+      console.error(error);
     }
-    state.noticeKind = error.kind === ERROR_UNAUTHORIZED ? ERROR_UNAUTHORIZED : ERROR_CONNECTION;
-    renderNotice();
   }
 
   // A region is dirty while the operator works in it: a focused field or an
@@ -376,7 +382,9 @@
   // run id for the row's data attribute.
   function patchRow(row, spec) {
     row.className = spec.className || "";
-    if (spec.runId !== undefined) {
+    if (spec.runId === undefined) {
+      row.removeAttribute("data-run-id");
+    } else {
       row.setAttribute("data-run-id", spec.runId);
     }
     trimChildren(row, spec.cells.length);
@@ -1002,7 +1010,10 @@
       return [refreshRuns(request), refreshTotals(request)];
     },
     run: function (request) {
-      return request.runId === null ? [] : [refreshDetail(request)];
+      return request.runId === null ? [pingServer()] : [refreshDetail(request)];
+    },
+    compare: function () {
+      return [pingServer()];
     },
     projects: function (request) {
       return [refreshProjects(request)];
@@ -1012,12 +1023,25 @@
     }
   };
 
+  // A view with nothing to load still checks that the server answers, so the
+  // connection notice stays true.
+  function pingServer() {
+    return apiFetch("/healthz");
+  }
+
+  // Waits for every task, so the request stays in flight until the last one
+  // ends, then reports the first failure if there was one.
+  function allSettled(tasks) {
+    return Promise.allSettled(tasks).then(function (results) {
+      const failed = results.find(function (result) {
+        return result.status === "rejected";
+      });
+      return failed ? Promise.reject(failed.reason) : undefined;
+    });
+  }
+
   function settle(request, tasks) {
-    if (tasks.length === 0) {
-      endRequest(request);
-      return Promise.resolve();
-    }
-    return Promise.all(tasks)
+    return allSettled(tasks)
       .then(whenLatest(request, onRefreshSuccess), whenLatest(request, onRefreshFailure))
       .catch(function () {
         // A failure while drawing the view must not escape as an unhandled
@@ -1068,16 +1092,35 @@
   }
 
   // A deep link opens with the run list one step back, so Back leaves the deep
-  // view for the list. The marker keeps a reload from adding another entry.
+  // view for the list. A tab is seeded once: the session flag keeps a reload,
+  // or a reload after in-page navigation, from adding another entry.
+  const SEEDED_KEY = "factory-dashboard-seeded";
+
+  function tabWasSeeded() {
+    try {
+      return globalThis.sessionStorage.getItem(SEEDED_KEY) === "1";
+    } catch {
+      return globalThis.history.state?.seeded === true;
+    }
+  }
+
+  function markTabSeeded() {
+    try {
+      globalThis.sessionStorage.setItem(SEEDED_KEY, "1");
+    } catch {
+      // Without storage the history marker is the only guard.
+    }
+  }
+
   function seedBackHistory() {
     const hash = globalThis.location.hash;
     const route = parseRoute(hash);
-    const seeded = globalThis.history.state?.seeded === true;
-    if (route === null || route.view === "runs" || seeded) {
-      return;
+    const deepLink = route !== null && route.view !== "runs";
+    if (deepLink && !tabWasSeeded()) {
+      globalThis.history.replaceState(null, "", "#runs");
+      globalThis.history.pushState({ seeded: true }, "", hash);
     }
-    globalThis.history.replaceState(null, "", "#runs");
-    globalThis.history.pushState({ seeded: true }, "", hash);
+    markTabSeeded();
   }
 
   // ---- Wiring ------------------------------------------------------------

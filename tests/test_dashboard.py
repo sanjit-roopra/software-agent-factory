@@ -2396,6 +2396,7 @@ def test_one_poll_refreshes_only_the_open_view() -> None:
     assert re.findall(r"^    (\w+): function", refreshers.group(1), re.MULTILINE) == [
         "runs",
         "run",
+        "compare",
         "projects",
         "health",
     ]
@@ -2490,7 +2491,43 @@ def test_a_401_is_told_apart_from_a_network_error() -> None:
     assert "response.status >= 500 ? ERROR_CONNECTION : ERROR_REQUEST" in reader
     assert "apiError(ERROR_CONNECTION" in function_source(js, "onNetworkError")
     failure = function_source(js, "onRefreshFailure")
-    assert "error.kind === ERROR_UNAUTHORIZED ? ERROR_UNAUTHORIZED : ERROR_CONNECTION" in failure
+    assert "error.kind === ERROR_UNAUTHORIZED || error.kind === ERROR_CONNECTION" in failure
+    assert "state.noticeKind = error.kind;" in failure
+
+
+def test_an_answered_request_clears_the_connection_notice() -> None:
+    failure = function_source(dashboard_assets.APP_JS, "onRefreshFailure")
+    request_branch = failure.split("error.kind === ERROR_REQUEST")[1].split("} else {")[0]
+    assert "onRefreshSuccess();" in request_branch
+
+
+def test_a_page_bug_is_logged_and_never_shown_as_a_lost_connection() -> None:
+    failure = function_source(dashboard_assets.APP_JS, "onRefreshFailure")
+    fallback = failure.split("} else {")[-1]
+    assert "console.error(error);" in fallback
+    assert "noticeKind" not in fallback
+
+
+def test_views_with_nothing_to_load_still_check_the_server() -> None:
+    js = dashboard_assets.APP_JS
+    assert 'apiFetch("/healthz")' in function_source(js, "pingServer")
+    refreshers = re.search(r"const REFRESHERS = \{(.*?)\n  \};", js, re.DOTALL)
+    assert refreshers is not None
+    assert "request.runId === null ? [pingServer()]" in refreshers.group(1)
+    assert re.search(r"compare: function \(\) \{\s+return \[pingServer\(\)\];", refreshers.group(1))
+
+
+def test_a_refresh_stays_in_flight_until_every_task_ends() -> None:
+    js = dashboard_assets.APP_JS
+    assert "Promise.allSettled(tasks)" in function_source(js, "allSettled")
+    settle = function_source(js, "settle")
+    assert "allSettled(tasks)" in settle
+    assert "Promise.all(" not in settle
+
+
+def test_a_reused_row_drops_a_stale_run_id() -> None:
+    patch = function_source(dashboard_assets.APP_JS, "patchRow")
+    assert 'row.removeAttribute("data-run-id");' in patch
 
 
 def test_a_successful_refresh_clears_the_notice() -> None:
@@ -2506,7 +2543,16 @@ def test_a_deep_link_seeds_history_so_back_returns_to_the_run_list() -> None:
     seed = function_source(js, "seedBackHistory")
     assert seed.index('replaceState(null, "", "#runs")') < seed.index("pushState(")
     assert 'pushState({ seeded: true }, "", hash)' in seed
-    assert "seeded" in seed.split("return;")[0]
+    assert "deepLink && !tabWasSeeded()" in seed
+    assert re.search(r"markTabSeeded\(\);\s*\}\s*$", seed)
+
+
+def test_a_tab_is_seeded_once_even_across_reloads() -> None:
+    js = dashboard_assets.APP_JS
+    was_seeded = function_source(js, "tabWasSeeded")
+    assert "sessionStorage.getItem(SEEDED_KEY)" in was_seeded
+    assert "history.state?.seeded === true" in was_seeded.split("catch")[1]
+    assert "sessionStorage.setItem(SEEDED_KEY" in function_source(js, "markTabSeeded")
 
 
 # --------------------------------------------------------------------------
