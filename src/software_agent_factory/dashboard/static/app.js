@@ -7,7 +7,7 @@
   var tokenMeta = document.querySelector('meta[name="factory-dashboard-token"]');
   var token = tokenMeta ? tokenMeta.getAttribute("content") : "";
 
-  var state = { offset: 0, limit: PAGE_SIZE, total: null };
+  var state = { offset: 0, limit: PAGE_SIZE, total: null, runId: null };
 
   var THEME_STORAGE_KEY = "factory-dashboard-theme";
   var DARK_QUERY = "(prefers-color-scheme: dark)";
@@ -177,48 +177,75 @@
     renderKeyValueList(container, totals, { emptyMessage: "No totals available." });
   }
 
+  function navigateToRun(runId) {
+    window.location.hash = "run/" + encodeURIComponent(runId);
+  }
+
+  function renderRunRow(run) {
+    var runId = run.run_id !== undefined ? run.run_id : run.id;
+    var isStale = run.is_stale !== undefined ? run.is_stale : run.stale;
+    var row = document.createElement("tr");
+    row.setAttribute("data-run-id", runId);
+    textCell(row, runId);
+    textCell(row, run.source_external_id || run.work_item_id);
+    textCell(row, run.state);
+    textCell(row, run.review_status);
+    textCell(row, run.created_at);
+    textCell(row, run.idle_seconds);
+    textCell(row, run.attempt_count);
+    var staleCell = textCell(row, isStale ? "yes" : "no");
+    if (isStale) {
+      staleCell.classList.add("stale-yes");
+    }
+    row.addEventListener("click", function () {
+      navigateToRun(runId);
+    });
+    return row;
+  }
+
+  function hasMoreRuns(page, shown) {
+    if (typeof page.has_more === "boolean") {
+      return page.has_more;
+    }
+    if (state.total !== null) {
+      return state.offset + state.limit < state.total;
+    }
+    return shown >= state.limit;
+  }
+
+  function renderRunsPager(page, shown) {
+    state.total = typeof page.total === "number" ? page.total : null;
+    var rangeStart = shown === 0 ? 0 : state.offset + 1;
+    var totalText = state.total === null ? "" : " of " + state.total;
+    document.getElementById("runs-page-info").textContent =
+      "showing " + rangeStart + "\u2013" + (state.offset + shown) + totalText;
+    document.getElementById("runs-prev").disabled = state.offset <= 0;
+    document.getElementById("runs-next").disabled = !hasMoreRuns(page, shown);
+  }
+
+  function renderRunsStatus(shown) {
+    var status = document.getElementById("runs-status");
+    status.hidden = shown > 0;
+    status.textContent = state.offset === 0 ? "No runs yet." : "No runs on this page.";
+    document.querySelector("#view-runs .table-wrap").hidden = shown === 0;
+  }
+
   function renderRuns(payload) {
     var body = document.getElementById("runs-body");
     clearChildren(body);
     var runs = Array.isArray(payload.runs) ? payload.runs : [];
     runs.forEach(function (run) {
-      var runId = run.run_id !== undefined ? run.run_id : run.id;
-      var isStale = run.is_stale !== undefined ? run.is_stale : run.stale;
-      var row = document.createElement("tr");
-      row.setAttribute("data-run-id", runId);
-      textCell(row, runId);
-      textCell(row, run.source_external_id || run.work_item_id);
-      textCell(row, run.state);
-      textCell(row, run.review_status);
-      textCell(row, run.created_at);
-      textCell(row, run.idle_seconds);
-      textCell(row, run.attempt_count);
-      var staleCell = textCell(row, isStale ? "yes" : "no");
-      if (isStale) {
-        staleCell.classList.add("stale-yes");
-      }
-      row.addEventListener("click", function () {
-        loadDetail(runId);
-      });
-      body.appendChild(row);
+      body.appendChild(renderRunRow(run));
     });
+    renderRunsPager(payload.page || {}, runs.length);
+    renderRunsStatus(runs.length);
+  }
 
-    var page = payload.page || {};
-    state.total = typeof page.total === "number" ? page.total : null;
-    var info = document.getElementById("runs-page-info");
-    var shown = runs.length;
-    var rangeStart = shown === 0 ? 0 : state.offset + 1;
-    var rangeEnd = state.offset + shown;
-    var totalText = state.total === null ? "" : " of " + state.total;
-    info.textContent = "showing " + rangeStart + "\u2013" + rangeEnd + totalText;
-
-    document.getElementById("runs-prev").disabled = state.offset <= 0;
-    document.getElementById("runs-next").disabled =
-      typeof page.has_more === "boolean"
-        ? !page.has_more
-        : state.total !== null
-          ? state.offset + state.limit >= state.total
-          : shown < state.limit;
+  function wrapTable(table) {
+    var wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    wrap.appendChild(table);
+    return wrap;
   }
 
   function appendLinkCell(row, value) {
@@ -309,7 +336,7 @@
         body.appendChild(row);
       });
       table.appendChild(body);
-      card.appendChild(table);
+      card.appendChild(wrapTable(table));
 
       var modelsHeading = document.createElement("h4");
       modelsHeading.textContent = "Models used";
@@ -383,7 +410,7 @@
           modelsBody.appendChild(row);
         });
         modelsTable.appendChild(modelsBody);
-        card.appendChild(modelsTable);
+        card.appendChild(wrapTable(modelsTable));
       }
       container.appendChild(card);
     });
@@ -426,8 +453,16 @@
       });
   }
 
+  // A message shows in the status line and hides the detail card; null shows
+  // the card instead.
+  function setDetailStatus(message) {
+    var status = document.getElementById("detail-status");
+    status.textContent = message === null ? "" : message;
+    status.hidden = message === null;
+    document.getElementById("detail-content").hidden = message !== null;
+  }
+
   function renderDetail(detail) {
-    var section = document.getElementById("detail-section");
     var dl = document.getElementById("detail-body");
     clearChildren(dl);
 
@@ -614,17 +649,22 @@
       invocationsBody.appendChild(activeRow);
     }
 
-    section.hidden = false;
+    setDetailStatus(null);
   }
 
   function loadDetail(runId) {
     return apiFetch("/api/runs/" + encodeURIComponent(runId))
       .then(function (payload) {
-        renderDetail(payload);
-        clearError();
+        if (state.runId === runId) {
+          renderDetail(payload);
+          clearError();
+        }
       })
       .catch(function () {
-        showError("Run detail is currently unavailable.");
+        if (state.runId === runId) {
+          setDetailStatus("Run detail is currently unavailable.");
+          showError("Run detail is currently unavailable.");
+        }
       });
   }
 
@@ -643,8 +683,98 @@
   });
   window.matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle);
   updateThemeToggle();
-  document.getElementById("detail-close").addEventListener("click", function () {
-    document.getElementById("detail-section").hidden = true;
+
+  var RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+  var TITLE_SUFFIX = " \u2014 Factory dashboard";
+  var VIEWS = {
+    runs: { section: "view-runs", heading: "runs-heading", nav: "runs", label: "Runs" },
+    run: { section: "view-run", heading: "detail-heading", nav: "runs", label: "Run detail" },
+    compare: {
+      section: "view-compare", heading: "compare-heading", nav: "compare", label: "Compare"
+    },
+    projects: {
+      section: "view-projects", heading: "projects-heading", nav: "projects", label: "Projects"
+    },
+    health: { section: "view-health", heading: "health-heading", nav: "health", label: "Health" }
+  };
+
+  // Returns null for an empty or unknown hash. The run id is only checked
+  // for shape later, so a bad id still opens the run view with "Unknown run".
+  function parseRoute(hash) {
+    var parts = hash.replace(/^#/, "").split("/");
+    var name = parts[0];
+    if (name === "run" && parts.length === 2) {
+      return { view: "run", runId: parts[1] };
+    }
+    if (name === "compare" && (parts.length === 1 || parts.length === 3)) {
+      return { view: "compare" };
+    }
+    if (parts.length === 1 && ["runs", "projects", "health"].indexOf(name) !== -1) {
+      return { view: name };
+    }
+    return null;
+  }
+
+  function currentRoute() {
+    var hash = window.location.hash;
+    var route = parseRoute(hash);
+    if (route) {
+      return route;
+    }
+    if (hash !== "" && hash !== "#") {
+      window.history.replaceState(null, "", "#runs");
+    }
+    return { view: "runs" };
+  }
+
+  function showView(name) {
+    Object.keys(VIEWS).forEach(function (key) {
+      document.getElementById(VIEWS[key].section).hidden = key !== name;
+    });
+    var links = document.querySelectorAll('nav[aria-label="Main"] a');
+    Array.prototype.forEach.call(links, function (link) {
+      if (link.getAttribute("data-route") === VIEWS[name].nav) {
+        link.setAttribute("aria-current", "page");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+  }
+
+  function routeTitle(route) {
+    if (route.view !== "run") {
+      return VIEWS[route.view].label + TITLE_SUFFIX;
+    }
+    return (RUN_ID_PATTERN.test(route.runId) ? "Run " + route.runId : "Unknown run") + TITLE_SUFFIX;
+  }
+
+  function openRun(runId) {
+    var heading = document.getElementById("detail-heading");
+    if (!RUN_ID_PATTERN.test(runId)) {
+      heading.textContent = VIEWS.run.label;
+      setDetailStatus("Unknown run");
+      return;
+    }
+    heading.textContent = "Run " + runId;
+    setDetailStatus("Loading\u2026");
+    loadDetail(runId);
+  }
+
+  function applyRoute(moveFocus) {
+    var route = currentRoute();
+    state.runId = route.view === "run" ? route.runId : null;
+    showView(route.view);
+    if (route.view === "run") {
+      openRun(route.runId);
+    }
+    document.title = routeTitle(route);
+    if (moveFocus) {
+      document.getElementById(VIEWS[route.view].heading).focus();
+    }
+  }
+
+  window.addEventListener("hashchange", function () {
+    applyRoute(true);
   });
 
   function refresh() {
@@ -653,6 +783,7 @@
     loadRuns();
   }
 
+  applyRoute(false);
   refresh();
   window.setInterval(refresh, POLL_INTERVAL_MS);
 })();

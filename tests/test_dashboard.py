@@ -2126,3 +2126,144 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
                 chunks.append(chunk)
     raw = b"".join(chunks)
     assert b"400" in raw and b"Bad request" in raw
+
+
+# --------------------------------------------------------------------------
+# Shell, navigation and hash routes (asset tests; no JS runner, ADR-016)
+# --------------------------------------------------------------------------
+
+_INDEX_HTML = dashboard_assets.render_index_html(token="fixture-token")
+
+#: (section id, heading id) for the one section each view renders into.
+_VIEW_SECTIONS = (
+    ("view-runs", "runs-heading"),
+    ("view-run", "detail-heading"),
+    ("view-compare", "compare-heading"),
+    ("view-projects", "projects-heading"),
+    ("view-health", "health-heading"),
+)
+
+
+def test_index_html_has_a_main_nav_landmark_with_the_four_links() -> None:
+    nav = re.search(r'<nav aria-label="Main">(.*?)</nav>', _INDEX_HTML, flags=re.DOTALL)
+    assert nav is not None
+    links = re.findall(r'<a href="(#[a-z]+)" data-route="([a-z]+)">([^<]+)</a>', nav.group(1))
+    assert links == [
+        ("#runs", "runs", "Runs"),
+        ("#compare", "compare", "Compare"),
+        ("#projects", "projects", "Projects"),
+        ("#health", "health", "Health"),
+    ]
+
+
+@pytest.mark.parametrize(("section_id", "heading_id"), _VIEW_SECTIONS)
+def test_each_view_is_one_hidden_section_with_a_focusable_heading(
+    section_id: str, heading_id: str
+) -> None:
+    assert f'<section id="{section_id}" aria-labelledby="{heading_id}" hidden>' in _INDEX_HTML
+    assert re.search(rf'<h1 id="{heading_id}" tabindex="-1">', _INDEX_HTML)
+
+
+def test_totals_stay_on_the_runs_view() -> None:
+    runs_view = _INDEX_HTML.split('<section id="view-runs"')[1].split("</section>")[0]
+    assert 'id="totals-body"' in runs_view
+    assert 'id="runs-body"' in runs_view
+
+
+def test_script_is_deferred_in_the_head_and_not_in_the_body() -> None:
+    head, body = _INDEX_HTML.split("</head>")
+    assert '<script defer src="/assets/app.js?token=fixture-token"></script>' in head
+    assert "<script" not in body
+
+
+@pytest.mark.parametrize(
+    "route_text",
+    ['"runs"', '"run"', '"compare"', '"projects"', '"health"', "parts.length === 3"],
+)
+def test_app_js_handles_every_route(route_text: str) -> None:
+    assert route_text in dashboard_assets.APP_JS
+
+
+def test_app_js_routes_on_hashchange_and_defaults_unknown_hashes_to_runs() -> None:
+    js = _normalized(dashboard_assets.APP_JS)
+    assert 'window.addEventListener("hashchange"' in js
+    assert 'history.replaceState(null, "", "#runs")' in js
+    assert 'window.location.hash = "run/" + encodeURIComponent(runId)' in js
+
+
+def test_app_js_validates_hash_run_ids_with_the_server_pattern() -> None:
+    from software_agent_factory.dashboard import snapshot
+
+    js = dashboard_assets.APP_JS
+    assert f"/{snapshot._RUN_ID_PATTERN.pattern}/" in js
+    assert "RUN_ID_PATTERN.test(" in js
+    assert '"Unknown run"' in js
+
+
+def test_app_js_marks_the_active_link_focuses_the_heading_and_sets_the_title() -> None:
+    js = _normalized(dashboard_assets.APP_JS)
+    assert 'link.setAttribute("aria-current", "page")' in js
+    assert 'link.removeAttribute("aria-current")' in js
+    assert "document.getElementById(VIEWS[route.view].heading).focus()" in js
+    assert "document.title = " in js
+    assert 'Factory dashboard"' in js
+    assert '"Run " + route.runId' in js
+
+
+def test_app_js_shows_loading_and_empty_states() -> None:
+    js = dashboard_assets.APP_JS
+    assert "No runs yet." in js
+    assert 'setDetailStatus("Loading\\u2026")' in js
+    assert 'id="runs-status"' in _INDEX_HTML
+    assert "Loading&hellip;</p>" in _INDEX_HTML.split('id="runs-status"')[1][:40]
+
+
+def test_empty_run_table_stays_hidden_until_rows_arrive() -> None:
+    assert '<div class="table-wrap" hidden>\n          <table id="runs-table">' in _INDEX_HTML
+    assert 'document.querySelector("#view-runs .table-wrap").hidden = shown === 0' in _normalized(
+        dashboard_assets.APP_JS
+    )
+
+
+def test_compare_view_is_a_placeholder_card() -> None:
+    compare = _INDEX_HTML.split('<section id="view-compare"')[1].split("</section>")[0]
+    assert "Compare two runs &mdash; coming soon" in compare
+
+
+def test_every_table_sits_in_a_table_wrap() -> None:
+    assert _INDEX_HTML.count("<table") == 3
+    assert len(re.findall(r'<div class="table-wrap"(?: hidden)?>\s*<table', _INDEX_HTML)) == 3
+    js = dashboard_assets.APP_JS
+    assert 'className = "table-wrap"' in js
+    assert "card.appendChild(table)" not in js
+    assert "card.appendChild(modelsTable)" not in js
+    assert js.count("card.appendChild(wrapTable(") == 2
+
+
+def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert re.search(r"\.table-wrap\s*\{[^}]*overflow-x:\s*auto;", css)
+    assert re.search(r"main\s*\{[^}]*min-width:\s*0;", css)
+    assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
+    assert "overflow-x: hidden" not in css
+    assert "overflow: hidden" not in css
+
+
+def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert re.search(r"@media\s*\(max-width:\s*900px\)", css)
+
+
+def test_cards_use_a_12_to_16_pixel_radius_on_the_surface_token() -> None:
+    rule = re.search(r"\.card\s*\{([^}]*)\}", dashboard_assets.STYLE_CSS)
+    assert rule is not None
+    assert "background: var(--surface);" in rule.group(1)
+    radius = re.search(r"border-radius:\s*(\d+)px;", rule.group(1))
+    assert radius is not None
+    assert 12 <= int(radius.group(1)) <= 16
+
+
+def test_active_nav_link_uses_the_accent_token() -> None:
+    rule = re.search(r'nav a\[aria-current="page"\]\s*\{([^}]*)\}', dashboard_assets.STYLE_CSS)
+    assert rule is not None
+    assert "background: var(--accent);" in rule.group(1)
