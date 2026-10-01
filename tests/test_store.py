@@ -3,18 +3,23 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from software_agent_factory.models import (
     ChangeSet,
+    DashboardResumeRequest,
     FactoryRun,
+    PlanDecisionAnswer,
     RepositoryProfile,
     RepositorySkill,
     RepositorySkillOverlay,
     RepositorySkillUse,
+    ResumeClassification,
     SkillGuidance,
     SkillOverlayMode,
     SkillSelectionSource,
@@ -659,3 +664,186 @@ def test_create_once_artifacts_are_idempotent_but_immutable(tmp_path: Path) -> N
 
     assert store.load_artifact(run.id, RepositorySkillUse) == use
     assert not [path for path in (store.runs_dir / run.id).iterdir() if path.suffix == ".tmp"]
+
+
+FINGERPRINT_A = "a" * 64
+FINGERPRINT_B = "b" * 64
+
+
+def _request(**overrides: object) -> DashboardResumeRequest:
+    fields: dict[str, object] = {
+        "run_id": "run-1",
+        "episode_id": "episode-1",
+        "context_fingerprint": FINGERPRINT_A,
+        "action": ResumeClassification.RISK_APPROVAL,
+    }
+    return DashboardResumeRequest.model_validate({**fields, **overrides})
+
+
+def _store_with_run(tmp_path: Path) -> FileRunStore:
+    store = FileRunStore(tmp_path / "data")
+    run = _sample_run()
+    store.save_run(run.model_copy(update={"id": "run-1"}))
+    return store
+
+
+def _request_files(store: FileRunStore) -> list[Path]:
+    return sorted((store.runs_dir / "run-1").glob("dashboard-approval-*"))
+
+
+def test_dashboard_request_is_created_once_per_episode_and_fingerprint(tmp_path: Path) -> None:
+    store = _store_with_run(tmp_path)
+
+    assert store.create_dashboard_request("run-1", _request()) is True
+    [path] = _request_files(store)
+    assert path.name == f"dashboard-approval-episode-1-{FINGERPRINT_A[:16]}.json"
+    before = path.read_text(encoding="utf-8")
+
+    second = _request(created_at=datetime(2030, 1, 1, tzinfo=UTC))
+    assert store.create_dashboard_request("run-1", second) is False
+
+    assert _request_files(store) == [path]
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_dashboard_request_with_new_fingerprint_gets_its_own_file(tmp_path: Path) -> None:
+    store = _store_with_run(tmp_path)
+
+    assert store.create_dashboard_request("run-1", _request()) is True
+    assert store.create_dashboard_request("run-1", _request(context_fingerprint=FINGERPRINT_B))
+
+    assert len(_request_files(store)) == 2
+
+
+def test_concurrent_dashboard_requests_create_exactly_one_file(tmp_path: Path) -> None:
+    store = _store_with_run(tmp_path)
+    workers = 8
+    barrier = threading.Barrier(workers)
+    results: list[bool] = []
+
+    def create() -> None:
+        barrier.wait()
+        results.append(store.create_dashboard_request("run-1", _request()))
+
+    threads = [threading.Thread(target=create) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [False] * (workers - 1) + [True]
+    assert len(_request_files(store)) == 1
+    assert not list((store.runs_dir / "run-1").glob("*.tmp"))
+    assert not list((store.runs_dir / "run-1").glob(".*.tmp"))
+
+
+def test_dashboard_request_for_a_missing_run_raises_and_creates_nothing(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+
+    with pytest.raises(FileNotFoundError):
+        store.create_dashboard_request("run-1", _request())
+
+    assert not (store.runs_dir / "run-1").exists()
+
+
+def test_dashboard_request_for_another_run_is_rejected(tmp_path: Path) -> None:
+    store = _store_with_run(tmp_path)
+
+    with pytest.raises(ValueError, match="not run-1"):
+        store.create_dashboard_request("run-1", _request(run_id="run-2"))
+
+    assert _request_files(store) == []
+
+
+def test_dashboard_request_round_trips(tmp_path: Path) -> None:
+    store = _store_with_run(tmp_path)
+    request = _request(
+        action=ResumeClassification.PLAN_DECISION,
+        answers=[PlanDecisionAnswer(decision_number=1, answer="Use SQLite.")],
+    )
+    store.create_dashboard_request("run-1", request)
+
+    assert store.load_dashboard_request("run-1", "episode-1", FINGERPRINT_A) == request
+
+
+def test_load_of_an_absent_dashboard_request_is_none(tmp_path: Path) -> None:
+    store = _store_with_run(tmp_path)
+    store.create_dashboard_request("run-1", _request())
+
+    assert store.load_dashboard_request("run-1", "episode-1", FINGERPRINT_B) is None
+    assert store.load_dashboard_request("run-1", "other-episode", FINGERPRINT_A) is None
+    assert (
+        FileRunStore(tmp_path / "empty").load_dashboard_request("run-1", "episode-1", FINGERPRINT_A)
+        is None
+    )
+    assert not (tmp_path / "empty").exists()
+
+
+@pytest.mark.parametrize("episode", ["", "a/b", "..\\x", "x" * 129, "a b"])
+def test_dashboard_request_lookup_rejects_unsafe_episode_ids(tmp_path: Path, episode: str) -> None:
+    store = _store_with_run(tmp_path)
+
+    with pytest.raises(ValueError, match="episode id"):
+        store.load_dashboard_request("run-1", episode, FINGERPRINT_A)
+
+
+@pytest.mark.parametrize("fingerprint", ["", "a" * 63, "A" * 64, "g" * 64, "a" * 65])
+def test_dashboard_request_lookup_rejects_bad_fingerprints(
+    tmp_path: Path, fingerprint: str
+) -> None:
+    store = _store_with_run(tmp_path)
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        store.load_dashboard_request("run-1", "episode-1", fingerprint)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"episode_id": ""},
+        {"episode_id": "a/b"},
+        {"episode_id": "x" * 129},
+        {"context_fingerprint": "a" * 63},
+        {"context_fingerprint": "A" * 64},
+        {"action": ResumeClassification.NOT_RESUMABLE},
+        {"action": "DELETE_RUN"},
+        {"answers": [{"decision_number": 1, "answer": "x"}]},
+        {"action": ResumeClassification.PLAN_DECISION},
+        {
+            "action": ResumeClassification.PLAN_DECISION,
+            "answers": [{"decision_number": 2, "answer": "x"}],
+        },
+        {
+            "action": ResumeClassification.PLAN_DECISION,
+            "answers": [{"decision_number": 1, "answer": "two\nlines"}],
+        },
+        {
+            "action": ResumeClassification.PLAN_DECISION,
+            "answers": [{"decision_number": 1, "answer": "x" * 501}],
+        },
+        {
+            "action": ResumeClassification.PLAN_DECISION,
+            "answers": [{"decision_number": n, "answer": "x"} for n in range(1, 26)],
+        },
+        {"status": "stale"},
+        {"reason": "expired"},
+        {"status": "stale", "reason": "because"},
+        {"status": "done"},
+    ],
+)
+def test_dashboard_request_rejects_invalid_fields(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        _request(**overrides)
+
+
+def test_dashboard_request_accepts_a_stale_state_with_each_reason() -> None:
+    for reason in ("expired", "reopen_limit", "context_changed", "state_changed"):
+        assert _request(status="stale", reason=reason).reason == reason
+
+
+def test_dashboard_request_accepts_the_string_form_of_an_action() -> None:
+    assert _request(action="RISK_APPROVAL").action is ResumeClassification.RISK_APPROVAL
+    assert (
+        _request(action="PLAN_DECISION", answers=[{"decision_number": 1, "answer": "x"}]).action
+        is ResumeClassification.PLAN_DECISION
+    )

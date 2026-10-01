@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -977,6 +978,13 @@ class EscalationTargetType(StrEnum):
 
 DASHBOARD_USER_LOGIN = "dashboard-local"
 
+#: An episode id as a whole. Lives here so the request model can check it without
+#: importing ``escalation_protocol``, which imports this module.
+EPISODE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+#: A context fingerprint is a full SHA-256 digest in lowercase hex.
+CONTEXT_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
+
 ReplySource = Literal["github", "dashboard"]
 
 
@@ -1120,10 +1128,63 @@ class PlanDecisionAnswers(VersionedModel):
 
     @model_validator(mode="after")
     def _require_ordered_answers(self) -> PlanDecisionAnswers:
-        expected = list(range(1, len(self.answers) + 1))
-        actual = [answer.decision_number for answer in self.answers]
-        if actual != expected:
-            raise ValueError("answers must use contiguous decision numbers in order")
+        _check_ordered_answers(self.answers)
+        return self
+
+
+def _check_ordered_answers(answers: list[PlanDecisionAnswer]) -> None:
+    expected = list(range(1, len(answers) + 1))
+    if [answer.decision_number for answer in answers] != expected:
+        raise ValueError("answers must use contiguous decision numbers in order")
+
+
+DashboardRequestAction = Literal[
+    ResumeClassification.RISK_APPROVAL, ResumeClassification.PLAN_DECISION
+]
+DashboardRequestStatus = Literal["pending", "stale"]
+DashboardRequestStaleReason = Literal["expired", "reopen_limit", "context_changed", "state_changed"]
+
+
+class DashboardResumeRequest(VersionedModel):
+    """A local approval or plan answer waiting for the service to read it.
+
+    The dashboard creates it as ``pending``. Only the service marks it ``stale``,
+    with the reason it refused it.
+    """
+
+    run_id: str = Field(min_length=1)
+    episode_id: str = Field(min_length=1)
+    context_fingerprint: str
+    action: DashboardRequestAction
+    answers: list[PlanDecisionAnswer] = Field(default_factory=list, max_length=24)
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+    status: DashboardRequestStatus = "pending"
+    reason: DashboardRequestStaleReason | None = None
+
+    @field_validator("episode_id")
+    @classmethod
+    def _validate_episode_id(cls, value: str) -> str:
+        if EPISODE_ID_PATTERN.fullmatch(value) is None:
+            raise ValueError("episode_id must be 1-128 letters, digits, '.', '_' or '-'")
+        return value
+
+    @field_validator("context_fingerprint")
+    @classmethod
+    def _validate_context_fingerprint(cls, value: str) -> str:
+        if CONTEXT_FINGERPRINT_PATTERN.fullmatch(value) is None:
+            raise ValueError("context_fingerprint must be 64 lowercase hex characters")
+        return value
+
+    @model_validator(mode="after")
+    def _require_consistent_fields(self) -> DashboardResumeRequest:
+        if self.action == ResumeClassification.PLAN_DECISION:
+            if not self.answers:
+                raise ValueError("a plan answer request needs answers")
+            _check_ordered_answers(self.answers)
+        elif self.answers:
+            raise ValueError("a risk approval request has no answers")
+        if (self.status == "stale") != (self.reason is not None):
+            raise ValueError("a stale request needs a reason and a pending one has none")
         return self
 
 

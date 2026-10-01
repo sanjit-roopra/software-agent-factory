@@ -36,8 +36,11 @@ from pydantic_core import from_json
 
 from .atomic_write import write_text_atomic
 from .models import (
+    CONTEXT_FINGERPRINT_PATTERN,
+    EPISODE_ID_PATTERN,
     ChangeSet,
     CIReport,
+    DashboardResumeRequest,
     ExecutionPlan,
     FactoryRun,
     PlanDecisionAnswers,
@@ -315,6 +318,46 @@ class FileRunStore:
         else:
             path = self._attempt_dir_readonly(run_id, attempt) / safe_name
         return path.read_text(encoding="utf-8")
+
+    def create_dashboard_request(self, run_id: str, request: DashboardResumeRequest) -> bool:
+        """Create the dashboard resume request for its episode and context.
+
+        Returns ``False`` when one already exists for that episode and
+        fingerprint, so a double click or a replayed request changes nothing.
+        A new fingerprint in the same episode gets its own file. A missing run
+        raises ``FileNotFoundError`` and is never created.
+        """
+        if request.run_id != run_id:
+            raise ValueError(f"request is for run {request.run_id}, not {run_id}")
+        run_dir = self._run_dir_readonly(run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run {run_id} does not exist")
+        destination = run_dir / self._dashboard_request_name(
+            request.episode_id, request.context_fingerprint
+        )
+        return self._write_text_create_only(destination, self._model_text(request))
+
+    def load_dashboard_request(
+        self, run_id: str, episode_id: str, context_fingerprint: str
+    ) -> DashboardResumeRequest | None:
+        """Load the request for one episode and context, or ``None`` when absent.
+        Read-only: never creates a directory."""
+        path = self._run_dir_readonly(run_id) / self._dashboard_request_name(
+            episode_id, context_fingerprint
+        )
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        return DashboardResumeRequest.model_validate_json(raw)
+
+    @staticmethod
+    def _dashboard_request_name(episode_id: str, context_fingerprint: str) -> str:
+        if EPISODE_ID_PATTERN.fullmatch(episode_id) is None:
+            raise ValueError(f"invalid episode id: {episode_id!r}")
+        if CONTEXT_FINGERPRINT_PATTERN.fullmatch(context_fingerprint) is None:
+            raise ValueError("context fingerprint must be 64 lowercase hex characters")
+        return f"dashboard-approval-{episode_id}-{context_fingerprint[:16]}.json"
 
     def attempt_dir(self, run_id: str, attempt: int) -> Path:
         """Return (creating if needed) the snapshot directory for ``attempt``.
