@@ -590,7 +590,7 @@ def test_dashboard_detail_provider_returns_none_for_unknown_or_hostile_ids(
     assert provider("../../etc/passwd") is None
 
 
-def test_dashboard_detail_never_exposes_logs_diffs_or_failure_text(
+def test_dashboard_detail_never_exposes_logs_diffs_or_prompts(
     source_repo: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:
     run_id = make_run(source_repo, data_dir)
@@ -599,7 +599,7 @@ def test_dashboard_detail_never_exposes_logs_diffs_or_failure_text(
     detail = fake_dashboard[0].config.run_detail_provider(run_id)
     payload = detail.model_dump(mode="json")
 
-    forbidden = {"failure_reason", "reasoning", "logs", "patch", "diff", "prompt", "output"}
+    forbidden = {"reasoning", "logs", "patch", "diff", "prompt", "output"}
     assert forbidden.isdisjoint(payload)
     for attempt in payload["attempts"]:
         assert forbidden.isdisjoint(attempt)

@@ -349,14 +349,13 @@ class RunSummary(ModelBase):
 
 
 class RunAttemptSummary(ModelBase):
-    """One attempt, reduced to fields that are safe to render anywhere.
+    """One attempt, reduced to the fields the dashboard may render.
 
-    Deliberately excludes ``reasoning`` and ``failure_reason``: both are
-    unbounded free text produced by (or about) an agent, so either could
-    quote repository content, and nothing downstream can vet them. The
-    dashboard's own allowlist (``dashboard.sanitize.ATTEMPT_FIELDS``) drops
-    them a second time; this model makes sure they are never carried that
-    far in the first place.
+    Deliberately excludes the attempt ``reasoning`` level. ``failure_reason``
+    is carried as the raw stored text: it is free text that could quote
+    repository content, so this model is not safe to show as is. The
+    dashboard sanitizer (``dashboard.sanitize``) redacts and bounds it before
+    it leaves the process.
     """
 
     attempt_number: int = Field(ge=1)
@@ -367,6 +366,7 @@ class RunAttemptSummary(ModelBase):
     outcome: str
     started_at: UtcDateTime
     completed_at: UtcDateTime
+    failure_reason: str | None = None
 
 
 class UsageSummary(ModelBase):
@@ -388,17 +388,24 @@ class UsageSummary(ModelBase):
 
 
 class RunInvocationSummary(ModelBase):
-    """One dashboard-safe invocation with typed runtime-reported usage."""
+    """One invocation with typed runtime-reported usage.
+
+    ``reasoning`` is the reasoning level the call ran at (for example
+    ``high``). ``failure_reason`` is the raw stored text, redacted and bounded
+    by ``dashboard.sanitize`` before display.
+    """
 
     invocation_number: int = Field(ge=1)
     role: AgentRole
     purpose: str
     model: str
+    reasoning: str
     context_tier: ContextTier
     success: bool
     started_at: UtcDateTime
     completed_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
+    failure_reason: str | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
 
@@ -469,10 +476,13 @@ class RunDetail(ModelBase):
     facts and the attempt history.
 
     Same data-minimization rule as :class:`RunSummary`, applied to a single
-    run: no command logs, no patch text, no prompts, no agent reasoning, no
-    raw artifact bodies and no ``failure_reason``. ``commit_sha`` and
-    ``pull_request_url`` are controller-produced identifiers, not repository
-    content, so both are included.
+    run: no command logs, no patch text, no prompts, no agent reasoning text
+    and no raw artifact bodies. ``failure_reason`` (here and on each attempt
+    and invocation) is the one free-text exception: it is carried raw so the
+    dashboard sanitizer can redact and bound it, so this model must not be
+    shown to a user without that step. ``commit_sha`` and ``pull_request_url``
+    are controller-produced identifiers, not repository content, so both are
+    included.
     """
 
     run_id: str
@@ -513,6 +523,7 @@ class RunDetail(ModelBase):
     invocations: list[RunInvocationSummary] = Field(default_factory=list)
     active_invocation: ActiveInvocationSummary | None = None
     guidance: RunGuidance | None = None
+    failure_reason: str | None = None
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -1433,6 +1444,7 @@ def build_run_detail(
                 outcome=attempt.outcome,
                 started_at=attempt.started_at,
                 completed_at=attempt.completed_at,
+                failure_reason=attempt.failure_reason,
             )
             for attempt in run.attempt_records
         ],
@@ -1442,11 +1454,13 @@ def build_run_detail(
                 role=invocation.role,
                 purpose=str(invocation.purpose),
                 model=invocation.model,
+                reasoning=invocation.reasoning,
                 context_tier=invocation.context_tier,
                 success=invocation.success,
                 started_at=invocation.started_at,
                 completed_at=invocation.completed_at,
                 attempt_number=invocation.attempt_number,
+                failure_reason=invocation.failure_reason,
                 usage=invocation.usage,
                 performance=invocation.performance,
             )
@@ -1458,6 +1472,7 @@ def build_run_detail(
             stale_after=stale_after,
         ),
         guidance=_build_run_guidance(store, run),
+        failure_reason=run.failure_reason,
     )
 
 

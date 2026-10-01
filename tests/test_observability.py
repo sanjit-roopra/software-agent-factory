@@ -1803,26 +1803,71 @@ def test_build_run_detail_rejects_a_hostile_run_id_without_touching_disk(
     assert not (tmp_path / "data").exists()
 
 
-def test_build_run_detail_omits_free_text_and_raw_artifacts(tmp_path: Path) -> None:
-    """No ``failure_reason``, no attempt ``reasoning``: neither can be vetted
-    for repository content, so neither is carried into a detail view."""
+def test_build_run_detail_carries_the_run_failure_reason_as_stored(tmp_path: Path) -> None:
+    """Raw text: redaction and bounding belong to ``dashboard.sanitize``."""
     from software_agent_factory.observability import build_run_detail
 
     store = _fake_store(tmp_path)
+    reason = "boom GH_TOKEN=ghp_abcdefgh12345678 " + "x" * 600
     store.add_run(
-        _run(
-            "run-safe",
-            state=WorkflowState.NEEDS_HUMAN,
-            completed_at=T0,
-            attempt_records=[_attempt(1)],
-        )
+        _run("run-failed", state=WorkflowState.FAILED).model_copy(update={"failure_reason": reason})
     )
+    store.add_run(_run("run-ok", state=WorkflowState.DONE))
 
-    payload = build_run_detail(store, "run-safe").model_dump(mode="json")
+    assert build_run_detail(store, "run-failed").failure_reason == reason
+    assert build_run_detail(store, "run-ok").failure_reason is None
 
-    assert "failure_reason" not in payload
+
+def test_build_run_detail_carries_attempt_failure_reason_but_not_attempt_reasoning(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = _fake_store(tmp_path)
+    failed = _attempt(2).model_copy(update={"outcome": "failed", "failure_reason": "tests red"})
+    store.add_run(_run("run-attempts", attempt_records=[_attempt(1), failed]))
+
+    detail = build_run_detail(store, "run-attempts")
+
+    assert [attempt.failure_reason for attempt in detail.attempts] == [None, "tests red"]
+    payload = detail.model_dump(mode="json")
     assert all("reasoning" not in attempt for attempt in payload["attempts"])
-    assert all("failure_reason" not in attempt for attempt in payload["attempts"])
+
+
+def test_build_run_detail_carries_invocation_reasoning_level_and_failure_reason(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    def invocation(number: int, *, success: bool, reason: str | None) -> InvocationRecord:
+        return InvocationRecord(
+            invocation_number=number,
+            role=AgentRole.IMPLEMENTER,
+            model="gpt-5.6-sol",
+            reasoning="xhigh" if number == 1 else "low",
+            started_at=T0,
+            completed_at=T0 + timedelta(seconds=1),
+            success=success,
+            failure_reason=reason,
+        )
+
+    store = _fake_store(tmp_path)
+    run = _run("run-calls").model_copy(
+        update={
+            "invocation_records": [
+                invocation(1, success=True, reason=None),
+                invocation(2, success=False, reason="agent crashed"),
+            ]
+        }
+    )
+    store.add_run(run)
+
+    calls = build_run_detail(store, "run-calls").invocations
+
+    assert [(call.reasoning, call.failure_reason) for call in calls] == [
+        ("xhigh", None),
+        ("low", "agent crashed"),
+    ]
 
 
 def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -> None:
@@ -1856,7 +1901,7 @@ def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -
 
     payload = build_run_detail(store, run.id).model_dump(mode="json")
 
-    assert "failure_reason" not in payload
+    assert "secret raw review failure" not in json.dumps(payload["guidance"])
     assert payload["guidance"] == {
         "status": "ACTION_REQUIRED",
         "reason_code": "REVIEW_IMPASSE",
@@ -1998,7 +2043,7 @@ def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(
         ("an uncategorized manual boundary", "MANUAL_INSPECTION"),
     ],
 )
-def test_build_run_detail_classifies_action_required_without_exposing_reason(
+def test_build_run_detail_guidance_classifies_action_required_without_the_reason_text(
     tmp_path: Path,
     failure_reason: str,
     reason_code: str,
@@ -2014,7 +2059,7 @@ def test_build_run_detail_classifies_action_required_without_exposing_reason(
     payload = build_run_detail(store, run.id).model_dump(mode="json")
 
     assert payload["guidance"]["reason_code"] == reason_code
-    assert failure_reason not in json.dumps(payload)
+    assert failure_reason not in json.dumps(payload["guidance"])
 
 
 def test_build_run_detail_is_read_only(tmp_path: Path) -> None:

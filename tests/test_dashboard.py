@@ -1915,6 +1915,101 @@ def test_wires_real_observability_and_store_end_to_end(tmp_path: Path) -> None:
         _stop(running)
 
 
+def _stored_run_detail_payload(tmp_path: Path, reason: str) -> dict[str, Any]:
+    """Store a run whose run, attempt and call all failed with ``reason`` and read its
+    detail over HTTP through the real ``build_run_detail`` provider."""
+    from datetime import UTC, datetime, timedelta
+
+    from software_agent_factory.models import (
+        AgentRole,
+        AttemptRecord,
+        FactoryRun,
+        InvocationRecord,
+        WorkflowState,
+    )
+    from software_agent_factory.observability import build_run_detail
+    from software_agent_factory.store import FileRunStore
+
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    done = started + timedelta(minutes=1)
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(
+        FactoryRun(
+            id="real-failed-run",
+            work_item_id="WI-1",
+            state=WorkflowState.FAILED,
+            failure_reason=reason,
+            attempt_records=[
+                AttemptRecord(
+                    attempt_number=1,
+                    role=AgentRole.IMPLEMENTER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=started,
+                    completed_at=done,
+                    outcome="failed",
+                    failure_reason=reason,
+                )
+            ],
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.IMPLEMENTER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=started,
+                    completed_at=done,
+                    success=False,
+                    failure_reason=reason,
+                )
+            ],
+        )
+    )
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=lambda run_id: build_run_detail(store, run_id),
+    )
+    running = _start(config)
+    try:
+        response = running.request(
+            "GET", "/api/runs/real-failed-run", headers=running.authed_headers()
+        )
+        assert response.status == 200
+        return _body_json(response)
+    finally:
+        _stop(running)
+
+
+def test_stored_run_with_a_secret_in_its_failure_reasons_shows_them_redacted(
+    tmp_path: Path,
+) -> None:
+    payload = _stored_run_detail_payload(tmp_path, f"deploy failed: {GH_SECRET}")
+
+    shown = [payload, payload["attempts"][0], payload["invocations"][0]]
+    for level in shown:
+        assert level["failure_reason"] == "deploy failed: [REDACTED]"
+        assert level["failure_reason_truncated"] is False
+    assert "ghp_" not in json.dumps(payload)
+    assert "GH_TOKEN" not in json.dumps(payload)
+    assert payload["invocations"][0]["reasoning"] == "high"
+
+
+def test_stored_run_with_a_600_character_failure_reason_shows_it_cut_and_marked(
+    tmp_path: Path,
+) -> None:
+    payload = _stored_run_detail_payload(tmp_path, "a" * 300 + "b" * 300)
+
+    shown = [payload, payload["attempts"][0], payload["invocations"][0]]
+    for level in shown:
+        assert level["failure_reason_truncated"] is True
+        assert len(level["failure_reason"]) <= 500
+        assert "factory show real-failed-run" in level["failure_reason"]
+        assert level["failure_reason"].startswith("a")
+        assert level["failure_reason"].endswith("b")
+
+
 def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> None:
     from software_agent_factory.models import FactoryRun, WorkflowState
     from software_agent_factory.observability import (
