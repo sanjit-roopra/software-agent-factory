@@ -683,6 +683,15 @@ def test_an_outcome_shows_its_text_next_to_its_color() -> None:
         assert re.search(rf"\.{name}\s*\{{[^}}]*color:\s*var\({token}\);", css)
 
 
+def test_the_script_names_an_outcome_for_every_status_the_server_sends() -> None:
+    from software_agent_factory.dashboard.aggregate import STATUS_FAILED, STATUS_SUCCESS
+    from software_agent_factory.dashboard.sanitize import ACTIVE_INVOCATION_STATUSES
+
+    keys = re.findall(r'\["([A-Za-z]+)", \{', _constant_source("OUTCOMES"))
+
+    assert sorted(keys) == sorted({STATUS_SUCCESS, STATUS_FAILED, *ACTIVE_INVOCATION_STATUSES})
+
+
 def test_a_total_cost_and_a_call_cost_skip_the_unreported_units() -> None:
     cost = function_source(dashboard_assets.APP_JS, "costText")
     assert "isFiniteNumber(usage[unit.key])" in cost
@@ -853,7 +862,7 @@ def test_the_run_attempts_table_shows_the_failure_reason() -> None:
     assert "attempt.failure_reason" in function_source(dashboard_assets.APP_JS, "attemptRowSpec")
 
 
-def test_the_timeline_scrolls_inside_its_card_and_keeps_new_colors_on_tokens() -> None:
+def test_the_timeline_scrolls_inside_its_card() -> None:
     assert re.search(r'<div\s+class="table-wrap"\s+id="timeline-wrap"\s+hidden>', _RUN_DETAIL_HTML)
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"\.timeline\s*\{[^}]*min-width:\s*\d+rem;", css)

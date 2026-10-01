@@ -322,8 +322,14 @@ def test_each_reason_code_has_its_own_plain_sentence(code: str) -> None:
     step = next_step(_run(reason_code=code, resume_classification="NOT_RESUMABLE"))
 
     assert step["sentence"] == f"{REASON_SENTENCES[code]} This run cannot continue."
-    assert REASON_SENTENCES[code].startswith("The run ")
+
+
+def test_no_two_reason_codes_share_a_sentence() -> None:
     assert len(set(REASON_SENTENCES.values())) == len(REASON_SENTENCES)
+
+
+def test_every_reason_sentence_starts_with_the_run() -> None:
+    assert all(sentence.startswith("The run ") for sentence in REASON_SENTENCES.values())
 
 
 def test_every_reason_sentence_belongs_to_a_known_reason_code() -> None:

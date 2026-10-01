@@ -17,7 +17,7 @@ import logging
 import re
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -2384,9 +2384,15 @@ def test_call_reasoning_level_must_be_a_short_token() -> None:
     assert sanitize_invocation(_raw_call(reasoning=None))["reasoning"] is None
 
 
-def test_call_attempt_number_must_be_a_positive_integer() -> None:
-    for invalid in (0, -1, True, "1", 1.5):
-        assert sanitize_invocation(_raw_call(attempt_number=invalid))["attempt_number"] is None
+@pytest.mark.parametrize("invalid", [0, -1, True, "1", 1.5], ids=repr)
+def test_call_attempt_number_must_be_a_positive_integer(invalid: Any) -> None:
+    assert sanitize_invocation(_raw_call(attempt_number=invalid))["attempt_number"] is None
+
+
+@pytest.mark.parametrize("purpose", ["Summarize the secret plan", "x" * 65, "", 5, None])
+def test_call_purpose_must_be_a_short_token_not_free_text(purpose: Any) -> None:
+    assert sanitize_invocation(_raw_call(purpose=purpose))["purpose"] is None
+    assert sanitize_active_invocation(_raw_active(purpose=purpose))["purpose"] is None
 
 
 def test_calls_sort_by_number() -> None:
@@ -2436,7 +2442,6 @@ REASON_LEVELS = ("run", "attempt", "call")
 REASON_SECRETS = {
     "token assignment": (GH_SECRET, ("ghp_abcdefgh12345678",)),
     "bearer header": ("Authorization: Bearer abc.def.gh", ("abc.def.gh",)),
-    "secret at char 490": ("x" * 489 + " " + GH_SECRET, ("GH_TOKEN", "ghp_")),
 }
 
 
@@ -2453,6 +2458,18 @@ def _detail_with_reason(level: str, reason: str) -> dict[str, Any]:
     return detail
 
 
+def _shown_reason(level: str, payload: dict[str, Any]) -> tuple[str, bool]:
+    shown = {"run": payload, "attempt": payload["attempts"][0], "call": payload["invocations"][0]}[
+        level
+    ]
+    return shown["failure_reason"], shown["failure_reason_truncated"]
+
+
+def _reason_of(level: str, reason: str) -> tuple[str, bool]:
+    """The level's reason and cut flag, from the run detail view."""
+    return _shown_reason(level, run_detail_view(_detail_with_reason(level, reason)))
+
+
 def _reason_through_api(level: str, reason: str) -> tuple[str, bool]:
     """Open the run detail over HTTP and return the level's reason and cut flag."""
     detail = _detail_with_reason(level, reason)
@@ -2466,13 +2483,20 @@ def _reason_through_api(level: str, reason: str) -> tuple[str, bool]:
     try:
         response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
         assert response.status == 200
-        payload = _body_json(response)
+        return _shown_reason(level, _body_json(response))
     finally:
         _stop(running)
-    shown = {"run": payload, "attempt": payload["attempts"][0], "call": payload["invocations"][0]}[
-        level
-    ]
-    return shown["failure_reason"], shown["failure_reason_truncated"]
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+def test_a_reason_is_redacted_and_cut_before_it_leaves_the_server(level: str) -> None:
+    reason, truncated = _reason_through_api(level, f"{GH_SECRET} " + "a" * 600)
+
+    assert truncated is True
+    assert len(reason) <= 500
+    assert "[REDACTED]" in reason
+    assert "ghp_" not in reason and "GH_TOKEN" not in reason
+    assert "factory show run-001" in reason
 
 
 @pytest.mark.parametrize("level", REASON_LEVELS)
@@ -2480,7 +2504,7 @@ def _reason_through_api(level: str, reason: str) -> tuple[str, bool]:
 def test_secret_in_a_failure_reason_is_redacted(level: str, secret: str) -> None:
     text, fragments = REASON_SECRETS[secret]
 
-    reason, _ = _reason_through_api(level, text)
+    reason, _ = _reason_of(level, text)
 
     assert "[REDACTED]" in reason
     assert not any(fragment in reason for fragment in fragments)
@@ -2488,7 +2512,7 @@ def test_secret_in_a_failure_reason_is_redacted(level: str, secret: str) -> None
 
 @pytest.mark.parametrize("level", REASON_LEVELS)
 def test_reason_of_500_characters_is_shown_in_full(level: str) -> None:
-    reason, truncated = _reason_through_api(level, "a" * 500)
+    reason, truncated = _reason_of(level, "a" * 500)
 
     assert reason == "a" * 500
     assert truncated is False
@@ -2496,7 +2520,7 @@ def test_reason_of_500_characters_is_shown_in_full(level: str) -> None:
 
 @pytest.mark.parametrize("level", REASON_LEVELS)
 def test_reason_of_501_characters_is_cut_and_names_factory_show(level: str) -> None:
-    reason, truncated = _reason_through_api(level, "a" * 250 + "b" + "c" * 250)
+    reason, truncated = _reason_of(level, "a" * 250 + "b" + "c" * 250)
 
     assert truncated is True
     assert len(reason) <= 500
@@ -2504,21 +2528,62 @@ def test_reason_of_501_characters_is_cut_and_names_factory_show(level: str) -> N
     assert reason.startswith("a") and reason.endswith("c")
 
 
-def test_reason_is_cut_after_redaction_so_a_secret_is_never_split() -> None:
-    reason, truncated = _reason_through_api("run", "x" * 480 + " " + GH_SECRET + " " + "y" * 100)
+def _cut_edges() -> tuple[int, int]:
+    """How many raw characters a cut keeps at the head and at the tail."""
+    reason, _ = _reason_of("run", "H" * 2000 + "T" * 2000)
+    head = len(reason) - len(reason.lstrip("H"))
+    tail = len(reason) - len(reason.rstrip("T"))
+    return head, tail
+
+
+#: Parts of ``GH_SECRET`` a half-cut copy of it still shows.
+_SECRET_FRAGMENTS = ("GH_TOKEN", "ghp_", "bcdefgh", "12345678")
+
+
+def _secret_across_the_head_edge() -> str:
+    head, _ = _cut_edges()
+    inside = len(GH_SECRET) // 2
+    # The space keeps the filler out of the secret: its name may start with letters.
+    return "x" * (head - inside - 1) + " " + GH_SECRET + " " + "y" * 1000
+
+
+def _secret_across_the_tail_edge() -> str:
+    _, tail = _cut_edges()
+    inside = len(GH_SECRET) - len(GH_SECRET) // 2
+    return "x" * 1000 + " " + GH_SECRET + " " + "y" * (tail - inside - 1)
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+@pytest.mark.parametrize(
+    "build_text",
+    [_secret_across_the_head_edge, _secret_across_the_tail_edge],
+    ids=["head-edge", "tail-edge"],
+)
+def test_reason_is_cut_after_redaction_so_a_secret_is_never_split(
+    level: str, build_text: Callable[[], str]
+) -> None:
+    text = build_text()
+    head, tail = _cut_edges()
+    # Cutting the raw text first would leave half of the secret on show.
+    cut_first = text[:head] + text[len(text) - tail :]
+    assert any(fragment in cut_first for fragment in _SECRET_FRAGMENTS)
+
+    reason, truncated = _reason_of(level, text)
 
     assert truncated is True
-    assert "ghp_" not in reason and "GH_TOKEN" not in reason
+    assert "[REDACTED]" in reason
+    assert not any(fragment in reason for fragment in _SECRET_FRAGMENTS)
 
 
-def test_missing_or_empty_reason_is_null_and_not_cut() -> None:
-    for raw in (None, "", 42, ["a"]):
-        call = sanitize_invocation(_raw_call(failure_reason=raw))
-        attempt = sanitize_attempt({"attempt_number": 1, "failure_reason": raw})
-        detail = sanitize_run_detail({"run_id": "run-001", "failure_reason": raw})
-        for shown in (call, attempt, detail):
-            assert shown["failure_reason"] is None
-            assert shown["failure_reason_truncated"] is False
+@pytest.mark.parametrize("raw", [None, "", 42, ["a"]], ids=repr)
+def test_missing_or_empty_reason_is_null_and_not_cut(raw: Any) -> None:
+    call = sanitize_invocation(_raw_call(failure_reason=raw))
+    attempt = sanitize_attempt({"attempt_number": 1, "failure_reason": raw})
+    detail = sanitize_run_detail({"run_id": "run-001", "failure_reason": raw})
+
+    for shown in (call, attempt, detail):
+        assert shown["failure_reason"] is None
+        assert shown["failure_reason_truncated"] is False
 
 
 def test_cut_marker_uses_a_placeholder_when_the_run_id_is_unknown_or_invalid() -> None:

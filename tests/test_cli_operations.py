@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -31,13 +32,28 @@ from typer.testing import CliRunner
 from software_agent_factory import cli
 from software_agent_factory.cli import app
 from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
+from software_agent_factory.dashboard.view import project_view
 from software_agent_factory.doctor import CheckResult, CheckStatus, DoctorReport
+from software_agent_factory.models import (
+    AgentRole,
+    EscalationRecord,
+    EscalationStatus,
+    FactoryRun,
+    InvocationRecord,
+    ModelUsage,
+    ProjectExecution,
+    ProjectState,
+    ResumeClassification,
+    UsageMetrics,
+    WorkflowState,
+)
 from software_agent_factory.observability import (
     MonitoringSnapshot,
     OperationalHealthReport,
     RunDetail,
     RunScanResult,
 )
+from software_agent_factory.projects import FileProjectStore
 from software_agent_factory.service_install import (
     DEFAULT_LABEL,
     ServiceInstallRequest,
@@ -46,6 +62,7 @@ from software_agent_factory.service_install import (
     ServiceStatus,
     build_program_arguments,
 )
+from software_agent_factory.store import FileRunStore
 
 runner = CliRunner()
 
@@ -578,6 +595,68 @@ def test_dashboard_providers_serve_real_snapshot_health_and_detail(
     assert isinstance(detail, RunDetail)
     assert detail.run_id == run_id
     assert [attempt.role for attempt in detail.attempts]
+
+
+def test_dashboard_detail_carries_the_configured_reopen_limit(
+    tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    # The default limit is 3, which is also the highest the config accepts.
+    config_path = write_config(tmp_path / "factory.yaml", data_dir, escalation={"max_reopens": 2})
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id="run-needs-human",
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=now,
+            updated_at=now,
+            escalation=EscalationRecord(
+                episode_id="ep-1",
+                status=EscalationStatus.NOTIFIED,
+                resume_classification=ResumeClassification.NOT_RESUMABLE,
+                reason_code="MANUAL_INSPECTION",
+            ),
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    detail = fake_dashboard[0].config.run_detail_provider("run-needs-human")
+    assert isinstance(detail, RunDetail)
+    assert detail.escalation is not None
+    assert detail.escalation.reopen_max == 2
+
+
+def test_dashboard_project_totals_count_usage_a_call_reported_only_per_model(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    FileProjectStore(data_dir).save_execution(
+        ProjectExecution(
+            project_id="project-usage",
+            state=ProjectState.RUNNING,
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.PLANNER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=now,
+                    completed_at=now,
+                    success=True,
+                    usage=UsageMetrics(
+                        model_usage=(ModelUsage(model="gpt-5.6-sol", input_tokens=40),)
+                    ),
+                )
+            ],
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+
+    payload = fake_dashboard[0].config.project_provider()
+    project = project_view(payload["projects"][0])
+    assert project["totals"]["tokens"]["input_tokens"] == {"total": 40, "reported_count": 1}
 
 
 def test_dashboard_detail_provider_returns_none_for_unknown_or_hostile_ids(

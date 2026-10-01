@@ -19,8 +19,8 @@ from software_agent_factory.redaction import (
 
 _PEM_BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
 
-#: One sample per entry of ``_SECRET_PATTERNS``, in the same order. Each row is
-#: (id, sample text, the part that must not survive redaction).
+#: One sample per secret pattern. Each row is (id, sample text, the part that
+#: must not survive redaction).
 _SAMPLES: tuple[tuple[str, str, str], ...] = (
     ("github-token", "ghp_abcdefgh12345678", "abcdefgh12345678"),
     ("github-pat", "github_pat_abcdefghij0123456789", "abcdefghij0123456789"),
@@ -44,8 +44,8 @@ _SAMPLES: tuple[tuple[str, str, str], ...] = (
     ("assignment", "MY_API_KEY=abcdefgh12345", "abcdefgh12345"),
 )
 
-#: (id, text, redacted?) pairs around the smallest accepted size of each
-#: quantified pattern. The quantifier is read from ``_SECRET_PATTERNS``.
+#: (id, text, redacted?) pairs written by hand around the smallest accepted size
+#: of each quantified pattern. Change them with the quantifier when a pattern changes.
 _THRESHOLDS: tuple[tuple[str, str, bool], ...] = (
     ("github-token-15", "ghp_" + "a" * 15, False),
     ("github-token-16", "ghp_" + "a" * 16, True),
@@ -63,20 +63,19 @@ _THRESHOLDS: tuple[tuple[str, str, bool], ...] = (
 )
 
 
-def test_every_secret_pattern_has_a_sample() -> None:
-    assert len(_SAMPLES) == len(_SECRET_PATTERNS)
-
-
-@pytest.mark.parametrize("index", range(len(_SAMPLES)), ids=[row[0] for row in _SAMPLES])
-def test_each_secret_pattern_is_redacted(index: int) -> None:
-    _, sample, secret = _SAMPLES[index]
-    pattern: re.Pattern[str] = _SECRET_PATTERNS[index]
-
-    assert pattern.search(sample) is not None
+@pytest.mark.parametrize(
+    ("sample", "secret"), [row[1:] for row in _SAMPLES], ids=[row[0] for row in _SAMPLES]
+)
+def test_each_secret_shape_is_redacted(sample: str, secret: str) -> None:
     redacted = redact_secrets(f"before {sample} after")
 
     assert REDACTION_PLACEHOLDER in redacted
     assert secret not in redacted
+
+
+@pytest.mark.parametrize("pattern", _SECRET_PATTERNS, ids=lambda pattern: pattern.pattern[:40])
+def test_every_secret_pattern_matches_some_sample(pattern: re.Pattern[str]) -> None:
+    assert any(pattern.search(sample) for _, sample, _ in _SAMPLES)
 
 
 @pytest.mark.parametrize(
@@ -169,12 +168,6 @@ def test_secret_straddling_the_tail_edge_is_redacted() -> None:
     assert truncated is True
     _assert_no_fragment(reason)
     assert REDACTION_PLACEHOLDER in reason.rsplit("\n", 1)[1]
-
-
-def test_reason_limit_contract_is_500_characters() -> None:
-    assert REASON_LIMIT == 500
-    assert bounded_reason("a" * 500) == ("a" * 500, False)
-    assert bounded_reason("a" * 501)[1] is True
 
 
 def test_reason_at_the_limit_is_shown_in_full() -> None:
