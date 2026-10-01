@@ -33,7 +33,11 @@
   };
 
   const TOTALS_EXCLUDED_KEYS = new Set(["health", "runs", "page"]);
-  const CALL_CELL_COUNT = 7;
+  // What a screen reader hears before each cell of a call row. The visible header
+  // row is hidden from assistive technology, so the row carries its own labels.
+  const CALL_COLUMNS = [
+    "Call number", "Role", "Model", "Outcome", "Duration", "Total tokens", "Cost"
+  ];
   const OUTCOME_CELL = 3;
   const STAT_PART_CLASSES = ["stat-label", "stat-value", "stat-note", "stat-help"];
   const COPIED_TEXT = "Copied";
@@ -1055,13 +1059,21 @@
     ];
   }
 
+  // A cell is a hidden column label followed by its value.
+  function buildCell(label) {
+    const cell = element("span");
+    cell.appendChild(element("span", "visually-hidden", label + ": "));
+    cell.appendChild(element("span"));
+    return cell;
+  }
+
   // A call is a native details element: the summary holds the default columns,
   // the body holds the rest.
   function buildCall() {
     const details = element("details", "call");
     const summary = details.appendChild(element("summary", "call-row"));
-    for (let index = 0; index < CALL_CELL_COUNT; index += 1) {
-      summary.appendChild(element("span"));
+    for (const label of CALL_COLUMNS) {
+      summary.appendChild(buildCell(label));
     }
     details.appendChild(element("dl", "call-fields"));
     return details;
@@ -1081,7 +1093,7 @@
     }
     const cells = details.firstElementChild.children;
     for (const [index, text] of callCells(call).entries()) {
-      setText(cells[index], text);
+      setText(cells[index].lastElementChild, text);
     }
     cells[OUTCOME_CELL].className = outcomeOf(call.status).className;
     syncDefinitionList(details.lastElementChild, callFields(call, runId));
@@ -1202,6 +1214,7 @@
     button.type = "button";
     const status = row.appendChild(element("span", "copy-status"));
     status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
     button.addEventListener("click", function () {
       copyText(text).then(announceCopied(status), announceCopyFailed(status));
     });

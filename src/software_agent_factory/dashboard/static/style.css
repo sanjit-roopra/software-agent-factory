@@ -167,8 +167,8 @@ a { color: var(--accent); }
 .call-row { cursor: pointer; list-style: none; }
 .call-row::-webkit-details-marker { display: none; }
 .call-row:hover, .call[open] { background: var(--surface-2); }
-.call-row span:first-child::before { content: "\25B8"; margin-right: 0.4rem; }
-.call[open] .call-row span:first-child::before { content: "\25BE"; }
+.call-row > span:first-child::before { content: "\25B8"; margin-right: 0.4rem; }
+.call[open] .call-row > span:first-child::before { content: "\25BE"; }
 .call-fields { margin: 0; padding: 0.5rem 0.6rem 0.75rem 2rem; }
 .next-step { border: 2px solid var(--warn); }
 .next-step h2 { margin-bottom: 0.5rem; }
@@ -186,6 +186,17 @@ a { color: var(--accent); }
   overflow-wrap: anywhere;
   padding: 0.6rem 0.75rem;
   white-space: pre-wrap;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .copy-row { display: flex; gap: 0.75rem; align-items: center; }
 .copy-status { color: var(--ok); font-weight: 600; }

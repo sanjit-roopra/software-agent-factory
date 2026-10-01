@@ -610,6 +610,62 @@ def test_the_timeline_heads_the_default_columns_in_order() -> None:
     ]
 
 
+def test_the_timeline_group_is_named_by_its_heading() -> None:
+    assert '<h2 id="timeline-heading">Call timeline</h2>' in _RUN_DETAIL_HTML
+    assert re.search(
+        r'<div\s+class="timeline"\s+role="group"\s+aria-labelledby="timeline-heading">',
+        _RUN_DETAIL_HTML,
+    )
+
+
+def test_the_visual_header_row_is_hidden_from_assistive_technology() -> None:
+    assert re.search(r'<div\s+class="timeline-head"\s+aria-hidden="true">', _RUN_DETAIL_HTML)
+
+
+def test_a_timeline_row_is_not_given_table_roles() -> None:
+    timeline = _RUN_DETAIL_HTML.split('class="timeline"')[1].split("</section>")[0]
+    for role in ("table", "row", "cell", "columnheader", "grid"):
+        assert f'role="{role}"' not in timeline
+        assert f'role="{role}"' not in dashboard_assets.APP_JS
+
+
+def test_each_call_cell_starts_with_a_hidden_label_for_its_column() -> None:
+    js = dashboard_assets.APP_JS
+    assert '"visually-hidden", label + ": "' in function_source(js, "buildCell")
+    assert "buildCell(label)" in function_source(js, "buildCall")
+    labels = re.findall(r'"([^"]+)"', _constant_source("CALL_COLUMNS"))
+    head = _RUN_DETAIL_HTML.split('class="timeline-head"')[1].split("</div>")[0]
+    visible = re.findall(r"<span>([^<]*)</span>", head)
+    assert labels[0] == "Call number"
+    assert labels[1:] == visible[1:]
+    assert len(labels) == len(visible)
+    # The value is the last child of the cell, after the hidden label.
+    assert "cells[index].lastElementChild" in function_source(js, "patchCall")
+
+
+def test_the_hidden_label_style_hides_text_visually_but_not_from_screen_readers() -> None:
+    css = dashboard_assets.STYLE_CSS
+    rule = re.search(r"\.visually-hidden\s*\{([^}]*)\}", css)
+    assert rule is not None
+    for declaration in (
+        "position: absolute;",
+        "width: 1px;",
+        "height: 1px;",
+        "clip: rect(0 0 0 0);",
+        "clip-path: inset(50%);",
+        "white-space: nowrap;",
+    ):
+        assert declaration in rule.group(1)
+    assert "display: none" not in rule.group(1)
+    assert "visibility: hidden" not in rule.group(1)
+
+
+def test_the_row_caret_marks_only_the_first_cell_not_its_hidden_label() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert ".call-row > span:first-child::before" in css
+    assert not re.search(r"\.call-row span:first-child", css)
+
+
 def test_the_timeline_says_there_are_no_calls_yet_until_a_call_arrives() -> None:
     assert re.search(r'<p\s+id="timeline-status">No calls yet\.</p>', _RUN_DETAIL_HTML)
     source = function_source(dashboard_assets.APP_JS, "renderTimeline")
@@ -844,6 +900,7 @@ def test_the_reply_has_a_copy_button_that_announces_copied() -> None:
     assert 'const COPIED_TEXT = "Copied";' in js
     control = function_source(js, "copyControl")
     assert 'setAttribute("role", "status")' in control
+    assert 'setAttribute("aria-live", "polite")' in control
     assert "copyText(text).then(announceCopied(status), announceCopyFailed(status))" in control
     assert "setText(status, COPIED_TEXT)" in function_source(js, "announceCopied")
     assert "setText(status, COPY_FAILED_TEXT)" in function_source(js, "announceCopyFailed")

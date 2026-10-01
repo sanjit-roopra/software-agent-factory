@@ -97,11 +97,11 @@ def render_index_html(*, token: str) -> str:
           <div id="run-totals" class="stats"></div>
         </div>
         <div class="card">
-          <h2>Call timeline</h2>
+          <h2 id="timeline-heading">Call timeline</h2>
           <p id="timeline-status">No calls yet.</p>
           <div class="table-wrap" id="timeline-wrap" hidden>
-            <div class="timeline">
-              <div class="timeline-head">
+            <div class="timeline" role="group" aria-labelledby="timeline-heading">
+              <div class="timeline-head" aria-hidden="true">
                 <span>#</span>
                 <span>Role</span>
                 <span>Model</span>
