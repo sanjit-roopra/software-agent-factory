@@ -3024,3 +3024,288 @@ def test_the_running_calls_reasoning_level_goes_from_the_provider_to_the_page(
 
     assert shown["active_invocation"]["reasoning"] == "xhigh"
     assert shown["active_invocation"]["status"] == "running"
+
+
+# --------------------------------------------------------------------------
+# Two-run comparison (#80 slice 5)
+# --------------------------------------------------------------------------
+
+_RUN_A = "run-A"
+_RUN_B = "run-B"
+_MISSING_RUN = "missing-run"
+_TRAVERSAL_ID = "../etc"
+_SECRET_TEXT = "must-not-be-exposed"
+
+
+def _compare_call(role: str, model: str, *, success: bool = True, **usage: float) -> dict[str, Any]:
+    return {
+        "role": role,
+        "model": model,
+        "success": success,
+        "started_at": "2026-10-01T10:00:00Z",
+        "completed_at": "2026-10-01T10:00:05Z",
+        "usage": usage,
+        "prompt": _SECRET_TEXT,
+    }
+
+
+def _compare_detail(run_id: str, calls: list[dict[str, Any]] | None) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "run_id": run_id,
+        "title": f"Task of {run_id}",
+        "state": "DONE",
+        "created_at": "2026-10-01T09:00:00Z",
+        "logs": _SECRET_TEXT,
+    }
+    if calls is not None:
+        detail["invocations"] = calls
+    return detail
+
+
+_COMPARE_DETAILS: dict[str, dict[str, Any]] = {
+    _RUN_A: _compare_detail(
+        _RUN_A,
+        [
+            _compare_call("TRIAGE", "model-t", input_tokens=10, total_premium_request_cost=1.0),
+            _compare_call("TRIAGE", "model-t", input_tokens=20, total_premium_request_cost=1.0),
+            _compare_call("IMPLEMENTER", "model-i", input_tokens=100),
+            _compare_call("REVIEWER", "model-r", input_tokens=7),
+        ],
+    ),
+    _RUN_B: _compare_detail(
+        _RUN_B,
+        [
+            _compare_call("TRIAGE", "model-t", input_tokens=5, total_nano_aiu=200_000_000_000),
+            _compare_call("IMPLEMENTER", "model-i", success=False, input_tokens=60),
+            _compare_call("IMPLEMENTER", "model-j", input_tokens=40),
+        ],
+    ),
+    "run-empty": _compare_detail("run-empty", []),
+    "run-no-calls-key": _compare_detail("run-no-calls-key", None),
+}
+
+
+@pytest.fixture
+def compare_server() -> Iterator[RunningServer]:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=_COMPARE_DETAILS.get,
+        )
+    )
+    try:
+        yield running
+    finally:
+        _stop(running)
+
+
+def _compare(running: RunningServer, a: str, b: str) -> http.client.HTTPResponse:
+    path = f"/api/compare?a={quote(a, safe='')}&b={quote(b, safe='')}"
+    return running.request("GET", path, headers=running.authed_headers())
+
+
+def _role_row(payload: dict[str, Any], role: str) -> dict[str, Any]:
+    (row,) = [row for row in payload["roles"] if row["role"] == role]
+    return row
+
+
+def test_compare_gives_each_role_for_both_runs(compare_server: RunningServer) -> None:
+    response = _compare(compare_server, _RUN_A, _RUN_B)
+
+    assert response.status == 200
+    payload = _body_json(response)
+    assert [row["role"] for row in payload["roles"]] == ["TRIAGE", "IMPLEMENTER", "REVIEWER"]
+    triage = _role_row(payload, "TRIAGE")
+    assert [triage["a"]["calls"], triage["b"]["calls"]] == [2, 1]
+    assert triage["a"]["tokens"]["input_tokens"] == {"total": 30, "reported_count": 2}
+    assert triage["a"]["duration_ms"] == {"total": 10000, "reported_count": 2}
+    implementer = _role_row(payload, "IMPLEMENTER")
+    assert [implementer["a"]["calls"], implementer["b"]["calls"]] == [1, 2]
+    assert implementer["a"]["failed_calls"] == {"total": 0, "reported_count": 1}
+    assert implementer["b"]["failed_calls"] == {"total": 1, "reported_count": 2}
+    assert implementer["a"]["models"] == ["model-i"]
+    assert implementer["b"]["models"] == ["model-i", "model-j"]
+
+
+def test_compare_keeps_each_runs_cost_in_its_own_units(compare_server: RunningServer) -> None:
+    payload = _body_json(_compare(compare_server, _RUN_A, _RUN_B))
+
+    triage = _role_row(payload, "TRIAGE")
+    assert triage["a"]["costs"]["total_premium_request_cost"] == {
+        "total": 2.0,
+        "reported_count": 2,
+    }
+    assert triage["a"]["costs"]["usage_value_usd"] == {"total": None, "reported_count": 0}
+    assert triage["b"]["costs"]["total_premium_request_cost"] == {
+        "total": None,
+        "reported_count": 0,
+    }
+    assert triage["b"]["costs"]["usage_value_usd"] == {"total": 2.0, "reported_count": 1}
+
+
+def test_compare_labels_each_run_for_the_picker(compare_server: RunningServer) -> None:
+    payload = _body_json(_compare(compare_server, _RUN_A, _RUN_B))
+
+    assert payload["a"] == {
+        "run_id": _RUN_A,
+        "created_at": "2026-10-01T09:00:00Z",
+        "state": "DONE",
+        "title": "Task of run-A",
+        "models": ["model-i", "model-r", "model-t"],
+    }
+    assert payload["b"]["run_id"] == _RUN_B
+    assert payload["b"]["models"] == ["model-i", "model-j", "model-t"]
+
+
+def test_compare_shows_a_role_only_one_run_used_as_null_for_the_other(
+    compare_server: RunningServer,
+) -> None:
+    payload = _body_json(_compare(compare_server, _RUN_A, _RUN_B))
+
+    reviewer = _role_row(payload, "REVIEWER")
+    assert reviewer["a"]["calls"] == 1
+    assert reviewer["b"] is None
+
+
+@pytest.mark.parametrize("empty_run", ["run-empty", "run-no-calls-key"])
+def test_compare_with_a_run_that_has_no_calls_lists_the_other_runs_roles(
+    compare_server: RunningServer, empty_run: str
+) -> None:
+    payload = _body_json(_compare(compare_server, empty_run, _RUN_B))
+
+    assert payload["a"]["models"] == []
+    assert [row["a"] for row in payload["roles"]] == [None, None]
+    assert [row["role"] for row in payload["roles"]] == ["TRIAGE", "IMPLEMENTER"]
+
+
+def test_compare_of_two_runs_without_calls_has_no_roles(compare_server: RunningServer) -> None:
+    payload = _body_json(_compare(compare_server, "run-empty", "run-no-calls-key"))
+
+    assert payload["roles"] == []
+
+
+def test_compare_drops_fields_the_sanitizer_does_not_allow(compare_server: RunningServer) -> None:
+    response = _compare(compare_server, _RUN_A, _RUN_B)
+
+    assert _SECRET_TEXT not in response.read_body.decode()  # type: ignore[attr-defined]
+
+
+_BAD_REQUESTS = [
+    (_RUN_A, _TRAVERSAL_ID),
+    (_TRAVERSAL_ID, _RUN_A),
+    (_RUN_A, ""),
+    ("", _RUN_A),
+    (_RUN_A, _RUN_A),
+    (_TRAVERSAL_ID, _MISSING_RUN),
+    (_MISSING_RUN, _MISSING_RUN),
+    ("", ""),
+]
+
+
+@pytest.mark.parametrize(("a", "b"), _BAD_REQUESTS)
+def test_compare_rejects_an_invalid_empty_or_identical_id_with_400(a: str, b: str) -> None:
+    asked: list[str] = []
+
+    def recording_provider(run_id: str) -> dict[str, Any] | None:
+        asked.append(run_id)
+        return _COMPARE_DETAILS.get(run_id)
+
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=recording_provider,
+        )
+    )
+    try:
+        response = _compare(running, a, b)
+        payload = _body_json(response)
+    finally:
+        _stop(running)
+
+    assert response.status == 400
+    assert payload == {"error": "invalid run ids"}
+    assert asked == []
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/compare", f"/api/compare?a={_RUN_A}", f"/api/compare?b={_RUN_A}"]
+)
+def test_compare_with_a_missing_id_parameter_is_400(
+    compare_server: RunningServer, path: str
+) -> None:
+    response = compare_server.request("GET", path, headers=compare_server.authed_headers())
+
+    assert response.status == 400
+
+
+@pytest.mark.parametrize(("a", "b"), [(_RUN_A, _MISSING_RUN), (_MISSING_RUN, _RUN_A)])
+def test_compare_with_an_unknown_run_is_404_without_run_data(
+    compare_server: RunningServer, a: str, b: str
+) -> None:
+    response = _compare(compare_server, a, b)
+
+    assert response.status == 404
+    assert _body_json(response) == {"error": "not found"}
+
+
+def test_compare_without_a_token_is_401(compare_server: RunningServer) -> None:
+    path = f"/api/compare?a={_RUN_A}&b={_RUN_B}"
+
+    response = compare_server.request(
+        "GET", path, headers={"Host": f"127.0.0.1:{compare_server.port}"}
+    )
+
+    assert response.status == 401
+    assert _body_json(response) == {"error": "unauthorized"}
+
+
+def test_compare_with_a_wrong_host_is_rejected(compare_server: RunningServer) -> None:
+    path = f"/api/compare?a={_RUN_A}&b={_RUN_B}"
+    headers = {"Host": "evil.com", TOKEN_HEADER: compare_server.token}
+
+    response = compare_server.request("GET", path, headers=headers)
+
+    assert response.status == 400
+    assert _body_json(response) == {"error": "invalid host"}
+
+
+def test_compare_provider_failure_is_503_without_run_data() -> None:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=failing_detail_provider,
+        )
+    )
+    try:
+        response = _compare(running, _RUN_A, _RUN_B)
+        payload = _body_json(response)
+    finally:
+        _stop(running)
+
+    assert response.status == 503
+    assert payload == {"error": "run detail unavailable"}
+
+
+def test_compare_with_unsanitizable_provider_data_is_503_without_run_data() -> None:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=lambda run_id: _SECRET_TEXT,  # type: ignore[arg-type,return-value]
+        )
+    )
+    try:
+        response = _compare(running, _RUN_A, _RUN_B)
+        payload = _body_json(response)
+    finally:
+        _stop(running)
+
+    assert response.status == 503
+    assert payload == {"error": "run detail unavailable"}

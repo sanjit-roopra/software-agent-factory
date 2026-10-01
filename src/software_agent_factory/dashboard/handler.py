@@ -14,17 +14,18 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from io import BufferedIOBase
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..models import ResumeClassification
 from . import assets
 from .actions import ResumeActions, accept_action
 from .responses import WriteRejected
-from .sanitize import sanitize_health, sanitize_run_summary
+from .sanitize import sanitize_health, sanitize_run_detail, sanitize_run_summary
 from .security import (
     TOKEN_QUERY_PARAM,
     header_token_matches,
@@ -34,7 +35,7 @@ from .security import (
     token_matches,
 )
 from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
-from .view import project_view, run_detail_view
+from .view import compare_view, project_view, run_detail_view
 
 if TYPE_CHECKING:
     from .server import DashboardServer
@@ -339,6 +340,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/projects":
             self._serve_projects(send_body)
             return
+        if path == "/api/compare":
+            self._serve_compare(query, send_body)
+            return
         detail_match = _RUN_DETAIL_PATTERN.match(path)
         if detail_match:
             self._serve_run_detail(detail_match.group(1), send_body)
@@ -462,39 +466,55 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if not is_valid_run_id(raw_run_id):
             self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
             return
+        sanitized = self._load_run(
+            raw_run_id, lambda detail: run_detail_view(detail, self._resume_requests), send_body
+        )
+        if sanitized is not None:
+            self._respond_json(HTTPStatus.OK, sanitized, send_body)
 
-        try:
-            detail = self.server.run_detail_provider(raw_run_id)
-        except Exception:  # noqa: BLE001
-            _logger.exception("Run detail provider failed for run %s", raw_run_id)
-            self._respond_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                {"error": "run detail unavailable"},
-                send_body,
-            )
+    def _serve_compare(self, query: dict[str, list[str]], send_body: bool) -> None:
+        a_id = query.get("a", [""])[0]
+        b_id = query.get("b", [""])[0]
+        if a_id == b_id or not (is_valid_run_id(a_id) and is_valid_run_id(b_id)):
+            self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid run ids"}, send_body)
             return
+        a_detail = self._load_run(a_id, sanitize_run_detail, send_body)
+        if a_detail is None:
+            return
+        b_detail = self._load_run(b_id, sanitize_run_detail, send_body)
+        if b_detail is None:
+            return
+        self._respond_json(HTTPStatus.OK, compare_view(a_id, a_detail, b_id, b_detail), send_body)
 
+    def _load_run(
+        self, run_id: str, build: Callable[[Any], dict[str, Any]], send_body: bool
+    ) -> dict[str, Any] | None:
+        """One valid run id's detail through ``build``, or ``None`` after answering why not.
+
+        An unknown run is ``404``. A provider that fails or returns data ``build`` cannot
+        sanitize is ``503``. The answer never holds run data. ``build`` must go through
+        :func:`sanitize_run_detail`, so only allowlisted fields ever leave this process, no
+        matter what the provider handed back.
+        """
+        try:
+            detail = self.server.run_detail_provider(run_id)
+        except Exception:  # noqa: BLE001
+            _logger.exception("Run detail provider failed for run %s", run_id)
+            self._respond_json(
+                HTTPStatus.SERVICE_UNAVAILABLE, {"error": "run detail unavailable"}, send_body
+            )
+            return None
         if detail is None:
             self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
-            return
-
+            return None
         try:
-            # Same data-minimization guarantee as run summaries: only the
-            # allowlisted detail/attempt fields ever leave this process, no
-            # matter what the provider actually handed back.
-            sanitized = run_detail_view(detail, self._resume_requests)
+            return build(detail)
         except TypeError:
-            _logger.exception(
-                "Run detail provider returned unsanitizable data for run %s", raw_run_id
-            )
+            _logger.exception("Run detail provider returned unsanitizable data for run %s", run_id)
             self._respond_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                {"error": "run detail unavailable"},
-                send_body,
+                HTTPStatus.SERVICE_UNAVAILABLE, {"error": "run detail unavailable"}, send_body
             )
-            return
-
-        self._respond_json(HTTPStatus.OK, sanitized, send_body)
+            return None
 
     def _resume_requests(self, run_id: str, episode_id: str) -> list[object]:
         """The queued requests of one episode. A reader failure shows none and is logged."""

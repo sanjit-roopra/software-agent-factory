@@ -9,6 +9,9 @@ import pytest
 from software_agent_factory.dashboard.aggregate import (
     COST_UNIT_FIELDS,
     TOKEN_CLASS_FIELDS,
+    UNKNOWN_ROLE,
+    compare_roles,
+    role_breakdown,
     run_totals,
 )
 from software_agent_factory.dashboard.sanitize import USAGE_FIELDS
@@ -129,3 +132,106 @@ def test_field_names_come_from_the_usage_allowlist() -> None:
     assert set(TOKEN_CLASS_FIELDS) <= USAGE_FIELDS
     assert set(COST_UNIT_FIELDS) - {"usage_value_usd"} <= USAGE_FIELDS
     assert "usage_value_usd" not in USAGE_FIELDS
+
+
+def _role_call(
+    role: Any, model: Any = "m1", status: str = "SUCCESS", **usage: Any
+) -> dict[str, Any]:
+    return {**_call(status, 1000, **usage), "role": role, "model": model}
+
+
+def test_role_breakdown_totals_each_role_with_run_totals() -> None:
+    calls = [
+        _role_call("TRIAGE", input_tokens=10),
+        _role_call("IMPLEMENTER", status="FAILED", input_tokens=5, usage_value_usd=0.5),
+        _role_call("TRIAGE", input_tokens=20),
+    ]
+
+    breakdown = role_breakdown(calls)
+
+    assert breakdown["TRIAGE"]["calls"] == 2
+    assert breakdown["TRIAGE"]["tokens"]["input_tokens"] == _figure(30, 2)
+    assert breakdown["IMPLEMENTER"]["failed_calls"] == _figure(1, 1)
+    assert breakdown["IMPLEMENTER"]["duration_ms"] == _figure(1000, 1)
+    assert breakdown["IMPLEMENTER"]["costs"]["usage_value_usd"] == _figure(0.5, 1)
+    assert breakdown["TRIAGE"]["costs"]["usage_value_usd"] == _figure(None, 0)
+
+
+def test_role_breakdown_lists_roles_in_order_of_first_call() -> None:
+    calls = [_role_call("PLANNER"), _role_call("TRIAGE"), _role_call("PLANNER")]
+
+    assert list(role_breakdown(calls)) == ["PLANNER", "TRIAGE"]
+
+
+def test_role_breakdown_lists_distinct_sorted_models_per_role() -> None:
+    calls = [
+        _role_call("TRIAGE", "zeta"),
+        _role_call("TRIAGE", "alpha"),
+        _role_call("TRIAGE", "zeta"),
+    ]
+
+    assert role_breakdown(calls)["TRIAGE"]["models"] == ["alpha", "zeta"]
+
+
+@pytest.mark.parametrize("model", [None, "", 7, ["x"]])
+def test_role_breakdown_ignores_a_model_that_is_not_a_name(model: Any) -> None:
+    assert role_breakdown([_role_call("TRIAGE", model)])["TRIAGE"]["models"] == []
+
+
+@pytest.mark.parametrize("role", [None, "", 7, ["x"]])
+def test_role_breakdown_groups_a_call_without_a_usable_role_as_unknown(role: Any) -> None:
+    breakdown = role_breakdown([_role_call(role)])
+
+    assert list(breakdown) == [UNKNOWN_ROLE]
+    assert breakdown[UNKNOWN_ROLE]["calls"] == 1
+
+
+def test_role_breakdown_of_no_calls_has_no_roles() -> None:
+    assert role_breakdown([]) == {}
+
+
+def test_compare_roles_gives_each_run_its_own_totals_per_role() -> None:
+    a_calls = [_role_call("TRIAGE"), _role_call("TRIAGE"), _role_call("IMPLEMENTER")]
+    b_calls = [
+        _role_call("TRIAGE"),
+        _role_call("IMPLEMENTER", status="FAILED"),
+        _role_call("IMPLEMENTER"),
+    ]
+
+    rows = compare_roles(a_calls, b_calls)
+
+    assert [row["role"] for row in rows] == ["TRIAGE", "IMPLEMENTER"]
+    triage, implementer = rows
+    assert [triage["a"]["calls"], triage["b"]["calls"]] == [2, 1]
+    assert [implementer["a"]["calls"], implementer["b"]["calls"]] == [1, 2]
+    assert implementer["a"]["failed_calls"] == _figure(0, 1)
+    assert implementer["b"]["failed_calls"] == _figure(1, 2)
+
+
+def test_compare_roles_keeps_each_runs_cost_in_its_own_units() -> None:
+    a_calls = [_role_call("TRIAGE", total_premium_request_cost=2)]
+    b_calls = [_role_call("TRIAGE", usage_value_usd=0.5)]
+
+    (row,) = compare_roles(a_calls, b_calls)
+
+    assert row["a"]["costs"]["total_premium_request_cost"] == _figure(2, 1)
+    assert row["a"]["costs"]["usage_value_usd"] == _figure(None, 0)
+    assert row["b"]["costs"]["total_premium_request_cost"] == _figure(None, 0)
+    assert row["b"]["costs"]["usage_value_usd"] == _figure(0.5, 1)
+
+
+def test_compare_roles_marks_a_role_one_run_never_used_with_none() -> None:
+    a_calls = [_role_call("TRIAGE"), _role_call("REVIEWER")]
+    b_calls = [_role_call("TRIAGE"), _role_call("TESTER")]
+
+    rows = {row["role"]: row for row in compare_roles(a_calls, b_calls)}
+
+    assert list(rows) == ["TRIAGE", "REVIEWER", "TESTER"]
+    assert rows["REVIEWER"]["a"] is not None
+    assert rows["REVIEWER"]["b"] is None
+    assert rows["TESTER"]["a"] is None
+    assert rows["TESTER"]["b"] is not None
+
+
+def test_compare_roles_of_runs_without_calls_has_no_rows() -> None:
+    assert compare_roles([], []) == []
