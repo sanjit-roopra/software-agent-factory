@@ -814,8 +814,9 @@ def _dashboard_stub(
 
 
 def _assert_process_gone(pid_file: Path) -> None:
+    pid = int(pid_file.read_text(encoding="utf-8"))
     with pytest.raises(ProcessLookupError):
-        os.kill(int(pid_file.read_text(encoding="utf-8")), 0)
+        os.kill(pid, 0)
 
 
 def test_smoke_dashboard_assets_accepts_a_dashboard_that_serves_both_assets(

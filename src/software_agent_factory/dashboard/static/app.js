@@ -18,7 +18,7 @@
 
   const RUN_ID_PATTERN = /^[\w-]{1,128}$/;
   const TITLE_SUFFIX = " \u2014 Factory dashboard";
-  const SIMPLE_VIEWS = ["runs", "projects", "health"];
+  const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);
   const VIEWS = {
     runs: { section: "view-runs", heading: "runs-heading", nav: "runs", label: "Runs" },
     run: { section: "view-run", heading: "detail-heading", nav: "runs", label: "Run detail" },
@@ -31,7 +31,7 @@
     health: { section: "view-health", heading: "health-heading", nav: "health", label: "Health" }
   };
 
-  const TOTALS_EXCLUDED_KEYS = ["health", "runs", "page"];
+  const TOTALS_EXCLUDED_KEYS = new Set(["health", "runs", "page"]);
   const INVOCATION_USAGE_COLUMNS = 7;
   const TASK_HEADERS = [
     "Task", "Title", "State", "Run", "Issue", "Pull request", "Merged commit"
@@ -362,7 +362,7 @@
   // place instead of rebuilding the list.
   function syncList(container, lines) {
     let list = container.firstElementChild;
-    if (!list || list.tagName !== "UL") {
+    if (list?.tagName !== "UL") {
       clearChildren(container);
       list = container.appendChild(document.createElement("ul"));
     }
@@ -384,9 +384,9 @@
   function patchRow(row, spec) {
     row.className = spec.className || "";
     if (spec.runId === undefined) {
-      row.removeAttribute("data-run-id");
+      delete row.dataset.runId;
     } else {
-      row.setAttribute("data-run-id", spec.runId);
+      row.dataset.runId = spec.runId;
     }
     trimChildren(row, spec.cells.length);
     for (const [index, entry] of spec.cells.entries()) {
@@ -476,7 +476,7 @@
   function totalsFields(summary) {
     return Object.fromEntries(
       Object.entries(summary || {}).filter(function (entry) {
-        return !TOTALS_EXCLUDED_KEYS.includes(entry[0]);
+        return !TOTALS_EXCLUDED_KEYS.has(entry[0]);
       })
     );
   }
@@ -950,7 +950,7 @@
     if (name === "compare" && (parts.length === 1 || parts.length === 3)) {
       return { view: "compare" };
     }
-    if (parts.length === 1 && SIMPLE_VIEWS.includes(name)) {
+    if (parts.length === 1 && SIMPLE_VIEWS.has(name)) {
       return { view: name };
     }
     return null;
@@ -982,7 +982,7 @@
       document.getElementById(VIEWS[key].section).hidden = key !== name;
     }
     for (const link of document.querySelectorAll('nav[aria-label="Main"] a')) {
-      markNavLink(link, link.getAttribute("data-route") === VIEWS[name].nav);
+      markNavLink(link, link.dataset.route === VIEWS[name].nav);
     }
   }
 
@@ -1069,7 +1069,7 @@
   // A poll tick waits while the open view still has a request in flight.
   function pollView() {
     if (requests[state.view].inFlight === 0) {
-      refreshView();
+      void refreshView();
     }
   }
 
@@ -1089,7 +1089,7 @@
     if (moveFocus) {
       document.getElementById(VIEWS[route.view].heading).focus();
     }
-    refreshView();
+    void refreshView();
   }
 
   // A deep link opens with the run list one step back, so Back leaves the deep
@@ -1128,7 +1128,7 @@
 
   function goToOffset(offset) {
     state.offset = offset;
-    refreshView();
+    void refreshView();
   }
 
   function navigateToRun(runId) {
@@ -1150,7 +1150,7 @@
     document.getElementById("runs-body").addEventListener("click", function (event) {
       const row = event.target.closest("tr[data-run-id]");
       if (row) {
-        navigateToRun(row.getAttribute("data-run-id"));
+        navigateToRun(row.dataset.runId);
       }
     });
     globalThis.matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle);

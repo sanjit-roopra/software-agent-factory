@@ -75,10 +75,10 @@ def test_route_parser_pins_every_route_shape() -> None:
     assert 'return { view: "run", runId: parts[1] };' in parser
     assert 'name === "compare" && (parts.length === 1 || parts.length === 3)' in parser
     assert 'return { view: "compare" };' in parser
-    assert "parts.length === 1 && SIMPLE_VIEWS.includes(name)" in parser
+    assert "parts.length === 1 && SIMPLE_VIEWS.has(name)" in parser
     assert "return { view: name };" in parser
     assert parser.endswith("return null; }")
-    assert 'const SIMPLE_VIEWS = ["runs", "projects", "health"];' in js
+    assert 'const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);' in js
 
 
 def test_an_unknown_hash_redirects_in_apply_route_and_resolve_route_has_no_side_effects() -> None:
@@ -151,7 +151,7 @@ def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
     mark = function_source(js, "markNavLink")
     assert 'link.setAttribute("aria-current", "page")' in mark
     assert 'link.removeAttribute("aria-current")' in mark
-    assert 'link.getAttribute("data-route") === VIEWS[name].nav' in function_source(js, "showView")
+    assert 'link.dataset.route === VIEWS[name].nav' in function_source(js, "showView")
     assert (
         "if (moveFocus) { document.getElementById(VIEWS[route.view].heading).focus(); }"
         in function_source(js, "applyRoute")
@@ -271,7 +271,7 @@ def test_start_applies_the_theme_then_wires_controls_then_opens_the_route() -> N
 
 def test_a_route_change_refreshes_the_view_it_opens() -> None:
     apply_route = function_source(dashboard_assets.APP_JS, "applyRoute")
-    assert apply_route.endswith("refreshView(); }")
+    assert apply_route.endswith("void refreshView(); }")
 
 
 def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
@@ -379,7 +379,7 @@ def test_a_refresh_stays_in_flight_until_every_task_ends() -> None:
 
 def test_a_reused_row_drops_a_stale_run_id() -> None:
     patch = function_source(dashboard_assets.APP_JS, "patchRow")
-    assert 'row.removeAttribute("data-run-id");' in patch
+    assert 'delete row.dataset.runId;' in patch
 
 
 def test_a_successful_refresh_clears_the_notice() -> None:
@@ -474,7 +474,7 @@ def test_a_refresh_never_ends_in_an_unhandled_rejection() -> None:
 
 def test_a_poll_tick_waits_while_the_open_view_has_a_request_in_flight() -> None:
     assert function_source(dashboard_assets.APP_JS, "pollView") == (
-        "function pollView() { if (requests[state.view].inFlight === 0) { refreshView(); } }"
+        "function pollView() { if (requests[state.view].inFlight === 0) { void refreshView(); } }"
     )
 
 
