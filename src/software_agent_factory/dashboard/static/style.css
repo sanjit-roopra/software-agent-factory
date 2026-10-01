@@ -1,50 +1,112 @@
+/* Light is the base theme. Dark applies when the operator picked it
+   (data-theme="dark") or, with no pick, when the system prefers it. Keep the
+   two dark blocks identical: tests/test_dashboard_theme.py checks that. */
 :root {
-  color-scheme: light dark;
-  --border: #ccc;
-  --stale: #b45309;
+  color-scheme: light;
+  --bg: #f4f7fe;
+  --surface: #ffffff;
+  --surface-2: #eef2fb;
+  --border: #d5dcef;
+  --text: #1b2559;
+  --text-muted: #4f5b87;
+  --accent: #2563eb;
+  --accent-contrast: #ffffff;
+  --ok: #15803d;
+  --warn: #b45309;
   --error: #b91c1c;
+  --focus: #1d4ed8;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1437;
+  --surface: #111c44;
+  --surface-2: #1b254b;
+  --border: #2d3a6b;
+  --text: #f1f4ff;
+  --text-muted: #a3aed0;
+  --accent: #5b8cff;
+  --accent-contrast: #0b1437;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --error: #f87171;
+  --focus: #7aa2ff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #0b1437;
+    --surface: #111c44;
+    --surface-2: #1b254b;
+    --border: #2d3a6b;
+    --text: #f1f4ff;
+    --text-muted: #a3aed0;
+    --accent: #5b8cff;
+    --accent-contrast: #0b1437;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --error: #f87171;
+    --focus: #7aa2ff;
+  }
 }
 * { box-sizing: border-box; }
 body {
   font-family: system-ui, sans-serif;
   margin: 0;
   padding: 0 1.5rem 2rem;
+  background: var(--bg);
+  color: var(--text);
 }
 header {
   padding: 1rem 0;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
 }
 h1 { margin: 0; font-size: 1.4rem; }
-.subtitle { margin: 0.25rem 0 0; color: #666; font-size: 0.9rem; }
+.subtitle { margin: 0.25rem 0 0; color: var(--text-muted); font-size: 0.9rem; }
 section { margin-top: 1.5rem; }
-table { border-collapse: collapse; width: 100%; }
+table { border-collapse: collapse; width: 100%; background: var(--surface); }
 th, td {
   border: 1px solid var(--border);
   padding: 0.4rem 0.6rem;
   text-align: left;
   font-size: 0.9rem;
 }
-th { background: rgba(127, 127, 127, 0.1); }
+th { background: var(--surface-2); }
 tr[data-run-id] { cursor: pointer; }
-tr[data-run-id]:hover { background: rgba(127, 127, 127, 0.08); }
+tr[data-run-id]:hover { background: var(--surface-2); }
 .project-card {
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
   margin-bottom: 1rem;
   padding: 0.75rem;
 }
 .project-card h3 { margin: 0 0 0.5rem; }
-.project-meta { margin: 0 0 0.75rem; color: #666; }
+.project-meta { margin: 0 0 0.75rem; color: var(--text-muted); }
 .project-card table { margin-top: 0.5rem; }
 .state-active { font-weight: 700; }
-.stale-yes { color: var(--stale); font-weight: 600; }
+.stale-yes { color: var(--warn); font-weight: 600; }
 #runs-toolbar { margin-bottom: 0.5rem; display: flex; gap: 0.75rem; align-items: center; }
 #error-banner {
+  background: var(--surface);
   color: var(--error);
   border: 1px solid var(--error);
   padding: 0.5rem 0.75rem;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
 dt { font-weight: 600; }
-button { cursor: pointer; }
+button {
+  cursor: pointer;
+  font: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.35rem 0.75rem;
+}
+button:hover { background: var(--surface-2); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

@@ -9,6 +9,53 @@
 
   var state = { offset: 0, limit: PAGE_SIZE, total: null };
 
+  var THEME_STORAGE_KEY = "factory-dashboard-theme";
+  var DARK_QUERY = "(prefers-color-scheme: dark)";
+
+  function readStoredTheme() {
+    try {
+      var stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+      return stored === "light" || stored === "dark" ? stored : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function storeTheme(theme) {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch (error) {
+      // Storage is blocked: the choice lasts for this page view only.
+    }
+  }
+
+  function systemTheme() {
+    return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
+  }
+
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") || systemTheme();
+  }
+
+  function updateThemeToggle() {
+    var toggle = document.getElementById("theme-toggle");
+    if (toggle) {
+      toggle.textContent = "Switch to " + (currentTheme() === "dark" ? "light" : "dark") + " theme";
+    }
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    updateThemeToggle();
+  }
+
+  // Run before anything else so a remembered theme shows without a flash. With
+  // no valid stored value the CSS follows the system theme on its own.
+  var initialTheme = readStoredTheme();
+  if (initialTheme) {
+    document.documentElement.setAttribute("data-theme", initialTheme);
+  }
+
   function apiFetch(path) {
     return fetch(path, {
       method: "GET",
@@ -589,6 +636,13 @@
     state.offset = state.offset + state.limit;
     loadRuns();
   });
+  document.getElementById("theme-toggle").addEventListener("click", function () {
+    var next = currentTheme() === "dark" ? "light" : "dark";
+    applyTheme(next);
+    storeTheme(next);
+  });
+  window.matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle);
+  updateThemeToggle();
   document.getElementById("detail-close").addEventListener("click", function () {
     document.getElementById("detail-section").hidden = true;
   });

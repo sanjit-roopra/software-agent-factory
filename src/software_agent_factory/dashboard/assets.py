@@ -29,8 +29,11 @@ def render_index_html(*, token: str) -> str:
 </head>
 <body>
 <header>
-  <h1>Software Agent Factory</h1>
-  <p class="subtitle">Read-only local dashboard &mdash; loopback only, no mutation.</p>
+  <div>
+    <h1>Software Agent Factory</h1>
+    <p class="subtitle">Read-only local dashboard &mdash; loopback only, no mutation.</p>
+  </div>
+  <button id="theme-toggle" type="button">Switch theme</button>
 </header>
 <main>
   <section id="projects-section" aria-labelledby="projects-heading">
