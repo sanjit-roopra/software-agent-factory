@@ -44,7 +44,7 @@ def render_index_html(*, token: str) -> str:
     </nav>
   </aside>
   <main>
-    <p id="error-banner" role="alert" hidden></p>
+    <p id="notice" role="status" aria-live="polite"></p>
 
     <section id="view-runs" aria-labelledby="runs-heading" hidden>
       <h1 id="runs-heading" tabindex="-1">Runs</h1>

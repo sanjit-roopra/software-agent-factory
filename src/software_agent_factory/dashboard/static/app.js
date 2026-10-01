@@ -7,7 +7,15 @@
   var tokenMeta = document.querySelector('meta[name="factory-dashboard-token"]');
   var token = tokenMeta ? tokenMeta.getAttribute("content") : "";
 
-  var state = { offset: 0, limit: PAGE_SIZE, total: null, runId: null };
+  var state = {
+    offset: 0, limit: PAGE_SIZE, total: null, runId: null, view: "runs", notice: null
+  };
+  var lastSuccessAt = null;
+  var lastProjectsSignature = null;
+
+  var ERROR_UNAUTHORIZED = "unauthorized";
+  var ERROR_CONNECTION = "connection";
+  var ERROR_REQUEST = "request";
 
   var THEME_STORAGE_KEY = "factory-dashboard-theme";
   var DARK_QUERY = "(prefers-color-scheme: dark)";
@@ -56,16 +64,30 @@
     document.documentElement.setAttribute("data-theme", initialTheme);
   }
 
+  function apiError(kind, message) {
+    var error = new Error(message);
+    error.kind = kind;
+    return error;
+  }
+
+  // Rejects with an error whose "kind" tells a restarted server (401) from a
+  // lost connection (network failure or 5xx) and from any other bad request.
   function apiFetch(path) {
     return fetch(path, {
       method: "GET",
       headers: { "X-Factory-Token": token },
       credentials: "same-origin"
     }).then(function (response) {
+      if (response.status === 401) {
+        throw apiError(ERROR_UNAUTHORIZED, "unauthorized");
+      }
       if (!response.ok) {
-        throw new Error("request failed: " + response.status);
+        var kind = response.status >= 500 ? ERROR_CONNECTION : ERROR_REQUEST;
+        throw apiError(kind, "request failed: " + response.status);
       }
       return response.json();
+    }, function () {
+      throw apiError(ERROR_CONNECTION, "network error");
     });
   }
 
@@ -75,16 +97,52 @@
     }
   }
 
-  function showError(message) {
-    var banner = document.getElementById("error-banner");
-    banner.textContent = message;
-    banner.hidden = false;
+  // Writes only when the text changed, so a refresh keeps a text selection.
+  function setText(node, text) {
+    if (node.textContent !== text) {
+      node.textContent = text;
+    }
   }
 
-  function clearError() {
-    var banner = document.getElementById("error-banner");
-    banner.hidden = true;
-    banner.textContent = "";
+  function noticeMessage() {
+    if (state.notice === ERROR_UNAUTHORIZED) {
+      return "Dashboard restarted, reload the page.";
+    }
+    if (state.notice !== ERROR_CONNECTION) {
+      return "";
+    }
+    if (lastSuccessAt === null) {
+      return "Connection lost, not updated yet";
+    }
+    return "Connection lost, updated " + Math.floor((Date.now() - lastSuccessAt) / 1000) + "s ago";
+  }
+
+  function renderNotice() {
+    setText(document.getElementById("notice"), noticeMessage());
+  }
+
+  function onRefreshSuccess() {
+    state.notice = null;
+    lastSuccessAt = Date.now();
+    renderNotice();
+  }
+
+  function onRefreshFailure(error) {
+    if (error.kind === ERROR_REQUEST) {
+      return;
+    }
+    state.notice = error.kind === ERROR_UNAUTHORIZED ? ERROR_UNAUTHORIZED : ERROR_CONNECTION;
+    renderNotice();
+  }
+
+  // A region is dirty while the operator works in it: a focused field or an
+  // open dialog. A refresh must not re-render a dirty region.
+  function isDirty(region) {
+    var active = document.activeElement;
+    if (active && region.contains(active) && active.matches("input, textarea, select")) {
+      return true;
+    }
+    return region.querySelector("dialog[open]") !== null;
   }
 
   function displayValue(value) {
@@ -98,54 +156,61 @@
     return cell;
   }
 
+  // Reuses the existing <ul> and <li> nodes so a refresh patches the text in
+  // place instead of rebuilding the list.
+  function syncList(container, lines) {
+    var list = container.firstElementChild;
+    if (!list || list.tagName !== "UL") {
+      clearChildren(container);
+      list = container.appendChild(document.createElement("ul"));
+    }
+    while (list.children.length > lines.length) {
+      list.removeChild(list.lastChild);
+    }
+    lines.forEach(function (line, index) {
+      var item = list.children[index] || list.appendChild(document.createElement("li"));
+      setText(item, line);
+    });
+  }
+
+  function keyValueLines(data) {
+    var lines = [];
+    Object.keys(data).forEach(function (key) {
+      var value = data[key];
+      if (Array.isArray(value)) {
+        lines.push(key + ": " + value.length + " item(s)");
+      } else if (value !== null && typeof value === "object") {
+        Object.keys(value).forEach(function (nestedKey) {
+          lines.push(key + "." + nestedKey + ": " + displayValue(value[nestedKey]));
+        });
+      } else {
+        lines.push(key + ": " + displayValue(value));
+      }
+    });
+    return lines;
+  }
+
   function renderKeyValueList(container, data, options) {
-    clearChildren(container);
     if (!data || typeof data !== "object") {
       container.textContent = options && options.emptyMessage
         ? options.emptyMessage
         : "No data available.";
       return;
     }
-    var list = document.createElement("ul");
-    Object.keys(data).forEach(function (key) {
-      var value = data[key];
-      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-        Object.keys(value).forEach(function (nestedKey) {
-          var nestedItem = document.createElement("li");
-          nestedItem.textContent = key + "." + nestedKey + ": " + displayValue(value[nestedKey]);
-          list.appendChild(nestedItem);
-        });
-        return;
-      }
-      var item = document.createElement("li");
-      if (Array.isArray(value)) {
-        item.textContent = key + ": " + value.length + " item(s)";
-      } else {
-        item.textContent = key + ": " + displayValue(value);
-      }
-      list.appendChild(item);
-    });
-    container.appendChild(list);
+    syncList(container, keyValueLines(data));
   }
 
   function renderHealth(health) {
     var container = document.getElementById("health-body");
-    clearChildren(container);
     if (!health) {
       container.textContent = "No health provider configured.";
       return;
     }
-    if (health && Array.isArray(health.checks)) {
-      var list = document.createElement("ul");
-      health.checks.forEach(function (check) {
-        var item = document.createElement("li");
-        var name = displayValue(check.name);
-        var status = displayValue(check.status);
-        var message = displayValue(check.message);
-        item.textContent = name + " [" + status + "]: " + message;
-        list.appendChild(item);
-      });
-      container.appendChild(list);
+    if (Array.isArray(health.checks)) {
+      syncList(container, health.checks.map(function (check) {
+        return displayValue(check.name) + " [" + displayValue(check.status) + "]: " +
+          displayValue(check.message);
+      }));
       return;
     }
     renderKeyValueList(container, health, { emptyMessage: "No health data available." });
@@ -181,26 +246,53 @@
     window.location.hash = "run/" + encodeURIComponent(runId);
   }
 
-  function renderRunRow(run) {
+  // Patches the rows of a table body in place. A spec is { cells, className,
+  // runId }; a cell is a value or { value, className }.
+  function patchCell(cell, entry) {
+    var isObject = entry !== null && typeof entry === "object";
+    setText(cell, displayValue(isObject ? entry.value : entry));
+    cell.className = isObject ? entry.className : "";
+  }
+
+  function patchRow(row, spec) {
+    row.className = spec.className || "";
+    if (spec.runId !== undefined) {
+      row.setAttribute("data-run-id", spec.runId);
+    }
+    while (row.children.length > spec.cells.length) {
+      row.removeChild(row.lastChild);
+    }
+    spec.cells.forEach(function (entry, index) {
+      var cell = row.children[index] || row.appendChild(document.createElement("td"));
+      patchCell(cell, entry);
+    });
+  }
+
+  function syncRows(tbody, specs) {
+    while (tbody.children.length > specs.length) {
+      tbody.removeChild(tbody.lastChild);
+    }
+    specs.forEach(function (spec, index) {
+      patchRow(tbody.children[index] || tbody.appendChild(document.createElement("tr")), spec);
+    });
+  }
+
+  function runRowSpec(run) {
     var runId = run.run_id !== undefined ? run.run_id : run.id;
     var isStale = run.is_stale !== undefined ? run.is_stale : run.stale;
-    var row = document.createElement("tr");
-    row.setAttribute("data-run-id", runId);
-    textCell(row, runId);
-    textCell(row, run.source_external_id || run.work_item_id);
-    textCell(row, run.state);
-    textCell(row, run.review_status);
-    textCell(row, run.created_at);
-    textCell(row, run.idle_seconds);
-    textCell(row, run.attempt_count);
-    var staleCell = textCell(row, isStale ? "yes" : "no");
-    if (isStale) {
-      staleCell.classList.add("stale-yes");
-    }
-    row.addEventListener("click", function () {
-      navigateToRun(runId);
-    });
-    return row;
+    return {
+      runId: runId,
+      cells: [
+        runId,
+        run.source_external_id || run.work_item_id,
+        run.state,
+        run.review_status,
+        run.created_at,
+        run.idle_seconds,
+        run.attempt_count,
+        { value: isStale ? "yes" : "no", className: isStale ? "stale-yes" : "" }
+      ]
+    };
   }
 
   function hasMoreRuns(page, shown) {
@@ -231,12 +323,8 @@
   }
 
   function renderRuns(payload) {
-    var body = document.getElementById("runs-body");
-    clearChildren(body);
     var runs = Array.isArray(payload.runs) ? payload.runs : [];
-    runs.forEach(function (run) {
-      body.appendChild(renderRunRow(run));
-    });
+    syncRows(document.getElementById("runs-body"), runs.map(runRowSpec));
     renderRunsPager(payload.page || {}, runs.length);
     renderRunsStatus(runs.length);
   }
@@ -416,41 +504,33 @@
     });
   }
 
-  function loadProjects() {
-    return apiFetch("/api/projects")
-      .then(function (payload) {
+  // The projects payload is nested and rebuilt wholesale, so an unchanged
+  // payload skips the rebuild and leaves the DOM as the operator left it.
+  function refreshProjects() {
+    return apiFetch("/api/projects").then(function (payload) {
+      var signature = JSON.stringify(payload);
+      if (signature !== lastProjectsSignature) {
         renderProjects(payload);
-        clearError();
-      })
-      .catch(function () {
-        showError("Project status is currently unavailable.");
-      });
+        lastProjectsSignature = signature;
+      }
+    });
   }
 
-  function loadSummary() {
-    return apiFetch("/api/summary")
-      .then(function (payload) {
-        renderHealth(payload.health);
-        renderTotals(payload);
-        clearError();
-      })
-      .catch(function () {
-        showError("Summary is currently unavailable.");
-      });
+  function refreshTotals() {
+    return apiFetch("/api/summary").then(renderTotals);
   }
 
-  function loadRuns() {
+  function refreshHealth() {
+    return apiFetch("/api/summary").then(function (payload) {
+      renderHealth(payload.health);
+    });
+  }
+
+  function refreshRuns() {
     var query =
       "limit=" + encodeURIComponent(state.limit) +
       "&offset=" + encodeURIComponent(state.offset);
-    return apiFetch("/api/runs?" + query)
-      .then(function (payload) {
-        renderRuns(payload);
-        clearError();
-      })
-      .catch(function () {
-        showError("Run list is currently unavailable.");
-      });
+    return apiFetch("/api/runs?" + query).then(renderRuns);
   }
 
   // A message shows in the status line and hides the detail card; null shows
@@ -462,10 +542,88 @@
     document.getElementById("detail-content").hidden = message !== null;
   }
 
-  function renderDetail(detail) {
-    var dl = document.getElementById("detail-body");
-    clearChildren(dl);
+  function setValueNode(dd, value, asLink) {
+    if (!asLink || typeof value !== "string" || value.indexOf("https://") !== 0) {
+      setText(dd, displayValue(value));
+      return;
+    }
+    var existing = dd.firstElementChild;
+    if (existing && existing.getAttribute("href") === value) {
+      return;
+    }
+    clearChildren(dd);
+    var link = document.createElement("a");
+    link.href = value;
+    link.textContent = value;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    dd.appendChild(link);
+  }
 
+  // A field is [label, value, asLink]. The label list is fixed, so the usual
+  // refresh patches each dt and dd in place.
+  function syncDefinitionList(dl, fields) {
+    while (dl.children.length > fields.length * 2) {
+      dl.removeChild(dl.lastChild);
+    }
+    fields.forEach(function (pair, index) {
+      var dt = dl.children[index * 2] || dl.appendChild(document.createElement("dt"));
+      var dd = dl.children[index * 2 + 1] || dl.appendChild(document.createElement("dd"));
+      setText(dt, pair[0]);
+      setValueNode(dd, pair[1], pair[2]);
+    });
+  }
+
+  function attemptRowSpec(attempt) {
+    return {
+      cells: [
+        attempt.attempt_number,
+        attempt.role,
+        attempt.model,
+        attempt.budget,
+        attempt.triggered_by,
+        attempt.outcome,
+        attempt.started_at,
+        attempt.completed_at
+      ]
+    };
+  }
+
+  function invocationRowSpec(invocation) {
+    var usage = invocation.usage || {};
+    return {
+      cells: [
+        invocation.invocation_number,
+        invocation.role,
+        invocation.model,
+        invocation.context_tier,
+        invocation.success,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.total_api_duration_ms,
+        usage.session_duration_ms,
+        displayUsd(usage.usage_value_usd),
+        usage.total_premium_request_cost,
+        displayListPriceEstimate(usage.list_price_estimate_usd)
+      ]
+    };
+  }
+
+  function activeInvocationRowSpec(active) {
+    return {
+      className: "invocation-active",
+      cells: [
+        active.invocation_number,
+        active.role,
+        active.model,
+        active.context_tier,
+        active.status,
+        "\u2014", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014"
+      ]
+    };
+  }
+
+  function renderDetail(detail) {
     var fields = [
       ["Run", detail.run_id !== undefined ? detail.run_id : detail.id],
       ["Work item", detail.work_item_id],
@@ -576,110 +734,55 @@
       ["Merged commit", detail.merge_commit_sha],
       ["Pull request", detail.pull_request_url, true]
     ];
-    fields.forEach(function (pair) {
-      var dt = document.createElement("dt");
-      dt.textContent = pair[0];
-      var dd = document.createElement("dd");
-      if (pair[2] && typeof pair[1] === "string" && pair[1].indexOf("https://") === 0) {
-        var link = document.createElement("a");
-        link.href = pair[1];
-        link.textContent = pair[1];
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        dd.appendChild(link);
-      } else {
-        dd.textContent = displayValue(pair[1]);
-      }
-      dl.appendChild(dt);
-      dl.appendChild(dd);
-    });
+    syncDefinitionList(document.getElementById("detail-body"), fields);
 
-    var attemptsBody = document.getElementById("attempts-body");
-    clearChildren(attemptsBody);
     var attempts = Array.isArray(detail.attempts) ? detail.attempts : [];
-    attempts.forEach(function (attempt) {
-      var row = document.createElement("tr");
-      textCell(row, attempt.attempt_number);
-      textCell(row, attempt.role);
-      textCell(row, attempt.model);
-      textCell(row, attempt.budget);
-      textCell(row, attempt.triggered_by);
-      textCell(row, attempt.outcome);
-      textCell(row, attempt.started_at);
-      textCell(row, attempt.completed_at);
-      attemptsBody.appendChild(row);
-    });
+    syncRows(document.getElementById("attempts-body"), attempts.map(attemptRowSpec));
 
-    var invocationsBody = document.getElementById("invocations-body");
-    clearChildren(invocationsBody);
     var invocations = Array.isArray(detail.invocations) ? detail.invocations : [];
-    invocations.forEach(function (invocation) {
-      var usage = invocation.usage || {};
-      var row = document.createElement("tr");
-      textCell(row, invocation.invocation_number);
-      textCell(row, invocation.role);
-      textCell(row, invocation.model);
-      textCell(row, invocation.context_tier);
-      textCell(row, invocation.success);
-      textCell(row, usage.input_tokens);
-      textCell(row, usage.output_tokens);
-      textCell(row, usage.total_api_duration_ms);
-      textCell(row, usage.session_duration_ms);
-      textCell(row, displayUsd(usage.usage_value_usd));
-      textCell(row, usage.total_premium_request_cost);
-      textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));
-      invocationsBody.appendChild(row);
-    });
+    var invocationSpecs = invocations.map(invocationRowSpec);
     if (detail.active_invocation) {
-      var active = detail.active_invocation;
-      var activeRow = document.createElement("tr");
-      activeRow.className = "invocation-active";
-      textCell(activeRow, active.invocation_number);
-      textCell(activeRow, active.role);
-      textCell(activeRow, active.model);
-      textCell(activeRow, active.context_tier);
-      textCell(activeRow, active.status);
-      textCell(activeRow, "—");
-      textCell(activeRow, "—");
-      textCell(activeRow, "—");
-      textCell(activeRow, "—");
-      textCell(activeRow, "—");
-      textCell(activeRow, "—");
-      textCell(activeRow, "—");
-      invocationsBody.appendChild(activeRow);
+      invocationSpecs.push(activeInvocationRowSpec(detail.active_invocation));
     }
+    syncRows(document.getElementById("invocations-body"), invocationSpecs);
 
     setDetailStatus(null);
   }
 
-  function loadDetail(runId) {
-    return apiFetch("/api/runs/" + encodeURIComponent(runId))
-      .then(function (payload) {
-        if (state.runId === runId) {
-          renderDetail(payload);
-          clearError();
-        }
-      })
-      .catch(function () {
-        if (state.runId === runId) {
-          setDetailStatus("Run detail is currently unavailable.");
-          showError("Run detail is currently unavailable.");
-        }
-      });
+  // A failure shows the status line only while no detail has loaded; a loaded
+  // card stays visible.
+  function refreshDetail() {
+    var runId = state.runId;
+    return apiFetch("/api/runs/" + encodeURIComponent(runId)).then(function (payload) {
+      if (state.runId === runId) {
+        renderDetail(payload);
+      }
+    }, function (error) {
+      if (state.runId === runId && document.getElementById("detail-content").hidden) {
+        setDetailStatus("Run detail is currently unavailable.");
+      }
+      throw error;
+    });
   }
 
   document.getElementById("runs-prev").addEventListener("click", function () {
     state.offset = Math.max(0, state.offset - state.limit);
-    loadRuns();
+    refreshView();
   });
   document.getElementById("runs-next").addEventListener("click", function () {
     state.offset = state.offset + state.limit;
-    loadRuns();
+    refreshView();
   });
   document.getElementById("theme-toggle").addEventListener("click", function () {
     var next = currentTheme() === "dark" ? "light" : "dark";
     applyTheme(next);
     storeTheme(next);
+  });
+  document.getElementById("runs-body").addEventListener("click", function (event) {
+    var row = event.target.closest("tr[data-run-id]");
+    if (row) {
+      navigateToRun(row.getAttribute("data-run-id"));
+    }
   });
   window.matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle);
   updateThemeToggle();
@@ -757,12 +860,45 @@
     }
     heading.textContent = "Run " + runId;
     setDetailStatus("Loading\u2026");
-    loadDetail(runId);
+  }
+
+  // What each view refreshes. Compare has nothing to load. A run view with an
+  // unknown id has no run id in state and loads nothing.
+  var REFRESHERS = {
+    runs: function () {
+      return [refreshRuns(), refreshTotals()];
+    },
+    run: function () {
+      return state.runId === null ? [] : [refreshDetail()];
+    },
+    projects: function () {
+      return [refreshProjects()];
+    },
+    health: function () {
+      return [refreshHealth()];
+    }
+  };
+
+  // Refreshes only the open view, and skips it while the operator works in it.
+  // The notice shows the outcome of the latest refresh and clears on success.
+  function refreshView() {
+    renderNotice();
+    var refresher = REFRESHERS[state.view];
+    if (!refresher || isDirty(document.getElementById(VIEWS[state.view].section))) {
+      return Promise.resolve();
+    }
+    var tasks = refresher();
+    if (tasks.length === 0) {
+      return Promise.resolve();
+    }
+    return Promise.all(tasks).then(onRefreshSuccess, onRefreshFailure);
   }
 
   function applyRoute(moveFocus) {
     var route = currentRoute();
-    state.runId = route.view === "run" ? route.runId : null;
+    state.view = route.view;
+    state.runId =
+      route.view === "run" && RUN_ID_PATTERN.test(route.runId) ? route.runId : null;
     showView(route.view);
     if (route.view === "run") {
       openRun(route.runId);
@@ -771,19 +907,27 @@
     if (moveFocus) {
       document.getElementById(VIEWS[route.view].heading).focus();
     }
+    refreshView();
+  }
+
+  // A deep link opens with the run list one step back, so Back leaves the deep
+  // view for the list. The marker keeps a reload from adding another entry.
+  function seedBackHistory() {
+    var hash = window.location.hash;
+    var route = parseRoute(hash);
+    var seeded = window.history.state !== null && window.history.state.seeded === true;
+    if (route === null || route.view === "runs" || seeded) {
+      return;
+    }
+    window.history.replaceState(null, "", "#runs");
+    window.history.pushState({ seeded: true }, "", hash);
   }
 
   window.addEventListener("hashchange", function () {
     applyRoute(true);
   });
 
-  function refresh() {
-    loadProjects();
-    loadSummary();
-    loadRuns();
-  }
-
+  seedBackHistory();
   applyRoute(false);
-  refresh();
-  window.setInterval(refresh, POLL_INTERVAL_MS);
+  window.setInterval(refreshView, POLL_INTERVAL_MS);
 })();

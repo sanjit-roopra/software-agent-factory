@@ -1757,12 +1757,18 @@ def test_dashboard_list_price_estimate_falls_back_to_unknown_and_never_replaces_
     # Both usage tables put the AI usage value, then the premium-request cost, then
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
-    row_wiring = (
+    project_row_wiring = (
         "textCell(row, displayUsd(usage.usage_value_usd)); "
         "textCell(row, usage.total_premium_request_cost); "
         "textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
     )
-    assert normalized.count(row_wiring) == 2
+    invocation_row_wiring = (
+        "displayUsd(usage.usage_value_usd), "
+        "usage.total_premium_request_cost, "
+        "displayListPriceEstimate(usage.list_price_estimate_usd)"
+    )
+    assert normalized.count(project_row_wiring) == 1
+    assert normalized.count(invocation_row_wiring) == 1
     assert "displayListPriceEstimate(usage.usage_value_usd)" not in normalized
     assert "displayUsd(usage.list_price_estimate_usd)" not in normalized
     assert normalized.count("displayUsd(usage.usage_value_usd)") == 2
@@ -2267,3 +2273,96 @@ def test_active_nav_link_uses_the_accent_token() -> None:
     rule = re.search(r'nav a\[aria-current="page"\]\s*\{([^}]*)\}', dashboard_assets.STYLE_CSS)
     assert rule is not None
     assert "background: var(--accent);" in rule.group(1)
+
+
+# --------------------------------------------------------------------------
+# Refresh dispatcher and connection notices (asset tests; no JS runner, ADR-016)
+# --------------------------------------------------------------------------
+
+
+def test_one_poll_refreshes_only_the_open_view() -> None:
+    js = _normalized(dashboard_assets.APP_JS)
+    assert "var POLL_INTERVAL_MS = 5000;" in js
+    assert js.count("setInterval(") == 1
+    assert "window.setInterval(refreshView, POLL_INTERVAL_MS);" in js
+    assert "setTimeout(" not in js
+    assert "function refresh()" not in js
+    refreshers = re.search(r"var REFRESHERS = \{(.*?)\n  \};", dashboard_assets.APP_JS, re.DOTALL)
+    assert refreshers is not None
+    assert re.findall(r"^    (\w+): function", refreshers.group(1), re.MULTILINE) == [
+        "runs",
+        "run",
+        "projects",
+        "health",
+    ]
+
+
+def test_a_route_change_refreshes_the_view_it_opens() -> None:
+    apply_route = _js_function_source(dashboard_assets.APP_JS, "applyRoute")
+    assert apply_route.endswith("refreshView(); }")
+
+
+def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
+    js = dashboard_assets.APP_JS
+    guard = _js_function_source(js, "isDirty")
+    assert "region.contains(active)" in guard
+    assert 'active.matches("input, textarea, select")' in guard
+    assert 'region.querySelector("dialog[open]") !== null' in guard
+    refresh_view = _js_function_source(js, "refreshView")
+    assert "isDirty(document.getElementById(VIEWS[state.view].section))" in refresh_view
+
+
+def test_refresh_patches_rows_and_text_in_place() -> None:
+    js = dashboard_assets.APP_JS
+    assert "function renderRunRow" not in js
+    for name in ("syncRows", "syncList", "syncDefinitionList", "setText"):
+        assert f"function {name}(" in js
+    assert "if (node.textContent !== text)" in _normalized(js)
+    assert "signature !== lastProjectsSignature" in _normalized(js)
+
+
+def test_notices_live_in_one_polite_status_region() -> None:
+    assert '<p id="notice" role="status" aria-live="polite"></p>' in _INDEX_HTML
+    assert _INDEX_HTML.count('role="status"') == 1
+    assert "error-banner" not in _INDEX_HTML
+    assert "error-banner" not in dashboard_assets.APP_JS
+    assert "showError(" not in dashboard_assets.APP_JS
+
+
+def test_notice_texts_report_a_lost_connection_and_a_restart() -> None:
+    js = _normalized(dashboard_assets.APP_JS)
+    assert (
+        '"Connection lost, updated " + Math.floor((Date.now() - lastSuccessAt) / 1000) + "s ago"'
+        in js
+    )
+    assert '"Dashboard restarted, reload the page."' in js
+
+
+def test_a_401_is_told_apart_from_a_network_error() -> None:
+    js = dashboard_assets.APP_JS
+    fetcher = _normalized(js.split("function apiFetch(")[1].split("function clearChildren(")[0])
+    assert "response.status === 401" in fetcher
+    assert "apiError(ERROR_UNAUTHORIZED" in fetcher
+    assert "apiError(ERROR_CONNECTION" in fetcher
+    failure = _js_function_source(js, "onRefreshFailure")
+    assert "error.kind === ERROR_UNAUTHORIZED ? ERROR_UNAUTHORIZED : ERROR_CONNECTION" in failure
+
+
+def test_a_successful_refresh_clears_the_notice() -> None:
+    success = _js_function_source(dashboard_assets.APP_JS, "onRefreshSuccess")
+    assert "state.notice = null;" in success
+    assert "lastSuccessAt = Date.now();" in success
+    assert "Promise.all(tasks).then(onRefreshSuccess, onRefreshFailure)" in _normalized(
+        dashboard_assets.APP_JS
+    )
+
+
+def test_a_deep_link_seeds_history_so_back_returns_to_the_run_list() -> None:
+    js = dashboard_assets.APP_JS
+    seed = _js_function_source(js, "seedBackHistory")
+    assert seed.index('replaceState(null, "", "#runs")') < seed.index("pushState(")
+    assert 'pushState({ seeded: true }, "", hash)' in seed
+    assert "seeded" in seed.split("return;")[0]
+    normalized = _normalized(js)
+    assert normalized.index("seedBackHistory(); applyRoute(false);") > 0
+    assert "applyRoute(false); seedBackHistory" not in normalized

@@ -114,7 +114,7 @@ tr[data-run-id]:hover { background: var(--surface-2); }
 .state-active { font-weight: 700; }
 .stale-yes { color: var(--warn); font-weight: 600; }
 #runs-toolbar { margin-bottom: 0.75rem; display: flex; gap: 0.75rem; align-items: center; }
-#error-banner {
+#notice {
   background: var(--surface);
   color: var(--error);
   border: 1px solid var(--error);
@@ -122,6 +122,7 @@ tr[data-run-id]:hover { background: var(--surface-2); }
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
 }
+#notice:empty { margin: 0; padding: 0; border: 0; }
 dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 1rem; }
 dt { font-weight: 600; }
 dd { margin: 0; overflow-wrap: anywhere; }
