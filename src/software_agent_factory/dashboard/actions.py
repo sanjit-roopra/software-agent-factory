@@ -21,6 +21,7 @@ from http import HTTPStatus
 from typing import Literal
 
 from ..models import (
+    CONTEXT_FINGERPRINT_PATTERN,
     DashboardResumeRequest,
     EscalationRecord,
     FactoryRun,
@@ -37,7 +38,7 @@ from ..resume import (
     resume_refusal_within,
 )
 from .snapshot import ResumeRequester, ResumeRunReader, is_valid_run_id
-from .validators import is_context_fingerprint, is_episode_id
+from .validators import is_episode_id
 
 #: Why a well-formed request is refused with ``409``. The page maps each code to a sentence.
 ConflictReason = Literal[
@@ -131,7 +132,11 @@ def _parse_fields(kind: ResumeClassification, body: object) -> _Fields:
     fingerprint = body.get("context_fingerprint")
     if not is_episode_id(episode_id):
         raise _bad_request("episode_id is missing or not valid")
-    if not is_context_fingerprint(fingerprint):
+    # The stored shape (64 lowercase hex), not the wider one the page accepts for display.
+    if (
+        not isinstance(fingerprint, str)
+        or CONTEXT_FINGERPRINT_PATTERN.fullmatch(fingerprint) is None
+    ):
         raise _bad_request("context_fingerprint is missing or not valid")
     answers = (
         _answer_texts(body.get("answers")) if kind is ResumeClassification.PLAN_DECISION else ()

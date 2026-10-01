@@ -11,7 +11,9 @@ import ast
 import http.client
 import json
 import logging
+import socket
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,7 +25,7 @@ import pytest
 from software_agent_factory import dashboard
 from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
 from software_agent_factory.dashboard.actions import ResumeActions
-from software_agent_factory.dashboard.handler import MAX_BODY_BYTES
+from software_agent_factory.dashboard.handler import MAX_BODY_BYTES, DashboardRequestHandler
 from software_agent_factory.dashboard.security import TOKEN_HEADER
 from software_agent_factory.dashboard.snapshot import ResumeRequestResult
 from software_agent_factory.models import (
@@ -348,6 +350,7 @@ def test_a_500_character_plan_answer_is_accepted(make_rig: RigFactory) -> None:
     [
         ("no token header", {TOKEN_HEADER: None}, 401),
         ("a wrong token header", {TOKEN_HEADER: "wrong"}, 401),
+        ("a non-ASCII token header", {TOKEN_HEADER: "caf\u00e9"}, 401),
         ("no Origin header", {ORIGIN_HEADER: None}, 403),
         ("a foreign Origin", {ORIGIN_HEADER: "http://evil.example"}, 403),
         ("the localhost alias as Origin", {ORIGIN_HEADER: "http://localhost:1"}, 403),
@@ -456,6 +459,50 @@ def test_a_refused_write_leaves_the_connection_usable(make_rig: RigFactory) -> N
     assert follow_up.status == 200
 
 
+SHORT_TIMEOUT = 0.3
+CLOSE_BOUND = 3.0
+
+
+def _declare_a_body_and_send_none(rig: Rig, **header_overrides: str | None) -> tuple[bytes, float]:
+    """Declare 100 body bytes, send none, and read until the server closes the connection."""
+    lines = [f"POST /api/runs/{RUN_ID}/approve HTTP/1.1", f"Host: 127.0.0.1:{rig.port}"]
+    lines += [f"{name}: {value}" for name, value in rig.headers(**header_overrides).items()]
+    lines.append("Content-Length: 100")
+    started = time.monotonic()
+    received = b""
+    with socket.create_connection(("127.0.0.1", rig.port), timeout=5) as sock:
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        while chunk := sock.recv(4096):
+            received += chunk
+    return received, time.monotonic() - started
+
+
+def test_a_body_that_never_arrives_is_408_and_the_connection_closes(
+    make_rig: RigFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(DashboardRequestHandler, "timeout", SHORT_TIMEOUT)
+    rig = make_rig()
+    before = _tree(rig.data_dir)
+
+    received, elapsed = _declare_a_body_and_send_none(rig)
+
+    assert received.startswith(b"HTTP/1.1 408 ")
+    assert elapsed < CLOSE_BOUND
+    assert _tree(rig.data_dir) == before
+
+
+def test_a_refused_write_that_never_sends_its_body_closes_the_connection(
+    make_rig: RigFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(DashboardRequestHandler, "timeout", SHORT_TIMEOUT)
+    rig = make_rig()
+
+    received, elapsed = _declare_a_body_and_send_none(rig, **{TOKEN_HEADER: "wrong"})
+
+    assert received.startswith(b"HTTP/1.1 401 ")
+    assert elapsed < CLOSE_BOUND
+
+
 # -- rejected: body -----------------------------------------------------------------------
 
 
@@ -489,8 +536,19 @@ def test_a_body_that_is_not_a_json_object_is_400(make_rig: RigFactory, body: byt
         {"context_fingerprint": None},
         {"context_fingerprint": "short"},
         {"context_fingerprint": 7},
+        {"context_fingerprint": "A" * 64},
+        {"context_fingerprint": "Z" * 64},
     ],
-    ids=["no episode", "number episode", "bad episode", "no print", "short print", "number print"],
+    ids=[
+        "no episode",
+        "number episode",
+        "bad episode",
+        "no print",
+        "short print",
+        "number print",
+        "upper-case hex print",
+        "non-hex print",
+    ],
 )
 def test_a_missing_or_malformed_field_is_400(
     make_rig: RigFactory, overrides: dict[str, object]

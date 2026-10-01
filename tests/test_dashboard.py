@@ -445,6 +445,31 @@ def test_wrong_token_is_rejected(running_server: RunningServer) -> None:
     assert response.status == 401
 
 
+NON_ASCII_TOKENS = ["caf\u00e9", "\u00e9" * 43]
+
+
+@pytest.mark.parametrize("token", NON_ASCII_TOKENS, ids=["short", "full length"])
+def test_a_non_ascii_header_token_is_401_not_an_error(
+    running_server: RunningServer, token: str
+) -> None:
+    headers = {"Host": f"127.0.0.1:{running_server.port}", TOKEN_HEADER: token}
+
+    response = running_server.request("GET", "/api/summary", headers=headers)
+
+    assert response.status == 401
+
+
+@pytest.mark.parametrize("token", NON_ASCII_TOKENS, ids=["short", "full length"])
+def test_a_non_ascii_query_token_is_401_not_an_error(
+    running_server: RunningServer, token: str
+) -> None:
+    headers = {"Host": f"127.0.0.1:{running_server.port}"}
+
+    response = running_server.request("GET", f"/?token={quote(token)}", headers=headers)
+
+    assert response.status == 401
+
+
 def test_wrong_query_token_is_rejected(running_server: RunningServer) -> None:
     headers = {"Host": f"127.0.0.1:{running_server.port}"}
     response = running_server.request("GET", "/?token=wrong", headers=headers)

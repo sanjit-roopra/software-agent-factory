@@ -82,6 +82,9 @@ MAX_BODY_BYTES = 16 * 1024
 #: A refused write whose body is still unread is read and dropped after the answer when it is
 #: no larger than this, so the connection stays in step. A larger one closes the connection.
 _MAX_DISCARDED_BODY_BYTES = 4 * MAX_BODY_BYTES
+#: Seconds a connection may stay silent: the stdlib applies it to every read of the socket.
+#: Without it a client that declares a body and sends none holds a thread and its socket open.
+_REQUEST_TIMEOUT_SECONDS = 10
 _MAX_LOGGED_RUN_ID_LENGTH = 128
 _LOG_UNSAFE_PATTERN = re.compile(r"[^\x20-\x7e]")
 _MAX_LOGGED_PATH_LENGTH = 200
@@ -123,6 +126,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     server: DashboardServer
     server_version = "SoftwareAgentFactoryDashboard/1"
     protocol_version = "HTTP/1.1"
+    #: A class attribute, so a test can shorten it.
+    timeout = _REQUEST_TIMEOUT_SECONDS
     #: Whether the current write's body has been read. Set at the start of every write.
     _body_read = False
 
@@ -453,8 +458,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             result,
         )
         self._respond_json(status, payload, send_body=True)
-        # After the answer, so a client that lies about its length only blocks itself.
-        self.rfile.read(unread)
+        # After the answer, so a client that lies about its length only blocks itself, for
+        # at most the timeout. Then the connection closes: its next request would start
+        # in the middle of the body.
+        try:
+            self.rfile.read(unread)
+        except TimeoutError:
+            self.close_connection = True
 
     def _action_outcome(
         self, actions: ResumeActions, raw_run_id: str, kind: ResumeClassification
@@ -500,7 +510,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             raise ActionRejected(HTTPStatus.BAD_REQUEST, "invalid content length")
         if length > MAX_BODY_BYTES:
             raise ActionRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
-        raw = self.rfile.read(length)
+        try:
+            raw = self.rfile.read(length)
+        except TimeoutError:
+            # A read that timed out cannot be read again, so there is nothing to drop either.
+            self._body_read = True
+            self.close_connection = True
+            raise ActionRejected(HTTPStatus.REQUEST_TIMEOUT, "the body did not arrive") from None
         self._body_read = True
         try:
             return json.loads(raw)

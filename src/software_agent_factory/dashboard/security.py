@@ -42,11 +42,15 @@ def token_matches(expected: str, candidate: str | None) -> bool:
     """Constant-time comparison of ``candidate`` against ``expected``.
 
     Returns ``False`` (rather than raising) for any non-string or empty
-    candidate so callers can use this directly as a boolean guard.
+    candidate so callers can use this directly as a boolean guard. The two are compared as
+    bytes: ``compare_digest`` refuses non-ASCII ``str``, and a header arrives decoded as
+    latin-1, so a client could otherwise turn a wrong token into a server error.
     """
     if not candidate or not isinstance(candidate, str):
         return False
-    return secrets.compare_digest(expected, candidate)
+    return secrets.compare_digest(
+        expected.encode("utf-8", "surrogateescape"), candidate.encode("utf-8", "surrogateescape")
+    )
 
 
 class HeaderSource(Protocol):
