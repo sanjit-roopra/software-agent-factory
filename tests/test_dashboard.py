@@ -938,6 +938,33 @@ def test_summary_never_includes_run_list(running_server: RunningServer) -> None:
     assert payload["health"]["success"] is True
 
 
+def test_summary_passes_the_key_figures_through() -> None:
+    def provider(*, limit: int, offset: int) -> dict[str, Any]:
+        return {
+            **fake_snapshot_provider(limit=limit, offset=offset),
+            "needs_human_count": 1,
+            "failed_last_24h": 2,
+            "tokens_last_24h": 1200,
+        }
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=provider,
+        run_detail_provider=fake_run_detail_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
+        payload = _body_json(response)
+    finally:
+        _stop(running)
+
+    assert payload["needs_human_count"] == 1
+    assert payload["failed_last_24h"] == 2
+    assert payload["tokens_last_24h"] == 1200
+
+
 def test_summary_reports_null_health_when_not_configured() -> None:
     config = DashboardConfig(
         host="127.0.0.1",
