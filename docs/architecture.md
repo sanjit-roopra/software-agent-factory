@@ -73,7 +73,8 @@ Implemented (requested Phase 15 sub-phases, see `PLAN.md`):
 - 15.1 tag-driven release of native macOS artifacts
 - 15.2 macOS runtime packaging and an opt-in user launchd service
 - 15.5 local monitoring and health (`factory doctor`, `factory status`)
-- 15.11 a read-only, loopback-only local dashboard (`factory dashboard`)
+- 15.11 a loopback-only local dashboard (`factory dashboard`), read-only apart from
+  two resume request actions (ADR-033)
 
 Phase 16 is also implemented: deterministic repository capability profiling and
 an optional bounded post-green polish pass.
@@ -1455,7 +1456,7 @@ factory start                  mutates: dispatches runs (opt-in scheduler)
 factory runs / show            read-only
 factory doctor                 read-only apart from the data-dir write probe
 factory status                 read-only (does not create the data dir)
-factory dashboard              read-only server, explicit and blocking
+factory dashboard              read-only server (two request-file actions, ADR-033), explicit and blocking
 factory service install        mutates: one per-user LaunchAgent plist
 factory service status         read-only
 factory service uninstall      mutates: removes that plist only
@@ -1640,7 +1641,8 @@ intact.
 ## Local dashboard
 
 `AGENTS.md` bans web dashboards in V1. One narrow, explicitly requested
-exception exists (ADR-016) and it is a viewer, not a control plane.
+exception exists (ADR-016, amended by ADR-033). It is a viewer with two named
+write actions, not a control plane.
 
 ```text
 factory dashboard          explicit command, disabled by default
@@ -1649,7 +1651,7 @@ factory dashboard          explicit command, disabled by default
     ↓
 token required (generated per start)
     ↓
-GET only, read-only
+GET to read; two POST actions to request a resume
 ```
 
 Implemented with the Python standard library: no web framework, no npm, no
@@ -1667,7 +1669,22 @@ failure reason and the escalation text first, then cuts it to 500 characters
 and keeps the start and the end (ADR-033). A run that does not exist, or whose id is
 not even shaped like one, is a 404.
 
-It cannot approve, retry, cancel or reconfigure anything. Authority stays with
+The two write actions are approve a risk approval and answer plan decisions
+(ADR-033). The dashboard never writes `run.json`. An action creates one
+request file per run, episode and context fingerprint, with a create-only
+write. The factory service ingests it, checks it again with the ADR-024 reopen
+checks, writes the receipt and reopens the run through `controller.reopen`. The
+service is the only writer of `run.json` and of the request's `stale` status,
+and it ingests requests even when GitHub escalation is off. Holding the
+per-start token replaces the ADR-024 author checks for a local approval. The
+two POST routes land in slice 4 of issue #80. Until then the dashboard is
+read-only.
+
+```text
+dashboard POST → request file (create-only) → service ingest → controller.reopen
+```
+
+It cannot retry, cancel or reconfigure anything. Authority stays with
 `WorkflowController`.
 
 ## Long-term architecture
