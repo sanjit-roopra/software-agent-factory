@@ -65,6 +65,10 @@ logger = logging.getLogger(__name__)
 
 ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 
+_DASHBOARD_REQUEST_PREFIX = "dashboard-approval-"
+#: A request file name carries this many leading hex characters of its context fingerprint.
+_FINGERPRINT_PREFIX_CHARS = 16
+
 ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     WorkItem: "work-item.json",
     RepositoryProfile: "repository-profile.json",
@@ -359,9 +363,9 @@ class FileRunStore:
         others.
         """
         run_dir = self._run_dir_readonly(run_id)
-        self._dashboard_request_name(episode_id, "0" * 64)  # validates the episode id
+        self._require_episode_id(episode_id)
         requests: list[DashboardResumeRequest] = []
-        for path in sorted(run_dir.glob(f"dashboard-approval-{episode_id}-*.json")):
+        for path in sorted(run_dir.glob(f"{_DASHBOARD_REQUEST_PREFIX}{episode_id}-*.json")):
             try:
                 request = DashboardResumeRequest.model_validate_json(
                     path.read_text(encoding="utf-8")
@@ -391,12 +395,17 @@ class FileRunStore:
         self._write_text_atomic(path, self._model_text(request))
 
     @staticmethod
-    def _dashboard_request_name(episode_id: str, context_fingerprint: str) -> str:
+    def _require_episode_id(episode_id: str) -> None:
         if EPISODE_ID_PATTERN.fullmatch(episode_id) is None:
             raise ValueError(f"invalid episode id: {episode_id!r}")
+
+    @classmethod
+    def _dashboard_request_name(cls, episode_id: str, context_fingerprint: str) -> str:
+        cls._require_episode_id(episode_id)
         if CONTEXT_FINGERPRINT_PATTERN.fullmatch(context_fingerprint) is None:
             raise ValueError("context fingerprint must be 64 lowercase hex characters")
-        return f"dashboard-approval-{episode_id}-{context_fingerprint[:16]}.json"
+        fingerprint = context_fingerprint[:_FINGERPRINT_PREFIX_CHARS]
+        return f"{_DASHBOARD_REQUEST_PREFIX}{episode_id}-{fingerprint}.json"
 
     def attempt_dir(self, run_id: str, attempt: int) -> Path:
         """Return (creating if needed) the snapshot directory for ``attempt``.

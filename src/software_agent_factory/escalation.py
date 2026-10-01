@@ -45,6 +45,7 @@ from .github import (
     parse_pull_request_url,
 )
 from .models import (
+    REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
     EscalationRecord,
     EscalationStatus,
@@ -1517,7 +1518,7 @@ def _pollable_escalation(run: FactoryRun) -> EscalationRecord | None:
     return escalation
 
 
-def _save_poll_update(
+def _save_poll_update_if_unchanged(
     store: FileRunStore, run_id: str, seen: EscalationRecord, update: dict[str, Any]
 ) -> None:
     """Apply ``update`` to the stored escalation, unless it moved on since the poll read it.
@@ -1535,6 +1536,49 @@ def _save_poll_update(
     ):
         return
     store.save_run(stored.model_copy(update={"escalation": current.model_copy(update=update)}))
+
+
+def _cursor_json(page: int, since: datetime, last_id: int | None) -> str:
+    return json.dumps({"page": page, "since": since.isoformat(), "last_id": last_id})
+
+
+def _accept_valid_reply(
+    run: FactoryRun,
+    store: FileRunStore,
+    config: FactoryConfig,
+    escalation: EscalationRecord,
+    comment: GitHubComment,
+    now: datetime,
+) -> AcceptedReplyReceipt | None:
+    """Record a reply that passed validation, with its plan answers when it carries any.
+
+    ``None`` means the stored run no longer accepts a reply.
+    """
+    plan_answers: list[PlanDecisionAnswer] | None = None
+    if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+        context = escalation.plan_decision_context
+        assert context is not None
+        parsed_plan_reply = parse_plan_decision_answers(
+            comment.body, decision_count=len(context.decisions)
+        )
+        if parsed_plan_reply is None:
+            raise ValueError("validated plan decision reply could not be parsed")
+        _, _, plan_answers = parsed_plan_reply
+    return accept_resume(
+        run,
+        store,
+        config,
+        reply=ReplyIdentity(
+            source="github",
+            comment_id=comment.id,
+            user_login=comment.user_login,
+            user_id=comment.user_id,
+            author_association=comment.author_association,
+            created_at=comment.created_at,
+        ),
+        answers=plan_answers,
+        now=now,
+    )
 
 
 def poll_escalation_reply(
@@ -1558,14 +1602,14 @@ def poll_escalation_reply(
         return None
 
     # The caller's run may be older than the stored one (the dashboard path can have reopened
-    # it). Work from the stored run and save only through _save_poll_update.
+    # it). Work from the stored run and save only through _save_poll_update_if_unchanged.
     run = store.load_run(run.id)
     escalation = _pollable_escalation(run)
     if escalation is None or escalation.last_notified_at is None:
         return None  # the stored run no longer waits for a reply
     notified_at = escalation.last_notified_at
 
-    if escalation.reply_cursor == "closed":
+    if escalation.reply_cursor == REPLY_CURSOR_CLOSED:
         return None
 
     target_repo = escalation.target_repository
@@ -1575,35 +1619,30 @@ def poll_escalation_reply(
 
     current_time = now or utc_now()
     refusal = resume_refusal(run, config, current_time)
-    if not escalation.remote_resume_enabled or refusal == "context_changed":
-        _save_poll_update(
+    if not escalation.remote_resume_enabled or refusal in {"context_changed", "reopen_limit"}:
+        _save_poll_update_if_unchanged(
             store,
             run.id,
             escalation,
-            {"remote_resume_enabled": False, "reply_cursor": "closed", "updated_at": current_time},
+            {
+                "remote_resume_enabled": False,
+                "reply_cursor": REPLY_CURSOR_CLOSED,
+                "updated_at": current_time,
+            },
         )
         return None
 
     if refusal == "expired":
-        _save_poll_update(
+        _save_poll_update_if_unchanged(
             store,
             run.id,
             escalation,
             {
                 "status": EscalationStatus.EXPIRED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "updated_at": current_time,
             },
-        )
-        return None
-
-    if refusal == "reopen_limit":
-        _save_poll_update(
-            store,
-            run.id,
-            escalation,
-            {"remote_resume_enabled": False, "reply_cursor": "closed", "updated_at": current_time},
         )
         return None
 
@@ -1634,7 +1673,7 @@ def poll_escalation_reply(
     cursor_page = 1
     cursor_since: datetime = notified_at
     cursor_last_id: int | None = None
-    if escalation.reply_cursor and escalation.reply_cursor != "closed":
+    if escalation.reply_cursor and escalation.reply_cursor != REPLY_CURSOR_CLOSED:
         try:
             cursor_data = json.loads(escalation.reply_cursor)
             if isinstance(cursor_data, dict):
@@ -1671,13 +1710,7 @@ def poll_escalation_reply(
             break
 
         if not comments:
-            next_cursor = json.dumps(
-                {
-                    "page": 1,
-                    "since": latest_timestamp.isoformat(),
-                    "last_id": latest_id,
-                }
-            )
+            next_cursor = _cursor_json(1, latest_timestamp, latest_id)
             break
 
         retryable_stopped = False
@@ -1700,30 +1733,8 @@ def poll_escalation_reply(
                 now=current_time,
             )
             if result.is_valid:
-                plan_answers: list[PlanDecisionAnswer] | None = None
-                if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-                    context = escalation.plan_decision_context
-                    assert context is not None
-                    parsed_plan_reply = parse_plan_decision_answers(
-                        comment.body, decision_count=len(context.decisions)
-                    )
-                    if parsed_plan_reply is None:
-                        raise ValueError("validated plan decision reply could not be parsed")
-                    _, _, plan_answers = parsed_plan_reply
-                accepted_receipt = accept_resume(
-                    run,
-                    store,
-                    config,
-                    reply=ReplyIdentity(
-                        source="github",
-                        comment_id=comment.id,
-                        user_login=comment.user_login,
-                        user_id=comment.user_id,
-                        author_association=comment.author_association,
-                        created_at=comment.created_at,
-                    ),
-                    answers=plan_answers,
-                    now=current_time,
+                accepted_receipt = _accept_valid_reply(
+                    run, store, config, escalation, comment, current_time
                 )
                 if accepted_receipt is None:
                     # The stored run no longer accepts a reply (the dashboard path got there
@@ -1749,39 +1760,21 @@ def poll_escalation_reply(
 
         if accepted_receipt is not None or retryable_stopped:
             if retryable_stopped and latest_timestamp is not None:
-                next_cursor = json.dumps(
-                    {
-                        "page": 1,
-                        "since": latest_timestamp.isoformat(),
-                        "last_id": latest_id,
-                    }
-                )
+                next_cursor = _cursor_json(1, latest_timestamp, latest_id)
             break
 
         if len(comments) < 100:
-            next_cursor = json.dumps(
-                {
-                    "page": 1,
-                    "since": latest_timestamp.isoformat(),
-                    "last_id": latest_id,
-                }
-            )
+            next_cursor = _cursor_json(1, latest_timestamp, latest_id)
             break
         else:
             current_page += 1
-            next_cursor = json.dumps(
-                {
-                    "page": current_page,
-                    "since": cursor_since.isoformat(),
-                    "last_id": latest_id,
-                }
-            )
+            next_cursor = _cursor_json(current_page, cursor_since, latest_id)
 
     if accepted_receipt is not None:
         return accepted_receipt
 
     if next_cursor is not None and next_cursor != escalation.reply_cursor:
-        _save_poll_update(
+        _save_poll_update_if_unchanged(
             store, run.id, escalation, {"reply_cursor": next_cursor, "updated_at": current_time}
         )
 

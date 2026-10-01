@@ -56,6 +56,7 @@ from .config import FactoryConfig
 from .github import GitHubClient, GitHubCommandError, resolve_github_token
 from .github_tracker import GitHubIssueProvider
 from .models import (
+    REPLY_CURSOR_CLOSED,
     EscalationStatus,
     FactoryRun,
     ResumeClassification,
@@ -64,7 +65,7 @@ from .models import (
     utc_now,
 )
 from .observability import log_run_event
-from .resume import WAITING_STATUSES, ingest_dashboard_request
+from .resume import awaits_human, ingest_dashboard_request
 from .scheduler import (
     DispatchOutcome,
     ReconciliationAction,
@@ -490,9 +491,8 @@ class FactoryService:
         waiting = [
             run
             for run in runs
-            if run.state is WorkflowState.NEEDS_HUMAN
+            if awaits_human(run)
             and run.escalation is not None
-            and run.escalation.status in WAITING_STATUSES
             and any(
                 request.status == "pending"
                 for request in self.store.list_dashboard_requests(run.id, run.escalation.episode_id)
@@ -571,11 +571,11 @@ class FactoryService:
                         ResumeClassification.RISK_APPROVAL,
                         ResumeClassification.PLAN_DECISION,
                     }
-                    or run.escalation.reply_cursor == "closed"
+                    or run.escalation.reply_cursor == REPLY_CURSOR_CLOSED
                 ):
-                    if run.escalation.reply_cursor != "closed":
+                    if run.escalation.reply_cursor != REPLY_CURSOR_CLOSED:
                         escalation = run.escalation.model_copy(
-                            update={"reply_cursor": "closed", "updated_at": utc_now()}
+                            update={"reply_cursor": REPLY_CURSOR_CLOSED, "updated_at": utc_now()}
                         )
                         self.store.save_run(run.model_copy(update={"escalation": escalation}))
 
@@ -592,7 +592,7 @@ class FactoryService:
                 ResumeClassification.RISK_APPROVAL,
                 ResumeClassification.PLAN_DECISION,
             }
-            and r.escalation.reply_cursor != "closed"
+            and r.escalation.reply_cursor != REPLY_CURSOR_CLOSED
         ]
 
         if not eligible_runs:

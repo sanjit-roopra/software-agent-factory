@@ -978,6 +978,9 @@ class EscalationTargetType(StrEnum):
 
 DASHBOARD_USER_LOGIN = "dashboard-local"
 
+#: ``EscalationRecord.reply_cursor`` once no further reply can resume the run.
+REPLY_CURSOR_CLOSED = "closed"
+
 #: An episode id as a whole. Lives here so the request model can check it without
 #: importing ``escalation_protocol``, which imports this module.
 EPISODE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
@@ -1142,7 +1145,9 @@ DashboardRequestAction = Literal[
     ResumeClassification.RISK_APPROVAL, ResumeClassification.PLAN_DECISION
 ]
 DashboardRequestStatus = Literal["pending", "stale"]
-DashboardRequestStaleReason = Literal["expired", "reopen_limit", "context_changed", "state_changed"]
+#: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
+ResumeRefusal = Literal["expired", "reopen_limit", "context_changed", "state_changed"]
+DashboardRequestStaleReason = ResumeRefusal
 
 
 class DashboardResumeRequest(VersionedModel):

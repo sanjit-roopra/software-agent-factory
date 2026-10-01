@@ -28,8 +28,8 @@ from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
 from .models import (
     DASHBOARD_USER_LOGIN,
+    REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
-    DashboardRequestStaleReason,
     DashboardResumeRequest,
     EscalationRecord,
     EscalationStatus,
@@ -39,6 +39,7 @@ from .models import (
     PlanDecisionContext,
     ReplySource,
     ResumeClassification,
+    ResumeRefusal,
     Risk,
     RiskApprovalContext,
     WorkflowState,
@@ -143,6 +144,12 @@ def build_plan_answers(
     return answers
 
 
+def _fingerprint_dict(data: dict[str, object]) -> str:
+    """SHA-256 of ``data`` as canonical JSON: sorted keys, no spaces."""
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def compute_approval_context_fingerprint(
     *,
     run_id: str,
@@ -164,7 +171,7 @@ def compute_approval_context_fingerprint(
     conditions_in_force: Sequence[str],
 ) -> str:
     """Compute deterministic SHA-256 binding displayed and authority fields to episode."""
-    payload = json.dumps(
+    return _fingerprint_dict(
         {
             "run_id": run_id,
             "episode_id": episode_id,
@@ -183,11 +190,8 @@ def compute_approval_context_fingerprint(
             "authorized_actions": list(authorized_actions),
             "unauthorized_actions": list(unauthorized_actions),
             "conditions_in_force": list(conditions_in_force),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def is_valid_risk_approval_context(
@@ -253,17 +257,14 @@ def compute_plan_decision_context_fingerprint(
     decisions: Sequence[str],
 ) -> str:
     """Bind a numbered decision set to one run and escalation episode."""
-    payload = json.dumps(
+    return _fingerprint_dict(
         {
             "run_id": run_id,
             "episode_id": episode_id,
             "plan_fingerprint": plan_fingerprint,
             "decisions": list(decisions),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def is_valid_plan_decision_context(
@@ -312,9 +313,17 @@ def _has_valid_resume_context(run: FactoryRun) -> bool:
     return False
 
 
-def resume_refusal(
-    run: FactoryRun, config: FactoryConfig, now: datetime
-) -> DashboardRequestStaleReason | None:
+def awaits_human(run: FactoryRun) -> bool:
+    """Whether ``run`` waits in ``NEEDS_HUMAN`` for a human to reply to its escalation."""
+    escalation = run.escalation
+    return (
+        run.state is WorkflowState.NEEDS_HUMAN
+        and escalation is not None
+        and escalation.status in WAITING_STATUSES
+    )
+
+
+def resume_refusal(run: FactoryRun, config: FactoryConfig, now: datetime) -> ResumeRefusal | None:
     """Why ``run`` cannot accept a resume at ``now``, or ``None`` when it can.
 
     The run must wait in ``NEEDS_HUMAN`` with an escalation that is pending, notified or
@@ -323,11 +332,7 @@ def resume_refusal(
     ``remote_resume_enabled`` is not part of this check: it covers GitHub replies only.
     """
     escalation = run.escalation
-    if (
-        run.state is not WorkflowState.NEEDS_HUMAN
-        or escalation is None
-        or escalation.status not in WAITING_STATUSES
-    ):
+    if escalation is None or not awaits_human(run):
         return "state_changed"
     if not _has_valid_resume_context(run):
         return "context_changed"
@@ -397,7 +402,7 @@ def _accept(
     reply: ReplyIdentity,
     answers: list[PlanDecisionAnswer] | None,
     now: datetime,
-) -> AcceptedReplyReceipt | DashboardRequestStaleReason:
+) -> AcceptedReplyReceipt | ResumeRefusal:
     seen = run.escalation
     if seen is None:
         raise ValueError(f"run {run.id} has no escalation to resume")
@@ -457,7 +462,7 @@ def _accept(
             "accepted_replies": [*escalation.accepted_replies, receipt],
             "reopen_count": escalation.reopen_count + 1,
             "status": EscalationStatus.REOPENED,
-            "reply_cursor": "closed",
+            "reply_cursor": REPLY_CURSOR_CLOSED,
             "updated_at": now,
         }
     )
@@ -499,7 +504,7 @@ def _dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) 
 
 def _request_refusal(
     run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig, now: datetime
-) -> tuple[DashboardRequestStaleReason | None, list[PlanDecisionAnswer] | None]:
+) -> tuple[ResumeRefusal | None, list[PlanDecisionAnswer] | None]:
     """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
     refusal = resume_refusal(run, config, now)
     if refusal is not None:
@@ -522,7 +527,7 @@ def _mark_stale(
     store: ResumeStore,
     run_id: str,
     request: DashboardResumeRequest,
-    reason: DashboardRequestStaleReason,
+    reason: ResumeRefusal,
 ) -> None:
     store.replace_dashboard_request(run_id, request.marked_stale(reason))
 
