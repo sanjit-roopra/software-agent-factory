@@ -7,6 +7,8 @@ from typing import Any
 import pytest
 
 from software_agent_factory.dashboard.validators import (
+    ESCALATION_STATUSES,
+    ESCALATION_TARGET_TYPES,
     RESUME_CLASSIFICATIONS,
     is_context_fingerprint,
     is_count,
@@ -17,7 +19,11 @@ from software_agent_factory.dashboard.validators import (
     run_id_of,
 )
 from software_agent_factory.escalation import parse_plan_decision_answers, parse_resume_command
-from software_agent_factory.models import ResumeClassification
+from software_agent_factory.models import (
+    EscalationStatus,
+    EscalationTargetType,
+    ResumeClassification,
+)
 
 
 @pytest.mark.parametrize(
@@ -108,3 +114,8 @@ def test_the_run_id_of_a_record_is_the_server_run_id_shape(
 
 def test_resume_classifications_are_the_enum_values() -> None:
     assert RESUME_CLASSIFICATIONS == {item.value for item in ResumeClassification}
+
+
+def test_escalation_statuses_and_target_types_are_the_enum_values() -> None:
+    assert ESCALATION_STATUSES == {item.value for item in EscalationStatus}
+    assert ESCALATION_TARGET_TYPES == {None, *(item.value for item in EscalationTargetType)}

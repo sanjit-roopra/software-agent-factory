@@ -28,6 +28,7 @@ from collections.abc import Callable, Collection
 from datetime import datetime, timedelta
 from typing import Any
 
+from ..escalation_protocol import MAX_PLAN_DECISIONS
 from ..redaction import bounded_reason
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import (
@@ -40,6 +41,8 @@ from .aggregate import (
 from .next_step import clean_approval_scope, clean_decisions
 from .snapshot import to_json_safe
 from .validators import (
+    ESCALATION_STATUSES,
+    ESCALATION_TARGET_TYPES,
     RESUME_CLASSIFICATIONS,
     is_context_fingerprint,
     is_count,
@@ -536,11 +539,6 @@ def _sanitize_verification(verification: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-_ESCALATION_STATUSES = frozenset(
-    {"PENDING_NOTIFICATION", "NOTIFIED", "NOTIFICATION_FAILED", "REOPENED", "RESUMED", "EXPIRED"}
-)
-
-
 def _is_github_login(value: Any) -> bool:
     return value is None or (
         isinstance(value, str) and bool(_GITHUB_LOGIN_PATTERN.fullmatch(value))
@@ -553,8 +551,8 @@ def _one_of(allowed: Collection[str | None]) -> Callable[[Any], bool]:
 
 
 _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
-    "status": _one_of(_ESCALATION_STATUSES),
-    "target_type": _one_of({None, "PULL_REQUEST", "ISSUE"}),
+    "status": _one_of(ESCALATION_STATUSES),
+    "target_type": _one_of(ESCALATION_TARGET_TYPES),
     "comment_url": is_safe_https_url,
     "reason_code": _one_of(GUIDANCE_COPY.keys()),
     "resume_classification": _one_of(RESUME_CLASSIFICATIONS),
@@ -702,7 +700,7 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
             }
     else:
         decision_count = data.get("decision_count")
-        if is_count(decision_count) and decision_count <= 24:
+        if is_count(decision_count) and decision_count <= MAX_PLAN_DECISIONS:
             result["decision_count"] = decision_count
     return result
 

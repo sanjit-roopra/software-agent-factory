@@ -1,6 +1,7 @@
 """Shape checks shared by the dashboard modules. Pure: no I/O.
 
-This is a leaf: it imports only ``models`` and :mod:`.snapshot`, so the
+This is a leaf: it imports only ``models``, the escalation protocol leaf and
+:mod:`.snapshot`, so the
 aggregate, sanitize and next-step modules can all use it without importing each
 other.
 
@@ -15,17 +16,20 @@ from collections.abc import Mapping
 from typing import Any, TypeGuard
 from urllib.parse import urlsplit
 
-from ..models import ResumeClassification
+from ..escalation_protocol import EPISODE_ID_PATTERN
+from ..models import EscalationStatus, EscalationTargetType, ResumeClassification
 from .snapshot import is_valid_run_id
 
-#: The episode id the reply parsers in :mod:`software_agent_factory.escalation`
-#: accept. It is wider than a run id, which never holds a ``.`` (see
-#: :func:`software_agent_factory.dashboard.snapshot.is_valid_run_id`).
-_EPISODE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _FINGERPRINT_PATTERN = re.compile(r"[A-Za-z0-9]{64}")
 
 #: The one set of resume classifications, built from the enum.
 RESUME_CLASSIFICATIONS: frozenset[str] = frozenset(item.value for item in ResumeClassification)
+#: The escalation statuses and target types, built from their enums. A run
+#: without a target has ``None`` for its type.
+ESCALATION_STATUSES: frozenset[str] = frozenset(item.value for item in EscalationStatus)
+ESCALATION_TARGET_TYPES: frozenset[str | None] = frozenset(
+    {None, *(item.value for item in EscalationTargetType)}
+)
 
 
 def is_number(value: Any) -> TypeGuard[int | float]:
@@ -57,8 +61,12 @@ def is_safe_https_url(value: Any) -> bool:
 
 
 def is_episode_id(value: Any) -> TypeGuard[str]:
-    """An episode id the reply parsers accept."""
-    return isinstance(value, str) and _EPISODE_ID_PATTERN.fullmatch(value) is not None
+    """An episode id the reply parsers accept.
+
+    It is wider than a run id, which never holds a ``.`` (see
+    :func:`software_agent_factory.dashboard.snapshot.is_valid_run_id`).
+    """
+    return isinstance(value, str) and EPISODE_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_context_fingerprint(value: Any) -> TypeGuard[str]:

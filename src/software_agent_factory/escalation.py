@@ -27,6 +27,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import FactoryConfig
+from .escalation_protocol import (
+    ANSWER_COMMAND_PATTERN,
+    MAX_PLAN_DECISIONS,
+    RESUME_COMMAND_PATTERN,
+    format_answer_command,
+    format_resume_command,
+)
 from .github import (
     GitHubClient,
     GitHubComment,
@@ -121,12 +128,6 @@ _RAW_DIAGNOSTIC_PATTERN = re.compile(
     r"file \"[^\"]+\", line \d+|diff --git|@@ -\d+,\d+ \+\d+,\d+ @@|\+[A-Z0-9_]+=[^\s]+)"
 )
 
-_RESUME_COMMAND_PATTERN = re.compile(
-    r"^@factory\s+resume\s+v1\s+run=(?P<run>[A-Za-z0-9._-]+)\s+episode=(?P<episode>[A-Za-z0-9._-]+)$"
-)
-_ANSWER_COMMAND_PATTERN = re.compile(
-    r"^@factory answer v1 run=(?P<run>[A-Za-z0-9._-]+) episode=(?P<episode>[A-Za-z0-9._-]+)$"
-)
 _NUMBERED_ANSWER_PATTERN = re.compile(r"^(?P<number>[1-9][0-9]?)\.\s+(?P<answer>\S.*)$")
 MAX_PLAN_DECISION_ANSWER_CHARS = 500
 
@@ -151,7 +152,7 @@ def format_escalation_marker(run_id: str, episode_id: str) -> str:
 def parse_resume_command(body: str) -> tuple[str, str] | None:
     """Parse exact ASCII command: @factory resume v1 run=<run-id> episode=<opaque-id>."""
     cleaned = body.strip()
-    match = _RESUME_COMMAND_PATTERN.fullmatch(cleaned)
+    match = RESUME_COMMAND_PATTERN.fullmatch(cleaned)
     if match is None:
         return None
     return match.group("run"), match.group("episode")
@@ -161,7 +162,7 @@ def parse_plan_decision_answers(
     body: str, *, decision_count: int
 ) -> tuple[str, str, list[PlanDecisionAnswer]] | None:
     """Parse a strict, complete numbered response to a plan-decision notice."""
-    if not 1 <= decision_count <= 24:
+    if not 1 <= decision_count <= MAX_PLAN_DECISIONS:
         return None
     normalized_body = body.replace("\r\n", "\n")
     if normalized_body != normalized_body.strip():
@@ -169,7 +170,7 @@ def parse_plan_decision_answers(
     lines = normalized_body.split("\n")
     if len(lines) != decision_count + 1:
         return None
-    header = _ANSWER_COMMAND_PATTERN.fullmatch(lines[0])
+    header = ANSWER_COMMAND_PATTERN.fullmatch(lines[0])
     if header is None:
         return None
     answers: list[PlanDecisionAnswer] = []
@@ -625,7 +626,7 @@ def build_plan_decision_context(
     except (FileNotFoundError, ValueError):
         logger.warning("run %s has no valid execution plan for decision escalation", run.id)
         return None
-    if not plan.unresolved_decisions or len(plan.unresolved_decisions) > 24:
+    if not plan.unresolved_decisions or len(plan.unresolved_decisions) > MAX_PLAN_DECISIONS:
         logger.warning("run %s has an invalid unresolved decision count", run.id)
         return None
     decisions = [normalize_whitespace(redact_secrets(value)) for value in plan.unresolved_decisions]
@@ -653,7 +654,7 @@ def is_valid_plan_decision_context(
     """Verify an answerable decision context is safe and bound to its episode."""
     if not isinstance(context, PlanDecisionContext):
         return False
-    if not 1 <= len(context.decisions) <= 24:
+    if not 1 <= len(context.decisions) <= MAX_PLAN_DECISIONS:
         return False
     if any(not value or contains_unsafe_content(value)[0] for value in context.decisions):
         return False
@@ -893,7 +894,7 @@ def build_escalation_comment(
                 ),
                 "",
                 "```",
-                f"@factory resume v1 run={run_id} episode={episode_id}",
+                format_resume_command(run_id, episode_id),
                 "```",
                 "",
             ]
@@ -966,7 +967,7 @@ def build_escalation_comment(
                 "An authorized contributor must reply with every numbered answer:",
                 "",
                 "```",
-                f"@factory answer v1 run={run_id} episode={episode_id}",
+                format_answer_command(run_id, episode_id),
                 *answer_lines,
                 "```",
                 "",
@@ -1921,9 +1922,9 @@ def poll_escalation_reply(
                     created_at=comment.created_at,
                     accepted_at=current_time,
                     command=(
-                        f"@factory resume v1 run={run.id} episode={escalation.episode_id}"
+                        format_resume_command(run.id, escalation.episode_id)
                         if escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-                        else f"@factory answer v1 run={run.id} episode={escalation.episode_id}"
+                        else format_answer_command(run.id, escalation.episode_id)
                     ),
                     episode_id=escalation.episode_id,
                     run_id=run.id,

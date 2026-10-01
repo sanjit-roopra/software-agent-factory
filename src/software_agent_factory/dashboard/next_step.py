@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
 from ..models import EscalationStatus, ResumeClassification, WorkflowState
 from ..redaction import bounded_reason, redact_secrets
 from .validators import (
@@ -43,8 +44,6 @@ FALLBACK_SENTENCE = "The run stopped and needs a person to look at it."
 FAILED_SENTENCE = "The run failed."
 CANNOT_CONTINUE = "This run cannot continue."
 
-#: The most numbered decisions ``parse_plan_decision_answers`` accepts.
-MAX_DECISIONS = 24
 ANSWER_PLACEHOLDER = "<answer>"
 
 #: Why a reply cannot reach a halted run, by escalation status. The reply poller
@@ -206,7 +205,7 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         },
         episode_id=episode_id,
         context_fingerprint=fingerprint,
-        reply_text=f"@factory resume v1 run={run_id} episode={episode_id}",
+        reply_text=format_resume_command(run_id, episode_id),
     )
     return step
 
@@ -217,7 +216,7 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         return _unavailable(run, escalation, f"Remote answers are not available because {closed}.")
     ids = _reply_ids(run, escalation)
     questions = clean_decisions(escalation.get("decisions"))
-    if ids is None or not 1 <= len(questions) <= MAX_DECISIONS:
+    if ids is None or not 1 <= len(questions) <= MAX_PLAN_DECISIONS:
         return _unavailable(run, escalation, "Remote answers are not available.")
     run_id, episode_id, fingerprint = ids
     template = [f"{n}. {ANSWER_PLACEHOLDER}" for n in range(1, len(questions) + 1)]
@@ -226,7 +225,7 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         decisions=[{"number": n, "question": q} for n, q in enumerate(questions, start=1)],
         episode_id=episode_id,
         context_fingerprint=fingerprint,
-        reply_text="\n".join([f"@factory answer v1 run={run_id} episode={episode_id}", *template]),
+        reply_text="\n".join([format_answer_command(run_id, episode_id), *template]),
     )
     return step
 
