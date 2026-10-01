@@ -22,10 +22,10 @@ REASON_LIMIT = 500
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # GitHub personal access / app / OAuth tokens.
     re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"),
-    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"github_pat_\w{20,}"),
     # AWS access key ids and secret access keys.
     re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),
-    re.compile(r"(?i)\baws_secret_access_key\b\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}[\"']?"),
+    re.compile(r"(?i)\baws_secret_access_key\b\s*[:=]\s*[\"']?[a-z0-9/+=]{40}[\"']?"),
     # PEM-encoded private keys (any flavor), including the body.
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -35,7 +35,7 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Authorization and proxy-authorization headers (all schemes: Basic, Bearer, Digest, etc.).
     re.compile(r"(?i)\b(?:authorization|proxy[_-]?authorization)\b\s*[:=]\s*[^\r\n]+"),
     re.compile(r"(?i)\bbearer\b\s*(?:[:=]\s*)?[a-z0-9._\-/+=]{20,}"),
-    re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"),
+    re.compile(r"(?i)\bBasic\s+[a-z0-9+/]{8,}={1,2}(?!\S)"),
     # Cookie and Set-Cookie headers.
     re.compile(r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b\s*[:=]\s*[^\r\n]+"),
     # Standalone JWTs (JSON Web Tokens).

@@ -1823,7 +1823,8 @@ def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path
 
     detail = build_run_detail(store, run.id, max_reopens=3)
 
-    assert detail is not None and detail.escalation is not None
+    assert detail is not None
+    assert detail.escalation is not None
     assert detail.escalation.episode_id == "ep-1"
     assert detail.escalation.context_fingerprint == "a" * 64
     assert detail.escalation.reopen_max == 3
@@ -1861,7 +1862,8 @@ def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
 
     detail = build_run_detail(store, run.id)
 
-    assert detail is not None and detail.escalation is not None
+    assert detail is not None
+    assert detail.escalation is not None
     assert detail.escalation.decisions == ["Use SQLite?", "Keep the API?"]
     assert detail.escalation.context_fingerprint == "c" * 64
     assert detail.escalation.approval_scope is None

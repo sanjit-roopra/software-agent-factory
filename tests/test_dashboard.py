@@ -2507,7 +2507,8 @@ def test_a_reason_is_redacted_and_cut_before_it_leaves_the_server(level: str) ->
     assert truncated is True
     assert len(reason) <= 500
     assert "[REDACTED]" in reason
-    assert "ghp_" not in reason and "GH_TOKEN" not in reason
+    assert "ghp_" not in reason
+    assert "GH_TOKEN" not in reason
     assert "factory show run-001" in reason
 
 
@@ -2537,7 +2538,8 @@ def test_reason_of_501_characters_is_cut_and_names_factory_show(level: str) -> N
     assert truncated is True
     assert len(reason) <= 500
     assert "factory show run-001" in reason
-    assert reason.startswith("a") and reason.endswith("c")
+    assert reason.startswith("a")
+    assert reason.endswith("c")
 
 
 def _cut_edges() -> tuple[int, int]:
