@@ -80,6 +80,7 @@ from typing import Any, Iterable, Literal, Protocol, TypeVar
 
 from pydantic import Field, ValidationError, model_serializer
 
+from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
 from .models import (
     AgentRole,
     AttemptBudget,
@@ -142,6 +143,7 @@ __all__ = [
     "RunAttemptSummary",
     "RunInvocationSummary",
     "UsageSummary",
+    "resolve_usage",
     "summarize_usage",
     "RunDetail",
     "RunGuidance",
@@ -349,14 +351,13 @@ class RunSummary(ModelBase):
 
 
 class RunAttemptSummary(ModelBase):
-    """One attempt, reduced to fields that are safe to render anywhere.
+    """One attempt, reduced to the fields the dashboard may render.
 
-    Deliberately excludes ``reasoning`` and ``failure_reason``: both are
-    unbounded free text produced by (or about) an agent, so either could
-    quote repository content, and nothing downstream can vet them. The
-    dashboard's own allowlist (``dashboard.sanitize.ATTEMPT_FIELDS``) drops
-    them a second time; this model makes sure they are never carried that
-    far in the first place.
+    Deliberately excludes the attempt ``reasoning`` level. ``failure_reason``
+    is carried as the raw stored text: it is free text that could quote
+    repository content, so this model is not safe to show as is. The
+    dashboard sanitizer (``dashboard.sanitize``) redacts and bounds it before
+    it leaves the process.
     """
 
     attempt_number: int = Field(ge=1)
@@ -367,6 +368,7 @@ class RunAttemptSummary(ModelBase):
     outcome: str
     started_at: UtcDateTime
     completed_at: UtcDateTime
+    failure_reason: str | None = None
 
 
 class UsageSummary(ModelBase):
@@ -388,17 +390,24 @@ class UsageSummary(ModelBase):
 
 
 class RunInvocationSummary(ModelBase):
-    """One dashboard-safe invocation with typed runtime-reported usage."""
+    """One invocation with typed runtime-reported usage.
+
+    ``reasoning`` is the reasoning level the call ran at (for example
+    ``high``). ``failure_reason`` is the raw stored text, redacted and bounded
+    by ``dashboard.sanitize`` before display.
+    """
 
     invocation_number: int = Field(ge=1)
     role: AgentRole
     purpose: str
     model: str
+    reasoning: str
     context_tier: ContextTier
     success: bool
     started_at: UtcDateTime
     completed_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
+    failure_reason: str | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
 
@@ -410,6 +419,7 @@ class ActiveInvocationSummary(ModelBase):
     role: AgentRole
     purpose: str
     model: str
+    reasoning: str
     context_tier: ContextTier
     status: str
     started_at: UtcDateTime
@@ -446,6 +456,19 @@ class VerificationSummary(ModelBase):
     coverage_change: float | None = None
 
 
+class ApprovalScopeSummary(ModelBase):
+    """What approving a risk halt asks for, allows, excludes and keeps in force.
+
+    Free text carried raw from the stored approval context; the dashboard
+    sanitizer redacts it before display.
+    """
+
+    decision_requested: str
+    authorized_actions: list[str]
+    unauthorized_actions: list[str]
+    conditions_in_force: list[str]
+
+
 class EscalationSummary(ModelBase):
     status: EscalationStatus
     target_type: str | None = None
@@ -462,6 +485,12 @@ class EscalationSummary(ModelBase):
     last_response_at: UtcDateTime | None = None
     is_resumed: bool = False
     resumed_at: UtcDateTime | None = None
+    episode_id: str | None = None
+    context_fingerprint: str | None = None
+    reopen_max: int | None = Field(default=None, ge=1)
+    reply_closed_cause: str | None = None
+    approval_scope: ApprovalScopeSummary | None = None
+    decisions: list[str] = Field(default_factory=list)
 
 
 class RunDetail(ModelBase):
@@ -469,10 +498,15 @@ class RunDetail(ModelBase):
     facts and the attempt history.
 
     Same data-minimization rule as :class:`RunSummary`, applied to a single
-    run: no command logs, no patch text, no prompts, no agent reasoning, no
-    raw artifact bodies and no ``failure_reason``. ``commit_sha`` and
-    ``pull_request_url`` are controller-produced identifiers, not repository
-    content, so both are included.
+    run: no command logs, no patch text, no prompts, no agent reasoning text
+    and no raw artifact bodies. ``failure_reason`` (here and on each attempt
+    and invocation) is a free-text exception: it is carried raw so the
+    dashboard sanitizer can redact and bound it, so this model must not be
+    shown to a user without that step. The escalation's approval scope and
+    plan decision questions are the other free-text exception, with the same
+    rule. ``commit_sha`` and ``pull_request_url``
+    are controller-produced identifiers, not repository content, so both are
+    included.
     """
 
     run_id: str
@@ -513,6 +547,7 @@ class RunDetail(ModelBase):
     invocations: list[RunInvocationSummary] = Field(default_factory=list)
     active_invocation: ActiveInvocationSummary | None = None
     guidance: RunGuidance | None = None
+    failure_reason: str | None = None
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -1222,20 +1257,37 @@ def _premium_request_costs(usage: UsageMetrics) -> list[float]:
     ]
 
 
+def resolve_usage(usage: UsageMetrics) -> UsageMetrics:
+    """One invocation's usage with every aggregate field resolved.
+
+    A runtime may report a figure only per model. Each token, nano-AIU, list-price
+    and premium-request-cost field then takes the aggregate when reported, else the
+    per-model sum, else stays ``None``. The run totals, the call timeline and the
+    dashboard all read this one definition.
+    """
+    resolved: dict[str, Any] = {
+        field: _usage_field_value(usage, field) for field in _MODEL_BACKED_USAGE_FIELDS
+    }
+    resolved["total_premium_request_cost"] = _sum_or_none(_premium_request_costs(usage))
+    return usage.model_copy(update=resolved)
+
+
 def summarize_usage(invocations: Iterable[InvocationRecord]) -> UsageSummary:
     """Sum runtime-reported usage; a field no invocation reported stays ``None``."""
     records = list(invocations)
-    usages = [record.usage for record in records if record.usage is not None]
+    usages = [resolve_usage(record.usage) for record in records if record.usage is not None]
     totals = {
-        field: _sum_or_none(
-            [value for usage in usages if (value := _usage_field_value(usage, field)) is not None]
-        )
+        field: _sum_or_none([v for usage in usages if (v := getattr(usage, field)) is not None])
         for field in _MODEL_BACKED_USAGE_FIELDS
     }
     premium_requests = [
         usage.premium_requests for usage in usages if usage.premium_requests is not None
     ]
-    premium_request_costs = [cost for usage in usages for cost in _premium_request_costs(usage)]
+    premium_request_costs = [
+        usage.total_premium_request_cost
+        for usage in usages
+        if usage.total_premium_request_cost is not None
+    ]
     return UsageSummary(
         invocation_count=len(records),
         reported_invocations=len(usages),
@@ -1291,9 +1343,17 @@ def _artifact_inventory(store: RunStoreProtocol, run_id: str) -> list[str]:
 def _escalation_summary(
     run: FactoryRun,
     escalation: EscalationRecord | None,
+    now: datetime,
+    max_reopens: int | None = None,
+    reply_window_hours: int | None = None,
+    escalation_enabled: bool | None = None,
+    allowed_hosts: Sequence[str] | None = None,
 ) -> EscalationSummary | None:
     if escalation is None:
         return None
+    approval = escalation.approval_context
+    plan = escalation.plan_decision_context
+    context = approval or plan
     last_reply = escalation.accepted_replies[-1] if escalation.accepted_replies else None
     is_resumed = escalation.status in {EscalationStatus.REOPENED, EscalationStatus.RESUMED}
     return EscalationSummary(
@@ -1310,7 +1370,8 @@ def _escalation_summary(
         last_responder=last_reply.user_login if last_reply is not None else None,
         last_action=(
             "ANSWER"
-            if last_reply is not None and last_reply.command.startswith("@factory answer ")
+            if last_reply is not None
+            and ANSWER_COMMAND_PATTERN.fullmatch(last_reply.command.split("\n", 1)[0])
             else "RESUME"
             if last_reply is not None
             else None
@@ -1318,6 +1379,28 @@ def _escalation_summary(
         last_response_at=last_reply.created_at if last_reply is not None else None,
         is_resumed=is_resumed,
         resumed_at=escalation.updated_at if is_resumed else None,
+        episode_id=escalation.episode_id,
+        context_fingerprint=context.context_fingerprint if context is not None else None,
+        reopen_max=max_reopens,
+        reply_closed_cause=reply_closed_cause(
+            escalation,
+            max_reopens=max_reopens,
+            reply_window_hours=reply_window_hours,
+            enabled=escalation_enabled,
+            allowed_hosts=allowed_hosts,
+            now=now,
+        ),
+        approval_scope=(
+            ApprovalScopeSummary(
+                decision_requested=approval.decision_requested,
+                authorized_actions=approval.authorized_actions,
+                unauthorized_actions=approval.unauthorized_actions,
+                conditions_in_force=approval.conditions_in_force,
+            )
+            if approval is not None
+            else None
+        ),
+        decisions=list(plan.decisions) if plan is not None else [],
     )
 
 
@@ -1390,6 +1473,10 @@ def build_run_detail(
     *,
     now: datetime | None = None,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
+    max_reopens: int | None = None,
+    reply_window_hours: int | None = None,
+    escalation_enabled: bool | None = None,
+    allowed_hosts: Sequence[str] | None = None,
 ) -> RunDetail | None:
     """Derive one run's read-only detail view, or ``None`` if it is not
     readable.
@@ -1412,7 +1499,8 @@ def build_run_detail(
     except (OSError, ValueError):  # ValidationError is a ValueError in Pydantic v2
         return None
 
-    summary = _build_run_summary(store, run, _normalize_now(now), stale_after)
+    observed_at = _normalize_now(now)
+    summary = _build_run_summary(store, run, observed_at, stale_after)
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
         **summary.model_dump(),
@@ -1422,7 +1510,15 @@ def build_run_detail(
         merge_commit_sha=run.merge_commit_sha,
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),
-        escalation=_escalation_summary(run, run.escalation),
+        escalation=_escalation_summary(
+            run,
+            run.escalation,
+            observed_at,
+            max_reopens=max_reopens,
+            reply_window_hours=reply_window_hours,
+            escalation_enabled=escalation_enabled,
+            allowed_hosts=allowed_hosts,
+        ),
         attempts=[
             RunAttemptSummary(
                 attempt_number=attempt.attempt_number,
@@ -1433,6 +1529,7 @@ def build_run_detail(
                 outcome=attempt.outcome,
                 started_at=attempt.started_at,
                 completed_at=attempt.completed_at,
+                failure_reason=attempt.failure_reason,
             )
             for attempt in run.attempt_records
         ],
@@ -1442,12 +1539,14 @@ def build_run_detail(
                 role=invocation.role,
                 purpose=str(invocation.purpose),
                 model=invocation.model,
+                reasoning=invocation.reasoning,
                 context_tier=invocation.context_tier,
                 success=invocation.success,
                 started_at=invocation.started_at,
                 completed_at=invocation.completed_at,
                 attempt_number=invocation.attempt_number,
-                usage=invocation.usage,
+                failure_reason=invocation.failure_reason,
+                usage=resolve_usage(invocation.usage) if invocation.usage is not None else None,
                 performance=invocation.performance,
             )
             for invocation in run.invocation_records
@@ -1458,6 +1557,7 @@ def build_run_detail(
             stale_after=stale_after,
         ),
         guidance=_build_run_guidance(store, run),
+        failure_reason=run.failure_reason,
     )
 
 
@@ -1593,6 +1693,7 @@ def build_active_invocation_summary(
         role=active.role,
         purpose=str(active.purpose),
         model=active.model,
+        reasoning=active.reasoning,
         context_tier=active.context_tier,
         status=status,
         started_at=active.started_at,

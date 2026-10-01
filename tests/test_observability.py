@@ -45,6 +45,7 @@ from software_agent_factory.models import (
     InvocationRecord,
     ModelUsage,
     PerformanceRecord,
+    PlanDecisionContext,
     PlanStep,
     ResumeClassification,
     ReviewAcceptance,
@@ -57,6 +58,7 @@ from software_agent_factory.models import (
     ReviewLedger,
     ReviewSourceLocation,
     Risk,
+    RiskApprovalContext,
     RiskRationale,
     RunLease,
     TriageResult,
@@ -83,6 +85,7 @@ from software_agent_factory.observability import (
     build_operational_health,
     configure_factory_logging,
     log_run_event,
+    resolve_usage,
     scan_readable_runs,
     summarize_usage,
 )
@@ -807,6 +810,83 @@ def test_summarize_usage_sums_reported_values_and_keeps_unreported_unknown() -> 
     assert summary.input_tokens == 15
     assert summary.cache_read_tokens == 0
     assert summary.cache_write_tokens is None
+
+
+def test_resolve_usage_takes_the_aggregate_else_the_per_model_sum_for_every_field() -> None:
+    usage = UsageMetrics(
+        input_tokens=1000,
+        total_premium_request_cost=None,
+        model_usage=(
+            ModelUsage(
+                model="a",
+                premium_request_cost=1.0,
+                input_tokens=1,
+                output_tokens=20,
+                reasoning_tokens=5,
+                cache_read_tokens=7,
+                cache_write_tokens=0,
+                total_nano_aiu=100,
+                list_price_estimate_usd=0.1,
+            ),
+            ModelUsage(model="b", premium_request_cost=0.5, output_tokens=30),
+        ),
+    )
+
+    resolved = resolve_usage(usage)
+
+    assert resolved.input_tokens == 1000
+    assert resolved.output_tokens == 50
+    assert resolved.reasoning_tokens == 5
+    assert resolved.cache_read_tokens == 7
+    assert resolved.cache_write_tokens == 0
+    assert resolved.total_nano_aiu == 100
+    assert resolved.list_price_estimate_usd == pytest.approx(0.1)
+    assert resolved.total_premium_request_cost == 1.5
+    assert resolve_usage(UsageMetrics()).input_tokens is None
+    assert resolve_usage(UsageMetrics()).total_premium_request_cost is None
+
+
+def test_build_run_detail_resolves_each_calls_usage_like_the_run_usage(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = _fake_store(tmp_path)
+    per_model_only = UsageMetrics(
+        model_usage=(ModelUsage(model="m", input_tokens=40, premium_request_cost=1.0),)
+    )
+    records = [
+        InvocationRecord(
+            invocation_number=number,
+            role=AgentRole.IMPLEMENTER,
+            model="m",
+            reasoning="medium",
+            started_at=T0,
+            completed_at=T0 + timedelta(seconds=1),
+            success=True,
+            usage=per_model_only,
+        )
+        for number in (1, 2)
+    ]
+    store.add_run(
+        FactoryRun(
+            id="run-1",
+            work_item_id="WI-run-1",
+            state=WorkflowState.DONE,
+            created_at=T0,
+            updated_at=T0,
+            invocation_records=records,
+        )
+    )
+
+    detail = build_run_detail(store, "run-1", now=T0)
+
+    assert detail is not None
+    assert [call.usage.input_tokens for call in detail.invocations if call.usage] == [40, 40]
+    assert [call.usage.total_premium_request_cost for call in detail.invocations if call.usage] == [
+        1.0,
+        1.0,
+    ]
+    assert detail.usage.input_tokens == 80
+    assert detail.usage.premium_request_cost == 2.0
 
 
 def test_list_price_estimate_falls_back_to_model_usage_when_aggregate_missing(
@@ -1703,6 +1783,93 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
     assert "patch.diff" not in payload["artifacts"]
 
 
+def _risk_context() -> RiskApprovalContext:
+    return RiskApprovalContext(
+        risk=Risk.R2,
+        complexity=Complexity.L1,
+        work_item_id="WI-1",
+        work_item_title="Task",
+        risk_rationale=RiskRationale(
+            intended_outcome="o",
+            sensitive_boundary="b",
+            necessity="n",
+            credible_scenario="c",
+            known_mitigations=["m"],
+            residual_risk="r",
+        ),
+        decision_requested="Approve advancing the run to REFINING.",
+        authorized_actions=["Run agents."],
+        unauthorized_actions=["Change scope."],
+        conditions_in_force=["Quality gates stay on."],
+        context_fingerprint="a" * 64,
+    )
+
+
+def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path / "data")
+    run = _run("run-risk", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "escalation": EscalationRecord(
+                episode_id="ep-1",
+                resume_classification=ResumeClassification.RISK_APPROVAL,
+                reason_code="RISK_APPROVAL",
+                approval_context=_risk_context(),
+            ),
+        }
+    )
+    store.save_run(run)
+
+    detail = build_run_detail(store, run.id, max_reopens=3)
+
+    assert detail is not None
+    assert detail.escalation is not None
+    assert detail.escalation.episode_id == "ep-1"
+    assert detail.escalation.context_fingerprint == "a" * 64
+    assert detail.escalation.reopen_max == 3
+    assert detail.escalation.approval_scope is not None
+    assert detail.escalation.approval_scope.model_dump() == {
+        "decision_requested": "Approve advancing the run to REFINING.",
+        "authorized_actions": ["Run agents."],
+        "unauthorized_actions": ["Change scope."],
+        "conditions_in_force": ["Quality gates stay on."],
+    }
+    assert detail.escalation.decisions == []
+
+
+def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path / "data")
+    run = _run("run-plan", state=WorkflowState.NEEDS_HUMAN).model_copy(
+        update={
+            "escalation": EscalationRecord(
+                episode_id="ep-2",
+                resume_classification=ResumeClassification.PLAN_DECISION,
+                reason_code="UNRESOLVED_DECISIONS",
+                plan_decision_context=PlanDecisionContext(
+                    plan_fingerprint="b" * 64,
+                    decisions=["Use SQLite?", "Keep the API?"],
+                    context_fingerprint="c" * 64,
+                ),
+            ),
+        }
+    )
+    store.save_run(run)
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None
+    assert detail.escalation is not None
+    assert detail.escalation.decisions == ["Use SQLite?", "Keep the API?"]
+    assert detail.escalation.context_fingerprint == "c" * 64
+    assert detail.escalation.approval_scope is None
+    assert detail.escalation.reopen_max is None
+
+
 def test_build_run_detail_shows_live_active_invocation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1741,6 +1908,7 @@ def test_build_run_detail_shows_live_active_invocation(
     assert detail.active_invocation is not None
     assert detail.active_invocation.status == "running"
     assert detail.active_invocation.role is AgentRole.IMPLEMENTER
+    assert detail.active_invocation.reasoning == "high"
     assert detail.active_invocation.attempt_number == 2
 
 
@@ -1803,26 +1971,71 @@ def test_build_run_detail_rejects_a_hostile_run_id_without_touching_disk(
     assert not (tmp_path / "data").exists()
 
 
-def test_build_run_detail_omits_free_text_and_raw_artifacts(tmp_path: Path) -> None:
-    """No ``failure_reason``, no attempt ``reasoning``: neither can be vetted
-    for repository content, so neither is carried into a detail view."""
+def test_build_run_detail_carries_the_run_failure_reason_as_stored(tmp_path: Path) -> None:
+    """Raw text: redaction and bounding belong to ``dashboard.sanitize``."""
     from software_agent_factory.observability import build_run_detail
 
     store = _fake_store(tmp_path)
+    reason = "boom GH_TOKEN=ghp_abcdefgh12345678 " + "x" * 600
     store.add_run(
-        _run(
-            "run-safe",
-            state=WorkflowState.NEEDS_HUMAN,
-            completed_at=T0,
-            attempt_records=[_attempt(1)],
-        )
+        _run("run-failed", state=WorkflowState.FAILED).model_copy(update={"failure_reason": reason})
     )
+    store.add_run(_run("run-ok", state=WorkflowState.DONE))
 
-    payload = build_run_detail(store, "run-safe").model_dump(mode="json")
+    assert build_run_detail(store, "run-failed").failure_reason == reason
+    assert build_run_detail(store, "run-ok").failure_reason is None
 
-    assert "failure_reason" not in payload
+
+def test_build_run_detail_carries_attempt_failure_reason_but_not_attempt_reasoning(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = _fake_store(tmp_path)
+    failed = _attempt(2).model_copy(update={"outcome": "failed", "failure_reason": "tests red"})
+    store.add_run(_run("run-attempts", attempt_records=[_attempt(1), failed]))
+
+    detail = build_run_detail(store, "run-attempts")
+
+    assert [attempt.failure_reason for attempt in detail.attempts] == [None, "tests red"]
+    payload = detail.model_dump(mode="json")
     assert all("reasoning" not in attempt for attempt in payload["attempts"])
-    assert all("failure_reason" not in attempt for attempt in payload["attempts"])
+
+
+def test_build_run_detail_carries_invocation_reasoning_level_and_failure_reason(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    def invocation(number: int, *, success: bool, reason: str | None) -> InvocationRecord:
+        return InvocationRecord(
+            invocation_number=number,
+            role=AgentRole.IMPLEMENTER,
+            model="gpt-5.6-sol",
+            reasoning="xhigh" if number == 1 else "low",
+            started_at=T0,
+            completed_at=T0 + timedelta(seconds=1),
+            success=success,
+            failure_reason=reason,
+        )
+
+    store = _fake_store(tmp_path)
+    run = _run("run-calls").model_copy(
+        update={
+            "invocation_records": [
+                invocation(1, success=True, reason=None),
+                invocation(2, success=False, reason="agent crashed"),
+            ]
+        }
+    )
+    store.add_run(run)
+
+    calls = build_run_detail(store, "run-calls").invocations
+
+    assert [(call.reasoning, call.failure_reason) for call in calls] == [
+        ("xhigh", None),
+        ("low", "agent crashed"),
+    ]
 
 
 def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -> None:
@@ -1856,7 +2069,7 @@ def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -
 
     payload = build_run_detail(store, run.id).model_dump(mode="json")
 
-    assert "failure_reason" not in payload
+    assert "secret raw review failure" not in json.dumps(payload["guidance"])
     assert payload["guidance"] == {
         "status": "ACTION_REQUIRED",
         "reason_code": "REVIEW_IMPASSE",
@@ -1998,7 +2211,7 @@ def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(
         ("an uncategorized manual boundary", "MANUAL_INSPECTION"),
     ],
 )
-def test_build_run_detail_classifies_action_required_without_exposing_reason(
+def test_build_run_detail_guidance_classifies_action_required_without_the_reason_text(
     tmp_path: Path,
     failure_reason: str,
     reason_code: str,
@@ -2014,7 +2227,7 @@ def test_build_run_detail_classifies_action_required_without_exposing_reason(
     payload = build_run_detail(store, run.id).model_dump(mode="json")
 
     assert payload["guidance"]["reason_code"] == reason_code
-    assert failure_reason not in json.dumps(payload)
+    assert failure_reason not in json.dumps(payload["guidance"])
 
 
 def test_build_run_detail_is_read_only(tmp_path: Path) -> None:

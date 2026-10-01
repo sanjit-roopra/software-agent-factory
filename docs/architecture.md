@@ -1659,10 +1659,12 @@ no diffs at all, because repository content and near-secret material can leak
 into a browser in those places.
 
 Data minimization is applied twice, independently. The detail provider builds a
-typed `RunDetail` containing only summary fields, completion facts and attempt
-metadata (never `failure_reason`, agent reasoning or a raw artifact). The
-request handler then allowlists the fields it renders, so a future provider
-mistake still cannot leak content. A run that does not exist, or whose id is
+typed `RunDetail` with summary fields, completion facts, attempt and call
+metadata, and raw failure reasons. It never holds agent reasoning text or a raw
+artifact. The request handler then allowlists the fields it renders, so a
+future provider mistake still cannot leak content. The sanitizer redacts each
+failure reason and the escalation text first, then cuts it to 500 characters
+and keeps the start and the end (ADR-033). A run that does not exist, or whose id is
 not even shaped like one, is a 404.
 
 It cannot approve, retry, cancel or reconfigure anything. Authority stays with

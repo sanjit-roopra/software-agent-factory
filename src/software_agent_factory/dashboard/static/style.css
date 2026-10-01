@@ -124,7 +124,7 @@ tr[data-run-id]:hover { background: var(--surface-2); }
 #notice:empty { margin: 0; padding: 0; border: 0; }
 dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 1rem; }
 dt { font-weight: 600; }
-dd { margin: 0; overflow-wrap: anywhere; }
+dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 button {
   cursor: pointer;
   font: inherit;
@@ -137,6 +137,69 @@ button {
 button:hover { background: var(--surface-2); }
 a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.status-ok { color: var(--ok); font-weight: 600; }
+.status-error { color: var(--error); font-weight: 600; }
+.status-warn { color: var(--warn); font-weight: 600; }
+.status-active { color: var(--accent); font-weight: 600; }
+.reason-cell { white-space: pre-wrap; overflow-wrap: anywhere; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.75rem; }
+.stat {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+}
+.stat p { margin: 0; }
+.stat-label { color: var(--text-muted); font-size: 0.85rem; }
+.stat-value { font-size: 1.15rem; font-weight: 700; overflow-wrap: anywhere; }
+.stat-note, .stat-help { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem; }
+.timeline { min-width: 56rem; --call-columns: 4.5rem 8rem minmax(9rem, 1.5fr) 7rem 7rem 8rem minmax(12rem, 2fr); }
+.timeline-head, .call-row {
+  display: grid;
+  grid-template-columns: var(--call-columns);
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+}
+.timeline-head { background: var(--surface-2); border: 1px solid var(--border); font-weight: 600; }
+.timeline-head span, .call-row span { overflow-wrap: anywhere; }
+.call { border: 1px solid var(--border); border-top: 0; }
+.call-row { cursor: pointer; list-style: none; }
+.call-row::-webkit-details-marker { display: none; }
+.call-row:hover, .call[open] { background: var(--surface-2); }
+.call-row > span:first-child::before { content: "\25B8"; margin-right: 0.4rem; }
+.call[open] .call-row > span:first-child::before { content: "\25BE"; }
+.call-fields { margin: 0; padding: 0.5rem 0.6rem 0.75rem 2rem; }
+.next-step { border: 2px solid var(--warn); }
+.next-step h2 { margin-bottom: 0.5rem; }
+.next-step h3 { margin: 0.75rem 0 0.25rem; font-size: 1rem; }
+.next-step p { margin: 0 0 0.5rem; }
+.next-step ul, .next-step ol { margin: 0 0 0.5rem; padding-left: 1.25rem; }
+.next-step-sentence { font-weight: 600; }
+.reason-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.reply-text {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+  padding: 0.6rem 0.75rem;
+  white-space: pre-wrap;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.copy-row { display: flex; gap: 0.75rem; align-items: center; }
+.copy-status { color: var(--ok); font-weight: 600; }
 @media (max-width: 900px) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar {

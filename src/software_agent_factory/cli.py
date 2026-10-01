@@ -1041,6 +1041,7 @@ def dashboard_command(
         build_monitoring_snapshot,
         build_operational_health,
         build_run_detail,
+        resolve_usage,
     )
     from .projects import FileProjectStore
     from .store import FileRunStore
@@ -1061,10 +1062,19 @@ def dashboard_command(
 
     def run_detail_provider(run_id: str) -> object | None:
         # Returns None (rendered as 404) for a run that does not exist or
-        # cannot be read, and only ever carries allowlisted summary fields
-        # plus attempt metadata -- never a log, a diff, a prompt or a raw
-        # artifact body.
-        return build_run_detail(store, run_id, stale_after=stale_after)
+        # cannot be read. The detail carries raw failure reasons and the
+        # escalation text, so ``dashboard.view.run_detail_view`` must redact and
+        # bound them before they reach a client. It never carries a log, a
+        # diff, a prompt or a raw artifact body.
+        return build_run_detail(
+            store,
+            run_id,
+            stale_after=stale_after,
+            max_reopens=factory_config.escalation.max_reopens,
+            reply_window_hours=factory_config.escalation.reply_window_hours,
+            escalation_enabled=factory_config.escalation.enabled,
+            allowed_hosts=factory_config.escalation.allowed_hosts,
+        )
 
     def health_provider() -> object:
         return build_operational_health(
@@ -1074,6 +1084,13 @@ def dashboard_command(
             max_scanned_runs=max_scanned_runs,
             scan=scan_cache.get_scan(max_scanned_runs),
         )
+
+    def invocation_row(invocation: InvocationRecord) -> dict[str, object]:
+        # Resolve per-model usage so the project totals count it like a run's.
+        row = invocation.model_dump(mode="json")
+        if invocation.usage is not None:
+            row["usage"] = resolve_usage(invocation.usage).model_dump(mode="json")
+        return row
 
     def project_provider() -> object:
         projects_dir = factory_config.data_dir / "projects"
@@ -1109,7 +1126,7 @@ def dashboard_command(
             for invocation in execution.invocation_records:
                 models.append(
                     {
-                        **invocation.model_dump(mode="json"),
+                        **invocation_row(invocation),
                         "scope": "project",
                         "task_id": None,
                     }
@@ -1124,7 +1141,7 @@ def dashboard_command(
                 for invocation in run.invocation_records:
                     models.append(
                         {
-                            **invocation.model_dump(mode="json"),
+                            **invocation_row(invocation),
                             "scope": f"task {task.task_id}",
                             "task_id": task.task_id,
                         }

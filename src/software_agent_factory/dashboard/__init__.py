@@ -11,6 +11,9 @@ This package is intentionally self-contained. It does not import
 ``subprocess`` or any shell helper, and it never starts a server as a side
 effect of import -- callers must construct a :class:`DashboardConfig` and
 call :func:`create_server` explicitly.
+
+Wire and storage names keep ``invocation`` (``invocations``, ``invocation_count``,
+``active_invocation``). The page calls the same thing a "call".
 """
 
 from .handler import DashboardRequestHandler

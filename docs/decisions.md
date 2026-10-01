@@ -1,5 +1,33 @@
 # Architecture Decisions
 
+## ADR-033: The dashboard may request a resume
+
+Status: accepted on 2026-10-01 for the data minimization part. This amends ADR-016.
+The write path part comes in a later change and is added to this ADR.
+
+ADR-016 kept failure reasons out of the dashboard.
+The operator then had to run `factory show` to learn why a run failed or what it needs.
+Issue #80 asks the dashboard to show errors and how to continue.
+
+The dashboard now shows failure reasons for the run, each attempt and each agent call.
+It also shows the escalation text that a halted run needs: the approval scope and the decision questions.
+
+- The sanitizer is the single place that redacts this text.
+  The detail provider passes raw text, and the request handler sends only the redacted result.
+- Redaction comes first. The sanitizer runs the shared secret patterns over the full text before any cut.
+  The patterns live in `redaction.py`, a module that imports only `re`.
+- A redacted reason longer than 500 characters is cut. The start and the end stay.
+  A marker replaces the middle and names `factory show <run>` for the full text.
+- The call's reasoning level, such as `high`, is shown. Agent reasoning text is not.
+- The run list, the snapshot and health carry no failure reasons.
+- Command logs, diffs, prompts and raw artifacts stay out, as ADR-016 says.
+
+Consequences:
+
+- Secret patterns that miss a credential shape can now leak it to the browser as well as to logs.
+  The dashboard is loopback only and token protected, so the risk stays on the operator's machine.
+- `RunDetail` now holds raw reasons. Any other consumer must sanitize them first.
+
 ## ADR-032: pi implementer shell commands match the Copilot deny list
 
 Status: accepted on 2026-09-30. This amends ADR-031.
@@ -772,6 +800,9 @@ copilot`. Preflight therefore validates prerequisites for *enabled* features,
 so the default offline run does not demand tools it will never call.
 
 ## ADR-016: The local dashboard is a bounded exception to the V1 ban
+
+ADR-033 amends the data minimization rule below: the dashboard now shows
+redacted failure reasons.
 
 `AGENTS.md` bans a web dashboard in V1. One narrow exception is granted.
 Inspecting runs, states, attempts, and metrics by reading JSON files is worse

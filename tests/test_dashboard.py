@@ -17,7 +17,7 @@ import logging
 import re
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -49,6 +49,8 @@ from software_agent_factory.dashboard.sanitize import (
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    sanitize_active_invocation,
+    sanitize_attempt,
     sanitize_invocation,
     sanitize_project,
     sanitize_run_detail,
@@ -60,6 +62,7 @@ from software_agent_factory.dashboard.snapshot import (
     is_valid_run_id,
     to_json_safe,
 )
+from software_agent_factory.dashboard.view import project_view, run_detail_view
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -749,7 +752,7 @@ def test_projects_show_project_and_task_progress(running_server: RunningServer) 
     assert response.status == 200
     payload = _body_json(response)
     project = payload["projects"][0]
-    assert set(project) <= PROJECT_FIELDS | {"tasks", "models"}
+    assert set(project) <= PROJECT_FIELDS | {"tasks", "models", "totals"}
     assert project["project_id"] == "project-001"
     assert project["state"] == "RUNNING"
     assert set(project["tasks"][0]) <= PROJECT_TASK_FIELDS
@@ -1084,6 +1087,7 @@ def test_is_valid_run_id_helper() -> None:
 # --------------------------------------------------------------------------
 
 SECRET_MARKER = "SECRET-sk-adversarial-0xDEADBEEF"
+GH_SECRET = "GH_TOKEN=ghp_abcdefgh12345678"
 
 
 def adversarial_snapshot_provider(*, limit: int, offset: int) -> dict[str, Any]:
@@ -1117,7 +1121,7 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
         "prompt": f"system prompt leaking {SECRET_MARKER}",
         "tool_output": SECRET_MARKER,
         "reasoning": f"chain of thought: {SECRET_MARKER}",
-        "failure_reason": f"traceback containing {SECRET_MARKER}",
+        "failure_reason": f"traceback containing {GH_SECRET}",
         "token_usage": {"api_key": SECRET_MARKER},
         "usage": {**detail["usage"], "api_key": SECRET_MARKER},
         "raw_artifact": SECRET_MARKER,
@@ -1125,7 +1129,7 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
             {
                 **attempt,
                 "reasoning": f"attempt chain of thought: {SECRET_MARKER}",
-                "failure_reason": f"attempt traceback: {SECRET_MARKER}",
+                "failure_reason": f"attempt traceback: {GH_SECRET}",
                 "tool_output": SECRET_MARKER,
                 "raw_command_log": SECRET_MARKER,
             }
@@ -1134,7 +1138,8 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
         "invocations": [
             {
                 **invocation,
-                "failure_reason": SECRET_MARKER,
+                "success": False,
+                "failure_reason": GH_SECRET,
                 "usage": {
                     **invocation["usage"],
                     "api_key": SECRET_MARKER,
@@ -1212,56 +1217,33 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
         assert response.status == 200
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
+        assert "ghp_abcdefgh12345678" not in raw_body
         payload = json.loads(raw_body)
         assert set(payload) <= RUN_DETAIL_FIELDS | {
             "active_invocation",
             "attempts",
             "invocations",
+            "totals",
+            "next_step",
         }
         assert "logs" not in payload
         assert "diff" not in payload
         assert "prompt" not in payload
         assert "tool_output" not in payload
         assert "reasoning" not in payload
-        assert "failure_reason" not in payload
+        assert payload["failure_reason"] == "traceback containing [REDACTED]"
         assert "token_usage" not in payload
         assert "raw_artifact" not in payload
         for attempt in payload["attempts"]:
             assert set(attempt) <= ATTEMPT_FIELDS
             assert "reasoning" not in attempt
-            assert "failure_reason" not in attempt
+            assert attempt["failure_reason"] == "attempt traceback: [REDACTED]"
             assert "tool_output" not in attempt
             assert "raw_command_log" not in attempt
         for invocation in payload["invocations"]:
             assert set(invocation) <= INVOCATION_FIELDS
-            assert "failure_reason" not in invocation
+            assert invocation["failure_reason"] == "[REDACTED]"
             assert SECRET_MARKER not in json.dumps(invocation)
-    finally:
-        _stop(running)
-
-
-def test_failure_reason_is_never_returned_even_when_provider_sets_it() -> None:
-    # Explicit, targeted check for the "prefer omitting failure_reason"
-    # requirement: even a provider that populates it directly (not just via
-    # the broader adversarial payload above) never sees it echoed back.
-    def provider(run_id: str) -> dict[str, Any] | None:
-        detail = FIXTURE_DETAILS.get(run_id)
-        if detail is None:
-            return None
-        return {**detail, "failure_reason": "a raw failure reason with detail"}
-
-    config = DashboardConfig(
-        host="127.0.0.1",
-        port=0,
-        snapshot_provider=fake_snapshot_provider,
-        run_detail_provider=provider,
-    )
-    running = _start(config)
-    try:
-        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
-        assert response.status == 200
-        payload = _body_json(response)
-        assert "failure_reason" not in payload
     finally:
         _stop(running)
 
@@ -1305,6 +1287,18 @@ def test_new_dashboard_fields_reject_untrusted_values() -> None:
     assert "last_responder" not in payload["escalation"]
     assert "raw_comment_body" not in payload["escalation"]
     assert SECRET_MARKER not in json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    "field", ["status", "target_type", "reason_code", "resume_classification", "last_action"]
+)
+@pytest.mark.parametrize("value", [["NOTIFIED"], {"a": 1}])
+def test_an_unhashable_escalation_value_is_dropped_not_raised(field: str, value: object) -> None:
+    payload = sanitize_run_detail(
+        {**FIXTURE_DETAILS["run-001"], "escalation": {"status": "NOTIFIED", field: value}}
+    )
+
+    assert field not in payload["escalation"]
 
 
 def test_sanitize_run_detail_preserves_resumed_escalation_status() -> None:
@@ -1512,7 +1506,7 @@ def test_app_js_never_uses_dangerous_rendering_apis(forbidden: str) -> None:
 def test_app_js_renders_server_text_with_textcontent() -> None:
     js = dashboard_assets.APP_JS
     assert "textContent" in js
-    assert "Active invocation" in js
+    assert "Active call" in js
     assert "model.status" in js
 
 
@@ -1743,83 +1737,68 @@ def test_sanitize_project_model_usage_keeps_list_price_estimate_beside_unchanged
     assert usage["list_price_estimate_usd"] == pytest.approx(0.42)
 
 
-def test_dashboard_list_price_estimate_falls_back_to_unknown_and_never_replaces_usage_value() -> (
-    None
-):
+def test_dashboard_unreported_cost_and_tokens_show_not_reported_and_never_swap_units() -> None:
     """No JS runner is available, so pin the exact rendering helper source and
     the row wiring instead of grepping for loose substrings."""
     js = dashboard_assets.APP_JS
 
-    assert function_source(js, "displayListPriceEstimate") == (
-        "function displayListPriceEstimate(value) { "
-        'if (!isFiniteNumber(value)) { return "unknown"; } return displayUsd(value); }'
+    assert function_source(js, "displayUsd") == (
+        "function displayUsd(value) { "
+        'if (!isFiniteNumber(value)) { return NOT_REPORTED; } return "$" + value.toFixed(6); }'
     )
-    # Every usage table puts the AI usage value, then the premium-request cost, then
+    assert function_source(js, "displayNumber") == (
+        "function displayNumber(value) { "
+        "if (!isFiniteNumber(value)) { return NOT_REPORTED; } "
+        'return value.toLocaleString("en-US"); }'
+    )
+    # Every usage table puts the AI usage value, then the premium requests, then
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
     assert (
         "appendCell(row, displayUsd(usage.usage_value_usd)); "
-        "appendCell(row, usage.total_premium_request_cost); "
-        "appendCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
+        "appendCell(row, displayNumber(usage.total_premium_request_cost)); "
+        "appendCell(row, displayUsd(usage.list_price_estimate_usd));"
     ) in function_source(js, "modelRow")
-    assert (
-        "displayUsd(usage.usage_value_usd), "
-        "usage.total_premium_request_cost, "
-        "displayListPriceEstimate(usage.list_price_estimate_usd)"
-    ) in function_source(js, "invocationRowSpec")
     code = normalized(js)
-    assert "displayListPriceEstimate(usage.usage_value_usd)" not in code
-    assert "displayUsd(usage.list_price_estimate_usd)" not in code
+    assert "displayUsd(usage.usage_value_usd)" in code
+    assert "displayUsd(usage.list_price_estimate_usd)" in code
+    assert "displayListPriceEstimate" not in code
 
 
 def test_dashboard_run_detail_lists_list_price_estimate_after_the_usage_value_rows() -> None:
     usage_fields = function_source(dashboard_assets.APP_JS, "usageFields")
 
     value_row = '["AI usage value (USD)", displayUsd(usage.usage_value_usd)],'
-    estimate_row = (
-        '["List-price estimate", displayListPriceEstimate(usage.list_price_estimate_usd)]'
-    )
+    estimate_row = '["List-price estimate", displayUsd(usage.list_price_estimate_usd)]'
     assert value_row in usage_fields
     assert estimate_row in usage_fields
     assert usage_fields.index(value_row) < usage_fields.index(estimate_row)
 
 
-def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> None:
-    """Both usage tables list the AI usage value, the premium-request column, then
-    the estimate last, in the order their row builders fill the cells."""
-    html = dashboard_assets.render_index_html(token="tok")
+def test_dashboard_project_usage_table_ends_with_the_list_price_estimate_column() -> None:
+    """The project models table lists the AI usage value, the premium requests, then
+    the estimate last, in the order its row builder fills the cells."""
     js = dashboard_assets.APP_JS
 
-    invocations_head = re.search(
-        r'<table id="invocations-table">\s*<thead>(.*?)</thead>', html, flags=re.DOTALL
-    )
-    assert invocations_head is not None
-    invocation_headers = re.findall(r'<th scope="col">([^<]*)</th>', invocations_head.group(1))
-    assert invocation_headers[-3:] == [
-        "AI usage value (USD)",
-        "Premium-request cost",
-        "List-price estimate",
-    ]
     model_headers = re.search(r"const MODEL_HEADERS = \[(.*?)\];", js, flags=re.DOTALL)
     assert model_headers is not None
     assert re.findall(r'"([^"]*)"', model_headers.group(1))[-3:] == [
         "AI usage value (USD)",
-        "Premium-request units",
+        "Premium requests",
         "List-price estimate",
     ]
 
 
-def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -> None:
-    """renderTotals surfaces the List-price estimate row with the same
-    ``displayListPriceEstimate`` "unknown" fallback the detail/invocation
-    views use, rather than the generic renderer's ``[object Object]`` for a
-    field nested two levels deep (``metrics.usage.list_price_estimate_usd``)."""
+def test_dashboard_totals_show_list_price_estimate_row_as_not_reported_when_missing() -> None:
+    """renderTotals surfaces the List-price estimate row through ``displayUsd``,
+    which shows "not reported" for a missing value, rather than the generic
+    renderer's ``[object Object]`` for a field nested two levels deep
+    (``metrics.usage.list_price_estimate_usd``)."""
     js = dashboard_assets.APP_JS
 
     assert function_source(js, "withListPriceEstimate") == (
         "function withListPriceEstimate(metrics) { return { ...metrics, "
-        "list_price_estimate_usd: "
-        "displayListPriceEstimate(metrics.usage?.list_price_estimate_usd) }; }"
+        "list_price_estimate_usd: displayUsd(metrics.usage?.list_price_estimate_usd) }; }"
     )
     assert "totals.metrics = withListPriceEstimate(totals.metrics);" in function_source(
         js, "renderTotals"
@@ -1934,6 +1913,101 @@ def test_wires_real_observability_and_store_end_to_end(tmp_path: Path) -> None:
         assert missing_response.status == 404
     finally:
         _stop(running)
+
+
+def _stored_run_detail_payload(tmp_path: Path, reason: str) -> dict[str, Any]:
+    """Store a run whose run, attempt and call all failed with ``reason`` and read its
+    detail over HTTP through the real ``build_run_detail`` provider."""
+    from datetime import UTC, datetime, timedelta
+
+    from software_agent_factory.models import (
+        AgentRole,
+        AttemptRecord,
+        FactoryRun,
+        InvocationRecord,
+        WorkflowState,
+    )
+    from software_agent_factory.observability import build_run_detail
+    from software_agent_factory.store import FileRunStore
+
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    done = started + timedelta(minutes=1)
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(
+        FactoryRun(
+            id="real-failed-run",
+            work_item_id="WI-1",
+            state=WorkflowState.FAILED,
+            failure_reason=reason,
+            attempt_records=[
+                AttemptRecord(
+                    attempt_number=1,
+                    role=AgentRole.IMPLEMENTER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=started,
+                    completed_at=done,
+                    outcome="failed",
+                    failure_reason=reason,
+                )
+            ],
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.IMPLEMENTER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=started,
+                    completed_at=done,
+                    success=False,
+                    failure_reason=reason,
+                )
+            ],
+        )
+    )
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=lambda run_id: build_run_detail(store, run_id),
+    )
+    running = _start(config)
+    try:
+        response = running.request(
+            "GET", "/api/runs/real-failed-run", headers=running.authed_headers()
+        )
+        assert response.status == 200
+        return _body_json(response)
+    finally:
+        _stop(running)
+
+
+def test_stored_run_with_a_secret_in_its_failure_reasons_shows_them_redacted(
+    tmp_path: Path,
+) -> None:
+    payload = _stored_run_detail_payload(tmp_path, f"deploy failed: {GH_SECRET}")
+
+    shown = [payload, payload["attempts"][0], payload["invocations"][0]]
+    for level in shown:
+        assert level["failure_reason"] == "deploy failed: [REDACTED]"
+        assert level["failure_reason_truncated"] is False
+    assert "ghp_" not in json.dumps(payload)
+    assert "GH_TOKEN" not in json.dumps(payload)
+    assert payload["invocations"][0]["reasoning"] == "high"
+
+
+def test_stored_run_with_a_600_character_failure_reason_shows_it_cut_and_marked(
+    tmp_path: Path,
+) -> None:
+    payload = _stored_run_detail_payload(tmp_path, "a" * 300 + "b" * 300)
+
+    shown = [payload, payload["attempts"][0], payload["invocations"][0]]
+    for level in shown:
+        assert level["failure_reason_truncated"] is True
+        assert len(level["failure_reason"]) <= 500
+        assert "factory show real-failed-run" in level["failure_reason"]
+        assert level["failure_reason"].startswith("a")
+        assert level["failure_reason"].endswith("b")
 
 
 def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> None:
@@ -2131,3 +2205,704 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
                 chunks.append(chunk)
     raw = b"".join(chunks)
     assert b"400" in raw and b"Bad request" in raw
+
+
+# --------------------------------------------------------------------------
+# Run detail call timeline (#80 slice 2, step 2.2)
+# --------------------------------------------------------------------------
+
+CALL_FIELD_ORDER = [
+    "invocation_number",
+    "role",
+    "purpose",
+    "model",
+    "reasoning",
+    "context_tier",
+    "status",
+    "success",
+    "attempt_number",
+    "started_at",
+    "completed_at",
+    "duration_ms",
+    "usage",
+    "total_tokens",
+    "failure_reason",
+    "failure_reason_truncated",
+]
+TOKEN_CLASSES = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+COST_UNITS = ("total_premium_request_cost", "usage_value_usd", "list_price_estimate_usd")
+
+
+def _raw_call(**overrides: Any) -> dict[str, Any]:
+    call: dict[str, Any] = {
+        "invocation_number": 1,
+        "role": "IMPLEMENTER",
+        "purpose": "STANDARD",
+        "model": "fake-model",
+        "reasoning": "high",
+        "context_tier": "default",
+        "success": True,
+        "attempt_number": 1,
+        "started_at": "2024-01-01T00:00:00+00:00",
+        "completed_at": "2024-01-01T00:00:02.500000+00:00",
+        "failure_reason": None,
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+    }
+    return {**call, **overrides}
+
+
+def test_sanitized_call_lists_timeline_fields_in_a_fixed_order() -> None:
+    call = sanitize_invocation(_raw_call())
+
+    assert list(call) == CALL_FIELD_ORDER
+    assert call["purpose"] == "STANDARD"
+    assert call["reasoning"] == "high"
+    assert call["started_at"] == "2024-01-01T00:00:00+00:00"
+    assert call["completed_at"] == "2024-01-01T00:00:02.500000+00:00"
+    assert call["duration_ms"] == 2500
+    assert call["attempt_number"] == 1
+    assert call["status"] == "SUCCESS"
+    assert call["failure_reason"] is None
+    assert call["failure_reason_truncated"] is False
+
+
+def test_failed_call_has_failed_status() -> None:
+    call = sanitize_invocation(_raw_call(success=False, failure_reason="boom"))
+
+    assert call["status"] == "FAILED"
+    assert call["failure_reason"] == "boom"
+
+
+def test_call_with_unknown_outcome_has_no_status() -> None:
+    assert sanitize_invocation(_raw_call(success="yes"))["status"] is None
+
+
+@pytest.mark.parametrize(
+    ("reported", "shown"), [(0, 0), (1200, 1200), (None, None)], ids=["zero", "value", "nothing"]
+)
+def test_reported_zero_stays_zero_and_unreported_is_null(
+    reported: int | None, shown: int | None
+) -> None:
+    usage = {} if reported is None else {"reasoning_tokens": reported}
+
+    call = sanitize_invocation(_raw_call(usage=usage))
+
+    assert call["usage"]["reasoning_tokens"] == shown
+    assert (call["usage"]["reasoning_tokens"] is None) is (shown is None)
+
+
+def test_every_token_class_and_cost_unit_is_present_and_null_without_usage() -> None:
+    call = sanitize_invocation(_raw_call(usage=None))
+
+    assert {key: call["usage"][key] for key in (*TOKEN_CLASSES, *COST_UNITS)} == dict.fromkeys(
+        (*TOKEN_CLASSES, *COST_UNITS)
+    )
+
+
+def test_each_call_reports_cost_in_its_own_unit() -> None:
+    copilot = sanitize_invocation(
+        _raw_call(usage={"total_premium_request_cost": 1.0, "total_nano_aiu": 4_000_000_000})
+    )
+    pi = sanitize_invocation(_raw_call(usage={"list_price_estimate_usd": 0.02}))
+
+    assert copilot["usage"]["total_premium_request_cost"] == 1.0
+    assert copilot["usage"]["usage_value_usd"] == pytest.approx(0.04)
+    assert copilot["usage"]["list_price_estimate_usd"] is None
+    assert pi["usage"]["list_price_estimate_usd"] == pytest.approx(0.02)
+    assert pi["usage"]["total_premium_request_cost"] is None
+    assert pi["usage"]["usage_value_usd"] is None
+
+
+def test_reported_zero_cost_stays_zero() -> None:
+    usage = sanitize_invocation(
+        _raw_call(
+            usage={
+                "total_premium_request_cost": 0,
+                "total_nano_aiu": 0,
+                "list_price_estimate_usd": 0.0,
+            }
+        )
+    )["usage"]
+
+    assert [usage[unit] for unit in COST_UNITS] == [0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    ("started", "completed", "expected"),
+    [
+        ("2024-01-01T00:00:00+00:00", "2024-01-01T00:00:00+00:00", 0),
+        ("2024-01-01T00:00:00+00:00", "2024-01-01T00:01:00+00:00", 60_000),
+        ("2024-01-01T00:00:00+00:00", None, None),
+        (None, "2024-01-01T00:00:00+00:00", None),
+        ("not a time", "2024-01-01T00:00:00+00:00", None),
+        ("2024-01-01T00:00:05+00:00", "2024-01-01T00:00:00+00:00", None),
+        ("2024-01-01T00:00:00", "2024-01-01T00:00:00+00:00", None),
+    ],
+    ids=["zero", "minute", "no-end", "no-start", "garbage", "negative", "naive"],
+)
+def test_call_duration_is_derived_from_its_timestamps(
+    started: str | None, completed: str | None, expected: int | None
+) -> None:
+    call = sanitize_invocation(_raw_call(started_at=started, completed_at=completed))
+
+    assert call["duration_ms"] == expected
+
+
+#: The Copilot usage fixture in tests/test_copilot_runtime.py: 1195 input tokens beside
+#: 47104 cache-read tokens, so the cache classes add to input. Its 18 reasoning tokens
+#: are already inside the 59 output tokens.
+COPILOT_USAGE = {
+    "input_tokens": 1195,
+    "output_tokens": 59,
+    "reasoning_tokens": 18,
+    "cache_read_tokens": 47104,
+    "cache_write_tokens": 0,
+}
+
+
+def test_call_total_tokens_adds_input_output_and_cache_but_not_reasoning() -> None:
+    call = sanitize_invocation(_raw_call(usage=COPILOT_USAGE))
+
+    assert call["total_tokens"] == 1195 + 59 + 47104 + 0
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"input_tokens": 10, "cache_write_tokens": 5}, 15),
+        ({"output_tokens": 0}, 0),
+        ({"reasoning_tokens": 7}, None),
+        ({}, None),
+        (None, None),
+    ],
+    ids=["partial", "reported-zero", "reasoning-only", "empty", "no-usage"],
+)
+def test_call_total_tokens_is_null_unless_a_counted_class_was_reported(
+    usage: dict[str, int] | None, expected: int | None
+) -> None:
+    assert sanitize_invocation(_raw_call(usage=usage))["total_tokens"] == expected
+
+
+def test_call_reasoning_level_must_be_a_short_token() -> None:
+    chain_of_thought = "first I will " + SECRET_MARKER
+
+    assert sanitize_invocation(_raw_call(reasoning=chain_of_thought))["reasoning"] is None
+    assert sanitize_invocation(_raw_call(reasoning=None))["reasoning"] is None
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, "1", 1.5], ids=repr)
+def test_call_attempt_number_must_be_a_positive_integer(invalid: Any) -> None:
+    assert sanitize_invocation(_raw_call(attempt_number=invalid))["attempt_number"] is None
+
+
+@pytest.mark.parametrize("purpose", ["Summarize the secret plan", "x" * 65, "", 5, None])
+def test_call_purpose_must_be_a_short_token_not_free_text(purpose: Any) -> None:
+    assert sanitize_invocation(_raw_call(purpose=purpose))["purpose"] is None
+    assert sanitize_active_invocation(_raw_active(purpose=purpose))["purpose"] is None
+
+
+def test_calls_sort_by_number() -> None:
+    detail = sanitize_run_detail(
+        {
+            "run_id": "run-001",
+            "invocations": [
+                _raw_call(invocation_number=3),
+                _raw_call(invocation_number=1),
+                {"role": "TRIAGE"},
+                _raw_call(invocation_number=2),
+            ],
+        }
+    )
+
+    assert [call["invocation_number"] for call in detail["invocations"]] == [1, 2, 3, None]
+
+
+def test_call_drops_fields_outside_the_allowlist() -> None:
+    call = sanitize_invocation(
+        _raw_call(
+            prompt=SECRET_MARKER,
+            tool_output=SECRET_MARKER,
+            raw_command_log=SECRET_MARKER,
+            usage={"input_tokens": 1, "api_key": SECRET_MARKER},
+        )
+    )
+
+    assert list(call) == CALL_FIELD_ORDER
+    assert SECRET_MARKER not in json.dumps(call)
+
+
+def test_call_keeps_sanitized_performance_only_when_provided() -> None:
+    assert "performance" not in sanitize_invocation(_raw_call())
+
+    call = sanitize_invocation(_raw_call(performance={"prompt_chars": 5, "logs": SECRET_MARKER}))
+
+    assert call["performance"] == {"prompt_chars": 5}
+    assert list(call)[-1] == "performance"
+
+
+# --------------------------------------------------------------------------
+# Redacted, bounded failure reasons for the run, an attempt and a call
+# --------------------------------------------------------------------------
+
+REASON_LEVELS = ("run", "attempt", "call")
+REASON_SECRETS = {
+    "token assignment": (GH_SECRET, ("ghp_abcdefgh12345678",)),
+    "bearer header": ("Authorization: Bearer abc.def.gh", ("abc.def.gh",)),
+}
+
+
+def _detail_with_reason(level: str, reason: str) -> dict[str, Any]:
+    detail = dict(FIXTURE_DETAILS["run-001"])
+    if level == "run":
+        detail["failure_reason"] = reason
+    elif level == "attempt":
+        detail["attempts"] = [{**detail["attempts"][0], "failure_reason": reason}]
+    else:
+        detail["invocations"] = [
+            {**detail["invocations"][0], "success": False, "failure_reason": reason}
+        ]
+    return detail
+
+
+def _shown_reason(level: str, payload: dict[str, Any]) -> tuple[str, bool]:
+    shown = {"run": payload, "attempt": payload["attempts"][0], "call": payload["invocations"][0]}[
+        level
+    ]
+    return shown["failure_reason"], shown["failure_reason_truncated"]
+
+
+def _reason_of(level: str, reason: str) -> tuple[str, bool]:
+    """The level's reason and cut flag, from the run detail view."""
+    return _shown_reason(level, run_detail_view(_detail_with_reason(level, reason)))
+
+
+def _reason_through_api(level: str, reason: str) -> tuple[str, bool]:
+    """Open the run detail over HTTP and return the level's reason and cut flag."""
+    detail = _detail_with_reason(level, reason)
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=lambda run_id: detail if run_id == "run-001" else None,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
+        assert response.status == 200
+        return _shown_reason(level, _body_json(response))
+    finally:
+        _stop(running)
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+def test_a_reason_is_redacted_and_cut_before_it_leaves_the_server(level: str) -> None:
+    reason, truncated = _reason_through_api(level, f"{GH_SECRET} " + "a" * 600)
+
+    assert truncated is True
+    assert len(reason) <= 500
+    assert "[REDACTED]" in reason
+    assert "ghp_" not in reason
+    assert "GH_TOKEN" not in reason
+    assert "factory show run-001" in reason
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+@pytest.mark.parametrize("secret", list(REASON_SECRETS), ids=list(REASON_SECRETS))
+def test_secret_in_a_failure_reason_is_redacted(level: str, secret: str) -> None:
+    text, fragments = REASON_SECRETS[secret]
+
+    reason, _ = _reason_of(level, text)
+
+    assert "[REDACTED]" in reason
+    assert not any(fragment in reason for fragment in fragments)
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+def test_reason_of_500_characters_is_shown_in_full(level: str) -> None:
+    reason, truncated = _reason_of(level, "a" * 500)
+
+    assert reason == "a" * 500
+    assert truncated is False
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+def test_reason_of_501_characters_is_cut_and_names_factory_show(level: str) -> None:
+    reason, truncated = _reason_of(level, "a" * 250 + "b" + "c" * 250)
+
+    assert truncated is True
+    assert len(reason) <= 500
+    assert "factory show run-001" in reason
+    assert reason.startswith("a")
+    assert reason.endswith("c")
+
+
+def _cut_edges() -> tuple[int, int]:
+    """How many raw characters a cut keeps at the head and at the tail."""
+    reason, _ = _reason_of("run", "H" * 2000 + "T" * 2000)
+    head = len(reason) - len(reason.lstrip("H"))
+    tail = len(reason) - len(reason.rstrip("T"))
+    return head, tail
+
+
+#: Parts of ``GH_SECRET`` a half-cut copy of it still shows.
+_SECRET_FRAGMENTS = ("GH_TOKEN", "ghp_", "bcdefgh", "12345678")
+
+
+def _secret_across_the_head_edge() -> str:
+    head, _ = _cut_edges()
+    inside = len(GH_SECRET) // 2
+    # The space keeps the filler out of the secret: its name may start with letters.
+    return "x" * (head - inside - 1) + " " + GH_SECRET + " " + "y" * 1000
+
+
+def _secret_across_the_tail_edge() -> str:
+    _, tail = _cut_edges()
+    inside = len(GH_SECRET) - len(GH_SECRET) // 2
+    return "x" * 1000 + " " + GH_SECRET + " " + "y" * (tail - inside - 1)
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+@pytest.mark.parametrize(
+    "build_text",
+    [_secret_across_the_head_edge, _secret_across_the_tail_edge],
+    ids=["head-edge", "tail-edge"],
+)
+def test_reason_is_cut_after_redaction_so_a_secret_is_never_split(
+    level: str, build_text: Callable[[], str]
+) -> None:
+    text = build_text()
+    head, tail = _cut_edges()
+    # Cutting the raw text first would leave half of the secret on show.
+    cut_first = text[:head] + text[len(text) - tail :]
+    assert any(fragment in cut_first for fragment in _SECRET_FRAGMENTS)
+
+    reason, truncated = _reason_of(level, text)
+
+    assert truncated is True
+    assert "[REDACTED]" in reason
+    assert not any(fragment in reason for fragment in _SECRET_FRAGMENTS)
+
+
+@pytest.mark.parametrize("raw", [None, "", 42, ["a"]], ids=repr)
+def test_missing_or_empty_reason_is_null_and_not_cut(raw: Any) -> None:
+    call = sanitize_invocation(_raw_call(failure_reason=raw))
+    attempt = sanitize_attempt({"attempt_number": 1, "failure_reason": raw})
+    detail = sanitize_run_detail({"run_id": "run-001", "failure_reason": raw})
+
+    for shown in (call, attempt, detail):
+        assert shown["failure_reason"] is None
+        assert shown["failure_reason_truncated"] is False
+
+
+def test_cut_marker_uses_a_placeholder_when_the_run_id_is_unknown_or_invalid() -> None:
+    long_reason = "a" * 600
+
+    assert (
+        "factory show <run>" in sanitize_attempt({"failure_reason": long_reason})["failure_reason"]
+    )
+
+
+@pytest.mark.parametrize("run_id", ["bad id\n", "run.001"])
+def test_cut_marker_ignores_a_run_id_the_dashboard_route_would_reject(run_id: str) -> None:
+    detail = sanitize_run_detail({"run_id": run_id, "failure_reason": "a" * 600})
+
+    assert "factory show <run>" in detail["failure_reason"]
+
+
+def test_cut_marker_names_the_run_by_its_id_when_run_id_is_missing() -> None:
+    detail = sanitize_run_detail({"id": "run-009", "failure_reason": "a" * 600})
+
+    assert "factory show run-009" in detail["failure_reason"]
+
+
+def test_project_model_status_is_derived_by_the_server() -> None:
+    project = sanitize_project(
+        {
+            "project_id": "project-001",
+            "models": [
+                {"model": "m", "success": True},
+                {"model": "m", "success": False},
+                {"model": "m"},
+                {"model": "m", "success": True, "status": "running"},
+            ],
+        }
+    )
+
+    assert [model["status"] for model in project["models"]] == [
+        "SUCCESS",
+        "FAILED",
+        None,
+        "running",
+    ]
+
+
+def _raw_active(**overrides: Any) -> dict[str, Any]:
+    active: dict[str, Any] = {
+        "invocation_number": 2,
+        "role": "REVIEWER",
+        "purpose": "STANDARD",
+        "model": "fake-model",
+        "reasoning": "medium",
+        "context_tier": "default",
+        "status": "running",
+        "started_at": "2024-01-01T00:06:00+00:00",
+        "attempt_number": 2,
+    }
+    return {**active, **overrides}
+
+
+def test_running_call_has_the_shape_of_a_finished_call_with_nothing_reported() -> None:
+    call = sanitize_active_invocation(_raw_active())
+
+    assert list(call) == CALL_FIELD_ORDER
+    assert call["status"] == "running"
+    assert call["started_at"] == "2024-01-01T00:06:00+00:00"
+    assert call["success"] is None
+    assert call["total_tokens"] is None
+    assert call["completed_at"] is None
+    assert call["duration_ms"] is None
+    assert call["failure_reason"] is None
+    assert call["failure_reason_truncated"] is False
+    assert {key: call["usage"][key] for key in (*TOKEN_CLASSES, *COST_UNITS)} == dict.fromkeys(
+        (*TOKEN_CLASSES, *COST_UNITS)
+    )
+
+
+@pytest.mark.parametrize("status", ["stale", "crashed", "abandoned"])
+def test_running_call_keeps_a_liveness_status_the_provider_reports(status: str) -> None:
+    assert sanitize_active_invocation(_raw_active(status=status))["status"] == status
+
+
+@pytest.mark.parametrize("status", [None, "", "weird", "FAILED", ["running"], 5])
+def test_running_call_shows_running_for_a_missing_or_unknown_status(status: Any) -> None:
+    assert sanitize_active_invocation(_raw_active(status=status))["status"] == "running"
+
+
+def test_running_call_ignores_fields_that_only_a_finished_call_has() -> None:
+    call = sanitize_active_invocation(
+        _raw_active(
+            success=False,
+            completed_at="2024-01-01T00:07:00+00:00",
+            usage={"input_tokens": 99},
+            failure_reason=SECRET_MARKER,
+            prompt=SECRET_MARKER,
+        )
+    )
+
+    assert call["success"] is None
+    assert call["completed_at"] is None
+    assert call["usage"]["input_tokens"] is None
+    assert call["failure_reason"] is None
+    assert SECRET_MARKER not in json.dumps(call)
+
+
+def test_running_call_is_dropped_when_it_is_not_an_object() -> None:
+    assert sanitize_active_invocation("running") == {}
+    assert "active_invocation" not in sanitize_run_detail(
+        {"run_id": "run-001", "active_invocation": "running"}
+    )
+
+
+def test_run_detail_api_returns_calls_in_number_order_with_the_timeline_fields(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.request(
+        "GET", "/api/runs/run-001", headers=running_server.authed_headers()
+    )
+
+    payload = _body_json(response)
+    assert [list(call) for call in payload["invocations"]] == [CALL_FIELD_ORDER]
+    assert list(payload["active_invocation"]) == CALL_FIELD_ORDER
+    assert payload["invocations"][0]["duration_ms"] == 300_000
+    assert payload["failure_reason"] is None
+    assert payload["failure_reason_truncated"] is False
+
+
+def test_run_detail_api_carries_totals_by_unit(running_server: RunningServer) -> None:
+    response = running_server.request(
+        "GET", "/api/runs/run-001", headers=running_server.authed_headers()
+    )
+
+    totals = _body_json(response)["totals"]
+    assert totals["calls"] == 1
+    assert totals["duration_ms"] == {"total": 300_000, "reported_count": 1}
+    assert totals["costs"]["total_premium_request_cost"] == {"total": 1.0, "reported_count": 1}
+    assert totals["costs"]["usage_value_usd"] == {"total": None, "reported_count": 0}
+
+
+def test_sanitizing_a_run_detail_composes_no_view_model() -> None:
+    sanitized = sanitize_run_detail(FIXTURE_DETAILS["run-001"])
+
+    assert "totals" not in sanitized
+    assert "next_step" not in sanitized
+    assert sanitized["invocations"]
+
+
+def test_run_detail_without_a_calls_list_has_no_totals() -> None:
+    assert "totals" not in run_detail_view({"run_id": "run-001"})
+
+
+def test_run_detail_with_no_calls_yet_has_every_total_unreported() -> None:
+    totals = run_detail_view({"run_id": "run-001", "invocations": []})["totals"]
+
+    assert totals["calls"] == 0
+    assert totals["duration_ms"] == {"total": None, "reported_count": 0}
+
+
+def test_sanitizing_a_project_composes_no_totals() -> None:
+    assert "totals" not in sanitize_project({"project_id": "project-001", "models": []})
+
+
+def test_project_carries_totals_over_its_models() -> None:
+    project = project_view(
+        {
+            "project_id": "project-001",
+            "models": [
+                {"usage": {"total_nano_aiu": 100_000_000_000}, "success": True},
+                {"usage": {}, "success": False},
+            ],
+        }
+    )
+
+    assert project["totals"]["calls"] == 2
+    assert project["totals"]["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}
+
+
+# --------------------------------------------------------------------------
+# Provider -> sanitizer: one usage definition and the running call's reasoning
+# --------------------------------------------------------------------------
+
+
+def _stored_detail(tmp_path: Path, **run_fields: Any) -> Any:
+    from datetime import UTC, datetime
+
+    from software_agent_factory.models import FactoryRun, WorkflowState
+    from software_agent_factory.observability import build_run_detail
+    from software_agent_factory.store import FileRunStore
+
+    store = FileRunStore(tmp_path / "data")
+    state = run_fields.pop("state", WorkflowState.DONE)
+    store.save_run(
+        FactoryRun(id="stored-run", work_item_id="WI-1", state=state, **run_fields),
+    )
+    return build_run_detail(store, "stored-run", now=datetime(2026, 9, 1, 12, 5, tzinfo=UTC))
+
+
+def _usage_call(number: int, usage: Any) -> Any:
+    from datetime import UTC, datetime, timedelta
+
+    from software_agent_factory.models import AgentRole, InvocationRecord
+
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    return InvocationRecord(
+        invocation_number=number,
+        role=AgentRole.IMPLEMENTER,
+        model="gpt-5.6-sol",
+        reasoning="high",
+        started_at=started,
+        completed_at=started + timedelta(minutes=1),
+        success=True,
+        usage=usage,
+    )
+
+
+def test_a_call_that_reports_usage_only_per_model_still_counts_in_the_totals(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.models import ModelUsage, UsageMetrics
+
+    per_model_only = UsageMetrics(
+        model_usage=(
+            ModelUsage(
+                model="claude-sonnet-5",
+                premium_request_cost=1.0,
+                input_tokens=100,
+                output_tokens=20,
+                reasoning_tokens=5,
+                total_nano_aiu=100_000_000_000,
+            ),
+            ModelUsage(model="gpt-5.6-sol", premium_request_cost=0.5, input_tokens=10),
+        )
+    )
+    aggregate = UsageMetrics(input_tokens=1000, total_premium_request_cost=2.0)
+    detail = _stored_detail(
+        tmp_path,
+        invocation_records=[_usage_call(1, per_model_only), _usage_call(2, aggregate)],
+    )
+
+    shown = run_detail_view(detail)
+
+    first, second = shown["invocations"]
+    assert first["usage"]["input_tokens"] == 110
+    assert first["usage"]["output_tokens"] == 20
+    assert first["usage"]["reasoning_tokens"] == 5
+    assert first["usage"]["total_premium_request_cost"] == 1.5
+    assert first["usage"]["usage_value_usd"] == 1.0
+    assert first["total_tokens"] == 130
+    assert second["usage"]["input_tokens"] == 1000
+    assert second["usage"]["output_tokens"] is None
+    assert second["usage"]["total_premium_request_cost"] == 2.0
+    totals = shown["totals"]
+    assert totals["tokens"]["input_tokens"] == {"total": 1110, "reported_count": 2}
+    assert totals["costs"]["total_premium_request_cost"] == {"total": 3.5, "reported_count": 2}
+    assert totals["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}
+
+
+def test_run_usage_and_run_totals_report_the_same_figures(tmp_path: Path) -> None:
+    from software_agent_factory.models import ModelUsage, UsageMetrics
+
+    per_model_only = UsageMetrics(
+        model_usage=(ModelUsage(model="m", premium_request_cost=1.0, input_tokens=100),)
+    )
+    detail = _stored_detail(
+        tmp_path,
+        invocation_records=[_usage_call(1, per_model_only), _usage_call(2, per_model_only)],
+    )
+
+    shown = run_detail_view(detail)
+
+    assert shown["usage"]["input_tokens"] == shown["totals"]["tokens"]["input_tokens"]["total"]
+    assert (
+        shown["usage"]["premium_request_cost"]
+        == shown["totals"]["costs"]["total_premium_request_cost"]["total"]
+    )
+
+
+def test_the_running_calls_reasoning_level_goes_from_the_provider_to_the_page(
+    tmp_path: Path,
+) -> None:
+    import os
+    import socket
+    from datetime import UTC, datetime
+
+    from software_agent_factory.models import (
+        ActiveInvocation,
+        AgentRole,
+        RunLease,
+        WorkflowState,
+    )
+
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    detail = _stored_detail(
+        tmp_path,
+        state=WorkflowState.IMPLEMENTING,
+        lease=RunLease(host=socket.gethostname(), pid=os.getpid(), heartbeat_at=started),
+        active_invocation=ActiveInvocation(
+            invocation_number=2,
+            role=AgentRole.REVIEWER,
+            model="gpt-5.6-sol",
+            reasoning="xhigh",
+            started_at=started,
+        ),
+    )
+
+    shown = sanitize_run_detail(detail)
+
+    assert shown["active_invocation"]["reasoning"] == "xhigh"
+    assert shown["active_invocation"]["status"] == "running"

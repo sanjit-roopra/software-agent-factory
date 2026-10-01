@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -31,13 +32,29 @@ from typer.testing import CliRunner
 from software_agent_factory import cli
 from software_agent_factory.cli import app
 from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
+from software_agent_factory.dashboard.view import project_view
 from software_agent_factory.doctor import CheckResult, CheckStatus, DoctorReport
+from software_agent_factory.models import (
+    AgentRole,
+    EscalationRecord,
+    EscalationStatus,
+    FactoryRun,
+    InvocationRecord,
+    ModelUsage,
+    ProjectExecution,
+    ProjectState,
+    ProjectTaskExecution,
+    ResumeClassification,
+    UsageMetrics,
+    WorkflowState,
+)
 from software_agent_factory.observability import (
     MonitoringSnapshot,
     OperationalHealthReport,
     RunDetail,
     RunScanResult,
 )
+from software_agent_factory.projects import FileProjectStore
 from software_agent_factory.service_install import (
     DEFAULT_LABEL,
     ServiceInstallRequest,
@@ -46,6 +63,7 @@ from software_agent_factory.service_install import (
     ServiceStatus,
     build_program_arguments,
 )
+from software_agent_factory.store import FileRunStore
 
 runner = CliRunner()
 
@@ -580,6 +598,181 @@ def test_dashboard_providers_serve_real_snapshot_health_and_detail(
     assert [attempt.role for attempt in detail.attempts]
 
 
+def _save_needs_human_run(
+    data_dir: Path, run_id: str, at: datetime, **escalation_overrides: object
+) -> None:
+    """Save a NEEDS_HUMAN run whose notified escalation cannot resume."""
+    fields: dict[str, object] = {
+        "episode_id": "ep-1",
+        "status": EscalationStatus.NOTIFIED,
+        "resume_classification": ResumeClassification.NOT_RESUMABLE,
+        "reason_code": "MANUAL_INSPECTION",
+        **escalation_overrides,
+    }
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id=run_id,
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=at,
+            updated_at=at,
+            escalation=EscalationRecord.model_validate(fields),
+        )
+    )
+
+
+def test_dashboard_detail_carries_the_configured_reopen_limit(
+    tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    # The default limit is 3, which is also the highest the config accepts.
+    config_path = write_config(tmp_path / "factory.yaml", data_dir, escalation={"max_reopens": 2})
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    _save_needs_human_run(data_dir, "run-needs-human", now)
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    detail = fake_dashboard[0].config.run_detail_provider("run-needs-human")
+    assert isinstance(detail, RunDetail)
+    assert detail.escalation is not None
+    assert detail.escalation.reopen_max == 2
+
+
+@pytest.mark.parametrize(
+    ("escalation", "cause"),
+    [
+        (
+            {"enabled": True, "authorized_identities": ["lead-dev"], "reply_window_hours": 1},
+            "the reply window expired",
+        ),
+        ({"enabled": False}, "escalation replies are turned off"),
+    ],
+    ids=["window", "switch"],
+)
+def test_dashboard_detail_closes_the_reply_from_the_configured_window_and_switch(
+    tmp_path: Path,
+    data_dir: Path,
+    fake_dashboard: list[FakeDashboardServer],
+    escalation: dict[str, object],
+    cause: str,
+) -> None:
+    config_path = write_config(tmp_path / "factory.yaml", data_dir, escalation=escalation)
+    old = datetime(2020, 1, 1, tzinfo=UTC)
+    _save_needs_human_run(
+        data_dir, "run-old-notice", old, remote_resume_enabled=True, created_at=old
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    detail = fake_dashboard[0].config.run_detail_provider("run-old-notice")
+    assert isinstance(detail, RunDetail)
+    assert detail.escalation is not None
+    assert detail.escalation.reply_closed_cause == cause
+
+
+def test_dashboard_detail_closes_the_reply_from_the_configured_allowed_hosts(
+    tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    config_path = write_config(
+        tmp_path / "factory.yaml",
+        data_dir,
+        escalation={
+            "enabled": True,
+            "authorized_identities": ["lead-dev"],
+            "allowed_hosts": ["ghe.example.com"],
+        },
+    )
+    now = datetime.now(UTC)
+    _save_needs_human_run(
+        data_dir,
+        "run-other-host",
+        now,
+        remote_resume_enabled=True,
+        target_host="github.com",
+        created_at=now,
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    detail = fake_dashboard[0].config.run_detail_provider("run-other-host")
+    assert isinstance(detail, RunDetail)
+    assert detail.escalation is not None
+    assert detail.escalation.reply_closed_cause == "the notice host is no longer allowed"
+
+
+def test_dashboard_project_totals_count_usage_a_call_reported_only_per_model(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    FileProjectStore(data_dir).save_execution(
+        ProjectExecution(
+            project_id="project-usage",
+            state=ProjectState.RUNNING,
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.PLANNER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=now,
+                    completed_at=now,
+                    success=True,
+                    usage=UsageMetrics(
+                        model_usage=(ModelUsage(model="gpt-5.6-sol", input_tokens=40),)
+                    ),
+                )
+            ],
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+
+    payload = fake_dashboard[0].config.project_provider()
+    project = project_view(payload["projects"][0])
+    assert project["totals"]["tokens"]["input_tokens"] == {"total": 40, "reported_count": 1}
+
+
+def test_dashboard_project_totals_count_usage_a_task_run_call_reported_only_per_model(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id="run-task-usage",
+            work_item_id="WI-1",
+            state=WorkflowState.PR_CREATED,
+            created_at=now,
+            updated_at=now,
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.PLANNER,
+                    model="gpt-5.6-sol",
+                    reasoning="high",
+                    started_at=now,
+                    completed_at=now,
+                    success=True,
+                    usage=UsageMetrics(
+                        model_usage=(ModelUsage(model="gpt-5.6-sol", input_tokens=40),)
+                    ),
+                )
+            ],
+        )
+    )
+    FileProjectStore(data_dir).save_execution(
+        ProjectExecution(
+            project_id="project-task-usage",
+            state=ProjectState.RUNNING,
+            tasks=(ProjectTaskExecution(task_id=1, work_item_id="WI-1", run_id="run-task-usage"),),
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+
+    payload = fake_dashboard[0].config.project_provider()
+    project = project_view(payload["projects"][0])
+    assert project["totals"]["tokens"]["input_tokens"] == {"total": 40, "reported_count": 1}
+
+
 def test_dashboard_detail_provider_returns_none_for_unknown_or_hostile_ids(
     data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:
@@ -590,7 +783,7 @@ def test_dashboard_detail_provider_returns_none_for_unknown_or_hostile_ids(
     assert provider("../../etc/passwd") is None
 
 
-def test_dashboard_detail_never_exposes_logs_diffs_or_failure_text(
+def test_dashboard_detail_never_exposes_logs_diffs_or_prompts(
     source_repo: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:
     run_id = make_run(source_repo, data_dir)
@@ -599,7 +792,7 @@ def test_dashboard_detail_never_exposes_logs_diffs_or_failure_text(
     detail = fake_dashboard[0].config.run_detail_provider(run_id)
     payload = detail.model_dump(mode="json")
 
-    forbidden = {"failure_reason", "reasoning", "logs", "patch", "diff", "prompt", "output"}
+    forbidden = {"reasoning", "logs", "patch", "diff", "prompt", "output"}
     assert forbidden.isdisjoint(payload)
     for attempt in payload["attempts"]:
         assert forbidden.isdisjoint(attempt)

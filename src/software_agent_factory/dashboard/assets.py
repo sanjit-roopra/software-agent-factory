@@ -80,51 +80,60 @@ def render_index_html(*, token: str) -> str:
       </div>
     </section>
 
-    <section id="view-run" aria-labelledby="detail-heading" hidden>
-      <h1 id="detail-heading" tabindex="-1">Run detail</h1>
+    <section id="view-run-detail" aria-labelledby="run-detail-heading" hidden>
+      <h1 id="run-detail-heading" tabindex="-1">Run detail</h1>
       <p><a href="#runs">&larr; Back to runs</a></p>
-      <p id="detail-status">Loading&hellip;</p>
-      <div id="detail-content" class="card" hidden>
-        <dl id="detail-body"></dl>
-        <h2>Attempts</h2>
-        <div class="table-wrap">
-          <table id="attempts-table">
-            <thead>
-              <tr>
-                <th scope="col">#</th>
-                <th scope="col">Role</th>
-                <th scope="col">Model</th>
-                <th scope="col">Budget</th>
-                <th scope="col">Trigger</th>
-                <th scope="col">Outcome</th>
-                <th scope="col">Started</th>
-                <th scope="col">Completed</th>
-              </tr>
-            </thead>
-            <tbody id="attempts-body"></tbody>
-          </table>
+      <p id="run-detail-status">Loading&hellip;</p>
+      <div id="run-detail-content" hidden>
+        <section id="next-step" class="card next-step" aria-labelledby="next-step-heading" hidden>
+          <h2 id="next-step-heading">Needs you</h2>
+          <div id="next-step-body"></div>
+        </section>
+        <div class="card">
+          <dl id="run-detail-body"></dl>
         </div>
-        <h2>Agent invocations</h2>
-        <div class="table-wrap">
-          <table id="invocations-table">
-            <thead>
-              <tr>
-                <th scope="col">#</th>
-                <th scope="col">Role</th>
-                <th scope="col">Model</th>
-                <th scope="col">Context</th>
-                <th scope="col">Success</th>
-                <th scope="col">Input tokens</th>
-                <th scope="col">Output tokens</th>
-                <th scope="col">API duration (ms)</th>
-                <th scope="col">Session duration (ms)</th>
-                <th scope="col">AI usage value (USD)</th>
-                <th scope="col">Premium-request cost</th>
-                <th scope="col">List-price estimate</th>
-              </tr>
-            </thead>
-            <tbody id="invocations-body"></tbody>
-          </table>
+        <div class="card">
+          <h2>Totals</h2>
+          <div id="run-totals" class="stats"></div>
+        </div>
+        <div class="card">
+          <h2 id="timeline-heading">Call timeline</h2>
+          <p id="timeline-status">No calls yet.</p>
+          <div class="table-wrap" id="timeline-wrap" hidden>
+            <div class="timeline" role="group" aria-labelledby="timeline-heading">
+              <div class="timeline-head" aria-hidden="true">
+                <span>#</span>
+                <span>Role</span>
+                <span>Model</span>
+                <span>Outcome</span>
+                <span>Duration</span>
+                <span>Total tokens</span>
+                <span>Cost</span>
+              </div>
+              <div id="timeline-body"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Attempts</h2>
+          <div class="table-wrap">
+            <table id="attempts-table">
+              <thead>
+                <tr>
+                  <th scope="col">#</th>
+                  <th scope="col">Role</th>
+                  <th scope="col">Model</th>
+                  <th scope="col">Budget</th>
+                  <th scope="col">Trigger</th>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Started</th>
+                  <th scope="col">Completed</th>
+                  <th scope="col">Failure reason</th>
+                </tr>
+              </thead>
+              <tbody id="attempts-body"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>

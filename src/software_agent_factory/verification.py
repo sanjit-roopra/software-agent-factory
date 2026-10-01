@@ -52,7 +52,6 @@ runner executes here -- independent tester judgement is a separate
 from __future__ import annotations
 
 import os
-import re
 import signal
 import subprocess
 import time
@@ -61,52 +60,15 @@ from typing import Sequence
 
 from .models import CommandResult, VerificationReport
 
+# Re-exported: observability, escalation and routing import it from here.
+from .redaction import redact_secrets as redact_secrets
+
 #: Environment variables always provided to repository commands. Anything
 #: else must be named explicitly by repository configuration.
 BASE_ENV_ALLOWLIST: tuple[str, ...] = ("PATH", "HOME", "LANG", "TERM")
 
 #: Default cap on retained stdout/stderr bytes per command.
 DEFAULT_CAPTURE_BYTES = 32768
-
-REDACTION_PLACEHOLDER = "[REDACTED]"
-
-_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # GitHub personal access / app / OAuth tokens.
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"),
-    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    # AWS access key ids and secret access keys.
-    re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),
-    re.compile(r"(?i)\baws_secret_access_key\b\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}[\"']?"),
-    # PEM-encoded private keys (any flavor), including the body.
-    re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
-        re.DOTALL,
-    ),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    # Authorization and proxy-authorization headers (all schemes: Basic, Bearer, Digest, etc.).
-    re.compile(r"(?i)\b(?:authorization|proxy[_-]?authorization)\b\s*[:=]\s*[^\r\n]+"),
-    re.compile(r"(?i)\bbearer\b\s*(?:[:=]\s*)?[a-z0-9._\-/+=]{20,}"),
-    re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"),
-    # Cookie and Set-Cookie headers.
-    re.compile(r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b\s*[:=]\s*[^\r\n]+"),
-    # Standalone JWTs (JSON Web Tokens).
-    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
-    # Explicit token/secret/password/session assignments.
-    re.compile(
-        r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|SESSION[_-]?ID|SESSION[_-]?KEY|SESSION[_-]?TOKEN|JSESSIONID|PHPSESSID))\b\s*[:=]\s*"
-        r"[\"']?[^\s\"';]{8,}[\"']?"
-    ),
-)
-
-
-def redact_secrets(text: str) -> str:
-    """Replace well-known credential shapes with ``[REDACTED]``."""
-    if not text:
-        return text
-    redacted = text
-    for pattern in _SECRET_PATTERNS:
-        redacted = pattern.sub(REDACTION_PLACEHOLDER, redacted)
-    return redacted
 
 
 def bound_output(text: str, limit: int) -> str:
