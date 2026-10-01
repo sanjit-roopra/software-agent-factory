@@ -36,11 +36,13 @@ from software_agent_factory.dashboard.view import project_view
 from software_agent_factory.doctor import CheckResult, CheckStatus, DoctorReport
 from software_agent_factory.models import (
     AgentRole,
+    DashboardResumeRequest,
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
     InvocationRecord,
     ModelUsage,
+    PlanDecisionAnswer,
     ProjectExecution,
     ProjectState,
     ProjectTaskExecution,
@@ -635,6 +637,35 @@ def test_dashboard_detail_carries_the_configured_reopen_limit(
     assert isinstance(detail, RunDetail)
     assert detail.escalation is not None
     assert detail.escalation.reopen_max == 2
+
+
+def test_dashboard_resume_request_reader_returns_the_stored_requests_without_answers(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    _save_needs_human_run(data_dir, "run-queued", now)
+    FileRunStore(data_dir).create_dashboard_request(
+        "run-queued",
+        DashboardResumeRequest(
+            run_id="run-queued",
+            episode_id="ep-1",
+            context_fingerprint="a" * 64,
+            action=ResumeClassification.PLAN_DECISION,
+            answers=[PlanDecisionAnswer(decision_number=1, answer="private answer")],
+            created_at=now,
+        ),
+    )
+
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+    reader = fake_dashboard[0].config.resume_request_reader
+
+    requests = reader("run-queued", "ep-1")
+    assert [(r["action"], r["status"], r["context_fingerprint"]) for r in requests] == [
+        ("PLAN_DECISION", "pending", "a" * 64)
+    ]
+    assert "answers" not in requests[0]
+    assert "private answer" not in repr(requests)
+    assert reader("run-queued", "ep-2") == []
 
 
 @pytest.mark.parametrize(

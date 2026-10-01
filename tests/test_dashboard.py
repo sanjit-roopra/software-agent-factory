@@ -2093,6 +2093,95 @@ def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# Resume request reader: queued approvals reach the next step.
+# ---------------------------------------------------------------------------
+
+_FINGERPRINT = "f" * 64
+_QUEUED_REQUEST = {
+    "action": "RISK_APPROVAL",
+    "context_fingerprint": _FINGERPRINT,
+    "status": "pending",
+    "reason": None,
+    "created_at": "2026-10-01T09:30:00Z",
+}
+
+
+def _waiting_detail(run_id: str) -> dict[str, Any] | None:
+    if run_id != "run-001":
+        return None
+    return {
+        "run_id": "run-001",
+        "state": "NEEDS_HUMAN",
+        "escalation": {
+            "status": "NOTIFIED",
+            "reason_code": "RISK_APPROVAL",
+            "resume_classification": "RISK_APPROVAL",
+            "episode_id": "ep-1",
+            "context_fingerprint": _FINGERPRINT,
+            "reopen_count": 0,
+            "reopen_max": 3,
+            "reply_closed_cause": None,
+            "approval_scope": {
+                "decision_requested": "Approve it.",
+                "authorized_actions": ["Run agents."],
+                "unauthorized_actions": ["Change scope."],
+                "conditions_in_force": ["Gates stay on."],
+            },
+        },
+    }
+
+
+def _next_step_over_http(reader: Callable[[str, str], Any] | None) -> dict[str, Any]:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=_waiting_detail,
+            resume_request_reader=reader,
+        )
+    )
+    try:
+        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
+        assert response.status == 200
+        step: dict[str, Any] = _body_json(response)["next_step"]
+        return step
+    finally:
+        _stop(running)
+
+
+def test_a_queued_request_from_the_reader_makes_the_next_step_pending() -> None:
+    asked: list[tuple[str, str]] = []
+
+    def reader(run_id: str, episode_id: str) -> list[dict[str, Any]]:
+        asked.append((run_id, episode_id))
+        return [_QUEUED_REQUEST]
+
+    step = _next_step_over_http(reader)
+
+    assert step["kind"] == "approved_pending"
+    assert step["sentence"].startswith("Approved at 2026-10-01 09:30 UTC, queued")
+    assert asked == [("run-001", "ep-1")]
+
+
+def test_without_a_reader_the_next_step_is_the_normal_panel() -> None:
+    assert _next_step_over_http(None)["kind"] == "approve"
+
+
+def test_a_failing_reader_shows_the_normal_panel_and_logs_no_request_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def failing_reader(run_id: str, episode_id: str) -> list[dict[str, Any]]:
+        raise OSError("disk gone")
+
+    with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+        step = _next_step_over_http(failing_reader)
+
+    assert step["kind"] == "approve"
+    assert "Resume request reader failed for run run-001" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Log injection: request paths reach the log only after sanitisation.
 # ---------------------------------------------------------------------------
 

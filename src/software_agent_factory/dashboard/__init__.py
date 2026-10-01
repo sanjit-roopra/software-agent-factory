@@ -45,6 +45,7 @@ from .server import DashboardConfig, DashboardServer, create_server
 from .snapshot import (
     HealthProvider,
     ProjectProvider,
+    ResumeRequestReader,
     RunDetailProvider,
     SnapshotProvider,
     is_valid_run_id,
@@ -65,6 +66,7 @@ __all__ = [
     "ProjectProvider",
     "RUN_DETAIL_FIELDS",
     "RUN_SUMMARY_FIELDS",
+    "ResumeRequestReader",
     "RunDetailProvider",
     "SnapshotProvider",
     "TOKEN_HEADER",

@@ -2,7 +2,7 @@
 
 The dashboard never imports ``software_agent_factory.observability`` (which
 does not exist yet) or ``software_agent_factory.store`` directly. Instead it
-depends on two small callables supplied by whoever wires the dashboard up:
+depends on small callables supplied by whoever wires the dashboard up:
 
 ``SnapshotProvider``
     Called for ``/api/summary`` and ``/api/runs``. Expected to mirror the
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Iterable
 from typing import Any, Protocol
 
 #: Hard ceiling on requested page size, independent of what any caller asks
@@ -86,6 +87,19 @@ class ProjectProvider(Protocol):
     """Optional provider for bounded, dashboard-safe project summaries."""
 
     def __call__(self) -> Any: ...
+
+
+class ResumeRequestReader(Protocol):
+    """Optional provider of the dashboard resume requests of one episode.
+
+    Called for ``/api/runs/{run_id}`` with a run id and an episode id the
+    dashboard already validated. Read only: it returns the requests a person
+    queued from the page, each a dict (or model) with ``status``, ``reason``,
+    ``action``, ``context_fingerprint`` and ``created_at``. The dashboard reads
+    nothing else from a request, so an adapter should leave the answers out.
+    """
+
+    def __call__(self, run_id: str, episode_id: str) -> Iterable[Any]: ...
 
 
 #: The real ``build_monitoring_snapshot`` (``observability.py``) rejects

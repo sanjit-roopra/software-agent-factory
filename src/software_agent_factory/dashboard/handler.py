@@ -372,7 +372,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             # Same data-minimization guarantee as run summaries: only the
             # allowlisted detail/attempt fields ever leave this process, no
             # matter what the provider actually handed back.
-            sanitized = run_detail_view(detail)
+            sanitized = run_detail_view(detail, self._resume_requests)
         except TypeError:
             _logger.exception(
                 "Run detail provider returned unsanitizable data for run %s", raw_run_id
@@ -385,6 +385,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._respond_json(HTTPStatus.OK, sanitized, send_body)
+
+    def _resume_requests(self, run_id: str, episode_id: str) -> list[object]:
+        """The queued requests of one episode. A reader failure shows none and is logged."""
+        reader = self.server.resume_request_reader
+        if reader is None:
+            return []
+        try:
+            return list(reader(run_id, episode_id))
+        except Exception:  # noqa: BLE001 - a damaged request must not hide the run
+            _logger.exception("Resume request reader failed for run %s", run_id)
+            return []
 
     # -- response helpers -------------------------------------------------------
 

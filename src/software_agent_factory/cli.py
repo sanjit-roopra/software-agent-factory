@@ -1076,6 +1076,14 @@ def dashboard_command(
             allowed_hosts=factory_config.escalation.allowed_hosts,
         )
 
+    def resume_request_reader(run_id: str, episode_id: str) -> list[dict[str, object]]:
+        # Read only. The answers stay behind: the page shows when and whether a
+        # request was queued, never what was answered.
+        return [
+            request.model_dump(mode="json", exclude={"answers"})
+            for request in store.list_dashboard_requests(run_id, episode_id)
+        ]
+
     def health_provider() -> object:
         return build_operational_health(
             store,
@@ -1187,6 +1195,7 @@ def dashboard_command(
                 run_detail_provider=run_detail_provider,
                 health_provider=health_provider,
                 project_provider=project_provider,
+                resume_request_reader=resume_request_reader,
                 host=LOOPBACK_HOST,
                 port=port,
             )

@@ -9,6 +9,10 @@ Whether a reply can reach the run is not decided here. The escalation block carr
 ``reply_closed_cause``, which :func:`software_agent_factory.escalation_protocol.reply_closed_cause`
 computed from the stored record and the config. A block without it is treated as closed.
 
+A request the dashboard queued is read through the injected ``ResumeRequestReader``. Only its
+status, stale reason, action, context fingerprint and time are used; the answers in it are never
+read, so they cannot reach the page.
+
 The reply text must match the two parsers in :mod:`software_agent_factory.escalation`
 (``parse_resume_command`` and ``parse_plan_decision_answers``). The tests pin
 that round trip. A run id, episode id or fingerprint that could not survive the
@@ -18,6 +22,10 @@ parser is never put into a reply: the step becomes
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
@@ -48,16 +56,50 @@ FAILED_SENTENCE = "The run failed."
 CANNOT_CONTINUE = "This run cannot continue."
 
 ANSWER_PLACEHOLDER = "<answer>"
+START_HINT = "If factory start is not running, start it."
 
 #: The cause shown when the escalation block does not say whether a reply is open.
 UNKNOWN_REPLY_STATE = "the reply state is not known"
+#: The cause shown when the reopen count has reached its maximum. It is one of
+#: ``escalation_protocol.REPLY_CLOSED_CAUSES``; a test pins that.
+REOPEN_LIMIT_CAUSE = "the reopen limit is reached"
+
+#: One sentence per reason the service gave for refusing a dashboard request.
+STALE_SENTENCES: dict[str, str] = {
+    "expired": "approval expired, approve again",
+    "reopen_limit": "reopen limit reached, inspect with factory show",
+    "context_changed": "the run changed, review again",
+    "state_changed": "the run state changed, review again",
+}
+
+
+class NextStepKind(StrEnum):
+    """Every ``kind`` a next step can have: the one list the page and the tests share."""
+
+    NONE = "none"
+    CANNOT_CONTINUE = "cannot_continue"
+    REMOTE_APPROVAL_UNAVAILABLE = "remote_approval_unavailable"
+    APPROVE = "approve"
+    ANSWER = "answer"
+    APPROVED_PENDING = "approved_pending"
+
+
+@dataclass(frozen=True)
+class _Request:
+    """The few facts of a dashboard request the page may use. Never its answers."""
+
+    action: str
+    fingerprint: str
+    status: str
+    reason: str | None
+    created_at: datetime
 
 
 def _count_or_none(value: Any) -> int | None:
     return value if is_count(value) else None
 
 
-def _empty(kind: str) -> dict[str, Any]:
+def _empty(kind: NextStepKind) -> dict[str, Any]:
     return {
         "kind": kind,
         "sentence": None,
@@ -73,6 +115,8 @@ def _empty(kind: str) -> dict[str, Any]:
         "reply_text": None,
         "failure_reason": None,
         "failure_reason_truncated": False,
+        "requested_at": None,
+        "stale_sentence": None,
     }
 
 
@@ -85,7 +129,7 @@ def _reason_sentence(escalation: dict[str, Any]) -> str:
     )
 
 
-def _halt_step(kind: str, sentence: str, escalation: dict[str, Any]) -> dict[str, Any]:
+def _halt_step(kind: NextStepKind, sentence: str, escalation: dict[str, Any]) -> dict[str, Any]:
     """A step for a halted run: the facts every kind shows."""
     code = escalation.get("reason_code")
     resume_classification = escalation.get("resume_classification")
@@ -108,7 +152,7 @@ def _halt_step(kind: str, sentence: str, escalation: dict[str, Any]) -> dict[str
 def _cannot_continue(
     run: dict[str, Any], sentence: str, escalation: dict[str, Any]
 ) -> dict[str, Any]:
-    step = _halt_step("cannot_continue", f"{sentence} {CANNOT_CONTINUE}", escalation)
+    step = _halt_step(NextStepKind.CANNOT_CONTINUE, f"{sentence} {CANNOT_CONTINUE}", escalation)
     reason = run.get("failure_reason")
     if isinstance(reason, str) and reason:
         step["failure_reason"] = reason
@@ -121,7 +165,13 @@ def _unavailable(run: dict[str, Any], escalation: dict[str, Any], what: str) -> 
     sentence = (
         f"{_reason_sentence(escalation)} {what} Inspect the run with `factory show {target}`."
     )
-    return _halt_step("remote_approval_unavailable", sentence, escalation)
+    return _halt_step(NextStepKind.REMOTE_APPROVAL_UNAVAILABLE, sentence, escalation)
+
+
+def _reopens_exhausted(escalation: dict[str, Any]) -> bool:
+    used = _count_or_none(escalation.get("reopen_count"))
+    maximum = _count_or_none(escalation.get("reopen_max"))
+    return used is not None and maximum is not None and used >= maximum
 
 
 def _reply_closed_cause_or_unknown(escalation: dict[str, Any]) -> str | None:
@@ -130,11 +180,12 @@ def _reply_closed_cause_or_unknown(escalation: dict[str, Any]) -> str | None:
     The cause comes from :func:`software_agent_factory.escalation_protocol.reply_closed_cause`,
     computed with the config when the run detail is built. ``None`` means open. A block
     without that field, or with a value that is not ``None`` or a non-empty string, is
-    treated as closed, because the reply state is then unknown.
+    treated as closed, because the reply state is then unknown. An open reply is still
+    closed once the reopen count has reached its maximum.
     """
     cause = escalation.get("reply_closed_cause", UNKNOWN_REPLY_STATE)
     if cause is None:
-        return None
+        return REOPEN_LIMIT_CAUSE if _reopens_exhausted(escalation) else None
     return cause if isinstance(cause, str) and cause else UNKNOWN_REPLY_STATE
 
 
@@ -157,7 +208,7 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     if ids is None or not isinstance(scope, dict):
         return _unavailable(run, escalation, "Remote approval is not available.")
     run_id, episode_id, fingerprint = ids
-    step = _halt_step("approve", _reason_sentence(escalation), escalation)
+    step = _halt_step(NextStepKind.APPROVE, _reason_sentence(escalation), escalation)
     step.update(
         approval_scope=scope,
         episode_id=episode_id,
@@ -181,7 +232,7 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
         return _unavailable(run, escalation, "Remote answers are not available.")
     run_id, episode_id, fingerprint = ids
     template = [f"{n}. {ANSWER_PLACEHOLDER}" for n in range(1, len(questions) + 1)]
-    step = _halt_step("answer", _reason_sentence(escalation), escalation)
+    step = _halt_step(NextStepKind.ANSWER, _reason_sentence(escalation), escalation)
     step.update(
         decisions=[{"number": n, "question": q} for n, q in enumerate(questions, start=1)],
         episode_id=episode_id,
@@ -191,18 +242,106 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     return step
 
 
-def next_step(run: dict[str, Any]) -> dict[str, Any]:
-    """What the operator must do to continue ``run``, or ``kind == "none"``."""
+def _parsed_requests(raw: Iterable[Any]) -> list[_Request]:
+    """The requests that have the expected shape. Anything else is dropped."""
+    requests: list[_Request] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        status, reason = item.get("status"), item.get("reason")
+        created_at = _parse_time(item.get("created_at"))
+        if (
+            status not in ("pending", "stale")
+            or item.get("action") not in RESUME_CLASSIFICATIONS
+            or not is_context_fingerprint(item.get("context_fingerprint"))
+            or (status == "stale") != (reason in STALE_SENTENCES)
+            or created_at is None
+        ):
+            continue
+        requests.append(
+            _Request(
+                action=item["action"],
+                fingerprint=item["context_fingerprint"],
+                status=status,
+                reason=reason,
+                created_at=created_at,
+            )
+        )
+    return sorted(requests, key=lambda request: request.created_at)
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+def _queued_sentence(request: _Request) -> str:
+    moment = request.created_at.strftime("%Y-%m-%d %H:%M UTC")
+    if request.action == ResumeClassification.RISK_APPROVAL:
+        return f"Approved at {moment}, queued for the factory service. {START_HINT}"
+    return f"Answers sent at {moment}, queued for the factory service"
+
+
+def _queued_request(
+    requests: list[_Request], classification: Any, fingerprint: str
+) -> _Request | None:
+    """The pending request for this halt's action and context, if the dashboard queued one."""
+    for request in requests:
+        if (request.status, request.action, request.fingerprint) == (
+            "pending",
+            classification,
+            fingerprint,
+        ):
+            return request
+    return None
+
+
+def _resume_step(
+    run: dict[str, Any], escalation: dict[str, Any], requests: list[_Request]
+) -> dict[str, Any]:
+    """The step for a risk approval or plan decision halt, with any dashboard request."""
+    classification = escalation.get("resume_classification")
+    ids = _reply_ids(run, escalation)
+    queued = _queued_request(requests, classification, ids[2]) if ids is not None else None
+    if queued is not None:
+        step = _halt_step(NextStepKind.APPROVED_PENDING, _queued_sentence(queued), escalation)
+        step.update(
+            episode_id=escalation.get("episode_id"),
+            context_fingerprint=queued.fingerprint,
+            requested_at=queued.created_at.isoformat(),
+        )
+        return step
+    step = (
+        _approve(run, escalation)
+        if classification == ResumeClassification.RISK_APPROVAL
+        else _answer(run, escalation)
+    )
+    stale = [r for r in requests if r.status == "stale" and r.action == classification]
+    if stale:
+        step["stale_sentence"] = STALE_SENTENCES[str(stale[-1].reason)]
+    return step
+
+
+def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, Any]:
+    """What the operator must do to continue ``run``, or ``kind == "none"``.
+
+    ``requests`` are the dashboard requests of the run's current episode, oldest first.
+    """
     state = run.get("state")
     raw = run.get("escalation")
     escalation: dict[str, Any] = raw if isinstance(raw, dict) else {}
     if state == WorkflowState.FAILED:
         return _cannot_continue(run, FAILED_SENTENCE, {})
     if state != WorkflowState.NEEDS_HUMAN:
-        return _empty("none")
-    resume_classification = escalation.get("resume_classification")
-    if resume_classification == ResumeClassification.RISK_APPROVAL:
-        return _approve(run, escalation)
-    if resume_classification == ResumeClassification.PLAN_DECISION:
-        return _answer(run, escalation)
+        return _empty(NextStepKind.NONE)
+    if escalation.get("resume_classification") in (
+        ResumeClassification.RISK_APPROVAL,
+        ResumeClassification.PLAN_DECISION,
+    ):
+        return _resume_step(run, escalation, _parsed_requests(requests))
     return _cannot_continue(run, _reason_sentence(escalation), escalation)

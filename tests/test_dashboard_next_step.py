@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ from software_agent_factory.dashboard import sanitize
 from software_agent_factory.dashboard.next_step import (
     FALLBACK_SENTENCE,
     REASON_SENTENCES,
+    REOPEN_LIMIT_CAUSE,
+    STALE_SENTENCES,
+    NextStepKind,
     next_step,
 )
 from software_agent_factory.dashboard.sanitize import (
@@ -321,10 +325,25 @@ def test_a_malformed_reply_state_is_treated_as_closed(cause: Any) -> None:
     assert approve["reply_text"] is answer["reply_text"] is None
 
 
-def test_an_open_reply_is_offered_whatever_the_reopen_numbers_show() -> None:
-    # The reopen limit is the factory's call (``reply_closed_cause``), not the page's.
-    assert next_step(_risk_run(reopen_count=5, reopen_max=3))["kind"] == "approve"
+def test_the_action_is_hidden_once_the_reopen_limit_is_reached() -> None:
+    for used in (3, 5):
+        approve = next_step(_risk_run(reopen_count=used, reopen_max=3))
+        answer = next_step(_plan_run(reopen_count=used, reopen_max=3))
+
+        assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
+        assert approve["reply_text"] is answer["reply_text"] is None
+        assert "because the reopen limit is reached." in approve["sentence"]
+        assert "because the reopen limit is reached." in answer["sentence"]
+        assert f"factory show {RUN_ID}" in approve["sentence"]
+
+
+def test_the_action_stays_while_a_reopen_is_left_or_the_numbers_are_unknown() -> None:
+    assert next_step(_risk_run(reopen_count=2, reopen_max=3))["kind"] == "approve"
     assert next_step(_plan_run(reopen_count=None, reopen_max=None))["kind"] == "answer"
+
+
+def test_the_reopen_limit_phrase_is_one_the_factory_reports() -> None:
+    assert REOPEN_LIMIT_CAUSE in REPLY_CLOSED_CAUSES
 
 
 @pytest.mark.parametrize(
@@ -629,3 +648,198 @@ def test_sanitize_does_not_import_next_step_and_next_step_does_not_redact() -> N
 
     assert not {name for name in imported(sanitize) if "next_step" in name}
     assert not {name for name in imported(next_step_module) if "redaction" in name}
+
+
+# ---- Dashboard requests: queued and stale ------------------------------------------
+
+REQUESTED_AT = "2026-10-01T09:30:00Z"
+QUEUED_AT = "2026-10-01 09:30 UTC"
+START_HINT = "If factory start is not running, start it."
+
+
+def _request(
+    action: str = "RISK_APPROVAL",
+    *,
+    status: str = "pending",
+    reason: str | None = None,
+    fingerprint: str = FINGERPRINT,
+    created_at: str = REQUESTED_AT,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "action": action,
+        "context_fingerprint": fingerprint,
+        "status": status,
+        "reason": reason,
+        "created_at": created_at,
+        **extra,
+    }
+
+
+def test_a_pending_approval_shows_when_it_was_queued_and_how_to_start_the_service() -> None:
+    step = next_step(_risk_run(), [_request()])
+
+    assert step["kind"] == "approved_pending"
+    assert (
+        step["sentence"] == f"Approved at {QUEUED_AT}, queued for the factory service. {START_HINT}"
+    )
+    assert step["requested_at"] == "2026-10-01T09:30:00+00:00"
+    assert step["stale_sentence"] is None
+    assert (step["episode_id"], step["context_fingerprint"]) == (EPISODE_ID, FINGERPRINT)
+    assert step["approval_scope"] is None
+    assert step["reply_text"] is None
+
+
+def test_pending_plan_answers_use_their_own_wording() -> None:
+    step = next_step(_plan_run(), [_request("PLAN_DECISION")])
+
+    assert step["kind"] == "approved_pending"
+    assert step["sentence"] == f"Answers sent at {QUEUED_AT}, queued for the factory service"
+    assert step["decisions"] == []
+
+
+def test_the_queued_time_is_shown_in_utc_whatever_offset_the_store_wrote() -> None:
+    step = next_step(_risk_run(), [_request(created_at="2026-10-01T11:30:00+02:00")])
+
+    assert QUEUED_AT in step["sentence"]
+
+
+def test_a_pending_request_still_shows_when_the_reply_is_closed() -> None:
+    run = _risk_run(reply_closed_cause="the reply window expired", reopen_count=3)
+
+    assert next_step(run, [_request()])["kind"] == "approved_pending"
+
+
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("expired", "approval expired, approve again"),
+        ("reopen_limit", "reopen limit reached, inspect with factory show"),
+        ("context_changed", "the run changed, review again"),
+        ("state_changed", "the run state changed, review again"),
+    ],
+)
+def test_a_stale_request_adds_its_reason_to_the_normal_panel(reason: str, sentence: str) -> None:
+    step = next_step(_risk_run(), [_request(status="stale", reason=reason)])
+
+    assert step["kind"] == "approve"
+    assert step["stale_sentence"] == sentence
+    assert step["requested_at"] is None
+    assert step["approval_scope"] == SCOPE
+
+
+def test_every_stale_reason_has_a_sentence() -> None:
+    assert set(STALE_SENTENCES) == {"expired", "reopen_limit", "context_changed", "state_changed"}
+
+
+def test_a_stale_request_for_an_old_context_still_explains_the_new_panel() -> None:
+    old = _request(status="stale", reason="context_changed", fingerprint="a" * 64)
+
+    step = next_step(_plan_run(), [{**old, "action": "PLAN_DECISION"}])
+
+    assert step["kind"] == "answer"
+    assert step["stale_sentence"] == "the run changed, review again"
+
+
+def test_the_newest_stale_request_wins() -> None:
+    older = _request(status="stale", reason="expired", created_at="2026-10-01T08:00:00Z")
+    newer = _request(
+        status="stale", reason="context_changed", fingerprint="a" * 64, created_at=REQUESTED_AT
+    )
+
+    step = next_step(_risk_run(), [newer, older])
+
+    assert step["stale_sentence"] == STALE_SENTENCES["context_changed"]
+
+
+def test_a_pending_request_for_another_context_or_action_does_not_count() -> None:
+    other_context = _request(fingerprint="a" * 64)
+    other_action = _request("PLAN_DECISION")
+
+    for request in (other_context, other_action):
+        step = next_step(_risk_run(), [request])
+
+        assert step["kind"] == "approve"
+        assert step["stale_sentence"] is None
+
+
+def test_without_a_request_the_step_has_no_queued_fields() -> None:
+    step = next_step(_risk_run())
+
+    assert step["kind"] == "approve"
+    assert (step["requested_at"], step["stale_sentence"]) == (None, None)
+
+
+def test_no_request_matters_without_a_valid_context() -> None:
+    step = next_step(_risk_run(context_fingerprint="short"), [_request(fingerprint="short")])
+
+    assert step["kind"] == "remote_approval_unavailable"
+
+
+def test_a_request_never_changes_a_run_that_is_not_waiting() -> None:
+    step = next_step(_run("IMPLEMENTING"), [_request()])
+
+    assert step["kind"] == "none"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not a dict",
+        _request(status="done"),
+        _request("OTHER"),
+        _request(fingerprint="short"),
+        _request(status="stale", reason=None),
+        _request(status="stale", reason="bogus"),
+        _request(reason="expired"),
+        _request(created_at="yesterday"),
+        _request(created_at="2026-10-01T09:30:00"),
+        _request(created_at=5),
+    ],
+)
+def test_a_malformed_request_is_ignored(bad: Any) -> None:
+    step = next_step(_risk_run(), [bad])
+
+    assert step["kind"] == "approve"
+    assert step["stale_sentence"] is None
+
+
+def test_the_answers_of_a_request_never_reach_the_step() -> None:
+    answers = [{"decision_number": 1, "answer": "use the secret plan"}]
+
+    step = next_step(_plan_run(), [_request("PLAN_DECISION", answers=answers)])
+
+    assert "secret plan" not in repr(step)
+
+
+def test_the_view_asks_only_a_waiting_run_with_a_valid_episode_for_requests() -> None:
+    asked: list[tuple[str, str]] = []
+
+    def requests_for(run_id: str, episode_id: str) -> list[dict[str, Any]]:
+        asked.append((run_id, episode_id))
+        return [_request()]
+
+    waiting = run_detail_view(_risk_run(), requests_for)
+    active = run_detail_view(_run("IMPLEMENTING"), requests_for)
+    no_episode = run_detail_view(_risk_run(episode_id="ep one"), requests_for)
+
+    assert waiting["next_step"]["kind"] == "approved_pending"
+    assert active["next_step"]["kind"] == "none"
+    assert no_episode["next_step"]["kind"] == "remote_approval_unavailable"
+    assert asked == [(RUN_ID, EPISODE_ID)]
+
+
+def test_the_view_without_a_reader_shows_the_normal_panel() -> None:
+    assert run_detail_view(_risk_run())["next_step"]["kind"] == "approve"
+
+
+def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
+    assert [kind.value for kind in NextStepKind] == [
+        "none",
+        "cannot_continue",
+        "remote_approval_unavailable",
+        "approve",
+        "answer",
+        "approved_pending",
+    ]
+    assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'
