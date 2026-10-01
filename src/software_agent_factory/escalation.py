@@ -25,6 +25,7 @@ import secrets
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from .config import FactoryConfig
 from .escalation_protocol import (
@@ -44,6 +45,7 @@ from .github import (
     parse_pull_request_url,
 )
 from .models import (
+    REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
     EscalationRecord,
     EscalationStatus,
@@ -63,6 +65,17 @@ from .models import (
     WorkItem,
     utc_now,
 )
+from .resume import (
+    ReplyIdentity,
+    accept_resume,
+    build_plan_answers,
+    compute_approval_context_fingerprint,
+    compute_plan_decision_context_fingerprint,
+    contains_unsafe_content,
+    resume_refusal,
+)
+from .resume import is_valid_plan_decision_context as is_valid_plan_decision_context
+from .resume import is_valid_risk_approval_context as is_valid_risk_approval_context
 from .store import FileRunStore
 from .verification import redact_secrets
 
@@ -86,51 +99,7 @@ class EscalationComment(str):
         return instance
 
 
-# Absolute, network, and system file system paths
-_ABSOLUTE_OR_NETWORK_PATH_PATTERN = re.compile(
-    r"(?i)"
-    r"(?:(?<![A-Za-z0-9.~/@\\<])(?<!&lt;)/(?:[A-Za-z0-9_.-]+)[^\s\"'`>)]*)"
-    r"|(?:(?<![A-Za-z0-9_.-])~[\\/][^\s\"'`>)]+)"
-    r"|(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'`>)]*)"
-    r"|(?:(?<![A-Za-z0-9_.-])\\\\[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
-    r"|(?:(?<![A-Za-z0-9_.:])//[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
-)
-
-# Credentials embedded in URLs
-_URL_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@[^\s/]+"
-    r"|\b[a-z][a-z0-9+.-]*://[^/\s@]+@[^\s/]+"
-)
-
-# Tokens, API keys, credentials, and private keys
-_TOKEN_AND_KEY_PATTERN = re.compile(
-    r"(?i)\bxox[baprse]-[0-9A-Za-z-]{10,}\b"
-    r"|\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,})\b"
-    r"|\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b"
-    r"|\bsk-(?:proj-|ant-)?[0-9a-zA-Z_-]{20,}\b"
-    r"|\b(?:authorization|proxy[_-]?authorization)\s*[:=]\s*[^\r\n]+"
-    r"|\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\s*[:=]\s*[^\r\n]+"
-    r"|\bBearer\s+[A-Za-z0-9_.\-/+=]{20,}"
-    r"|\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"
-    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
-    r"|\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|session[_-]?id|session[_-]?token|session[_-]?key)\s*[:=]\s*['\"]?[A-Za-z0-9_.-]{8,}"
-    r"|-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----"
-)
-
-# External URLs (http, https, ftp) and bare www. domains
-_EXTERNAL_URL_PATTERN = re.compile(
-    r"(?i)\b(?:https?|ftp)://[^\s\"'`<>)]+"
-    r"|\bwww\.[A-Za-z0-9_.-]+\.[A-Za-z]{2,}[^\s\"'`<>)]*"
-)
-
-# Raw diagnostics / stack traces / diff output
-_RAW_DIAGNOSTIC_PATTERN = re.compile(
-    r"(?i)(?:traceback \(most recent call last\)|subprocess\.calledprocesserror|"
-    r"file \"[^\"]+\", line \d+|diff --git|@@ -\d+,\d+ \+\d+,\d+ @@|\+[A-Z0-9_]+=[^\s]+)"
-)
-
 _NUMBERED_ANSWER_PATTERN = re.compile(r"^(?P<number>[1-9][0-9]?)\.\s+(?P<answer>\S.*)$")
-MAX_PLAN_DECISION_ANSWER_CHARS = 500
 
 _ESCALATION_MARKER_TEMPLATE = (
     "<!-- software-agent-factory:escalation run={run_id} episode={episode_id} -->"
@@ -174,18 +143,15 @@ def parse_plan_decision_answers(
     header = ANSWER_COMMAND_PATTERN.fullmatch(lines[0])
     if header is None:
         return None
-    answers: list[PlanDecisionAnswer] = []
+    texts: list[str] = []
     for expected_number, line in enumerate(lines[1:], start=1):
         match = _NUMBERED_ANSWER_PATTERN.fullmatch(line)
         if match is None or int(match.group("number")) != expected_number:
             return None
-        answer = match.group("answer").strip()
-        if len(answer) > MAX_PLAN_DECISION_ANSWER_CHARS:
-            return None
-        is_unsafe, _ = contains_unsafe_content(answer)
-        if is_unsafe:
-            return None
-        answers.append(PlanDecisionAnswer(decision_number=expected_number, answer=answer))
+        texts.append(match.group("answer"))
+    answers = build_plan_answers(texts, decision_count=decision_count)
+    if answers is None:
+        return None
     return header.group("run"), header.group("episode"), answers
 
 
@@ -222,70 +188,6 @@ def escape_notice_text(text: str) -> str:
     escaped = re.sub(r"(?i)\b(https?|ftp)://", r"\1&#58;&#47;&#47;", escaped)
     escaped = re.sub(r"(?i)\bwww\.", "www&#46;", escaped)
     return escaped
-
-
-def contains_unsafe_content(text: str) -> tuple[bool, str]:
-    """Check whether text contains paths, embedded credentials, tokens, URLs, or diagnostics."""
-    if not text:
-        return False, ""
-    if _URL_CREDENTIAL_PATTERN.search(text):
-        return True, "contains URL-embedded credentials"
-    if _EXTERNAL_URL_PATTERN.search(text):
-        return True, "contains external URL or link"
-    if _TOKEN_AND_KEY_PATTERN.search(text):
-        return True, "contains token or credential"
-    if _ABSOLUTE_OR_NETWORK_PATH_PATTERN.search(text):
-        return True, "contains local or network file system path"
-    if _RAW_DIAGNOSTIC_PATTERN.search(text):
-        return True, "contains raw diagnostic or diff output"
-    return False, ""
-
-
-def compute_approval_context_fingerprint(
-    *,
-    run_id: str,
-    episode_id: str,
-    work_item_id: str,
-    work_item_title: str,
-    risk: str,
-    complexity: str,
-    intended_outcome: str,
-    sensitive_boundary: str,
-    necessity: str,
-    credible_scenario: str,
-    known_mitigations: Sequence[str],
-    residual_risk: str,
-    decision_requested: str,
-    next_state: str,
-    authorized_actions: Sequence[str],
-    unauthorized_actions: Sequence[str],
-    conditions_in_force: Sequence[str],
-) -> str:
-    """Compute deterministic SHA-256 binding displayed and authority fields to episode."""
-    payload = json.dumps(
-        {
-            "run_id": run_id,
-            "episode_id": episode_id,
-            "work_item_id": work_item_id,
-            "work_item_title": work_item_title,
-            "risk": risk,
-            "complexity": complexity,
-            "intended_outcome": intended_outcome,
-            "sensitive_boundary": sensitive_boundary,
-            "necessity": necessity,
-            "credible_scenario": credible_scenario,
-            "known_mitigations": list(known_mitigations),
-            "residual_risk": residual_risk,
-            "decision_requested": decision_requested,
-            "next_state": next_state,
-            "authorized_actions": list(authorized_actions),
-            "unauthorized_actions": list(unauthorized_actions),
-            "conditions_in_force": list(conditions_in_force),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def build_risk_approval_context(
@@ -405,26 +307,6 @@ def build_risk_approval_context(
         "Approval does not reset run history or attempt budgets.",
     ]
 
-    fingerprint = compute_approval_context_fingerprint(
-        run_id=run.id,
-        episode_id=current_episode_id,
-        work_item_id=clean_id,
-        work_item_title=clean_title,
-        risk=triage_result.risk.value,
-        complexity=triage_result.complexity.value,
-        intended_outcome=clean_outcome,
-        sensitive_boundary=clean_boundary,
-        necessity=clean_necessity,
-        credible_scenario=clean_scenario,
-        known_mitigations=clean_mitigations,
-        residual_risk=clean_residual,
-        decision_requested=decision_requested,
-        next_state=WorkflowState.REFINING.value,
-        authorized_actions=authorized_actions,
-        unauthorized_actions=unauthorized_actions,
-        conditions_in_force=conditions_in_force,
-    )
-
     clean_rationale = RiskRationale(
         intended_outcome=clean_outcome,
         sensitive_boundary=clean_boundary,
@@ -432,6 +314,21 @@ def build_risk_approval_context(
         credible_scenario=clean_scenario,
         known_mitigations=clean_mitigations,
         residual_risk=clean_residual,
+    )
+
+    fingerprint = compute_approval_context_fingerprint(
+        run_id=run.id,
+        episode_id=current_episode_id,
+        work_item_id=clean_id,
+        work_item_title=clean_title,
+        risk=triage_result.risk.value,
+        complexity=triage_result.complexity.value,
+        rationale=clean_rationale,
+        decision_requested=decision_requested,
+        next_state=WorkflowState.REFINING.value,
+        authorized_actions=authorized_actions,
+        unauthorized_actions=unauthorized_actions,
+        conditions_in_force=conditions_in_force,
     )
 
     return RiskApprovalContext(
@@ -447,61 +344,6 @@ def build_risk_approval_context(
         conditions_in_force=conditions_in_force,
         context_fingerprint=fingerprint,
     )
-
-
-def is_valid_risk_approval_context(
-    context: RiskApprovalContext | None,
-    run_id: str,
-    episode_id: str,
-) -> bool:
-    """Verify that an approval context is complete, safe, and bound to this run and episode."""
-    if not isinstance(context, RiskApprovalContext):
-        return False
-    if context.risk not in {Risk.R2, Risk.R3}:
-        return False
-    if context.next_state is not WorkflowState.REFINING:
-        return False
-
-    rationale = context.risk_rationale
-    fields = [
-        context.work_item_id,
-        context.work_item_title,
-        context.decision_requested,
-        rationale.intended_outcome,
-        rationale.sensitive_boundary,
-        rationale.necessity,
-        rationale.credible_scenario,
-        *rationale.known_mitigations,
-        rationale.residual_risk,
-        *context.authorized_actions,
-        *context.unauthorized_actions,
-        *context.conditions_in_force,
-    ]
-    for field_val in fields:
-        is_unsafe, _ = contains_unsafe_content(field_val)
-        if is_unsafe:
-            return False
-
-    expected_fp = compute_approval_context_fingerprint(
-        run_id=run_id,
-        episode_id=episode_id,
-        work_item_id=context.work_item_id,
-        work_item_title=context.work_item_title,
-        risk=context.risk.value,
-        complexity=context.complexity.value,
-        intended_outcome=rationale.intended_outcome,
-        sensitive_boundary=rationale.sensitive_boundary,
-        necessity=rationale.necessity,
-        credible_scenario=rationale.credible_scenario,
-        known_mitigations=rationale.known_mitigations,
-        residual_risk=rationale.residual_risk,
-        decision_requested=context.decision_requested,
-        next_state=context.next_state.value,
-        authorized_actions=context.authorized_actions,
-        unauthorized_actions=context.unauthorized_actions,
-        conditions_in_force=context.conditions_in_force,
-    )
-    return secrets.compare_digest(context.context_fingerprint, expected_fp)
 
 
 def receipt_approves_risk_context(
@@ -594,27 +436,6 @@ def _execution_plan_fingerprint(plan: ExecutionPlan) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def compute_plan_decision_context_fingerprint(
-    *,
-    run_id: str,
-    episode_id: str,
-    plan_fingerprint: str,
-    decisions: Sequence[str],
-) -> str:
-    """Bind a numbered decision set to one run and escalation episode."""
-    payload = json.dumps(
-        {
-            "run_id": run_id,
-            "episode_id": episode_id,
-            "plan_fingerprint": plan_fingerprint,
-            "decisions": list(decisions),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def build_plan_decision_context(
     run: FactoryRun,
     store: FileRunStore,
@@ -647,27 +468,6 @@ def build_plan_decision_context(
     )
 
 
-def is_valid_plan_decision_context(
-    context: PlanDecisionContext | None,
-    run_id: str,
-    episode_id: str,
-) -> bool:
-    """Verify an answerable decision context is safe and bound to its episode."""
-    if not isinstance(context, PlanDecisionContext):
-        return False
-    if not 1 <= len(context.decisions) <= MAX_PLAN_DECISIONS:
-        return False
-    if any(not value or contains_unsafe_content(value)[0] for value in context.decisions):
-        return False
-    expected = compute_plan_decision_context_fingerprint(
-        run_id=run_id,
-        episode_id=episode_id,
-        plan_fingerprint=context.plan_fingerprint,
-        decisions=context.decisions,
-    )
-    return secrets.compare_digest(context.context_fingerprint, expected)
-
-
 def is_valid_plan_decision_answers(
     answers: PlanDecisionAnswers | None,
     context: PlanDecisionContext,
@@ -682,6 +482,7 @@ def is_valid_plan_decision_answers(
     if (
         answers.run_id != run_id
         or answers.episode_id != episode_id
+        or answers.source != receipt.source
         or answers.comment_id != receipt.comment_id
         or answers.user_login != receipt.user_login
         or answers.user_id != receipt.user_id
@@ -697,14 +498,10 @@ def is_valid_plan_decision_answers(
         )
     ):
         return False
-    if len(answers.answers) != len(context.decisions):
-        return False
-    return all(
-        answer.decision_number == index
-        and bool(answer.answer)
-        and not contains_unsafe_content(answer.answer)[0]
-        for index, answer in enumerate(answers.answers, start=1)
+    rebuilt = build_plan_answers(
+        [answer.answer for answer in answers.answers], decision_count=len(context.decisions)
     )
+    return rebuilt == answers.answers
 
 
 def classify_halt_reason(
@@ -1276,7 +1073,7 @@ def deliver_escalation_notification(
                 update={
                     "status": EscalationStatus.NOTIFICATION_FAILED,
                     "remote_resume_enabled": False,
-                    "reply_cursor": "closed",
+                    "reply_cursor": REPLY_CURSOR_CLOSED,
                     "updated_at": utc_now(),
                 }
             )
@@ -1297,7 +1094,7 @@ def deliver_escalation_notification(
                 "delivery_error": "no valid escalation target resolved",
                 "status": EscalationStatus.NOTIFICATION_FAILED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "updated_at": utc_now(),
             }
         )
@@ -1328,7 +1125,7 @@ def deliver_escalation_notification(
     )
     comment_body = str(rendered_notice)
     remote_resume_enabled = getattr(rendered_notice, "remote_resume_enabled", False)
-    reply_cursor = None if remote_resume_enabled else "closed"
+    reply_cursor = None if remote_resume_enabled else REPLY_CURSOR_CLOSED
 
     factory_login: str | None = None
     factory_id: int | None = None
@@ -1424,7 +1221,7 @@ def deliver_escalation_notification(
                 ),
                 "status": EscalationStatus.NOTIFICATION_FAILED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "last_notified_at": None,
                 "updated_at": utc_now(),
             }
@@ -1448,7 +1245,7 @@ def deliver_escalation_notification(
                 ),
                 "status": EscalationStatus.NOTIFICATION_FAILED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "last_notified_at": None,
                 "updated_at": utc_now(),
             }
@@ -1504,7 +1301,7 @@ def deliver_escalation_notification(
                 "remote_resume_enabled": (
                     False if is_terminal else escalation.remote_resume_enabled
                 ),
-                "reply_cursor": "closed" if is_terminal else escalation.reply_cursor,
+                "reply_cursor": REPLY_CURSOR_CLOSED if is_terminal else escalation.reply_cursor,
                 "updated_at": utc_now(),
             }
         )
@@ -1611,7 +1408,10 @@ def validate_reply_candidate(
         return ValidationResult(False, "plan decision reply is missing validated answers")
 
     # Replay check
-    if any(receipt.comment_id == comment.id for receipt in escalation.accepted_replies):
+    if any(
+        receipt.source == "github" and receipt.comment_id == comment.id
+        for receipt in escalation.accepted_replies
+    ):
         return ValidationResult(False, f"comment {comment.id} has already been accepted")
 
     # Target host check
@@ -1701,6 +1501,81 @@ def validate_reply_candidate(
     return ValidationResult(True, "valid")
 
 
+def _pollable_escalation(run: FactoryRun) -> EscalationRecord | None:
+    """The escalation of a run that is waiting for a reply, or ``None``."""
+    if run.state is not WorkflowState.NEEDS_HUMAN:
+        return None
+    escalation = run.escalation
+    if escalation is None or escalation.status is not EscalationStatus.NOTIFIED:
+        return None
+    if escalation.last_notified_at is None:
+        return None
+    return escalation
+
+
+def _save_poll_update_if_unchanged(
+    store: FileRunStore, run_id: str, seen: EscalationRecord, update: dict[str, Any]
+) -> None:
+    """Apply ``update`` to the stored escalation, unless it moved on since the poll read it.
+
+    The poller works on a copy of the run. If the dashboard path reopened the run, or the
+    episode or cursor changed, since that copy was read, saving it would undo that work, so
+    nothing is saved.
+    """
+    stored = store.load_run(run_id)
+    current = stored.escalation
+    if current is None or (current.status, current.episode_id, current.reply_cursor) != (
+        seen.status,
+        seen.episode_id,
+        seen.reply_cursor,
+    ):
+        return
+    store.save_run(stored.model_copy(update={"escalation": current.model_copy(update=update)}))
+
+
+def _cursor_json(page: int, since: datetime, last_id: int | None) -> str:
+    return json.dumps({"page": page, "since": since.isoformat(), "last_id": last_id})
+
+
+def _accept_valid_reply(
+    run: FactoryRun,
+    store: FileRunStore,
+    config: FactoryConfig,
+    escalation: EscalationRecord,
+    comment: GitHubComment,
+    now: datetime,
+) -> AcceptedReplyReceipt | None:
+    """Record a reply that passed validation, with its plan answers when it carries any.
+
+    ``None`` means the stored run no longer accepts a reply.
+    """
+    plan_answers: list[PlanDecisionAnswer] | None = None
+    if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+        context = escalation.plan_decision_context
+        assert context is not None
+        parsed_plan_reply = parse_plan_decision_answers(
+            comment.body, decision_count=len(context.decisions)
+        )
+        if parsed_plan_reply is None:
+            raise ValueError("validated plan decision reply could not be parsed")
+        _, _, plan_answers = parsed_plan_reply
+    return accept_resume(
+        run,
+        store,
+        config,
+        reply=ReplyIdentity(
+            source="github",
+            comment_id=comment.id,
+            user_login=comment.user_login,
+            user_id=comment.user_id,
+            author_association=comment.author_association,
+            created_at=comment.created_at,
+        ),
+        answers=plan_answers,
+        now=now,
+    )
+
+
 def poll_escalation_reply(
     run: FactoryRun,
     store: FileRunStore,
@@ -1718,21 +1593,18 @@ def poll_escalation_reply(
     missing comments and avoid unbounded scans. If a valid reply is found,
     records the decision receipt on the run and persists it to disk before returning.
     """
-    if not config.escalation.enabled:
+    if not config.escalation.enabled or _pollable_escalation(run) is None:
         return None
 
-    if run.state is not WorkflowState.NEEDS_HUMAN:
-        return None
-
-    escalation = run.escalation
-    if escalation is None or escalation.status is not EscalationStatus.NOTIFIED:
-        return None
-
-    if escalation.last_notified_at is None:
-        return None
+    # The caller's run may be older than the stored one (the dashboard path can have reopened
+    # it). Work from the stored run and save only through _save_poll_update_if_unchanged.
+    run = store.load_run(run.id)
+    escalation = _pollable_escalation(run)
+    if escalation is None or escalation.last_notified_at is None:
+        return None  # the stored run no longer waits for a reply
     notified_at = escalation.last_notified_at
 
-    if escalation.reply_cursor == "closed":
+    if escalation.reply_cursor == REPLY_CURSOR_CLOSED:
         return None
 
     target_repo = escalation.target_repository
@@ -1741,55 +1613,32 @@ def poll_escalation_reply(
         return None
 
     current_time = now or utc_now()
-    valid_resume_context = (
-        escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-        and escalation.approval_context is not None
-        and is_valid_risk_approval_context(
-            escalation.approval_context, run.id, escalation.episode_id
-        )
-    ) or (
-        escalation.resume_classification is ResumeClassification.PLAN_DECISION
-        and escalation.plan_decision_context is not None
-        and is_valid_plan_decision_context(
-            escalation.plan_decision_context, run.id, escalation.episode_id
-        )
-    )
-    if not escalation.remote_resume_enabled or not valid_resume_context:
-        escalation = escalation.model_copy(
-            update={
+    refusal = resume_refusal(run, config, current_time)
+    if not escalation.remote_resume_enabled or refusal in {"context_changed", "reopen_limit"}:
+        _save_poll_update_if_unchanged(
+            store,
+            run.id,
+            escalation,
+            {
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "updated_at": current_time,
-            }
+            },
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return None
 
-    window_deadline = escalation.created_at + timedelta(hours=config.escalation.reply_window_hours)
-    if current_time > window_deadline:
-        escalation = escalation.model_copy(
-            update={
+    if refusal == "expired":
+        _save_poll_update_if_unchanged(
+            store,
+            run.id,
+            escalation,
+            {
                 "status": EscalationStatus.EXPIRED,
                 "remote_resume_enabled": False,
-                "reply_cursor": "closed",
+                "reply_cursor": REPLY_CURSOR_CLOSED,
                 "updated_at": current_time,
-            }
+            },
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
-        return None
-
-    if escalation.reopen_count >= config.escalation.max_reopens:
-        escalation = escalation.model_copy(
-            update={
-                "remote_resume_enabled": False,
-                "reply_cursor": "closed",
-                "updated_at": current_time,
-            }
-        )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return None
 
     target_host = notice_host(escalation, config.escalation.allowed_hosts)
@@ -1819,7 +1668,7 @@ def poll_escalation_reply(
     cursor_page = 1
     cursor_since: datetime = notified_at
     cursor_last_id: int | None = None
-    if escalation.reply_cursor and escalation.reply_cursor != "closed":
+    if escalation.reply_cursor and escalation.reply_cursor != REPLY_CURSOR_CLOSED:
         try:
             cursor_data = json.loads(escalation.reply_cursor)
             if isinstance(cursor_data, dict):
@@ -1856,13 +1705,7 @@ def poll_escalation_reply(
             break
 
         if not comments:
-            next_cursor = json.dumps(
-                {
-                    "page": 1,
-                    "since": latest_timestamp.isoformat(),
-                    "last_id": latest_id,
-                }
-            )
+            next_cursor = _cursor_json(1, latest_timestamp, latest_id)
             break
 
         retryable_stopped = False
@@ -1885,67 +1728,13 @@ def poll_escalation_reply(
                 now=current_time,
             )
             if result.is_valid:
-                plan_answers: list[PlanDecisionAnswer] | None = None
-                if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-                    context = escalation.plan_decision_context
-                    assert context is not None
-                    parsed_plan_reply = parse_plan_decision_answers(
-                        comment.body, decision_count=len(context.decisions)
-                    )
-                    if parsed_plan_reply is None:
-                        raise ValueError("validated plan decision reply could not be parsed")
-                    _, _, plan_answers = parsed_plan_reply
-                app_fp = (
-                    escalation.approval_context.context_fingerprint
-                    if (
-                        escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-                        and escalation.approval_context is not None
-                    )
-                    else None
+                accepted_receipt = _accept_valid_reply(
+                    run, store, config, escalation, comment, current_time
                 )
-                plan_decision_fp = (
-                    escalation.plan_decision_context.context_fingerprint
-                    if (
-                        escalation.resume_classification is ResumeClassification.PLAN_DECISION
-                        and escalation.plan_decision_context is not None
-                    )
-                    else None
-                )
-                accepted_receipt = AcceptedReplyReceipt(
-                    comment_id=comment.id,
-                    user_login=comment.user_login,
-                    user_id=comment.user_id,
-                    author_association=comment.author_association,
-                    created_at=comment.created_at,
-                    accepted_at=current_time,
-                    command=(
-                        format_resume_command(run.id, escalation.episode_id)
-                        if escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-                        else format_answer_command(run.id, escalation.episode_id)
-                    ),
-                    episode_id=escalation.episode_id,
-                    run_id=run.id,
-                    approval_context_fingerprint=app_fp,
-                    plan_decision_context_fingerprint=plan_decision_fp,
-                )
-                if plan_answers is not None:
-                    context = escalation.plan_decision_context
-                    assert context is not None
-                    store.save_artifact(
-                        run.id,
-                        PlanDecisionAnswers(
-                            run_id=run.id,
-                            episode_id=escalation.episode_id,
-                            plan_fingerprint=context.plan_fingerprint,
-                            context_fingerprint=context.context_fingerprint,
-                            comment_id=comment.id,
-                            user_login=comment.user_login,
-                            user_id=comment.user_id,
-                            author_association=comment.author_association,
-                            answers=plan_answers,
-                            accepted_at=current_time,
-                        ),
-                    )
+                if accepted_receipt is None:
+                    # The stored run no longer accepts a reply (the dashboard path got there
+                    # first). Saving this snapshot's cursor would overwrite its work.
+                    return None
                 break
 
             if getattr(result, "retryable", False):
@@ -1966,54 +1755,23 @@ def poll_escalation_reply(
 
         if accepted_receipt is not None or retryable_stopped:
             if retryable_stopped and latest_timestamp is not None:
-                next_cursor = json.dumps(
-                    {
-                        "page": 1,
-                        "since": latest_timestamp.isoformat(),
-                        "last_id": latest_id,
-                    }
-                )
+                next_cursor = _cursor_json(1, latest_timestamp, latest_id)
             break
 
         if len(comments) < 100:
-            next_cursor = json.dumps(
-                {
-                    "page": 1,
-                    "since": latest_timestamp.isoformat(),
-                    "last_id": latest_id,
-                }
-            )
+            next_cursor = _cursor_json(1, latest_timestamp, latest_id)
             break
         else:
             current_page += 1
-            next_cursor = json.dumps(
-                {
-                    "page": current_page,
-                    "since": cursor_since.isoformat(),
-                    "last_id": latest_id,
-                }
-            )
+            next_cursor = _cursor_json(current_page, cursor_since, latest_id)
 
     if accepted_receipt is not None:
-        escalation = escalation.model_copy(
-            update={
-                "accepted_replies": [*escalation.accepted_replies, accepted_receipt],
-                "reopen_count": escalation.reopen_count + 1,
-                "status": EscalationStatus.REOPENED,
-                "reply_cursor": "closed",
-                "updated_at": current_time,
-            }
-        )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return accepted_receipt
 
     if next_cursor is not None and next_cursor != escalation.reply_cursor:
-        escalation = escalation.model_copy(
-            update={"reply_cursor": next_cursor, "updated_at": current_time}
+        _save_poll_update_if_unchanged(
+            store, run.id, escalation, {"reply_cursor": next_cursor, "updated_at": current_time}
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
 
     return None
 

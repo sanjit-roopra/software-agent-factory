@@ -92,6 +92,7 @@ from .governance import (
 )
 from .models import (
     MAX_OPEN_REVIEW_FINDINGS,
+    REPLY_CURSOR_CLOSED,
     ActiveInvocation,
     AgentPurpose,
     AgentRole,
@@ -1074,7 +1075,7 @@ class WorkflowController:
             reason_code=code,
             reopen_count=reopen_count,
             accepted_replies=accepted_replies,
-            reply_cursor="closed",
+            reply_cursor=REPLY_CURSOR_CLOSED,
             created_at=now,
             updated_at=now,
         )

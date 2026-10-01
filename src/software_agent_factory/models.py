@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 def utc_now() -> datetime:
@@ -975,8 +985,45 @@ class EscalationTargetType(StrEnum):
     ISSUE = "ISSUE"
 
 
+DASHBOARD_USER_LOGIN = "dashboard-local"
+
+#: ``EscalationRecord.reply_cursor`` once no further reply can resume the run.
+REPLY_CURSOR_CLOSED = "closed"
+
+#: An episode id as a whole. Lives here so the request model can check it without
+#: importing ``escalation_protocol``, which imports this module.
+EPISODE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+#: A context fingerprint is a full SHA-256 digest in lowercase hex.
+CONTEXT_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+ReplySource = Literal["github", "dashboard"]
+
+
+def _check_reply_source(source: ReplySource, comment_id: int | None, user_login: str) -> None:
+    """Shared rule: a GitHub reply has a comment id, a dashboard reply has the fixed login."""
+    if source == "github" and comment_id is None:
+        raise ValueError("a github reply needs a comment_id")
+    if source == "dashboard" and comment_id is not None:
+        raise ValueError("a dashboard reply has no GitHub comment_id")
+    if source == "dashboard" and user_login != DASHBOARD_USER_LOGIN:
+        raise ValueError(f"a dashboard reply must use user_login {DASHBOARD_USER_LOGIN!r}")
+
+
+def _without_github_source(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop ``source`` when it is ``github``, so a GitHub reply is saved as it was before.
+
+    Code from before the field existed forbids unknown keys. Leaving the key out of GitHub
+    replies means only a dashboard reply changes the file, and a rollback fails only for those.
+    """
+    if data.get("source") == "github":
+        data.pop("source")
+    return data
+
+
 class AcceptedReplyReceipt(ModelBase):
-    comment_id: int = Field(ge=1)
+    source: ReplySource = "github"
+    comment_id: int | None = Field(default=None, ge=1)
     user_login: str = Field(min_length=1)
     user_id: int | None = None
     author_association: str = ""
@@ -988,6 +1035,15 @@ class AcceptedReplyReceipt(ModelBase):
     run_id: str = Field(min_length=1)
     approval_context_fingerprint: str | None = None
     plan_decision_context_fingerprint: str | None = None
+
+    @model_validator(mode="after")
+    def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
+        _check_reply_source(self.source, self.comment_id, self.user_login)
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_github_source(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_github_source(handler(self))
 
 
 class RiskRationale(ModelBase):
@@ -1084,7 +1140,8 @@ class PlanDecisionAnswers(VersionedModel):
     episode_id: str = Field(min_length=1)
     plan_fingerprint: str = Field(min_length=64, max_length=64)
     context_fingerprint: str = Field(min_length=64, max_length=64)
-    comment_id: int = Field(ge=1)
+    source: ReplySource = "github"
+    comment_id: int | None = Field(default=None, ge=1)
     user_login: str = Field(min_length=1)
     user_id: int | None = None
     author_association: str = ""
@@ -1092,12 +1149,83 @@ class PlanDecisionAnswers(VersionedModel):
     accepted_at: UtcDateTime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
-    def _require_ordered_answers(self) -> PlanDecisionAnswers:
-        expected = list(range(1, len(self.answers) + 1))
-        actual = [answer.decision_number for answer in self.answers]
-        if actual != expected:
-            raise ValueError("answers must use contiguous decision numbers in order")
+    def _require_reply_source_fields(self) -> PlanDecisionAnswers:
+        _check_reply_source(self.source, self.comment_id, self.user_login)
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_github_source(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_github_source(handler(self))
+
+    @model_validator(mode="after")
+    def _require_ordered_answers(self) -> PlanDecisionAnswers:
+        _check_ordered_answers(self.answers)
+        return self
+
+
+def _check_ordered_answers(answers: list[PlanDecisionAnswer]) -> None:
+    expected = list(range(1, len(answers) + 1))
+    if [answer.decision_number for answer in answers] != expected:
+        raise ValueError("answers must use contiguous decision numbers in order")
+
+
+DashboardRequestAction = Literal[
+    ResumeClassification.RISK_APPROVAL, ResumeClassification.PLAN_DECISION
+]
+DashboardRequestStatus = Literal["pending", "stale"]
+#: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
+ResumeRefusal = Literal["expired", "reopen_limit", "context_changed", "state_changed"]
+#: A new ``ResumeRefusal`` value changes the stored request schema: older code rejects it.
+DashboardRequestStaleReason = ResumeRefusal
+
+
+class DashboardResumeRequest(VersionedModel):
+    """A local approval or plan answer waiting for the service to read it.
+
+    The dashboard creates it as ``pending``. Only the service marks it ``stale``,
+    with the reason it refused it.
+    """
+
+    run_id: str = Field(min_length=1)
+    episode_id: str = Field(min_length=1)
+    context_fingerprint: str
+    action: DashboardRequestAction
+    answers: list[PlanDecisionAnswer] = Field(default_factory=list, max_length=24)
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+    status: DashboardRequestStatus = "pending"
+    reason: DashboardRequestStaleReason | None = None
+
+    @field_validator("episode_id")
+    @classmethod
+    def _validate_episode_id(cls, value: str) -> str:
+        if EPISODE_ID_PATTERN.fullmatch(value) is None:
+            raise ValueError("episode_id must be 1-128 letters, digits, '.', '_' or '-'")
+        return value
+
+    @field_validator("context_fingerprint")
+    @classmethod
+    def _validate_context_fingerprint(cls, value: str) -> str:
+        if CONTEXT_FINGERPRINT_PATTERN.fullmatch(value) is None:
+            raise ValueError("context_fingerprint must be 64 lowercase hex characters")
+        return value
+
+    @model_validator(mode="after")
+    def _require_consistent_fields(self) -> DashboardResumeRequest:
+        if self.action == ResumeClassification.PLAN_DECISION:
+            if not self.answers:
+                raise ValueError("a plan answer request needs answers")
+            _check_ordered_answers(self.answers)
+        elif self.answers:
+            raise ValueError("a risk approval request has no answers")
+        if (self.status == "stale") != (self.reason is not None):
+            raise ValueError("a stale request needs a reason and a pending one has none")
+        return self
+
+    def marked_stale(self, reason: DashboardRequestStaleReason) -> DashboardResumeRequest:
+        """This request as the service leaves it when it refuses it, validated again."""
+        return DashboardResumeRequest.model_validate(
+            {**self.model_dump(), "status": "stale", "reason": reason}
+        )
 
 
 class EscalationRecord(ModelBase):

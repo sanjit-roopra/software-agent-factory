@@ -166,12 +166,7 @@ def _sample_context(
         work_item_title=work_item_title,
         risk=risk.value,
         complexity=complexity.value,
-        intended_outcome=rationale.intended_outcome,
-        sensitive_boundary=rationale.sensitive_boundary,
-        necessity=rationale.necessity,
-        credible_scenario=rationale.credible_scenario,
-        known_mitigations=rationale.known_mitigations,
-        residual_risk=rationale.residual_risk,
+        rationale=rationale,
         decision_requested=decision_requested,
         next_state=WorkflowState.REFINING.value,
         authorized_actions=authorized_actions,
@@ -1240,12 +1235,7 @@ def test_adversarial_markdown_rendering() -> None:
         work_item_title=clean_title,
         risk=Risk.R2.value,
         complexity=Complexity.L2.value,
-        intended_outcome=rat.intended_outcome,
-        sensitive_boundary=rat.sensitive_boundary,
-        necessity=rat.necessity,
-        credible_scenario=rat.credible_scenario,
-        known_mitigations=rat.known_mitigations,
-        residual_risk=rat.residual_risk,
+        rationale=rat,
         decision_requested=decision_requested,
         next_state=WorkflowState.REFINING.value,
         authorized_actions=authorized_actions,
@@ -2774,12 +2764,7 @@ def test_build_escalation_comment_size_limit_warning_and_fallback() -> None:
         work_item_title=work_title,
         risk=Risk.R2.value,
         complexity=Complexity.L2.value,
-        intended_outcome=rat.intended_outcome,
-        sensitive_boundary=rat.sensitive_boundary,
-        necessity=rat.necessity,
-        credible_scenario=rat.credible_scenario,
-        known_mitigations=rat.known_mitigations,
-        residual_risk=rat.residual_risk,
+        rationale=rat,
         decision_requested=decision_req,
         next_state=WorkflowState.REFINING.value,
         authorized_actions=auth_actions,
@@ -3312,6 +3297,7 @@ def test_poll_escalation_reply_fail_closed_and_edge_cases(tmp_path: Path) -> Non
     run_bad_host = run.model_copy(
         update={"escalation": escalation.model_copy(update={"target_host": "untrusted.invalid"})}
     )
+    store.save_run(run_bad_host)
     assert poll_escalation_reply(run_bad_host, store, config, client, repo_path) is None
 
     # 5. Remote resume disabled or approval context missing in poll -> closes cursor
@@ -3369,6 +3355,7 @@ def test_poll_escalation_reply_fail_closed_and_edge_cases(tmp_path: Path) -> Non
     run_malformed_cursor = run.model_copy(
         update={"escalation": escalation.model_copy(update={"reply_cursor": "{malformed-json"})}
     )
+    store.save_run(run_malformed_cursor)
     runner_empty = FakeRunner([FakeCompletedProcess(0, json.dumps([]))])
     client_empty = GitHubClient(runner=runner_empty)
     assert (

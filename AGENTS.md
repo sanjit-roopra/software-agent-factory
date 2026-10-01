@@ -430,19 +430,28 @@ The first version uses filesystem persistence.
 
 #### The one permitted dashboard
 
-A local, read-only dashboard has been explicitly requested (Phase 15.11,
-ADR-016). It is the only exception to the ban above and is allowed only as:
+A local dashboard has been explicitly requested (Phase 15.11, ADR-016,
+amended by ADR-033). It is the only exception to the ban above and is allowed
+only as:
 
 - bound to `127.0.0.1`, started by an explicit command, disabled by default
-- read-only: no endpoint may change configuration, runs or workflow state
-- token protected
+- read-only, except two named write actions: approve a risk approval, and
+  answer plan decisions. They only create a request file. The factory service
+  ingests it and is the single writer of `run.json`. No endpoint may change
+  configuration or workflow state in any other way. The two routes land in
+  slice 4 of issue #80; until then the dashboard is read-only
+- token protected. The per-start token guards the HTTP route only. The factory
+  service never checks it and trusts any request file in the run directory. So
+  write access to `<data_dir>/runs` is the real authority for a local approval,
+  the same as write access to `run.json`. Agents work in their own workspace,
+  and the factory does not give them the data directory
 - served from the Python standard library, with no web framework, no npm, no
   bundler and no build step
 - no logs and no diffs rendered by default
 
 Everything else in the list stays banned. Nothing may become a hosted service,
 a multi-user application or a control plane. If a dashboard change would need a
-framework, a package manager or a write path, stop and update the ADR first.
+framework, a package manager or a third write action, stop and update the ADR first.
 
 ## Initial technologies
 Prefer:

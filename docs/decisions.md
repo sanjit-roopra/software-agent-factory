@@ -2,8 +2,10 @@
 
 ## ADR-033: The dashboard may request a resume
 
-Status: accepted on 2026-10-01 for the data minimization part. This amends ADR-016.
-The write path part comes in a later change and is added to this ADR.
+Status: accepted on 2026-10-01 for the data minimization part and the write path part.
+This amends ADR-016. It extends ADR-024 and ADR-026.
+
+### Data minimization
 
 ADR-016 kept failure reasons out of the dashboard.
 The operator then had to run `factory show` to learn why a run failed or what it needs.
@@ -27,6 +29,81 @@ Consequences:
 - Secret patterns that miss a credential shape can now leak it to the browser as well as to logs.
   The dashboard is loopback only and token protected, so the risk stays on the operator's machine.
 - `RunDetail` now holds raw reasons. Any other consumer must sanitize them first.
+
+### Write path
+
+ADR-016 made the dashboard read-only. That rule is replaced by two named write actions:
+
+- Approve a risk approval (`RISK_APPROVAL`). The run reopens to `REFINING`, as in ADR-024.
+- Answer plan decisions (`PLAN_DECISION`). The run reopens to `PLANNING`, as in ADR-026.
+
+No other route can change a run, a workspace or the configuration.
+Retry, cancel, reconfigure and any other write stay banned.
+The dashboard cannot reopen a run itself.
+It only asks the factory service to do it.
+
+The write path has one writer:
+
+- The dashboard never writes `run.json`. It never calls `save_run`.
+- A dashboard action creates one request file in the run directory.
+  The name holds the episode and the first 16 hex characters of the context fingerprint.
+  The write is create-only, so a second approval of the same context is impossible.
+  A changed context has a new fingerprint and so gets a new file.
+- The factory service ingests the request.
+  It checks the request again, writes the receipt, and reopens the run through `controller.reopen`.
+  For plan answers it also writes the answers.
+- The service is the only writer of `run.json` and the only writer of the request's `stale` status.
+  A request fails the check if the reply window ended, the reopen limit is reached,
+  the context changed or the run is no longer waiting.
+  The service then marks it `stale` with a reason code.
+  If a GitHub reply was accepted first, the request goes stale.
+- The reply window is judged when a dashboard request was made.
+  A GitHub reply is judged when the poller reads it, as before.
+  So a full service or a spent daily quota can make a GitHub reply expire, but never a dashboard request.
+- The reopen checks are the ones in ADR-024: reopen limit, quota, concurrency,
+  approval context match, and delivery resume for R2 and R3 runs.
+  A dashboard request does not need `remote_resume_enabled`.
+- The service ingests requests even when GitHub escalation is off.
+  If `factory start` is not running, the request waits for it.
+
+Authority for a local approval:
+
+- ADR-024 checks the GitHub comment author. A local approval has no author to check.
+- The per-start dashboard token guards the HTTP route only (slice 4).
+  The token is random, per start, printed to stdout and never logged.
+  The dashboard binds to `127.0.0.1`, so only a process on the operator's machine can reach the route.
+- The factory service never checks the token.
+  It trusts any well-formed request file in the run directory.
+  The file name is `dashboard-approval-<episode>-<fingerprint prefix>.json`.
+- So the real authority is write access to `<data_dir>/runs`.
+  Anyone who can write there can approve a run.
+  Anyone who can write `run.json` can already do the same.
+- The control that stops an implementer agent from approving its own R2 or R3 risk is the workspace.
+  Agents work in their own workspace, and the factory does not give them the data directory.
+  This is not a sandbox. The code sets the working directory and does not block other paths.
+- The receipt records the source `dashboard` and the login `dashboard-local`.
+  It also records the time and the context fingerprint, and the service writes a log event.
+- A `POST` also needs the token in a header, an exact `Origin` and a JSON body of at most 16 KB.
+  Other write methods return `405`.
+
+Consequences:
+
+- Anyone who can write the run directory can approve a run, with or without the token.
+  The risk is the same as for anyone who can write `run.json`.
+- Receipts and plan answers carry a `source` field. Models use `extra="forbid"`.
+  The factory writes `source` only for dashboard receipts and answers. GitHub is the default and is left out.
+  After a dashboard receipt exists, rolling back to code without `source` needs a hand edit of `run.json`.
+  `plan-decision-answers.json` in the run directory can also hold `source: dashboard`. It needs the same edit.
+  Older code ignores the `dashboard-approval-*.json` request files.
+- The `created_at` of a request decides its reply window.
+  Ingest marks a request stale as `expired` if it is older than its escalation or newer than the service clock.
+  Back-dating a request needs write access to the data directory, which can already edit `run.json`.
+  The slice 4 route stamps `created_at` from the server clock and never reads it from the request body.
+- Slice 3 of issue #80 adds the request file and the service ingest.
+  The HTTP routes for the two actions land in slice 4.
+  Until slice 4 ships, the dashboard stays read-only and no route creates a request.
+
+See also ADR-016, ADR-024 and ADR-026.
 
 ## ADR-032: pi implementer shell commands match the Copilot deny list
 
@@ -802,7 +879,8 @@ so the default offline run does not demand tools it will never call.
 ## ADR-016: The local dashboard is a bounded exception to the V1 ban
 
 ADR-033 amends the data minimization rule below: the dashboard now shows
-redacted failure reasons.
+redacted failure reasons. ADR-033 also replaces the read-only rule below with
+two named write actions that only create a request file.
 
 `AGENTS.md` bans a web dashboard in V1. One narrow exception is granted.
 Inspecting runs, states, attempts, and metrics by reading JSON files is worse

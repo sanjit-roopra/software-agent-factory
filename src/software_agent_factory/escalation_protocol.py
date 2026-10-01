@@ -5,11 +5,11 @@ escalation controller, which pulls in the GitHub client, and the read-only
 dashboard both import the grammar, so they cannot drift apart on what a reply
 looks like.
 
-The reply poller keeps its own accept checks in :mod:`.escalation`.
-:func:`reply_closed_cause` mirrors them for the dashboard, and a parity test
-keeps the two in line. The stored-context validity check
+The reply poller takes its context, window and reopen checks from
+:func:`.resume.resume_refusal`. :func:`reply_closed_cause` mirrors that gate for the
+dashboard, and a parity test keeps the two in line. The stored-context validity check
 (``is_valid_risk_approval_context`` and ``is_valid_plan_decision_context``)
-stays in the poller only.
+lives in :mod:`.resume` and stays out of this mirror.
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
-from .models import EscalationRecord, EscalationStatus
+from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
+from .models import REPLY_CURSOR_CLOSED, EscalationRecord, EscalationStatus
 
 #: Characters allowed in a run id or an episode id inside a reply command.
 _ID_CHARS = "A-Za-z0-9._-"
@@ -26,8 +27,8 @@ _ID_CHARS = "A-Za-z0-9._-"
 #: The most numbered decisions one plan-decision reply can answer.
 MAX_PLAN_DECISIONS = 24
 
-#: An episode id as a whole. The command patterns below do not cap the length.
-EPISODE_ID_PATTERN = re.compile(rf"[{_ID_CHARS}]{{1,128}}")
+# ``EPISODE_ID_PATTERN`` (an episode id as a whole) lives in ``models`` and is re-exported
+# here. The command patterns below do not cap the length.
 
 RESUME_COMMAND_PATTERN = re.compile(
     rf"^@factory\s+resume\s+v1\s+run=(?P<run>[{_ID_CHARS}]+)\s+episode=(?P<episode>[{_ID_CHARS}]+)$"
@@ -112,7 +113,7 @@ def reply_closed_cause(
         return _STATUS_CAUSES.get(record.status, _STATUS_UNKNOWN)
     if not record.remote_resume_enabled:
         return _NO_INSTRUCTIONS
-    if record.reply_cursor == "closed":
+    if record.reply_cursor == REPLY_CURSOR_CLOSED:
         return _CURSOR_CLOSED
     if reply_window_hours is not None and now > record.created_at + timedelta(
         hours=reply_window_hours

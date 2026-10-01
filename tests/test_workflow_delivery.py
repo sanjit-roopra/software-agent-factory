@@ -16,8 +16,10 @@ from software_agent_factory.models import (
     CICheckEvidence,
     CIReport,
     Complexity,
+    DashboardResumeRequest,
     EscalationStatus,
     FactoryRun,
+    ResumeClassification,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
     ReviewFindingCategory,
@@ -32,6 +34,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
+from software_agent_factory.resume import ingest_dashboard_request
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, delivery_policy_fingerprint
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError
@@ -561,17 +564,17 @@ def test_resume_with_the_switch_off_cannot_bypass_an_approval_the_run_started_wi
 APPROVED_RUN_ID = "approved"
 
 
-def _r2_runtime() -> FakeAgentRuntime:
-    return FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
+def _risk_runtime(risk: Risk = Risk.R2) -> FakeAgentRuntime:
+    return FakeAgentRuntime(triage=triage_hook(risk=risk))
 
 
-def _human_approved_r2_interrupted_at(
-    tmp_path: Path, source_repo: Path, boundary: str
-) -> tuple[LocalPublisher, Observer, FileRunStore, FactoryConfig]:
-    """Halt an R2 run for approval, record the reply receipt, reopen it, then crash in delivery.
+_Delivery = tuple[LocalPublisher, Observer, FileRunStore, FactoryConfig]
 
-    The receipt is written the way the reply poller persists it; ``reopen`` is the real path.
-    """
+
+def _halted_for_approval(
+    tmp_path: Path, source_repo: Path, boundary: str, risk: Risk
+) -> tuple[WorkflowController, _Delivery, FactoryRun]:
+    """Halt a run for approval, with a publisher or observer that crashes at ``boundary``."""
     config = _config(tmp_path)
     config = config.model_copy(
         update={"escalation": config.escalation.model_copy(update={"enabled": True})}
@@ -579,10 +582,23 @@ def _human_approved_r2_interrupted_at(
     publisher = LocalPublisher(crash=boundary == "publish")
     observer = Observer(crash=boundary == "observe")
     controller, store = _controller(
-        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+        config, publisher=publisher, observer=observer, runtime=_risk_runtime(risk)
     )
     halted = controller.run(work_item(), source_repo, run_id=APPROVED_RUN_ID)
     assert halted.state is WorkflowState.NEEDS_HUMAN
+    assert halted.escalation is not None
+    assert halted.escalation.approval_context is not None
+    return controller, (publisher, observer, store, config), halted
+
+
+def _github_approved_interrupted_at(
+    tmp_path: Path, source_repo: Path, boundary: str, *, risk: Risk = Risk.R2
+) -> _Delivery:
+    """Halt a run for approval, record a GitHub approval, reopen it, then crash in delivery.
+
+    The receipt is written the way the reply poller persists it; ``reopen`` is the real path.
+    """
+    controller, delivery, halted = _halted_for_approval(tmp_path, source_repo, boundary, risk)
     escalation = halted.escalation
     assert escalation is not None
     assert escalation.approval_context is not None
@@ -596,7 +612,7 @@ def _human_approved_r2_interrupted_at(
         run_id=APPROVED_RUN_ID,
         approval_context_fingerprint=escalation.approval_context.context_fingerprint,
     )
-    store.save_run(
+    delivery[2].save_run(
         halted.model_copy(
             update={
                 "escalation": escalation.model_copy(
@@ -611,7 +627,33 @@ def _human_approved_r2_interrupted_at(
     )
     with pytest.raises(KeyboardInterrupt):
         controller.reopen(APPROVED_RUN_ID, source_repo)
-    return publisher, observer, store, config
+    return delivery
+
+
+def _dashboard_approved_interrupted_at(
+    tmp_path: Path, source_repo: Path, boundary: str, *, risk: Risk = Risk.R2
+) -> _Delivery:
+    """Halt a run for approval, approve it through a dashboard request, reopen it, then crash.
+
+    The approval goes through ``create_dashboard_request`` and ``ingest_dashboard_request``;
+    ``reopen`` is the real path.
+    """
+    controller, delivery, halted = _halted_for_approval(tmp_path, source_repo, boundary, risk)
+    _, _, store, config = delivery
+    escalation = halted.escalation
+    assert escalation is not None
+    assert escalation.approval_context is not None
+    request = DashboardResumeRequest(
+        run_id=APPROVED_RUN_ID,
+        episode_id=escalation.episode_id,
+        context_fingerprint=escalation.approval_context.context_fingerprint,
+        action=ResumeClassification.RISK_APPROVAL,
+    )
+    assert store.create_dashboard_request(APPROVED_RUN_ID, request)
+    assert ingest_dashboard_request(halted, store, config, utc_now()) is not None
+    with pytest.raises(KeyboardInterrupt):
+        controller.reopen(APPROVED_RUN_ID, source_repo)
+    return delivery
 
 
 @pytest.mark.parametrize(
@@ -630,13 +672,13 @@ def test_resume_continues_delivery_for_a_human_approved_risk(
     publish_calls: int,
     observe_calls: int,
 ) -> None:
-    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+    publisher, observer, store, config = _github_approved_interrupted_at(
         tmp_path, source_repo, boundary
     )
     assert store.load_run(APPROVED_RUN_ID).state is checkpoint
 
     resumed_controller, _ = _controller(
-        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+        config, publisher=publisher, observer=observer, runtime=_risk_runtime()
     )
     recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
 
@@ -646,6 +688,32 @@ def test_resume_continues_delivery_for_a_human_approved_risk(
     assert observer.calls == observe_calls
 
 
+@pytest.mark.parametrize("risk", [Risk.R2, Risk.R3], ids=["R2", "R3"])
+def test_resume_continues_delivery_for_a_dashboard_approved_risk(
+    tmp_path: Path, source_repo: Path, risk: Risk
+) -> None:
+    publisher, observer, store, config = _dashboard_approved_interrupted_at(
+        tmp_path, source_repo, "publish", risk=risk
+    )
+    approved = store.load_run(APPROVED_RUN_ID)
+    assert approved.state is WorkflowState.PR_READY
+    assert approved.escalation is not None
+    assert [r.source for r in approved.escalation.accepted_replies] == ["dashboard"]
+
+    resumed_controller, _ = _controller(
+        config, publisher=publisher, observer=observer, runtime=_risk_runtime(risk)
+    )
+    recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
+
+    assert recovered.state is WorkflowState.DONE
+    assert not recovered.failure_reason
+    assert recovered.escalation is not None
+    assert recovered.escalation.reopen_count == 1
+    assert recovered.escalation.episode_id == approved.escalation.episode_id
+    assert publisher.calls == 2
+    assert observer.calls == 1
+
+
 def _assert_resume_refused_after(
     tmp_path: Path, source_repo: Path, tamper: Callable[[FileRunStore], None]
 ) -> None:
@@ -653,14 +721,14 @@ def _assert_resume_refused_after(
 
     The controller gets the R2 triage hook like the happy path, though resume never re-triages.
     """
-    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+    publisher, observer, store, config = _github_approved_interrupted_at(
         tmp_path, source_repo, "publish"
     )
     tamper(store)
     calls_before = publisher.calls
 
     resumed_controller, _ = _controller(
-        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+        config, publisher=publisher, observer=observer, runtime=_risk_runtime()
     )
     recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
 
@@ -750,7 +818,7 @@ def test_resume_refuses_a_risk_approval_that_no_longer_holds(
 def test_resume_skips_a_receipt_from_another_run_and_uses_the_valid_one_after_it(
     tmp_path: Path, source_repo: Path
 ) -> None:
-    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+    publisher, observer, store, config = _github_approved_interrupted_at(
         tmp_path, source_repo, "publish"
     )
     _tamper_receipts(
@@ -762,7 +830,7 @@ def test_resume_skips_a_receipt_from_another_run_and_uses_the_valid_one_after_it
     )
 
     resumed_controller, _ = _controller(
-        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+        config, publisher=publisher, observer=observer, runtime=_risk_runtime()
     )
     recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
 

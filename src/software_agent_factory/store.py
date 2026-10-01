@@ -36,8 +36,11 @@ from pydantic_core import from_json
 
 from .atomic_write import write_text_atomic
 from .models import (
+    CONTEXT_FINGERPRINT_PATTERN,
+    EPISODE_ID_PATTERN,
     ChangeSet,
     CIReport,
+    DashboardResumeRequest,
     ExecutionPlan,
     FactoryRun,
     PlanDecisionAnswers,
@@ -61,6 +64,10 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
+
+_DASHBOARD_REQUEST_PREFIX = "dashboard-approval-"
+#: A request file name carries this many leading hex characters of its context fingerprint.
+_FINGERPRINT_PREFIX_CHARS = 16
 
 ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     WorkItem: "work-item.json",
@@ -315,6 +322,94 @@ class FileRunStore:
         else:
             path = self._attempt_dir_readonly(run_id, attempt) / safe_name
         return path.read_text(encoding="utf-8")
+
+    def create_dashboard_request(self, run_id: str, request: DashboardResumeRequest) -> bool:
+        """Create the dashboard resume request for its episode and context.
+
+        Returns ``False`` when one already exists for that episode and
+        fingerprint, so a double click or a replayed request changes nothing.
+        A new fingerprint in the same episode gets its own file. A request that
+        is not pending, or has a reason, raises ``ValueError``: only the service
+        marks one stale. A missing run raises ``FileNotFoundError`` and is never
+        created.
+        """
+        if request.run_id != run_id:
+            raise ValueError(f"request is for run {request.run_id}, not {run_id}")
+        if request.status != "pending" or request.reason is not None:
+            raise ValueError("a new dashboard request must be pending and have no reason")
+        run_dir = self._run_dir_readonly(run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run {run_id} does not exist")
+        destination = run_dir / self._dashboard_request_name(
+            request.episode_id, request.context_fingerprint
+        )
+        return self._write_text_create_only(destination, self._model_text(request))
+
+    def load_dashboard_request(
+        self, run_id: str, episode_id: str, context_fingerprint: str
+    ) -> DashboardResumeRequest | None:
+        """Load the request for one episode and context, or ``None`` when absent.
+        Read-only: never creates a directory."""
+        path = self._run_dir_readonly(run_id) / self._dashboard_request_name(
+            episode_id, context_fingerprint
+        )
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        return DashboardResumeRequest.model_validate_json(raw)
+
+    def list_dashboard_requests(self, run_id: str, episode_id: str) -> list[DashboardResumeRequest]:
+        """Load every dashboard request of one episode, oldest first. Read-only.
+
+        A file that does not load, or whose name does not match its episode and context, is
+        skipped and logged, so one damaged request cannot stop the service from reading the
+        others.
+        """
+        run_dir = self._run_dir_readonly(run_id)
+        self._require_episode_id(episode_id)
+        requests: list[DashboardResumeRequest] = []
+        for path in sorted(run_dir.glob(f"{_DASHBOARD_REQUEST_PREFIX}{episode_id}-*.json")):
+            try:
+                request = DashboardResumeRequest.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning("skipped dashboard request %s: %s", path.name, exc)
+                continue
+            if request.episode_id != episode_id or path.name != self._dashboard_request_name(
+                request.episode_id, request.context_fingerprint
+            ):
+                logger.warning(
+                    "skipped dashboard request %s: its name does not match it", path.name
+                )
+                continue
+            requests.append(request)
+        return sorted(requests, key=lambda request: request.created_at)
+
+    def replace_dashboard_request(self, run_id: str, request: DashboardResumeRequest) -> None:
+        """Overwrite an existing dashboard request. Only the service calls this, to mark
+        a request stale; the dashboard only creates. A missing request raises
+        ``FileNotFoundError`` and is never created here."""
+        path = self._run_dir_readonly(run_id) / self._dashboard_request_name(
+            request.episode_id, request.context_fingerprint
+        )
+        if not path.is_file():
+            raise FileNotFoundError(f"no dashboard request {path.name} for run {run_id}")
+        self._write_text_atomic(path, self._model_text(request))
+
+    @staticmethod
+    def _require_episode_id(episode_id: str) -> None:
+        if EPISODE_ID_PATTERN.fullmatch(episode_id) is None:
+            raise ValueError(f"invalid episode id: {episode_id!r}")
+
+    @classmethod
+    def _dashboard_request_name(cls, episode_id: str, context_fingerprint: str) -> str:
+        cls._require_episode_id(episode_id)
+        if CONTEXT_FINGERPRINT_PATTERN.fullmatch(context_fingerprint) is None:
+            raise ValueError("context fingerprint must be 64 lowercase hex characters")
+        fingerprint = context_fingerprint[:_FINGERPRINT_PREFIX_CHARS]
+        return f"{_DASHBOARD_REQUEST_PREFIX}{episode_id}-{fingerprint}.json"
 
     def attempt_dir(self, run_id: str, attempt: int) -> Path:
         """Return (creating if needed) the snapshot directory for ``attempt``.
