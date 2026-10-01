@@ -56,6 +56,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import socket
 import subprocess
 from collections.abc import Callable, Sequence
@@ -947,11 +948,9 @@ class WorkflowController:
                 f"episode {escalation.episode_id}"
             )
 
-        import secrets
-
         target_state: WorkflowState
         if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
-            from .escalation import is_valid_risk_approval_context
+            from .escalation import is_valid_risk_approval_context, receipt_approves_risk_context
 
             if escalation.approval_context is None or not is_valid_risk_approval_context(
                 escalation.approval_context, run.id, escalation.episode_id
@@ -959,10 +958,7 @@ class WorkflowController:
                 raise ValueError(
                     f"run {run.id} has missing or invalid risk approval decision context"
                 )
-            if receipt.approval_context_fingerprint is None or not secrets.compare_digest(
-                receipt.approval_context_fingerprint,
-                escalation.approval_context.context_fingerprint,
-            ):
+            if not receipt_approves_risk_context(receipt, escalation.approval_context):
                 raise ValueError(
                     f"run {run.id} receipt fingerprint does not match active approval context"
                 )
@@ -1269,6 +1265,29 @@ class WorkflowController:
         finally:
             workspace.release_lock()
 
+    def _triage_authorizes_delivery(
+        self, run: FactoryRun, work_item: WorkItem, triage: TriageResult
+    ) -> bool:
+        """Whether the persisted triage lets a resumed run deliver.
+
+        A risk that needs human approval authorizes delivery only when a dispatched
+        approval receipt still matches the approval context (see
+        :func:`~software_agent_factory.escalation.has_dispatched_risk_approval`).
+        """
+        from .escalation import has_dispatched_risk_approval
+
+        if not triage.factory_eligible:
+            return False
+        if not self._approval_required(run, triage.risk):
+            return True
+        return has_dispatched_risk_approval(
+            run,
+            self._store,
+            config=self._config,
+            work_item=work_item,
+            triage_result=triage,
+        )
+
     def _restore_delivery_context(
         self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
     ) -> _RunContext:
@@ -1276,7 +1295,7 @@ class WorkflowController:
         if work_item.id != run.work_item_id:
             raise ValueError("persisted work item does not match run")
         triage = self._store.load_artifact(run.id, TriageResult)
-        if not triage.factory_eligible or self._approval_required(run, triage.risk):
+        if not self._triage_authorizes_delivery(run, work_item, triage):
             raise ValueError("persisted triage does not authorize delivery")
         route_decision: RouteDecision | None = None
         try:

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -8,11 +9,14 @@ from software_agent_factory.config import FactoryConfig, RiskAssessmentConfig
 from software_agent_factory.delivery import DeliveryTarget
 from software_agent_factory.github import GitHubError, UnexpectedRepositoryError
 from software_agent_factory.models import (
+    AcceptedReplyReceipt,
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
     CICheckEvidence,
     CIReport,
+    Complexity,
+    EscalationStatus,
     FactoryRun,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
@@ -24,6 +28,7 @@ from software_agent_factory.models import (
     Risk,
     TriageResult,
     WorkflowState,
+    utc_now,
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
@@ -551,6 +556,217 @@ def test_resume_with_the_switch_off_cannot_bypass_an_approval_the_run_started_wi
     assert recovered.state is not WorkflowState.DONE
     assert recovered.risk_assessment_enabled is True
     assert publisher.calls == calls_before
+
+
+APPROVED_RUN_ID = "approved"
+
+
+def _r2_runtime() -> FakeAgentRuntime:
+    return FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
+
+
+def _human_approved_r2_interrupted_at(
+    tmp_path: Path, source_repo: Path, boundary: str
+) -> tuple[LocalPublisher, Observer, FileRunStore, FactoryConfig]:
+    """Halt an R2 run for approval, record the reply receipt, reopen it, then crash in delivery.
+
+    The receipt is written the way the reply poller persists it; ``reopen`` is the real path.
+    """
+    config = _config(tmp_path)
+    config = config.model_copy(
+        update={"escalation": config.escalation.model_copy(update={"enabled": True})}
+    )
+    publisher = LocalPublisher(crash=boundary == "publish")
+    observer = Observer(crash=boundary == "observe")
+    controller, store = _controller(
+        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+    )
+    halted = controller.run(work_item(), source_repo, run_id=APPROVED_RUN_ID)
+    assert halted.state is WorkflowState.NEEDS_HUMAN
+    escalation = halted.escalation
+    assert escalation is not None
+    assert escalation.approval_context is not None
+    receipt = AcceptedReplyReceipt(
+        comment_id=1,
+        user_login="lead-dev",
+        author_association="MEMBER",
+        created_at=utc_now(),
+        command=f"@factory resume v1 run={APPROVED_RUN_ID} episode={escalation.episode_id}",
+        episode_id=escalation.episode_id,
+        run_id=APPROVED_RUN_ID,
+        approval_context_fingerprint=escalation.approval_context.context_fingerprint,
+    )
+    store.save_run(
+        halted.model_copy(
+            update={
+                "escalation": escalation.model_copy(
+                    update={
+                        "status": EscalationStatus.REOPENED,
+                        "accepted_replies": [receipt],
+                        "reopen_count": 1,
+                    }
+                )
+            }
+        )
+    )
+    with pytest.raises(KeyboardInterrupt):
+        controller.reopen(APPROVED_RUN_ID, source_repo)
+    return publisher, observer, store, config
+
+
+@pytest.mark.parametrize(
+    ("boundary", "checkpoint", "publish_calls", "observe_calls"),
+    [
+        # Each boundary crashed once, then the resume retried it.
+        ("publish", WorkflowState.PR_READY, 2, 1),
+        ("observe", WorkflowState.CI_RUNNING, 1, 2),
+    ],
+)
+def test_resume_continues_delivery_for_a_human_approved_risk(
+    tmp_path: Path,
+    source_repo: Path,
+    boundary: str,
+    checkpoint: WorkflowState,
+    publish_calls: int,
+    observe_calls: int,
+) -> None:
+    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+        tmp_path, source_repo, boundary
+    )
+    assert store.load_run(APPROVED_RUN_ID).state is checkpoint
+
+    resumed_controller, _ = _controller(
+        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+    )
+    recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
+
+    assert recovered.state is WorkflowState.DONE
+    assert not recovered.failure_reason
+    assert publisher.calls == publish_calls
+    assert observer.calls == observe_calls
+
+
+def _assert_resume_refused_after(
+    tmp_path: Path, source_repo: Path, tamper: Callable[[FileRunStore], None]
+) -> None:
+    """Tamper with the persisted run after its approval, resume, and expect a refusal.
+
+    The controller gets the R2 triage hook like the happy path, though resume never re-triages.
+    """
+    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+        tmp_path, source_repo, "publish"
+    )
+    tamper(store)
+    calls_before = publisher.calls
+
+    resumed_controller, _ = _controller(
+        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+    )
+    recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
+
+    assert recovered.state is WorkflowState.NEEDS_HUMAN
+    assert "persisted triage does not authorize delivery" in recovered.failure_reason
+    assert publisher.calls == calls_before
+
+
+def _tamper_triage(store: FileRunStore, **update: object) -> None:
+    triage = store.load_artifact(APPROVED_RUN_ID, TriageResult)
+    store.save_artifact(APPROVED_RUN_ID, triage.model_copy(update=update))
+
+
+def _tamper_rationale(store: FileRunStore) -> None:
+    # The new text passes contains_unsafe_content, so the refusal comes from the
+    # fingerprint mismatch and not from the context failing to build.
+    triage = store.load_artifact(APPROVED_RUN_ID, TriageResult)
+    assert triage.risk_rationale is not None
+    rationale = triage.risk_rationale.model_copy(
+        update={"residual_risk": "Nobody reviews the release."}
+    )
+    _tamper_triage(store, risk_rationale=rationale)
+
+
+def _tamper_complexity(store: FileRunStore) -> None:
+    # Another valid complexity: the context still builds, only its fingerprint differs.
+    _tamper_triage(store, complexity=Complexity.L3)
+
+
+def _tamper_receipts(store: FileRunStore, rewrite: Callable[[list], list]) -> None:
+    run = store.load_run(APPROVED_RUN_ID)
+    assert run.escalation is not None
+    escalation = run.escalation.model_copy(
+        update={"accepted_replies": rewrite(list(run.escalation.accepted_replies))}
+    )
+    store.save_run(run.model_copy(update={"escalation": escalation}))
+
+
+def _tamper_receipt_never_dispatched(store: FileRunStore) -> None:
+    _tamper_receipts(
+        store, lambda receipts: [r.model_copy(update={"dispatched_at": None}) for r in receipts]
+    )
+
+
+def _tamper_receipt_from_another_run(store: FileRunStore) -> None:
+    _tamper_receipts(
+        store, lambda receipts: [r.model_copy(update={"run_id": "other-run"}) for r in receipts]
+    )
+
+
+def _tamper_receipt_without_fingerprint(store: FileRunStore) -> None:
+    _tamper_receipts(
+        store,
+        lambda receipts: [
+            r.model_copy(update={"approval_context_fingerprint": None}) for r in receipts
+        ],
+    )
+
+
+def _tamper_no_receipts(store: FileRunStore) -> None:
+    _tamper_receipts(store, lambda receipts: [])
+
+
+def _tamper_no_escalation(store: FileRunStore) -> None:
+    run = store.load_run(APPROVED_RUN_ID)
+    store.save_run(run.model_copy(update={"escalation": None}))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        _tamper_rationale,
+        _tamper_complexity,
+        _tamper_receipt_never_dispatched,
+        _tamper_receipt_from_another_run,
+        _tamper_receipt_without_fingerprint,
+        _tamper_no_receipts,
+        _tamper_no_escalation,
+    ],
+)
+def test_resume_refuses_a_risk_approval_that_no_longer_holds(
+    tmp_path: Path, source_repo: Path, tamper: Callable[[FileRunStore], None]
+) -> None:
+    _assert_resume_refused_after(tmp_path, source_repo, tamper)
+
+
+def test_resume_skips_a_receipt_from_another_run_and_uses_the_valid_one_after_it(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+        tmp_path, source_repo, "publish"
+    )
+    _tamper_receipts(
+        store,
+        lambda receipts: [
+            receipts[0].model_copy(update={"run_id": "other-run", "comment_id": 2}),
+            *receipts,
+        ],
+    )
+
+    resumed_controller, _ = _controller(
+        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+    )
+    recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
+
+    assert recovered.state is WorkflowState.DONE
 
 
 def test_resume_refuses_policy_changes_without_mutating_checkpoint(
