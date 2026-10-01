@@ -828,7 +828,8 @@ def test_a_request_with_two_faults_is_refused_for_the_first_in_the_documented_or
     with rig.assert_writes_nothing():
         status, payload = send(rig)
 
-    assert (status, {key: payload.get(key) for key in expected[1]}) == expected
+    actual = (status, {key: payload.get(key) for key in expected[1]})
+    assert actual == expected
 
 
 def test_a_run_without_an_escalation_is_not_waiting(make_rig: RigFactory) -> None:
@@ -870,7 +871,8 @@ def test_the_limits_are_the_configured_ones(
 
     status, payload = rig.approve()
 
-    assert (status, payload.get(REASON)) == expected
+    actual = (status, payload.get(REASON))
+    assert actual == expected
 
 
 def test_two_approvals_at_once_make_one_request(make_rig: RigFactory) -> None:

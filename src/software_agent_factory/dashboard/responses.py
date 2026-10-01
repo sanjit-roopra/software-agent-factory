@@ -23,7 +23,8 @@ ConflictReason = Literal[
 ]
 
 
-class WriteRejected(Exception):  # noqa: N818 - a response, not an error condition
+# The name says what the dashboard sends back, not an error condition.
+class WriteRejected(Exception):  # noqa: N818
     """A write the dashboard refuses. ``payload`` is the JSON body of the response."""
 
     def __init__(

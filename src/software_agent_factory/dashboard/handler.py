@@ -74,7 +74,7 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
 #: The decoded path, so a run id such as ``../etc`` reaches the id check as a ``400`` and is
 #: not mistaken for an unknown route.
-_ACTION_PATTERN = re.compile(r"/api/runs/(.+)/(approve|answer)", re.DOTALL)
+_ACTION_PREFIX = "/api/runs/"
 _ACTION_KINDS = {
     "approve": ResumeClassification.RISK_APPROVAL,
     "answer": ResumeClassification.PLAN_DECISION,
@@ -278,10 +278,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         Only a server that has actions routes the approve and answer paths.
         """
         actions = self.server.resume_actions
-        match = _ACTION_PATTERN.fullmatch(self._decoded_path())
-        if actions is None or match is None:
+        path = self._decoded_path()
+        if actions is None or not path.startswith(_ACTION_PREFIX):
             return None
-        return actions, match.group(1), match.group(2)
+        # Split at the last "/" without a regex, so a hostile path cannot make matching slow.
+        run_id, _, action = path[len(_ACTION_PREFIX) :].rpartition("/")
+        if not run_id or action not in _ACTION_KINDS:
+            return None
+        return actions, run_id, action
 
     def _method_not_allowed(self) -> None:
         # The body of a refused write, if any, stays unread.
