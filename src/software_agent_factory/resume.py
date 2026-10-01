@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
@@ -374,6 +374,31 @@ def current_context_fingerprint(escalation: EscalationRecord) -> str | None:
     return None
 
 
+#: What a request names that is not what the run asks now: its episode, its context, its action.
+RequestMismatch = Literal["episode", "fingerprint", "action"]
+
+
+def request_mismatch(
+    escalation: EscalationRecord,
+    episode_id: str,
+    fingerprint: str | None,
+    action: ResumeClassification,
+) -> RequestMismatch | None:
+    """The first way a request differs from what ``escalation`` asks now, or ``None``.
+
+    The order is the one the dashboard explains and the service settles by: the episode,
+    then the context fingerprint, then the action. The dashboard asks it of a request it
+    is about to store, the service of one it has read, so both judge the same thing.
+    """
+    if episode_id != escalation.episode_id:
+        return "episode"
+    if fingerprint != current_context_fingerprint(escalation):
+        return "fingerprint"
+    if action is not escalation.resume_classification:
+        return "action"
+    return None
+
+
 class ResumeStore(Protocol):
     """The run store calls resume needs. ``FileRunStore`` satisfies it."""
 
@@ -579,7 +604,10 @@ def _request_refusal(
     # The stamp decides the window, so a stamp the episode or the clock cannot have is refused.
     if request.created_at < escalation.created_at or request.created_at > now:
         return "expired", None
-    if request.run_id != run.id or request.action is not escalation.resume_classification:
+    mismatch = request_mismatch(
+        escalation, request.episode_id, request.context_fingerprint, request.action
+    )
+    if request.run_id != run.id or mismatch is not None:
         return "context_changed", None
     if request.action is not ResumeClassification.PLAN_DECISION:
         return None, None
@@ -604,18 +632,26 @@ def _settle_other_contexts(
     store: ResumeStore,
     run_id: str,
     escalation: EscalationRecord,
-    fingerprint: str | None,
     requests: Sequence[DashboardResumeRequest],
 ) -> DashboardResumeRequest | None:
-    """Mark the pending requests for another context stale; return the one for ``fingerprint``."""
+    """Mark the pending requests for another context stale; return the one for this context.
+
+    A request for this context but another action is returned too: :func:`_request_refusal`
+    judges it, so a closed window or a changed state is still the reason it gets.
+    """
     current: DashboardResumeRequest | None = None
     for request in requests:
-        if request.status != "pending" or request.episode_id != escalation.episode_id:
+        if request.status != "pending":
             continue
-        if request.context_fingerprint == fingerprint:
-            current = request
-        else:
+        mismatch = request_mismatch(
+            escalation, request.episode_id, request.context_fingerprint, request.action
+        )
+        if mismatch == "episode":
+            continue
+        if mismatch == "fingerprint":
             _mark_stale(store, run_id, request, "context_changed")
+        else:
+            current = request
     return current
 
 
@@ -650,7 +686,7 @@ def ingest_dashboard_request(
     fingerprint = current_context_fingerprint(escalation)
     if requests is None:
         requests = store.list_dashboard_requests(run.id, escalation.episode_id)
-    current = _settle_other_contexts(store, run.id, escalation, fingerprint, requests)
+    current = _settle_other_contexts(store, run.id, escalation, requests)
     if current is None or fingerprint is None:
         return None
     if _dashboard_already_accepted(escalation, fingerprint):

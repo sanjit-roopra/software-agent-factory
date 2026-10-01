@@ -40,6 +40,7 @@ from software_agent_factory.resume import (
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
     ingest_dashboard_request,
+    request_mismatch,
     resume_refusal,
     resume_refusal_within,
 )
@@ -676,6 +677,22 @@ def test_a_request_for_the_other_action_is_stale(tmp_path: Path) -> None:
     assert (stale.status, stale.reason) == ("stale", "context_changed")
 
 
+def test_a_closed_window_outranks_a_request_for_the_other_action(tmp_path: Path) -> None:
+    run = _run(created_at=NOW - timedelta(hours=25))
+    store = _store(tmp_path, run)
+    _submit(
+        store,
+        run,
+        action=PLAN,
+        answers=[PlanDecisionAnswer(decision_number=1, answer="x")],
+    )
+
+    assert ingest_dashboard_request(run, store, _config(window_hours=24), NOW) is None
+
+    stale = _stored_request(store, run)
+    assert (stale.status, stale.reason) == ("stale", "expired")
+
+
 def test_every_request_of_a_run_that_cannot_resume_goes_stale(tmp_path: Path) -> None:
     run = _run(ResumeClassification.NOT_RESUMABLE)
     store = _store(tmp_path, run)
@@ -960,3 +977,31 @@ def test_refusal_within_skips_a_limit_that_is_unknown() -> None:
         resume_refusal_within(run, reply_window_hours=None, max_reopens=3, now=NOW)
         == "reopen_limit"
     )
+
+
+@pytest.mark.parametrize(
+    ("other_episode", "other_fingerprint", "other_action", "expected"),
+    [
+        pytest.param(False, False, False, None, id="all three match"),
+        pytest.param(True, False, False, "episode", id="another episode"),
+        pytest.param(False, True, False, "fingerprint", id="another fingerprint"),
+        pytest.param(False, False, True, "action", id="another action"),
+        pytest.param(True, True, False, "episode", id="episode before fingerprint"),
+        pytest.param(False, True, True, "fingerprint", id="fingerprint before action"),
+        pytest.param(True, True, True, "episode", id="episode before the rest"),
+    ],
+)
+def test_a_request_mismatch_names_the_first_difference_in_the_documented_order(
+    other_episode: bool, other_fingerprint: bool, other_action: bool, expected: str | None
+) -> None:
+    run = _run(RISK)
+    assert run.escalation is not None
+
+    mismatch = request_mismatch(
+        run.escalation,
+        "ep-old" if other_episode else EPISODE,
+        "b" * 64 if other_fingerprint else _fingerprint(run),
+        PLAN if other_action else RISK,
+    )
+
+    assert mismatch == expected

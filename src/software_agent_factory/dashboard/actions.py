@@ -31,10 +31,11 @@ from ..models import (
     utc_now,
 )
 from ..resume import (
+    RequestMismatch,
     awaits_human,
     build_plan_answers,
     clean_plan_answer,
-    current_context_fingerprint,
+    request_mismatch,
     resume_refusal_within,
 )
 from .snapshot import ResumeRequester, ResumeRunReader, is_valid_run_id
@@ -50,6 +51,13 @@ ConflictReason = Literal[
     "expired",
     "existing_request",
 ]
+
+#: What a request names wrongly, as the code the page gets.
+_MISMATCH_REASONS: dict[RequestMismatch, ConflictReason] = {
+    "episode": "stale_episode",
+    "fingerprint": "stale_fingerprint",
+    "action": "wrong_action",
+}
 
 #: The service's refusal codes as the codes the page gets. ``state_changed`` and
 #: ``context_changed`` are the service's words for a run that stopped waiting and a context
@@ -155,17 +163,9 @@ def _conflict_reason(
     escalation = run.escalation
     if escalation is None or not awaits_human(run):
         return "not_waiting"
-    differences: tuple[tuple[bool, ConflictReason], ...] = (
-        (fields.episode_id != escalation.episode_id, "stale_episode"),
-        (
-            fields.context_fingerprint != current_context_fingerprint(escalation),
-            "stale_fingerprint",
-        ),
-        (kind is not escalation.resume_classification, "wrong_action"),
-    )
-    for differs, reason in differences:
-        if differs:
-            return reason
+    mismatch = request_mismatch(escalation, fields.episode_id, fields.context_fingerprint, kind)
+    if mismatch is not None:
+        return _MISMATCH_REASONS[mismatch]
     refusal = resume_refusal_within(
         run,
         reply_window_hours=actions.reply_window_hours,

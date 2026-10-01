@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from software_agent_factory import dashboard
+from software_agent_factory.cli import resume_requester, resume_run_reader
 from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
 from software_agent_factory.dashboard.actions import ResumeActions
 from software_agent_factory.dashboard.handler import MAX_BODY_BYTES, DashboardRequestHandler
@@ -235,25 +236,13 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
         store = FileRunStore(tmp_path)
         store.save_run(stored)
 
-        def run_reader(run_id: str) -> FactoryRun | None:
-            try:
-                return store.load_run(run_id)
-            except (OSError, ValueError):
-                return None
-
-        def create(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
-            try:
-                return "created" if store.create_dashboard_request(run_id, request) else "exists"
-            except FileNotFoundError:
-                return "run_missing"
-
         server = create_server(
             DashboardConfig(
                 snapshot_provider=lambda *, limit, offset: {},
                 run_detail_provider=lambda run_id: None,
                 resume_actions=ResumeActions(
-                    run_reader=run_reader,
-                    requester=requester or create,
+                    run_reader=resume_run_reader(store),
+                    requester=requester or resume_requester(store),
                     reply_window_hours=reply_window_hours,
                     max_reopens=max_reopens,
                     clock=lambda: NOW,
@@ -750,6 +739,52 @@ def test_a_run_that_vanishes_before_the_write_is_404(make_rig: RigFactory) -> No
     rig = make_rig(requester=lambda run_id, request: "run_missing")
 
     assert rig.approve()[0] == 404
+
+
+def _approval_request(run: FactoryRun) -> DashboardResumeRequest:
+    return DashboardResumeRequest(
+        run_id=RUN_ID,
+        episode_id=EPISODE,
+        context_fingerprint=_fingerprint(run),
+        action=RISK,
+        created_at=NOW,
+    )
+
+
+def test_the_production_reader_reads_a_stored_run(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = _run()
+    store.save_run(run)
+
+    assert resume_run_reader(store)(RUN_ID) == run
+
+
+def test_the_production_reader_gives_none_for_an_unknown_run(tmp_path: Path) -> None:
+    assert resume_run_reader(FileRunStore(tmp_path))("run-missing") is None
+
+
+def test_the_production_reader_gives_none_for_a_corrupt_run_file(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(_run()).write_text("{not json", encoding="utf-8")
+
+    assert resume_run_reader(store)(RUN_ID) is None
+
+
+def test_the_production_requester_reports_created_then_exists(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = _run()
+    store.save_run(run)
+    request = _approval_request(run)
+    requester = resume_requester(store)
+
+    assert [requester(RUN_ID, request), requester(RUN_ID, request)] == ["created", "exists"]
+
+
+def test_the_production_requester_reports_a_missing_run(tmp_path: Path) -> None:
+    run = _run()
+    request = _approval_request(run)
+
+    assert resume_requester(FileRunStore(tmp_path))(RUN_ID, request) == "run_missing"
 
 
 # -- other writes stay blocked ------------------------------------------------------------

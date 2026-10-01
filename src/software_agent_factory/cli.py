@@ -72,6 +72,7 @@ if TYPE_CHECKING:
 
     from .agents import AgentRuntime
     from .config import FactoryConfig
+    from .dashboard.snapshot import ResumeRequester, ResumeRequestResult, ResumeRunReader
     from .models import (
         DashboardResumeRequest,
         FactoryRun,
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
         WorkItem,
     )
     from .repository_skills import RepositorySkillManager
+    from .store import FileRunStore
 
 app = typer.Typer(help="Local-first autonomous software engineering factory.")
 service_app = typer.Typer(
@@ -997,6 +999,38 @@ def status_command(
         typer.echo(line)
 
 
+def resume_run_reader(store: FileRunStore) -> ResumeRunReader:
+    """The run reader of the dashboard's approve and answer routes. Read only.
+
+    A run that is missing or cannot be read is an unknown run: the route answers ``404``.
+    """
+
+    def read(run_id: str) -> FactoryRun | None:
+        try:
+            return store.load_run(run_id)
+        except (OSError, ValueError):
+            return None
+
+    return read
+
+
+def resume_requester(store: FileRunStore) -> ResumeRequester:
+    """The requester of the dashboard's approve and answer routes.
+
+    The one write the dashboard makes: a create-only request file. The service reads it
+    later and is the only writer of the run.
+    """
+
+    def create(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
+        try:
+            created = store.create_dashboard_request(run_id, request)
+        except FileNotFoundError:
+            return "run_missing"
+        return "created" if created else "exists"
+
+    return create
+
+
 @app.command("dashboard")
 def dashboard_command(
     config: Path = typer.Option(
@@ -1038,7 +1072,6 @@ def dashboard_command(
 
     from .dashboard import LOOPBACK_HOST, DashboardConfig
     from .dashboard.actions import ResumeActions
-    from .dashboard.snapshot import ResumeRequestResult
     from .observability import (
         RunScanCache,
         build_active_invocation_summary,
@@ -1087,22 +1120,6 @@ def dashboard_command(
             request.model_dump(mode="json", exclude={"answers"})
             for request in store.list_dashboard_requests(run_id, episode_id)
         ]
-
-    def resume_run_reader(run_id: str) -> FactoryRun | None:
-        # Read only. A run that is missing or cannot be read is an unknown run.
-        try:
-            return store.load_run(run_id)
-        except (OSError, ValueError):
-            return None
-
-    def resume_requester(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
-        # The one write the dashboard makes: a create-only request file. The service
-        # reads it later and is the only writer of the run.
-        try:
-            created = store.create_dashboard_request(run_id, request)
-        except FileNotFoundError:
-            return "run_missing"
-        return "created" if created else "exists"
 
     def health_provider() -> object:
         return build_operational_health(
@@ -1217,8 +1234,8 @@ def dashboard_command(
                 project_provider=project_provider,
                 resume_request_reader=resume_request_reader,
                 resume_actions=ResumeActions(
-                    run_reader=resume_run_reader,
-                    requester=resume_requester,
+                    run_reader=resume_run_reader(store),
+                    requester=resume_requester(store),
                     reply_window_hours=factory_config.escalation.reply_window_hours,
                     max_reopens=factory_config.escalation.max_reopens,
                 ),
