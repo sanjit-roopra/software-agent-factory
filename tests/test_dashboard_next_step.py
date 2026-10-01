@@ -23,6 +23,7 @@ from software_agent_factory.dashboard.sanitize import (
 )
 from software_agent_factory.dashboard.view import run_detail_view
 from software_agent_factory.escalation import parse_plan_decision_answers, parse_resume_command
+from software_agent_factory.escalation_protocol import REPLY_CLOSED_CAUSES
 from software_agent_factory.models import (
     Complexity,
     EscalationRecord,
@@ -239,6 +240,13 @@ def test_malformed_decisions_are_unavailable(decisions: Any) -> None:
     assert _step(_plan_run(decisions=decisions))["kind"] == "remote_approval_unavailable"
 
 
+def test_the_most_decisions_the_answer_parser_accepts_are_all_offered() -> None:
+    step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(1, 25)]))
+
+    assert step["kind"] == "answer"
+    assert [d["number"] for d in step["decisions"]] == list(range(1, 25))
+
+
 def test_more_decisions_than_the_answer_parser_accepts_are_unavailable() -> None:
     step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(25)]))
 
@@ -300,6 +308,17 @@ def test_an_escalation_without_a_reply_state_is_treated_as_closed() -> None:
 
     assert step["kind"] == "remote_approval_unavailable"
     assert "because the reply state is not known." in step["sentence"]
+
+
+@pytest.mark.parametrize("cause", ["", 5, ["closed"], {"a": 1}, False])
+def test_a_malformed_reply_state_is_treated_as_closed(cause: Any) -> None:
+    approve = next_step(_risk_run(reply_closed_cause=cause))
+    answer = next_step(_plan_run(reply_closed_cause=cause))
+
+    assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
+    assert "because the reply state is not known." in approve["sentence"]
+    assert "because the reply state is not known." in answer["sentence"]
+    assert approve["reply_text"] is answer["reply_text"] is None
 
 
 def test_an_open_reply_is_offered_whatever_the_reopen_numbers_show() -> None:
@@ -550,15 +569,15 @@ def test_a_stored_notice_with_no_reply_instructions_is_unavailable_end_to_end(
     assert "because the notice has no reply instructions." in step["sentence"]
 
 
-@pytest.mark.parametrize("cause", ["the reply window expired", None])
-def test_the_sanitizer_keeps_a_reply_closed_cause_that_is_text_or_none(cause: str | None) -> None:
+@pytest.mark.parametrize("cause", [*sorted(REPLY_CLOSED_CAUSES), None])
+def test_the_sanitizer_keeps_every_known_reply_closed_cause_and_none(cause: str | None) -> None:
     detail = {"run_id": RUN_ID, "escalation": {"reply_closed_cause": cause}}
 
     assert sanitize_run_detail(detail)["escalation"]["reply_closed_cause"] == cause
 
 
-@pytest.mark.parametrize("cause", ["", 5, ["closed"], {"a": 1}])
-def test_the_sanitizer_drops_a_reply_closed_cause_that_is_not_text(cause: Any) -> None:
+@pytest.mark.parametrize("cause", ["", 5, ["closed"], {"a": 1}, "a phrase the factory never sends"])
+def test_the_sanitizer_drops_a_reply_closed_cause_that_is_not_a_known_phrase(cause: Any) -> None:
     detail = {"run_id": RUN_ID, "escalation": {"reply_closed_cause": cause}}
 
     assert "reply_closed_cause" not in sanitize_run_detail(detail)["escalation"]

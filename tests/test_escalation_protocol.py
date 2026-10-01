@@ -13,6 +13,7 @@ from software_agent_factory.escalation import (
 )
 from software_agent_factory.escalation_protocol import (
     MAX_PLAN_DECISIONS,
+    REPLY_CLOSED_CAUSES,
     format_answer_command,
     format_resume_command,
     reply_closed_cause,
@@ -65,6 +66,7 @@ def _cause(record: EscalationRecord, **config: Any) -> str | None:
     config.setdefault("max_reopens", 3)
     config.setdefault("reply_window_hours", WINDOW_HOURS)
     config.setdefault("enabled", True)
+    config.setdefault("allowed_hosts", ["github.com"])
     config.setdefault("now", NOW)
     return reply_closed_cause(record, **config)
 
@@ -111,11 +113,51 @@ def test_the_reply_window_closes_after_its_last_moment_not_at_it() -> None:
     assert _cause(record, now=NOW + timedelta(seconds=1)) == "the reply window expired"
 
 
-@pytest.mark.parametrize(("count", "closed"), [(2, False), (3, True), (4, True)])
-def test_the_reopen_limit_closes_the_reply_at_the_limit(count: int, closed: bool) -> None:
-    cause = _cause(_record(reopen_count=count))
+@pytest.mark.parametrize(
+    ("count", "cause"),
+    [(2, None), (3, "the reopen limit is reached"), (4, "the reopen limit is reached")],
+)
+def test_the_reopen_limit_closes_the_reply_at_the_limit(count: int, cause: str | None) -> None:
+    assert _cause(_record(reopen_count=count)) == cause
 
-    assert cause == ("the reopen limit is reached" if closed else None)
+
+def test_a_notice_host_that_is_not_allowed_closes_the_reply() -> None:
+    record = _record(target_host="ghe.example.com")
+
+    assert _cause(record) == "the notice host is no longer allowed"
+    assert _cause(record, allowed_hosts=["github.com", "ghe.example.com"]) is None
+
+
+def test_the_notice_host_is_compared_without_regard_to_case() -> None:
+    assert _cause(_record(target_host="GitHub.com")) is None
+    assert _cause(_record(target_host="github.com"), allowed_hosts=["GitHub.com"]) is None
+
+
+def test_a_notice_without_a_stored_host_uses_the_first_allowed_host() -> None:
+    assert _cause(_record(), allowed_hosts=["ghe.example.com", "github.com"]) is None
+    assert _cause(_record(), allowed_hosts=[]) == "the notice host is no longer allowed"
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _record(status=EscalationStatus.NOTIFICATION_FAILED),
+        _record(status=EscalationStatus.EXPIRED),
+        _record(remote_resume_enabled=False),
+        _record(reply_cursor="closed"),
+        _record(created_at=NOW - timedelta(days=30)),
+        _record(reopen_count=3),
+        _record(target_host="ghe.example.com"),
+    ],
+)
+def test_every_closed_cause_is_a_known_phrase(record: EscalationRecord) -> None:
+    cause = _cause(record)
+
+    assert cause in REPLY_CLOSED_CAUSES
+
+
+def test_the_disabled_cause_is_a_known_phrase() -> None:
+    assert _cause(_record(), enabled=False) in REPLY_CLOSED_CAUSES
 
 
 def test_a_disabled_escalation_closes_the_reply() -> None:
@@ -123,9 +165,19 @@ def test_a_disabled_escalation_closes_the_reply() -> None:
 
 
 def test_unknown_config_values_do_not_close_the_reply() -> None:
-    record = _record(reopen_count=9, created_at=NOW - timedelta(days=30))
-    unknown: dict[str, Any] = {"max_reopens": None, "reply_window_hours": None, "enabled": None}
+    record = _record(
+        reopen_count=9, created_at=NOW - timedelta(days=30), target_host="ghe.example.com"
+    )
+    unknown: dict[str, Any] = {
+        "max_reopens": None,
+        "reply_window_hours": None,
+        "enabled": None,
+        "allowed_hosts": None,
+    }
 
     assert _cause(record, **unknown) is None
     assert _cause(record, **{**unknown, "max_reopens": 3}) == "the reopen limit is reached"
     assert _cause(record, **{**unknown, "reply_window_hours": 24}) == "the reply window expired"
+    assert _cause(record, **{**unknown, "allowed_hosts": ["github.com"]}) == (
+        "the notice host is no longer allowed"
+    )

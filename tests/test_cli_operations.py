@@ -673,6 +673,46 @@ def test_dashboard_detail_closes_the_reply_from_the_configured_window_and_switch
     assert detail.escalation.reply_closed_cause == cause
 
 
+def test_dashboard_detail_closes_the_reply_from_the_configured_allowed_hosts(
+    tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    config_path = write_config(
+        tmp_path / "factory.yaml",
+        data_dir,
+        escalation={
+            "enabled": True,
+            "authorized_identities": ["lead-dev"],
+            "allowed_hosts": ["ghe.example.com"],
+        },
+    )
+    now = datetime.now(UTC)
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id="run-other-host",
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=now,
+            updated_at=now,
+            escalation=EscalationRecord(
+                episode_id="ep-1",
+                status=EscalationStatus.NOTIFIED,
+                resume_classification=ResumeClassification.NOT_RESUMABLE,
+                reason_code="MANUAL_INSPECTION",
+                remote_resume_enabled=True,
+                target_host="github.com",
+                created_at=now,
+            ),
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    detail = fake_dashboard[0].config.run_detail_provider("run-other-host")
+    assert isinstance(detail, RunDetail)
+    assert detail.escalation is not None
+    assert detail.escalation.reply_closed_cause == "the notice host is no longer allowed"
+
+
 def test_dashboard_project_totals_count_usage_a_call_reported_only_per_model(
     data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:

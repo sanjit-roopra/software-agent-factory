@@ -146,6 +146,7 @@ def _make_config(
     max_notification_attempts: int = 3,
     max_runs_per_day: int | None = 20,
     max_concurrent_tasks: int = 1,
+    allowed_hosts: list[str] | None = None,
 ) -> FactoryConfig:
     config = load_config()
     return config.model_copy(
@@ -159,6 +160,7 @@ def _make_config(
                     "reply_window_hours": reply_window_hours,
                     "max_reply_polls_per_tick": max_reply_polls_per_tick,
                     "max_notification_attempts": max_notification_attempts,
+                    "allowed_hosts": allowed_hosts or config.escalation.allowed_hosts,
                 }
             ),
             "scheduler": config.scheduler.model_copy(
@@ -1251,22 +1253,36 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
 
 _PARITY_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
-#: Record changes and the config change that close a reply. ``None`` means the reply is open.
-_PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {
-    "open": ({}, {}, True),
-    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}, True),
-    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, False),
-    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, False),
-    "expired": ({"status": EscalationStatus.EXPIRED}, {}, False),
-    "reopened": ({"status": EscalationStatus.REOPENED}, {}, False),
-    "resumed": ({"status": EscalationStatus.RESUMED}, {}, False),
-    "notice-fallback": ({"remote_resume_enabled": False, "reply_cursor": "closed"}, {}, False),
-    "no-reply-instructions": ({"remote_resume_enabled": False}, {}, False),
-    "cursor-closed": ({"reply_cursor": "closed"}, {}, False),
-    "window-passed": ({"created_at": _PARITY_NOW - timedelta(hours=25)}, {}, False),
-    "reopen-limit": ({"reopen_count": 3}, {}, False),
-    "reopens-left": ({"reopen_count": 2}, {}, True),
-    "escalation-off": ({}, {"escalation_enabled": False}, False),
+#: Per case: record changes, config changes, whether the reply is open, and whether
+#: ``validate_reply_candidate`` runs the case. The validator does not read the reply cursor
+#: or the config switch: the poller guards both before it calls the validator.
+_PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool, bool]] = {
+    "open": ({}, {}, True, True),
+    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}, True, True),
+    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, False, True),
+    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, False, True),
+    "expired": ({"status": EscalationStatus.EXPIRED}, {}, False, True),
+    "reopened": ({"status": EscalationStatus.REOPENED}, {}, False, True),
+    "resumed": ({"status": EscalationStatus.RESUMED}, {}, False, True),
+    "notice-fallback": (
+        {"remote_resume_enabled": False, "reply_cursor": "closed"},
+        {},
+        False,
+        True,
+    ),
+    "no-reply-instructions": ({"remote_resume_enabled": False}, {}, False, True),
+    "cursor-closed": ({"reply_cursor": "closed"}, {}, False, False),
+    "window-passed": ({"created_at": _PARITY_NOW - timedelta(hours=25)}, {}, False, True),
+    "reopen-limit": ({"reopen_count": 3}, {}, False, True),
+    "reopens-left": ({"reopen_count": 2}, {}, True, True),
+    "escalation-off": ({}, {"escalation_enabled": False}, False, False),
+    "host-not-allowed": ({"target_host": "ghe.example.com"}, {}, False, True),
+    "host-allowed": (
+        {"target_host": "ghe.example.com"},
+        {"allowed_hosts": ["github.com", "ghe.example.com"]},
+        True,
+        True,
+    ),
 }
 
 
@@ -1274,7 +1290,7 @@ _PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {
 def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_open(
     case: str, tmp_path: Path
 ) -> None:
-    record_changes, config_changes, expect_open = _PARITY_CASES[case]
+    record_changes, config_changes, expect_open, validator_applies = _PARITY_CASES[case]
     config = _make_config(tmp_path, max_reopens=3, reply_window_hours=24, **config_changes)  # type: ignore[arg-type]
     store = FileRunStore(tmp_path)
     escalation = EscalationRecord.model_validate(
@@ -1311,8 +1327,7 @@ def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_ope
         )
     )
 
-    # The validator does not read the cursor or the config switch: the poller guards both first.
-    if case not in {"cursor-closed", "escalation-off"}:
+    if validator_applies:
         candidate = GitHubComment(
             id=555,
             user_login="lead-dev",
@@ -1339,6 +1354,7 @@ def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_ope
         max_reopens=config.escalation.max_reopens,
         reply_window_hours=config.escalation.reply_window_hours,
         enabled=config.escalation.enabled,
+        allowed_hosts=config.escalation.allowed_hosts,
         now=_PARITY_NOW,
     )
 

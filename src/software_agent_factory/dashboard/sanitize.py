@@ -30,7 +30,7 @@ from collections.abc import Callable, Collection
 from datetime import datetime, timedelta
 from typing import Any
 
-from ..escalation_protocol import MAX_PLAN_DECISIONS
+from ..escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
 from ..redaction import bounded_reason
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import (
@@ -568,7 +568,7 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "episode_id": is_episode_id,
     "context_fingerprint": is_context_fingerprint,
     "reopen_max": is_count,
-    "reply_closed_cause": lambda value: value is None or (isinstance(value, str) and bool(value)),
+    "reply_closed_cause": _one_of({None, *REPLY_CLOSED_CAUSES}),
 }
 
 

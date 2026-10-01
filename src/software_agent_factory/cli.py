@@ -1073,6 +1073,7 @@ def dashboard_command(
             max_reopens=factory_config.escalation.max_reopens,
             reply_window_hours=factory_config.escalation.reply_window_hours,
             escalation_enabled=factory_config.escalation.enabled,
+            allowed_hosts=factory_config.escalation.allowed_hosts,
         )
 
     def health_provider() -> object:

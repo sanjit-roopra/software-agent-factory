@@ -80,7 +80,7 @@ from typing import Any, Iterable, Literal, Protocol, TypeVar
 
 from pydantic import Field, ValidationError, model_serializer
 
-from .escalation_protocol import reply_closed_cause
+from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
 from .models import (
     AgentRole,
     AttemptBudget,
@@ -1347,6 +1347,7 @@ def _escalation_summary(
     max_reopens: int | None = None,
     reply_window_hours: int | None = None,
     escalation_enabled: bool | None = None,
+    allowed_hosts: Sequence[str] | None = None,
 ) -> EscalationSummary | None:
     if escalation is None:
         return None
@@ -1369,7 +1370,8 @@ def _escalation_summary(
         last_responder=last_reply.user_login if last_reply is not None else None,
         last_action=(
             "ANSWER"
-            if last_reply is not None and last_reply.command.startswith("@factory answer ")
+            if last_reply is not None
+            and ANSWER_COMMAND_PATTERN.fullmatch(last_reply.command.split("\n", 1)[0])
             else "RESUME"
             if last_reply is not None
             else None
@@ -1385,6 +1387,7 @@ def _escalation_summary(
             max_reopens=max_reopens,
             reply_window_hours=reply_window_hours,
             enabled=escalation_enabled,
+            allowed_hosts=allowed_hosts,
             now=now,
         ),
         approval_scope=(
@@ -1473,6 +1476,7 @@ def build_run_detail(
     max_reopens: int | None = None,
     reply_window_hours: int | None = None,
     escalation_enabled: bool | None = None,
+    allowed_hosts: Sequence[str] | None = None,
 ) -> RunDetail | None:
     """Derive one run's read-only detail view, or ``None`` if it is not
     readable.
@@ -1513,6 +1517,7 @@ def build_run_detail(
             max_reopens=max_reopens,
             reply_window_hours=reply_window_hours,
             escalation_enabled=escalation_enabled,
+            allowed_hosts=allowed_hosts,
         ),
         attempts=[
             RunAttemptSummary(

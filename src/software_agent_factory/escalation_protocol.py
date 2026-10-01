@@ -1,14 +1,21 @@
-"""The escalation reply protocol: grammar and the rule for when a reply is read.
+"""The escalation reply protocol: the shared reply grammar and a mirror of the poller's gate.
 
 A leaf: it imports only the standard library and :mod:`.models`. The
 escalation controller, which pulls in the GitHub client, and the read-only
-dashboard both import it, so they cannot drift apart on what a reply looks
-like or when the factory accepts one.
+dashboard both import the grammar, so they cannot drift apart on what a reply
+looks like.
+
+The reply poller keeps its own accept checks in :mod:`.escalation`.
+:func:`reply_closed_cause` mirrors them for the dashboard, and a parity test
+keeps the two in line. The stored-context validity check
+(``is_valid_risk_approval_context`` and ``is_valid_plan_decision_context``)
+stays in the poller only.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from .models import EscalationRecord, EscalationStatus
@@ -40,15 +47,43 @@ def format_answer_command(run_id: str, episode_id: str) -> str:
     return f"@factory answer v1 run={run_id} episode={episode_id}"
 
 
+_ESCALATION_OFF = "escalation replies are turned off"
+_NO_INSTRUCTIONS = "the notice has no reply instructions"
+_CURSOR_CLOSED = "the factory stopped reading replies"
+_WINDOW_EXPIRED = "the reply window expired"
+_REOPEN_LIMIT = "the reopen limit is reached"
+_HOST_NOT_ALLOWED = "the notice host is no longer allowed"
+_STATUS_UNKNOWN = "the notice status is not known"
+_ALREADY_RESUMED = "the run already resumed from a reply"
+
 #: Why a reply cannot reach a run, by escalation status. The factory reads
 #: replies only while the status is ``NOTIFIED``.
 _STATUS_CAUSES: dict[EscalationStatus, str] = {
     EscalationStatus.PENDING_NOTIFICATION: "the notice is not sent yet",
     EscalationStatus.NOTIFICATION_FAILED: "the notice was not sent",
-    EscalationStatus.EXPIRED: "the reply window expired",
-    EscalationStatus.REOPENED: "the run already resumed from a reply",
-    EscalationStatus.RESUMED: "the run already resumed from a reply",
+    EscalationStatus.EXPIRED: _WINDOW_EXPIRED,
+    EscalationStatus.REOPENED: _ALREADY_RESUMED,
+    EscalationStatus.RESUMED: _ALREADY_RESUMED,
 }
+
+#: Every phrase :func:`reply_closed_cause` can return.
+REPLY_CLOSED_CAUSES: frozenset[str] = frozenset(
+    {
+        *_STATUS_CAUSES.values(),
+        _ESCALATION_OFF,
+        _NO_INSTRUCTIONS,
+        _CURSOR_CLOSED,
+        _WINDOW_EXPIRED,
+        _REOPEN_LIMIT,
+        _HOST_NOT_ALLOWED,
+        _STATUS_UNKNOWN,
+    }
+)
+
+
+def _notice_host(record: EscalationRecord, allowed_hosts: Sequence[str]) -> str:
+    """The host the poller would read replies from: the stored one, else the first allowed."""
+    return record.target_host or (allowed_hosts[0] if allowed_hosts else "github.com")
 
 
 def reply_closed_cause(
@@ -57,29 +92,36 @@ def reply_closed_cause(
     max_reopens: int | None,
     reply_window_hours: float | None,
     enabled: bool | None,
+    allowed_hosts: Sequence[str] | None,
     now: datetime,
 ) -> str | None:
-    """Why the factory would ignore a reply to ``record`` at ``now``, or ``None``.
+    """Why the reply poller would ignore a reply to ``record`` at ``now``, or ``None``.
 
-    This is the rule behind ``poll_escalation_reply`` and ``validate_reply_candidate``
-    in :mod:`software_agent_factory.escalation`: a reply is read only while escalation
-    is enabled, the status is ``NOTIFIED``, the notice carries reply instructions,
-    the reply cursor is open, the reply window has not passed and a reopen is left.
+    This mirrors the accept checks of ``poll_escalation_reply`` and
+    ``validate_reply_candidate`` in :mod:`software_agent_factory.escalation`: a reply is
+    read only while escalation is enabled, the status is ``NOTIFIED``, the notice carries
+    reply instructions, the reply cursor is open, the reply window has not passed, a reopen
+    is left and the notice host is still allowed. A parity test keeps the mirror in line.
+    The poller also checks the stored decision context; this predicate does not.
     A config value that is ``None`` is unknown and does not close the reply.
-    The result is one short plain-English phrase.
+    The result is one short plain-English phrase from :data:`REPLY_CLOSED_CAUSES`.
     """
     if enabled is False:
-        return "escalation replies are turned off"
+        return _ESCALATION_OFF
     if record.status is not EscalationStatus.NOTIFIED:
-        return _STATUS_CAUSES.get(record.status, "the notice status is not known")
+        return _STATUS_CAUSES.get(record.status, _STATUS_UNKNOWN)
     if not record.remote_resume_enabled:
-        return "the notice has no reply instructions"
+        return _NO_INSTRUCTIONS
     if record.reply_cursor == "closed":
-        return "the factory stopped reading replies"
+        return _CURSOR_CLOSED
     if reply_window_hours is not None and now > record.created_at + timedelta(
         hours=reply_window_hours
     ):
-        return "the reply window expired"
+        return _WINDOW_EXPIRED
     if max_reopens is not None and record.reopen_count >= max_reopens:
-        return "the reopen limit is reached"
+        return _REOPEN_LIMIT
+    if allowed_hosts is not None and _notice_host(record, allowed_hosts).casefold() not in {
+        host.casefold() for host in allowed_hosts
+    }:
+        return _HOST_NOT_ALLOWED
     return None

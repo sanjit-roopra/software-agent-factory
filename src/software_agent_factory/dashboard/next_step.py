@@ -128,13 +128,14 @@ def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
     """Why the factory would ignore a reply now, or ``None`` when it would read it.
 
     The cause comes from :func:`software_agent_factory.escalation_protocol.reply_closed_cause`,
-    computed with the config when the run detail is built. A block without that field
-    is treated as closed, because the reply state is then unknown.
+    computed with the config when the run detail is built. ``None`` means open. A block
+    without that field, or with a value that is not ``None`` or a non-empty string, is
+    treated as closed, because the reply state is then unknown.
     """
-    if "reply_closed_cause" not in escalation:
-        return UNKNOWN_REPLY_STATE
-    cause = escalation["reply_closed_cause"]
-    return cause if isinstance(cause, str) and cause else None
+    cause = escalation.get("reply_closed_cause", UNKNOWN_REPLY_STATE)
+    if cause is None:
+        return None
+    return cause if isinstance(cause, str) and cause else UNKNOWN_REPLY_STATE
 
 
 def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, str, str] | None:
