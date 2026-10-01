@@ -1187,6 +1187,12 @@ class DashboardResumeRequest(VersionedModel):
             raise ValueError("a stale request needs a reason and a pending one has none")
         return self
 
+    def marked_stale(self, reason: DashboardRequestStaleReason) -> DashboardResumeRequest:
+        """This request as the service leaves it when it refuses it, validated again."""
+        return DashboardResumeRequest.model_validate(
+            {**self.model_dump(), "status": "stale", "reason": reason}
+        )
+
 
 class EscalationRecord(ModelBase):
     episode_id: str = Field(min_length=1)

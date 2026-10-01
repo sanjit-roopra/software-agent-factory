@@ -5,9 +5,9 @@ escalation controller, which pulls in the GitHub client, and the read-only
 dashboard both import the grammar, so they cannot drift apart on what a reply
 looks like.
 
-The reply poller keeps its own accept checks in :mod:`.escalation`.
-:func:`reply_closed_cause` mirrors them for the dashboard, and a parity test
-keeps the two in line. The stored-context validity check
+The reply poller takes its context, window and reopen checks from
+:func:`.resume.resume_refusal`. :func:`reply_closed_cause` mirrors that gate for the
+dashboard, and a parity test keeps the two in line. The stored-context validity check
 (``is_valid_risk_approval_context`` and ``is_valid_plan_decision_context``)
 lives in :mod:`.resume` and stays out of this mirror.
 """

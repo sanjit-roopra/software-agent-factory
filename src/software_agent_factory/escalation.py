@@ -501,14 +501,10 @@ def is_valid_plan_decision_answers(
         )
     ):
         return False
-    if len(answers.answers) != len(context.decisions):
-        return False
-    return all(
-        answer.decision_number == index
-        and bool(answer.answer)
-        and not contains_unsafe_content(answer.answer)[0]
-        for index, answer in enumerate(answers.answers, start=1)
+    rebuilt = build_plan_answers(
+        [answer.answer for answer in answers.answers], decision_count=len(context.decisions)
     )
+    return rebuilt == answers.answers
 
 
 def classify_halt_reason(
@@ -1692,6 +1688,7 @@ def poll_escalation_reply(
                 accepted_receipt = accept_resume(
                     run,
                     store,
+                    config,
                     reply=ReplyIdentity(
                         source="github",
                         comment_id=comment.id,
@@ -1703,6 +1700,10 @@ def poll_escalation_reply(
                     answers=plan_answers,
                     now=current_time,
                 )
+                if accepted_receipt is None:
+                    # The stored run no longer accepts a reply (the dashboard path got there
+                    # first). Saving this snapshot's cursor would overwrite its work.
+                    return None
                 break
 
             if getattr(result, "retryable", False):

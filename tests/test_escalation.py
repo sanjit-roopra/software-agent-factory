@@ -1427,6 +1427,44 @@ def test_a_dashboard_request_accepted_first_stops_the_github_poller(tmp_path: Pa
     assert saved.escalation.reopen_count == 1
 
 
+def test_the_github_poller_does_not_overwrite_a_reopen_it_read_too_late(tmp_path: Path) -> None:
+    config, store, run = _parity_run(tmp_path, {}, {})
+    assert run.escalation is not None
+    assert run.escalation.approval_context is not None
+    store.create_dashboard_request(
+        run.id,
+        DashboardResumeRequest(
+            run_id=run.id,
+            episode_id=run.escalation.episode_id,
+            context_fingerprint=run.escalation.approval_context.context_fingerprint,
+            action=ResumeClassification.RISK_APPROVAL,
+            created_at=_PARITY_NOW,
+        ),
+    )
+    comment = _make_comment_payload(
+        555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
+    )
+    client = GitHubClient(
+        runner=FakeRunner(
+            [
+                FakeCompletedProcess(0, json.dumps([comment])),  # poller list
+                FakeCompletedProcess(0, json.dumps(comment)),  # poller re-fetch
+            ]
+        )
+    )
+    assert ingest_dashboard_request(run, store, config, _PARITY_NOW) is not None
+    after_dashboard = store.load_run(run.id)
+
+    # ``run`` is the snapshot read before the dashboard request was ingested.
+    polled = poll_escalation_reply(run, store, config, client, tmp_path, now=_PARITY_NOW)
+
+    assert polled is None
+    assert store.load_run(run.id) == after_dashboard
+    assert after_dashboard.escalation is not None
+    assert [r.source for r in after_dashboard.escalation.accepted_replies] == ["dashboard"]
+    assert after_dashboard.escalation.reopen_count == 1
+
+
 def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     store = FileRunStore(tmp_path)

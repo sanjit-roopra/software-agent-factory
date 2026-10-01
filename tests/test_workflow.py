@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import os
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -5059,7 +5060,9 @@ def test_a_dashboard_risk_approval_reopens_the_run_at_refining_without_new_budge
         ),
     )
 
-    receipt = ingest_dashboard_request(run, store, config, utc_now())
+    now = run.escalation.created_at + timedelta(minutes=1)
+
+    receipt = ingest_dashboard_request(run, store, config, now)
 
     assert receipt is not None
     ingested = store.load_run(run.id)
@@ -5082,11 +5085,13 @@ def test_dashboard_plan_answers_reach_the_planning_prompt_after_reopen(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
+    answer = "Use JSON files in the data dir."
     planner_contexts: list[str | None] = []
 
     def planner(request: AgentRequest) -> AgentResult:
         planner_contexts.append(request.repair_context)
-        decisions = ["Choose the local persistence format."] if len(planner_contexts) < 3 else []
+        answered = request.repair_context is not None and answer in request.repair_context
+        decisions = [] if answered else ["Choose the local persistence format."]
         return AgentResult(
             role=AgentRole.PLANNER,
             success=True,
@@ -5115,17 +5120,15 @@ def test_dashboard_plan_answers_reach_the_planning_prompt_after_reopen(
             episode_id=run.escalation.episode_id,
             context_fingerprint=run.escalation.plan_decision_context.context_fingerprint,
             action=ResumeClassification.PLAN_DECISION,
-            answers=[
-                PlanDecisionAnswer(decision_number=1, answer="Use JSON files in the data dir.")
-            ],
+            answers=[PlanDecisionAnswer(decision_number=1, answer=answer)],
         ),
     )
+    now = run.escalation.created_at + timedelta(minutes=1)
 
-    assert ingest_dashboard_request(run, store, config, utc_now()) is not None
+    assert ingest_dashboard_request(run, store, config, now) is not None
     reopened = controller.reopen(run.id, source_repo)
 
     assert reopened.state is WorkflowState.PR_READY
-    assert len(planner_contexts) == 3
     assert planner_contexts[-1] is not None
-    assert "Use JSON files in the data dir." in planner_contexts[-1]
+    assert answer in planner_contexts[-1]
     assert reopened.attempt_records[0].triggered_by is AttemptTrigger.INITIAL

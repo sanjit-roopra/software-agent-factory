@@ -1,4 +1,4 @@
-"""Tests for the pure resume rules shared by the GitHub poller and dashboard requests."""
+"""Tests for the resume rules shared by the GitHub poller and dashboard requests."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from software_agent_factory.escalation import (
 )
 from software_agent_factory.models import (
     DASHBOARD_USER_LOGIN,
-    AcceptedReplyReceipt,
     Complexity,
     DashboardResumeRequest,
     EscalationRecord,
@@ -45,7 +44,7 @@ from software_agent_factory.resume import (
 )
 from software_agent_factory.store import FileRunStore
 
-# -- purity ------------------------------------------------------------------
+# -- imports ------------------------------------------------------------------
 
 
 def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
@@ -483,7 +482,7 @@ def test_a_github_reply_accepted_first_makes_the_request_stale(tmp_path: Path) -
         author_association="MEMBER",
         created_at=NOW - timedelta(minutes=1),
     )
-    accept_resume(run, store, reply=github, answers=None, now=NOW)
+    accept_resume(run, store, _config(), reply=github, answers=None, now=NOW)
     after_github = store.load_run(RUN_ID)
 
     assert ingest_dashboard_request(after_github, store, _config(), NOW) is None
@@ -676,7 +675,9 @@ def test_accept_resume_needs_an_escalation() -> None:
     reply = ReplyIdentity("github", 1, "lead-dev", None, "", NOW)
 
     with pytest.raises(ValueError, match="no escalation"):
-        accept_resume(run, FileRunStore(Path("unused")), reply=reply, answers=None, now=NOW)
+        accept_resume(
+            run, FileRunStore(Path("unused")), _config(), reply=reply, answers=None, now=NOW
+        )
 
 
 def test_accept_resume_rejects_answers_without_a_plan_context(tmp_path: Path) -> None:
@@ -686,24 +687,131 @@ def test_accept_resume_rejects_answers_without_a_plan_context(tmp_path: Path) ->
     answers = [PlanDecisionAnswer(decision_number=1, answer="x")]
 
     with pytest.raises(ValueError, match="no plan decision context"):
-        accept_resume(run, store, reply=reply, answers=answers, now=NOW)
+        accept_resume(run, store, _config(), reply=reply, answers=answers, now=NOW)
 
     assert store.load_run(RUN_ID) == run
 
 
-def test_the_receipt_is_a_valid_model_for_either_source() -> None:
-    for source, comment_id, login in [
-        ("github", 5, "lead-dev"),
-        ("dashboard", None, "dashboard-local"),
-    ]:
-        AcceptedReplyReceipt.model_validate(
-            {
-                "source": source,
-                "comment_id": comment_id,
-                "user_login": login,
-                "created_at": NOW,
-                "command": "@factory resume v1 run=r episode=e",
-                "episode_id": "e",
-                "run_id": "r",
-            }
-        )
+# -- one reopen per episode, even from a stale snapshot ----------------------
+
+
+def _github_reply() -> ReplyIdentity:
+    return ReplyIdentity(
+        source="github",
+        comment_id=555,
+        user_login="lead-dev",
+        user_id=1001,
+        author_association="MEMBER",
+        created_at=NOW - timedelta(minutes=1),
+    )
+
+
+def test_a_github_reply_on_a_stale_snapshot_does_not_overwrite_an_ingested_request(
+    tmp_path: Path,
+) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    _submit(store, run)
+    assert ingest_dashboard_request(run, store, _config(), NOW) is not None
+    after_dashboard = store.load_run(RUN_ID)
+
+    # ``run`` is the snapshot read before the request was ingested.
+    receipt = accept_resume(run, store, _config(), reply=_github_reply(), answers=None, now=NOW)
+
+    assert receipt is None
+    assert store.load_run(RUN_ID) == after_dashboard
+    assert after_dashboard.escalation is not None
+    assert [r.source for r in after_dashboard.escalation.accepted_replies] == ["dashboard"]
+    assert after_dashboard.escalation.reopen_count == 1
+
+
+def test_a_request_on_a_stale_snapshot_goes_stale_after_a_github_reply(tmp_path: Path) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    _submit(store, run)
+    github_receipt = accept_resume(
+        run, store, _config(), reply=_github_reply(), answers=None, now=NOW
+    )
+    assert github_receipt is not None
+    after_github = store.load_run(RUN_ID)
+
+    assert ingest_dashboard_request(run, store, _config(), NOW) is None
+
+    assert store.load_run(RUN_ID) == after_github
+    assert after_github.escalation is not None
+    assert after_github.escalation.accepted_replies == [github_receipt]
+    assert after_github.escalation.reopen_count == 1
+    stale = _stored_request(store, run)
+    assert (stale.status, stale.reason) == ("stale", "state_changed")
+
+
+def test_plan_answers_of_a_stale_snapshot_do_not_replace_the_accepted_ones(
+    tmp_path: Path,
+) -> None:
+    run = _run(PLAN)
+    store = _store(tmp_path, run)
+    _submit(store, run)
+    assert ingest_dashboard_request(run, store, _config(), NOW) is not None
+    late = [PlanDecisionAnswer(decision_number=n, answer=f"Late {n}.") for n in (1, 2)]
+
+    receipt = accept_resume(run, store, _config(), reply=_github_reply(), answers=late, now=NOW)
+
+    assert receipt is None
+    saved = store.load_artifact(RUN_ID, PlanDecisionAnswers)
+    assert saved.source == "dashboard"
+    assert [a.answer for a in saved.answers] == ["Answer 1.", "Answer 2."]
+
+
+def test_a_reply_checked_against_another_context_is_not_accepted(tmp_path: Path) -> None:
+    seen = _run(PLAN)
+    decisions = ["Pick another thing.", "Pick one more."]
+    newer = _plan_context().model_copy(
+        update={
+            "decisions": decisions,
+            "context_fingerprint": compute_plan_decision_context_fingerprint(
+                run_id=RUN_ID,
+                episode_id=EPISODE,
+                plan_fingerprint=PLAN_FINGERPRINT,
+                decisions=decisions,
+            ),
+        }
+    )
+    stored = _run(PLAN, plan_decision_context=newer)
+    store = _store(tmp_path, stored)
+    answers = [PlanDecisionAnswer(decision_number=n, answer=f"Answer {n}.") for n in (1, 2)]
+
+    receipt = accept_resume(seen, store, _config(), reply=_github_reply(), answers=answers, now=NOW)
+
+    assert receipt is None
+    assert store.load_run(RUN_ID) == stored
+    with pytest.raises(FileNotFoundError):
+        store.load_artifact(RUN_ID, PlanDecisionAnswers)
+
+
+# -- only the service writes -------------------------------------------------
+
+_WRITE_FUNCTIONS = {
+    "accept_resume",
+    "ingest_dashboard_request",
+    "replace_dashboard_request",
+    "save_run",
+}
+
+
+def test_the_dashboard_package_never_names_a_resume_write_function() -> None:
+    dashboard = Path(resume.__file__).parent / "dashboard"
+    sources = sorted(dashboard.rglob("*.py"))
+    assert sources, "the dashboard package moved; update this test"
+    named: dict[str, set[str]] = {}
+    for path in sources:
+        found: set[str] = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+            elif isinstance(node, ast.alias):
+                found.add(node.name.rsplit(".", maxsplit=1)[-1])
+        if found & _WRITE_FUNCTIONS:
+            named[path.name] = found & _WRITE_FUNCTIONS
+    assert named == {}
