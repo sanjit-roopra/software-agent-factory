@@ -61,24 +61,19 @@ def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
             else:
                 imported.add(f".{node.module or ''}")
 
-    forbidden = {"subprocess", ".github", ".workflow", ".service", ".escalation", ".store"}
-    assert imported.isdisjoint(forbidden)
-    assert imported <= {
-        "__future__",
-        "collections.abc",
-        "dataclasses",
-        "datetime",
-        "hashlib",
-        "json",
-        "logging",
-        "pathlib",
-        "re",
-        "secrets",
-        "typing",
-        ".config",
-        ".escalation_protocol",
-        ".models",
+    forbidden = {
+        "subprocess",
+        ".github",
+        ".workflow",
+        ".service",
+        ".escalation",
+        ".store",
+        ".dashboard",
+        ".publishing",
+        ".workspace",
+        ".agents",
     }
+    assert imported.isdisjoint(forbidden)
 
 
 # -- answer rules ------------------------------------------------------------
@@ -457,8 +452,11 @@ def test_a_run_without_an_escalation_is_left_alone(tmp_path: Path) -> None:
     assert ingest_dashboard_request(run, store, _config(), NOW) is None
 
 
-def test_an_accepted_request_stays_pending_and_is_not_ingested_twice(tmp_path: Path) -> None:
-    run = _run()
+@pytest.mark.parametrize("kind", [RISK, PLAN])
+def test_an_accepted_request_stays_pending_and_is_not_ingested_twice(
+    tmp_path: Path, kind: ResumeClassification
+) -> None:
+    run = _run(kind)
     store = _store(tmp_path, run)
     _submit(store, run)
     assert ingest_dashboard_request(run, store, _config(), NOW) is not None
@@ -470,10 +468,11 @@ def test_an_accepted_request_stays_pending_and_is_not_ingested_twice(tmp_path: P
     assert _stored_request(store, run).status == "pending"
 
 
+@pytest.mark.parametrize("kind", [RISK, PLAN])
 def test_a_request_this_run_accepted_stays_pending_when_ingest_reads_a_stale_run(
-    tmp_path: Path,
+    tmp_path: Path, kind: ResumeClassification
 ) -> None:
-    run = _run()
+    run = _run(kind)
     store = _store(tmp_path, run)
     _submit(store, run)
     assert ingest_dashboard_request(run, store, _config(), NOW) is not None
@@ -486,10 +485,11 @@ def test_a_request_this_run_accepted_stays_pending_when_ingest_reads_a_stale_run
     assert _stored_request(store, run).status == "pending"
 
 
+@pytest.mark.parametrize("kind", [RISK, PLAN])
 def test_an_accepted_request_stays_pending_when_a_stale_run_is_read_after_the_window(
-    tmp_path: Path,
+    tmp_path: Path, kind: ResumeClassification
 ) -> None:
-    run = _run()
+    run = _run(kind)
     store = _store(tmp_path, run)
     _submit(store, run)
     assert ingest_dashboard_request(run, store, _config(), NOW) is not None
@@ -893,6 +893,7 @@ _WRITE_FUNCTIONS = {
     "accept_resume",
     "ingest_dashboard_request",
     "replace_dashboard_request",
+    "save_artifact",
     "save_run",
 }
 

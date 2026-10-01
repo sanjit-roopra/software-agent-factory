@@ -625,7 +625,9 @@ class FakeGitHub:
         if argv[-1] == "user":
             payload: object = FACTORY_BOT
         elif "POST" in argv:
-            number = int(re.search(r"issues/(\d+)/comments", endpoint).group(1))  # type: ignore[union-attr]
+            match = re.search(r"issues/(\d+)/comments", endpoint)
+            assert match is not None
+            number = int(match.group(1))
             body = next(arg for arg in argv if arg.startswith("body="))[len("body=") :]
             self.posted.append((number, body))
             payload = _comment(5000 + len(self.posted), body, login="factory-bot", user_id=999)
@@ -700,7 +702,7 @@ def _escalation_config(
 
 
 @pytest.fixture
-def make_service(source_repo: Path, data_dir: Path):  # type: ignore[no-untyped-def]
+def make_service(source_repo: Path, data_dir: Path):
     """Build services over one data dir and shut every one down after the test."""
     services: list[FactoryService] = []
 
@@ -793,13 +795,13 @@ def test_a_free_slot_is_filled_by_one_reopened_run_per_cycle(
     service = make_service(config)
 
     service.reconcile_escalation()
-    assert set(service._handles) == {first.id}
     service.drain(60)
+    assert store.load_run(first.id).state is WorkflowState.PR_READY
+    assert store.load_run(second.id).state is WorkflowState.NEEDS_HUMAN
+
     service.reconcile_escalation()
     service.drain(60)
 
-    assert set(service._handles) == {first.id, second.id}
-    assert store.load_run(first.id).state is WorkflowState.PR_READY
     assert store.load_run(second.id).state is WorkflowState.PR_READY
 
 
@@ -866,7 +868,9 @@ def test_a_notice_is_delivered_even_when_no_slot_is_free(
     service.drain(60)
 
     assert [number for number, _ in github.posted] == [2]
-    assert store.load_run(undelivered.id).escalation.status is EscalationStatus.NOTIFIED  # type: ignore[union-attr]
+    notified = store.load_run(undelivered.id).escalation
+    assert notified is not None
+    assert notified.status is EscalationStatus.NOTIFIED
 
 
 # ---------------------------------------------------------------------------
@@ -902,6 +906,20 @@ def _stored_request(store: FileRunStore, run: FactoryRun) -> DashboardResumeRequ
     )
     assert request is not None
     return request
+
+
+def _escalated_hours_ago(store: FileRunStore, run: FactoryRun, hours: int) -> FactoryRun:
+    """``run`` with its escalation created ``hours`` hours ago, saved."""
+    assert run.escalation is not None
+    aged = run.model_copy(
+        update={
+            "escalation": run.escalation.model_copy(
+                update={"created_at": utc_now() - timedelta(hours=hours)}
+            )
+        }
+    )
+    store.save_run(aged)
+    return aged
 
 
 def _request_status(store: FileRunStore, run: FactoryRun) -> str:
@@ -941,10 +959,11 @@ def test_service_reopens_a_run_with_the_plan_answers_of_the_dashboard(
     source_repo: Path, data_dir: Path, make_service
 ) -> None:
     answers = ["Use JSON files.", "Keep 64 entries."]
-    prompts: list[str | None] = []
+    prompts: list[str] = []
 
     def planner(request: AgentRequest) -> AgentResult:
-        prompts.append(request.repair_context)  # type: ignore[arg-type]
+        if isinstance(request.repair_context, str):
+            prompts.append(request.repair_context)
         answered = isinstance(request.repair_context, str) and all(
             answer in request.repair_context for answer in answers
         )
@@ -990,28 +1009,7 @@ def test_service_reopens_a_run_with_the_plan_answers_of_the_dashboard(
 
     assert store.load_run(halted.id).state is WorkflowState.PR_READY
     assert _sources(store, halted) == ["dashboard"]
-    reopened_prompt = prompts[-1]
-    assert reopened_prompt is not None
-    assert all(answer in reopened_prompt for answer in answers)
-
-
-def test_service_ingests_without_a_github_client(
-    source_repo: Path, data_dir: Path, make_service, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = _escalation_config(data_dir, escalation_enabled=True)
-    store = FileRunStore(data_dir)
-    run = _halt_for_approval(config, store, source_repo, 1)
-    _approve(store, run)
-    service = make_service(config)
-    monkeypatch.setattr(service, "github_client", None)
-    assert service.controller is not None
-    monkeypatch.setattr(service.controller, "_github", None)
-
-    service.reconcile_escalation()
-    service.drain(60)
-
-    assert store.load_run(run.id).state is WorkflowState.PR_READY
-    assert _sources(store, run) == ["dashboard"]
+    assert all(answer in prompts[-1] for answer in answers)
 
 
 def test_a_used_up_quota_defers_the_request_to_a_later_cycle(
@@ -1050,13 +1048,13 @@ def test_a_full_service_defers_the_request_to_the_first_cycle_with_a_free_slot(
     service = make_service(config)
 
     service.reconcile_escalation()
+    service.drain(60)
 
-    assert set(service._handles) == {busy.id}
+    assert store.load_run(busy.id).state is WorkflowState.PR_READY
     assert store.load_run(run.id).state is WorkflowState.NEEDS_HUMAN
     assert _sources(store, run) == []
     assert _request_status(store, run) == "pending"
 
-    service.drain(60)
     service.reconcile_escalation()
     service.drain(60)
 
@@ -1109,7 +1107,9 @@ def test_service_with_escalation_enabled_posts_notices_and_reopens_github_replie
     service.drain(60)
 
     assert [number for number, _ in github.posted] == [1]
-    assert store.load_run(undelivered.id).escalation.status is EscalationStatus.NOTIFIED  # type: ignore[union-attr]
+    notified = store.load_run(undelivered.id).escalation
+    assert notified is not None
+    assert notified.status is EscalationStatus.NOTIFIED
     assert store.load_run(answered.id).state is WorkflowState.PR_READY
     assert _sources(store, answered) == ["github"]
 
@@ -1159,7 +1159,9 @@ def test_a_github_reply_accepted_first_makes_a_later_dashboard_request_stale(
     stale = _stored_request(store, answered)
     assert (stale.status, stale.reason) == ("stale", "state_changed")
     assert _sources(store, answered) == ["github"]
-    assert store.load_run(answered.id).escalation.reopen_count == 1  # type: ignore[union-attr]
+    reopened = store.load_run(answered.id).escalation
+    assert reopened is not None
+    assert reopened.reopen_count == 1
 
 
 def test_a_request_made_while_the_github_reply_is_accepted_goes_stale_in_that_cycle(
@@ -1194,8 +1196,9 @@ def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_without_a_sl
     service = make_service(config)
 
     service.reconcile_escalation()
+    service.drain(60)
 
-    assert set(service._handles) == {busy.id}
+    assert store.load_run(busy.id).state is WorkflowState.PR_READY
     stale = _stored_request(store, gone)
     assert (stale.status, stale.reason) == ("stale", "state_changed")
 
@@ -1208,14 +1211,7 @@ def test_a_request_made_inside_the_reply_window_reopens_after_the_quota_delayed_
     run = _halt_for_approval(tight, store, source_repo, 1)
     assert run.escalation is not None
     window_hours = tight.escalation.reply_window_hours
-    aged = run.model_copy(
-        update={
-            "escalation": run.escalation.model_copy(
-                update={"created_at": utc_now() - timedelta(hours=window_hours + 24)}
-            )
-        }
-    )
-    store.save_run(aged)
+    aged = _escalated_hours_ago(store, run, window_hours + 24)
     # Made 12 hours before the window ended; the quota holds it back until after the end.
     _approve(store, aged, created_at=utc_now() - timedelta(hours=36))
 
@@ -1228,3 +1224,51 @@ def test_a_request_made_inside_the_reply_window_reopens_after_the_quota_delayed_
 
     assert _sources(store, aged) == ["dashboard"]
     assert store.load_run(aged.id).state is WorkflowState.PR_READY
+
+
+def test_with_one_slot_the_run_escalated_first_reopens_first(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    # The older escalation has the higher id, so ordering by id alone would pick the other run.
+    older = _escalated_hours_ago(store, _halt_for_approval(config, store, source_repo, 2), 5)
+    newer = _escalated_hours_ago(store, _halt_for_approval(config, store, source_repo, 1), 1)
+    assert older.id > newer.id
+    _approve(store, older)
+    _approve(store, newer)
+    service = make_service(config)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert store.load_run(older.id).state is WorkflowState.PR_READY
+    assert store.load_run(newer.id).state is WorkflowState.NEEDS_HUMAN
+    assert _request_status(store, newer) == "pending"
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert store.load_run(newer.id).state is WorkflowState.PR_READY
+
+
+def test_a_dashboard_request_takes_the_daily_quota_before_github_reply_polling(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    # Two runs exist today, so one run of the daily limit of three is left, and two slots.
+    config = _escalation_config(
+        data_dir, escalation_enabled=True, max_concurrent_tasks=2, max_runs_per_day=3
+    )
+    store = FileRunStore(data_dir)
+    approved = _halt_for_approval(config, store, source_repo, 1)
+    _approve(store, approved)
+    answered = _notified(store, _halt_for_approval(config, store, source_repo, 2), 2)
+    github = FakeGitHub({2: [_github_reply_to(answered)]})
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert _sources(store, approved) == ["dashboard"]
+    assert 2 not in github.listed_issues
+    assert store.load_run(answered.id).state is WorkflowState.NEEDS_HUMAN

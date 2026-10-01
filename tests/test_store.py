@@ -6,12 +6,14 @@ import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
 from software_agent_factory.models import (
     ChangeSet,
+    DashboardRequestStaleReason,
     DashboardResumeRequest,
     FactoryRun,
     PlanDecisionAnswer,
@@ -890,38 +892,44 @@ def test_dashboard_request_lookup_rejects_bad_fingerprints(
         store.load_dashboard_request("run-1", "episode-1", fingerprint)
 
 
+_PLAN_ACTION = {"action": ResumeClassification.PLAN_DECISION}
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"episode_id": ""},
-        {"episode_id": "a/b"},
-        {"episode_id": "x" * 129},
-        {"context_fingerprint": "a" * 63},
-        {"context_fingerprint": "A" * 64},
-        {"action": ResumeClassification.NOT_RESUMABLE},
-        {"action": "DELETE_RUN"},
-        {"answers": [{"decision_number": 1, "answer": "x"}]},
-        {"action": ResumeClassification.PLAN_DECISION},
-        {
-            "action": ResumeClassification.PLAN_DECISION,
-            "answers": [{"decision_number": 2, "answer": "x"}],
-        },
-        {
-            "action": ResumeClassification.PLAN_DECISION,
-            "answers": [{"decision_number": 1, "answer": "two\nlines"}],
-        },
-        {
-            "action": ResumeClassification.PLAN_DECISION,
-            "answers": [{"decision_number": 1, "answer": "x" * 501}],
-        },
-        {
-            "action": ResumeClassification.PLAN_DECISION,
-            "answers": [{"decision_number": n, "answer": "x"} for n in range(1, 26)],
-        },
-        {"status": "stale"},
-        {"reason": "expired"},
-        {"status": "stale", "reason": "because"},
-        {"status": "done"},
+        pytest.param({"episode_id": ""}, id="empty-episode"),
+        pytest.param({"episode_id": "a/b"}, id="episode-with-slash"),
+        pytest.param({"episode_id": "x" * 129}, id="episode-too-long"),
+        pytest.param({"context_fingerprint": "a" * 63}, id="fingerprint-too-short"),
+        pytest.param({"context_fingerprint": "A" * 64}, id="fingerprint-uppercase"),
+        pytest.param({"action": ResumeClassification.NOT_RESUMABLE}, id="action-not-resumable"),
+        pytest.param({"action": "DELETE_RUN"}, id="action-unknown"),
+        pytest.param({"answers": [{"decision_number": 1, "answer": "x"}]}, id="risk-with-answers"),
+        pytest.param(_PLAN_ACTION, id="plan-without-answers"),
+        pytest.param(
+            {**_PLAN_ACTION, "answers": [{"decision_number": 2, "answer": "x"}]},
+            id="answers-start-at-two",
+        ),
+        pytest.param(
+            {**_PLAN_ACTION, "answers": [{"decision_number": 1, "answer": "two\nlines"}]},
+            id="answer-with-two-lines",
+        ),
+        pytest.param(
+            {**_PLAN_ACTION, "answers": [{"decision_number": 1, "answer": "x" * 501}]},
+            id="answer-too-long",
+        ),
+        pytest.param(
+            {
+                **_PLAN_ACTION,
+                "answers": [{"decision_number": n, "answer": "x"} for n in range(1, 26)],
+            },
+            id="too-many-answers",
+        ),
+        pytest.param({"status": "stale"}, id="stale-without-reason"),
+        pytest.param({"reason": "expired"}, id="pending-with-reason"),
+        pytest.param({"status": "stale", "reason": "because"}, id="unknown-reason"),
+        pytest.param({"status": "done"}, id="unknown-status"),
     ],
 )
 def test_dashboard_request_rejects_invalid_fields(overrides: dict[str, object]) -> None:
@@ -929,9 +937,9 @@ def test_dashboard_request_rejects_invalid_fields(overrides: dict[str, object]) 
         _request(**overrides)
 
 
-def test_dashboard_request_accepts_a_stale_state_with_each_reason() -> None:
-    for reason in ("expired", "reopen_limit", "context_changed", "state_changed"):
-        assert _request(status="stale", reason=reason).reason == reason
+@pytest.mark.parametrize("reason", get_args(DashboardRequestStaleReason))
+def test_dashboard_request_accepts_a_stale_state_with_each_reason(reason: str) -> None:
+    assert _request(status="stale", reason=reason).reason == reason
 
 
 def test_dashboard_request_accepts_the_string_form_of_an_action() -> None:
