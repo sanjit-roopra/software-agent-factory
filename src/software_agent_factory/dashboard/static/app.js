@@ -646,22 +646,9 @@
     return table;
   }
 
-  function totalUsageValue(models) {
-    const values = models
-      .map(function (model) {
-        return model.usage?.usage_value_usd;
-      })
-      .filter(isFiniteNumber);
-    if (values.length === 0) {
-      return null;
-    }
-    return values.reduce(function (sum, value) {
-      return sum + value;
-    }, 0);
-  }
-
-  function usageSummary(models) {
-    return "AI usage value: " + displayUsd(totalUsageValue(models)) + ". " + USAGE_NOTE;
+  function usageSummary(totals) {
+    const usageValue = totals?.costs?.usage_value_usd;
+    return "AI usage value: " + displayUsd(usageValue?.total) + ". " + USAGE_NOTE;
   }
 
   function projectCard(project) {
@@ -673,7 +660,7 @@
     card.appendChild(element("p", "project-meta", projectMeta(project)));
     card.appendChild(wrapTable(tasksTable(asArray(project.tasks))));
     card.appendChild(element("h4", "", "Models used"));
-    card.appendChild(element("p", "project-meta", usageSummary(models)));
+    card.appendChild(element("p", "project-meta", usageSummary(project.totals)));
     if (models.length === 0) {
       card.appendChild(element("p", "", "No model invocations yet."));
     } else {

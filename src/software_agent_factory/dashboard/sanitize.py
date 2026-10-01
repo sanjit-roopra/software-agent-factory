@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 
 from ..redaction import bounded_reason
 from ..store import ARTIFACT_FILENAMES
+from .aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS, run_totals
 from .snapshot import is_valid_run_id, to_json_safe
 
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
@@ -173,35 +174,19 @@ _ACTIVE_INPUT_KEYS = (
     "attempt_number",
 )
 
-#: Token classes and cost units a call always reports. An unreported value is
-#: ``None``, never ``0``. Names match ``USAGE_FIELDS``.
-TOKEN_CLASS_FIELDS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-)
-COST_UNIT_FIELDS: tuple[str, ...] = (
-    "total_premium_request_cost",
-    "usage_value_usd",
-    "list_price_estimate_usd",
-)
+#: ``usage_value_usd`` is derived from ``total_nano_aiu``; a provider value for
+#: it is never read, so it stays out of the allowlist.
+_DERIVED_USAGE_FIELDS: frozenset[str] = frozenset({"usage_value_usd"})
 
-USAGE_FIELDS: frozenset[str] = frozenset(
-    {
-        "total_premium_request_cost",
+USAGE_FIELDS: frozenset[str] = (
+    frozenset(TOKEN_CLASS_FIELDS)
+    | (frozenset(COST_UNIT_FIELDS) - _DERIVED_USAGE_FIELDS)
+    | {
         "total_nano_aiu",
         "total_api_duration_ms",
         "session_duration_ms",
-        "input_tokens",
-        "output_tokens",
-        "reasoning_tokens",
-        "cache_read_tokens",
-        "cache_write_tokens",
         "reported_invocations",
         "premium_request_cost",
-        "list_price_estimate_usd",
     }
 )
 
@@ -625,9 +610,9 @@ def _sanitize_calls(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         sanitized["attempts"] = [sanitize_attempt(item, run_id) for item in attempts]
     invocations = data.get("invocations")
     if isinstance(invocations, list):
-        sanitized["invocations"] = sorted(
-            (sanitize_invocation(item, run_id) for item in invocations), key=_call_order
-        )
+        calls = sorted((sanitize_invocation(item, run_id) for item in invocations), key=_call_order)
+        sanitized["invocations"] = calls
+        sanitized["totals"] = run_totals(calls)
     active_invocation = data.get("active_invocation")
     if isinstance(active_invocation, dict):
         sanitized["active_invocation"] = sanitize_active_invocation(active_invocation, run_id)
@@ -735,6 +720,7 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
             if "usage" in model_data:
                 model_data["usage"] = sanitize_usage(model_data["usage"])
             sanitized["models"].append(model_data)
+        sanitized["totals"] = run_totals(sanitized["models"])
     return sanitized
 
 

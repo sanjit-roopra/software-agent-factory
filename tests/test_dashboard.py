@@ -751,7 +751,7 @@ def test_projects_show_project_and_task_progress(running_server: RunningServer) 
     assert response.status == 200
     payload = _body_json(response)
     project = payload["projects"][0]
-    assert set(project) <= PROJECT_FIELDS | {"tasks", "models"}
+    assert set(project) <= PROJECT_FIELDS | {"tasks", "models", "totals"}
     assert project["project_id"] == "project-001"
     assert project["state"] == "RUNNING"
     assert set(project["tasks"][0]) <= PROJECT_TASK_FIELDS
@@ -1222,6 +1222,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             "active_invocation",
             "attempts",
             "invocations",
+            "totals",
         }
         assert "logs" not in payload
         assert "diff" not in payload
@@ -2614,3 +2615,41 @@ def test_run_detail_api_returns_calls_in_number_order_with_the_timeline_fields(
     assert payload["invocations"][0]["duration_ms"] == 300_000
     assert payload["failure_reason"] is None
     assert payload["failure_reason_truncated"] is False
+
+
+def test_run_detail_api_carries_totals_by_unit(running_server: RunningServer) -> None:
+    response = running_server.request(
+        "GET", "/api/runs/run-001", headers=running_server.authed_headers()
+    )
+
+    totals = _body_json(response)["totals"]
+    assert totals["calls"] == 1
+    assert totals["duration_ms"] == {"total": 300_000, "reported_count": 1}
+    assert totals["costs"]["total_premium_request_cost"] == {"total": 1.0, "reported_count": 1}
+    assert totals["costs"]["usage_value_usd"] == {"total": None, "reported_count": 0}
+
+
+def test_run_detail_without_a_calls_list_has_no_totals() -> None:
+    assert "totals" not in sanitize_run_detail({"run_id": "run-001"})
+
+
+def test_run_detail_with_no_calls_yet_has_every_total_unreported() -> None:
+    totals = sanitize_run_detail({"run_id": "run-001", "invocations": []})["totals"]
+
+    assert totals["calls"] == 0
+    assert totals["duration_ms"] == {"total": None, "reported_count": 0}
+
+
+def test_project_carries_totals_over_its_models() -> None:
+    project = sanitize_project(
+        {
+            "project_id": "project-001",
+            "models": [
+                {"usage": {"total_nano_aiu": 100_000_000_000}, "success": True},
+                {"usage": {}, "success": False},
+            ],
+        }
+    )
+
+    assert project["totals"]["calls"] == 2
+    assert project["totals"]["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}

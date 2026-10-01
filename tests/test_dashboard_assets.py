@@ -491,3 +491,10 @@ def test_a_request_times_out_after_ten_seconds_and_counts_as_a_lost_connection()
     assert fetcher.index(".then(readResponse") < fetcher.index(".finally(")
     assert "globalThis.clearTimeout(timer)" in fetcher.split(".finally(")[1]
     assert "response.json().catch(onNetworkError)" in function_source(js, "readResponse")
+
+
+def test_the_project_usage_value_comes_from_the_server_totals_not_a_client_sum() -> None:
+    js = dashboard_assets.APP_JS
+    assert "totalUsageValue" not in js
+    assert "totals?.costs?.usage_value_usd" in function_source(js, "usageSummary")
+    assert "usageSummary(project.totals)" in function_source(js, "projectCard")
