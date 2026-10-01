@@ -21,6 +21,10 @@ depends on small callables supplied by whoever wires the dashboard up:
 Neither provider is invoked with anything the dashboard has not already
 validated, and neither is expected to perform writes; the dashboard only ever
 calls them from `GET`/`HEAD` handling.
+
+``ResumeRunReader`` and ``ResumeRequester`` serve the two approve and answer
+routes (ADR-033). The reader only reads. The requester makes the one write the
+dashboard asks for, a create-only request file; it never changes a run.
 """
 
 from __future__ import annotations
@@ -28,7 +32,10 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from ..models import DashboardResumeRequest, FactoryRun
 
 #: Hard ceiling on requested page size, independent of what any caller asks
 #: for. Keeps one client from forcing an unbounded read/serialize.
@@ -100,6 +107,30 @@ class ResumeRequestReader(Protocol):
     """
 
     def __call__(self, run_id: str, episode_id: str) -> Iterable[Any]: ...
+
+
+#: What the requester reports for one request: it was stored, one for the same episode and
+#: context already exists, or the run is gone.
+ResumeRequestResult = Literal["created", "exists", "run_missing"]
+
+
+class ResumeRunReader(Protocol):
+    """Provider of the stored run an approval or answer is checked against.
+
+    Returns ``None`` when the run does not exist or cannot be read. Read only.
+    """
+
+    def __call__(self, run_id: str) -> FactoryRun | None: ...
+
+
+class ResumeRequester(Protocol):
+    """Provider that stores one dashboard resume request, create-only.
+
+    The only write the dashboard asks for. It never changes a run: the factory
+    service reads the request later and decides.
+    """
+
+    def __call__(self, run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult: ...
 
 
 #: The real ``build_monitoring_snapshot`` (``observability.py``) rejects

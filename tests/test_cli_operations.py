@@ -668,6 +668,49 @@ def test_dashboard_resume_request_reader_returns_the_stored_requests_without_ans
     assert reader("run-queued", "ep-2") == []
 
 
+def test_dashboard_resume_actions_read_the_run_and_create_the_request(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    _save_needs_human_run(data_dir, "run-approve", now)
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+    actions = fake_dashboard[0].config.resume_actions
+
+    def request(run_id: str) -> DashboardResumeRequest:
+        return DashboardResumeRequest(
+            run_id=run_id,
+            episode_id="ep-1",
+            context_fingerprint="a" * 64,
+            action=ResumeClassification.RISK_APPROVAL,
+            created_at=now,
+        )
+
+    run = actions.run_reader("run-approve")
+    assert run is not None
+    assert run.id == "run-approve"
+    assert actions.run_reader("run-missing") is None
+    assert actions.requester("run-approve", request("run-approve")) == "created"
+    assert actions.requester("run-approve", request("run-approve")) == "exists"
+    assert actions.requester("run-missing", request("run-missing")) == "run_missing"
+    stored = FileRunStore(data_dir).list_dashboard_requests("run-approve", "ep-1")
+    assert [r.run_id for r in stored] == ["run-approve"]
+
+
+def test_dashboard_resume_actions_use_the_configured_limits(
+    tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    config_path = write_config(
+        tmp_path / "factory.yaml",
+        data_dir,
+        escalation={"max_reopens": 2, "reply_window_hours": 5},
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    actions = fake_dashboard[0].config.resume_actions
+    assert (actions.max_reopens, actions.reply_window_hours) == (2, 5)
+
+
 @pytest.mark.parametrize(
     ("escalation", "cause"),
     [

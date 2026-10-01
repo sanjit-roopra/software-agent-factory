@@ -73,6 +73,8 @@ if TYPE_CHECKING:
     from .agents import AgentRuntime
     from .config import FactoryConfig
     from .models import (
+        DashboardResumeRequest,
+        FactoryRun,
         InvocationRecord,
         RepositoryProfile,
         RepositorySkill,
@@ -1035,6 +1037,8 @@ def dashboard_command(
     _configure_logging(factory_config)
 
     from .dashboard import LOOPBACK_HOST, DashboardConfig
+    from .dashboard.actions import ResumeActions
+    from .dashboard.snapshot import ResumeRequestResult
     from .observability import (
         RunScanCache,
         build_active_invocation_summary,
@@ -1083,6 +1087,22 @@ def dashboard_command(
             request.model_dump(mode="json", exclude={"answers"})
             for request in store.list_dashboard_requests(run_id, episode_id)
         ]
+
+    def resume_run_reader(run_id: str) -> FactoryRun | None:
+        # Read only. A run that is missing or cannot be read is an unknown run.
+        try:
+            return store.load_run(run_id)
+        except (OSError, ValueError):
+            return None
+
+    def resume_requester(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
+        # The one write the dashboard makes: a create-only request file. The service
+        # reads it later and is the only writer of the run.
+        try:
+            created = store.create_dashboard_request(run_id, request)
+        except FileNotFoundError:
+            return "run_missing"
+        return "created" if created else "exists"
 
     def health_provider() -> object:
         return build_operational_health(
@@ -1196,6 +1216,12 @@ def dashboard_command(
                 health_provider=health_provider,
                 project_provider=project_provider,
                 resume_request_reader=resume_request_reader,
+                resume_actions=ResumeActions(
+                    run_reader=resume_run_reader,
+                    requester=resume_requester,
+                    reply_window_hours=factory_config.escalation.reply_window_hours,
+                    max_reopens=factory_config.escalation.max_reopens,
+                ),
                 host=LOOPBACK_HOST,
                 port=port,
             )

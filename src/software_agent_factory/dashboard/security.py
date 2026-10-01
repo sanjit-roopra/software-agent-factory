@@ -9,6 +9,7 @@ configuration, and nothing here imports outside the standard library.
 from __future__ import annotations
 
 import secrets
+from typing import Protocol
 
 #: Number of random bytes used for the per-process dashboard token. 32 bytes
 #: (256 bits) of ``secrets.token_urlsafe`` output is well beyond brute-force
@@ -46,6 +47,21 @@ def token_matches(expected: str, candidate: str | None) -> bool:
     if not candidate or not isinstance(candidate, str):
         return False
     return secrets.compare_digest(expected, candidate)
+
+
+class HeaderSource(Protocol):
+    """Anything that looks a header up by name, such as ``http.client.HTTPMessage``."""
+
+    def get(self, name: str) -> str | None: ...
+
+
+def header_token_matches(expected: str, headers: HeaderSource) -> bool:
+    """Whether the token header carries ``expected``. The query string never counts.
+
+    A write must use this and not the page-load rule: a token in a URL ends up in browser
+    history and referrers, so it must never authorize a change.
+    """
+    return token_matches(expected, headers.get(TOKEN_HEADER))
 
 
 class InvalidBindHostError(ValueError):
@@ -103,3 +119,12 @@ def origin_header_is_valid(origin_header: str | None, bound_host: str, port: int
     if origin_header is None or origin_header == "":
         return True
     return origin_header.strip().lower() == expected_origin(bound_host, port).lower()
+
+
+def required_origin_is_valid(origin_header: str | None, bound_host: str, port: int) -> bool:
+    """Validate ``Origin`` for a write: it must be present and the exact origin served.
+
+    A browser always sends ``Origin`` with a cross-site ``POST``. A request without one
+    is not from this page, so unlike :func:`origin_header_is_valid` absent is refused.
+    """
+    return bool(origin_header) and origin_header_is_valid(origin_header, bound_host, port)

@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 
+from .actions import ResumeActions
 from .handler import DashboardRequestHandler
 from .security import expected_origin, generate_token, validate_bind_host
 from .snapshot import (
@@ -39,7 +40,8 @@ class DashboardConfig:
     points of contact with real data; both are mandatory so a caller cannot
     accidentally stand up a dashboard with no data source. ``health_provider``
     is optional -- a dashboard with no configured health source simply
-    reports ``health: null`` rather than refusing to start. Pass fakes in
+    reports ``health: null`` rather than refusing to start. ``resume_actions`` turns on
+    the approve and answer routes; without it every ``POST`` is ``405``. Pass fakes in
     tests and thin wrappers around ``observability.build_monitoring_snapshot``
     / a safe run lookup / ``doctor.run_doctor`` in production wiring.
     """
@@ -49,6 +51,7 @@ class DashboardConfig:
     health_provider: HealthProvider | None = None
     project_provider: ProjectProvider | None = None
     resume_request_reader: ResumeRequestReader | None = None
+    resume_actions: ResumeActions | None = None
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     token: str | None = None
@@ -68,6 +71,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.health_provider: HealthProvider | None = config.health_provider
         self.project_provider: ProjectProvider | None = config.project_provider
         self.resume_request_reader: ResumeRequestReader | None = config.resume_request_reader
+        self.resume_actions: ResumeActions | None = config.resume_actions
         super().__init__((bind_host, config.port), DashboardRequestHandler)
 
     @property

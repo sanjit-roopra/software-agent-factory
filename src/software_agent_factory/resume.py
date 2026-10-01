@@ -363,7 +363,8 @@ def can_accept_resume(run: FactoryRun, config: FactoryConfig, now: datetime) -> 
     return resume_refusal(run, config, now) is None
 
 
-def _current_context_fingerprint(escalation: EscalationRecord) -> str | None:
+def current_context_fingerprint(escalation: EscalationRecord) -> str | None:
+    """The fingerprint of the context ``escalation`` asks a human to decide, or ``None``."""
     if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
         risk_context = escalation.approval_context
         return risk_context.context_fingerprint if risk_context is not None else None
@@ -404,7 +405,7 @@ class ReplyIdentity:
 def _same_context(fresh: EscalationRecord, seen: EscalationRecord) -> bool:
     """Whether ``fresh`` is still the episode and context the reply was checked against."""
     return fresh.episode_id == seen.episode_id and (
-        _current_context_fingerprint(fresh) == _current_context_fingerprint(seen)
+        current_context_fingerprint(fresh) == current_context_fingerprint(seen)
     )
 
 
@@ -646,7 +647,7 @@ def ingest_dashboard_request(
     escalation = run.escalation
     if escalation is None:
         return None
-    fingerprint = _current_context_fingerprint(escalation)
+    fingerprint = current_context_fingerprint(escalation)
     if requests is None:
         requests = store.list_dashboard_requests(run.id, escalation.episode_id)
     current = _settle_other_contexts(store, run.id, escalation, fingerprint, requests)

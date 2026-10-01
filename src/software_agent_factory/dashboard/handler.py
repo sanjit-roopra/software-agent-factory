@@ -1,7 +1,9 @@
 """HTTP request handling for the read-only local dashboard.
 
 Routing, auth (token/Host/Origin), method enforcement and security headers
-all live here. Nothing in this module -- or anywhere in this package --
+all live here. ``GET`` serves reads. The only ``POST`` routes are the approve and
+answer actions (ADR-033): they check the transport here and the run in
+:mod:`.actions`. Nothing in this module -- or anywhere in this package --
 imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
 ``subprocess`` or any shell helper. All data comes from the injectable
 providers in :mod:`software_agent_factory.dashboard.snapshot`.
@@ -17,13 +19,16 @@ from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from ..models import ResumeClassification
 from . import assets
+from .actions import ActionRejected, ResumeActions, accept_action
 from .sanitize import sanitize_health, sanitize_run_summary
 from .security import (
-    TOKEN_HEADER,
     TOKEN_QUERY_PARAM,
+    header_token_matches,
     host_header_is_valid,
     origin_header_is_valid,
+    required_origin_is_valid,
     token_matches,
 )
 from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
@@ -33,6 +38,10 @@ if TYPE_CHECKING:
     from .server import DashboardServer
 
 _logger = logging.getLogger("software_agent_factory.dashboard")
+
+#: One event for every approve or answer request, accepted or refused. It holds the run id
+#: and the result. It never holds the token or the body.
+_audit_logger = logging.getLogger("software_agent_factory.dashboard.audit")
 
 #: Hard ceiling on the number of query-string fields ``parse_qs`` will
 #: accept. The dashboard only ever reads ``token``/``limit``/``offset``, so
@@ -61,6 +70,19 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 )
 
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
+#: The decoded path, so a run id such as ``../etc`` reaches the id check as a ``400`` and is
+#: not mistaken for an unknown route.
+_ACTION_PATTERN = re.compile(r"/api/runs/(.+)/(approve|answer)", re.DOTALL)
+_ACTION_KINDS = {
+    "approve": ResumeClassification.RISK_APPROVAL,
+    "answer": ResumeClassification.PLAN_DECISION,
+}
+#: Largest request body a write accepts. A body of exactly this size is accepted.
+MAX_BODY_BYTES = 16 * 1024
+#: A refused write whose body is still unread is read and dropped after the answer when it is
+#: no larger than this, so the connection stays in step. A larger one closes the connection.
+_MAX_DISCARDED_BODY_BYTES = 4 * MAX_BODY_BYTES
+_MAX_LOGGED_RUN_ID_LENGTH = 128
 _LOG_UNSAFE_PATTERN = re.compile(r"[^\x20-\x7e]")
 _MAX_LOGGED_PATH_LENGTH = 200
 _MAX_LOGGED_METHOD_LENGTH = 16
@@ -101,6 +123,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     server: DashboardServer
     server_version = "SoftwareAgentFactoryDashboard/1"
     protocol_version = "HTTP/1.1"
+    #: Whether the current write's body has been read. Set at the start of every write.
+    _body_read = False
 
     # -- stdlib method hooks -------------------------------------------------
 
@@ -111,7 +135,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self._dispatch(send_body=False)
 
     def do_POST(self) -> None:  # noqa: N802
-        self._method_not_allowed()
+        actions = self.server.resume_actions
+        match = _ACTION_PATTERN.fullmatch(self._decoded_path())
+        if actions is None or match is None:
+            self._method_not_allowed()
+            return
+        self._serve_action(actions, match.group(1), match.group(2))
 
     def do_PUT(self) -> None:  # noqa: N802
         self._method_not_allowed()
@@ -178,22 +207,33 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 send_body,
             )
 
+    def _decoded_path(self) -> str:
+        """The request path without its query, percent-decoded. Empty if it cannot be parsed."""
+        try:
+            return unquote(urlsplit(self.path).path)
+        except ValueError:  # e.g. an unterminated IPv6 literal in the target
+            return ""
+
     def _method_not_allowed(self) -> None:
+        # The body of a refused write, if any, stays unread.
+        self.close_connection = True
+        is_action = (
+            self.server.resume_actions is not None
+            and _ACTION_PATTERN.fullmatch(self._decoded_path()) is not None
+        )
         self._respond_json(
             HTTPStatus.METHOD_NOT_ALLOWED,
             {"error": "method not allowed"},
             send_body=True,
-            extra_headers=(("Allow", "GET, HEAD"),),
+            extra_headers=(("Allow", "POST" if is_action else "GET, HEAD"),),
         )
 
     def _token_is_valid(self, query: dict[str, list[str]]) -> bool:
-        expected = self.server.token
-        header_token = self.headers.get(TOKEN_HEADER)
-        if token_matches(expected, header_token):
+        if header_token_matches(self.server.token, self.headers):
             return True
         query_values = query.get(TOKEN_QUERY_PARAM)
         query_token = query_values[0] if query_values else None
-        return token_matches(expected, query_token)
+        return token_matches(self.server.token, query_token)
 
     # -- routing ---------------------------------------------------------------
 
@@ -397,6 +437,90 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             _logger.exception("Resume request reader failed for run %s", run_id)
             return []
 
+    # -- writes -----------------------------------------------------------------
+
+    def _serve_action(self, actions: ResumeActions, raw_run_id: str, action_name: str) -> None:
+        """Run one approve or answer request and write its one audit event."""
+        self._body_read = False
+        status, payload, result = self._action_outcome(
+            actions, raw_run_id, _ACTION_KINDS[action_name]
+        )
+        unread = self._unread_body_length()
+        _audit_logger.info(
+            "dashboard %s run=%s result=%s",
+            action_name,
+            _log_safe_text(raw_run_id, _MAX_LOGGED_RUN_ID_LENGTH),
+            result,
+        )
+        self._respond_json(status, payload, send_body=True)
+        # After the answer, so a client that lies about its length only blocks itself.
+        self.rfile.read(unread)
+
+    def _action_outcome(
+        self, actions: ResumeActions, raw_run_id: str, kind: ResumeClassification
+    ) -> tuple[HTTPStatus, dict[str, object], str]:
+        """The status, JSON body and audit result of one write. Never raises."""
+        try:
+            self._check_write_headers()
+            body = self._read_json_body()
+            payload = accept_action(actions, kind, raw_run_id, body)
+        except ActionRejected as rejected:
+            return rejected.status, rejected.payload, rejected.result
+        except Exception:  # noqa: BLE001 - never leak internals to the client
+            _logger.exception("Unhandled dashboard error for an action on a run")
+            error = HTTPStatus.INTERNAL_SERVER_ERROR
+            return error, {"error": "internal error"}, str(error.value)
+        return HTTPStatus.ACCEPTED, payload, str(HTTPStatus.ACCEPTED.value)
+
+    def _check_write_headers(self) -> None:
+        """``Host``, ``Origin`` and the token header, in that order. A write needs all three."""
+        bound_host, port = self.server.address
+        if not host_header_is_valid(self.headers.get("Host"), bound_host, port):
+            raise ActionRejected(HTTPStatus.BAD_REQUEST, "invalid host")
+        if not required_origin_is_valid(self.headers.get("Origin"), bound_host, port):
+            raise ActionRejected(HTTPStatus.FORBIDDEN, "invalid origin")
+        if not header_token_matches(self.server.token, self.headers):
+            raise ActionRejected(HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    def _content_length(self) -> int | None:
+        """The declared body length, or ``None`` when it is missing or not a number."""
+        raw = self.headers.get("Content-Length")
+        if raw is None or not (raw.isascii() and raw.isdigit()):
+            return None
+        # Too many digits to be a size we would accept; also keeps ``int`` cheap and safe.
+        return int(raw) if len(raw) <= 12 else _MAX_DISCARDED_BODY_BYTES + 1
+
+    def _read_json_body(self) -> object:
+        """The decoded JSON body of a write: ``415``, ``413`` or ``400`` when it cannot be."""
+        media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            raise ActionRejected(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "send application/json")
+        length = self._content_length()
+        if length is None:
+            raise ActionRejected(HTTPStatus.BAD_REQUEST, "invalid content length")
+        if length > MAX_BODY_BYTES:
+            raise ActionRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body too large")
+        raw = self.rfile.read(length)
+        self._body_read = True
+        try:
+            return json.loads(raw)
+        except (ValueError, RecursionError):  # bad bytes, bad JSON or absurdly deep nesting
+            raise ActionRejected(HTTPStatus.BAD_REQUEST, "the body is not valid JSON") from None
+
+    def _unread_body_length(self) -> int:
+        """How many bytes of a refused write are still to be dropped after the answer.
+
+        A body that cannot be dropped, because its size is unknown or large, closes the
+        connection instead, so the next request is never read from the middle of a body.
+        """
+        if self._body_read:
+            return 0
+        length = self._content_length()
+        if length is None or length > _MAX_DISCARDED_BODY_BYTES:
+            self.close_connection = True
+            return 0
+        return length
+
     # -- response helpers -------------------------------------------------------
 
     def _respond_json(
@@ -428,6 +552,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         for name, value in extra_headers:
             self.send_header(name, value)
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         if send_body:
             self.wfile.write(body)
