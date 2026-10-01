@@ -2212,6 +2212,7 @@ CALL_FIELD_ORDER = [
     "completed_at",
     "duration_ms",
     "usage",
+    "total_tokens",
     "failure_reason",
     "failure_reason_truncated",
 ]
@@ -2338,6 +2339,41 @@ def test_call_duration_is_derived_from_its_timestamps(
     call = sanitize_invocation(_raw_call(started_at=started, completed_at=completed))
 
     assert call["duration_ms"] == expected
+
+
+#: The Copilot usage fixture in tests/test_copilot_runtime.py: 1195 input tokens beside
+#: 47104 cache-read tokens, so the cache classes add to input. Its 18 reasoning tokens
+#: are already inside the 59 output tokens.
+COPILOT_USAGE = {
+    "input_tokens": 1195,
+    "output_tokens": 59,
+    "reasoning_tokens": 18,
+    "cache_read_tokens": 47104,
+    "cache_write_tokens": 0,
+}
+
+
+def test_call_total_tokens_adds_input_output_and_cache_but_not_reasoning() -> None:
+    call = sanitize_invocation(_raw_call(usage=COPILOT_USAGE))
+
+    assert call["total_tokens"] == 1195 + 59 + 47104 + 0
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"input_tokens": 10, "cache_write_tokens": 5}, 15),
+        ({"output_tokens": 0}, 0),
+        ({"reasoning_tokens": 7}, None),
+        ({}, None),
+        (None, None),
+    ],
+    ids=["partial", "reported-zero", "reasoning-only", "empty", "no-usage"],
+)
+def test_call_total_tokens_is_null_unless_a_counted_class_was_reported(
+    usage: dict[str, int] | None, expected: int | None
+) -> None:
+    assert sanitize_invocation(_raw_call(usage=usage))["total_tokens"] == expected
 
 
 def test_call_reasoning_level_must_be_a_short_token() -> None:
@@ -2541,9 +2577,9 @@ def test_running_call_has_the_shape_of_a_finished_call_with_nothing_reported() -
 
     assert list(call) == CALL_FIELD_ORDER
     assert call["status"] == "running"
-    assert call["reasoning"] == "medium"
     assert call["started_at"] == "2024-01-01T00:06:00+00:00"
     assert call["success"] is None
+    assert call["total_tokens"] is None
     assert call["completed_at"] is None
     assert call["duration_ms"] is None
     assert call["failure_reason"] is None
@@ -2639,3 +2675,137 @@ def test_project_carries_totals_over_its_models() -> None:
 
     assert project["totals"]["calls"] == 2
     assert project["totals"]["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}
+
+
+# --------------------------------------------------------------------------
+# Provider -> sanitizer: one usage definition and the running call's reasoning
+# --------------------------------------------------------------------------
+
+
+def _stored_detail(tmp_path: Path, **run_fields: Any) -> Any:
+    from datetime import UTC, datetime
+
+    from software_agent_factory.models import FactoryRun, WorkflowState
+    from software_agent_factory.observability import build_run_detail
+    from software_agent_factory.store import FileRunStore
+
+    store = FileRunStore(tmp_path / "data")
+    state = run_fields.pop("state", WorkflowState.DONE)
+    store.save_run(
+        FactoryRun(id="stored-run", work_item_id="WI-1", state=state, **run_fields),
+    )
+    return build_run_detail(store, "stored-run", now=datetime(2026, 9, 1, 12, 5, tzinfo=UTC))
+
+
+def _usage_call(number: int, usage: Any) -> Any:
+    from datetime import UTC, datetime, timedelta
+
+    from software_agent_factory.models import AgentRole, InvocationRecord
+
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    return InvocationRecord(
+        invocation_number=number,
+        role=AgentRole.IMPLEMENTER,
+        model="gpt-5.6-sol",
+        reasoning="high",
+        started_at=started,
+        completed_at=started + timedelta(minutes=1),
+        success=True,
+        usage=usage,
+    )
+
+
+def test_a_call_that_reports_usage_only_per_model_still_counts_in_the_totals(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.models import ModelUsage, UsageMetrics
+
+    per_model_only = UsageMetrics(
+        model_usage=(
+            ModelUsage(
+                model="claude-sonnet-5",
+                premium_request_cost=1.0,
+                input_tokens=100,
+                output_tokens=20,
+                reasoning_tokens=5,
+                total_nano_aiu=100_000_000_000,
+            ),
+            ModelUsage(model="gpt-5.6-sol", premium_request_cost=0.5, input_tokens=10),
+        )
+    )
+    aggregate = UsageMetrics(input_tokens=1000, total_premium_request_cost=2.0)
+    detail = _stored_detail(
+        tmp_path,
+        invocation_records=[_usage_call(1, per_model_only), _usage_call(2, aggregate)],
+    )
+
+    shown = sanitize_run_detail(detail)
+
+    first, second = shown["invocations"]
+    assert first["usage"]["input_tokens"] == 110
+    assert first["usage"]["output_tokens"] == 20
+    assert first["usage"]["reasoning_tokens"] == 5
+    assert first["usage"]["total_premium_request_cost"] == 1.5
+    assert first["usage"]["usage_value_usd"] == 1.0
+    assert first["total_tokens"] == 130
+    assert second["usage"]["input_tokens"] == 1000
+    assert second["usage"]["output_tokens"] is None
+    assert second["usage"]["total_premium_request_cost"] == 2.0
+    totals = shown["totals"]
+    assert totals["tokens"]["input_tokens"] == {"total": 1110, "reported_count": 2}
+    assert totals["costs"]["total_premium_request_cost"] == {"total": 3.5, "reported_count": 2}
+    assert totals["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}
+
+
+def test_run_usage_and_run_totals_report_the_same_figures(tmp_path: Path) -> None:
+    from software_agent_factory.models import ModelUsage, UsageMetrics
+
+    per_model_only = UsageMetrics(
+        model_usage=(ModelUsage(model="m", premium_request_cost=1.0, input_tokens=100),)
+    )
+    detail = _stored_detail(
+        tmp_path,
+        invocation_records=[_usage_call(1, per_model_only), _usage_call(2, per_model_only)],
+    )
+
+    shown = sanitize_run_detail(detail)
+
+    assert shown["usage"]["input_tokens"] == shown["totals"]["tokens"]["input_tokens"]["total"]
+    assert (
+        shown["usage"]["premium_request_cost"]
+        == shown["totals"]["costs"]["total_premium_request_cost"]["total"]
+    )
+
+
+def test_the_running_calls_reasoning_level_goes_from_the_provider_to_the_page(
+    tmp_path: Path,
+) -> None:
+    import os
+    import socket
+    from datetime import UTC, datetime
+
+    from software_agent_factory.models import (
+        ActiveInvocation,
+        AgentRole,
+        RunLease,
+        WorkflowState,
+    )
+
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    detail = _stored_detail(
+        tmp_path,
+        state=WorkflowState.IMPLEMENTING,
+        lease=RunLease(host=socket.gethostname(), pid=os.getpid(), heartbeat_at=started),
+        active_invocation=ActiveInvocation(
+            invocation_number=2,
+            role=AgentRole.REVIEWER,
+            model="gpt-5.6-sol",
+            reasoning="xhigh",
+            started_at=started,
+        ),
+    )
+
+    shown = sanitize_run_detail(detail)
+
+    assert shown["active_invocation"]["reasoning"] == "xhigh"
+    assert shown["active_invocation"]["status"] == "running"

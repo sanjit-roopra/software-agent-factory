@@ -18,7 +18,7 @@ import re
 from typing import Any, TypeGuard
 from urllib.parse import urlsplit
 
-from ..models import ResumeClassification, WorkflowState
+from ..models import EscalationStatus, ResumeClassification, WorkflowState
 from ..redaction import bounded_reason, redact_secrets
 
 #: Why a run stopped, one plain sentence per halt reason code.
@@ -44,6 +44,17 @@ ANSWER_PLACEHOLDER = "<answer>"
 _ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _FINGERPRINT_PATTERN = re.compile(r"[A-Za-z0-9]{64}")
 _RESUME_CLASSES = frozenset(item.value for item in ResumeClassification)
+
+#: Why a reply cannot reach a halted run, by escalation status. The reply poller
+#: (``escalation.poll_escalation_reply``) reads replies only while the status is
+#: ``NOTIFIED``.
+_CLOSED_REPLY_CAUSES: dict[str, str] = {
+    EscalationStatus.PENDING_NOTIFICATION: "the notice is not sent yet",
+    EscalationStatus.NOTIFICATION_FAILED: "the notice was not sent",
+    EscalationStatus.EXPIRED: "the reply window expired",
+    EscalationStatus.REOPENED: "the run already resumed from a reply",
+    EscalationStatus.RESUMED: "the run already resumed from a reply",
+}
 
 
 def is_safe_https_url(value: Any) -> bool:
@@ -174,6 +185,24 @@ def _run_id(run: dict[str, Any]) -> str | None:
     return candidate if is_opaque_id(candidate) else None
 
 
+def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
+    """Why the poller would ignore a reply now, or ``None`` when it would read it.
+
+    The poller stops at a status other than ``NOTIFIED`` and at the reopen limit
+    (``reopen_count >= max_reopens``). A reopen count or limit that is unknown
+    does not close the reply.
+    """
+    status = escalation.get("status")
+    if status != EscalationStatus.NOTIFIED:
+        cause = _CLOSED_REPLY_CAUSES.get(status) if isinstance(status, str) else None
+        return cause or "the notice status is not known"
+    used = _int_or_none(escalation.get("reopen_count"))
+    limit = _int_or_none(escalation.get("reopen_max"))
+    if used is not None and limit is not None and used >= limit:
+        return "the reopen limit is reached"
+    return None
+
+
 def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, str, str] | None:
     """Run id, episode id and fingerprint, all safe to put in a reply."""
     run_id = _run_id(run)
@@ -185,6 +214,9 @@ def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, st
 
 
 def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
+    closed = _closed_reply_cause(escalation)
+    if closed is not None:
+        return _unavailable(run, escalation, f"Remote approval is not available because {closed}.")
     ids = _reply_ids(run, escalation)
     scope = clean_approval_scope(escalation.get("approval_scope"))
     if ids is None or scope is None:
@@ -206,6 +238,9 @@ def _approve(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
+    closed = _closed_reply_cause(escalation)
+    if closed is not None:
+        return _unavailable(run, escalation, f"Remote answers are not available because {closed}.")
     ids = _reply_ids(run, escalation)
     questions = clean_decisions(escalation.get("decisions"))
     if ids is None or not 1 <= len(questions) <= MAX_DECISIONS:

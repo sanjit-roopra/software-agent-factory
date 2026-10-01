@@ -85,6 +85,7 @@ from software_agent_factory.observability import (
     build_operational_health,
     configure_factory_logging,
     log_run_event,
+    resolve_usage,
     scan_readable_runs,
     summarize_usage,
 )
@@ -809,6 +810,83 @@ def test_summarize_usage_sums_reported_values_and_keeps_unreported_unknown() -> 
     assert summary.input_tokens == 15
     assert summary.cache_read_tokens == 0
     assert summary.cache_write_tokens is None
+
+
+def test_resolve_usage_takes_the_aggregate_else_the_per_model_sum_for_every_field() -> None:
+    usage = UsageMetrics(
+        input_tokens=1000,
+        total_premium_request_cost=None,
+        model_usage=(
+            ModelUsage(
+                model="a",
+                premium_request_cost=1.0,
+                input_tokens=1,
+                output_tokens=20,
+                reasoning_tokens=5,
+                cache_read_tokens=7,
+                cache_write_tokens=0,
+                total_nano_aiu=100,
+                list_price_estimate_usd=0.1,
+            ),
+            ModelUsage(model="b", premium_request_cost=0.5, output_tokens=30),
+        ),
+    )
+
+    resolved = resolve_usage(usage)
+
+    assert resolved.input_tokens == 1000
+    assert resolved.output_tokens == 50
+    assert resolved.reasoning_tokens == 5
+    assert resolved.cache_read_tokens == 7
+    assert resolved.cache_write_tokens == 0
+    assert resolved.total_nano_aiu == 100
+    assert resolved.list_price_estimate_usd == pytest.approx(0.1)
+    assert resolved.total_premium_request_cost == 1.5
+    assert resolve_usage(UsageMetrics()).input_tokens is None
+    assert resolve_usage(UsageMetrics()).total_premium_request_cost is None
+
+
+def test_build_run_detail_resolves_each_calls_usage_like_the_run_usage(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = _fake_store(tmp_path)
+    per_model_only = UsageMetrics(
+        model_usage=(ModelUsage(model="m", input_tokens=40, premium_request_cost=1.0),)
+    )
+    records = [
+        InvocationRecord(
+            invocation_number=number,
+            role=AgentRole.IMPLEMENTER,
+            model="m",
+            reasoning="medium",
+            started_at=T0,
+            completed_at=T0 + timedelta(seconds=1),
+            success=True,
+            usage=per_model_only,
+        )
+        for number in (1, 2)
+    ]
+    store.add_run(
+        FactoryRun(
+            id="run-1",
+            work_item_id="WI-run-1",
+            state=WorkflowState.DONE,
+            created_at=T0,
+            updated_at=T0,
+            invocation_records=records,
+        )
+    )
+
+    detail = build_run_detail(store, "run-1", now=T0)
+
+    assert detail is not None
+    assert [call.usage.input_tokens for call in detail.invocations if call.usage] == [40, 40]
+    assert [call.usage.total_premium_request_cost for call in detail.invocations if call.usage] == [
+        1.0,
+        1.0,
+    ]
+    assert detail.usage.input_tokens == 80
+    assert detail.usage.premium_request_cost == 2.0
 
 
 def test_list_price_estimate_falls_back_to_model_usage_when_aggregate_missing(
@@ -1828,6 +1906,7 @@ def test_build_run_detail_shows_live_active_invocation(
     assert detail.active_invocation is not None
     assert detail.active_invocation.status == "running"
     assert detail.active_invocation.role is AgentRole.IMPLEMENTER
+    assert detail.active_invocation.reasoning == "high"
     assert detail.active_invocation.attempt_number == 2
 
 

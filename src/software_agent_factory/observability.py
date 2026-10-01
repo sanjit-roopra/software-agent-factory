@@ -142,6 +142,7 @@ __all__ = [
     "RunAttemptSummary",
     "RunInvocationSummary",
     "UsageSummary",
+    "resolve_usage",
     "summarize_usage",
     "RunDetail",
     "RunGuidance",
@@ -417,6 +418,7 @@ class ActiveInvocationSummary(ModelBase):
     role: AgentRole
     purpose: str
     model: str
+    reasoning: str
     context_tier: ContextTier
     status: str
     started_at: UtcDateTime
@@ -1253,20 +1255,37 @@ def _premium_request_costs(usage: UsageMetrics) -> list[float]:
     ]
 
 
+def resolve_usage(usage: UsageMetrics) -> UsageMetrics:
+    """One invocation's usage with every aggregate field resolved.
+
+    A runtime may report a figure only per model. Each token, nano-AIU, list-price
+    and premium-request-cost field then takes the aggregate when reported, else the
+    per-model sum, else stays ``None``. The run totals, the call timeline and the
+    dashboard all read this one definition.
+    """
+    resolved: dict[str, Any] = {
+        field: _usage_field_value(usage, field) for field in _MODEL_BACKED_USAGE_FIELDS
+    }
+    resolved["total_premium_request_cost"] = _sum_or_none(_premium_request_costs(usage))
+    return usage.model_copy(update=resolved)
+
+
 def summarize_usage(invocations: Iterable[InvocationRecord]) -> UsageSummary:
     """Sum runtime-reported usage; a field no invocation reported stays ``None``."""
     records = list(invocations)
-    usages = [record.usage for record in records if record.usage is not None]
+    usages = [resolve_usage(record.usage) for record in records if record.usage is not None]
     totals = {
-        field: _sum_or_none(
-            [value for usage in usages if (value := _usage_field_value(usage, field)) is not None]
-        )
+        field: _sum_or_none([v for usage in usages if (v := getattr(usage, field)) is not None])
         for field in _MODEL_BACKED_USAGE_FIELDS
     }
     premium_requests = [
         usage.premium_requests for usage in usages if usage.premium_requests is not None
     ]
-    premium_request_costs = [cost for usage in usages for cost in _premium_request_costs(usage)]
+    premium_request_costs = [
+        usage.total_premium_request_cost
+        for usage in usages
+        if usage.total_premium_request_cost is not None
+    ]
     return UsageSummary(
         invocation_count=len(records),
         reported_invocations=len(usages),
@@ -1500,7 +1519,7 @@ def build_run_detail(
                 completed_at=invocation.completed_at,
                 attempt_number=invocation.attempt_number,
                 failure_reason=invocation.failure_reason,
-                usage=invocation.usage,
+                usage=resolve_usage(invocation.usage) if invocation.usage is not None else None,
                 performance=invocation.performance,
             )
             for invocation in run.invocation_records
@@ -1647,6 +1666,7 @@ def build_active_invocation_summary(
         role=active.role,
         purpose=str(active.purpose),
         model=active.model,
+        reasoning=active.reasoning,
         context_tier=active.context_tier,
         status=status,
         started_at=active.started_at,

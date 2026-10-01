@@ -27,7 +27,7 @@ from typing import Any
 
 from ..redaction import bounded_reason
 from ..store import ARTIFACT_FILENAMES
-from .aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS, run_totals
+from .aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS, call_total_tokens, run_totals
 from .next_step import (
     clean_approval_scope,
     clean_decisions,
@@ -162,6 +162,7 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
         "completed_at",
         "duration_ms",
         "usage",
+        "total_tokens",
         "failure_reason",
         "failure_reason_truncated",
         "performance",
@@ -464,6 +465,7 @@ def _outcome_status(success: Any) -> str | None:
 
 def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
     success = data.get("success")
+    usage = _call_usage(data.get("usage"))
     return {
         "invocation_number": _positive_int(data.get("invocation_number")),
         "role": data.get("role"),
@@ -477,7 +479,8 @@ def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         "started_at": _timestamp(data.get("started_at")),
         "completed_at": _timestamp(data.get("completed_at")),
         "duration_ms": _duration_ms(data.get("started_at"), data.get("completed_at")),
-        "usage": _call_usage(data.get("usage")),
+        "usage": usage,
+        "total_tokens": call_total_tokens(usage),
         **_reason_fields(data.get("failure_reason"), run_id),
     }
 

@@ -18,6 +18,7 @@ from software_agent_factory.escalation import parse_plan_decision_answers, parse
 from software_agent_factory.models import (
     Complexity,
     EscalationRecord,
+    EscalationStatus,
     FactoryRun,
     ResumeClassification,
     Risk,
@@ -57,6 +58,7 @@ def _run(
     }
     if resume_class is not None:
         run["escalation"] = {
+            "status": "NOTIFIED",
             "reason_code": reason_code,
             "resume_classification": resume_class,
             "episode_id": EPISODE_ID,
@@ -240,6 +242,59 @@ def test_an_unsafe_run_id_makes_the_reply_unavailable() -> None:
 
 
 @pytest.mark.parametrize(
+    ("override", "cause"),
+    [
+        ({"status": "PENDING_NOTIFICATION"}, "the notice is not sent yet"),
+        ({"status": "NOTIFICATION_FAILED"}, "the notice was not sent"),
+        ({"status": "EXPIRED"}, "the reply window expired"),
+        ({"status": "REOPENED"}, "the run already resumed from a reply"),
+        ({"status": "RESUMED"}, "the run already resumed from a reply"),
+        ({"status": None}, "the notice status is not known"),
+        ({"status": ["NOTIFIED"]}, "the notice status is not known"),
+        ({"reopen_count": 3, "reopen_max": 3}, "the reopen limit is reached"),
+        ({"reopen_count": 4, "reopen_max": 3}, "the reopen limit is reached"),
+    ],
+    ids=[
+        "pending",
+        "notification-failed",
+        "expired",
+        "reopened",
+        "resumed",
+        "no-status",
+        "malformed-status",
+        "reopen-limit-reached",
+        "reopen-limit-passed",
+    ],
+)
+def test_a_reply_the_poller_would_ignore_is_unavailable_and_says_why(
+    override: dict[str, Any], cause: str
+) -> None:
+    approve = next_step(_risk_run(**override))
+    answer = next_step(_plan_run(**override))
+
+    assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
+    assert f"Remote approval is not available because {cause}." in approve["sentence"]
+    assert f"Remote answers are not available because {cause}." in answer["sentence"]
+    assert approve["reply_text"] is answer["reply_text"] is None
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"reopen_count": 2, "reopen_max": 3},
+        {"reopen_count": None, "reopen_max": 3},
+        {"reopen_count": 5, "reopen_max": None},
+    ],
+    ids=["reopens-left", "no-reopen-count", "no-reopen-limit"],
+)
+def test_a_notified_run_with_reopens_left_or_unknown_can_still_be_replied_to(
+    override: dict[str, Any],
+) -> None:
+    assert next_step(_risk_run(**override))["kind"] == "approve"
+    assert next_step(_plan_run(**override))["kind"] == "answer"
+
+
+@pytest.mark.parametrize(
     "state", ["CREATED", "IMPLEMENTING", "REFINING", "PR_READY", "DONE", "CANCELLED"]
 )
 def test_active_and_finished_runs_have_no_next_step(state: str) -> None:
@@ -406,6 +461,7 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
         updated_at=now,
         escalation=EscalationRecord(
             episode_id=EPISODE_ID,
+            status=EscalationStatus.NOTIFIED,
             resume_classification=ResumeClassification.RISK_APPROVAL,
             reason_code="RISK_APPROVAL",
             reopen_count=1,

@@ -646,7 +646,7 @@ def test_a_call_row_wires_the_default_columns_from_the_call_fields() -> None:
         "displayValue(call.model)",
         "outcomeOf(call.status).text",
         "durationText(call.duration_ms)",
-        "displayNumber(totalTokens(usage))",
+        "displayNumber(call.total_tokens)",
         "costText(usage)",
     ):
         assert wired in cells
@@ -688,10 +688,8 @@ def test_a_total_cost_and_a_call_cost_skip_the_unreported_units() -> None:
     assert "isFiniteNumber(usage[unit.key])" in cost
     assert 'join(", ")' in cost
     assert "return NOT_REPORTED;" in cost
-    total = function_source(dashboard_assets.APP_JS, "totalTokens")
-    assert "TOKEN_CLASSES.map(" in total
-    assert "filter(isFiniteNumber)" in total
-    assert "return null;" in total
+    # The server adds the token classes up, so the script has no sum of its own.
+    assert "totalTokens" not in dashboard_assets.APP_JS
 
 
 def test_totals_name_the_calls_that_reported_a_partial_figure() -> None:

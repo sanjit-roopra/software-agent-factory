@@ -1041,6 +1041,7 @@ def dashboard_command(
         build_monitoring_snapshot,
         build_operational_health,
         build_run_detail,
+        resolve_usage,
     )
     from .projects import FileProjectStore
     from .store import FileRunStore
@@ -1080,6 +1081,13 @@ def dashboard_command(
             scan=scan_cache.get_scan(max_scanned_runs),
         )
 
+    def invocation_row(invocation: InvocationRecord) -> dict[str, object]:
+        # Resolve per-model usage so the project totals count it like a run's.
+        row = invocation.model_dump(mode="json")
+        if invocation.usage is not None:
+            row["usage"] = resolve_usage(invocation.usage).model_dump(mode="json")
+        return row
+
     def project_provider() -> object:
         projects_dir = factory_config.data_dir / "projects"
         if not projects_dir.is_dir():
@@ -1114,7 +1122,7 @@ def dashboard_command(
             for invocation in execution.invocation_records:
                 models.append(
                     {
-                        **invocation.model_dump(mode="json"),
+                        **invocation_row(invocation),
                         "scope": "project",
                         "task_id": None,
                     }
@@ -1129,7 +1137,7 @@ def dashboard_command(
                 for invocation in run.invocation_records:
                     models.append(
                         {
-                            **invocation.model_dump(mode="json"),
+                            **invocation_row(invocation),
                             "scope": f"task {task.task_id}",
                             "task_id": task.task_id,
                         }

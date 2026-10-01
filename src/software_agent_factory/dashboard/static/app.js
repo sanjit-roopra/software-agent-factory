@@ -926,19 +926,6 @@
     return OUTCOMES.get(status) || UNREPORTED_OUTCOME;
   }
 
-  // The sum of the token classes the call reported, or null when it reported none.
-  function totalTokens(usage) {
-    const reported = TOKEN_CLASSES.map(function (tokenClass) {
-      return usage[tokenClass.key];
-    }).filter(isFiniteNumber);
-    if (reported.length === 0) {
-      return null;
-    }
-    return reported.reduce(function (sum, value) {
-      return sum + value;
-    }, 0);
-  }
-
   // Every cost unit the call reported, each in its own unit.
   function costText(usage) {
     const phrases = COST_UNITS.filter(function (unit) {
@@ -1048,7 +1035,7 @@
       displayValue(call.model),
       outcomeOf(call.status).text,
       durationText(call.duration_ms),
-      displayNumber(totalTokens(usage)),
+      displayNumber(call.total_tokens),
       costText(usage)
     ];
   }
