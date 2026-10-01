@@ -6,7 +6,10 @@ deterministic ``FakeAgentRuntime``, and pull requests/CI stay disabled.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -14,11 +17,19 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from factory_testing import build_config, git
+from factory_testing import build_config, git, triage_hook, work_item
 
 from software_agent_factory.agents import FakeAgentRuntime
-from software_agent_factory.github import GitHubCommandError
-from software_agent_factory.models import FactoryRun, WorkflowState
+from software_agent_factory.config import FactoryConfig
+from software_agent_factory.github import GitHubClient, GitHubCommandError
+from software_agent_factory.models import (
+    EscalationStatus,
+    FactoryRun,
+    Risk,
+    WorkflowState,
+    utc_now,
+)
+from software_agent_factory.resume import ReplyIdentity, accept_resume
 from software_agent_factory.scheduler import (
     ReconciliationAction,
     TrackerItem,
@@ -572,3 +583,268 @@ def test_dispatch_and_completion_are_logged_with_run_correlation(
     assert tagged, "expected run-tagged dispatch/completion records"
     assert {record.state for record in tagged} >= {WorkflowState.PR_READY}
     assert any("tick:" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Escalation reconciliation: capacity, quota and polling order
+# ---------------------------------------------------------------------------
+
+FACTORY_BOT = {"id": 999, "login": "factory-bot"}
+
+
+class FakeGitHub:
+    """A ``gh`` runner keyed on the API path, so the order of calls does not matter.
+
+    ``comments`` maps an issue number to the comments listed on it.
+    """
+
+    def __init__(self, comments: dict[int, list[dict[str, object]]] | None = None) -> None:
+        self.comments = comments or {}
+        self.listed_issues: list[int] = []
+        self.posted: list[tuple[int, str]] = []
+
+    def __call__(
+        self, args: Sequence[str], cwd: Path | None = None, env: object = None
+    ) -> subprocess.CompletedProcess[str]:
+        argv = list(args)
+        endpoint = next((arg for arg in argv if arg.startswith("repos/")), "")
+        if argv[-1] == "user":
+            payload: object = FACTORY_BOT
+        elif "POST" in argv:
+            number = int(re.search(r"issues/(\d+)/comments", endpoint).group(1))  # type: ignore[union-attr]
+            body = next(arg for arg in argv if arg.startswith("body="))[len("body=") :]
+            self.posted.append((number, body))
+            payload = _comment(5000 + len(self.posted), body, login="factory-bot", user_id=999)
+        elif match := re.search(r"issues/(\d+)/comments\?", endpoint):
+            self.listed_issues.append(int(match.group(1)))
+            payload = self.comments.get(int(match.group(1)), [])
+        elif match := re.search(r"issues/comments/(\d+)", endpoint):
+            payload = next(
+                comment
+                for comments in self.comments.values()
+                for comment in comments
+                if comment["id"] == int(match.group(1))
+            )
+        else:
+            raise AssertionError(f"unexpected gh call: {argv}")
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+
+
+def _comment(
+    comment_id: int,
+    body: str,
+    *,
+    login: str = "lead-dev",
+    user_id: int = 1001,
+    created_at: datetime | None = None,
+) -> dict[str, object]:
+    stamp = (created_at or utc_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "id": comment_id,
+        "url": f"https://api.github.com/repos/acme/repo/issues/comments/{comment_id}",
+        "html_url": f"https://github.com/acme/repo/issues/1#issuecomment-{comment_id}",
+        "body": body,
+        "user": {"login": login, "id": user_id, "type": "User"},
+        "created_at": stamp,
+        "updated_at": stamp,
+        "author_association": "MEMBER",
+    }
+
+
+def _escalation_config(
+    data_dir: Path,
+    *,
+    escalation_enabled: bool = True,
+    max_concurrent_tasks: int = 1,
+    max_runs_per_day: int | None = None,
+    max_reply_polls_per_tick: int = 10,
+) -> FactoryConfig:
+    config = build_config(
+        data_dir,
+        scheduler={
+            "enabled": True,
+            "poll_interval_seconds": 1,
+            "max_concurrent_tasks": max_concurrent_tasks,
+            "stall_timeout_seconds": 300,
+            "required_label": "agent-ready",
+            "max_runs_per_day": max_runs_per_day,
+        },
+    )
+    return config.model_copy(
+        update={
+            "escalation": config.escalation.model_copy(
+                update={
+                    "enabled": escalation_enabled,
+                    "authorized_identities": ["lead-dev"],
+                    "max_reply_polls_per_tick": max_reply_polls_per_tick,
+                }
+            )
+        }
+    )
+
+
+@pytest.fixture
+def make_service(source_repo: Path, data_dir: Path):  # type: ignore[no-untyped-def]
+    """Build services over one data dir and shut every one down after the test."""
+    services: list[FactoryService] = []
+
+    def make(
+        config: FactoryConfig, github: FakeGitHub | None = None, *, github_client: bool = True
+    ) -> FactoryService:
+        service = FactoryService(
+            config=config,
+            store=FileRunStore(data_dir),
+            runtime=FakeAgentRuntime(),
+            source_repo=source_repo,
+            github_repo="acme/repo",
+            provider=LocalProvider([]),
+            github_client=GitHubClient(runner=github or FakeGitHub()) if github_client else None,
+        )
+        services.append(service)
+        return service
+
+    yield make
+    for service in services:
+        service.shutdown()
+
+
+def _halt_for_approval(
+    config: FactoryConfig, store: FileRunStore, source_repo: Path, number: int
+) -> FactoryRun:
+    """Run ``run-<number>`` until it needs a risk approval, with no notice delivered yet."""
+    quiet = config.model_copy(
+        update={"escalation": config.escalation.model_copy(update={"enabled": False})}
+    )
+    controller = WorkflowController(
+        quiet, store, FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
+    )
+    item = work_item(f"WI-{number}").model_copy(update={"external_id": f"acme/repo#{number}"})
+    run = controller.run(item, source_repo, run_id=f"run-{number}")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.escalation is not None
+    return run
+
+
+def _notified(
+    store: FileRunStore, run: FactoryRun, number: int, *, minutes_ago: int = 60
+) -> FactoryRun:
+    """Mark the notice of ``run`` as delivered to issue ``number``, ``minutes_ago`` minutes back."""
+    assert run.escalation is not None
+    notified_at = utc_now() - timedelta(minutes=minutes_ago)
+    notified = run.model_copy(
+        update={
+            "escalation": run.escalation.model_copy(
+                update={
+                    "status": EscalationStatus.NOTIFIED,
+                    "created_at": notified_at,
+                    "last_notified_at": notified_at,
+                    "target_repository": "acme/repo",
+                    "target_number": number,
+                    "remote_resume_enabled": True,
+                }
+            )
+        }
+    )
+    store.save_run(notified)
+    return notified
+
+
+def _reopened(config: FactoryConfig, store: FileRunStore, run: FactoryRun) -> FactoryRun:
+    """Accept an authorized GitHub reply for ``run``, the way the reply poller does."""
+    now = utc_now()
+    receipt = accept_resume(
+        run,
+        store,
+        config,
+        reply=ReplyIdentity("github", 1, "lead-dev", 1001, "MEMBER", now),
+        answers=None,
+        now=now,
+    )
+    assert receipt is not None
+    return store.load_run(run.id)
+
+
+def test_a_free_slot_is_filled_by_one_reopened_run_per_cycle(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    first = _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    second = _reopened(config, store, _halt_for_approval(config, store, source_repo, 2))
+    service = make_service(config)
+
+    service.reconcile_escalation()
+    assert set(service._handles) == {first.id}
+    service.drain(60)
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert set(service._handles) == {first.id, second.id}
+    assert store.load_run(first.id).state is WorkflowState.PR_READY
+    assert store.load_run(second.id).state is WorkflowState.PR_READY
+
+
+@pytest.mark.parametrize(("max_runs_per_day", "polled"), [(1, False), (5, True)])
+def test_reply_polling_waits_for_a_free_daily_quota(
+    source_repo: Path, data_dir: Path, make_service, max_runs_per_day: int, polled: bool
+) -> None:
+    config = _escalation_config(data_dir, max_runs_per_day=max_runs_per_day)
+    store = FileRunStore(data_dir)
+    _notified(store, _halt_for_approval(config, store, source_repo, 4), 4)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+
+    assert github.listed_issues == ([4] if polled else [])
+
+
+@pytest.mark.parametrize(("max_concurrent_tasks", "polled"), [(1, False), (2, True)])
+def test_reply_polling_waits_for_a_free_slot(
+    source_repo: Path, data_dir: Path, make_service, max_concurrent_tasks: int, polled: bool
+) -> None:
+    config = _escalation_config(data_dir, max_concurrent_tasks=max_concurrent_tasks)
+    store = FileRunStore(data_dir)
+    _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    _notified(store, _halt_for_approval(config, store, source_repo, 2), 2)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert github.listed_issues == ([2] if polled else [])
+
+
+def test_reply_polling_rotates_through_the_waiting_runs(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, max_runs_per_day=None, max_reply_polls_per_tick=2)
+    store = FileRunStore(data_dir)
+    for number in (1, 2, 3):
+        run = _halt_for_approval(config, store, source_repo, number)
+        _notified(store, run, number, minutes_ago=60 - number)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    assert github.listed_issues == [1, 2]
+    service.reconcile_escalation()
+    assert github.listed_issues == [1, 2, 3, 1]
+
+
+def test_a_notice_is_delivered_even_when_no_slot_is_free(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    undelivered = _halt_for_approval(config, store, source_repo, 2)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert [number for number, _ in github.posted] == [2]
+    assert store.load_run(undelivered.id).escalation.status is EscalationStatus.NOTIFIED  # type: ignore[union-attr]
