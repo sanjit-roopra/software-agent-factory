@@ -1724,83 +1724,68 @@ def test_sanitize_project_model_usage_keeps_list_price_estimate_beside_unchanged
     assert usage["list_price_estimate_usd"] == pytest.approx(0.42)
 
 
-def test_dashboard_list_price_estimate_falls_back_to_unknown_and_never_replaces_usage_value() -> (
-    None
-):
+def test_dashboard_unreported_cost_and_tokens_show_not_reported_and_never_swap_units() -> None:
     """No JS runner is available, so pin the exact rendering helper source and
     the row wiring instead of grepping for loose substrings."""
     js = dashboard_assets.APP_JS
 
-    assert function_source(js, "displayListPriceEstimate") == (
-        "function displayListPriceEstimate(value) { "
-        'if (!isFiniteNumber(value)) { return "unknown"; } return displayUsd(value); }'
+    assert function_source(js, "displayUsd") == (
+        "function displayUsd(value) { "
+        'if (!isFiniteNumber(value)) { return NOT_REPORTED; } return "$" + value.toFixed(6); }'
     )
-    # Every usage table puts the AI usage value, then the premium-request cost, then
+    assert function_source(js, "displayNumber") == (
+        "function displayNumber(value) { "
+        "if (!isFiniteNumber(value)) { return NOT_REPORTED; } "
+        'return value.toLocaleString("en-US"); }'
+    )
+    # Every usage table puts the AI usage value, then the premium requests, then
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
     assert (
         "appendCell(row, displayUsd(usage.usage_value_usd)); "
-        "appendCell(row, usage.total_premium_request_cost); "
-        "appendCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
+        "appendCell(row, displayNumber(usage.total_premium_request_cost)); "
+        "appendCell(row, displayUsd(usage.list_price_estimate_usd));"
     ) in function_source(js, "modelRow")
-    assert (
-        "displayUsd(usage.usage_value_usd), "
-        "usage.total_premium_request_cost, "
-        "displayListPriceEstimate(usage.list_price_estimate_usd)"
-    ) in function_source(js, "invocationRowSpec")
     code = normalized(js)
-    assert "displayListPriceEstimate(usage.usage_value_usd)" not in code
-    assert "displayUsd(usage.list_price_estimate_usd)" not in code
+    assert "displayUsd(usage.usage_value_usd)" in code
+    assert "displayUsd(usage.list_price_estimate_usd)" in code
+    assert "displayListPriceEstimate" not in code
 
 
 def test_dashboard_run_detail_lists_list_price_estimate_after_the_usage_value_rows() -> None:
     usage_fields = function_source(dashboard_assets.APP_JS, "usageFields")
 
     value_row = '["AI usage value (USD)", displayUsd(usage.usage_value_usd)],'
-    estimate_row = (
-        '["List-price estimate", displayListPriceEstimate(usage.list_price_estimate_usd)]'
-    )
+    estimate_row = '["List-price estimate", displayUsd(usage.list_price_estimate_usd)]'
     assert value_row in usage_fields
     assert estimate_row in usage_fields
     assert usage_fields.index(value_row) < usage_fields.index(estimate_row)
 
 
-def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> None:
-    """Both usage tables list the AI usage value, the premium-request column, then
-    the estimate last, in the order their row builders fill the cells."""
-    html = dashboard_assets.render_index_html(token="tok")
+def test_dashboard_project_usage_table_ends_with_the_list_price_estimate_column() -> None:
+    """The project models table lists the AI usage value, the premium requests, then
+    the estimate last, in the order its row builder fills the cells."""
     js = dashboard_assets.APP_JS
 
-    invocations_head = re.search(
-        r'<table id="invocations-table">\s*<thead>(.*?)</thead>', html, flags=re.DOTALL
-    )
-    assert invocations_head is not None
-    invocation_headers = re.findall(r'<th scope="col">([^<]*)</th>', invocations_head.group(1))
-    assert invocation_headers[-3:] == [
-        "AI usage value (USD)",
-        "Premium-request cost",
-        "List-price estimate",
-    ]
     model_headers = re.search(r"const MODEL_HEADERS = \[(.*?)\];", js, flags=re.DOTALL)
     assert model_headers is not None
     assert re.findall(r'"([^"]*)"', model_headers.group(1))[-3:] == [
         "AI usage value (USD)",
-        "Premium-request units",
+        "Premium requests",
         "List-price estimate",
     ]
 
 
-def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -> None:
-    """renderTotals surfaces the List-price estimate row with the same
-    ``displayListPriceEstimate`` "unknown" fallback the detail/invocation
-    views use, rather than the generic renderer's ``[object Object]`` for a
-    field nested two levels deep (``metrics.usage.list_price_estimate_usd``)."""
+def test_dashboard_totals_show_list_price_estimate_row_as_not_reported_when_missing() -> None:
+    """renderTotals surfaces the List-price estimate row through ``displayUsd``,
+    which shows "not reported" for a missing value, rather than the generic
+    renderer's ``[object Object]`` for a field nested two levels deep
+    (``metrics.usage.list_price_estimate_usd``)."""
     js = dashboard_assets.APP_JS
 
     assert function_source(js, "withListPriceEstimate") == (
         "function withListPriceEstimate(metrics) { return { ...metrics, "
-        "list_price_estimate_usd: "
-        "displayListPriceEstimate(metrics.usage?.list_price_estimate_usd) }; }"
+        "list_price_estimate_usd: displayUsd(metrics.usage?.list_price_estimate_usd) }; }"
     )
     assert "totals.metrics = withListPriceEstimate(totals.metrics);" in function_source(
         js, "renderTotals"

@@ -80,12 +80,12 @@ def render_index_html(*, token: str) -> str:
       </div>
     </section>
 
-    <section id="view-run" aria-labelledby="detail-heading" hidden>
-      <h1 id="detail-heading" tabindex="-1">Run detail</h1>
+    <section id="view-run-detail" aria-labelledby="run-detail-heading" hidden>
+      <h1 id="run-detail-heading" tabindex="-1">Run detail</h1>
       <p><a href="#runs">&larr; Back to runs</a></p>
-      <p id="detail-status">Loading&hellip;</p>
-      <div id="detail-content" class="card" hidden>
-        <dl id="detail-body"></dl>
+      <p id="run-detail-status">Loading&hellip;</p>
+      <div id="run-detail-content" class="card" hidden>
+        <dl id="run-detail-body"></dl>
         <h2>Attempts</h2>
         <div class="table-wrap">
           <table id="attempts-table">
@@ -119,7 +119,7 @@ def render_index_html(*, token: str) -> str:
                 <th scope="col">API duration (ms)</th>
                 <th scope="col">Session duration (ms)</th>
                 <th scope="col">AI usage value (USD)</th>
-                <th scope="col">Premium-request cost</th>
+                <th scope="col">Premium requests</th>
                 <th scope="col">List-price estimate</th>
               </tr>
             </thead>

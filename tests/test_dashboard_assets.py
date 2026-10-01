@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from dashboard_js import function_source, normalized, object_literal_source
+from dashboard_js import function_source, normalized, object_literal_source, strip_comments
 
 from software_agent_factory.dashboard import assets as dashboard_assets
 
@@ -22,7 +22,7 @@ _INDEX_HTML = dashboard_assets.render_index_html(token="fixture-token")
 #: (section id, heading id) for the one section each view renders into.
 _VIEW_SECTIONS = (
     ("view-runs", "runs-heading"),
-    ("view-run", "detail-heading"),
+    ("view-run-detail", "run-detail-heading"),
     ("view-compare", "compare-heading"),
     ("view-projects", "projects-heading"),
     ("view-health", "health-heading"),
@@ -122,18 +122,18 @@ def test_app_js_validates_hash_run_ids_with_the_server_pattern() -> None:
     # JS \w without the u flag is exactly [A-Za-z0-9_], the server's character set.
     js_pattern = snapshot._RUN_ID_PATTERN.pattern.replace("A-Za-z0-9_", r"\w")
     assert f"const RUN_ID_PATTERN = /{js_pattern}/;" in js
-    assert "RUN_ID_PATTERN.test(runId)" in function_source(js, "prepareRunView")
+    assert "RUN_ID_PATTERN.test(runId)" in function_source(js, "prepareRunDetailView")
     assert "RUN_ID_PATTERN.test(route.runId)" in function_source(js, "validRunId")
 
 
 def test_the_run_view_heading_names_the_run_or_reports_an_unknown_one() -> None:
-    prepare = function_source(dashboard_assets.APP_JS, "prepareRunView")
+    prepare = function_source(dashboard_assets.APP_JS, "prepareRunDetailView")
     assert prepare == (
-        "function prepareRunView(runId) { "
-        'const heading = document.getElementById("detail-heading"); '
+        "function prepareRunDetailView(runId) { "
+        'const heading = document.getElementById("run-detail-heading"); '
         "if (!RUN_ID_PATTERN.test(runId)) { heading.textContent = VIEWS.run.label; "
-        'setDetailStatus("Unknown run"); return; } '
-        'heading.textContent = "Run " + runId; setDetailStatus("Loading\\u2026"); }'
+        'setRunDetailStatus("Unknown run"); return; } '
+        'heading.textContent = "Run " + runId; setRunDetailStatus("Loading\\u2026"); }'
     )
 
 
@@ -161,7 +161,7 @@ def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
 def test_loading_and_empty_states() -> None:
     js = dashboard_assets.APP_JS
     assert '"No runs yet."' in function_source(js, "renderRunsStatus")
-    assert 'setDetailStatus("Loading\\u2026");' in function_source(js, "prepareRunView")
+    assert 'setRunDetailStatus("Loading\\u2026");' in function_source(js, "prepareRunDetailView")
     assert re.search(r'<p\s+id="runs-status">Loading&hellip;</p>', _INDEX_HTML)
 
 
@@ -296,7 +296,7 @@ def test_refresh_patches_rows_and_text_in_place() -> None:
     ("renderer", "patchers"),
     [
         ("renderRuns", ["syncRows("]),
-        ("renderDetail", ["syncDefinitionList(", "syncRows("]),
+        ("renderRunDetail", ["syncDefinitionList(", "syncRows("]),
     ],
 )
 def test_the_live_views_patch_in_place_and_never_clear_their_content(
@@ -416,7 +416,7 @@ _REFRESH_FUNCTIONS = (
     "refreshTotals",
     "refreshHealth",
     "refreshProjects",
-    "refreshDetail",
+    "refreshRunDetail",
 )
 
 
@@ -498,3 +498,56 @@ def test_the_project_usage_value_comes_from_the_server_totals_not_a_client_sum()
     assert "totalUsageValue" not in js
     assert "totals?.costs?.usage_value_usd" in function_source(js, "usageSummary")
     assert "usageSummary(project.totals)" in function_source(js, "projectCard")
+
+
+# --------------------------------------------------------------------------
+# Carried from the slice 1 review: one label, one constant, one stem
+# --------------------------------------------------------------------------
+
+
+def test_one_premium_requests_label_is_used_everywhere() -> None:
+    js = dashboard_assets.APP_JS
+    for text in (js, _INDEX_HTML):
+        assert "Premium-request" not in text
+        assert "premium-request" not in text
+    assert '"Premium requests",' in function_source(js, "usageFields")
+    model_headers = re.search(r"const MODEL_HEADERS = \[(.*?)\];", js, re.DOTALL)
+    assert model_headers is not None
+    assert '"Premium requests"' in model_headers.group(1)
+    assert "Premium requests are a separate legacy metric." in js
+    assert '<th scope="col">Premium requests</th>' in _INDEX_HTML
+
+
+def test_unreported_cost_and_tokens_use_one_not_reported_constant() -> None:
+    code = strip_comments(dashboard_assets.APP_JS)
+    assert code.count('"not reported"') == 1
+    assert 'const NOT_REPORTED = "not reported";' in code
+    assert '"unknown"' not in code
+    assert "displayListPriceEstimate" not in code
+
+
+def test_project_model_rows_show_unreported_tokens_as_not_reported() -> None:
+    row = function_source(dashboard_assets.APP_JS, "modelRow")
+    assert "appendCell(row, displayNumber(usage.input_tokens));" in row
+    assert "appendCell(row, displayNumber(usage.output_tokens));" in row
+
+
+def test_an_empty_task_list_says_planning_only_in_a_planning_state() -> None:
+    js = dashboard_assets.APP_JS
+    message = function_source(js, "emptyTasksText")
+    assert 'projectState === "PLANNING"' in message
+    assert "Planning is in progress" in message
+    assert '"No tasks."' in message
+    assert js.count("Planning is in progress") == 1
+    assert "emptyTasksText(projectState)" in function_source(js, "pendingTasksRow")
+    assert "tasksTable(asArray(project.tasks), project.state)" in function_source(js, "projectCard")
+
+
+def test_the_run_view_uses_one_run_detail_stem_for_ids_functions_and_styles() -> None:
+    js = dashboard_assets.APP_JS
+    for text in (js, _INDEX_HTML, dashboard_assets.STYLE_CSS):
+        assert "detail-" not in text.replace("run-detail-", "")
+    assert not re.search(r"\b(?:render|refresh|set|prepare)(?:Detail|RunView)\b", js)
+    for element_id in ("view-run-detail", "run-detail-status", "run-detail-content"):
+        assert f'id="{element_id}"' in _INDEX_HTML
+    assert '<dl id="run-detail-body"></dl>' in _INDEX_HTML

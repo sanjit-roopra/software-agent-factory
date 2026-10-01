@@ -5,6 +5,7 @@
   const REQUEST_TIMEOUT_MS = 10000;
   const PAGE_SIZE = 20;
   const EMPTY_VALUE = "\u2014";
+  const NOT_REPORTED = "not reported";
 
   const ERROR_UNAUTHORIZED = "unauthorized";
   const ERROR_CONNECTION = "connection";
@@ -21,7 +22,7 @@
   const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);
   const VIEWS = {
     runs: { section: "view-runs", heading: "runs-heading", nav: "runs", label: "Runs" },
-    run: { section: "view-run", heading: "detail-heading", nav: "runs", label: "Run detail" },
+    run: { section: "view-run-detail", heading: "run-detail-heading", nav: "runs", label: "Run detail" },
     compare: {
       section: "view-compare", heading: "compare-heading", nav: "compare", label: "Compare"
     },
@@ -46,13 +47,13 @@
     "Reported input tokens",
     "Reported output tokens",
     "AI usage value (USD)",
-    "Premium-request units",
+    "Premium requests",
     "List-price estimate"
   ];
   const USAGE_NOTE =
     "Calculated from Copilot-reported nano-AIU at 1 AI credit = $0.01. " +
     "Your invoice charge may be lower or zero when included credits apply. " +
-    "Premium-request units are a separate legacy metric.";
+    "Premium requests are a separate legacy metric.";
 
   function readToken() {
     const meta = document.querySelector('meta[name="factory-dashboard-token"]');
@@ -285,16 +286,17 @@
 
   function displayUsd(value) {
     if (!isFiniteNumber(value)) {
-      return EMPTY_VALUE;
+      return NOT_REPORTED;
     }
     return "$" + value.toFixed(6);
   }
 
-  function displayListPriceEstimate(value) {
+  // A reported 0 shows as 0; only a missing value shows as not reported.
+  function displayNumber(value) {
     if (!isFiniteNumber(value)) {
-      return "unknown";
+      return NOT_REPORTED;
     }
-    return displayUsd(value);
+    return value.toLocaleString("en-US");
   }
 
   function clearChildren(node) {
@@ -482,12 +484,12 @@
   }
 
   // "metrics.usage" is nested two levels deep, past what the generic one-level
-  // flattening descends into, so its "unknown" fallback (consistent with the
-  // detail and invocation views) is shown directly on "metrics" as its own row.
+  // flattening descends into, so its estimate (or "not reported") is shown
+  // directly on "metrics" as its own row.
   function withListPriceEstimate(metrics) {
     return {
       ...metrics,
-      list_price_estimate_usd: displayListPriceEstimate(metrics.usage?.list_price_estimate_usd)
+      list_price_estimate_usd: displayUsd(metrics.usage?.list_price_estimate_usd)
     };
   }
 
@@ -585,11 +587,18 @@
       " | Updated: " + displayValue(project.updated_at);
   }
 
-  function pendingTasksRow() {
+  // Tasks are saved after planning, so an empty list is only expected while
+  // the project is still planning.
+  function emptyTasksText(projectState) {
+    if (projectState === "PLANNING") {
+      return "Planning is in progress; tasks are not persisted yet.";
+    }
+    return "No tasks.";
+  }
+
+  function pendingTasksRow(projectState) {
     const row = document.createElement("tr");
-    const cell = row.appendChild(
-      element("td", "", "Planning is in progress; tasks are not persisted yet.")
-    );
+    const cell = row.appendChild(element("td", "", emptyTasksText(projectState)));
     cell.colSpan = TASK_HEADERS.length;
     return row;
   }
@@ -606,12 +615,12 @@
     return row;
   }
 
-  function tasksTable(tasks) {
+  function tasksTable(tasks, projectState) {
     const table = document.createElement("table");
     table.appendChild(tableHeader(TASK_HEADERS));
     const body = table.appendChild(document.createElement("tbody"));
     if (tasks.length === 0) {
-      body.appendChild(pendingTasksRow());
+      body.appendChild(pendingTasksRow(projectState));
     }
     for (const task of tasks) {
       body.appendChild(taskRow(task));
@@ -628,11 +637,11 @@
     appendCell(row, model.purpose);
     appendCell(row, model.status);
     appendCell(row, model.started_at);
-    appendCell(row, usage.input_tokens);
-    appendCell(row, usage.output_tokens);
+    appendCell(row, displayNumber(usage.input_tokens));
+    appendCell(row, displayNumber(usage.output_tokens));
     appendCell(row, displayUsd(usage.usage_value_usd));
-    appendCell(row, usage.total_premium_request_cost);
-    appendCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));
+    appendCell(row, displayNumber(usage.total_premium_request_cost));
+    appendCell(row, displayUsd(usage.list_price_estimate_usd));
     return row;
   }
 
@@ -658,7 +667,7 @@
       "h3", "", displayValue(project.project_id) + " \u2014 " + displayValue(project.state)
     ));
     card.appendChild(element("p", "project-meta", projectMeta(project)));
-    card.appendChild(wrapTable(tasksTable(asArray(project.tasks))));
+    card.appendChild(wrapTable(tasksTable(asArray(project.tasks), project.state)));
     card.appendChild(element("h4", "", "Models used"));
     card.appendChild(element("p", "project-meta", usageSummary(project.totals)));
     if (models.length === 0) {
@@ -700,11 +709,11 @@
 
   // A message shows in the status line and hides the detail card; null shows
   // the card instead.
-  function setDetailStatus(message) {
-    const status = document.getElementById("detail-status");
+  function setRunDetailStatus(message) {
+    const status = document.getElementById("run-detail-status");
     status.textContent = message === null ? "" : message;
     status.hidden = message === null;
-    document.getElementById("detail-content").hidden = message !== null;
+    document.getElementById("run-detail-content").hidden = message !== null;
   }
 
   function activeInvocationText(active) {
@@ -739,14 +748,14 @@
   function usageFields(usage) {
     return [
       ["Usage reported", usage.reported_invocations],
-      ["Input tokens", usage.input_tokens],
-      ["Output tokens", usage.output_tokens],
-      ["Reasoning tokens", usage.reasoning_tokens],
-      ["Cache read tokens", usage.cache_read_tokens],
+      ["Input tokens", displayNumber(usage.input_tokens)],
+      ["Output tokens", displayNumber(usage.output_tokens)],
+      ["Reasoning tokens", displayNumber(usage.reasoning_tokens)],
+      ["Cache read tokens", displayNumber(usage.cache_read_tokens)],
       ["AI usage value (USD)", displayUsd(usage.usage_value_usd)],
-      ["Premium-request cost", usage.premium_request_cost],
+      ["Premium requests", displayNumber(usage.premium_request_cost)],
       ["Nano AIU", usage.total_nano_aiu],
-      ["List-price estimate", displayListPriceEstimate(usage.list_price_estimate_usd)]
+      ["List-price estimate", displayUsd(usage.list_price_estimate_usd)]
     ];
   }
 
@@ -849,20 +858,20 @@
         invocation.model,
         invocation.context_tier,
         invocation.success,
-        usage.input_tokens,
-        usage.output_tokens,
+        displayNumber(usage.input_tokens),
+        displayNumber(usage.output_tokens),
         usage.total_api_duration_ms,
         usage.session_duration_ms,
         displayUsd(usage.usage_value_usd),
-        usage.total_premium_request_cost,
-        displayListPriceEstimate(usage.list_price_estimate_usd)
+        displayNumber(usage.total_premium_request_cost),
+        displayUsd(usage.list_price_estimate_usd)
       ]
     };
   }
 
   function activeInvocationRowSpec(active) {
     const unreported = Array.from({ length: INVOCATION_USAGE_COLUMNS }, function () {
-      return EMPTY_VALUE;
+      return NOT_REPORTED;
     });
     return {
       className: "invocation-active",
@@ -885,7 +894,7 @@
     return specs;
   }
 
-  function renderDetail(detail) {
+  function renderRunDetail(detail) {
     const fields = [
       ...identityFields(detail),
       ...usageFields(detail.usage || {}),
@@ -894,21 +903,21 @@
       ...escalationFields(detail),
       ...referenceFields(detail)
     ];
-    syncDefinitionList(document.getElementById("detail-body"), fields);
+    syncDefinitionList(document.getElementById("run-detail-body"), fields);
     syncRows(
       document.getElementById("attempts-body"), asArray(detail.attempts).map(attemptRowSpec)
     );
     syncRows(document.getElementById("invocations-body"), invocationSpecs(detail));
-    setDetailStatus(null);
+    setRunDetailStatus(null);
   }
 
   // A failure shows the status line only while no detail has loaded; a loaded
   // card stays visible.
-  function refreshDetail(request) {
+  function refreshRunDetail(request) {
     const path = "/api/runs/" + encodeURIComponent(request.runId);
-    return apiFetch(path).then(whenLatest(request, renderDetail), function (error) {
-      if (isLatest(request) && document.getElementById("detail-content").hidden) {
-        setDetailStatus("Run detail is currently unavailable.");
+    return apiFetch(path).then(whenLatest(request, renderRunDetail), function (error) {
+      if (isLatest(request) && document.getElementById("run-detail-content").hidden) {
+        setRunDetailStatus("Run detail is currently unavailable.");
       }
       throw error;
     });
@@ -970,15 +979,15 @@
     return (RUN_ID_PATTERN.test(route.runId) ? "Run " + route.runId : "Unknown run") + TITLE_SUFFIX;
   }
 
-  function prepareRunView(runId) {
-    const heading = document.getElementById("detail-heading");
+  function prepareRunDetailView(runId) {
+    const heading = document.getElementById("run-detail-heading");
     if (!RUN_ID_PATTERN.test(runId)) {
       heading.textContent = VIEWS.run.label;
-      setDetailStatus("Unknown run");
+      setRunDetailStatus("Unknown run");
       return;
     }
     heading.textContent = "Run " + runId;
-    setDetailStatus("Loading\u2026");
+    setRunDetailStatus("Loading\u2026");
   }
 
   // What each view refreshes. Compare has nothing to load. A run view with an
@@ -988,7 +997,7 @@
       return [refreshRuns(request), refreshTotals(request)];
     },
     run: function (request) {
-      return request.runId === null ? [pingServer()] : [refreshDetail(request)];
+      return request.runId === null ? [pingServer()] : [refreshRunDetail(request)];
     },
     compare: function () {
       return [pingServer()];
@@ -1060,7 +1069,7 @@
     supersede(route.view);
     showView(route.view);
     if (route.view === "run") {
-      prepareRunView(route.runId);
+      prepareRunDetailView(route.runId);
     }
     document.title = routeTitle(route);
     if (moveFocus) {
