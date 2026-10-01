@@ -714,6 +714,7 @@ def test_smoke_script_exercises_doctor_status_and_the_prerequisite_failure() -> 
         "_smoke_service_status_is_read_only",
         "_smoke_missing_git_prerequisite",
         "_smoke_fake_run",
+        "_smoke_dashboard_assets",
     ):
         assert callable(getattr(module, name)), f"smoke script is missing {name}"
 
