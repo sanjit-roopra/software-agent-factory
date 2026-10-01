@@ -16,8 +16,10 @@ from software_agent_factory.models import (
     CICheckEvidence,
     CIReport,
     Complexity,
+    DashboardResumeRequest,
     EscalationStatus,
     FactoryRun,
+    ResumeClassification,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
     ReviewFindingCategory,
@@ -32,6 +34,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
+from software_agent_factory.resume import ingest_dashboard_request
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, delivery_policy_fingerprint
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError
@@ -561,16 +564,22 @@ def test_resume_with_the_switch_off_cannot_bypass_an_approval_the_run_started_wi
 APPROVED_RUN_ID = "approved"
 
 
-def _r2_runtime() -> FakeAgentRuntime:
-    return FakeAgentRuntime(triage=triage_hook(risk=Risk.R2))
+def _r2_runtime(risk: Risk = Risk.R2) -> FakeAgentRuntime:
+    return FakeAgentRuntime(triage=triage_hook(risk=risk))
 
 
 def _human_approved_r2_interrupted_at(
-    tmp_path: Path, source_repo: Path, boundary: str
+    tmp_path: Path,
+    source_repo: Path,
+    boundary: str,
+    *,
+    risk: Risk = Risk.R2,
+    dashboard: bool = False,
 ) -> tuple[LocalPublisher, Observer, FileRunStore, FactoryConfig]:
-    """Halt an R2 run for approval, record the reply receipt, reopen it, then crash in delivery.
+    """Halt a run for approval, record the approval, reopen it, then crash in delivery.
 
-    The receipt is written the way the reply poller persists it; ``reopen`` is the real path.
+    The receipt is written the way the reply poller persists it, or through a dashboard
+    request when ``dashboard`` is set; ``reopen`` is the real path.
     """
     config = _config(tmp_path)
     config = config.model_copy(
@@ -579,36 +588,46 @@ def _human_approved_r2_interrupted_at(
     publisher = LocalPublisher(crash=boundary == "publish")
     observer = Observer(crash=boundary == "observe")
     controller, store = _controller(
-        config, publisher=publisher, observer=observer, runtime=_r2_runtime()
+        config, publisher=publisher, observer=observer, runtime=_r2_runtime(risk)
     )
     halted = controller.run(work_item(), source_repo, run_id=APPROVED_RUN_ID)
     assert halted.state is WorkflowState.NEEDS_HUMAN
     escalation = halted.escalation
     assert escalation is not None
     assert escalation.approval_context is not None
-    receipt = AcceptedReplyReceipt(
-        comment_id=1,
-        user_login="lead-dev",
-        author_association="MEMBER",
-        created_at=utc_now(),
-        command=f"@factory resume v1 run={APPROVED_RUN_ID} episode={escalation.episode_id}",
-        episode_id=escalation.episode_id,
-        run_id=APPROVED_RUN_ID,
-        approval_context_fingerprint=escalation.approval_context.context_fingerprint,
-    )
-    store.save_run(
-        halted.model_copy(
-            update={
-                "escalation": escalation.model_copy(
-                    update={
-                        "status": EscalationStatus.REOPENED,
-                        "accepted_replies": [receipt],
-                        "reopen_count": 1,
-                    }
-                )
-            }
+    if dashboard:
+        request = DashboardResumeRequest(
+            run_id=APPROVED_RUN_ID,
+            episode_id=escalation.episode_id,
+            context_fingerprint=escalation.approval_context.context_fingerprint,
+            action=ResumeClassification.RISK_APPROVAL,
         )
-    )
+        assert store.create_dashboard_request(APPROVED_RUN_ID, request)
+        assert ingest_dashboard_request(halted, store, config, utc_now()) is not None
+    else:
+        receipt = AcceptedReplyReceipt(
+            comment_id=1,
+            user_login="lead-dev",
+            author_association="MEMBER",
+            created_at=utc_now(),
+            command=f"@factory resume v1 run={APPROVED_RUN_ID} episode={escalation.episode_id}",
+            episode_id=escalation.episode_id,
+            run_id=APPROVED_RUN_ID,
+            approval_context_fingerprint=escalation.approval_context.context_fingerprint,
+        )
+        store.save_run(
+            halted.model_copy(
+                update={
+                    "escalation": escalation.model_copy(
+                        update={
+                            "status": EscalationStatus.REOPENED,
+                            "accepted_replies": [receipt],
+                            "reopen_count": 1,
+                        }
+                    )
+                }
+            )
+        )
     with pytest.raises(KeyboardInterrupt):
         controller.reopen(APPROVED_RUN_ID, source_repo)
     return publisher, observer, store, config
@@ -644,6 +663,32 @@ def test_resume_continues_delivery_for_a_human_approved_risk(
     assert not recovered.failure_reason
     assert publisher.calls == publish_calls
     assert observer.calls == observe_calls
+
+
+@pytest.mark.parametrize("risk", [Risk.R2, Risk.R3], ids=["R2", "R3"])
+def test_resume_continues_delivery_for_a_dashboard_approved_risk(
+    tmp_path: Path, source_repo: Path, risk: Risk
+) -> None:
+    publisher, observer, store, config = _human_approved_r2_interrupted_at(
+        tmp_path, source_repo, "publish", risk=risk, dashboard=True
+    )
+    approved = store.load_run(APPROVED_RUN_ID)
+    assert approved.state is WorkflowState.PR_READY
+    assert approved.escalation is not None
+    assert [r.source for r in approved.escalation.accepted_replies] == ["dashboard"]
+
+    resumed_controller, _ = _controller(
+        config, publisher=publisher, observer=observer, runtime=_r2_runtime(risk)
+    )
+    recovered = resumed_controller.resume(APPROVED_RUN_ID, source_repo)
+
+    assert recovered.state is WorkflowState.DONE
+    assert not recovered.failure_reason
+    assert recovered.escalation is not None
+    assert recovered.escalation.reopen_count == 1
+    assert recovered.escalation.episode_id == approved.escalation.episode_id
+    assert publisher.calls == 2
+    assert observer.calls == 1
 
 
 def _assert_resume_refused_after(
