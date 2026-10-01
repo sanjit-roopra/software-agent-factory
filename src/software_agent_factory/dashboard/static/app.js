@@ -654,7 +654,7 @@
 
   function compareCell(runId) {
     if (typeof runId !== "string") {
-      return "";
+      return { value: "", className: "" };
     }
     return {
       value: "Compare with\u2026",
@@ -1848,7 +1848,7 @@
     if (run.performance_model_profile) {
       parts.push("profile " + run.performance_model_profile);
     }
-    return { value: runId, label: parts.map(displayValue).join(" | ") };
+    return { value: runId, label: parts.map((part) => displayValue(part)).join(" | ") };
   }
 
   // A picked run that the list no longer holds keeps an option, so the picker

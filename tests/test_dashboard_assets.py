@@ -1453,7 +1453,8 @@ def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> Non
 def test_each_run_row_has_a_compare_with_link_that_makes_that_run_run_a() -> None:
     assert '<th scope="col">Compare</th>' in _RUNS_HTML
     assert function_source(_JS, "compareCell") == (
-        'function compareCell(runId) { if (typeof runId !== "string") { return ""; } '
+        'function compareCell(runId) { if (typeof runId !== "string") { '
+        'return { value: "", className: "" }; } '
         'return { value: "Compare with\\u2026", '
         'href: COMPARE_HASH + "/" + encodeURIComponent(runId), hidden: " " + runId }; }'
     )
@@ -1523,7 +1524,7 @@ def test_a_picker_option_shows_the_start_time_state_task_and_model_profile() -> 
         "const parts = [run.created_at, run.state, run.title || runId]; "
         "if (run.performance_model_profile) { "
         'parts.push("profile " + run.performance_model_profile); } '
-        'return { value: runId, label: parts.map(displayValue).join(" | ") }; }'
+        'return { value: runId, label: parts.map((part) => displayValue(part)).join(" | ") }; }'
     )
 
 
