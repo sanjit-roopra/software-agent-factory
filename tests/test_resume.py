@@ -486,6 +486,23 @@ def test_a_request_this_run_accepted_stays_pending_when_ingest_reads_a_stale_run
     assert _stored_request(store, run).status == "pending"
 
 
+def test_an_accepted_request_stays_pending_when_a_stale_run_is_read_after_the_window(
+    tmp_path: Path,
+) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    _submit(store, run)
+    assert ingest_dashboard_request(run, store, _config(), NOW) is not None
+    reopened = store.load_run(RUN_ID)
+    after_window = NOW + timedelta(hours=25)
+
+    # ``run`` is the snapshot read before the request was accepted, now past the window.
+    assert ingest_dashboard_request(run, store, _config(), after_window) is None
+
+    assert store.load_run(RUN_ID) == reopened
+    assert _stored_request(store, run).status == "pending"
+
+
 def test_a_github_reply_accepted_first_makes_the_request_stale(tmp_path: Path) -> None:
     run = _run()
     store = _store(tmp_path, run)

@@ -539,6 +539,9 @@ def ingest_dashboard_request(
     ``context_changed``. A request the run already accepted stays pending, and so does a
     request nobody has read yet: capacity and quota never make a request stale.
     """
+    # Work from the stored run, never the caller's snapshot: an older snapshot could miss
+    # this request's own acceptance and mark it stale.
+    run = store.load_run(run.id)
     escalation = run.escalation
     if escalation is None:
         return None
