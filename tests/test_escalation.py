@@ -1746,13 +1746,68 @@ def test_old_run_file_with_a_github_receipt_loads_as_github(tmp_path: Path) -> N
     path = tmp_path / "runs" / "r1" / "run.json"
     data = json.loads(path.read_text())
     for receipt in data["escalation"]["accepted_replies"]:
-        del receipt["source"]
+        receipt.pop("source", None)
     path.write_text(json.dumps(data))
 
     loaded = store.load_run("r1")
 
     assert loaded.escalation is not None
     assert loaded.escalation.accepted_replies[0].source == "github"
+
+
+@pytest.mark.parametrize(
+    ("model", "build"),
+    [
+        pytest.param(AcceptedReplyReceipt, _receipt_json, id="receipt"),
+        pytest.param(PlanDecisionAnswers, _answers_json, id="answers"),
+    ],
+)
+def test_a_github_reply_is_saved_without_a_source_key(
+    model: type[BaseModel], build: Callable[..., dict[str, object]]
+) -> None:
+    reply = model.model_validate(build(source="github"))
+
+    assert "source" not in json.loads(reply.model_dump_json())
+    assert "source" not in reply.model_dump(mode="json")
+    assert model.model_validate_json(reply.model_dump_json()) == reply
+
+
+@pytest.mark.parametrize(
+    ("model", "build"),
+    [
+        pytest.param(AcceptedReplyReceipt, _receipt_json, id="receipt"),
+        pytest.param(PlanDecisionAnswers, _answers_json, id="answers"),
+    ],
+)
+def test_a_dashboard_reply_keeps_its_source_key(
+    model: type[BaseModel], build: Callable[..., dict[str, object]]
+) -> None:
+    reply = model.model_validate(
+        build(source="dashboard", user_login="dashboard-local", comment_id=None)
+    )
+
+    assert json.loads(reply.model_dump_json())["source"] == "dashboard"
+    assert model.model_validate_json(reply.model_dump_json()) == reply
+
+
+def test_a_run_file_with_a_github_receipt_has_no_source_key_for_older_code(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = FactoryRun(
+        id="r1",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        escalation=EscalationRecord(
+            episode_id="ep-1",
+            status=EscalationStatus.REOPENED,
+            accepted_replies=[_receipt("github")],
+        ),
+    )
+
+    store.save_run(run)
+
+    data = json.loads((tmp_path / "runs" / "r1" / "run.json").read_text())
+    assert [r.keys() & {"source"} for r in data["escalation"]["accepted_replies"]] == [set()]
+    assert store.load_run("r1") == run
 
 
 _REPLY_MODELS = [

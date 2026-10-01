@@ -832,6 +832,24 @@ def test_listing_dashboard_requests_rejects_an_unsafe_episode_id(tmp_path: Path)
         store.list_dashboard_requests("run-1", "../x")
 
 
+@pytest.mark.parametrize(
+    "update",
+    [{"status": "stale", "reason": "expired"}, {"reason": "expired"}],
+    ids=["stale", "pending-with-a-reason"],
+)
+def test_a_dashboard_request_is_created_pending_and_without_a_reason(
+    tmp_path: Path, update: dict[str, object]
+) -> None:
+    store = _store_with_run(tmp_path)
+    # model_copy skips validation, as a caller that bypassed the model would.
+    request = _request().model_copy(update=update)
+
+    with pytest.raises(ValueError, match="pending"):
+        store.create_dashboard_request("run-1", request)
+
+    assert _request_files(store) == []
+
+
 def test_replacing_a_dashboard_request_overwrites_it_in_place(tmp_path: Path) -> None:
     store = _store_with_run(tmp_path)
     request = _request()

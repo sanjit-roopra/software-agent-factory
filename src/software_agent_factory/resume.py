@@ -328,8 +328,10 @@ def resume_refusal(run: FactoryRun, config: FactoryConfig, now: datetime) -> Res
 
     The run must wait in ``NEEDS_HUMAN`` with an escalation that is pending, notified or
     failed to notify, with a valid decision context, inside its reply window and with a
-    reopen left. The result is the stale reason code a dashboard request gets.
-    ``remote_resume_enabled`` is not part of this check: it covers GitHub replies only.
+    reopen left. The result is the stale reason code a dashboard request gets. ``now`` is
+    the moment the reply window is judged: a GitHub reply is judged when it is read, a
+    dashboard request when its human made it. ``remote_resume_enabled`` is not part of this
+    check: it covers GitHub replies only.
     """
     escalation = run.escalation
     if escalation is None or not awaits_human(run):
@@ -409,7 +411,10 @@ def _accept(
     # The caller's run may be older than the stored one: the other path can have accepted a
     # reply since it was read. Check and save the stored run, never the snapshot.
     fresh = store.load_run(run.id)
-    refusal = resume_refusal(fresh, config, now)
+    # A dashboard request is judged when its human made it, so waiting for a free slot or the
+    # daily quota cannot end its window. A GitHub reply is judged when the poller reads it.
+    window_at = reply.created_at if reply.source == "dashboard" else now
+    refusal = resume_refusal(fresh, config, window_at)
     if refusal is not None:
         return refusal
     escalation = fresh.escalation
@@ -467,6 +472,12 @@ def _accept(
         }
     )
     store.save_run(fresh.model_copy(update={"escalation": reopened}))
+    if reply.source == "github":
+        # The run is reopened, so a dashboard request made for this episode can no longer
+        # be applied. A request this run accepted itself stays pending.
+        for request in store.list_dashboard_requests(fresh.id, escalation.episode_id):
+            if request.status == "pending":
+                _mark_stale(store, fresh.id, request, "state_changed")
     return receipt
 
 
@@ -503,10 +514,11 @@ def _dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) 
 
 
 def _request_refusal(
-    run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig, now: datetime
+    run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig
 ) -> tuple[ResumeRefusal | None, list[PlanDecisionAnswer] | None]:
     """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
-    refusal = resume_refusal(run, config, now)
+    # The window is judged when the human made the request, not when the service reads it.
+    refusal = resume_refusal(run, config, request.created_at)
     if refusal is not None:
         return refusal, None
     escalation = run.escalation
@@ -533,7 +545,12 @@ def _mark_stale(
 
 
 def ingest_dashboard_request(
-    run: FactoryRun, store: ResumeStore, config: FactoryConfig, now: datetime
+    run: FactoryRun,
+    store: ResumeStore,
+    config: FactoryConfig,
+    now: datetime,
+    *,
+    requests: Sequence[DashboardResumeRequest] | None = None,
 ) -> AcceptedReplyReceipt | None:
     """Turn the pending dashboard request for ``run``'s current context into a reopen.
 
@@ -542,7 +559,11 @@ def ingest_dashboard_request(
     (source ``dashboard``) and returns the receipt, or marks it stale with the reason and
     returns ``None``. A pending request for any other context of the episode goes stale as
     ``context_changed``. A request the run already accepted stays pending, and so does a
-    request nobody has read yet: capacity and quota never make a request stale.
+    request nobody has read yet: capacity and quota never make a request stale, because the
+    reply window is judged when the request was made, not at ``now``.
+
+    A caller that already read the requests of the episode can pass them as ``requests``, to
+    save a second directory listing. Requests of another episode in it are ignored.
     """
     # Work from the stored run, never the caller's snapshot: an older snapshot could miss
     # this request's own acceptance and mark it stale.
@@ -552,8 +573,10 @@ def ingest_dashboard_request(
         return None
     fingerprint = _current_context_fingerprint(escalation)
     current: DashboardResumeRequest | None = None
-    for request in store.list_dashboard_requests(run.id, escalation.episode_id):
-        if request.status != "pending":
+    if requests is None:
+        requests = store.list_dashboard_requests(run.id, escalation.episode_id)
+    for request in requests:
+        if request.status != "pending" or request.episode_id != escalation.episode_id:
             continue
         if request.context_fingerprint == fingerprint:
             current = request
@@ -563,7 +586,7 @@ def ingest_dashboard_request(
         return None
     if _dashboard_already_accepted(escalation, fingerprint):
         return None
-    reason, answers = _request_refusal(run, current, config, now)
+    reason, answers = _request_refusal(run, current, config)
     if reason is not None:
         logger.info("dashboard request for run %s is stale: %s", run.id, reason)
         _mark_stale(store, run.id, current, reason)

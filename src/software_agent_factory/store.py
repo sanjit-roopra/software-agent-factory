@@ -328,11 +328,15 @@ class FileRunStore:
 
         Returns ``False`` when one already exists for that episode and
         fingerprint, so a double click or a replayed request changes nothing.
-        A new fingerprint in the same episode gets its own file. A missing run
-        raises ``FileNotFoundError`` and is never created.
+        A new fingerprint in the same episode gets its own file. A request that
+        is not pending, or has a reason, raises ``ValueError``: only the service
+        marks one stale. A missing run raises ``FileNotFoundError`` and is never
+        created.
         """
         if request.run_id != run_id:
             raise ValueError(f"request is for run {request.run_id}, not {run_id}")
+        if request.status != "pending" or request.reason is not None:
+            raise ValueError("a new dashboard request must be pending and have no reason")
         run_dir = self._run_dir_readonly(run_id)
         if not run_dir.is_dir():
             raise FileNotFoundError(f"run {run_id} does not exist")

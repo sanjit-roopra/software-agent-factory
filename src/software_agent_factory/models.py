@@ -6,7 +6,16 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 def utc_now() -> datetime:
@@ -1001,6 +1010,17 @@ def _check_reply_source(source: ReplySource, comment_id: int | None, user_login:
         raise ValueError(f"a dashboard reply must use user_login {DASHBOARD_USER_LOGIN!r}")
 
 
+def _without_github_source(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop ``source`` when it is ``github``, so a GitHub reply is saved as it was before.
+
+    Code from before the field existed forbids unknown keys. Leaving the key out of GitHub
+    replies means only a dashboard reply changes the file, and a rollback fails only for those.
+    """
+    if data.get("source") == "github":
+        data.pop("source")
+    return data
+
+
 class AcceptedReplyReceipt(ModelBase):
     source: ReplySource = "github"
     comment_id: int | None = Field(default=None, ge=1)
@@ -1020,6 +1040,10 @@ class AcceptedReplyReceipt(ModelBase):
     def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
         _check_reply_source(self.source, self.comment_id, self.user_login)
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_github_source(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_github_source(handler(self))
 
 
 class RiskRationale(ModelBase):
@@ -1128,6 +1152,10 @@ class PlanDecisionAnswers(VersionedModel):
     def _require_reply_source_fields(self) -> PlanDecisionAnswers:
         _check_reply_source(self.source, self.comment_id, self.user_login)
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_github_source(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_github_source(handler(self))
 
     @model_validator(mode="after")
     def _require_ordered_answers(self) -> PlanDecisionAnswers:

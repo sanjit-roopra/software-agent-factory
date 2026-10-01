@@ -57,6 +57,7 @@ from .github import GitHubClient, GitHubCommandError, resolve_github_token
 from .github_tracker import GitHubIssueProvider
 from .models import (
     REPLY_CURSOR_CLOSED,
+    DashboardResumeRequest,
     EscalationStatus,
     FactoryRun,
     ResumeClassification,
@@ -405,17 +406,18 @@ class FactoryService:
         """Deliver GitHub notices, reopen approved runs, then poll GitHub replies.
 
         Notices need no slot or quota, so they go first, as before. Then, in a fixed order
-        that does not depend on GitHub: runs already ``REOPENED`` are dispatched, and
-        dashboard requests are ingested while a slot and quota last. Reply polling comes last
-        and uses what is left. The notice and polling steps run only when escalation is
-        enabled and a client exists. Capacity and quota only defer a dashboard request; they
-        never make it stale.
+        that does not depend on GitHub: requests of runs that no longer wait are settled
+        (no slot, no quota), runs already ``REOPENED`` are dispatched, and dashboard requests
+        are ingested while a slot and quota last. Reply polling comes last and uses what is
+        left. The notice and polling steps run only when escalation is enabled and a client
+        exists. Capacity and quota only defer a dashboard request; they never make it stale.
         """
         client = self._escalation_client()
         if client is not None:
             self._deliver_notices(client)
 
         runs = self.store.list_runs()
+        self._settle_requests_of_runs_not_waiting(runs)
         budget = _CycleBudget(
             slots=self.config.scheduler.max_concurrent_tasks
             - len([h for h in self._handles.values() if not h.is_done()]),
@@ -467,6 +469,34 @@ class FactoryService:
             self._dispatch_reopen(run.id, run.work_item_id)
             budget.take_slot()
 
+    def _pending_requests(self, run: FactoryRun) -> list[DashboardResumeRequest]:
+        """The pending dashboard requests for the current episode of ``run``."""
+        escalation = run.escalation
+        if escalation is None:
+            return []
+        return [
+            request
+            for request in self.store.list_dashboard_requests(run.id, escalation.episode_id)
+            if request.status == "pending"
+        ]
+
+    def _settle_requests_of_runs_not_waiting(self, runs: Sequence[FactoryRun]) -> None:
+        """Mark the pending requests of runs that no longer wait for a human as stale.
+
+        A GitHub reply, a failure or an expiry can end the wait after a request was made, or
+        just before it. Ingest marks such a request stale as ``state_changed`` and leaves one
+        this run accepted itself pending. This needs no slot and no quota, and reads only the
+        requests of each escalated run's current episode: one directory listing per run, and
+        a file is parsed only when it exists. ``list_runs`` already reads every run file in
+        the cycle, which costs more.
+        """
+        for run in runs:
+            if run.escalation is None or awaits_human(run):
+                continue
+            pending = self._pending_requests(run)
+            if pending:
+                ingest_dashboard_request(run, self.store, self.config, utc_now(), requests=pending)
+
     def _ingest_dashboard_requests(self, runs: Sequence[FactoryRun], budget: _CycleBudget) -> None:
         """Reopen runs whose operator approved or answered on the dashboard.
 
@@ -474,11 +504,13 @@ class FactoryService:
         for the first cycle with room. Only runs that wait for a human and have a pending
         request for their current episode are read, one directory listing per waiting run.
         """
-        for run in self._runs_with_pending_dashboard_request(runs):
+        for run, pending in self._runs_with_pending_dashboard_request(runs):
             if not budget.has_room():
                 logger.debug("dashboard request ingest deferred: no free slot or daily quota")
                 return
-            receipt = ingest_dashboard_request(run, self.store, self.config, utc_now())
+            receipt = ingest_dashboard_request(
+                run, self.store, self.config, utc_now(), requests=pending
+            )
             if receipt is None:
                 continue
             logger.info("accepted dashboard request for run %s", run.id)
@@ -486,20 +518,23 @@ class FactoryService:
             budget.take_slot()
             budget.take_quota()
 
-    def _runs_with_pending_dashboard_request(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:
-        """Waiting runs with a pending request for their current episode, oldest first."""
-        waiting = [
-            run
-            for run in runs
-            if awaits_human(run)
-            and run.escalation is not None
-            and any(
-                request.status == "pending"
-                for request in self.store.list_dashboard_requests(run.id, run.escalation.episode_id)
-            )
-        ]
-        waiting.sort(key=lambda r: (r.escalation.created_at if r.escalation else utc_now(), r.id))
-        return waiting
+    def _runs_with_pending_dashboard_request(
+        self, runs: Sequence[FactoryRun]
+    ) -> list[tuple[FactoryRun, list[DashboardResumeRequest]]]:
+        """Waiting runs with their pending requests for the current episode, oldest first.
+
+        The requests are listed once here and handed to ingest, which does not list again.
+        """
+        found: list[tuple[datetime, FactoryRun, list[DashboardResumeRequest]]] = []
+        for run in runs:
+            escalation = run.escalation
+            if escalation is None or not awaits_human(run):
+                continue
+            pending = self._pending_requests(run)
+            if pending:
+                found.append((escalation.created_at, run, pending))
+        found.sort(key=lambda item: (item[0], item[1].id))
+        return [(run, pending) for _, run, pending in found]
 
     def _escalation_client(self) -> GitHubClient | None:
         """The GitHub client for notices and replies, or ``None`` when they are off."""

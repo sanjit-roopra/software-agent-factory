@@ -529,16 +529,30 @@ def test_a_github_reply_accepted_first_makes_the_request_stale(tmp_path: Path) -
     assert (stale.status, stale.reason) == ("stale", "state_changed")
 
 
-def test_an_ended_reply_window_makes_the_request_stale(tmp_path: Path) -> None:
-    run = _run(created_at=NOW - timedelta(hours=25))
+def test_a_request_made_after_the_reply_window_ended_is_stale(tmp_path: Path) -> None:
+    run = _run(created_at=NOW - timedelta(hours=25))  # the window ended an hour ago
     store = _store(tmp_path, run)
-    _submit(store, run)
+    _submit(store, run, created_at=NOW - timedelta(minutes=59))
 
     assert ingest_dashboard_request(run, store, _config(window_hours=24), NOW) is None
 
     assert store.load_run(RUN_ID) == run
     stale = _stored_request(store, run)
     assert (stale.status, stale.reason) == ("stale", "expired")
+
+
+def test_a_request_made_inside_the_reply_window_reopens_after_the_window_ended(
+    tmp_path: Path,
+) -> None:
+    run = _run(created_at=NOW - timedelta(hours=25))  # the window ended an hour ago
+    store = _store(tmp_path, run)
+    _submit(store, run, created_at=NOW - timedelta(hours=2))
+
+    receipt = ingest_dashboard_request(run, store, _config(window_hours=24), NOW)
+
+    assert receipt is not None
+    assert receipt.accepted_at == NOW
+    assert _stored_request(store, run).status == "pending"
 
 
 @pytest.mark.parametrize(
@@ -645,7 +659,7 @@ def test_every_request_of_a_run_that_cannot_resume_goes_stale(tmp_path: Path) ->
 def test_a_stale_request_is_never_read_again(tmp_path: Path) -> None:
     run = _run(created_at=NOW - timedelta(hours=25))
     store = _store(tmp_path, run)
-    _submit(store, run)
+    _submit(store, run, created_at=NOW - timedelta(minutes=30))
     assert ingest_dashboard_request(run, store, _config(window_hours=24), NOW) is None
     stale = _stored_request(store, run)
 
@@ -776,6 +790,58 @@ def test_a_request_on_a_stale_snapshot_goes_stale_after_a_github_reply(tmp_path:
     assert after_github.escalation.reopen_count == 1
     stale = _stored_request(store, run)
     assert (stale.status, stale.reason) == ("stale", "state_changed")
+
+
+def test_a_github_reply_makes_every_pending_request_of_its_episode_stale(tmp_path: Path) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    _submit(store, run)
+    _submit(store, run, context_fingerprint="f" * 64)
+    elsewhere = _request(run, episode_id="ep-earlier")
+    store.create_dashboard_request(RUN_ID, elsewhere)
+
+    assert accept_resume(run, store, _config(), reply=_github_reply(), answers=None, now=NOW)
+
+    assert [(r.status, r.reason) for r in store.list_dashboard_requests(RUN_ID, EPISODE)] == [
+        ("stale", "state_changed")
+    ] * 2
+    assert store.load_dashboard_request(RUN_ID, "ep-earlier", _fingerprint(run)) == elsewhere
+
+
+def test_a_github_reply_that_is_refused_leaves_the_request_pending(tmp_path: Path) -> None:
+    run = _run(created_at=NOW - timedelta(hours=25))
+    store = _store(tmp_path, run)
+    request = _submit(store, run, created_at=NOW - timedelta(hours=2))
+
+    receipt = accept_resume(run, store, _config(), reply=_github_reply(), answers=None, now=NOW)
+
+    assert receipt is None
+    assert _stored_request(store, run) == request
+
+
+def test_ingest_uses_the_listing_it_is_given(tmp_path: Path) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    _submit(store, run)
+
+    assert ingest_dashboard_request(run, store, _config(), NOW, requests=[]) is None
+    assert store.load_run(RUN_ID) == run
+    assert _stored_request(store, run).status == "pending"
+
+    pending = store.list_dashboard_requests(RUN_ID, EPISODE)
+
+    assert ingest_dashboard_request(run, store, _config(), NOW, requests=pending) is not None
+
+
+def test_ingest_ignores_listed_requests_of_another_episode(tmp_path: Path) -> None:
+    run = _run()
+    store = _store(tmp_path, run)
+    earlier = _request(run, episode_id="ep-earlier")
+
+    # Not on disk: marking it stale would raise, so it must not be touched.
+    assert ingest_dashboard_request(run, store, _config(), NOW, requests=[earlier]) is None
+
+    assert store.load_run(RUN_ID) == run
 
 
 def test_plan_answers_of_a_stale_snapshot_do_not_replace_the_accepted_ones(
