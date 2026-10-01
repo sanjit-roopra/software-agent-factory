@@ -44,6 +44,8 @@ TEXT_BACKGROUNDS = ("--bg", "--surface", "--surface-2")
 RESERVED_TEXT_TOKENS = ("--ok",)
 #: Sits on the accent fill, not on a page background, so it has its own pair.
 ON_ACCENT_TOKEN = "--accent-contrast"
+#: A disabled button or field: muted text on the raised surface, with no opacity to dim it.
+DISABLED_PAIR = ("--text-muted", "--surface-2")
 UI_PAIRS = (
     ("--focus", "--bg"),
     ("--accent", "--surface"),
@@ -147,6 +149,26 @@ def test_text_on_the_accent_fill_reaches_4_5_to_1(css: str, theme: str) -> None:
 def test_ui_pairs_reach_3_to_1(css: str, theme: str, foreground: str, background: str) -> None:
     tokens = _tokens(css, theme)
     assert _contrast(tokens[foreground], tokens[background]) >= 3.0
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_a_disabled_control_keeps_4_5_to_1_text_contrast(css: str, theme: str) -> None:
+    foreground, background = DISABLED_PAIR
+    tokens = _tokens(css, theme)
+    assert _contrast(tokens[foreground], tokens[background]) >= 4.5
+
+
+@pytest.mark.parametrize("selector", ["button:disabled", r"\.answer-field input:disabled"])
+def test_a_disabled_control_is_dimmed_by_its_colors_and_not_by_opacity(
+    css: str, selector: str
+) -> None:
+    rule = _block(css, selector)
+    foreground, background = DISABLED_PAIR
+    assert f"color: var({foreground});" in rule
+    assert f"background: var({background});" in rule
+    assert "cursor: not-allowed;" in rule
+    assert "dashed" in rule
+    assert "opacity" not in rule
 
 
 def test_contrast_helper_matches_known_wcag_values() -> None:

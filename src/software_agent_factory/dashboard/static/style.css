@@ -201,7 +201,12 @@ a { color: var(--accent); }
 .copy-row { display: flex; gap: 0.75rem; align-items: center; }
 .copy-status { color: var(--ok); font-weight: 600; }
 .stale-sentence { color: var(--warn); font-weight: 600; }
-button:disabled { cursor: not-allowed; opacity: 0.6; }
+button:disabled {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
 .approve-dialog {
   background: var(--surface);
   color: var(--text);
@@ -222,6 +227,12 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   font: inherit;
   padding: 0.35rem 0.6rem;
   width: 100%;
+}
+.answer-field input:disabled {
+  background: var(--surface-2);
+  border-style: dashed;
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 .field-hint { color: var(--text-muted); font-size: 0.85rem; margin: 0.25rem 0 0; }
 @media (max-width: 900px) {

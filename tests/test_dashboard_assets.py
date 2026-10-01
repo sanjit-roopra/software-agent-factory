@@ -1289,6 +1289,7 @@ def test_the_dialog_and_the_form_have_styles_and_a_disabled_button_looks_disable
     for selector in (".approve-dialog", ".dialog-actions", ".answer-field input", ".field-hint"):
         assert re.search(rf"{re.escape(selector)}\s*\{{", css)
     assert re.search(r"button:disabled\s*\{[^}]*cursor:\s*not-allowed;", css)
+    assert re.search(r"input:disabled\s*\{[^}]*cursor:\s*not-allowed;", css)
     assert re.search(r"\.approve-dialog\s*\{[^}]*background:\s*var\(--surface\);", css)
     assert re.search(r"\.approve-dialog\s*\{[^}]*color:\s*var\(--text\);", css)
 
