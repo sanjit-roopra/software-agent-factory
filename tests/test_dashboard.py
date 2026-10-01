@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import quote
 
 import pytest
+from dashboard_js import function_source, normalized
 
 from software_agent_factory.dashboard import (
     DashboardConfig,
@@ -1427,22 +1428,21 @@ def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count
 
 
 def test_dashboard_ui_labeling_for_unresolved_decisions_and_finding_count() -> None:
-    normalized_js = " ".join(dashboard_assets.APP_JS.split())
+    js = dashboard_assets.APP_JS
 
-    expected_expression = (
-        '[ detail.guidance && (detail.guidance.reason_code === "UNRESOLVED_DECISIONS" || '
-        'detail.guidance.decision_count !== undefined) ? "Decision count" : "Finding count", '
-        'detail.guidance ? detail.guidance.reason_code === "UNRESOLVED_DECISIONS" || '
-        "detail.guidance.decision_count !== undefined ? detail.guidance.decision_count "
-        ": detail.guidance.finding_count : null ]"
+    # One condition decides both the label and the value, so they cannot drift apart.
+    assert function_source(js, "isDecisionGuidance") == (
+        "function isDecisionGuidance(guidance) { "
+        'return guidance.reason_code === "UNRESOLVED_DECISIONS" || '
+        "guidance.decision_count !== undefined; }"
     )
-    assert expected_expression in normalized_js
-
-    # Structural guard: verify label and value branches cannot be swapped or reversed
-    assert '? "Decision count" : "Finding count"' in normalized_js
-    assert '? "Finding count" : "Decision count"' not in normalized_js
-    assert "? detail.guidance.decision_count : detail.guidance.finding_count" in normalized_js
-    assert "? detail.guidance.finding_count : detail.guidance.decision_count" not in normalized_js
+    assert function_source(js, "countField") == (
+        "function countField(guidance) { if (isDecisionGuidance(guidance)) { "
+        'return ["Decision count", guidance.decision_count]; } '
+        'return ["Finding count", guidance.finding_count]; }'
+    )
+    assert normalized(js).count('"UNRESOLVED_DECISIONS"') == 1
+    assert "countField(guidance)," in function_source(js, "guidanceFields")
 
 
 # --------------------------------------------------------------------------
@@ -1492,13 +1492,25 @@ def test_run_detail_provider_failure_returns_503_without_traceback() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_app_js_never_uses_dangerous_rendering_apis() -> None:
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "createContextualFragment",
+        "srcdoc",
+        "document.write",
+        "eval(",
+        "new Function(",
+    ],
+)
+def test_app_js_never_uses_dangerous_rendering_apis(forbidden: str) -> None:
+    assert forbidden not in dashboard_assets.APP_JS
+
+
+def test_app_js_renders_server_text_with_textcontent() -> None:
     js = dashboard_assets.APP_JS
-    assert "innerHTML" not in js
-    assert "outerHTML" not in js
-    assert "document.write" not in js
-    assert "eval(" not in js
-    assert "new Function(" not in js
     assert "textContent" in js
     assert "Active invocation" in js
     assert "model.status" in js
@@ -1699,17 +1711,6 @@ def test_dashboard_explains_and_renders_usage_value() -> None:
     assert "AI usage value (USD)" in js
 
 
-def _normalized(text: str) -> str:
-    return " ".join(text.split())
-
-
-def _js_function_source(js: str, name: str) -> str:
-    """The normalized source of ``function name(...) { ... }`` (no nested braces)."""
-    match = re.search(rf"function {name}\([^)]*\) \{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}", js)
-    assert match is not None, f"{name} not found in the dashboard script"
-    return _normalized(match.group(0))
-
-
 def test_sanitize_invocation_keeps_list_price_estimate_beside_unchanged_usage_value() -> None:
     invocation = sanitize_invocation(
         {
@@ -1749,52 +1750,45 @@ def test_dashboard_list_price_estimate_falls_back_to_unknown_and_never_replaces_
     the row wiring instead of grepping for loose substrings."""
     js = dashboard_assets.APP_JS
 
-    assert _js_function_source(js, "displayListPriceEstimate") == (
-        'function displayListPriceEstimate(value) { if (typeof value !== "number" || '
-        '!Number.isFinite(value)) { return "unknown"; } return displayUsd(value); }'
+    assert function_source(js, "displayListPriceEstimate") == (
+        "function displayListPriceEstimate(value) { "
+        'if (!isFiniteNumber(value)) { return "unknown"; } return displayUsd(value); }'
     )
-    normalized = _normalized(js)
-    # Both usage tables put the AI usage value, then the premium-request cost, then
+    # Every usage table puts the AI usage value, then the premium-request cost, then
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
-    project_row_wiring = (
-        "textCell(row, displayUsd(usage.usage_value_usd)); "
-        "textCell(row, usage.total_premium_request_cost); "
-        "textCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
-    )
-    invocation_row_wiring = (
+    assert (
+        "appendCell(row, displayUsd(usage.usage_value_usd)); "
+        "appendCell(row, usage.total_premium_request_cost); "
+        "appendCell(row, displayListPriceEstimate(usage.list_price_estimate_usd));"
+    ) in function_source(js, "modelRow")
+    assert (
         "displayUsd(usage.usage_value_usd), "
         "usage.total_premium_request_cost, "
         "displayListPriceEstimate(usage.list_price_estimate_usd)"
-    )
-    assert normalized.count(project_row_wiring) == 1
-    assert normalized.count(invocation_row_wiring) == 1
-    assert "displayListPriceEstimate(usage.usage_value_usd)" not in normalized
-    assert "displayUsd(usage.list_price_estimate_usd)" not in normalized
-    assert normalized.count("displayUsd(usage.usage_value_usd)") == 2
+    ) in function_source(js, "invocationRowSpec")
+    code = normalized(js)
+    assert "displayListPriceEstimate(usage.usage_value_usd)" not in code
+    assert "displayUsd(usage.list_price_estimate_usd)" not in code
 
 
 def test_dashboard_run_detail_lists_list_price_estimate_after_the_usage_value_rows() -> None:
-    normalized = _normalized(dashboard_assets.APP_JS)
+    usage_fields = function_source(dashboard_assets.APP_JS, "usageFields")
 
-    value_row = (
-        '[ "AI usage value (USD)", detail.usage ? '
-        "displayUsd(detail.usage.usage_value_usd) : null ],"
-    )
+    value_row = '["AI usage value (USD)", displayUsd(usage.usage_value_usd)],'
     estimate_row = (
-        '[ "List-price estimate", displayListPriceEstimate(detail.usage ? '
-        "detail.usage.list_price_estimate_usd : null) ],"
+        '["List-price estimate", displayListPriceEstimate(usage.list_price_estimate_usd)]'
     )
-    assert value_row in normalized
-    assert estimate_row in normalized
-    assert normalized.index(value_row) < normalized.index(estimate_row)
+    assert value_row in usage_fields
+    assert estimate_row in usage_fields
+    assert usage_fields.index(value_row) < usage_fields.index(estimate_row)
 
 
 def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> None:
     """Both usage tables list the AI usage value, the premium-request column, then
     the estimate last, in the order their row builders fill the cells."""
     html = dashboard_assets.render_index_html(token="tok")
-    normalized_js = _normalized(dashboard_assets.APP_JS)
+    js = dashboard_assets.APP_JS
 
     invocations_head = re.search(
         r'<table id="invocations-table">\s*<thead>(.*?)</thead>', html, flags=re.DOTALL
@@ -1806,10 +1800,13 @@ def test_dashboard_usage_tables_end_with_the_list_price_estimate_column() -> Non
         "Premium-request cost",
         "List-price estimate",
     ]
-    assert (
-        '"AI usage value (USD)", "Premium-request units", "List-price estimate" ].forEach('
-        in normalized_js
-    )
+    model_headers = re.search(r"const MODEL_HEADERS = \[(.*?)\];", js, flags=re.DOTALL)
+    assert model_headers is not None
+    assert re.findall(r'"([^"]*)"', model_headers.group(1))[-3:] == [
+        "AI usage value (USD)",
+        "Premium-request units",
+        "List-price estimate",
+    ]
 
 
 def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -> None:
@@ -1817,14 +1814,16 @@ def test_dashboard_totals_show_list_price_estimate_row_with_unknown_fallback() -
     ``displayListPriceEstimate`` "unknown" fallback the detail/invocation
     views use, rather than the generic renderer's ``[object Object]`` for a
     field nested two levels deep (``metrics.usage.list_price_estimate_usd``)."""
-    normalized = _normalized(dashboard_assets.APP_JS)
+    js = dashboard_assets.APP_JS
 
-    assert (
-        "var listPriceEstimate = totals.metrics.usage ? "
-        "totals.metrics.usage.list_price_estimate_usd : null; "
-        "totals.metrics = Object.assign({}, totals.metrics, { "
-        "list_price_estimate_usd: displayListPriceEstimate(listPriceEstimate) });"
-    ) in normalized
+    assert function_source(js, "withListPriceEstimate") == (
+        "function withListPriceEstimate(metrics) { return { ...metrics, "
+        "list_price_estimate_usd: "
+        "displayListPriceEstimate(metrics.usage?.list_price_estimate_usd) }; }"
+    )
+    assert "totals.metrics = withListPriceEstimate(totals.metrics);" in function_source(
+        js, "renderTotals"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2135,6 +2134,38 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
 
 
 # --------------------------------------------------------------------------
+# Test helpers for the asset tests below (no JS runner, ADR-016)
+# --------------------------------------------------------------------------
+
+
+def test_function_source_returns_the_balanced_body_without_comments() -> None:
+    js = """
+    function first(a) {
+      // a brace in a comment: }
+      const text = "} not a close {";
+      if (a) { return 'x'; }
+      return text;
+    }
+    function second() { return 1; }
+    """
+    assert function_source(js, "first") == (
+        "function first(a) { "
+        "const text = \"} not a close {\"; if (a) { return 'x'; } return text; }"
+    )
+    assert function_source(js, "second") == "function second() { return 1; }"
+
+
+def test_function_source_raises_when_the_function_is_missing() -> None:
+    with pytest.raises(AssertionError, match="missing not found"):
+        function_source("function other() { return 1; }", "missing")
+
+
+def test_function_source_raises_when_braces_do_not_balance() -> None:
+    with pytest.raises(AssertionError, match="unbalanced"):
+        function_source("function broken() { if (a) { return 1; }", "broken")
+
+
+# --------------------------------------------------------------------------
 # Shell, navigation and hash routes (asset tests; no JS runner, ADR-016)
 # --------------------------------------------------------------------------
 
@@ -2149,11 +2180,14 @@ _VIEW_SECTIONS = (
     ("view-health", "health-heading"),
 )
 
+#: Every table the page ships is named, so each one can be checked on its own.
+_TABLE_IDS = re.findall(r'<table\s+id="([^"]+)"', _INDEX_HTML)
+
 
 def test_index_html_has_a_main_nav_landmark_with_the_four_links() -> None:
-    nav = re.search(r'<nav aria-label="Main">(.*?)</nav>', _INDEX_HTML, flags=re.DOTALL)
+    nav = re.search(r'<nav\s+aria-label="Main">(.*?)</nav>', _INDEX_HTML, flags=re.DOTALL)
     assert nav is not None
-    links = re.findall(r'<a href="(#[a-z]+)" data-route="([a-z]+)">([^<]+)</a>', nav.group(1))
+    links = re.findall(r'<a\s+href="(#[a-z]+)"\s+data-route="([a-z]+)">([^<]+)</a>', nav.group(1))
     assert links == [
         ("#runs", "runs", "Runs"),
         ("#compare", "compare", "Compare"),
@@ -2166,8 +2200,9 @@ def test_index_html_has_a_main_nav_landmark_with_the_four_links() -> None:
 def test_each_view_is_one_hidden_section_with_a_focusable_heading(
     section_id: str, heading_id: str
 ) -> None:
-    assert f'<section id="{section_id}" aria-labelledby="{heading_id}" hidden>' in _INDEX_HTML
-    assert re.search(rf'<h1 id="{heading_id}" tabindex="-1">', _INDEX_HTML)
+    section = rf'<section\s+id="{section_id}"\s+aria-labelledby="{heading_id}"\s+hidden>'
+    assert re.search(section, _INDEX_HTML)
+    assert re.search(rf'<h1\s+id="{heading_id}"\s+tabindex="-1">', _INDEX_HTML)
 
 
 def test_totals_stay_on_the_runs_view() -> None:
@@ -2178,56 +2213,117 @@ def test_totals_stay_on_the_runs_view() -> None:
 
 def test_script_is_deferred_in_the_head_and_not_in_the_body() -> None:
     head, body = _INDEX_HTML.split("</head>")
-    assert '<script defer src="/assets/app.js?token=fixture-token"></script>' in head
+    assert re.search(
+        r'<script\s+defer\s+src="/assets/app\.js\?token=fixture-token"></script>', head
+    )
     assert "<script" not in body
 
 
-@pytest.mark.parametrize(
-    "route_text",
-    ['"runs"', '"run"', '"compare"', '"projects"', '"health"', "parts.length === 3"],
-)
-def test_app_js_handles_every_route(route_text: str) -> None:
-    assert route_text in dashboard_assets.APP_JS
+def test_route_parser_pins_every_route_shape() -> None:
+    js = dashboard_assets.APP_JS
+    parser = function_source(js, "parseRoute")
+    # A run needs exactly one id part; compare takes none or a pair of ids.
+    assert 'name === "run" && parts.length === 2' in parser
+    assert 'return { view: "run", runId: parts[1] };' in parser
+    assert 'name === "compare" && (parts.length === 1 || parts.length === 3)' in parser
+    assert 'return { view: "compare" };' in parser
+    assert "parts.length === 1 && SIMPLE_VIEWS.includes(name)" in parser
+    assert "return { view: name };" in parser
+    assert parser.endswith("return null; }")
+    assert 'const SIMPLE_VIEWS = ["runs", "projects", "health"];' in js
 
 
-def test_app_js_routes_on_hashchange_and_defaults_unknown_hashes_to_runs() -> None:
-    js = _normalized(dashboard_assets.APP_JS)
-    assert 'window.addEventListener("hashchange"' in js
-    assert 'history.replaceState(null, "", "#runs")' in js
-    assert 'window.location.hash = "run/" + encodeURIComponent(runId)' in js
+def test_an_unknown_hash_redirects_in_apply_route_and_resolve_route_has_no_side_effects() -> None:
+    js = dashboard_assets.APP_JS
+    resolver = function_source(js, "resolveRoute")
+    assert resolver == (
+        "function resolveRoute() { "
+        'return parseRoute(globalThis.location.hash) || { view: "runs" }; }'
+    )
+    assert "history" not in resolver
+    assert function_source(js, "isUnknownHash") == (
+        "function isUnknownHash(hash) { "
+        'return hash !== "" && hash !== "#" && parseRoute(hash) === null; }'
+    )
+    apply_route = function_source(js, "applyRoute")
+    assert apply_route.startswith(
+        "function applyRoute(moveFocus) { if (isUnknownHash(globalThis.location.hash)) { "
+        'globalThis.history.replaceState(null, "", "#runs"); } const route = resolveRoute();'
+    )
+
+
+def test_a_hash_change_applies_the_route_and_moves_focus() -> None:
+    bindings = function_source(dashboard_assets.APP_JS, "bindControls")
+    assert (
+        'globalThis.addEventListener("hashchange", function () { applyRoute(true); });' in bindings
+    )
+
+
+def test_a_run_row_click_navigates_to_the_encoded_run_hash() -> None:
+    js = dashboard_assets.APP_JS
+    assert function_source(js, "navigateToRun") == (
+        "function navigateToRun(runId) { "
+        'globalThis.location.hash = "run/" + encodeURIComponent(runId); }'
+    )
 
 
 def test_app_js_validates_hash_run_ids_with_the_server_pattern() -> None:
     from software_agent_factory.dashboard import snapshot
 
     js = dashboard_assets.APP_JS
-    assert f"/{snapshot._RUN_ID_PATTERN.pattern}/" in js
-    assert "RUN_ID_PATTERN.test(" in js
-    assert '"Unknown run"' in js
+    # JS \w without the u flag is exactly [A-Za-z0-9_], the server's character set.
+    js_pattern = snapshot._RUN_ID_PATTERN.pattern.replace("A-Za-z0-9_", r"\w")
+    assert f"const RUN_ID_PATTERN = /{js_pattern}/;" in js
+    assert "RUN_ID_PATTERN.test(runId)" in function_source(js, "prepareRunView")
+    assert "RUN_ID_PATTERN.test(route.runId)" in function_source(js, "validRunId")
 
 
-def test_app_js_marks_the_active_link_focuses_the_heading_and_sets_the_title() -> None:
-    js = _normalized(dashboard_assets.APP_JS)
-    assert 'link.setAttribute("aria-current", "page")' in js
-    assert 'link.removeAttribute("aria-current")' in js
-    assert "document.getElementById(VIEWS[route.view].heading).focus()" in js
-    assert "document.title = " in js
-    assert 'Factory dashboard"' in js
-    assert '"Run " + route.runId' in js
+def test_the_run_view_heading_names_the_run_or_reports_an_unknown_one() -> None:
+    prepare = function_source(dashboard_assets.APP_JS, "prepareRunView")
+    assert prepare == (
+        "function prepareRunView(runId) { "
+        'const heading = document.getElementById("detail-heading"); '
+        "if (!RUN_ID_PATTERN.test(runId)) { heading.textContent = VIEWS.run.label; "
+        'setDetailStatus("Unknown run"); return; } '
+        'heading.textContent = "Run " + runId; setDetailStatus("Loading\\u2026"); }'
+    )
 
 
-def test_app_js_shows_loading_and_empty_states() -> None:
+def test_a_title_names_the_view_and_the_run() -> None:
     js = dashboard_assets.APP_JS
-    assert "No runs yet." in js
-    assert 'setDetailStatus("Loading\\u2026")' in js
-    assert 'id="runs-status"' in _INDEX_HTML
-    assert "Loading&hellip;</p>" in _INDEX_HTML.split('id="runs-status"')[1][:40]
+    assert 'const TITLE_SUFFIX = " \\u2014 Factory dashboard";' in js
+    title = function_source(js, "routeTitle")
+    assert "VIEWS[route.view].label + TITLE_SUFFIX" in title
+    assert '"Run " + route.runId : "Unknown run"' in title
+    assert "document.title = routeTitle(route);" in function_source(js, "applyRoute")
+
+
+def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
+    js = dashboard_assets.APP_JS
+    mark = function_source(js, "markNavLink")
+    assert 'link.setAttribute("aria-current", "page")' in mark
+    assert 'link.removeAttribute("aria-current")' in mark
+    assert 'link.getAttribute("data-route") === VIEWS[name].nav' in function_source(js, "showView")
+    assert (
+        "if (moveFocus) { document.getElementById(VIEWS[route.view].heading).focus(); }"
+        in function_source(js, "applyRoute")
+    )
+
+
+def test_loading_and_empty_states() -> None:
+    js = dashboard_assets.APP_JS
+    assert '"No runs yet."' in function_source(js, "renderRunsStatus")
+    assert 'setDetailStatus("Loading\\u2026");' in function_source(js, "prepareRunView")
+    assert re.search(r'<p\s+id="runs-status">Loading&hellip;</p>', _INDEX_HTML)
 
 
 def test_empty_run_table_stays_hidden_until_rows_arrive() -> None:
-    assert '<div class="table-wrap" hidden>\n          <table id="runs-table">' in _INDEX_HTML
-    assert 'document.querySelector("#view-runs .table-wrap").hidden = shown === 0' in _normalized(
-        dashboard_assets.APP_JS
+    assert re.search(
+        r'<div\s+class="table-wrap"\s+hidden>\s*<table\s+id="runs-table">', _INDEX_HTML
+    )
+    assert (
+        'document.querySelector("#view-runs .table-wrap").hidden = shown === 0;'
+        in function_source(dashboard_assets.APP_JS, "renderRunsStatus")
     )
 
 
@@ -2236,14 +2332,23 @@ def test_compare_view_is_a_placeholder_card() -> None:
     assert "Compare two runs &mdash; coming soon" in compare
 
 
-def test_every_table_sits_in_a_table_wrap() -> None:
-    assert _INDEX_HTML.count("<table") == 3
-    assert len(re.findall(r'<div class="table-wrap"(?: hidden)?>\s*<table', _INDEX_HTML)) == 3
+def test_every_static_table_has_an_id() -> None:
+    assert _TABLE_IDS
+    assert len(_TABLE_IDS) == len(re.findall(r"<table\b", _INDEX_HTML))
+
+
+@pytest.mark.parametrize("table_id", _TABLE_IDS)
+def test_each_static_table_sits_in_a_table_wrap(table_id: str) -> None:
+    wrapped = rf'<div\s+class="table-wrap"(?:\s+hidden)?>\s*<table\s+id="{table_id}">'
+    assert re.search(wrapped, _INDEX_HTML)
+
+
+def test_every_table_built_in_the_script_is_wrapped() -> None:
     js = dashboard_assets.APP_JS
-    assert 'className = "table-wrap"' in js
-    assert "card.appendChild(table)" not in js
-    assert "card.appendChild(modelsTable)" not in js
-    assert js.count("card.appendChild(wrapTable(") == 2
+    assert 'element("div", "table-wrap")' in function_source(js, "wrapTable")
+    callers = re.findall(r"(\w+)\((?:tasksTable|modelsTable)\(", js)
+    assert callers
+    assert set(callers) == {"wrapTable"}
 
 
 def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
@@ -2281,13 +2386,12 @@ def test_active_nav_link_uses_the_accent_token() -> None:
 
 
 def test_one_poll_refreshes_only_the_open_view() -> None:
-    js = _normalized(dashboard_assets.APP_JS)
-    assert "var POLL_INTERVAL_MS = 5000;" in js
-    assert js.count("setInterval(") == 1
-    assert "window.setInterval(refreshView, POLL_INTERVAL_MS);" in js
-    assert "setTimeout(" not in js
-    assert "function refresh()" not in js
-    refreshers = re.search(r"var REFRESHERS = \{(.*?)\n  \};", dashboard_assets.APP_JS, re.DOTALL)
+    js = dashboard_assets.APP_JS
+    code = normalized(js)
+    assert "const POLL_INTERVAL_MS = 5000;" in code
+    assert code.count("setInterval(") == 1
+    assert "globalThis.setInterval(pollView, POLL_INTERVAL_MS);" in code
+    refreshers = re.search(r"const REFRESHERS = \{(.*?)\n  \};", js, re.DOTALL)
     assert refreshers is not None
     assert re.findall(r"^    (\w+): function", refreshers.group(1), re.MULTILINE) == [
         "runs",
@@ -2295,74 +2399,197 @@ def test_one_poll_refreshes_only_the_open_view() -> None:
         "projects",
         "health",
     ]
+    assert "REFRESHERS[view]" in function_source(js, "refreshView")
+
+
+def test_start_applies_the_theme_then_wires_controls_then_opens_the_route() -> None:
+    start = function_source(dashboard_assets.APP_JS, "start")
+    order = [
+        "applyStoredTheme();",
+        "bindControls();",
+        "seedBackHistory();",
+        "applyRoute(false);",
+        "globalThis.setInterval(pollView, POLL_INTERVAL_MS);",
+    ]
+    positions = [start.index(call) for call in order]
+    assert positions == sorted(positions)
 
 
 def test_a_route_change_refreshes_the_view_it_opens() -> None:
-    apply_route = _js_function_source(dashboard_assets.APP_JS, "applyRoute")
+    apply_route = function_source(dashboard_assets.APP_JS, "applyRoute")
     assert apply_route.endswith("refreshView(); }")
 
 
 def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
     js = dashboard_assets.APP_JS
-    guard = _js_function_source(js, "isDirty")
+    guard = function_source(js, "isDirty")
     assert "region.contains(active)" in guard
     assert 'active.matches("input, textarea, select")' in guard
     assert 'region.querySelector("dialog[open]") !== null' in guard
-    refresh_view = _js_function_source(js, "refreshView")
-    assert "isDirty(document.getElementById(VIEWS[state.view].section))" in refresh_view
+    refresh_view = function_source(js, "refreshView")
+    assert "isDirty(document.getElementById(VIEWS[view].section))" in refresh_view
 
 
 def test_refresh_patches_rows_and_text_in_place() -> None:
     js = dashboard_assets.APP_JS
-    assert "function renderRunRow" not in js
     for name in ("syncRows", "syncList", "syncDefinitionList", "setText"):
         assert f"function {name}(" in js
-    assert "if (node.textContent !== text)" in _normalized(js)
-    assert "signature !== lastProjectsSignature" in _normalized(js)
+    assert "if (node.textContent !== text)" in normalized(js)
+    assert "signature !== lastProjectsSignature" in function_source(js, "renderProjectsOnChange")
+
+
+@pytest.mark.parametrize(
+    ("renderer", "patchers"),
+    [
+        ("renderRuns", ["syncRows("]),
+        ("renderDetail", ["syncDefinitionList(", "syncRows("]),
+    ],
+)
+def test_the_live_views_patch_in_place_and_never_clear_their_content(
+    renderer: str, patchers: list[str]
+) -> None:
+    source = function_source(dashboard_assets.APP_JS, renderer)
+    for patcher in patchers:
+        assert patcher in source
+    assert "clearChildren(" not in source
+    assert "replaceChildren(" not in source
+
+
+def test_a_failed_refresh_leaves_the_views_as_they_were() -> None:
+    js = dashboard_assets.APP_JS
+    failure = function_source(js, "onRefreshFailure")
+    assert "clearChildren" not in failure
+    assert "replaceChildren" not in failure
+    assert "hidden" not in failure
+    assert "renderNotice();" in failure
+    # The notice writes one status line and touches nothing else.
+    assert "getElementById" not in failure
+    assert 'getElementById("notice")' in function_source(js, "renderNotice")
 
 
 def test_notices_live_in_one_polite_status_region() -> None:
-    assert '<p id="notice" role="status" aria-live="polite"></p>' in _INDEX_HTML
+    assert re.search(r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"></p>', _INDEX_HTML)
     assert _INDEX_HTML.count('role="status"') == 1
-    assert "error-banner" not in _INDEX_HTML
-    assert "error-banner" not in dashboard_assets.APP_JS
-    assert "showError(" not in dashboard_assets.APP_JS
 
 
 def test_notice_texts_report_a_lost_connection_and_a_restart() -> None:
-    js = _normalized(dashboard_assets.APP_JS)
+    message = function_source(dashboard_assets.APP_JS, "noticeMessage")
     assert (
         '"Connection lost, updated " + Math.floor((Date.now() - lastSuccessAt) / 1000) + "s ago"'
-        in js
+        in message
     )
-    assert '"Dashboard restarted, reload the page."' in js
+    assert '"Connection lost, not updated yet"' in message
+    assert '"Dashboard restarted, reload the page."' in message
 
 
 def test_a_401_is_told_apart_from_a_network_error() -> None:
     js = dashboard_assets.APP_JS
-    fetcher = _normalized(js.split("function apiFetch(")[1].split("function clearChildren(")[0])
-    assert "response.status === 401" in fetcher
-    assert "apiError(ERROR_UNAUTHORIZED" in fetcher
-    assert "apiError(ERROR_CONNECTION" in fetcher
-    failure = _js_function_source(js, "onRefreshFailure")
+    reader = function_source(js, "readResponse")
+    assert "response.status === 401" in reader
+    assert "apiError(ERROR_UNAUTHORIZED" in reader
+    assert "response.status >= 500 ? ERROR_CONNECTION : ERROR_REQUEST" in reader
+    assert "apiError(ERROR_CONNECTION" in function_source(js, "onNetworkError")
+    failure = function_source(js, "onRefreshFailure")
     assert "error.kind === ERROR_UNAUTHORIZED ? ERROR_UNAUTHORIZED : ERROR_CONNECTION" in failure
 
 
 def test_a_successful_refresh_clears_the_notice() -> None:
-    success = _js_function_source(dashboard_assets.APP_JS, "onRefreshSuccess")
-    assert "state.notice = null;" in success
+    js = dashboard_assets.APP_JS
+    success = function_source(js, "onRefreshSuccess")
+    assert "state.noticeKind = null;" in success
     assert "lastSuccessAt = Date.now();" in success
-    assert "Promise.all(tasks).then(onRefreshSuccess, onRefreshFailure)" in _normalized(
-        dashboard_assets.APP_JS
-    )
+    assert "whenLatest(request, onRefreshSuccess)" in function_source(js, "settle")
 
 
 def test_a_deep_link_seeds_history_so_back_returns_to_the_run_list() -> None:
     js = dashboard_assets.APP_JS
-    seed = _js_function_source(js, "seedBackHistory")
+    seed = function_source(js, "seedBackHistory")
     assert seed.index('replaceState(null, "", "#runs")') < seed.index("pushState(")
     assert 'pushState({ seeded: true }, "", hash)' in seed
     assert "seeded" in seed.split("return;")[0]
-    normalized = _normalized(js)
-    assert normalized.index("seedBackHistory(); applyRoute(false);") > 0
-    assert "applyRoute(false); seedBackHistory" not in normalized
+
+
+# --------------------------------------------------------------------------
+# Stale responses, in-flight polls and timeouts (asset tests; no JS runner, ADR-016)
+# --------------------------------------------------------------------------
+
+_REFRESH_FUNCTIONS = (
+    "refreshRuns",
+    "refreshTotals",
+    "refreshHealth",
+    "refreshProjects",
+    "refreshDetail",
+)
+
+
+def test_a_request_records_the_view_sequence_offset_limit_and_run() -> None:
+    begin = function_source(dashboard_assets.APP_JS, "beginRequest")
+    for captured in (
+        "seq: requests[view].seq",
+        "offset: state.offset",
+        "limit: state.limit",
+        "runId: state.runId",
+    ):
+        assert captured in begin
+    assert "requests[view].inFlight += 1" in begin
+
+
+@pytest.mark.parametrize("name", _REFRESH_FUNCTIONS)
+def test_every_refresh_drops_a_response_that_a_newer_request_overtook(name: str) -> None:
+    source = function_source(dashboard_assets.APP_JS, name)
+    assert "whenLatest(request, " in source
+
+
+def test_a_response_is_dropped_unless_its_request_is_the_latest_for_the_view() -> None:
+    js = dashboard_assets.APP_JS
+    assert function_source(js, "isLatest") == (
+        "function isLatest(request) { return requests[request.view].seq === request.seq; }"
+    )
+    assert function_source(js, "whenLatest") == (
+        "function whenLatest(request, handler) { return function (value) { "
+        "if (isLatest(request)) { handler(value, request); } }; }"
+    )
+
+
+def test_a_route_change_supersedes_older_requests_for_the_view_it_opens() -> None:
+    apply_route = function_source(dashboard_assets.APP_JS, "applyRoute")
+    assert apply_route.index("supersede(route.view);") < apply_route.index("refreshView();")
+
+
+def test_the_runs_pager_reads_the_requested_page_and_never_the_live_state() -> None:
+    js = dashboard_assets.APP_JS
+    assert "renderRunsPager(payload.page || {}, runs.length, request)" in function_source(
+        js, "renderRuns"
+    )
+    refresh = function_source(js, "refreshRuns")
+    assert "encodeURIComponent(request.limit)" in refresh
+    assert "encodeURIComponent(request.offset)" in refresh
+    for name in ("renderRunsPager", "hasMoreRuns", "renderRunsStatus", "refreshRuns"):
+        assert "state." not in function_source(js, name)
+
+
+def test_a_refresh_never_ends_in_an_unhandled_rejection() -> None:
+    settle = function_source(dashboard_assets.APP_JS, "settle")
+    assert settle.index(".then(") < settle.index(".catch(") < settle.index(".finally(")
+    assert "endRequest(request)" in settle.split(".finally(")[1]
+
+
+def test_a_poll_tick_waits_while_the_open_view_has_a_request_in_flight() -> None:
+    assert function_source(dashboard_assets.APP_JS, "pollView") == (
+        "function pollView() { if (requests[state.view].inFlight === 0) { refreshView(); } }"
+    )
+
+
+def test_a_request_times_out_after_ten_seconds_and_counts_as_a_lost_connection() -> None:
+    js = dashboard_assets.APP_JS
+    assert "const REQUEST_TIMEOUT_MS = 10000;" in js
+    fetcher = function_source(js, "apiFetch")
+    assert "new AbortController()" in fetcher
+    assert "controller.abort()" in fetcher
+    assert "}, REQUEST_TIMEOUT_MS);" in fetcher
+    assert "signal: controller.signal" in fetcher
+    assert ".then(readResponse, onNetworkError)" in fetcher
+    # The timer stops only once the body is read, so a stalled body times out too.
+    assert fetcher.index(".then(readResponse") < fetcher.index(".finally(")
+    assert "globalThis.clearTimeout(timer)" in fetcher.split(".finally(")[1]
+    assert "response.json().catch(onNetworkError)" in function_source(js, "readResponse")

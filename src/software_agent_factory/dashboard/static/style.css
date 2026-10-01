@@ -11,8 +11,8 @@
   --text-muted: #4f5b87;
   --accent: #2563eb;
   --accent-contrast: #ffffff;
-  --ok: #15803d;
-  --warn: #b45309;
+  --ok: #147a39;
+  --warn: #a84d08;
   --error: #b91c1c;
   --focus: #1d4ed8;
 }
@@ -111,7 +111,6 @@ tr[data-run-id]:hover { background: var(--surface-2); }
 .project-card h3 { margin: 0 0 0.5rem; }
 .project-meta { margin: 0 0 0.75rem; color: var(--text-muted); }
 .project-card .table-wrap { margin-top: 0.5rem; }
-.state-active { font-weight: 700; }
 .stale-yes { color: var(--warn); font-weight: 600; }
 #runs-toolbar { margin-bottom: 0.75rem; display: flex; gap: 0.75rem; align-items: center; }
 #notice {
