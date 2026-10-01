@@ -9,7 +9,7 @@ already persists (``FactoryRun``, ``WorkItem``, ``TriageResult``). It has no
 import-time dependency on ``workflow.py`` (the orchestration/mutation
 authority): a run's terminal/finished status is a small, stable domain fact
 duplicated locally (see ``_is_run_finished`` below) precisely so this
-read-only monitoring path -- and the read-only Phase 15.11 dashboard route
+read-only monitoring path -- and the Phase 15.11 dashboard route
 that will call it -- never transitively pulls in
 ``WorkflowController``/agents/publishing/routing/workspace code merely to
 classify a run.
@@ -22,7 +22,7 @@ Two public surfaces are provided:
   active, stale-active), attempt tallies by role/model, and aggregate
   metrics (attempts per run, first-pass success rate, scope replans, CI
   repair attempts, completed-run duration). Rendered by ``factory status``
-  and by the Phase 15.11 read-only dashboard -- neither of which this module
+  and by the Phase 15.11 dashboard -- neither of which this module
   imports or depends on.
 - :func:`build_run_detail` -- the single-run counterpart, returning a
   :class:`RunDetail` (summary fields, completion facts and the attempt

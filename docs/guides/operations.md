@@ -93,10 +93,10 @@ does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
 A run that needs you shows a "Needs you" panel on its detail page.
 
-- For a risk approval, choose **Approve**. A dialog lists the actions the
-  approval allows and the actions it does not. It says that agent work starts.
-  Nothing is recorded until you choose **Confirm approval**. Press Escape to
-  close the dialog.
+- For a risk approval, choose **Approve**. A dialog shows the decision
+  requested, the actions the approval allows, the actions it does not, and the
+  conditions in force. It says that agent work starts. Nothing is recorded until
+  you choose **Confirm approval**. Press Escape to close the dialog.
 - For plan decisions, type one answer for each decision. Each answer is one line
   of 1 to 500 characters, with no path, link or secret in it. **Submit answers**
   stays disabled until every field is filled in.
@@ -107,31 +107,40 @@ shows "Approved at <time>, queued for the factory service" (or "Answers sent at
 <time>, queued for the factory service"). If `factory start` is not running,
 start it. The request waits until it does.
 
-The service can still refuse a request. The panel then shows why:
+#### When the service refuses a request
 
-| Message | Meaning |
+The dashboard saves your request. The factory service reads it later and can
+still refuse it. The panel then shows one sentence above the new panel, and the
+request stays on file marked stale. These sentences come from the service.
+
+| Sentence | Meaning |
 | --- | --- |
-| `approval expired, approve again` | The reply window ended before the service read the request. |
+| `approval expired, approve again` (`answers expired, send them again` for answers) | The reply window ended before the service read the request. |
 | `reopen limit reached, inspect with factory show` | The run used all of its reopens. |
 | `the run changed, review again` | The run moved on. Read the new panel, then act again. |
+| `the run state changed, review again` | The run no longer waited for you when the service read the request. A GitHub reply can do this. |
 
-If the page cannot send a request, it shows one of these messages and moves
-focus to it:
+#### When the request failed
+
+The dashboard checks a request before it saves anything. If it refuses the
+request, or the page gets no answer, the status line shows one of these messages
+and focus moves to it. These messages come from the page.
 
 | Message | Cause |
 | --- | --- |
 | `dashboard restarted, reload the page` | The token no longer matches (`401`). |
 | `open the dashboard from the link it printed` | The request did not come from the page (`403`). |
 | `this run no longer exists` | The run was removed (`404`). |
-| `already approved` | A request for this run and context exists. |
+| `already approved` (`answers already sent` for answers) | A request for this run and context exists. |
 | `reopen limit reached` | The run used all of its reopens. |
 | `this run needs a different action, reload the page` | The run needs an answer, not an approval, or the other way round. |
 | `the run changed, review again` | The run is in a new episode or no longer waits. |
-| `approval expired, approve again` | The reply window ended. |
+| `approval expired, approve again` (`answers expired, send them again` for answers) | The reply window ended. |
 | `decision N: use 1 to 500 characters, one line, ...` | The answer for decision N is not valid. |
 | `the request failed, try again` | Any other failure, or no answer from the server. |
 
-Answers you typed stay in the form when a request fails or the run changes.
+Answers you typed stay in the form when a request fails. If the run moved to a
+new episode or context, the form starts empty.
 
 The dashboard cannot retry, cancel or reconfigure anything. Authority stays with
 the workflow controller and the factory service.

@@ -8,7 +8,7 @@ This module does no I/O of its own. It imports only :mod:`.models`, :mod:`.confi
 :mod:`.escalation_protocol` and the standard library: no GitHub client, no subprocess, no
 workflow and no service. It writes only through the :class:`ResumeStore` it is given, and
 only the service calls the write functions (:func:`accept_resume` and
-:func:`ingest_dashboard_request`). The read-only dashboard never does. Tests check both.
+:func:`ingest_dashboard_request`). The dashboard never does. Tests check both.
 """
 
 from __future__ import annotations
