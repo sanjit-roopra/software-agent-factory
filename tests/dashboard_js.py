@@ -103,3 +103,19 @@ def object_literal_source(js: str, name: str) -> str:
     if start is None:
         raise AssertionError(f"object {name} not found in the dashboard script")
     return _balanced_source(code, start.start(), start.end() - 1, f"object {name}")
+
+
+def listener_source(js: str, function: str, target: str, event: str) -> str:
+    """Normalized source of the callback of ``target.addEventListener("event", ...)``.
+
+    The listener is looked up inside ``function``. The result runs from the call to the brace
+    that closes the callback, found by balancing braces, so a test can assert on what that
+    listener does and on nothing else. Raises when the listener is missing.
+    """
+    body = function_source(js, function)
+    call = f'{target}.addEventListener("{event}"'
+    start = body.find(call)
+    if start == -1:
+        raise AssertionError(f"no {event} listener on {target} in function {function}")
+    open_index = body.find("{", body.index("function", start))
+    return _balanced_source(body, start, open_index, f"{event} listener on {target}")

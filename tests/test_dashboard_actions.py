@@ -14,6 +14,7 @@ import logging
 import socket
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -48,6 +49,7 @@ from software_agent_factory.models import (
     WorkflowState,
 )
 from software_agent_factory.resume import (
+    MAX_PLAN_DECISION_ANSWER_CHARS,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
@@ -256,6 +258,13 @@ class Rig:
     def requests(self) -> list[DashboardResumeRequest]:
         return self.store.list_dashboard_requests(RUN_ID, EPISODE)
 
+    @contextmanager
+    def assert_writes_nothing(self) -> Iterator[None]:
+        """Fail if anything under the data directory changes, in bytes or in names."""
+        before = _tree(self.data_dir)
+        yield
+        assert _tree(self.data_dir) == before
+
 
 RigFactory = Callable[..., Rig]
 
@@ -366,11 +375,12 @@ def test_a_body_of_exactly_16_kb_is_accepted(make_rig: RigFactory) -> None:
     assert rig.approve(padded)[0] == 202
 
 
-def test_a_500_character_plan_answer_is_accepted(make_rig: RigFactory) -> None:
+def test_a_plan_answer_of_the_longest_length_is_accepted(make_rig: RigFactory) -> None:
     rig = make_rig(_run(PLAN))
+    longest = "x" * MAX_PLAN_DECISION_ANSWER_CHARS
 
-    assert rig.answer(rig.body(answers=["x" * 500, ANSWER_CACHE]))[0] == 202
-    assert len(rig.requests()[0].answers[0].answer) == 500
+    assert rig.answer(rig.body(answers=[longest, ANSWER_CACHE]))[0] == 202
+    assert rig.requests()[0].answers[0].answer == longest
 
 
 # -- rejected: transport ------------------------------------------------------------------
@@ -400,36 +410,30 @@ def test_a_rejected_request_changes_nothing(
     make_rig: RigFactory, problem: str, overrides: dict[str, str | None], status: int
 ) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    assert rig.approve(**overrides)[0] == status, problem
-
-    assert _tree(rig.data_dir) == before
+    with rig.assert_writes_nothing():
+        assert rig.approve(**overrides)[0] == status, problem
 
 
 def test_the_token_only_in_the_query_string_is_not_enough(make_rig: RigFactory) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    status, _ = rig.post(
-        f"{_path(APPROVE)}?token={rig.server.token}",
-        rig.body(),
-        headers=rig.headers(**{TOKEN_HEADER: None}),
-    )
+    with rig.assert_writes_nothing():
+        status, _ = rig.post(
+            f"{_path(APPROVE)}?token={rig.server.token}",
+            rig.body(),
+            headers=rig.headers(**{TOKEN_HEADER: None}),
+        )
 
     assert status == 401
-    assert _tree(rig.data_dir) == before
 
 
 def test_a_body_over_16_kb_is_413(make_rig: RigFactory) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
     body = json.dumps(rig.body()).encode()
 
-    status, _ = rig.approve(body + b" " * (MAX_BODY_BYTES - len(body) + 1))
+    with rig.assert_writes_nothing():
+        status, _ = rig.approve(body + b" " * (MAX_BODY_BYTES - len(body) + 1))
 
-    assert status == 413
-    assert _tree(rig.data_dir) == before
+        assert status == 413
 
 
 #: The header faults in the order the handler checks them, each with the status it gets.
@@ -526,12 +530,10 @@ def test_a_body_that_never_arrives_is_408_and_the_connection_closes(
     make_rig: RigFactory,
 ) -> None:
     rig = make_rig(request_timeout_seconds=SHORT_TIMEOUT)
-    before = _tree(rig.data_dir)
-
-    received = _declare_a_body_and_send_none(rig)
+    with rig.assert_writes_nothing():
+        received = _declare_a_body_and_send_none(rig)
 
     assert received.startswith(b"HTTP/1.1 408 ")
-    assert _tree(rig.data_dir) == before
 
 
 def test_a_refused_write_that_never_sends_its_body_closes_the_connection(
@@ -562,10 +564,8 @@ def test_a_refused_write_that_never_sends_its_body_closes_the_connection(
 )
 def test_a_body_that_is_not_a_json_object_is_400(make_rig: RigFactory, body: bytes) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    assert rig.approve(body)[0] == 400
-    assert _tree(rig.data_dir) == before
+    with rig.assert_writes_nothing():
+        assert rig.approve(body)[0] == 400
 
 
 @pytest.mark.parametrize(
@@ -595,33 +595,29 @@ def test_a_missing_or_malformed_field_is_400(
     make_rig: RigFactory, overrides: dict[str, object]
 ) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    assert rig.approve(rig.body(**overrides))[0] == 400
-    assert _tree(rig.data_dir) == before
+    with rig.assert_writes_nothing():
+        assert rig.approve(rig.body(**overrides))[0] == 400
 
 
 @pytest.mark.parametrize(
     ("answers", "number"),
     [
         ([ANSWER_FINE, "   "], 2),
-        (["x" * 501, ANSWER_FINE], 1),
+        (["x" * (MAX_PLAN_DECISION_ANSWER_CHARS + 1), ANSWER_FINE], 1),
         ([ANSWER_FINE, "two\nlines"], 2),
         ([7, ANSWER_FINE], 1),
         (["https://example.com/leak", ANSWER_FINE], 1),
     ],
-    ids=["blank", "501 characters", "two lines", "not text", "a link"],
+    ids=["blank", "one character too long", "two lines", "not text", "a link"],
 )
 def test_an_invalid_answer_is_400_and_names_its_decision(
     make_rig: RigFactory, answers: list[object], number: int
 ) -> None:
     rig = make_rig(_run(PLAN))
-    before = _tree(rig.data_dir)
-
-    status, payload = rig.answer(rig.body(answers=answers))
+    with rig.assert_writes_nothing():
+        status, payload = rig.answer(rig.body(answers=answers))
 
     assert (status, payload["decision"]) == (400, number)
-    assert _tree(rig.data_dir) == before
 
 
 @pytest.mark.parametrize(
@@ -631,13 +627,11 @@ def test_answers_that_do_not_cover_the_decisions_are_400(
     make_rig: RigFactory, answers: object
 ) -> None:
     rig = make_rig(_run(PLAN))
-    before = _tree(rig.data_dir)
-
-    status, payload = rig.answer(rig.body(answers=answers))
+    with rig.assert_writes_nothing():
+        status, payload = rig.answer(rig.body(answers=answers))
 
     assert status == 400
     assert "decision" not in payload
-    assert _tree(rig.data_dir) == before
 
 
 # -- rejected: run ------------------------------------------------------------------------
@@ -645,23 +639,19 @@ def test_answers_that_do_not_cover_the_decisions_are_400(
 
 def test_an_unknown_run_is_404(make_rig: RigFactory) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    status, _ = rig.post(_path(APPROVE, MISSING_RUN), rig.body(), headers=rig.headers())
+    with rig.assert_writes_nothing():
+        status, _ = rig.post(_path(APPROVE, MISSING_RUN), rig.body(), headers=rig.headers())
 
     assert status == 404
-    assert _tree(rig.data_dir) == before
 
 
 @pytest.mark.parametrize("run_id", ["../etc", "..%2Fetc", "a%2Fb", "run id", "x" * 129])
 def test_a_run_id_that_is_not_shaped_like_one_is_400(make_rig: RigFactory, run_id: str) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    status, _ = rig.post(_path(APPROVE, run_id).replace(" ", "%20"), rig.body())
+    with rig.assert_writes_nothing():
+        status, _ = rig.post(_path(APPROVE, run_id).replace(" ", "%20"), rig.body())
 
     assert status == 400
-    assert _tree(rig.data_dir) == before
 
 
 # -- rejected: 409 ------------------------------------------------------------------------
@@ -726,12 +716,10 @@ def test_a_request_the_service_would_refuse_is_409_with_its_reason(
     make_rig: RigFactory, send: Callable[[Rig], tuple[int, Any]], run: FactoryRun, reason: str
 ) -> None:
     rig = make_rig(run)
-    before = _tree(rig.data_dir)
-
-    status, payload = send(rig)
+    with rig.assert_writes_nothing():
+        status, payload = send(rig)
 
     assert (status, payload[REASON]) == (409, reason)
-    assert _tree(rig.data_dir) == before
 
 
 def _oversized(rig: Rig) -> bytes:
@@ -837,12 +825,10 @@ def test_a_request_with_two_faults_is_refused_for_the_first_in_the_documented_or
     expected: tuple[int, dict[str, object]],
 ) -> None:
     rig = make_rig(run)
-    before = _tree(rig.data_dir)
-
-    status, payload = send(rig)
+    with rig.assert_writes_nothing():
+        status, payload = send(rig)
 
     assert (status, {key: payload.get(key) for key in expected[1]}) == expected
-    assert _tree(rig.data_dir) == before
 
 
 def test_a_run_without_an_escalation_is_not_waiting(make_rig: RigFactory) -> None:
@@ -857,12 +843,10 @@ def test_a_run_without_an_escalation_is_not_waiting(make_rig: RigFactory) -> Non
 def test_an_existing_request_for_the_episode_is_409(make_rig: RigFactory) -> None:
     rig = make_rig()
     assert rig.approve()[0] == 202
-    before = _tree(rig.data_dir)
-
-    status, payload = rig.approve()
+    with rig.assert_writes_nothing():
+        status, payload = rig.approve()
 
     assert (status, payload[REASON]) == (409, "existing_request")
-    assert _tree(rig.data_dir) == before
 
 
 @pytest.mark.parametrize(
@@ -1027,19 +1011,15 @@ def _write_response(rig: Rig, method: str, path: str) -> tuple[int, str | None, 
 )
 def test_every_other_write_is_405(make_rig: RigFactory, method: str, path: str, allow: str) -> None:
     rig = make_rig()
-    before = _tree(rig.data_dir)
-
-    assert _write_response(rig, method, path) == (405, allow, CLOSE)
-    assert _tree(rig.data_dir) == before
+    with rig.assert_writes_nothing():
+        assert _write_response(rig, method, path) == (405, allow, CLOSE)
 
 
 @pytest.mark.parametrize("action", [APPROVE, ANSWER])
 def test_without_resume_actions_the_routes_do_not_exist(make_rig: RigFactory, action: str) -> None:
     rig = make_rig(actions=False)
-    before = _tree(rig.data_dir)
-
-    assert _write_response(rig, "POST", _path(action)) == (405, READ_ONLY_METHODS, CLOSE)
-    assert _tree(rig.data_dir) == before
+    with rig.assert_writes_nothing():
+        assert _write_response(rig, "POST", _path(action)) == (405, READ_ONLY_METHODS, CLOSE)
 
 
 # -- audit --------------------------------------------------------------------------------

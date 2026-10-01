@@ -36,13 +36,11 @@ from software_agent_factory.dashboard.view import project_view
 from software_agent_factory.doctor import CheckResult, CheckStatus, DoctorReport
 from software_agent_factory.models import (
     AgentRole,
-    DashboardResumeRequest,
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
     InvocationRecord,
     ModelUsage,
-    PlanDecisionAnswer,
     ProjectExecution,
     ProjectState,
     ProjectTaskExecution,
@@ -639,61 +637,18 @@ def test_dashboard_detail_carries_the_configured_reopen_limit(
     assert detail.escalation.reopen_max == 2
 
 
-def test_dashboard_resume_request_reader_returns_the_stored_requests_without_answers(
+def test_dashboard_wires_the_resume_readers_and_requester_to_the_data_dir(
     data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:
-    now = datetime(2026, 10, 1, tzinfo=UTC)
-    _save_needs_human_run(data_dir, "run-queued", now)
-    FileRunStore(data_dir).create_dashboard_request(
-        "run-queued",
-        DashboardResumeRequest(
-            run_id="run-queued",
-            episode_id="ep-1",
-            context_fingerprint="a" * 64,
-            action=ResumeClassification.PLAN_DECISION,
-            answers=[PlanDecisionAnswer(decision_number=1, answer="private answer")],
-            created_at=now,
-        ),
-    )
+    # The readers and the requester have their own tests in test_dashboard_actions.py.
+    _save_needs_human_run(data_dir, "run-wired", datetime(2026, 10, 1, tzinfo=UTC))
 
     assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
-    reader = fake_dashboard[0].config.resume_request_reader
 
-    requests = reader("run-queued", "ep-1")
-    assert [(r["action"], r["status"], r["context_fingerprint"]) for r in requests] == [
-        ("PLAN_DECISION", "pending", "a" * 64)
-    ]
-    assert "answers" not in requests[0]
-    assert "private answer" not in repr(requests)
-    assert reader("run-queued", "ep-2") == []
-
-
-def test_dashboard_resume_actions_read_the_run_and_create_the_request(
-    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
-) -> None:
-    now = datetime(2026, 10, 1, tzinfo=UTC)
-    _save_needs_human_run(data_dir, "run-approve", now)
-    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
-    actions = fake_dashboard[0].config.resume_actions
-
-    def request(run_id: str) -> DashboardResumeRequest:
-        return DashboardResumeRequest(
-            run_id=run_id,
-            episode_id="ep-1",
-            context_fingerprint="a" * 64,
-            action=ResumeClassification.RISK_APPROVAL,
-            created_at=now,
-        )
-
-    run = actions.run_reader("run-approve")
-    assert run is not None
-    assert run.id == "run-approve"
-    assert actions.run_reader("run-missing") is None
-    assert actions.requester("run-approve", request("run-approve")) == "created"
-    assert actions.requester("run-approve", request("run-approve")) == "exists"
-    assert actions.requester("run-missing", request("run-missing")) == "run_missing"
-    stored = FileRunStore(data_dir).list_dashboard_requests("run-approve", "ep-1")
-    assert [r.run_id for r in stored] == ["run-approve"]
+    config = fake_dashboard[0].config
+    assert config.resume_actions is not None
+    assert config.resume_actions.run_reader("run-wired") is not None
+    assert config.resume_request_reader is not None
 
 
 def test_dashboard_resume_actions_use_the_configured_limits(

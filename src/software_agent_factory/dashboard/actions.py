@@ -43,7 +43,7 @@ from .validators import is_episode_id
 #: page gets. A request that names the wrong episode, context or action is a stale one.
 #: ``state_changed`` and ``context_changed`` are the service's words for a run that stopped
 #: waiting and a context that no longer matches.
-_CONFLICT_REASONS: dict[ResumeRefusal | RequestMismatch, ConflictReason] = {
+CONFLICT_REASONS: dict[ResumeRefusal | RequestMismatch, ConflictReason] = {
     "state_changed": "not_waiting",
     "context_changed": "stale_fingerprint",
     "expired": "expired",
@@ -131,7 +131,7 @@ def _conflict_reason(
         max_reopens=actions.max_reopens,
         now=now,
     )
-    return None if reason is None else _CONFLICT_REASONS[reason]
+    return None if reason is None else CONFLICT_REASONS[reason]
 
 
 def _plan_answers(escalation: EscalationRecord, texts: Sequence[str]) -> list[PlanDecisionAnswer]:

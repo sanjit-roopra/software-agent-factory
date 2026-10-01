@@ -2179,6 +2179,8 @@ def _next_step_over_http(reader: Callable[[str, str], Any] | None) -> dict[str, 
 def test_a_queued_request_from_the_reader_makes_the_next_step_pending() -> None:
     asked: list[tuple[str, str]] = []
 
+    # double-waiver: B1 — the injected ResumeRequestReader boundary; the production reader has
+    # its own tests against a real store
     def reader(run_id: str, episode_id: str) -> list[dict[str, Any]]:
         asked.append((run_id, episode_id))
         return [_QUEUED_REQUEST]
@@ -2194,9 +2196,10 @@ def test_without_a_reader_the_next_step_is_the_normal_panel() -> None:
     assert _next_step_over_http(None)["kind"] == "approve"
 
 
-def test_a_failing_reader_shows_the_normal_panel_and_logs_no_request_content(
+def test_a_failing_reader_shows_the_normal_panel_and_logs_the_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    # double-waiver: B1 — a reader that fails, as a damaged request file would make it
     def failing_reader(run_id: str, episode_id: str) -> list[dict[str, Any]]:
         raise OSError("disk gone")
 

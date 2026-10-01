@@ -6,12 +6,13 @@ import ast
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
 from software_agent_factory.dashboard import next_step as next_step_module
 from software_agent_factory.dashboard import sanitize
+from software_agent_factory.dashboard.actions import CONFLICT_REASONS
 from software_agent_factory.dashboard.next_step import (
     ANSWER_STALE_SENTENCES,
     FALLBACK_SENTENCE,
@@ -30,7 +31,7 @@ from software_agent_factory.dashboard.sanitize import (
 from software_agent_factory.dashboard.validators import RESUME_REFUSALS
 from software_agent_factory.dashboard.view import run_detail_view
 from software_agent_factory.escalation import parse_plan_decision_answers, parse_resume_command
-from software_agent_factory.escalation_protocol import REPLY_CLOSED_CAUSES
+from software_agent_factory.escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
 from software_agent_factory.models import (
     Complexity,
     EscalationRecord,
@@ -38,6 +39,7 @@ from software_agent_factory.models import (
     FactoryRun,
     PlanDecisionContext,
     ResumeClassification,
+    ResumeRefusal,
     Risk,
     RiskApprovalContext,
     RiskRationale,
@@ -46,6 +48,7 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import build_run_detail
 from software_agent_factory.redaction import REASON_LIMIT
 from software_agent_factory.resume import (
+    RequestMismatch,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
@@ -253,14 +256,14 @@ def test_malformed_decisions_are_unavailable(decisions: Any) -> None:
 
 
 def test_the_most_decisions_the_answer_parser_accepts_are_all_offered() -> None:
-    step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(1, 25)]))
+    step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(1, MAX_PLAN_DECISIONS + 1)]))
 
     assert step["kind"] == "answer"
-    assert [d["number"] for d in step["decisions"]] == list(range(1, 25))
+    assert [d["number"] for d in step["decisions"]] == list(range(1, MAX_PLAN_DECISIONS + 1))
 
 
 def test_more_decisions_than_the_answer_parser_accepts_are_unavailable() -> None:
-    step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(25)]))
+    step = _step(_plan_run(decisions=[f"Question {n}?" for n in range(MAX_PLAN_DECISIONS + 1)]))
 
     assert step["kind"] == "remote_approval_unavailable"
 
@@ -358,14 +361,19 @@ def test_an_open_github_reply_offers_both_the_action_and_the_reply_text() -> Non
     assert answer["reply_text"] is not None
 
 
-@pytest.mark.parametrize("cause", [None, "", 5, ["closed"], {"a": 1}, False])
-def test_an_unknown_or_malformed_reply_state_hides_only_the_reply_text(cause: Any) -> None:
+def test_an_unknown_reply_state_hides_only_the_reply_text() -> None:
     run = _risk_run()
     del run["escalation"]["reply_closed_cause"]
-    if cause is not None:
-        run["escalation"]["reply_closed_cause"] = cause
 
     step = next_step(run)
+
+    assert step["kind"] == "approve"
+    assert step["reply_text"] is None
+
+
+@pytest.mark.parametrize("cause", ["", 5, ["closed"], {"a": 1}, False])
+def test_a_malformed_reply_state_hides_only_the_reply_text(cause: Any) -> None:
+    step = next_step(_risk_run(reply_closed_cause=cause))
 
     assert step["kind"] == "approve"
     assert step["reply_text"] is None
@@ -390,10 +398,6 @@ def test_a_refused_dashboard_action_is_unavailable_and_says_why(refusal: str, ph
     assert approve["reply_text"] is answer["reply_text"] is None
     assert approve["approval_scope"] is answer["approval_scope"] is None
     assert answer["decisions"] == []
-
-
-def test_every_refusal_code_has_a_phrase() -> None:
-    assert set(REFUSAL_CAUSES) == set(RESUME_REFUSALS)
 
 
 def test_a_refusal_overrides_an_open_github_reply() -> None:
@@ -880,9 +884,15 @@ def test_a_stale_request_for_answers_says_answers(reason: str, sentence: str) ->
     assert step["stale_sentence"] == sentence
 
 
-def test_every_stale_reason_has_a_sentence() -> None:
-    assert set(STALE_SENTENCES) == {"expired", "reopen_limit", "context_changed", "state_changed"}
-    assert set(ANSWER_STALE_SENTENCES) == set(STALE_SENTENCES)
+def test_every_code_the_service_refuses_with_has_a_sentence_a_cause_and_a_conflict_reason() -> None:
+    codes = set(get_args(ResumeRefusal))
+
+    assert set(RESUME_REFUSALS) == codes
+    assert set(STALE_SENTENCES) == codes
+    assert set(ANSWER_STALE_SENTENCES) == codes
+    assert set(REFUSAL_CAUSES) == codes
+    assert set(CONFLICT_REASONS) - codes == set(get_args(RequestMismatch))
+    assert codes < set(CONFLICT_REASONS)
 
 
 def test_a_stale_request_for_an_old_context_still_explains_the_new_panel() -> None:
@@ -905,15 +915,18 @@ def test_the_newest_stale_request_wins() -> None:
     assert step["stale_sentence"] == STALE_SENTENCES["context_changed"]
 
 
-def test_a_pending_request_for_another_context_or_action_does_not_count() -> None:
-    other_context = _request(fingerprint="a" * 64)
-    other_action = _request("PLAN_DECISION")
+@pytest.mark.parametrize(
+    "request_for_another",
+    [_request(fingerprint="a" * 64), _request("PLAN_DECISION")],
+    ids=["another context", "another action"],
+)
+def test_a_pending_request_for_another_context_or_action_does_not_count(
+    request_for_another: dict[str, Any],
+) -> None:
+    step = next_step(_risk_run(), [request_for_another])
 
-    for request in (other_context, other_action):
-        step = next_step(_risk_run(), [request])
-
-        assert step["kind"] == "approve"
-        assert step["stale_sentence"] is None
+    assert step["kind"] == "approve"
+    assert step["stale_sentence"] is None
 
 
 def test_without_a_request_the_step_has_no_queued_fields() -> None:
@@ -968,6 +981,8 @@ def test_the_answers_of_a_request_never_reach_the_step() -> None:
 def test_the_view_asks_only_a_waiting_run_with_a_valid_episode_for_requests() -> None:
     asked: list[tuple[str, str]] = []
 
+    # double-waiver: B1 — the injected ResumeRequestReader boundary; the production reader has
+    # its own tests against a real store
     def requests_for(run_id: str, episode_id: str) -> list[dict[str, Any]]:
         asked.append((run_id, episode_id))
         return [_request()]

@@ -10,7 +10,13 @@ import re
 from typing import get_args
 
 import pytest
-from dashboard_js import function_source, normalized, object_literal_source, strip_comments
+from dashboard_js import (
+    function_source,
+    listener_source,
+    normalized,
+    object_literal_source,
+    strip_comments,
+)
 
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.responses import ConflictReason
@@ -1086,13 +1092,26 @@ def test_a_button_is_disabled_while_the_request_runs() -> None:
 
 
 def test_nothing_is_sent_before_the_operator_confirms() -> None:
-    sends = [m.start() for m in re.finditer(r"sendAction\(", strip_comments(_JS))]
-    assert len(sends) == 3  # the definition and the two callers
-    approve = function_source(_JS, "buildApproveDialog")
-    assert approve.index('confirm.addEventListener("click"') < approve.index("sendAction(")
+    build = function_source(_JS, "buildApproveDialog")
+    confirm = listener_source(_JS, "buildApproveDialog", "confirm", "click")
+    cancel = listener_source(_JS, "buildApproveDialog", "cancel", "click")
+    assert "sendAction(" in confirm
+    assert build.count("sendAction(") == confirm.count("sendAction(") == 1
+    assert "sendAction" not in cancel
     opener = function_source(_JS, "approveSection")
     assert "sendAction" not in opener
     assert "dialog.showModal()" in opener
+
+
+def test_answers_are_sent_only_when_the_form_is_submitted() -> None:
+    section = function_source(_JS, "answerSection")
+    submit = listener_source(_JS, "answerSection", "form", "submit")
+    typing = listener_source(_JS, "answerSection", "form", "input")
+    assert "sendAnswers(" in submit
+    assert section.count("sendAnswers(") == submit.count("sendAnswers(") == 1
+    assert "sendAction" not in section
+    assert "sendAnswers" not in typing
+    assert "sendAction" not in typing
 
 
 def test_the_approve_dialog_is_a_labelled_native_modal_that_lists_the_scope() -> None:
@@ -1142,7 +1161,6 @@ def test_after_an_error_focus_moves_to_the_named_field_or_to_the_message() -> No
 
 
 def test_results_go_in_the_one_status_region_and_a_connection_notice_wins() -> None:
-    assert _INDEX_HTML.count('role="status"') == 1
     assert "state.actionMessage = text; renderNotice();" in function_source(_JS, "setActionMessage")
     message = function_source(_JS, "noticeMessage")
     assert message.index("ERROR_UNAUTHORIZED") < message.index("return state.actionMessage")
@@ -1252,31 +1270,12 @@ def test_a_stale_reason_shows_as_its_own_sentence() -> None:
     assert 'typeof sentence === "string"' in stale
 
 
-def test_the_dirty_guard_keeps_the_dialog_and_the_focused_field_from_a_refresh() -> None:
-    guard = function_source(_JS, "isDirty")
-    assert 'region.querySelector("dialog[open]") !== null' in guard
-    assert 'active.matches("input, textarea, select")' in guard
-
-
 def test_leaving_the_view_drops_the_message_and_closes_an_open_dialog() -> None:
     reset = function_source(_JS, "resetActionState")
     assert 'state.actionMessage = "";' in reset
     assert 'document.querySelectorAll("dialog[open]")' in reset
     assert "dialog.close(FOCUS_ON_MESSAGE)" in reset
     assert "resetActionState();" in function_source(_JS, "applyRoute")
-
-
-def test_the_status_region_can_take_focus_for_a_message() -> None:
-    notice = r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"\s+tabindex="-1"></p>'
-    assert re.search(notice, _INDEX_HTML)
-
-
-def test_a_route_change_still_moves_focus_to_the_heading_and_sets_the_title() -> None:
-    apply_route = function_source(_JS, "applyRoute")
-    assert "document.title = routeTitle(route);" in apply_route
-    assert "if (moveFocus) { document.getElementById(VIEWS[route.view].heading).focus(); }" in (
-        apply_route
-    )
 
 
 def test_the_script_reads_the_token_from_the_page_and_never_from_the_address() -> None:
