@@ -35,11 +35,14 @@ from software_agent_factory.models import (
     ChangeSet,
     Complexity,
     ContextTier,
+    DashboardResumeRequest,
     DependencyEcosystem,
+    EscalationStatus,
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
     InvocationRecord,
+    PlanDecisionAnswer,
     PlanStep,
     RepairContext,
     RepositoryDependency,
@@ -80,6 +83,7 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
+from software_agent_factory.resume import ingest_dashboard_request
 from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
@@ -5029,3 +5033,99 @@ def test_default_fake_planner_regression(
 
     planner_invocations = [r for r in run.invocation_records if r.role is AgentRole.PLANNER]
     assert len(planner_invocations) == 1
+
+
+def test_a_dashboard_risk_approval_reopens_the_run_at_refining_without_new_budget(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    config = _config(data_dir)
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        config, store, FakeAgentRuntime(triage=_triage_hook(Complexity.L1, Risk.R2))
+    )
+    run = controller.run(_work_item("WI-dashboard-risk"), source_repo, run_id="run-dashboard-risk")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.escalation is not None
+    assert run.escalation.approval_context is not None
+    assert run.attempt_records == []
+    store.create_dashboard_request(
+        run.id,
+        DashboardResumeRequest(
+            run_id=run.id,
+            episode_id=run.escalation.episode_id,
+            context_fingerprint=run.escalation.approval_context.context_fingerprint,
+            action=ResumeClassification.RISK_APPROVAL,
+        ),
+    )
+
+    receipt = ingest_dashboard_request(run, store, config, utc_now())
+
+    assert receipt is not None
+    ingested = store.load_run(run.id)
+    assert ingested.state is WorkflowState.NEEDS_HUMAN
+    assert ingested.attempt_records == run.attempt_records
+    reopened = controller.reopen(run.id, source_repo)
+    assert reopened.state is WorkflowState.PR_READY
+    assert reopened.escalation is not None
+    assert reopened.escalation.status is EscalationStatus.RESUMED
+    assert [r.source for r in reopened.escalation.accepted_replies] == ["dashboard"]
+    roles = [record.role for record in reopened.invocation_records]
+    assert roles.count(AgentRole.TRIAGE) == 1
+    assert roles.count(AgentRole.REFINER) == 1
+    assert [(a.attempt_number, a.budget) for a in reopened.attempt_records] == [
+        (1, AttemptBudget.IMPLEMENTATION)
+    ]
+
+
+def test_dashboard_plan_answers_reach_the_planning_prompt_after_reopen(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    planner_contexts: list[str | None] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        planner_contexts.append(request.repair_context)
+        decisions = ["Choose the local persistence format."] if len(planner_contexts) < 3 else []
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan the change.",
+                steps=[],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"], estimated_files_min=1, estimated_files_max=1
+                ),
+                unresolved_decisions=decisions,
+            ),
+        )
+
+    config = _config(data_dir)
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(config, store, FakeAgentRuntime(planner=planner))
+    run = controller.run(_work_item("WI-dashboard-plan"), source_repo, run_id="run-dashboard-plan")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.escalation is not None
+    assert run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
+    assert run.escalation.plan_decision_context is not None
+    store.create_dashboard_request(
+        run.id,
+        DashboardResumeRequest(
+            run_id=run.id,
+            episode_id=run.escalation.episode_id,
+            context_fingerprint=run.escalation.plan_decision_context.context_fingerprint,
+            action=ResumeClassification.PLAN_DECISION,
+            answers=[
+                PlanDecisionAnswer(decision_number=1, answer="Use JSON files in the data dir.")
+            ],
+        ),
+    )
+
+    assert ingest_dashboard_request(run, store, config, utc_now()) is not None
+    reopened = controller.reopen(run.id, source_repo)
+
+    assert reopened.state is WorkflowState.PR_READY
+    assert len(planner_contexts) == 3
+    assert planner_contexts[-1] is not None
+    assert "Use JSON files in the data dir." in planner_contexts[-1]
+    assert reopened.attempt_records[0].triggered_by is AttemptTrigger.INITIAL

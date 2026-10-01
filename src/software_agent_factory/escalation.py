@@ -64,10 +64,13 @@ from .models import (
     utc_now,
 )
 from .resume import (
+    ReplyIdentity,
+    accept_resume,
     build_plan_answers,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
     contains_unsafe_content,
+    resume_refusal,
 )
 from .resume import is_valid_plan_decision_context as is_valid_plan_decision_context
 from .resume import is_valid_risk_approval_context as is_valid_risk_approval_context
@@ -1545,20 +1548,8 @@ def poll_escalation_reply(
         return None
 
     current_time = now or utc_now()
-    valid_resume_context = (
-        escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-        and escalation.approval_context is not None
-        and is_valid_risk_approval_context(
-            escalation.approval_context, run.id, escalation.episode_id
-        )
-    ) or (
-        escalation.resume_classification is ResumeClassification.PLAN_DECISION
-        and escalation.plan_decision_context is not None
-        and is_valid_plan_decision_context(
-            escalation.plan_decision_context, run.id, escalation.episode_id
-        )
-    )
-    if not escalation.remote_resume_enabled or not valid_resume_context:
+    refusal = resume_refusal(run, config, current_time)
+    if not escalation.remote_resume_enabled or refusal == "context_changed":
         escalation = escalation.model_copy(
             update={
                 "remote_resume_enabled": False,
@@ -1570,8 +1561,7 @@ def poll_escalation_reply(
         store.save_run(run)
         return None
 
-    window_deadline = escalation.created_at + timedelta(hours=config.escalation.reply_window_hours)
-    if current_time > window_deadline:
+    if refusal == "expired":
         escalation = escalation.model_copy(
             update={
                 "status": EscalationStatus.EXPIRED,
@@ -1584,7 +1574,7 @@ def poll_escalation_reply(
         store.save_run(run)
         return None
 
-    if escalation.reopen_count >= config.escalation.max_reopens:
+    if refusal == "reopen_limit":
         escalation = escalation.model_copy(
             update={
                 "remote_resume_enabled": False,
@@ -1699,57 +1689,20 @@ def poll_escalation_reply(
                     if parsed_plan_reply is None:
                         raise ValueError("validated plan decision reply could not be parsed")
                     _, _, plan_answers = parsed_plan_reply
-                app_fp = (
-                    escalation.approval_context.context_fingerprint
-                    if (
-                        escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-                        and escalation.approval_context is not None
-                    )
-                    else None
-                )
-                plan_decision_fp = (
-                    escalation.plan_decision_context.context_fingerprint
-                    if (
-                        escalation.resume_classification is ResumeClassification.PLAN_DECISION
-                        and escalation.plan_decision_context is not None
-                    )
-                    else None
-                )
-                accepted_receipt = AcceptedReplyReceipt(
-                    comment_id=comment.id,
-                    user_login=comment.user_login,
-                    user_id=comment.user_id,
-                    author_association=comment.author_association,
-                    created_at=comment.created_at,
-                    accepted_at=current_time,
-                    command=(
-                        format_resume_command(run.id, escalation.episode_id)
-                        if escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-                        else format_answer_command(run.id, escalation.episode_id)
+                accepted_receipt = accept_resume(
+                    run,
+                    store,
+                    reply=ReplyIdentity(
+                        source="github",
+                        comment_id=comment.id,
+                        user_login=comment.user_login,
+                        user_id=comment.user_id,
+                        author_association=comment.author_association,
+                        created_at=comment.created_at,
                     ),
-                    episode_id=escalation.episode_id,
-                    run_id=run.id,
-                    approval_context_fingerprint=app_fp,
-                    plan_decision_context_fingerprint=plan_decision_fp,
+                    answers=plan_answers,
+                    now=current_time,
                 )
-                if plan_answers is not None:
-                    context = escalation.plan_decision_context
-                    assert context is not None
-                    store.save_artifact(
-                        run.id,
-                        PlanDecisionAnswers(
-                            run_id=run.id,
-                            episode_id=escalation.episode_id,
-                            plan_fingerprint=context.plan_fingerprint,
-                            context_fingerprint=context.context_fingerprint,
-                            comment_id=comment.id,
-                            user_login=comment.user_login,
-                            user_id=comment.user_id,
-                            author_association=comment.author_association,
-                            answers=plan_answers,
-                            accepted_at=current_time,
-                        ),
-                    )
                 break
 
             if getattr(result, "retryable", False):
@@ -1799,17 +1752,6 @@ def poll_escalation_reply(
             )
 
     if accepted_receipt is not None:
-        escalation = escalation.model_copy(
-            update={
-                "accepted_replies": [*escalation.accepted_replies, accepted_receipt],
-                "reopen_count": escalation.reopen_count + 1,
-                "status": EscalationStatus.REOPENED,
-                "reply_cursor": "closed",
-                "updated_at": current_time,
-            }
-        )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return accepted_receipt
 
     if next_cursor is not None and next_cursor != escalation.reply_cursor:

@@ -13,18 +13,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Protocol
 
-from .escalation_protocol import MAX_PLAN_DECISIONS
+from .config import FactoryConfig
+from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
 from .models import (
+    DASHBOARD_USER_LOGIN,
+    AcceptedReplyReceipt,
+    DashboardRequestStaleReason,
+    DashboardResumeRequest,
+    EscalationRecord,
+    EscalationStatus,
+    FactoryRun,
     PlanDecisionAnswer,
+    PlanDecisionAnswers,
     PlanDecisionContext,
+    ReplySource,
+    ResumeClassification,
     Risk,
     RiskApprovalContext,
     WorkflowState,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_PLAN_DECISION_ANSWER_CHARS = 500
 
@@ -265,3 +283,258 @@ def is_valid_plan_decision_context(
         decisions=context.decisions,
     )
     return secrets.compare_digest(context.context_fingerprint, expected)
+
+
+#: Escalation states in which a run still waits for a human.
+_WAITING_STATUSES = frozenset(
+    {
+        EscalationStatus.PENDING_NOTIFICATION,
+        EscalationStatus.NOTIFIED,
+        EscalationStatus.NOTIFICATION_FAILED,
+    }
+)
+
+
+def _has_valid_resume_context(run: FactoryRun) -> bool:
+    escalation = run.escalation
+    if escalation is None:
+        return False
+    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
+        return escalation.approval_context is not None and is_valid_risk_approval_context(
+            escalation.approval_context, run.id, escalation.episode_id
+        )
+    if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+        return escalation.plan_decision_context is not None and is_valid_plan_decision_context(
+            escalation.plan_decision_context, run.id, escalation.episode_id
+        )
+    return False
+
+
+def resume_refusal(
+    run: FactoryRun, config: FactoryConfig, now: datetime
+) -> DashboardRequestStaleReason | None:
+    """Why ``run`` cannot accept a resume at ``now``, or ``None`` when it can.
+
+    The run must wait in ``NEEDS_HUMAN`` with an escalation that is pending, notified or
+    failed to notify, with a valid decision context, inside its reply window and with a
+    reopen left. The result is the stale reason code a dashboard request gets.
+    ``remote_resume_enabled`` is not part of this check: it covers GitHub replies only.
+    """
+    escalation = run.escalation
+    if (
+        run.state is not WorkflowState.NEEDS_HUMAN
+        or escalation is None
+        or escalation.status not in _WAITING_STATUSES
+    ):
+        return "state_changed"
+    if not _has_valid_resume_context(run):
+        return "context_changed"
+    window_end = escalation.created_at + timedelta(hours=config.escalation.reply_window_hours)
+    if now > window_end:
+        return "expired"
+    if escalation.reopen_count >= config.escalation.max_reopens:
+        return "reopen_limit"
+    return None
+
+
+def can_accept_resume(run: FactoryRun, config: FactoryConfig, now: datetime) -> bool:
+    """Whether ``run`` can accept a resume at ``now``. See :func:`resume_refusal` for why not."""
+    return resume_refusal(run, config, now) is None
+
+
+class ResumeStore(Protocol):
+    """The run store calls resume needs. ``FileRunStore`` satisfies it."""
+
+    def save_run(self, run: FactoryRun) -> Path: ...
+
+    def save_artifact(self, run_id: str, artifact: PlanDecisionAnswers) -> Path: ...
+
+    def list_dashboard_requests(
+        self, run_id: str, episode_id: str
+    ) -> list[DashboardResumeRequest]: ...
+
+    def replace_dashboard_request(self, run_id: str, request: DashboardResumeRequest) -> None: ...
+
+
+@dataclass(frozen=True)
+class ReplyIdentity:
+    """Who gave an accepted reply and when. A dashboard reply has no comment id."""
+
+    source: ReplySource
+    comment_id: int | None
+    user_login: str
+    user_id: int | None
+    author_association: str
+    created_at: datetime
+
+
+def accept_resume(
+    run: FactoryRun,
+    store: ResumeStore,
+    *,
+    reply: ReplyIdentity,
+    answers: list[PlanDecisionAnswer] | None,
+    now: datetime,
+) -> AcceptedReplyReceipt:
+    """Record an accepted reply: the receipt, the plan answers, a reopen and a closed cursor.
+
+    The caller has already checked the reply and :func:`resume_refusal`. The receipt carries
+    the fingerprint of the context the human saw. Plan answers are saved before the run, so
+    a run never reopens without them.
+    """
+    escalation = run.escalation
+    if escalation is None:
+        raise ValueError(f"run {run.id} has no escalation to resume")
+    approval = escalation.approval_context
+    plan = escalation.plan_decision_context
+    is_risk = escalation.resume_classification is ResumeClassification.RISK_APPROVAL
+    is_plan = escalation.resume_classification is ResumeClassification.PLAN_DECISION
+    receipt = AcceptedReplyReceipt(
+        source=reply.source,
+        comment_id=reply.comment_id,
+        user_login=reply.user_login,
+        user_id=reply.user_id,
+        author_association=reply.author_association,
+        created_at=reply.created_at,
+        accepted_at=now,
+        command=(
+            format_resume_command(run.id, escalation.episode_id)
+            if is_risk
+            else format_answer_command(run.id, escalation.episode_id)
+        ),
+        episode_id=escalation.episode_id,
+        run_id=run.id,
+        approval_context_fingerprint=approval.context_fingerprint if is_risk and approval else None,
+        plan_decision_context_fingerprint=plan.context_fingerprint if is_plan and plan else None,
+    )
+    if answers is not None:
+        if plan is None:
+            raise ValueError(f"run {run.id} has no plan decision context for the answers")
+        store.save_artifact(
+            run.id,
+            PlanDecisionAnswers(
+                run_id=run.id,
+                episode_id=escalation.episode_id,
+                plan_fingerprint=plan.plan_fingerprint,
+                context_fingerprint=plan.context_fingerprint,
+                source=reply.source,
+                comment_id=reply.comment_id,
+                user_login=reply.user_login,
+                user_id=reply.user_id,
+                author_association=reply.author_association,
+                answers=answers,
+                accepted_at=now,
+            ),
+        )
+    reopened = escalation.model_copy(
+        update={
+            "accepted_replies": [*escalation.accepted_replies, receipt],
+            "reopen_count": escalation.reopen_count + 1,
+            "status": EscalationStatus.REOPENED,
+            "reply_cursor": "closed",
+            "updated_at": now,
+        }
+    )
+    store.save_run(run.model_copy(update={"escalation": reopened}))
+    return receipt
+
+
+def _current_context_fingerprint(escalation: EscalationRecord) -> str | None:
+    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
+        risk_context = escalation.approval_context
+        return risk_context.context_fingerprint if risk_context is not None else None
+    if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
+        plan_context = escalation.plan_decision_context
+        return plan_context.context_fingerprint if plan_context is not None else None
+    return None
+
+
+def _dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) -> bool:
+    return any(
+        receipt.source == "dashboard"
+        and receipt.episode_id == escalation.episode_id
+        and fingerprint
+        in (receipt.approval_context_fingerprint, receipt.plan_decision_context_fingerprint)
+        for receipt in escalation.accepted_replies
+    )
+
+
+def _request_refusal(
+    run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig, now: datetime
+) -> tuple[DashboardRequestStaleReason | None, list[PlanDecisionAnswer] | None]:
+    """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
+    refusal = resume_refusal(run, config, now)
+    if refusal is not None:
+        return refusal, None
+    escalation = run.escalation
+    assert escalation is not None  # resume_refusal returned None
+    if request.run_id != run.id or request.action is not escalation.resume_classification:
+        return "context_changed", None
+    if request.action is not ResumeClassification.PLAN_DECISION:
+        return None, None
+    context = escalation.plan_decision_context
+    assert context is not None  # a valid plan decision context
+    answers = build_plan_answers(
+        [answer.answer for answer in request.answers], decision_count=len(context.decisions)
+    )
+    return ("context_changed" if answers is None else None), answers
+
+
+def _mark_stale(
+    store: ResumeStore,
+    run_id: str,
+    request: DashboardResumeRequest,
+    reason: DashboardRequestStaleReason,
+) -> None:
+    store.replace_dashboard_request(
+        run_id, request.model_copy(update={"status": "stale", "reason": reason})
+    )
+
+
+def ingest_dashboard_request(
+    run: FactoryRun, store: ResumeStore, config: FactoryConfig, now: datetime
+) -> AcceptedReplyReceipt | None:
+    """Turn the pending dashboard request for ``run``'s current context into a reopen.
+
+    Only the service calls this. It reads the requests of the current episode, checks the
+    one for the current context again, and either records it like an accepted GitHub reply
+    (source ``dashboard``) and returns the receipt, or marks it stale with the reason and
+    returns ``None``. A pending request for any other context of the episode goes stale as
+    ``context_changed``. A request the run already accepted stays pending, and so does a
+    request nobody has read yet: capacity and quota never make a request stale.
+    """
+    escalation = run.escalation
+    if escalation is None:
+        return None
+    fingerprint = _current_context_fingerprint(escalation)
+    current: DashboardResumeRequest | None = None
+    for request in store.list_dashboard_requests(run.id, escalation.episode_id):
+        if request.status != "pending":
+            continue
+        if request.context_fingerprint == fingerprint:
+            current = request
+        else:
+            _mark_stale(store, run.id, request, "context_changed")
+    if current is None or fingerprint is None:
+        return None
+    if _dashboard_already_accepted(escalation, fingerprint):
+        return None
+    reason, answers = _request_refusal(run, current, config, now)
+    if reason is not None:
+        logger.info("dashboard request for run %s is stale: %s", run.id, reason)
+        _mark_stale(store, run.id, current, reason)
+        return None
+    return accept_resume(
+        run,
+        store,
+        reply=ReplyIdentity(
+            source="dashboard",
+            comment_id=None,
+            user_login=DASHBOARD_USER_LOGIN,
+            user_id=None,
+            author_association="",
+            created_at=current.created_at,
+        ),
+        answers=answers,
+        now=now,
+    )

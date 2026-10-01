@@ -351,6 +351,45 @@ class FileRunStore:
             return None
         return DashboardResumeRequest.model_validate_json(raw)
 
+    def list_dashboard_requests(self, run_id: str, episode_id: str) -> list[DashboardResumeRequest]:
+        """Load every dashboard request of one episode, oldest first. Read-only.
+
+        A file that does not load, or whose name does not match its episode and context, is
+        skipped and logged, so one damaged request cannot stop the service from reading the
+        others.
+        """
+        run_dir = self._run_dir_readonly(run_id)
+        self._dashboard_request_name(episode_id, "0" * 64)  # validates the episode id
+        requests: list[DashboardResumeRequest] = []
+        for path in sorted(run_dir.glob(f"dashboard-approval-{episode_id}-*.json")):
+            try:
+                request = DashboardResumeRequest.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning("skipped dashboard request %s: %s", path.name, exc)
+                continue
+            if request.episode_id != episode_id or path.name != self._dashboard_request_name(
+                request.episode_id, request.context_fingerprint
+            ):
+                logger.warning(
+                    "skipped dashboard request %s: its name does not match it", path.name
+                )
+                continue
+            requests.append(request)
+        return sorted(requests, key=lambda request: request.created_at)
+
+    def replace_dashboard_request(self, run_id: str, request: DashboardResumeRequest) -> None:
+        """Overwrite an existing dashboard request. Only the service calls this, to mark
+        a request stale; the dashboard only creates. A missing request raises
+        ``FileNotFoundError`` and is never created here."""
+        path = self._run_dir_readonly(run_id) / self._dashboard_request_name(
+            request.episode_id, request.context_fingerprint
+        )
+        if not path.is_file():
+            raise FileNotFoundError(f"no dashboard request {path.name} for run {run_id}")
+        self._write_text_atomic(path, self._model_text(request))
+
     @staticmethod
     def _dashboard_request_name(episode_id: str, context_fingerprint: str) -> str:
         if EPISODE_ID_PATTERN.fullmatch(episode_id) is None:

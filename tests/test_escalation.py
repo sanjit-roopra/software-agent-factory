@@ -60,6 +60,7 @@ from software_agent_factory.models import (
     AcceptedReplyReceipt,
     AgentRole,
     Complexity,
+    DashboardResumeRequest,
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
@@ -79,6 +80,7 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
+from software_agent_factory.resume import ingest_dashboard_request
 from software_agent_factory.scheduler import TrackerItem
 from software_agent_factory.service import AlreadyRunFilter, FactoryService
 from software_agent_factory.store import FileRunStore
@@ -1389,6 +1391,40 @@ def test_the_reply_validator_accepts_a_reply_exactly_when_the_protocol_says_it_i
 
     assert verdict.is_valid is expect_open
     assert (_parity_cause(run, config) is None) is expect_open
+
+
+def test_a_dashboard_request_accepted_first_stops_the_github_poller(tmp_path: Path) -> None:
+    config, store, run = _parity_run(tmp_path, {}, {})
+    assert run.escalation is not None
+    assert run.escalation.approval_context is not None
+    store.create_dashboard_request(
+        run.id,
+        DashboardResumeRequest(
+            run_id=run.id,
+            episode_id=run.escalation.episode_id,
+            context_fingerprint=run.escalation.approval_context.context_fingerprint,
+            action=ResumeClassification.RISK_APPROVAL,
+            created_at=_PARITY_NOW,
+        ),
+    )
+    assert ingest_dashboard_request(run, store, config, _PARITY_NOW) is not None
+    runner = FakeRunner()
+
+    polled = poll_escalation_reply(
+        store.load_run(run.id),
+        store,
+        config,
+        GitHubClient(runner=runner),
+        tmp_path,
+        now=_PARITY_NOW,
+    )
+
+    assert polled is None
+    assert runner.calls == []
+    saved = store.load_run(run.id)
+    assert saved.escalation is not None
+    assert [r.source for r in saved.escalation.accepted_replies] == ["dashboard"]
+    assert saved.escalation.reopen_count == 1
 
 
 def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -> None:
