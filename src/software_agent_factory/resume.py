@@ -577,6 +577,10 @@ def ingest_dashboard_request(
     )
     if isinstance(result, AcceptedReplyReceipt):
         return result
+    # ``run`` may be older than the stored run, which can hold this request's own acceptance.
+    stored = store.load_run(run.id).escalation
+    if stored is not None and _dashboard_already_accepted(stored, fingerprint):
+        return None
     logger.info("dashboard request for run %s is stale: %s", run.id, result)
     _mark_stale(store, run.id, current, result)
     return None

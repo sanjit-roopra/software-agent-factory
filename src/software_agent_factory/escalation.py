@@ -25,6 +25,7 @@ import secrets
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from .config import FactoryConfig
 from .escalation_protocol import (
@@ -1504,6 +1505,38 @@ def validate_reply_candidate(
     return ValidationResult(True, "valid")
 
 
+def _pollable_escalation(run: FactoryRun) -> EscalationRecord | None:
+    """The escalation of a run that is waiting for a reply, or ``None``."""
+    if run.state is not WorkflowState.NEEDS_HUMAN:
+        return None
+    escalation = run.escalation
+    if escalation is None or escalation.status is not EscalationStatus.NOTIFIED:
+        return None
+    if escalation.last_notified_at is None:
+        return None
+    return escalation
+
+
+def _save_poll_update(
+    store: FileRunStore, run_id: str, seen: EscalationRecord, update: dict[str, Any]
+) -> None:
+    """Apply ``update`` to the stored escalation, unless it moved on since the poll read it.
+
+    The poller works on a copy of the run. If the dashboard path reopened the run, or the
+    episode or cursor changed, since that copy was read, saving it would undo that work, so
+    nothing is saved.
+    """
+    stored = store.load_run(run_id)
+    current = stored.escalation
+    if current is None or (current.status, current.episode_id, current.reply_cursor) != (
+        seen.status,
+        seen.episode_id,
+        seen.reply_cursor,
+    ):
+        return
+    store.save_run(stored.model_copy(update={"escalation": current.model_copy(update=update)}))
+
+
 def poll_escalation_reply(
     run: FactoryRun,
     store: FileRunStore,
@@ -1521,18 +1554,15 @@ def poll_escalation_reply(
     missing comments and avoid unbounded scans. If a valid reply is found,
     records the decision receipt on the run and persists it to disk before returning.
     """
-    if not config.escalation.enabled:
+    if not config.escalation.enabled or _pollable_escalation(run) is None:
         return None
 
-    if run.state is not WorkflowState.NEEDS_HUMAN:
-        return None
-
-    escalation = run.escalation
-    if escalation is None or escalation.status is not EscalationStatus.NOTIFIED:
-        return None
-
-    if escalation.last_notified_at is None:
-        return None
+    # The caller's run may be older than the stored one (the dashboard path can have reopened
+    # it). Work from the stored run and save only through _save_poll_update.
+    run = store.load_run(run.id)
+    escalation = _pollable_escalation(run)
+    if escalation is None or escalation.last_notified_at is None:
+        return None  # the stored run no longer waits for a reply
     notified_at = escalation.last_notified_at
 
     if escalation.reply_cursor == "closed":
@@ -1546,40 +1576,35 @@ def poll_escalation_reply(
     current_time = now or utc_now()
     refusal = resume_refusal(run, config, current_time)
     if not escalation.remote_resume_enabled or refusal == "context_changed":
-        escalation = escalation.model_copy(
-            update={
-                "remote_resume_enabled": False,
-                "reply_cursor": "closed",
-                "updated_at": current_time,
-            }
+        _save_poll_update(
+            store,
+            run.id,
+            escalation,
+            {"remote_resume_enabled": False, "reply_cursor": "closed", "updated_at": current_time},
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return None
 
     if refusal == "expired":
-        escalation = escalation.model_copy(
-            update={
+        _save_poll_update(
+            store,
+            run.id,
+            escalation,
+            {
                 "status": EscalationStatus.EXPIRED,
                 "remote_resume_enabled": False,
                 "reply_cursor": "closed",
                 "updated_at": current_time,
-            }
+            },
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return None
 
     if refusal == "reopen_limit":
-        escalation = escalation.model_copy(
-            update={
-                "remote_resume_enabled": False,
-                "reply_cursor": "closed",
-                "updated_at": current_time,
-            }
+        _save_poll_update(
+            store,
+            run.id,
+            escalation,
+            {"remote_resume_enabled": False, "reply_cursor": "closed", "updated_at": current_time},
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
         return None
 
     target_host = notice_host(escalation, config.escalation.allowed_hosts)
@@ -1756,11 +1781,9 @@ def poll_escalation_reply(
         return accepted_receipt
 
     if next_cursor is not None and next_cursor != escalation.reply_cursor:
-        escalation = escalation.model_copy(
-            update={"reply_cursor": next_cursor, "updated_at": current_time}
+        _save_poll_update(
+            store, run.id, escalation, {"reply_cursor": next_cursor, "updated_at": current_time}
         )
-        run = run.model_copy(update={"escalation": escalation})
-        store.save_run(run)
 
     return None
 

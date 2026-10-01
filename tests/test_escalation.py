@@ -1465,6 +1465,122 @@ def test_the_github_poller_does_not_overwrite_a_reopen_it_read_too_late(tmp_path
     assert after_dashboard.escalation.reopen_count == 1
 
 
+def _submit_risk_request(store: FileRunStore, run: FactoryRun) -> None:
+    assert run.escalation is not None
+    assert run.escalation.approval_context is not None
+    store.create_dashboard_request(
+        run.id,
+        DashboardResumeRequest(
+            run_id=run.id,
+            episode_id=run.escalation.episode_id,
+            context_fingerprint=run.escalation.approval_context.context_fingerprint,
+            action=ResumeClassification.RISK_APPROVAL,
+            created_at=_PARITY_NOW,
+        ),
+    )
+
+
+def _stranger_comment_runner() -> FakeRunner:
+    comment = _make_comment_payload(
+        556,
+        "@factory resume v1 run=run-parity episode=ep-1234",
+        login="stranger",
+        user_id=2002,
+        author_association="NONE",
+        created_at=_PARITY_NOW,
+    )
+    return FakeRunner(
+        [
+            FakeCompletedProcess(0, json.dumps([comment])),
+            FakeCompletedProcess(0, json.dumps(comment)),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "runner_factory",
+    [
+        lambda: FakeRunner([FakeCompletedProcess(0, json.dumps([]))]),
+        _stranger_comment_runner,
+    ],
+    ids=["no-comments", "only-invalid-comments"],
+)
+def test_a_poll_without_a_valid_reply_keeps_a_reopen_it_read_too_late(
+    tmp_path: Path, runner_factory: Callable[[], FakeRunner]
+) -> None:
+    config, store, run = _parity_run(tmp_path, {}, {})
+    _submit_risk_request(store, run)
+    assert ingest_dashboard_request(run, store, config, _PARITY_NOW) is not None
+    after_dashboard = store.load_run(run.id)
+
+    # ``run`` is the snapshot read before the dashboard request was ingested.
+    polled = poll_escalation_reply(
+        run, store, config, GitHubClient(runner=runner_factory()), tmp_path, now=_PARITY_NOW
+    )
+
+    assert polled is None
+    saved = store.load_run(run.id)
+    assert saved == after_dashboard
+    assert saved.escalation is not None
+    assert saved.escalation.status is EscalationStatus.REOPENED
+    assert [r.source for r in saved.escalation.accepted_replies] == ["dashboard"]
+    assert saved.escalation.reopen_count == 1
+
+
+class _ReopeningStore(FileRunStore):
+    """A store where a reopen lands right after the poller's first read of the run."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.reopened = False
+
+    def load_run(self, run_id: str) -> FactoryRun:
+        run = super().load_run(run_id)
+        if not self.reopened:
+            self.reopened = True
+            assert run.escalation is not None
+            reopened = run.escalation.model_copy(
+                update={
+                    "status": EscalationStatus.REOPENED,
+                    "reopen_count": run.escalation.reopen_count + 1,
+                    "reply_cursor": "closed",
+                }
+            )
+            self.save_run(run.model_copy(update={"escalation": reopened}))
+        return run
+
+
+@pytest.mark.parametrize(
+    ("record_changes", "now", "runner_factory"),
+    [
+        ({"remote_resume_enabled": False}, _PARITY_NOW, FakeRunner),
+        ({}, _PARITY_NOW + timedelta(hours=25), FakeRunner),
+        ({"reopen_count": 3}, _PARITY_NOW, FakeRunner),
+        ({}, _PARITY_NOW, lambda: FakeRunner([FakeCompletedProcess(0, json.dumps([]))])),
+    ],
+    ids=["closed-cursor", "expired", "reopen-limit", "cursor-advance"],
+)
+def test_the_poller_does_not_save_over_a_reopen_that_lands_while_it_runs(
+    tmp_path: Path,
+    record_changes: dict[str, object],
+    now: datetime,
+    runner_factory: Callable[[], FakeRunner],
+) -> None:
+    config, _store, run = _parity_run(tmp_path, record_changes, {})
+    store = _ReopeningStore(tmp_path)
+
+    polled = poll_escalation_reply(
+        run, store, config, GitHubClient(runner=runner_factory()), tmp_path, now=now
+    )
+
+    assert polled is None
+    saved = store.load_run(run.id)
+    assert saved.escalation is not None
+    assert saved.escalation.status is EscalationStatus.REOPENED
+    assert saved.escalation.reply_cursor == "closed"
+    assert saved.escalation.updated_at == run.escalation.updated_at  # type: ignore[union-attr]
+
+
 def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     store = FileRunStore(tmp_path)

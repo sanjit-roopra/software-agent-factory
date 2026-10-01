@@ -3312,6 +3312,7 @@ def test_poll_escalation_reply_fail_closed_and_edge_cases(tmp_path: Path) -> Non
     run_bad_host = run.model_copy(
         update={"escalation": escalation.model_copy(update={"target_host": "untrusted.invalid"})}
     )
+    store.save_run(run_bad_host)
     assert poll_escalation_reply(run_bad_host, store, config, client, repo_path) is None
 
     # 5. Remote resume disabled or approval context missing in poll -> closes cursor
@@ -3369,6 +3370,7 @@ def test_poll_escalation_reply_fail_closed_and_edge_cases(tmp_path: Path) -> Non
     run_malformed_cursor = run.model_copy(
         update={"escalation": escalation.model_copy(update={"reply_cursor": "{malformed-json"})}
     )
+    store.save_run(run_malformed_cursor)
     runner_empty = FakeRunner([FakeCompletedProcess(0, json.dumps([]))])
     client_empty = GitHubClient(runner=runner_empty)
     assert (
