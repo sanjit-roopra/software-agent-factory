@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -40,7 +41,9 @@ from software_agent_factory.resume import (
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
     ingest_dashboard_request,
+    request_mismatch,
     resume_refusal,
+    resume_refusal_within,
 )
 from software_agent_factory.store import FileRunStore
 
@@ -675,6 +678,22 @@ def test_a_request_for_the_other_action_is_stale(tmp_path: Path) -> None:
     assert (stale.status, stale.reason) == ("stale", "context_changed")
 
 
+def test_a_closed_window_outranks_a_request_for_the_other_action(tmp_path: Path) -> None:
+    run = _run(created_at=NOW - timedelta(hours=25))
+    store = _store(tmp_path, run)
+    _submit(
+        store,
+        run,
+        action=PLAN,
+        answers=[PlanDecisionAnswer(decision_number=1, answer="x")],
+    )
+
+    assert ingest_dashboard_request(run, store, _config(window_hours=24), NOW) is None
+
+    stale = _stored_request(store, run)
+    assert (stale.status, stale.reason) == ("stale", "expired")
+
+
 def test_every_request_of_a_run_that_cannot_resume_goes_stale(tmp_path: Path) -> None:
     run = _run(ResumeClassification.NOT_RESUMABLE)
     store = _store(tmp_path, run)
@@ -948,3 +967,108 @@ def test_the_dashboard_package_never_names_a_resume_write_function() -> None:
         if found & _WRITE_FUNCTIONS:
             named[path.name] = found & _WRITE_FUNCTIONS
     assert named == {}
+
+
+def test_refusal_within_skips_a_limit_that_is_unknown() -> None:
+    run = _run(created_at=NOW - timedelta(hours=500), reopen_count=9)
+
+    assert resume_refusal_within(run, reply_window_hours=None, max_reopens=None, now=NOW) is None
+    assert resume_refusal_within(run, reply_window_hours=24, max_reopens=None, now=NOW) == "expired"
+    assert (
+        resume_refusal_within(run, reply_window_hours=None, max_reopens=3, now=NOW)
+        == "reopen_limit"
+    )
+
+
+@pytest.mark.parametrize(
+    ("other_episode", "other_fingerprint", "other_action", "expected"),
+    [
+        pytest.param(False, False, False, None, id="all three match"),
+        pytest.param(True, False, False, "episode", id="another episode"),
+        pytest.param(False, True, False, "fingerprint", id="another fingerprint"),
+        pytest.param(False, False, True, "action", id="another action"),
+        pytest.param(True, True, False, "episode", id="episode before fingerprint"),
+        pytest.param(False, True, True, "fingerprint", id="fingerprint before action"),
+        pytest.param(True, True, True, "episode", id="episode before the rest"),
+    ],
+)
+def test_a_request_mismatch_names_the_first_difference_in_the_documented_order(
+    other_episode: bool, other_fingerprint: bool, other_action: bool, expected: str | None
+) -> None:
+    run = _run(RISK)
+    assert run.escalation is not None
+
+    mismatch = request_mismatch(
+        run.escalation,
+        "ep-old" if other_episode else EPISODE,
+        "b" * 64 if other_fingerprint else _fingerprint(run),
+        PLAN if other_action else RISK,
+    )
+
+    assert mismatch == expected
+
+
+def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
+    fields: dict[str, Any] = {
+        "episode_id": EPISODE,
+        "action": RISK,
+        "reply_window_hours": 24,
+        "max_reopens": 3,
+        "now": NOW,
+        **overrides,
+    }
+    if "fingerprint" not in fields:
+        fields["fingerprint"] = _fingerprint(run)
+    return resume.request_refusal(run, **fields)
+
+
+@pytest.mark.parametrize(
+    ("run", "overrides", "expected"),
+    [
+        pytest.param(_run(RISK), {}, None, id="a request the service would take"),
+        pytest.param(_run(RISK, status=EscalationStatus.REOPENED), {}, "state_changed", id="state"),
+        pytest.param(
+            _run(RISK, state=WorkflowState.IMPLEMENTING),
+            {"episode_id": "ep-old"},
+            "state_changed",
+            id="state before the episode",
+        ),
+        pytest.param(
+            _run(RISK, approval_context=None),
+            {"fingerprint": "b" * 64},
+            "context_changed",
+            id="context before the fingerprint",
+        ),
+        pytest.param(
+            _run(RISK, created_at=NOW - timedelta(hours=25), reopen_count=3),
+            {},
+            "expired",
+            id="window before the reopen limit",
+        ),
+        pytest.param(
+            _run(RISK, created_at=NOW - timedelta(hours=25)),
+            {"episode_id": "ep-old"},
+            "expired",
+            id="window before the episode",
+        ),
+        pytest.param(
+            _run(RISK, reopen_count=3),
+            {"action": PLAN},
+            "reopen_limit",
+            id="reopen limit before the action",
+        ),
+        pytest.param(_run(RISK), {"episode_id": "ep-old"}, "episode", id="episode"),
+        pytest.param(_run(RISK), {"fingerprint": "b" * 64}, "fingerprint", id="fingerprint"),
+        pytest.param(_run(RISK), {"action": PLAN}, "action", id="action"),
+    ],
+)
+def test_a_request_refusal_names_one_reason_in_the_service_order(
+    run: FactoryRun, overrides: dict[str, Any], expected: str | None
+) -> None:
+    assert _request_refusal_of(run, **overrides) == expected
+
+
+def test_a_request_refusal_skips_a_limit_that_is_unknown() -> None:
+    run = _run(RISK, created_at=NOW - timedelta(hours=500), reopen_count=9)
+
+    assert _request_refusal_of(run, reply_window_hours=None, max_reopens=None) is None

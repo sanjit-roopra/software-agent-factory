@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from dashboard_js import function_source, object_literal_source, strip_comments
+from dashboard_js import function_source, listener_source, object_literal_source, strip_comments
 
 
 def test_function_source_returns_the_balanced_body_without_comments() -> None:
@@ -74,3 +74,37 @@ def test_strip_comments_raises_on_an_unterminated_string() -> None:
 def test_strip_comments_raises_on_an_unterminated_block_comment() -> None:
     with pytest.raises(AssertionError, match="unterminated block comment"):
         strip_comments("const a = 1; /* open")
+
+
+_WIRING = """
+function wire(button, form) {
+  button.addEventListener("click", function () {
+    send("a}");
+  });
+  form.addEventListener("input", function (event) {
+    if (event) { remember(); }
+  });
+  form.addEventListener("submit", function () { send(); });
+}
+function other(button) { button.addEventListener("click", function () { other(); }); }
+"""
+
+
+def test_listener_source_returns_only_the_callback_that_was_asked_for() -> None:
+    assert listener_source(_WIRING, "wire", "button", "click") == (
+        'button.addEventListener("click", function () { send("a}"); }'
+    )
+    assert listener_source(_WIRING, "wire", "form", "input") == (
+        'form.addEventListener("input", function (event) { if (event) { remember(); } }'
+    )
+    assert "remember" not in listener_source(_WIRING, "wire", "form", "submit")
+
+
+def test_listener_source_looks_only_inside_the_named_function() -> None:
+    assert "other()" in listener_source(_WIRING, "other", "button", "click")
+    assert "other()" not in listener_source(_WIRING, "wire", "button", "click")
+
+
+def test_listener_source_raises_when_the_listener_is_missing() -> None:
+    with pytest.raises(AssertionError, match="no keydown listener on button in function wire"):
+        listener_source(_WIRING, "wire", "button", "keydown")

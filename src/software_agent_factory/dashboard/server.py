@@ -13,9 +13,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 
+from .actions import ResumeActions
 from .handler import DashboardRequestHandler
 from .security import expected_origin, generate_token, validate_bind_host
-from .snapshot import HealthProvider, ProjectProvider, RunDetailProvider, SnapshotProvider
+from .snapshot import (
+    HealthProvider,
+    ProjectProvider,
+    ResumeRequestReader,
+    RunDetailProvider,
+    SnapshotProvider,
+)
 
 #: Binding to port 0 asks the OS for an ephemeral free port, which is the
 #: right default for both tests (no port collisions) and casual local use
@@ -23,6 +30,9 @@ from .snapshot import HealthProvider, ProjectProvider, RunDetailProvider, Snapsh
 DEFAULT_PORT = 0
 
 DEFAULT_HOST = "127.0.0.1"
+
+#: Seconds a connection may stay silent before the server drops it.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,7 +43,10 @@ class DashboardConfig:
     points of contact with real data; both are mandatory so a caller cannot
     accidentally stand up a dashboard with no data source. ``health_provider``
     is optional -- a dashboard with no configured health source simply
-    reports ``health: null`` rather than refusing to start. Pass fakes in
+    reports ``health: null`` rather than refusing to start. ``resume_actions`` turns on
+    the approve and answer routes; without it every ``POST`` is ``405``.
+    ``request_timeout_seconds`` is how long a connection may stay silent: a client that
+    declares a body and sends none gets ``408`` after it. Pass fakes in
     tests and thin wrappers around ``observability.build_monitoring_snapshot``
     / a safe run lookup / ``doctor.run_doctor`` in production wiring.
     """
@@ -42,13 +55,19 @@ class DashboardConfig:
     run_detail_provider: RunDetailProvider
     health_provider: HealthProvider | None = None
     project_provider: ProjectProvider | None = None
+    resume_request_reader: ResumeRequestReader | None = None
+    resume_actions: ResumeActions | None = None
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     token: str | None = None
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 
 class DashboardServer(ThreadingHTTPServer):
-    """A loopback-only, read-only HTTP server for the local dashboard."""
+    """A loopback-only HTTP server for the local dashboard.
+
+    It reads with ``GET``. Its only writes are the two ``POST`` action routes (ADR-033).
+    """
 
     daemon_threads = True
     allow_reuse_address = True
@@ -60,6 +79,9 @@ class DashboardServer(ThreadingHTTPServer):
         self.run_detail_provider: RunDetailProvider = config.run_detail_provider
         self.health_provider: HealthProvider | None = config.health_provider
         self.project_provider: ProjectProvider | None = config.project_provider
+        self.resume_request_reader: ResumeRequestReader | None = config.resume_request_reader
+        self.resume_actions: ResumeActions | None = config.resume_actions
+        self.request_timeout_seconds: float = config.request_timeout_seconds
         super().__init__((bind_host, config.port), DashboardRequestHandler)
 
     @property

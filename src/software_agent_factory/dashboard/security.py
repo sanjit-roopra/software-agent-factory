@@ -1,4 +1,4 @@
-"""Security primitives for the read-only local dashboard (ADR-016).
+"""Security primitives for the local dashboard (ADR-016, ADR-033).
 
 Everything in this module is deliberately small and dependency-free: token
 generation/comparison, loopback bind-host validation and strict same-origin
@@ -9,6 +9,7 @@ configuration, and nothing here imports outside the standard library.
 from __future__ import annotations
 
 import secrets
+from typing import Protocol
 
 #: Number of random bytes used for the per-process dashboard token. 32 bytes
 #: (256 bits) of ``secrets.token_urlsafe`` output is well beyond brute-force
@@ -41,11 +42,30 @@ def token_matches(expected: str, candidate: str | None) -> bool:
     """Constant-time comparison of ``candidate`` against ``expected``.
 
     Returns ``False`` (rather than raising) for any non-string or empty
-    candidate so callers can use this directly as a boolean guard.
+    candidate so callers can use this directly as a boolean guard. The two are compared as
+    bytes: ``compare_digest`` refuses non-ASCII ``str``, and a header arrives decoded as
+    latin-1, so a client could otherwise turn a wrong token into a server error.
     """
     if not candidate or not isinstance(candidate, str):
         return False
-    return secrets.compare_digest(expected, candidate)
+    return secrets.compare_digest(
+        expected.encode("utf-8", "surrogateescape"), candidate.encode("utf-8", "surrogateescape")
+    )
+
+
+class HeaderSource(Protocol):
+    """Anything that looks a header up by name, such as ``http.client.HTTPMessage``."""
+
+    def get(self, name: str) -> str | None: ...
+
+
+def header_token_matches(expected: str, headers: HeaderSource) -> bool:
+    """Whether the token header carries ``expected``. The query string never counts.
+
+    A write must use this and not the page-load rule: a token in a URL ends up in browser
+    history and referrers, so it must never authorize a change.
+    """
+    return token_matches(expected, headers.get(TOKEN_HEADER))
 
 
 class InvalidBindHostError(ValueError):
@@ -103,3 +123,12 @@ def origin_header_is_valid(origin_header: str | None, bound_host: str, port: int
     if origin_header is None or origin_header == "":
         return True
     return origin_header.strip().lower() == expected_origin(bound_host, port).lower()
+
+
+def required_origin_is_valid(origin_header: str | None, bound_host: str, port: int) -> bool:
+    """Validate ``Origin`` for a write: it must be present and the exact origin served.
+
+    A browser always sends ``Origin`` with a cross-site ``POST``. A request without one
+    is not from this page, so unlike :func:`origin_header_is_valid` absent is refused.
+    """
+    return bool(origin_header) and origin_header_is_valid(origin_header, bound_host, port)

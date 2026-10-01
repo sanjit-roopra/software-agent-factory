@@ -8,7 +8,7 @@ This module does no I/O of its own. It imports only :mod:`.models`, :mod:`.confi
 :mod:`.escalation_protocol` and the standard library: no GitHub client, no subprocess, no
 workflow and no service. It writes only through the :class:`ResumeStore` it is given, and
 only the service calls the write functions (:func:`accept_resume` and
-:func:`ingest_dashboard_request`). The read-only dashboard never does. Tests check both.
+:func:`ingest_dashboard_request`). The dashboard never does. Tests check both.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, TypeIs, get_args
 
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
@@ -324,15 +324,36 @@ def resume_refusal(run: FactoryRun, config: FactoryConfig, now: datetime) -> Res
     dashboard request when its human made it. ``remote_resume_enabled`` is not part of this
     check: it covers GitHub replies only.
     """
+    return resume_refusal_within(
+        run,
+        reply_window_hours=config.escalation.reply_window_hours,
+        max_reopens=config.escalation.max_reopens,
+        now=now,
+    )
+
+
+def resume_refusal_within(
+    run: FactoryRun,
+    *,
+    reply_window_hours: float | None,
+    max_reopens: int | None,
+    now: datetime,
+) -> ResumeRefusal | None:
+    """:func:`resume_refusal` for a caller that holds the two limits, not the whole config.
+
+    A limit that is ``None`` is unknown and is not checked, as in
+    :func:`.escalation_protocol.reply_closed_cause`.
+    """
     escalation = run.escalation
     if escalation is None or not awaits_human(run):
         return "state_changed"
     if not _has_valid_resume_context(run):
         return "context_changed"
-    window_end = escalation.created_at + timedelta(hours=config.escalation.reply_window_hours)
-    if now > window_end:
+    if reply_window_hours is not None and now > escalation.created_at + timedelta(
+        hours=reply_window_hours
+    ):
         return "expired"
-    if escalation.reopen_count >= config.escalation.max_reopens:
+    if max_reopens is not None and escalation.reopen_count >= max_reopens:
         return "reopen_limit"
     return None
 
@@ -342,7 +363,8 @@ def can_accept_resume(run: FactoryRun, config: FactoryConfig, now: datetime) -> 
     return resume_refusal(run, config, now) is None
 
 
-def _current_context_fingerprint(escalation: EscalationRecord) -> str | None:
+def current_context_fingerprint(escalation: EscalationRecord) -> str | None:
+    """The fingerprint of the context ``escalation`` asks a human to decide, or ``None``."""
     if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
         risk_context = escalation.approval_context
         return risk_context.context_fingerprint if risk_context is not None else None
@@ -350,6 +372,64 @@ def _current_context_fingerprint(escalation: EscalationRecord) -> str | None:
         plan_context = escalation.plan_decision_context
         return plan_context.context_fingerprint if plan_context is not None else None
     return None
+
+
+#: What a request names that is not what the run asks now: its episode, its context, its action.
+RequestMismatch = Literal["episode", "fingerprint", "action"]
+
+
+def request_mismatch(
+    escalation: EscalationRecord,
+    episode_id: str,
+    fingerprint: str | None,
+    action: ResumeClassification,
+) -> RequestMismatch | None:
+    """The first way a request differs from what ``escalation`` asks now, or ``None``.
+
+    The order is the episode, then the context fingerprint, then the action. It is the
+    second half of :func:`request_refusal`. Ingest also calls it directly to settle the
+    requests of an older context, so those go stale as ``context_changed`` even when the
+    run has stopped waiting.
+    """
+    if episode_id != escalation.episode_id:
+        return "episode"
+    if fingerprint != current_context_fingerprint(escalation):
+        return "fingerprint"
+    if action is not escalation.resume_classification:
+        return "action"
+    return None
+
+
+def _is_mismatch(reason: ResumeRefusal | RequestMismatch) -> TypeIs[RequestMismatch]:
+    return reason in get_args(RequestMismatch)
+
+
+def request_refusal(
+    run: FactoryRun,
+    *,
+    episode_id: str,
+    fingerprint: str | None,
+    action: ResumeClassification,
+    reply_window_hours: float | None,
+    max_reopens: int | None,
+    now: datetime,
+) -> ResumeRefusal | RequestMismatch | None:
+    """The one reason a request for ``run`` is not taken at ``now``, or ``None``.
+
+    The order is the service's: :func:`resume_refusal_within` first (state, context, window,
+    reopens), then :func:`request_mismatch` (episode, fingerprint, action). The dashboard
+    asks it of a request it is about to store and the service of the request for the
+    current context, so both give the same reason for that request. The stamp of a stored
+    request is judged by the service alone, after the refusals and before the mismatch.
+    """
+    refusal = resume_refusal_within(
+        run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
+    )
+    if refusal is not None:
+        return refusal
+    escalation = run.escalation
+    assert escalation is not None  # resume_refusal_within returned None
+    return request_mismatch(escalation, episode_id, fingerprint, action)
 
 
 class ResumeStore(Protocol):
@@ -383,7 +463,7 @@ class ReplyIdentity:
 def _same_context(fresh: EscalationRecord, seen: EscalationRecord) -> bool:
     """Whether ``fresh`` is still the episode and context the reply was checked against."""
     return fresh.episode_id == seen.episode_id and (
-        _current_context_fingerprint(fresh) == _current_context_fingerprint(seen)
+        current_context_fingerprint(fresh) == current_context_fingerprint(seen)
     )
 
 
@@ -549,15 +629,23 @@ def _request_refusal(
 ) -> tuple[ResumeRefusal | None, list[PlanDecisionAnswer] | None]:
     """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
     # The window is judged when the human made the request, not when the service reads it.
-    refusal = resume_refusal(run, config, request.created_at)
-    if refusal is not None:
+    refusal = request_refusal(
+        run,
+        episode_id=request.episode_id,
+        fingerprint=request.context_fingerprint,
+        action=request.action,
+        reply_window_hours=config.escalation.reply_window_hours,
+        max_reopens=config.escalation.max_reopens,
+        now=request.created_at,
+    )
+    if refusal is not None and not _is_mismatch(refusal):
         return refusal, None
     escalation = run.escalation
-    assert escalation is not None  # resume_refusal returned None
+    assert escalation is not None  # request_refusal found a waiting run
     # The stamp decides the window, so a stamp the episode or the clock cannot have is refused.
     if request.created_at < escalation.created_at or request.created_at > now:
         return "expired", None
-    if request.run_id != run.id or request.action is not escalation.resume_classification:
+    if request.run_id != run.id or refusal is not None:
         return "context_changed", None
     if request.action is not ResumeClassification.PLAN_DECISION:
         return None, None
@@ -582,18 +670,26 @@ def _settle_other_contexts(
     store: ResumeStore,
     run_id: str,
     escalation: EscalationRecord,
-    fingerprint: str | None,
     requests: Sequence[DashboardResumeRequest],
 ) -> DashboardResumeRequest | None:
-    """Mark the pending requests for another context stale; return the one for ``fingerprint``."""
+    """Mark the pending requests for another context stale; return the one for this context.
+
+    A request for this context but another action is returned too: :func:`_request_refusal`
+    judges it, so a closed window or a changed state is still the reason it gets.
+    """
     current: DashboardResumeRequest | None = None
     for request in requests:
-        if request.status != "pending" or request.episode_id != escalation.episode_id:
+        if request.status != "pending":
             continue
-        if request.context_fingerprint == fingerprint:
-            current = request
-        else:
+        mismatch = request_mismatch(
+            escalation, request.episode_id, request.context_fingerprint, request.action
+        )
+        if mismatch == "episode":
+            continue
+        if mismatch == "fingerprint":
             _mark_stale(store, run_id, request, "context_changed")
+        else:
+            current = request
     return current
 
 
@@ -625,10 +721,10 @@ def ingest_dashboard_request(
     escalation = run.escalation
     if escalation is None:
         return None
-    fingerprint = _current_context_fingerprint(escalation)
+    fingerprint = current_context_fingerprint(escalation)
     if requests is None:
         requests = store.list_dashboard_requests(run.id, escalation.episode_id)
-    current = _settle_other_contexts(store, run.id, escalation, fingerprint, requests)
+    current = _settle_other_contexts(store, run.id, escalation, requests)
     if current is None or fingerprint is None:
         return None
     if _dashboard_already_accepted(escalation, fingerprint):

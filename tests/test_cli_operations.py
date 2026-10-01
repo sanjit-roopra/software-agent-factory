@@ -498,7 +498,7 @@ def test_dashboard_binds_loopback_on_the_default_port_and_prints_the_token_url(
     assert server.config.host == "127.0.0.1"
     assert server.config.port == cli.DEFAULT_DASHBOARD_PORT == 8765
     assert "http://127.0.0.1:8765/?token=test-token" in result.output
-    assert "read-only, loopback only" in result.output
+    assert "loopback only. it can queue an approval or answers" in result.output
     assert server.served is True
     assert server.closed is True
 
@@ -635,6 +635,35 @@ def test_dashboard_detail_carries_the_configured_reopen_limit(
     assert isinstance(detail, RunDetail)
     assert detail.escalation is not None
     assert detail.escalation.reopen_max == 2
+
+
+def test_dashboard_wires_the_resume_readers_and_requester_to_the_data_dir(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    # The readers and the requester have their own tests in test_dashboard_actions.py.
+    _save_needs_human_run(data_dir, "run-wired", datetime(2026, 10, 1, tzinfo=UTC))
+
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+
+    config = fake_dashboard[0].config
+    assert config.resume_actions is not None
+    assert config.resume_actions.run_reader("run-wired") is not None
+    assert config.resume_request_reader is not None
+
+
+def test_dashboard_resume_actions_use_the_configured_limits(
+    tmp_path: Path, data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    config_path = write_config(
+        tmp_path / "factory.yaml",
+        data_dir,
+        escalation={"max_reopens": 2, "reply_window_hours": 5},
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    actions = fake_dashboard[0].config.resume_actions
+    assert (actions.max_reopens, actions.reply_window_hours) == (2, 5)
 
 
 @pytest.mark.parametrize(

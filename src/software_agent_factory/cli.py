@@ -72,13 +72,22 @@ if TYPE_CHECKING:
 
     from .agents import AgentRuntime
     from .config import FactoryConfig
+    from .dashboard.snapshot import (
+        ResumeRequester,
+        ResumeRequestReader,
+        ResumeRequestResult,
+        ResumeRunReader,
+    )
     from .models import (
+        DashboardResumeRequest,
+        FactoryRun,
         InvocationRecord,
         RepositoryProfile,
         RepositorySkill,
         WorkItem,
     )
     from .repository_skills import RepositorySkillManager
+    from .store import FileRunStore
 
 app = typer.Typer(help="Local-first autonomous software engineering factory.")
 service_app = typer.Typer(
@@ -302,7 +311,7 @@ def _configure_logging(config: FactoryConfig) -> None:
 
     A logging destination that cannot be created is reported as a warning
     rather than aborting the command: losing the on-disk log copy must never
-    stop the factory (or the read-only dashboard) from running.
+    stop the factory (or the dashboard) from running.
     """
     try:
         from .observability import configure_factory_logging
@@ -995,6 +1004,53 @@ def status_command(
         typer.echo(line)
 
 
+def build_resume_run_reader(store: FileRunStore) -> ResumeRunReader:
+    """The run reader of the dashboard's approve and answer routes. Read only.
+
+    A run that is missing or cannot be read is an unknown run: the route answers ``404``.
+    """
+
+    def read(run_id: str) -> FactoryRun | None:
+        try:
+            return store.load_run(run_id)
+        except (OSError, ValueError):
+            return None
+
+    return read
+
+
+def build_resume_requester(store: FileRunStore) -> ResumeRequester:
+    """The requester of the dashboard's approve and answer routes.
+
+    The one write the dashboard makes: a create-only request file. The service reads it
+    later and is the only writer of the run.
+    """
+
+    def create(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
+        try:
+            created = store.create_dashboard_request(run_id, request)
+        except FileNotFoundError:
+            return "run_missing"
+        return "created" if created else "exists"
+
+    return create
+
+
+def build_resume_request_reader(store: FileRunStore) -> ResumeRequestReader:
+    """The request reader of the run detail. Read only, and it leaves the answers out.
+
+    The page shows when and whether a request was queued, never what was answered.
+    """
+
+    def read(run_id: str, episode_id: str) -> list[dict[str, object]]:
+        return [
+            request.model_dump(mode="json", exclude={"answers"})
+            for request in store.list_dashboard_requests(run_id, episode_id)
+        ]
+
+    return read
+
+
 @app.command("dashboard")
 def dashboard_command(
     config: Path = typer.Option(
@@ -1022,12 +1078,13 @@ def dashboard_command(
         help="Hard cap on how many run files one dashboard request parses.",
     ),
 ) -> None:
-    """Serve the read-only local dashboard until interrupted (ADR-016).
+    """Serve the local dashboard until interrupted (ADR-016, ADR-033).
 
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
-    socket. The server binds ``127.0.0.1`` and nothing else, answers ``GET``
-    only, and is protected by a token generated for this process; the
+    socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
+    and two ``POST`` routes that queue an approval or plan answers for the
+    factory service. It is protected by a token generated for this process; the
     tokenized URL is printed to stdout once and never written to the log.
     Ctrl-C stops it and closes the socket.
     """
@@ -1035,6 +1092,7 @@ def dashboard_command(
     _configure_logging(factory_config)
 
     from .dashboard import LOOPBACK_HOST, DashboardConfig
+    from .dashboard.actions import ResumeActions
     from .observability import (
         RunScanCache,
         build_active_invocation_summary,
@@ -1187,6 +1245,13 @@ def dashboard_command(
                 run_detail_provider=run_detail_provider,
                 health_provider=health_provider,
                 project_provider=project_provider,
+                resume_request_reader=build_resume_request_reader(store),
+                resume_actions=ResumeActions(
+                    run_reader=build_resume_run_reader(store),
+                    requester=build_resume_requester(store),
+                    reply_window_hours=factory_config.escalation.reply_window_hours,
+                    max_reopens=factory_config.escalation.max_reopens,
+                ),
                 host=LOOPBACK_HOST,
                 port=port,
             )
@@ -1195,7 +1260,7 @@ def dashboard_command(
         raise _fail(f"could not bind the dashboard to {LOOPBACK_HOST}:{port}: {exc}") from None
 
     typer.echo(f"dashboard: {server.dashboard_url}")
-    typer.echo("read-only, loopback only. press Ctrl-C to stop.")
+    typer.echo("loopback only. it can queue an approval or answers. press Ctrl-C to stop.")
     if open_browser:
         webbrowser.open(server.dashboard_url)
 

@@ -45,6 +45,7 @@ from .validators import (
     ESCALATION_STATUSES,
     ESCALATION_TARGET_TYPES,
     RESUME_CLASSIFICATIONS,
+    RESUME_REFUSALS,
     is_context_fingerprint,
     is_count,
     is_episode_id,
@@ -138,6 +139,7 @@ ESCALATION_FIELDS: frozenset[str] = frozenset(
         "context_fingerprint",
         "reopen_max",
         "reply_closed_cause",
+        "dashboard_action_refusal",
         "approval_scope",
         "decisions",
     }
@@ -569,6 +571,7 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "context_fingerprint": is_context_fingerprint,
     "reopen_max": is_count,
     "reply_closed_cause": _one_of({None, *REPLY_CLOSED_CAUSES}),
+    "dashboard_action_refusal": _one_of({None, *RESUME_REFUSALS}),
 }
 
 

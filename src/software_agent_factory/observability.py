@@ -9,7 +9,7 @@ already persists (``FactoryRun``, ``WorkItem``, ``TriageResult``). It has no
 import-time dependency on ``workflow.py`` (the orchestration/mutation
 authority): a run's terminal/finished status is a small, stable domain fact
 duplicated locally (see ``_is_run_finished`` below) precisely so this
-read-only monitoring path -- and the read-only Phase 15.11 dashboard route
+read-only monitoring path -- and the Phase 15.11 dashboard route
 that will call it -- never transitively pulls in
 ``WorkflowController``/agents/publishing/routing/workspace code merely to
 classify a run.
@@ -22,7 +22,7 @@ Two public surfaces are provided:
   active, stale-active), attempt tallies by role/model, and aggregate
   metrics (attempts per run, first-pass success rate, scope replans, CI
   repair attempts, completed-run duration). Rendered by ``factory status``
-  and by the Phase 15.11 read-only dashboard -- neither of which this module
+  and by the Phase 15.11 dashboard -- neither of which this module
   imports or depends on.
 - :func:`build_run_detail` -- the single-run counterpart, returning a
   :class:`RunDetail` (summary fields, completion facts and the attempt
@@ -96,6 +96,7 @@ from .models import (
     ModelBase,
     PerformanceRecord,
     ResumeClassification,
+    ResumeRefusal,
     ReviewFindingCategory,
     ReviewImpasse,
     Risk,
@@ -108,6 +109,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
+from .resume import resume_refusal_within
 from .store import ARTIFACT_FILENAMES
 from .verification import redact_secrets
 
@@ -489,6 +491,9 @@ class EscalationSummary(ModelBase):
     context_fingerprint: str | None = None
     reopen_max: int | None = Field(default=None, ge=1)
     reply_closed_cause: str | None = None
+    #: Why the dashboard could not queue a resume now, or ``None`` when it can. Unlike
+    #: ``reply_closed_cause`` this ignores the GitHub-only gates.
+    dashboard_action_refusal: ResumeRefusal | None = None
     approval_scope: ApprovalScopeSummary | None = None
     decisions: list[str] = Field(default_factory=list)
 
@@ -1389,6 +1394,9 @@ def _escalation_summary(
             enabled=escalation_enabled,
             allowed_hosts=allowed_hosts,
             now=now,
+        ),
+        dashboard_action_refusal=resume_refusal_within(
+            run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
         ),
         approval_scope=(
             ApprovalScopeSummary(

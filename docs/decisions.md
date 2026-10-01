@@ -69,7 +69,7 @@ The write path has one writer:
 Authority for a local approval:
 
 - ADR-024 checks the GitHub comment author. A local approval has no author to check.
-- The per-start dashboard token guards the HTTP route only (slice 4).
+- The per-start dashboard token guards the HTTP route only.
   The token is random, per start, printed to stdout and never logged.
   The dashboard binds to `127.0.0.1`, so only a process on the operator's machine can reach the route.
 - The factory service never checks the token.
@@ -85,6 +85,9 @@ Authority for a local approval:
   It also records the time and the context fingerprint, and the service writes a log event.
 - A `POST` also needs the token in a header, an exact `Origin` and a JSON body of at most 16 KB.
   Other write methods return `405`.
+- The per-start token stays in the page URL and in the browser history.
+  Anyone who can read the operator's browser history or terminal can approve while that dashboard runs.
+  A server-set cookie can remove the token from the URL (follow-up).
 
 Consequences:
 
@@ -99,9 +102,9 @@ Consequences:
   Ingest marks a request stale as `expired` if it is older than its escalation or newer than the service clock.
   Back-dating a request needs write access to the data directory, which can already edit `run.json`.
   The slice 4 route stamps `created_at` from the server clock and never reads it from the request body.
-- Slice 3 of issue #80 adds the request file and the service ingest.
-  The HTTP routes for the two actions land in slice 4.
-  Until slice 4 ships, the dashboard stays read-only and no route creates a request.
+- Slice 3 of issue #80 added the request file and the service ingest.
+  Slice 4 added the HTTP routes for the two actions.
+  Before slice 4, the dashboard was read-only and no route created a request.
 
 See also ADR-016, ADR-024 and ADR-026.
 

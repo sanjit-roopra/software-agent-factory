@@ -21,7 +21,7 @@ Task guides for common workflows. Read [Get started](../get-started/index.md) fi
 : Configure, label, start, approve, and inspect one local issue listener.
 
 [Monitor and run continuously](operations.md)
-: Use `factory status`, structured logs, the read-only local dashboard, and the
+: Use `factory status`, structured logs, the local dashboard, and the
   macOS launchd service.
 
 [Troubleshooting](troubleshooting.md)

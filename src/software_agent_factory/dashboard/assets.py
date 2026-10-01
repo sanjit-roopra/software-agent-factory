@@ -33,7 +33,7 @@ def render_index_html(*, token: str) -> str:
   <aside class="sidebar">
     <header>
       <p class="brand">Software Agent Factory</p>
-      <p class="subtitle">Read-only local dashboard &mdash; loopback only, no mutation.</p>
+      <p class="subtitle">Local dashboard &mdash; loopback only. Can approve or answer a run.</p>
       <button id="theme-toggle" type="button">Switch theme</button>
     </header>
     <nav aria-label="Main">
@@ -44,7 +44,7 @@ def render_index_html(*, token: str) -> str:
     </nav>
   </aside>
   <main>
-    <p id="notice" role="status" aria-live="polite"></p>
+    <p id="notice" role="status" aria-live="polite" tabindex="-1"></p>
 
     <section id="view-runs" aria-labelledby="runs-heading" hidden>
       <h1 id="runs-heading" tabindex="-1">Runs</h1>
