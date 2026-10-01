@@ -627,6 +627,52 @@ def test_dashboard_detail_carries_the_configured_reopen_limit(
     assert detail.escalation.reopen_max == 2
 
 
+@pytest.mark.parametrize(
+    ("escalation", "cause"),
+    [
+        (
+            {"enabled": True, "authorized_identities": ["lead-dev"], "reply_window_hours": 1},
+            "the reply window expired",
+        ),
+        ({"enabled": False}, "escalation replies are turned off"),
+    ],
+    ids=["window", "switch"],
+)
+def test_dashboard_detail_closes_the_reply_from_the_configured_window_and_switch(
+    tmp_path: Path,
+    data_dir: Path,
+    fake_dashboard: list[FakeDashboardServer],
+    escalation: dict[str, object],
+    cause: str,
+) -> None:
+    config_path = write_config(tmp_path / "factory.yaml", data_dir, escalation=escalation)
+    old = datetime(2020, 1, 1, tzinfo=UTC)
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id="run-old-notice",
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=old,
+            updated_at=old,
+            escalation=EscalationRecord(
+                episode_id="ep-1",
+                status=EscalationStatus.NOTIFIED,
+                resume_classification=ResumeClassification.NOT_RESUMABLE,
+                reason_code="MANUAL_INSPECTION",
+                remote_resume_enabled=True,
+                created_at=old,
+            ),
+        )
+    )
+
+    assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
+
+    detail = fake_dashboard[0].config.run_detail_provider("run-old-notice")
+    assert isinstance(detail, RunDetail)
+    assert detail.escalation is not None
+    assert detail.escalation.reply_closed_cause == cause
+
+
 def test_dashboard_project_totals_count_usage_a_call_reported_only_per_model(
     data_dir: Path, fake_dashboard: list[FakeDashboardServer]
 ) -> None:

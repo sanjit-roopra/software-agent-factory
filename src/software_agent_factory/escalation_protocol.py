@@ -9,6 +9,9 @@ like or when the factory accepts one.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
+
+from .models import EscalationRecord, EscalationStatus
 
 #: Characters allowed in a run id or an episode id inside a reply command.
 _ID_CHARS = "A-Za-z0-9._-"
@@ -35,3 +38,48 @@ def format_resume_command(run_id: str, episode_id: str) -> str:
 def format_answer_command(run_id: str, episode_id: str) -> str:
     """The first line of a plan-decision reply. :data:`ANSWER_COMMAND_PATTERN` matches it."""
     return f"@factory answer v1 run={run_id} episode={episode_id}"
+
+
+#: Why a reply cannot reach a run, by escalation status. The factory reads
+#: replies only while the status is ``NOTIFIED``.
+_STATUS_CAUSES: dict[EscalationStatus, str] = {
+    EscalationStatus.PENDING_NOTIFICATION: "the notice is not sent yet",
+    EscalationStatus.NOTIFICATION_FAILED: "the notice was not sent",
+    EscalationStatus.EXPIRED: "the reply window expired",
+    EscalationStatus.REOPENED: "the run already resumed from a reply",
+    EscalationStatus.RESUMED: "the run already resumed from a reply",
+}
+
+
+def reply_closed_cause(
+    record: EscalationRecord,
+    *,
+    max_reopens: int | None,
+    reply_window_hours: float | None,
+    enabled: bool | None,
+    now: datetime,
+) -> str | None:
+    """Why the factory would ignore a reply to ``record`` at ``now``, or ``None``.
+
+    This is the rule behind ``poll_escalation_reply`` and ``validate_reply_candidate``
+    in :mod:`software_agent_factory.escalation`: a reply is read only while escalation
+    is enabled, the status is ``NOTIFIED``, the notice carries reply instructions,
+    the reply cursor is open, the reply window has not passed and a reopen is left.
+    A config value that is ``None`` is unknown and does not close the reply.
+    The result is one short plain-English phrase.
+    """
+    if enabled is False:
+        return "escalation replies are turned off"
+    if record.status is not EscalationStatus.NOTIFIED:
+        return _STATUS_CAUSES.get(record.status, "the notice status is not known")
+    if not record.remote_resume_enabled:
+        return "the notice has no reply instructions"
+    if record.reply_cursor == "closed":
+        return "the factory stopped reading replies"
+    if reply_window_hours is not None and now > record.created_at + timedelta(
+        hours=reply_window_hours
+    ):
+        return "the reply window expired"
+    if max_reopens is not None and record.reopen_count >= max_reopens:
+        return "the reopen limit is reached"
+    return None

@@ -21,6 +21,7 @@ from software_agent_factory.models import (
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
+    PlanDecisionContext,
     ResumeClassification,
     Risk,
     RiskApprovalContext,
@@ -66,6 +67,7 @@ def _run(
             "context_fingerprint": FINGERPRINT,
             "reopen_count": 0,
             "reopen_max": 3,
+            "reply_closed_cause": None,
             **escalation,
         }
     return run
@@ -249,35 +251,16 @@ def test_a_run_id_the_dashboard_route_would_reject_makes_the_reply_unavailable(
 
 
 @pytest.mark.parametrize(
-    ("override", "cause"),
+    "cause",
     [
-        ({"status": "PENDING_NOTIFICATION"}, "the notice is not sent yet"),
-        ({"status": "NOTIFICATION_FAILED"}, "the notice was not sent"),
-        ({"status": "EXPIRED"}, "the reply window expired"),
-        ({"status": "REOPENED"}, "the run already resumed from a reply"),
-        ({"status": "RESUMED"}, "the run already resumed from a reply"),
-        ({"status": None}, "the notice status is not known"),
-        ({"status": ["NOTIFIED"]}, "the notice status is not known"),
-        ({"reopen_count": 3, "reopen_max": 3}, "the reopen limit is reached"),
-        ({"reopen_count": 4, "reopen_max": 3}, "the reopen limit is reached"),
-    ],
-    ids=[
-        "pending",
-        "notification-failed",
-        "expired",
-        "reopened",
-        "resumed",
-        "no-status",
-        "malformed-status",
-        "reopen-limit-reached",
-        "reopen-limit-passed",
+        "the notice is not sent yet",
+        "the notice has no reply instructions",
+        "the reply window expired",
     ],
 )
-def test_a_reply_the_poller_would_ignore_is_unavailable_and_says_why(
-    override: dict[str, Any], cause: str
-) -> None:
-    approve = next_step(_risk_run(**override))
-    answer = next_step(_plan_run(**override))
+def test_a_reply_the_factory_would_ignore_is_unavailable_and_says_why(cause: str) -> None:
+    approve = next_step(_risk_run(reply_closed_cause=cause))
+    answer = next_step(_plan_run(reply_closed_cause=cause))
 
     assert approve["kind"] == answer["kind"] == "remote_approval_unavailable"
     assert f"Remote approval is not available because {cause}." in approve["sentence"]
@@ -285,20 +268,20 @@ def test_a_reply_the_poller_would_ignore_is_unavailable_and_says_why(
     assert approve["reply_text"] is answer["reply_text"] is None
 
 
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"reopen_count": 2, "reopen_max": 3},
-        {"reopen_count": None, "reopen_max": 3},
-        {"reopen_count": 5, "reopen_max": None},
-    ],
-    ids=["reopens-left", "no-reopen-count", "no-reopen-limit"],
-)
-def test_a_notified_run_with_reopens_left_or_unknown_can_still_be_replied_to(
-    override: dict[str, Any],
-) -> None:
-    assert next_step(_risk_run(**override))["kind"] == "approve"
-    assert next_step(_plan_run(**override))["kind"] == "answer"
+def test_an_escalation_without_a_reply_state_is_treated_as_closed() -> None:
+    run = _risk_run()
+    del run["escalation"]["reply_closed_cause"]
+
+    step = next_step(run)
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "because the reply state is not known." in step["sentence"]
+
+
+def test_an_open_reply_is_offered_whatever_the_reopen_numbers_show() -> None:
+    # The reopen limit is the factory's call (``reply_closed_cause``), not the page's.
+    assert next_step(_risk_run(reopen_count=5, reopen_max=3))["kind"] == "approve"
+    assert next_step(_plan_run(reopen_count=None, reopen_max=None))["kind"] == "answer"
 
 
 @pytest.mark.parametrize(
@@ -410,6 +393,7 @@ def test_sanitized_run_detail_carries_the_next_step_and_redacts_the_escalation()
             "context_fingerprint": FINGERPRINT,
             "reopen_count": 1,
             "reopen_max": 3,
+            "reply_closed_cause": None,
             "comment_url": "https://github.com/o/r/pull/1#c-1",
             "approval_scope": {**SCOPE, "decision_requested": f"Approve {SECRET}"},
             "raw_prompt": "dropped",
@@ -478,6 +462,7 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
             resume_classification=ResumeClassification.RISK_APPROVAL,
             reason_code="RISK_APPROVAL",
             reopen_count=1,
+            remote_resume_enabled=True,
             comment_url="https://github.com/o/r/pull/1#c-1",
             approval_context=RiskApprovalContext(
                 risk=Risk.R2,
@@ -495,7 +480,9 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
     )
     store.save_run(run)
 
-    detail = build_run_detail(store, RUN_ID, max_reopens=3)
+    detail = build_run_detail(
+        store, RUN_ID, max_reopens=3, reply_window_hours=168, escalation_enabled=True
+    )
     step = run_detail_view(detail)["next_step"]
 
     assert step["kind"] == "approve"
@@ -503,3 +490,51 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
     assert step["approval_scope"]["decision_requested"] == "Approve [REDACTED]"
     assert step["comment_url"] == "https://github.com/o/r/pull/1#c-1"
     assert parse_resume_command(step["reply_text"]) == (RUN_ID, EPISODE_ID)
+
+
+def test_a_stored_notice_with_no_reply_instructions_is_unavailable_end_to_end(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    store.save_run(
+        FactoryRun(
+            id=RUN_ID,
+            work_item_id="WI-1",
+            state=WorkflowState.NEEDS_HUMAN,
+            created_at=now,
+            updated_at=now,
+            escalation=EscalationRecord(
+                episode_id=EPISODE_ID,
+                status=EscalationStatus.NOTIFIED,
+                resume_classification=ResumeClassification.PLAN_DECISION,
+                reason_code="UNRESOLVED_DECISIONS",
+                remote_resume_enabled=False,
+                reply_cursor="closed",
+                plan_decision_context=PlanDecisionContext(
+                    plan_fingerprint="p" * 64,
+                    decisions=["Use SQLite?"],
+                    context_fingerprint=FINGERPRINT,
+                ),
+            ),
+        )
+    )
+
+    step = run_detail_view(build_run_detail(store, RUN_ID, max_reopens=3))["next_step"]
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "because the notice has no reply instructions." in step["sentence"]
+
+
+@pytest.mark.parametrize("cause", ["the reply window expired", None])
+def test_the_sanitizer_keeps_a_reply_closed_cause_that_is_text_or_none(cause: str | None) -> None:
+    detail = {"run_id": RUN_ID, "escalation": {"reply_closed_cause": cause}}
+
+    assert sanitize_run_detail(detail)["escalation"]["reply_closed_cause"] == cause
+
+
+@pytest.mark.parametrize("cause", ["", 5, ["closed"], {"a": 1}])
+def test_the_sanitizer_drops_a_reply_closed_cause_that_is_not_text(cause: Any) -> None:
+    detail = {"run_id": RUN_ID, "escalation": {"reply_closed_cause": cause}}
+
+    assert "reply_closed_cause" not in sanitize_run_detail(detail)["escalation"]

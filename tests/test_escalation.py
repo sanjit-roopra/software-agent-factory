@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -48,6 +48,7 @@ from software_agent_factory.escalation import (
     resolve_escalation_target,
     validate_reply_candidate,
 )
+from software_agent_factory.escalation_protocol import reply_closed_cause
 from software_agent_factory.github import (
     GitHubClient,
     GitHubComment,
@@ -1246,6 +1247,103 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
     # Verify raw reply body is NEVER stored on disk!
     assert not hasattr(persisted_receipt, "raw_body")
     assert persisted_receipt.command == "@factory resume v1 run=run-poll episode=ep-1234"
+
+
+_PARITY_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+#: Record changes and the config change that close a reply. ``None`` means the reply is open.
+_PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {
+    "open": ({}, {}, True),
+    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}, True),
+    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, False),
+    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, False),
+    "expired": ({"status": EscalationStatus.EXPIRED}, {}, False),
+    "reopened": ({"status": EscalationStatus.REOPENED}, {}, False),
+    "resumed": ({"status": EscalationStatus.RESUMED}, {}, False),
+    "notice-fallback": ({"remote_resume_enabled": False, "reply_cursor": "closed"}, {}, False),
+    "no-reply-instructions": ({"remote_resume_enabled": False}, {}, False),
+    "cursor-closed": ({"reply_cursor": "closed"}, {}, False),
+    "window-passed": ({"created_at": _PARITY_NOW - timedelta(hours=25)}, {}, False),
+    "reopen-limit": ({"reopen_count": 3}, {}, False),
+    "reopens-left": ({"reopen_count": 2}, {}, True),
+    "escalation-off": ({}, {"escalation_enabled": False}, False),
+}
+
+
+@pytest.mark.parametrize("case", _PARITY_CASES, ids=list(_PARITY_CASES))
+def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_open(
+    case: str, tmp_path: Path
+) -> None:
+    record_changes, config_changes, expect_open = _PARITY_CASES[case]
+    config = _make_config(tmp_path, max_reopens=3, reply_window_hours=24, **config_changes)  # type: ignore[arg-type]
+    store = FileRunStore(tmp_path)
+    escalation = EscalationRecord.model_validate(
+        {
+            "episode_id": "ep-1234",
+            "status": EscalationStatus.NOTIFIED,
+            "resume_classification": ResumeClassification.RISK_APPROVAL,
+            "target_repository": "owner/repo",
+            "target_number": 10,
+            "created_at": _PARITY_NOW - timedelta(hours=1),
+            "last_notified_at": _PARITY_NOW - timedelta(minutes=30),
+            "approval_context": _make_approval_context(run_id="run-parity", episode_id="ep-1234"),
+            "remote_resume_enabled": True,
+            **record_changes,
+        }
+    )
+    run = FactoryRun(
+        id="run-parity",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        escalation=escalation,
+    )
+    store.save_run(run)
+    comment = _make_comment_payload(
+        555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
+    )
+    client = GitHubClient(
+        runner=FakeRunner(
+            [
+                FakeCompletedProcess(0, json.dumps(comment)),  # validator re-fetch
+                FakeCompletedProcess(0, json.dumps([comment])),  # poller list
+                FakeCompletedProcess(0, json.dumps(comment)),  # poller re-fetch
+            ]
+        )
+    )
+
+    # The validator does not read the cursor or the config switch: the poller guards both first.
+    if case not in {"cursor-closed", "escalation-off"}:
+        candidate = GitHubComment(
+            id=555,
+            user_login="lead-dev",
+            user_id=1001,
+            user_type="User",
+            author_association="MEMBER",
+            created_at=_PARITY_NOW,
+            updated_at=_PARITY_NOW,
+            body="@factory resume v1 run=run-parity episode=ep-1234",
+        )
+        verdict = validate_reply_candidate(
+            candidate,
+            run=run,
+            config=config,
+            client=client,
+            repo_path=tmp_path,
+            now=_PARITY_NOW,
+        )
+        assert verdict.is_valid is expect_open
+
+    receipt = poll_escalation_reply(run, store, config, client, tmp_path, now=_PARITY_NOW)
+    cause = reply_closed_cause(
+        escalation,
+        max_reopens=config.escalation.max_reopens,
+        reply_window_hours=config.escalation.reply_window_hours,
+        enabled=config.escalation.enabled,
+        now=_PARITY_NOW,
+    )
+
+    assert (receipt is not None) is expect_open
+    assert (cause is None) is expect_open
 
 
 def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -> None:

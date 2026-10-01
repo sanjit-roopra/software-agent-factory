@@ -1070,6 +1070,8 @@ def dashboard_command(
             run_id,
             stale_after=stale_after,
             max_reopens=factory_config.escalation.max_reopens,
+            reply_window_hours=factory_config.escalation.reply_window_hours,
+            escalation_enabled=factory_config.escalation.enabled,
         )
 
     def health_provider() -> object:

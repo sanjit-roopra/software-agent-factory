@@ -136,6 +136,7 @@ ESCALATION_FIELDS: frozenset[str] = frozenset(
         "episode_id",
         "context_fingerprint",
         "reopen_max",
+        "reply_closed_cause",
         "approval_scope",
         "decisions",
     }
@@ -566,6 +567,7 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "episode_id": is_episode_id,
     "context_fingerprint": is_context_fingerprint,
     "reopen_max": is_count,
+    "reply_closed_cause": lambda value: value is None or (isinstance(value, str) and bool(value)),
 }
 
 

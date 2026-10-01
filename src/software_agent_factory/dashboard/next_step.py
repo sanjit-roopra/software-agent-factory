@@ -1,9 +1,13 @@
 """The "Needs you" view model: how an operator continues a halted run.
 
-Pure: no I/O, and it imports only ``models``, ``redaction`` and the leaf
-``validators`` (no ``escalation``, which pulls in the GitHub client). ``next_step`` reads a run
-detail whose escalation block already went through the sanitizer allowlist.
-It still redacts every free-text field itself, so it is safe on its own.
+Pure: no I/O, and it imports only ``models``, ``redaction`` and the leaves
+``escalation_protocol`` and ``validators`` (no ``escalation``, which pulls in the GitHub
+client). ``next_step`` reads a run detail whose escalation block already went through the
+sanitizer allowlist. It still redacts every free-text field itself, so it is safe on its own.
+
+Whether a reply can reach the run is not decided here. The escalation block carries
+``reply_closed_cause``, which :func:`software_agent_factory.escalation_protocol.reply_closed_cause`
+computed from the stored record and the config. A block without it is treated as closed.
 
 The reply text must match the two parsers in :mod:`software_agent_factory.escalation`
 (``parse_resume_command`` and ``parse_plan_decision_answers``). The tests pin
@@ -17,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
-from ..models import EscalationStatus, ResumeClassification, WorkflowState
+from ..models import ResumeClassification, WorkflowState
 from ..redaction import bounded_reason, redact_secrets
 from .validators import (
     RESUME_CLASSIFICATIONS,
@@ -46,16 +50,8 @@ CANNOT_CONTINUE = "This run cannot continue."
 
 ANSWER_PLACEHOLDER = "<answer>"
 
-#: Why a reply cannot reach a halted run, by escalation status. The reply poller
-#: (``escalation.poll_escalation_reply``) reads replies only while the status is
-#: ``NOTIFIED``.
-_CLOSED_REPLY_CAUSES: dict[str, str] = {
-    EscalationStatus.PENDING_NOTIFICATION: "the notice is not sent yet",
-    EscalationStatus.NOTIFICATION_FAILED: "the notice was not sent",
-    EscalationStatus.EXPIRED: "the reply window expired",
-    EscalationStatus.REOPENED: "the run already resumed from a reply",
-    EscalationStatus.RESUMED: "the run already resumed from a reply",
-}
+#: The cause shown when the escalation block does not say whether a reply is open.
+UNKNOWN_REPLY_STATE = "the reply state is not known"
 
 
 def _text_list(value: Any) -> list[str] | None:
@@ -159,21 +155,16 @@ def _unavailable(run: dict[str, Any], escalation: dict[str, Any], what: str) -> 
 
 
 def _closed_reply_cause(escalation: dict[str, Any]) -> str | None:
-    """Why the poller would ignore a reply now, or ``None`` when it would read it.
+    """Why the factory would ignore a reply now, or ``None`` when it would read it.
 
-    The poller stops at a status other than ``NOTIFIED`` and at the reopen limit
-    (``reopen_count >= max_reopens``). A reopen count or limit that is unknown
-    does not close the reply.
+    The cause comes from :func:`software_agent_factory.escalation_protocol.reply_closed_cause`,
+    computed with the config when the run detail is built. A block without that field
+    is treated as closed, because the reply state is then unknown.
     """
-    status = escalation.get("status")
-    if status != EscalationStatus.NOTIFIED:
-        cause = _CLOSED_REPLY_CAUSES.get(status) if isinstance(status, str) else None
-        return cause or "the notice status is not known"
-    used = _count_or_none(escalation.get("reopen_count"))
-    limit = _count_or_none(escalation.get("reopen_max"))
-    if used is not None and limit is not None and used >= limit:
-        return "the reopen limit is reached"
-    return None
+    if "reply_closed_cause" not in escalation:
+        return UNKNOWN_REPLY_STATE
+    cause = escalation["reply_closed_cause"]
+    return cause if isinstance(cause, str) and cause else None
 
 
 def _reply_ids(run: dict[str, Any], escalation: dict[str, Any]) -> tuple[str, str, str] | None:
