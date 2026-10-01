@@ -127,6 +127,10 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert '--expect-architecture "x86_64"' in text
     assert "COPYFILE_DISABLE=1 tar" in text
     assert "packaging/venvs/wheel-smoke/bin/pip install dist/*.whl" in text
+    assert (
+        'packaging/venvs/wheel-smoke/bin/python -c "import software_agent_factory.dashboard.assets"'
+        in text
+    )
     assert "packaging/venvs/sdist-smoke/bin/pip install dist/*.tar.gz" in text
     assert "VERSION=$(PYTHONPATH=src uv run --no-sync --no-build python" in text
     assert workflow["env"]["UV_VERSION"] == "0.12.19"
@@ -456,6 +460,10 @@ def test_release_workflow_has_safe_publish_shape() -> None:
     assert "actions/attest@" in text
     assert "github.event.repository.visibility == 'public'" in text
     assert "packaging/venvs/release-sdist-smoke" in text
+    assert (
+        "packaging/venvs/release-wheel-smoke/bin/python "
+        '-c "import software_agent_factory.dashboard.assets"'
+    ) in text
 
 
 def test_release_python_distributions_do_not_require_pyinstaller() -> None:

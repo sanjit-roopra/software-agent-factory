@@ -46,9 +46,9 @@ if not build_info_path.is_file():
     )
 package_data.append((str(build_info_path), "software_agent_factory"))
 
-# The read-only dashboard (Phase 15.11) is deliberately asset-free: its HTML,
-# CSS and JS are Python string constants in ``dashboard/assets.py``, so there
-# is no static directory, no bundler and no build step to bundle here.
+# The read-only dashboard serves ``dashboard/static/app.js`` and ``style.css``
+# from package files (bundled above); its HTML is rendered in
+# ``dashboard/assets.py``. There is no bundler and no build step.
 hiddenimports = collect_submodules("software_agent_factory")
 
 analysis = Analysis(

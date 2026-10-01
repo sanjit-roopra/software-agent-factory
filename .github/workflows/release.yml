@@ -144,6 +144,7 @@ jobs:
           uv run --no-sync --no-build check-wheel-contents dist/*.whl
           uv run --no-sync --no-build python -m venv packaging/venvs/release-wheel-smoke
           packaging/venvs/release-wheel-smoke/bin/pip install dist/*.whl
+          packaging/venvs/release-wheel-smoke/bin/python -c "import software_agent_factory.dashboard.assets"
           packaging/venvs/release-wheel-smoke/bin/python scripts/release/smoke_factory.py \
             --factory-executable packaging/venvs/release-wheel-smoke/bin/factory \
             --workspace-root packaging/release-wheel-smoke \
