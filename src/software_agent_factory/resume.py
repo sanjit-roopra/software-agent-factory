@@ -387,7 +387,9 @@ def request_mismatch(
     """The first way a request differs from what ``escalation`` asks now, or ``None``.
 
     The order is the episode, then the context fingerprint, then the action. It is the
-    second half of :func:`request_refusal`, which both the dashboard and the service call.
+    second half of :func:`request_refusal`. Ingest also calls it directly to settle the
+    requests of an older context, so those go stale as ``context_changed`` even when the
+    run has stopped waiting.
     """
     if episode_id != escalation.episode_id:
         return "episode"
@@ -416,9 +418,9 @@ def request_refusal(
 
     The order is the service's: :func:`resume_refusal_within` first (state, context, window,
     reopens), then :func:`request_mismatch` (episode, fingerprint, action). The dashboard
-    asks it of a request it is about to store and the service of one it has read, so both
-    give the same reason for the same request. The stamp of a stored request is judged by
-    the service alone, after the refusals and before the mismatch.
+    asks it of a request it is about to store and the service of the request for the
+    current context, so both give the same reason for that request. The stamp of a stored
+    request is judged by the service alone, after the refusals and before the mismatch.
     """
     refusal = resume_refusal_within(
         run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
