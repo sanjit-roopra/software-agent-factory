@@ -456,9 +456,12 @@ than a control plane.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object
-  with summary fields and metadata (never failure reasons, agent reasoning, or
-  raw artifacts). The request handler then allowlists the fields it renders. A
-  future provider mistake still cannot leak content.
+  with summary fields, metadata and raw failure reasons (never agent reasoning
+  text or raw artifacts). The request handler then allowlists the fields it
+  renders. A future provider mistake still cannot leak content.
+- Failure reasons and escalation text are redacted first, then cut to 500
+  characters with the start and the end kept. A cut reason names
+  `factory show <run>` for the full text (ADR-033).
 - Cannot approve, retry, cancel or reconfigure anything.
 - Python standard library only. No framework, no npm, no bundler, no build step.
 
