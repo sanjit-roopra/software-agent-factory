@@ -619,16 +619,6 @@
     return table;
   }
 
-  function modelStatus(model) {
-    if (model.status) {
-      return model.status;
-    }
-    if (model.success === true) {
-      return "SUCCESS";
-    }
-    return model.success === false ? "FAILED" : null;
-  }
-
   function modelRow(model) {
     const usage = model.usage || {};
     const row = document.createElement("tr");
@@ -636,7 +626,7 @@
     appendCell(row, model.role);
     appendCell(row, model.model);
     appendCell(row, model.purpose);
-    appendCell(row, modelStatus(model));
+    appendCell(row, model.status);
     appendCell(row, model.started_at);
     appendCell(row, usage.input_tokens);
     appendCell(row, usage.output_tokens);

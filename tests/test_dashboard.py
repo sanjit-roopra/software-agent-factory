@@ -49,6 +49,8 @@ from software_agent_factory.dashboard.sanitize import (
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    sanitize_active_invocation,
+    sanitize_attempt,
     sanitize_invocation,
     sanitize_project,
     sanitize_run_detail,
@@ -1084,6 +1086,7 @@ def test_is_valid_run_id_helper() -> None:
 # --------------------------------------------------------------------------
 
 SECRET_MARKER = "SECRET-sk-adversarial-0xDEADBEEF"
+GH_SECRET = "GH_TOKEN=ghp_abcdefgh12345678"
 
 
 def adversarial_snapshot_provider(*, limit: int, offset: int) -> dict[str, Any]:
@@ -1117,7 +1120,7 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
         "prompt": f"system prompt leaking {SECRET_MARKER}",
         "tool_output": SECRET_MARKER,
         "reasoning": f"chain of thought: {SECRET_MARKER}",
-        "failure_reason": f"traceback containing {SECRET_MARKER}",
+        "failure_reason": f"traceback containing {GH_SECRET}",
         "token_usage": {"api_key": SECRET_MARKER},
         "usage": {**detail["usage"], "api_key": SECRET_MARKER},
         "raw_artifact": SECRET_MARKER,
@@ -1125,7 +1128,7 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
             {
                 **attempt,
                 "reasoning": f"attempt chain of thought: {SECRET_MARKER}",
-                "failure_reason": f"attempt traceback: {SECRET_MARKER}",
+                "failure_reason": f"attempt traceback: {GH_SECRET}",
                 "tool_output": SECRET_MARKER,
                 "raw_command_log": SECRET_MARKER,
             }
@@ -1134,7 +1137,8 @@ def adversarial_run_detail_provider(run_id: str) -> dict[str, Any] | None:
         "invocations": [
             {
                 **invocation,
-                "failure_reason": SECRET_MARKER,
+                "success": False,
+                "failure_reason": GH_SECRET,
                 "usage": {
                     **invocation["usage"],
                     "api_key": SECRET_MARKER,
@@ -1212,6 +1216,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
         assert response.status == 200
         raw_body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
         assert SECRET_MARKER not in raw_body
+        assert "ghp_abcdefgh12345678" not in raw_body
         payload = json.loads(raw_body)
         assert set(payload) <= RUN_DETAIL_FIELDS | {
             "active_invocation",
@@ -1223,45 +1228,19 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
         assert "prompt" not in payload
         assert "tool_output" not in payload
         assert "reasoning" not in payload
-        assert "failure_reason" not in payload
+        assert payload["failure_reason"] == "traceback containing [REDACTED]"
         assert "token_usage" not in payload
         assert "raw_artifact" not in payload
         for attempt in payload["attempts"]:
             assert set(attempt) <= ATTEMPT_FIELDS
             assert "reasoning" not in attempt
-            assert "failure_reason" not in attempt
+            assert attempt["failure_reason"] == "attempt traceback: [REDACTED]"
             assert "tool_output" not in attempt
             assert "raw_command_log" not in attempt
         for invocation in payload["invocations"]:
             assert set(invocation) <= INVOCATION_FIELDS
-            assert "failure_reason" not in invocation
+            assert invocation["failure_reason"] == "[REDACTED]"
             assert SECRET_MARKER not in json.dumps(invocation)
-    finally:
-        _stop(running)
-
-
-def test_failure_reason_is_never_returned_even_when_provider_sets_it() -> None:
-    # Explicit, targeted check for the "prefer omitting failure_reason"
-    # requirement: even a provider that populates it directly (not just via
-    # the broader adversarial payload above) never sees it echoed back.
-    def provider(run_id: str) -> dict[str, Any] | None:
-        detail = FIXTURE_DETAILS.get(run_id)
-        if detail is None:
-            return None
-        return {**detail, "failure_reason": "a raw failure reason with detail"}
-
-    config = DashboardConfig(
-        host="127.0.0.1",
-        port=0,
-        snapshot_provider=fake_snapshot_provider,
-        run_detail_provider=provider,
-    )
-    running = _start(config)
-    try:
-        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
-        assert response.status == 200
-        payload = _body_json(response)
-        assert "failure_reason" not in payload
     finally:
         _stop(running)
 
@@ -2131,3 +2110,412 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
                 chunks.append(chunk)
     raw = b"".join(chunks)
     assert b"400" in raw and b"Bad request" in raw
+
+
+# --------------------------------------------------------------------------
+# Run detail call timeline (#80 slice 2, step 2.2)
+# --------------------------------------------------------------------------
+
+CALL_FIELD_ORDER = [
+    "invocation_number",
+    "role",
+    "purpose",
+    "model",
+    "reasoning",
+    "context_tier",
+    "status",
+    "success",
+    "attempt_number",
+    "started_at",
+    "completed_at",
+    "duration_ms",
+    "usage",
+    "failure_reason",
+    "failure_reason_truncated",
+]
+TOKEN_CLASSES = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+COST_UNITS = ("total_premium_request_cost", "usage_value_usd", "list_price_estimate_usd")
+
+
+def _raw_call(**overrides: Any) -> dict[str, Any]:
+    call: dict[str, Any] = {
+        "invocation_number": 1,
+        "role": "IMPLEMENTER",
+        "purpose": "STANDARD",
+        "model": "fake-model",
+        "reasoning": "high",
+        "context_tier": "default",
+        "success": True,
+        "attempt_number": 1,
+        "started_at": "2024-01-01T00:00:00+00:00",
+        "completed_at": "2024-01-01T00:00:02.500000+00:00",
+        "failure_reason": None,
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+    }
+    return {**call, **overrides}
+
+
+def test_sanitized_call_lists_timeline_fields_in_a_fixed_order() -> None:
+    call = sanitize_invocation(_raw_call())
+
+    assert list(call) == CALL_FIELD_ORDER
+    assert call["purpose"] == "STANDARD"
+    assert call["reasoning"] == "high"
+    assert call["started_at"] == "2024-01-01T00:00:00+00:00"
+    assert call["completed_at"] == "2024-01-01T00:00:02.500000+00:00"
+    assert call["duration_ms"] == 2500
+    assert call["attempt_number"] == 1
+    assert call["status"] == "SUCCESS"
+    assert call["failure_reason"] is None
+    assert call["failure_reason_truncated"] is False
+
+
+def test_failed_call_has_failed_status() -> None:
+    call = sanitize_invocation(_raw_call(success=False, failure_reason="boom"))
+
+    assert call["status"] == "FAILED"
+    assert call["failure_reason"] == "boom"
+
+
+def test_call_with_unknown_outcome_has_no_status() -> None:
+    assert sanitize_invocation(_raw_call(success="yes"))["status"] is None
+
+
+@pytest.mark.parametrize(
+    ("reported", "shown"), [(0, 0), (1200, 1200), (None, None)], ids=["zero", "value", "nothing"]
+)
+def test_reported_zero_stays_zero_and_unreported_is_null(
+    reported: int | None, shown: int | None
+) -> None:
+    usage = {} if reported is None else {"reasoning_tokens": reported}
+
+    call = sanitize_invocation(_raw_call(usage=usage))
+
+    assert call["usage"]["reasoning_tokens"] == shown
+    assert (call["usage"]["reasoning_tokens"] is None) is (shown is None)
+
+
+def test_every_token_class_and_cost_unit_is_present_and_null_without_usage() -> None:
+    call = sanitize_invocation(_raw_call(usage=None))
+
+    assert {key: call["usage"][key] for key in (*TOKEN_CLASSES, *COST_UNITS)} == dict.fromkeys(
+        (*TOKEN_CLASSES, *COST_UNITS)
+    )
+
+
+def test_each_call_reports_cost_in_its_own_unit() -> None:
+    copilot = sanitize_invocation(
+        _raw_call(usage={"total_premium_request_cost": 1.0, "total_nano_aiu": 4_000_000_000})
+    )
+    pi = sanitize_invocation(_raw_call(usage={"list_price_estimate_usd": 0.02}))
+
+    assert copilot["usage"]["total_premium_request_cost"] == 1.0
+    assert copilot["usage"]["usage_value_usd"] == pytest.approx(0.04)
+    assert copilot["usage"]["list_price_estimate_usd"] is None
+    assert pi["usage"]["list_price_estimate_usd"] == pytest.approx(0.02)
+    assert pi["usage"]["total_premium_request_cost"] is None
+    assert pi["usage"]["usage_value_usd"] is None
+
+
+def test_reported_zero_cost_stays_zero() -> None:
+    usage = sanitize_invocation(
+        _raw_call(
+            usage={
+                "total_premium_request_cost": 0,
+                "total_nano_aiu": 0,
+                "list_price_estimate_usd": 0.0,
+            }
+        )
+    )["usage"]
+
+    assert [usage[unit] for unit in COST_UNITS] == [0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    ("started", "completed", "expected"),
+    [
+        ("2024-01-01T00:00:00+00:00", "2024-01-01T00:00:00+00:00", 0),
+        ("2024-01-01T00:00:00+00:00", "2024-01-01T00:01:00+00:00", 60_000),
+        ("2024-01-01T00:00:00+00:00", None, None),
+        (None, "2024-01-01T00:00:00+00:00", None),
+        ("not a time", "2024-01-01T00:00:00+00:00", None),
+        ("2024-01-01T00:00:05+00:00", "2024-01-01T00:00:00+00:00", None),
+        ("2024-01-01T00:00:00", "2024-01-01T00:00:00+00:00", None),
+    ],
+    ids=["zero", "minute", "no-end", "no-start", "garbage", "negative", "naive"],
+)
+def test_call_duration_is_derived_from_its_timestamps(
+    started: str | None, completed: str | None, expected: int | None
+) -> None:
+    call = sanitize_invocation(_raw_call(started_at=started, completed_at=completed))
+
+    assert call["duration_ms"] == expected
+
+
+def test_call_reasoning_level_must_be_a_short_token() -> None:
+    chain_of_thought = "first I will " + SECRET_MARKER
+
+    assert sanitize_invocation(_raw_call(reasoning=chain_of_thought))["reasoning"] is None
+    assert sanitize_invocation(_raw_call(reasoning=None))["reasoning"] is None
+
+
+def test_call_attempt_number_must_be_a_positive_integer() -> None:
+    for invalid in (0, -1, True, "1", 1.5):
+        assert sanitize_invocation(_raw_call(attempt_number=invalid))["attempt_number"] is None
+
+
+def test_calls_sort_by_number() -> None:
+    detail = sanitize_run_detail(
+        {
+            "run_id": "run-001",
+            "invocations": [
+                _raw_call(invocation_number=3),
+                _raw_call(invocation_number=1),
+                {"role": "TRIAGE"},
+                _raw_call(invocation_number=2),
+            ],
+        }
+    )
+
+    assert [call["invocation_number"] for call in detail["invocations"]] == [1, 2, 3, None]
+
+
+def test_call_drops_fields_outside_the_allowlist() -> None:
+    call = sanitize_invocation(
+        _raw_call(
+            prompt=SECRET_MARKER,
+            tool_output=SECRET_MARKER,
+            raw_command_log=SECRET_MARKER,
+            usage={"input_tokens": 1, "api_key": SECRET_MARKER},
+        )
+    )
+
+    assert list(call) == CALL_FIELD_ORDER
+    assert SECRET_MARKER not in json.dumps(call)
+
+
+def test_call_keeps_sanitized_performance_only_when_provided() -> None:
+    assert "performance" not in sanitize_invocation(_raw_call())
+
+    call = sanitize_invocation(_raw_call(performance={"prompt_chars": 5, "logs": SECRET_MARKER}))
+
+    assert call["performance"] == {"prompt_chars": 5}
+    assert list(call)[-1] == "performance"
+
+
+# --------------------------------------------------------------------------
+# Redacted, bounded failure reasons for the run, an attempt and a call
+# --------------------------------------------------------------------------
+
+REASON_LEVELS = ("run", "attempt", "call")
+REASON_SECRETS = {
+    "token assignment": (GH_SECRET, ("ghp_abcdefgh12345678",)),
+    "bearer header": ("Authorization: Bearer abc.def.gh", ("abc.def.gh",)),
+    "secret at char 490": ("x" * 489 + " " + GH_SECRET, ("GH_TOKEN", "ghp_")),
+}
+
+
+def _detail_with_reason(level: str, reason: str) -> dict[str, Any]:
+    detail = dict(FIXTURE_DETAILS["run-001"])
+    if level == "run":
+        detail["failure_reason"] = reason
+    elif level == "attempt":
+        detail["attempts"] = [{**detail["attempts"][0], "failure_reason": reason}]
+    else:
+        detail["invocations"] = [
+            {**detail["invocations"][0], "success": False, "failure_reason": reason}
+        ]
+    return detail
+
+
+def _reason_through_api(level: str, reason: str) -> tuple[str, bool]:
+    """Open the run detail over HTTP and return the level's reason and cut flag."""
+    detail = _detail_with_reason(level, reason)
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=lambda run_id: detail if run_id == "run-001" else None,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
+        assert response.status == 200
+        payload = _body_json(response)
+    finally:
+        _stop(running)
+    shown = {"run": payload, "attempt": payload["attempts"][0], "call": payload["invocations"][0]}[
+        level
+    ]
+    return shown["failure_reason"], shown["failure_reason_truncated"]
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+@pytest.mark.parametrize("secret", list(REASON_SECRETS), ids=list(REASON_SECRETS))
+def test_secret_in_a_failure_reason_is_redacted(level: str, secret: str) -> None:
+    text, fragments = REASON_SECRETS[secret]
+
+    reason, _ = _reason_through_api(level, text)
+
+    assert "[REDACTED]" in reason
+    assert not any(fragment in reason for fragment in fragments)
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+def test_reason_of_500_characters_is_shown_in_full(level: str) -> None:
+    reason, truncated = _reason_through_api(level, "a" * 500)
+
+    assert reason == "a" * 500
+    assert truncated is False
+
+
+@pytest.mark.parametrize("level", REASON_LEVELS)
+def test_reason_of_501_characters_is_cut_and_names_factory_show(level: str) -> None:
+    reason, truncated = _reason_through_api(level, "a" * 250 + "b" + "c" * 250)
+
+    assert truncated is True
+    assert len(reason) <= 500
+    assert "factory show run-001" in reason
+    assert reason.startswith("a") and reason.endswith("c")
+
+
+def test_reason_is_cut_after_redaction_so_a_secret_is_never_split() -> None:
+    reason, truncated = _reason_through_api("run", "x" * 480 + " " + GH_SECRET + " " + "y" * 100)
+
+    assert truncated is True
+    assert "ghp_" not in reason and "GH_TOKEN" not in reason
+
+
+def test_missing_or_empty_reason_is_null_and_not_cut() -> None:
+    for raw in (None, "", 42, ["a"]):
+        call = sanitize_invocation(_raw_call(failure_reason=raw))
+        attempt = sanitize_attempt({"attempt_number": 1, "failure_reason": raw})
+        detail = sanitize_run_detail({"run_id": "run-001", "failure_reason": raw})
+        for shown in (call, attempt, detail):
+            assert shown["failure_reason"] is None
+            assert shown["failure_reason_truncated"] is False
+
+
+def test_cut_marker_uses_a_placeholder_when_the_run_id_is_unknown_or_invalid() -> None:
+    long_reason = "a" * 600
+
+    assert (
+        "factory show <run>" in sanitize_attempt({"failure_reason": long_reason})["failure_reason"]
+    )
+    detail = sanitize_run_detail({"run_id": "bad id\n", "failure_reason": long_reason})
+    assert "factory show <run>" in detail["failure_reason"]
+
+
+def test_cut_marker_names_the_run_by_its_id_when_run_id_is_missing() -> None:
+    detail = sanitize_run_detail({"id": "run-009", "failure_reason": "a" * 600})
+
+    assert "factory show run-009" in detail["failure_reason"]
+
+
+def test_project_model_status_is_derived_by_the_server() -> None:
+    project = sanitize_project(
+        {
+            "project_id": "project-001",
+            "models": [
+                {"model": "m", "success": True},
+                {"model": "m", "success": False},
+                {"model": "m"},
+                {"model": "m", "success": True, "status": "running"},
+            ],
+        }
+    )
+
+    assert [model["status"] for model in project["models"]] == [
+        "SUCCESS",
+        "FAILED",
+        None,
+        "running",
+    ]
+
+
+def _raw_active(**overrides: Any) -> dict[str, Any]:
+    active: dict[str, Any] = {
+        "invocation_number": 2,
+        "role": "REVIEWER",
+        "purpose": "STANDARD",
+        "model": "fake-model",
+        "reasoning": "medium",
+        "context_tier": "default",
+        "status": "running",
+        "started_at": "2024-01-01T00:06:00+00:00",
+        "attempt_number": 2,
+    }
+    return {**active, **overrides}
+
+
+def test_running_call_has_the_shape_of_a_finished_call_with_nothing_reported() -> None:
+    call = sanitize_active_invocation(_raw_active())
+
+    assert list(call) == CALL_FIELD_ORDER
+    assert call["status"] == "running"
+    assert call["reasoning"] == "medium"
+    assert call["started_at"] == "2024-01-01T00:06:00+00:00"
+    assert call["success"] is None
+    assert call["completed_at"] is None
+    assert call["duration_ms"] is None
+    assert call["failure_reason"] is None
+    assert call["failure_reason_truncated"] is False
+    assert {key: call["usage"][key] for key in (*TOKEN_CLASSES, *COST_UNITS)} == dict.fromkeys(
+        (*TOKEN_CLASSES, *COST_UNITS)
+    )
+
+
+@pytest.mark.parametrize("status", ["stale", "crashed", "abandoned"])
+def test_running_call_keeps_a_liveness_status_the_provider_reports(status: str) -> None:
+    assert sanitize_active_invocation(_raw_active(status=status))["status"] == status
+
+
+@pytest.mark.parametrize("status", [None, "", "weird", "FAILED", ["running"], 5])
+def test_running_call_shows_running_for_a_missing_or_unknown_status(status: Any) -> None:
+    assert sanitize_active_invocation(_raw_active(status=status))["status"] == "running"
+
+
+def test_running_call_ignores_fields_that_only_a_finished_call_has() -> None:
+    call = sanitize_active_invocation(
+        _raw_active(
+            success=False,
+            completed_at="2024-01-01T00:07:00+00:00",
+            usage={"input_tokens": 99},
+            failure_reason=SECRET_MARKER,
+            prompt=SECRET_MARKER,
+        )
+    )
+
+    assert call["success"] is None
+    assert call["completed_at"] is None
+    assert call["usage"]["input_tokens"] is None
+    assert call["failure_reason"] is None
+    assert SECRET_MARKER not in json.dumps(call)
+
+
+def test_running_call_is_dropped_when_it_is_not_an_object() -> None:
+    assert sanitize_active_invocation("running") == {}
+    assert "active_invocation" not in sanitize_run_detail(
+        {"run_id": "run-001", "active_invocation": "running"}
+    )
+
+
+def test_run_detail_api_returns_calls_in_number_order_with_the_timeline_fields(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.request(
+        "GET", "/api/runs/run-001", headers=running_server.authed_headers()
+    )
+
+    payload = _body_json(response)
+    assert [list(call) for call in payload["invocations"]] == [CALL_FIELD_ORDER]
+    assert list(payload["active_invocation"]) == CALL_FIELD_ORDER
+    assert payload["invocations"][0]["duration_ms"] == 300_000
+    assert payload["failure_reason"] is None
+    assert payload["failure_reason_truncated"] is False
