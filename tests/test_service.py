@@ -19,12 +19,19 @@ from typing import Sequence
 import pytest
 from factory_testing import build_config, git, triage_hook, work_item
 
-from software_agent_factory.agents import FakeAgentRuntime
+from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
+from software_agent_factory.escalation_protocol import format_resume_command
 from software_agent_factory.github import GitHubClient, GitHubCommandError
 from software_agent_factory.models import (
+    AgentRole,
+    DashboardResumeRequest,
     EscalationStatus,
+    ExecutionPlan,
+    ExpectedScope,
     FactoryRun,
+    PlanDecisionAnswer,
+    ResumeClassification,
     Risk,
     WorkflowState,
     utc_now,
@@ -689,16 +696,19 @@ def make_service(source_repo: Path, data_dir: Path):  # type: ignore[no-untyped-
     services: list[FactoryService] = []
 
     def make(
-        config: FactoryConfig, github: FakeGitHub | None = None, *, github_client: bool = True
+        config: FactoryConfig,
+        github: FakeGitHub | None = None,
+        *,
+        runtime: FakeAgentRuntime | None = None,
     ) -> FactoryService:
         service = FactoryService(
             config=config,
             store=FileRunStore(data_dir),
-            runtime=FakeAgentRuntime(),
+            runtime=runtime or FakeAgentRuntime(),
             source_repo=source_repo,
             github_repo="acme/repo",
             provider=LocalProvider([]),
-            github_client=GitHubClient(runner=github or FakeGitHub()) if github_client else None,
+            github_client=GitHubClient(runner=github or FakeGitHub()),
         )
         services.append(service)
         return service
@@ -848,3 +858,258 @@ def test_a_notice_is_delivered_even_when_no_slot_is_free(
 
     assert [number for number, _ in github.posted] == [2]
     assert store.load_run(undelivered.id).escalation.status is EscalationStatus.NOTIFIED  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Dashboard requests reopen runs without GitHub
+# ---------------------------------------------------------------------------
+
+
+def _approve(store: FileRunStore, run: FactoryRun, **overrides: object) -> DashboardResumeRequest:
+    """Record the dashboard request for the current approval context of ``run``."""
+    escalation = run.escalation
+    assert escalation is not None and escalation.approval_context is not None
+    fields: dict[str, object] = {
+        "run_id": run.id,
+        "episode_id": escalation.episode_id,
+        "context_fingerprint": escalation.approval_context.context_fingerprint,
+        "action": ResumeClassification.RISK_APPROVAL,
+    }
+    request = DashboardResumeRequest.model_validate({**fields, **overrides})
+    assert store.create_dashboard_request(run.id, request) is True
+    return request
+
+
+def _request_status(store: FileRunStore, run: FactoryRun) -> str:
+    escalation = run.escalation
+    assert escalation is not None and escalation.approval_context is not None
+    request = store.load_dashboard_request(
+        run.id, escalation.episode_id, escalation.approval_context.context_fingerprint
+    )
+    assert request is not None
+    return request.status
+
+
+def _sources(store: FileRunStore, run: FactoryRun) -> list[str]:
+    escalation = store.load_run(run.id).escalation
+    assert escalation is not None
+    return [receipt.source for receipt in escalation.accepted_replies]
+
+
+def test_service_reopens_a_risk_approval_from_the_dashboard(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False)
+    store = FileRunStore(data_dir)
+    run = _halt_for_approval(config, store, source_repo, 1)
+    _approve(store, run)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    finished = store.load_run(run.id)
+    assert _sources(store, run) == ["dashboard"]
+    assert finished.state is WorkflowState.PR_READY
+    assert finished.escalation is not None
+    assert finished.escalation.status is EscalationStatus.RESUMED
+    assert finished.escalation.reopen_count == 1
+    assert len(finished.attempt_records) == 1
+    assert github.listed_issues == [] and github.posted == []
+
+
+def test_service_reopens_a_run_with_the_plan_answers_of_the_dashboard(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    answers = ["Use JSON files.", "Keep 64 entries."]
+    prompts: list[str | None] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        prompts.append(request.repair_context)  # type: ignore[arg-type]
+        answered = isinstance(request.repair_context, str) and all(
+            answer in request.repair_context for answer in answers
+        )
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan the change.",
+                steps=[],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"], estimated_files_min=1, estimated_files_max=1
+                ),
+                unresolved_decisions=[]
+                if answered
+                else ["Choose the storage format.", "Choose the cache size."],
+            ),
+        )
+
+    config = _escalation_config(data_dir, escalation_enabled=False)
+    store = FileRunStore(data_dir)
+    runtime = FakeAgentRuntime(planner=planner)
+    halted = WorkflowController(config, store, runtime).run(
+        work_item("WI-plan"), source_repo, run_id="run-plan"
+    )
+    assert halted.escalation is not None and halted.escalation.plan_decision_context is not None
+    store.create_dashboard_request(
+        halted.id,
+        DashboardResumeRequest(
+            run_id=halted.id,
+            episode_id=halted.escalation.episode_id,
+            context_fingerprint=halted.escalation.plan_decision_context.context_fingerprint,
+            action=ResumeClassification.PLAN_DECISION,
+            answers=[
+                PlanDecisionAnswer(decision_number=n, answer=answer)
+                for n, answer in enumerate(answers, start=1)
+            ],
+        ),
+    )
+    service = make_service(config, runtime=runtime)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert store.load_run(halted.id).state is WorkflowState.PR_READY
+    assert _sources(store, halted) == ["dashboard"]
+    reopened_prompt = prompts[-1]
+    assert reopened_prompt is not None
+    assert all(answer in reopened_prompt for answer in answers)
+
+
+def test_service_ingests_without_a_github_client(
+    source_repo: Path, data_dir: Path, make_service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=True)
+    store = FileRunStore(data_dir)
+    run = _halt_for_approval(config, store, source_repo, 1)
+    _approve(store, run)
+    service = make_service(config)
+    monkeypatch.setattr(service, "github_client", None)
+    assert service.controller is not None
+    monkeypatch.setattr(service.controller, "_github", None)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert store.load_run(run.id).state is WorkflowState.PR_READY
+    assert _sources(store, run) == ["dashboard"]
+
+
+def test_a_used_up_quota_defers_the_request_to_a_later_cycle(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    tight = _escalation_config(data_dir, escalation_enabled=False, max_runs_per_day=1)
+    store = FileRunStore(data_dir)
+    run = _halt_for_approval(tight, store, source_repo, 1)
+    _approve(store, run)
+
+    make_service(tight).reconcile_escalation()
+
+    waiting = store.load_run(run.id)
+    assert waiting.state is WorkflowState.NEEDS_HUMAN
+    assert waiting.escalation is not None
+    assert waiting.escalation.status is EscalationStatus.PENDING_NOTIFICATION
+    assert waiting.escalation.accepted_replies == []
+    assert _request_status(store, run) == "pending"
+
+    later = make_service(_escalation_config(data_dir, escalation_enabled=False, max_runs_per_day=5))
+    later.reconcile_escalation()
+    later.drain(60)
+
+    assert store.load_run(run.id).state is WorkflowState.PR_READY
+    assert _sources(store, run) == ["dashboard"]
+
+
+def test_a_full_service_defers_the_request_to_the_first_cycle_with_a_free_slot(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    busy = _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    run = _halt_for_approval(config, store, source_repo, 2)
+    _approve(store, run)
+    service = make_service(config)
+
+    service.reconcile_escalation()
+
+    assert set(service._handles) == {busy.id}
+    assert store.load_run(run.id).state is WorkflowState.NEEDS_HUMAN
+    assert _sources(store, run) == []
+    assert _request_status(store, run) == "pending"
+
+    service.drain(60)
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert store.load_run(run.id).state is WorkflowState.PR_READY
+    assert _sources(store, run) == ["dashboard"]
+
+
+def test_a_stale_request_does_not_take_the_slot_of_a_valid_one(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    expired = _halt_for_approval(config, store, source_repo, 1)
+    assert expired.escalation is not None
+    long_ago = utc_now() - timedelta(days=30)
+    expired = expired.model_copy(
+        update={"escalation": expired.escalation.model_copy(update={"created_at": long_ago})}
+    )
+    store.save_run(expired)
+    _approve(store, expired)
+    valid = _halt_for_approval(config, store, source_repo, 2)
+    _approve(store, valid)
+    service = make_service(config)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert _request_status(store, expired) == "stale"
+    assert store.load_run(expired.id).state is WorkflowState.NEEDS_HUMAN
+    assert store.load_run(valid.id).state is WorkflowState.PR_READY
+
+
+def test_service_with_escalation_enabled_posts_notices_and_reopens_github_replies(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=True, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    undelivered = _halt_for_approval(config, store, source_repo, 1)
+    answered = _notified(store, _halt_for_approval(config, store, source_repo, 2), 2)
+    assert answered.escalation is not None
+    reply = _comment(
+        901,
+        format_resume_command(answered.id, answered.escalation.episode_id),
+        created_at=utc_now() - timedelta(minutes=30),
+    )
+    github = FakeGitHub({2: [reply]})
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert [number for number, _ in github.posted] == [1]
+    assert store.load_run(undelivered.id).escalation.status is EscalationStatus.NOTIFIED  # type: ignore[union-attr]
+    assert store.load_run(answered.id).state is WorkflowState.PR_READY
+    assert _sources(store, answered) == ["github"]
+
+
+def test_a_dashboard_request_takes_the_slot_before_github_reply_polling(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=True, max_concurrent_tasks=1)
+    store = FileRunStore(data_dir)
+    approved = _halt_for_approval(config, store, source_repo, 1)
+    _approve(store, approved)
+    answered = _notified(store, _halt_for_approval(config, store, source_repo, 2), 2)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    assert _sources(store, approved) == ["dashboard"]
+    assert 2 not in github.listed_issues
+    assert store.load_run(answered.id).state is WorkflowState.NEEDS_HUMAN

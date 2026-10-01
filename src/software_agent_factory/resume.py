@@ -288,7 +288,7 @@ def is_valid_plan_decision_context(
 
 
 #: Escalation states in which a run still waits for a human.
-_WAITING_STATUSES = frozenset(
+WAITING_STATUSES = frozenset(
     {
         EscalationStatus.PENDING_NOTIFICATION,
         EscalationStatus.NOTIFIED,
@@ -326,7 +326,7 @@ def resume_refusal(
     if (
         run.state is not WorkflowState.NEEDS_HUMAN
         or escalation is None
-        or escalation.status not in _WAITING_STATUSES
+        or escalation.status not in WAITING_STATUSES
     ):
         return "state_changed"
     if not _has_valid_resume_context(run):

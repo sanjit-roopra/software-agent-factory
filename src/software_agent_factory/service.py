@@ -64,6 +64,7 @@ from .models import (
     utc_now,
 )
 from .observability import log_run_event
+from .resume import WAITING_STATUSES, ingest_dashboard_request
 from .scheduler import (
     DispatchOutcome,
     ReconciliationAction,
@@ -214,6 +215,33 @@ class ThreadPoolRunHandle:
 def default_recovery_decision(run: FactoryRun) -> ReconciliationAction:
     """Escalate every abandoned non-terminal run to a human."""
     return ReconciliationAction.LEAVE if is_run_finished(run) else ReconciliationAction.NEEDS_HUMAN
+
+
+@dataclass
+class _CycleBudget:
+    """Executor slots and daily run quota still free in one reconcile cycle.
+
+    ``quota`` is ``None`` when the daily limit is unbounded.
+    """
+
+    slots: int
+    quota: int | None
+
+    def has_slot(self) -> bool:
+        return self.slots > 0
+
+    def has_quota(self) -> bool:
+        return self.quota is None or self.quota > 0
+
+    def has_room(self) -> bool:
+        return self.has_slot() and self.has_quota()
+
+    def take_slot(self) -> None:
+        self.slots -= 1
+
+    def take_quota(self) -> None:
+        if self.quota is not None:
+            self.quota -= 1
 
 
 @dataclass
@@ -373,34 +401,36 @@ class FactoryService:
         return records
 
     def reconcile_escalation(self) -> None:
-        """Deliver undelivered escalation notices and poll authorized replies."""
-        if not self.config.escalation.enabled:
-            return
+        """Deliver GitHub notices, reopen approved runs, then poll GitHub replies.
 
-        assert self.controller is not None
-        client = self.github_client or self.controller._github
-        if client is None:
-            return
+        Notices need no slot or quota, so they go first, as before. Then, in a fixed order
+        that does not depend on GitHub: runs already ``REOPENED`` are dispatched, and
+        dashboard requests are ingested while a slot and quota last. Reply polling comes last
+        and uses what is left. The notice and polling steps run only when escalation is
+        enabled and a client exists. Capacity and quota only defer a dashboard request; they
+        never make it stale.
+        """
+        client = self._escalation_client()
+        if client is not None:
+            self._deliver_notices(client)
 
-        from .escalation import poll_escalation_reply, reconcile_undelivered_notifications
-
-        # 1. Reconcile undelivered escalation notices, bound to authoritative repository
-        reconcile_undelivered_notifications(
-            self.store,
-            self.config,
-            client,
-            self.source_repo,
-            max_runs=self.config.escalation.max_reply_polls_per_tick,
-            expected_repository=self.github_repo,
-        )
-
-        active_count = len([h for h in self._handles.values() if not h.is_done()])
         runs = self.store.list_runs()
-        remaining_quota = self.scheduler._remaining_daily_quota(runs)
+        budget = _CycleBudget(
+            slots=self.config.scheduler.max_concurrent_tasks
+            - len([h for h in self._handles.values() if not h.is_done()]),
+            quota=self.scheduler._remaining_daily_quota(runs),
+        )
+        self._dispatch_reopened_runs(runs, budget)
+        self._ingest_dashboard_requests(runs, budget)
+        if client is not None:
+            self._poll_replies(client, budget)
 
-        # 2. Reconcile durable resume-pending runs (NEEDS_HUMAN + REOPENED)
-        # Crash-recovered REOPENED receipt is already a durable quota reservation.
-        # Dispatching that pending reopen must not require another quota slot.
+    def _dispatch_reopened_runs(self, runs: Sequence[FactoryRun], budget: _CycleBudget) -> None:
+        """Dispatch runs a reply already reopened (``NEEDS_HUMAN`` + ``REOPENED``).
+
+        A crash-recovered ``REOPENED`` receipt is already a durable quota reservation, so
+        dispatching it takes a slot and no quota.
+        """
         for run in runs:
             if run.state is not WorkflowState.NEEDS_HUMAN:
                 continue
@@ -424,7 +454,7 @@ class FactoryService:
                     )
                 continue
 
-            if active_count >= self.config.scheduler.max_concurrent_tasks:
+            if not budget.has_slot():
                 logger.debug("escalation resume dispatch skipped: at capacity")
                 break
 
@@ -434,19 +464,103 @@ class FactoryService:
 
             logger.info("reconciling and dispatching resume-pending run %s", run.id)
             self._dispatch_reopen(run.id, run.work_item_id)
-            active_count += 1
+            budget.take_slot()
 
-        # 3. Poll reply commands for runs in NEEDS_HUMAN with NOTIFIED status
-        # Reopened work must use the same executor, concurrency limit, and daily quota.
-        if active_count >= self.config.scheduler.max_concurrent_tasks:
+    def _ingest_dashboard_requests(self, runs: Sequence[FactoryRun], budget: _CycleBudget) -> None:
+        """Reopen runs whose operator approved or answered on the dashboard.
+
+        Stops when a slot or the quota is used up, leaving the remaining requests unread
+        for the first cycle with room. Only runs that wait for a human and have a pending
+        request for their current episode are read, one directory listing per waiting run.
+        """
+        for run in self._runs_with_pending_dashboard_request(runs):
+            if not budget.has_room():
+                logger.debug("dashboard request ingest deferred: no free slot or daily quota")
+                return
+            receipt = ingest_dashboard_request(run, self.store, self.config, utc_now())
+            if receipt is None:
+                continue
+            logger.info("accepted dashboard request for run %s", run.id)
+            self._dispatch_reopen(run.id, run.work_item_id)
+            budget.take_slot()
+            budget.take_quota()
+
+    def _runs_with_pending_dashboard_request(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:
+        """Waiting runs with a pending request for their current episode, oldest first."""
+        waiting = [
+            run
+            for run in runs
+            if run.state is WorkflowState.NEEDS_HUMAN
+            and run.escalation is not None
+            and run.escalation.status in WAITING_STATUSES
+            and any(
+                request.status == "pending"
+                for request in self.store.list_dashboard_requests(run.id, run.escalation.episode_id)
+            )
+        ]
+        waiting.sort(key=lambda r: (r.escalation.created_at if r.escalation else utc_now(), r.id))
+        return waiting
+
+    def _escalation_client(self) -> GitHubClient | None:
+        """The GitHub client for notices and replies, or ``None`` when they are off."""
+        if not self.config.escalation.enabled:
+            return None
+        assert self.controller is not None
+        return self.github_client or self.controller._github
+
+    def _deliver_notices(self, client: GitHubClient) -> None:
+        """Post undelivered escalation notices, bound to the authoritative repository."""
+        from .escalation import reconcile_undelivered_notifications
+
+        reconcile_undelivered_notifications(
+            self.store,
+            self.config,
+            client,
+            self.source_repo,
+            max_runs=self.config.escalation.max_reply_polls_per_tick,
+            expected_repository=self.github_repo,
+        )
+
+    def _poll_replies(self, client: GitHubClient, budget: _CycleBudget) -> None:
+        """Poll authorized replies of notified runs, with the slots and quota left."""
+        from .escalation import poll_escalation_reply
+
+        # Reopened work uses the same executor, concurrency limit, and daily quota.
+        if not budget.has_slot():
             logger.debug("escalation reply polling skipped: at capacity")
             return
 
-        if remaining_quota is not None and remaining_quota <= 0:
+        if not budget.has_quota():
             logger.debug("escalation reply polling skipped: daily run limit reached")
             return
 
-        # Close reply cursors for non-resumable NOTIFIED runs
+        # Read again: the dashboard requests and failed reopens changed what runs wait for.
+        runs = self.store.list_runs()
+        self._close_unpollable_reply_cursors(runs)
+
+        for run in self._next_runs_to_poll(runs):
+            if not budget.has_room():
+                break
+
+            receipt = poll_escalation_reply(
+                run,
+                self.store,
+                self.config,
+                client,
+                self.source_repo,
+            )
+            if receipt is not None:
+                logger.info(
+                    "accepted authorized reply for run %s from @%s",
+                    run.id,
+                    receipt.user_login,
+                )
+                self._dispatch_reopen(run.id, run.work_item_id)
+                budget.take_slot()
+                budget.take_quota()
+
+    def _close_unpollable_reply_cursors(self, runs: Sequence[FactoryRun]) -> None:
+        """Close the reply cursor of notified runs that no reply can resume."""
         for run in runs:
             if run.state is not WorkflowState.NEEDS_HUMAN or run.escalation is None:
                 continue
@@ -465,7 +579,8 @@ class FactoryService:
                         )
                         self.store.save_run(run.model_copy(update={"escalation": escalation}))
 
-        # Collect eligible runs for reply polling
+    def _next_runs_to_poll(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:
+        """Pick this cycle's runs for reply polling, rotating so none starves."""
         eligible_runs: list[FactoryRun] = [
             r
             for r in runs
@@ -481,7 +596,7 @@ class FactoryService:
         ]
 
         if not eligible_runs:
-            return
+            return []
 
         # Deterministic sorting
         eligible_runs.sort(
@@ -493,47 +608,25 @@ class FactoryService:
             runs_to_poll = list(eligible_runs)
             self._reply_poll_cursor_id = eligible_runs[-1].id
             self._save_reply_poll_cursor(self._reply_poll_cursor_id)
-        else:
-            # Deterministic rotating cursor to prevent starvation
-            start_idx = 0
-            if self._reply_poll_cursor_id is not None:
-                run_ids = [r.id for r in eligible_runs]
-                if self._reply_poll_cursor_id in run_ids:
-                    start_idx = (run_ids.index(self._reply_poll_cursor_id) + 1) % len(eligible_runs)
-                else:
-                    start_idx = bisect.bisect_right(run_ids, self._reply_poll_cursor_id) % len(
-                        eligible_runs
-                    )
+            return runs_to_poll
 
-            runs_to_poll = [
-                eligible_runs[(start_idx + i) % len(eligible_runs)] for i in range(max_polls)
-            ]
-            self._reply_poll_cursor_id = runs_to_poll[-1].id
-            self._save_reply_poll_cursor(self._reply_poll_cursor_id)
-
-        for run in runs_to_poll:
-            if active_count >= self.config.scheduler.max_concurrent_tasks:
-                break
-            if remaining_quota is not None and remaining_quota <= 0:
-                break
-
-            receipt = poll_escalation_reply(
-                run,
-                self.store,
-                self.config,
-                client,
-                self.source_repo,
-            )
-            if receipt is not None:
-                logger.info(
-                    "accepted authorized reply for run %s from @%s",
-                    run.id,
-                    receipt.user_login,
+        # Deterministic rotating cursor to prevent starvation
+        start_idx = 0
+        if self._reply_poll_cursor_id is not None:
+            run_ids = [r.id for r in eligible_runs]
+            if self._reply_poll_cursor_id in run_ids:
+                start_idx = (run_ids.index(self._reply_poll_cursor_id) + 1) % len(eligible_runs)
+            else:
+                start_idx = bisect.bisect_right(run_ids, self._reply_poll_cursor_id) % len(
+                    eligible_runs
                 )
-                self._dispatch_reopen(run.id, run.work_item_id)
-                active_count += 1
-                if remaining_quota is not None:
-                    remaining_quota -= 1
+
+        runs_to_poll = [
+            eligible_runs[(start_idx + i) % len(eligible_runs)] for i in range(max_polls)
+        ]
+        self._reply_poll_cursor_id = runs_to_poll[-1].id
+        self._save_reply_poll_cursor(self._reply_poll_cursor_id)
+        return runs_to_poll
 
     def run_once(self, drain_timeout_seconds: float = DEFAULT_DRAIN_TIMEOUT_SECONDS) -> TickReport:
         """One bounded cycle: recover, reconcile escalation, tick once, wait for dispatched work."""
