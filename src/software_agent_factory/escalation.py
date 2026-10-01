@@ -682,6 +682,7 @@ def is_valid_plan_decision_answers(
     if (
         answers.run_id != run_id
         or answers.episode_id != episode_id
+        or answers.source != receipt.source
         or answers.comment_id != receipt.comment_id
         or answers.user_login != receipt.user_login
         or answers.user_id != receipt.user_id
@@ -1611,7 +1612,10 @@ def validate_reply_candidate(
         return ValidationResult(False, "plan decision reply is missing validated answers")
 
     # Replay check
-    if any(receipt.comment_id == comment.id for receipt in escalation.accepted_replies):
+    if any(
+        receipt.source == "github" and receipt.comment_id == comment.id
+        for receipt in escalation.accepted_replies
+    ):
         return ValidationResult(False, f"comment {comment.id} has already been accepted")
 
     # Target host check

@@ -23,9 +23,10 @@ import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import pytest
+from pydantic import BaseModel
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, load_config
@@ -41,6 +42,7 @@ from software_agent_factory.escalation import (
     format_escalation_marker,
     has_dispatched_risk_approval,
     is_authorized_author,
+    is_valid_plan_decision_answers,
     parse_plan_decision_answers,
     parse_resume_command,
     poll_escalation_reply,
@@ -64,7 +66,9 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    PlanDecisionAnswer,
     PlanDecisionAnswers,
+    PlanDecisionContext,
     ResumeClassification,
     Risk,
     RiskApprovalContext,
@@ -1234,6 +1238,7 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
 
     receipt = poll_escalation_reply(run, store, config, client, tmp_path, now=now)
     assert receipt is not None
+    assert receipt.source == "github"
     assert receipt.comment_id == 555
     assert receipt.user_login == "lead-dev"
     assert receipt.run_id == "run-poll"
@@ -1448,9 +1453,268 @@ def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -
     assert receipt is not None
     assert receipt.plan_decision_context_fingerprint == context.context_fingerprint
     persisted = store.load_artifact(run.id, PlanDecisionAnswers)
+    assert persisted.source == "github"
     assert persisted.comment_id == receipt.comment_id
     assert persisted.context_fingerprint == context.context_fingerprint
     assert persisted.answers[0].answer == "Use JSON files in the configured data directory."
+
+
+# ---------------------------------------------------------------------------
+# 7b. Reply source: github vs dashboard
+# ---------------------------------------------------------------------------
+
+
+def _reply_identity(source: str, comment_id: int) -> dict[str, object]:
+    """Receipt and answers fields that identify who replied, for one source."""
+    if source == "dashboard":
+        return {"source": "dashboard", "user_login": "dashboard-local"}
+    return {
+        "source": "github",
+        "comment_id": comment_id,
+        "user_login": "lead-dev",
+        "user_id": 1001,
+        "author_association": "MEMBER",
+    }
+
+
+def _receipt_json(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "comment_id": 5,
+        "user_login": "lead-dev",
+        "created_at": "2026-09-13T10:00:00Z",
+        "accepted_at": "2026-09-13T10:01:00Z",
+        "command": "@factory resume v1 run=r1 episode=ep-1",
+        "episode_id": "ep-1",
+        "run_id": "r1",
+    }
+    data.update(overrides)
+    return data
+
+
+def _answers_json(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "run_id": "r1",
+        "episode_id": "ep-1",
+        "plan_fingerprint": "a" * 64,
+        "context_fingerprint": "b" * 64,
+        "comment_id": 5,
+        "user_login": "lead-dev",
+        "answers": [{"decision_number": 1, "answer": "Use SQLite."}],
+    }
+    data.update(overrides)
+    return data
+
+
+def test_old_receipt_and_answers_without_source_load_as_github() -> None:
+    receipt = AcceptedReplyReceipt.model_validate(_receipt_json())
+    answers = PlanDecisionAnswers.model_validate(_answers_json())
+    assert receipt.source == "github"
+    assert answers.source == "github"
+
+
+def test_old_run_file_with_a_github_receipt_loads_as_github(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = FactoryRun(
+        id="r1",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        escalation=EscalationRecord(
+            episode_id="ep-1",
+            status=EscalationStatus.REOPENED,
+            accepted_replies=[AcceptedReplyReceipt.model_validate(_receipt_json())],
+        ),
+    )
+    store.save_run(run)
+    path = tmp_path / "runs" / "r1" / "run.json"
+    data = json.loads(path.read_text())
+    for receipt in data["escalation"]["accepted_replies"]:
+        del receipt["source"]
+    path.write_text(json.dumps(data))
+
+    loaded = store.load_run("r1")
+
+    assert loaded.escalation is not None
+    assert loaded.escalation.accepted_replies[0].source == "github"
+
+
+_REPLY_MODELS = [
+    pytest.param(AcceptedReplyReceipt, _receipt_json, id="receipt"),
+    pytest.param(PlanDecisionAnswers, _answers_json, id="answers"),
+]
+
+
+@pytest.mark.parametrize(("model", "build"), _REPLY_MODELS)
+def test_github_reply_without_comment_id_is_rejected(
+    model: type[BaseModel], build: Callable[..., dict[str, object]]
+) -> None:
+    data = build(source="github")
+    del data["comment_id"]
+    with pytest.raises(ValueError, match="github reply needs a comment_id"):
+        model.model_validate(data)
+
+
+def test_dashboard_reply_validates_without_comment_id() -> None:
+    receipt = AcceptedReplyReceipt.model_validate(
+        _receipt_json(source="dashboard", user_login="dashboard-local", comment_id=None)
+    )
+    answers = PlanDecisionAnswers.model_validate(
+        _answers_json(source="dashboard", user_login="dashboard-local", comment_id=None)
+    )
+    assert receipt.source == answers.source == "dashboard"
+    assert receipt.comment_id is None
+    assert answers.comment_id is None
+
+
+@pytest.mark.parametrize(("model", "build"), _REPLY_MODELS)
+def test_dashboard_reply_needs_the_fixed_login(
+    model: type[BaseModel], build: Callable[..., dict[str, object]]
+) -> None:
+    data = build(source="dashboard", user_login="lead-dev", comment_id=None)
+    with pytest.raises(ValueError, match="dashboard-local"):
+        model.model_validate(data)
+
+
+def _plan_answers_and_receipt(
+    source: str,
+    *,
+    answers_source: str | None = None,
+) -> tuple[PlanDecisionAnswers, AcceptedReplyReceipt, PlanDecisionContext]:
+    context = PlanDecisionContext(
+        plan_fingerprint="a" * 64,
+        decisions=["Which store?"],
+        context_fingerprint="b" * 64,
+    )
+    answers = PlanDecisionAnswers(
+        run_id="r1",
+        episode_id="ep-1",
+        plan_fingerprint=context.plan_fingerprint,
+        context_fingerprint=context.context_fingerprint,
+        answers=[PlanDecisionAnswer(decision_number=1, answer="Use SQLite.")],
+        **_reply_identity(answers_source or source, 5),  # type: ignore[arg-type]
+    )
+    receipt = AcceptedReplyReceipt(
+        created_at=utc_now(),
+        command="@factory answer v1 run=r1 episode=ep-1",
+        episode_id="ep-1",
+        run_id="r1",
+        plan_decision_context_fingerprint=context.context_fingerprint,
+        **_reply_identity(source, 5),  # type: ignore[arg-type]
+    )
+    return answers, receipt, context
+
+
+@pytest.mark.parametrize("source", ["github", "dashboard"])
+def test_plan_answers_validate_against_a_receipt_of_the_same_source(source: str) -> None:
+    answers, receipt, context = _plan_answers_and_receipt(source)
+    assert is_valid_plan_decision_answers(
+        answers, context, run_id="r1", episode_id="ep-1", receipt=receipt
+    )
+
+
+def test_plan_answers_with_another_source_than_the_receipt_are_invalid() -> None:
+    answers, receipt, context = _plan_answers_and_receipt("github", answers_source="dashboard")
+    assert answers.source != receipt.source
+    # Align every other identity field so only the source differs.
+    answers = answers.model_copy(
+        update={
+            "comment_id": receipt.comment_id,
+            "user_login": receipt.user_login,
+            "user_id": receipt.user_id,
+            "author_association": receipt.author_association,
+        }
+    )
+    assert not is_valid_plan_decision_answers(
+        answers, context, run_id="r1", episode_id="ep-1", receipt=receipt
+    )
+
+
+def test_validate_reply_candidate_ignores_a_dashboard_receipt_with_the_same_comment_id(
+    tmp_path: Path,
+) -> None:
+    config = _make_config(tmp_path)
+    now = utc_now()
+    dashboard_receipt = AcceptedReplyReceipt(
+        source="dashboard",
+        comment_id=777,
+        user_login="dashboard-local",
+        created_at=now - timedelta(minutes=10),
+        command="@factory resume v1 run=r1 episode=ep-1",
+        episode_id="ep-1",
+        run_id="r1",
+    )
+    run = FactoryRun(
+        id="r1",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        escalation=EscalationRecord(
+            episode_id="ep-1",
+            status=EscalationStatus.NOTIFIED,
+            resume_classification=ResumeClassification.RISK_APPROVAL,
+            target_repository="owner/repo",
+            target_number=1,
+            created_at=now - timedelta(hours=1),
+            last_notified_at=now - timedelta(hours=1),
+            accepted_replies=[dashboard_receipt],
+            approval_context=_make_approval_context(run_id="r1", episode_id="ep-1"),
+            remote_resume_enabled=True,
+        ),
+    )
+    comment = GitHubComment(
+        id=777,
+        user_login="lead-dev",
+        user_id=1,
+        user_type="User",
+        author_association="MEMBER",
+        created_at=now,
+        updated_at=now,
+        body="@factory resume v1 run=r1 episode=ep-1",
+    )
+
+    _, reason = validate_reply_candidate(
+        comment,
+        run=run,
+        config=config,
+        client=GitHubClient(runner=FakeRunner()),
+        repo_path=tmp_path,
+    )
+
+    assert "already been accepted" not in reason
+
+
+def test_run_detail_reports_dashboard_local_as_last_responder(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path)
+    store.save_run(
+        FactoryRun(
+            id="r1",
+            work_item_id="task-1",
+            state=WorkflowState.REFINING,
+            escalation=EscalationRecord(
+                episode_id="ep-1",
+                status=EscalationStatus.REOPENED,
+                resume_classification=ResumeClassification.RISK_APPROVAL,
+                accepted_replies=[
+                    AcceptedReplyReceipt(
+                        source="dashboard",
+                        user_login="dashboard-local",
+                        created_at=utc_now(),
+                        command="@factory resume v1 run=r1 episode=ep-1",
+                        episode_id="ep-1",
+                        run_id="r1",
+                    )
+                ],
+            ),
+        )
+    )
+
+    detail = build_run_detail(store, "r1")
+
+    assert detail is not None
+    assert detail.escalation is not None
+    assert detail.escalation.accepted_reply_count == 1
+    assert detail.escalation.last_responder == "dashboard-local"
+    assert detail.escalation.last_action == "RESUME"
 
 
 # ---------------------------------------------------------------------------
@@ -1458,7 +1722,10 @@ def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("source", ["github", "dashboard"])
+def test_workflow_controller_reopen_risk_approval(
+    source_repo: Path, tmp_path: Path, source: str
+) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     config = _make_config(data_dir)
@@ -1505,13 +1772,11 @@ def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: P
 
     # 2. Simulate human approval via accepted reply receipt and controller.reopen
     receipt = AcceptedReplyReceipt(
-        comment_id=1,
-        user_login="lead-dev",
-        author_association="MEMBER",
         created_at=utc_now(),
         command=f"@factory resume v1 run={run.id} episode={run.escalation.episode_id}",
         episode_id=run.escalation.episode_id,
         run_id=run.id,
+        **_reply_identity(source, 1),  # type: ignore[arg-type]
         approval_context_fingerprint=(
             run.escalation.approval_context.context_fingerprint
             if run.escalation.approval_context
@@ -1540,8 +1805,9 @@ def test_workflow_controller_reopen_risk_approval(source_repo: Path, tmp_path: P
     assert reopened.escalation.status is EscalationStatus.RESUMED
 
 
+@pytest.mark.parametrize("source", ["github", "dashboard"])
 def test_workflow_controller_reopens_plan_decision_at_planning(
-    source_repo: Path, tmp_path: Path
+    source_repo: Path, tmp_path: Path, source: str
 ) -> None:
     data_dir = tmp_path / "data"
     config = _make_config(data_dir)
@@ -1602,23 +1868,17 @@ def test_workflow_controller_reopens_plan_decision_at_planning(
             episode_id=run.escalation.episode_id,
             plan_fingerprint=context.plan_fingerprint,
             context_fingerprint=context.context_fingerprint,
-            comment_id=101,
-            user_login="lead-dev",
-            user_id=1001,
-            author_association="MEMBER",
             answers=answers,
+            **_reply_identity(source, 101),  # type: ignore[arg-type]
         ),
     )
     receipt = AcceptedReplyReceipt(
-        comment_id=101,
-        user_login="lead-dev",
-        user_id=1001,
-        author_association="MEMBER",
         created_at=utc_now(),
         command=f"@factory answer v1 run={run.id} episode={run.escalation.episode_id}",
         episode_id=run.escalation.episode_id,
         run_id=run.id,
         plan_decision_context_fingerprint=context.context_fingerprint,
+        **_reply_identity(source, 101),  # type: ignore[arg-type]
     )
     run = run.model_copy(
         update={

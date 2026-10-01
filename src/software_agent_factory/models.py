@@ -975,8 +975,22 @@ class EscalationTargetType(StrEnum):
     ISSUE = "ISSUE"
 
 
+DASHBOARD_USER_LOGIN = "dashboard-local"
+
+ReplySource = Literal["github", "dashboard"]
+
+
+def _check_reply_source(source: ReplySource, comment_id: int | None, user_login: str) -> None:
+    """Shared rule: a GitHub reply has a comment id, a dashboard reply has the fixed login."""
+    if source == "github" and comment_id is None:
+        raise ValueError("a github reply needs a comment_id")
+    if source == "dashboard" and user_login != DASHBOARD_USER_LOGIN:
+        raise ValueError(f"a dashboard reply must use user_login {DASHBOARD_USER_LOGIN!r}")
+
+
 class AcceptedReplyReceipt(ModelBase):
-    comment_id: int = Field(ge=1)
+    source: ReplySource = "github"
+    comment_id: int | None = Field(default=None, ge=1)
     user_login: str = Field(min_length=1)
     user_id: int | None = None
     author_association: str = ""
@@ -988,6 +1002,11 @@ class AcceptedReplyReceipt(ModelBase):
     run_id: str = Field(min_length=1)
     approval_context_fingerprint: str | None = None
     plan_decision_context_fingerprint: str | None = None
+
+    @model_validator(mode="after")
+    def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
+        _check_reply_source(self.source, self.comment_id, self.user_login)
+        return self
 
 
 class RiskRationale(ModelBase):
@@ -1084,12 +1103,18 @@ class PlanDecisionAnswers(VersionedModel):
     episode_id: str = Field(min_length=1)
     plan_fingerprint: str = Field(min_length=64, max_length=64)
     context_fingerprint: str = Field(min_length=64, max_length=64)
-    comment_id: int = Field(ge=1)
+    source: ReplySource = "github"
+    comment_id: int | None = Field(default=None, ge=1)
     user_login: str = Field(min_length=1)
     user_id: int | None = None
     author_association: str = ""
     answers: list[PlanDecisionAnswer] = Field(min_length=1, max_length=24)
     accepted_at: UtcDateTime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def _require_reply_source_fields(self) -> PlanDecisionAnswers:
+        _check_reply_source(self.source, self.comment_id, self.user_login)
+        return self
 
     @model_validator(mode="after")
     def _require_ordered_answers(self) -> PlanDecisionAnswers:
