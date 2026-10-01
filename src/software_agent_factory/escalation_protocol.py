@@ -9,7 +9,7 @@ The reply poller keeps its own accept checks in :mod:`.escalation`.
 :func:`reply_closed_cause` mirrors them for the dashboard, and a parity test
 keeps the two in line. The stored-context validity check
 (``is_valid_risk_approval_context`` and ``is_valid_plan_decision_context``)
-stays in the poller only.
+lives in :mod:`.resume` and stays out of this mirror.
 """
 
 from __future__ import annotations
