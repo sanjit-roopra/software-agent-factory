@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from importlib import resources
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 from urllib.parse import quote
 
 import pytest
@@ -51,6 +51,7 @@ from software_agent_factory.dashboard.sanitize import (
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    is_active_status,
     sanitize_active_invocation,
     sanitize_attempt,
     sanitize_invocation,
@@ -72,7 +73,7 @@ from software_agent_factory.dashboard.snapshot import (
     to_json_safe,
 )
 from software_agent_factory.dashboard.view import project_view, run_detail_view
-from software_agent_factory.models import MAX_GUIDANCE_FINDINGS, ActiveInvocationStatus
+from software_agent_factory.models import MAX_GUIDANCE_FINDINGS, MAX_PLAN_DECISIONS
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -1537,8 +1538,22 @@ def test_sanitize_run_detail_omits_list_price_estimate_when_not_reported() -> No
     assert "list_price_estimate_usd" not in payload["usage"]
 
 
-def test_the_active_statuses_are_the_ones_the_run_view_can_send() -> None:
-    assert ACTIVE_INVOCATION_STATUSES == frozenset(get_args(ActiveInvocationStatus))
+def test_the_active_statuses_are_the_ones_the_page_names_an_outcome_for() -> None:
+    assert ACTIVE_INVOCATION_STATUSES == {"running", "stale", "crashed", "abandoned"}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("running", True),
+        ("abandoned", True),
+        ("success", False),
+        (None, False),
+        (["running"], False),
+    ],
+)
+def test_is_active_status_accepts_only_the_active_status_names(value: Any, expected: bool) -> None:
+    assert is_active_status(value) is expected
 
 
 def test_non_object_active_invocation_is_dropped() -> None:
@@ -1880,6 +1895,19 @@ def test_a_category_count_over_the_guidance_cap_is_dropped() -> None:
     )
 
     assert guidance["category_counts"] == {"CORRECTNESS": MAX_GUIDANCE_FINDINGS}
+
+
+def _decision_guidance(**fields: Any) -> dict[str, Any]:
+    guidance = {"reason_code": "UNRESOLVED_DECISIONS", **fields}
+    return sanitize_run_detail({**FIXTURE_DETAILS["run-001"], "guidance": guidance})["guidance"]
+
+
+def test_a_decision_count_up_to_the_plan_decision_cap_is_kept() -> None:
+    kept = _decision_guidance(decision_count=MAX_PLAN_DECISIONS)
+    dropped = _decision_guidance(decision_count=MAX_PLAN_DECISIONS + 1)
+
+    assert kept["decision_count"] == MAX_PLAN_DECISIONS
+    assert "decision_count" not in dropped
 
 
 def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count() -> None:

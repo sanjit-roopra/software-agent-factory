@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from software_agent_factory.models import (
     GENERIC_PRACTICE_VERSION_SCOPE,
     GENERIC_SKILL_TARGET,
+    MAX_GUIDANCE_FINDINGS,
     MAX_PLAN_DECISIONS,
     REQUIRED_SKILL_TARGET_NAMES,
     AgentRole,
@@ -1090,6 +1091,12 @@ def _dashboard_request(count: int) -> DashboardResumeRequest:
         action="PLAN_DECISION",
         answers=_answers(count),
     )
+
+
+def test_the_wire_limits_do_not_change() -> None:
+    # Stored run files and the dashboard payload hold lists of these sizes. Changing a limit
+    # makes an old file fail to load or a new file fail to read in an old dashboard.
+    assert (MAX_PLAN_DECISIONS, MAX_GUIDANCE_FINDINGS) == (24, 12)
 
 
 _PLAN_DECISION_BUILDERS: list[Callable[[int], Any]] = [
