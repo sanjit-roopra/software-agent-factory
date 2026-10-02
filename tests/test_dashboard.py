@@ -613,6 +613,28 @@ def test_a_cookie_of_another_port_is_401(running_server: RunningServer) -> None:
     assert response.status == 401
 
 
+@pytest.mark.parametrize("header_value", ["not-the-token", ""], ids=["wrong", "empty"])
+def test_a_token_header_that_is_present_and_wrong_beats_a_valid_cookie(
+    running_server: RunningServer, header_value: str
+) -> None:
+    headers = {**running_server.cookie_headers(), TOKEN_HEADER: header_value}
+
+    response = running_server.request("GET", SUMMARY_PATH, headers=headers)
+
+    assert response.status == 401
+
+
+def test_a_valid_token_header_beats_a_cookie_of_another_start(
+    running_server: RunningServer,
+) -> None:
+    stale = running_server.cookie_headers("the-token-of-an-earlier-start")
+    headers = {**stale, TOKEN_HEADER: running_server.token}
+
+    response = running_server.request("GET", SUMMARY_PATH, headers=headers)
+
+    assert response.status == 200
+
+
 @pytest.mark.parametrize("path", [SUMMARY_PATH, "/api/runs", "/assets/app.js", "/assets/style.css"])
 def test_the_token_in_the_url_authenticates_nothing_but_the_page_link(
     running_server: RunningServer, path: str

@@ -28,10 +28,10 @@ from .responses import WriteRejected
 from .sanitize import sanitize_health, sanitize_run_detail, sanitize_run_summary
 from .security import (
     TOKEN_QUERY_PARAM,
-    cookie_token_matches,
     header_token_matches,
     host_header_is_valid,
     origin_header_is_valid,
+    request_token_matches,
     required_origin_is_valid,
     session_cookie,
     token_matches,
@@ -323,11 +323,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _is_authenticated(self) -> bool:
-        """Whether the header or the cookie holds the token. The query never counts."""
+        """Whether the request holds the token. The header decides when present, else the cookie."""
         _, port = self.server.address
-        return header_token_matches(self.server.token, self.headers) or cookie_token_matches(
-            self.server.token, self.headers, port
-        )
+        return request_token_matches(self.server.token, self.headers, port)
 
     def _is_token_exchange(self, path: str, query: dict[str, list[str]]) -> bool:
         """Whether this is the page link ``factory dashboard`` printed, with the right token.

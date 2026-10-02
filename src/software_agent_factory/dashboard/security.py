@@ -16,12 +16,12 @@ from typing import Protocol
 #: range for a token that only needs to survive the lifetime of one process.
 TOKEN_BYTES = 32
 
-#: Header the page script sends. A write must carry it (the CSRF defence), and a read
-#: may carry it instead of the cookie.
+#: Header the page script sends. A write must carry it (the CSRF defence). A read may carry
+#: it instead of the cookie, and when it is present it alone decides.
 TOKEN_HEADER = "X-Factory-Token"
 
 #: Query parameter of the page link ``factory dashboard`` prints. Only the page route
-#: accepts it, and only to trade it for the cookie below (ADR-033). It never
+#: accepts it, and only to set the cookie below (ADR-033). It never
 #: authenticates an API, asset or write request.
 TOKEN_QUERY_PARAM = "token"
 
@@ -96,6 +96,18 @@ def cookie_token_matches(expected: str, headers: HeaderSource, port: int) -> boo
     return any(
         key.strip() == name and token_matches(expected, value.strip()) for key, _, value in pairs
     )
+
+
+def request_token_matches(expected: str, headers: HeaderSource, port: int) -> bool:
+    """Whether a read request holds ``expected``. The query string never counts.
+
+    The token header decides when it is present, right or wrong. The cookie counts only when
+    the header is absent. A tab of an earlier start sends its old token in the header, and a
+    newer cookie must not let that request half work.
+    """
+    if headers.get(TOKEN_HEADER) is not None:
+        return header_token_matches(expected, headers)
+    return cookie_token_matches(expected, headers, port)
 
 
 class InvalidBindHostError(ValueError):
