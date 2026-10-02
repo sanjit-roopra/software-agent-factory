@@ -106,7 +106,8 @@ def test_classify_halt_reason_returns_the_exact_code(reason: str, code: HaltReas
 def test_classify_halt_reason_reads_the_copy_table(reason: str, code: HaltReasonCode) -> None:
     _, _, summary, next_action = classify_halt_reason(_halted(reason))
 
-    assert (summary, next_action) == HALT_REASON_COPY[code]
+    actual = (summary, next_action)
+    assert actual == HALT_REASON_COPY[code]
 
 
 def test_classify_halt_reason_names_the_github_thread_for_plan_decisions() -> None:
@@ -129,7 +130,8 @@ def test_classify_halt_reason_reports_a_stored_review_impasse(tmp_path: Path) ->
 
     assert classification is ResumeClassification.NOT_RESUMABLE
     assert code is HaltReasonCode.REVIEW_IMPASSE
-    assert (summary, next_action) == HALT_REASON_COPY[HaltReasonCode.REVIEW_IMPASSE]
+    actual = (summary, next_action)
+    assert actual == HALT_REASON_COPY[HaltReasonCode.REVIEW_IMPASSE]
 
 
 @pytest.mark.parametrize(("reason", "code"), COPIED_REASONS)
@@ -139,10 +141,8 @@ def test_run_guidance_reads_the_copy_table(
     guidance = _build_run_guidance(FileRunStore(tmp_path), _halted(reason))
 
     assert guidance is not None
-    assert (guidance.reason_code, guidance.summary, guidance.next_action) == (
-        code,
-        *HALT_REASON_COPY[code],
-    )
+    actual = (guidance.reason_code, guidance.summary, guidance.next_action)
+    assert actual == (code, *HALT_REASON_COPY[code])
 
 
 def test_run_guidance_reads_the_copy_table_for_a_stored_review_impasse(tmp_path: Path) -> None:
@@ -154,9 +154,8 @@ def test_run_guidance_reads_the_copy_table_for_a_stored_review_impasse(tmp_path:
     guidance = _build_run_guidance(store, run)
 
     assert guidance is not None
-    assert (guidance.summary, guidance.next_action) == HALT_REASON_COPY[
-        HaltReasonCode.REVIEW_IMPASSE
-    ]
+    actual = (guidance.summary, guidance.next_action)
+    assert actual == HALT_REASON_COPY[HaltReasonCode.REVIEW_IMPASSE]
 
 
 def test_run_guidance_offers_a_replacement_run_when_no_reply_can_resume(tmp_path: Path) -> None:
@@ -233,7 +232,8 @@ def _sanitized_guidance(**fields: object) -> Any:
 def test_dashboard_guidance_reads_the_copy_table(code: HaltReasonCode) -> None:
     guidance = _sanitized_guidance(reason_code=code.value)
 
-    assert (guidance["summary"], guidance["next_action"]) == HALT_REASON_COPY[code]
+    actual = (guidance["summary"], guidance["next_action"])
+    assert actual == HALT_REASON_COPY[code]
 
 
 def test_dashboard_guidance_keeps_the_reply_action_the_table_holds() -> None:
@@ -243,7 +243,8 @@ def test_dashboard_guidance_keeps_the_reply_action_the_table_holds() -> None:
         reason_code="UNRESOLVED_DECISIONS", next_action=table.next_action
     )
 
-    assert (guidance["summary"], guidance["next_action"]) == table
+    actual = (guidance["summary"], guidance["next_action"])
+    assert actual == table
 
 
 @pytest.mark.parametrize("sent", [None, "anything else", UNRESOLVED_DECISIONS_REPLACE_ACTION])

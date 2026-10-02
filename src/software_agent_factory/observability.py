@@ -1065,6 +1065,15 @@ def _last_signal_at(run: FactoryRun) -> datetime | None:
     return max(candidates) if candidates else None
 
 
+def _review_status(run: FactoryRun) -> str | None:
+    """``action_required`` for a halted run, ``accepted_with_findings`` after an acceptance."""
+    if run.state is WorkflowState.NEEDS_HUMAN:
+        return _ACTION_REQUIRED
+    if run.review_acceptance is not None:
+        return _ACCEPTED_WITH_FINDINGS
+    return None
+
+
 def _is_stale(run: FactoryRun, now: datetime, stale_after: timedelta) -> bool:
     signal = _last_signal_at(run) or run.created_at
     return (now - signal) > stale_after
@@ -1550,13 +1559,7 @@ def _build_run_summary(
         usage=summarize_usage(run.invocation_records),
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
-        review_status=(
-            _ACTION_REQUIRED
-            if run.state is WorkflowState.NEEDS_HUMAN
-            else _ACCEPTED_WITH_FINDINGS
-            if run.review_acceptance is not None
-            else None
-        ),
+        review_status=_review_status(run),
         requested_performance_mode=run.requested_performance_mode,
         effective_performance_mode=run.effective_performance_mode,
         performance_model_profile=run.performance_model_profile,
