@@ -173,7 +173,7 @@ def test_answer_template_round_trips_through_the_answer_parser() -> None:
     ("state", "resume_classification", "reason_code"),
     [
         ("NEEDS_HUMAN", "NOT_RESUMABLE", "SCOPE_REVIEW"),
-        ("FAILED", None, None),
+        ("NEEDS_HUMAN", None, None),
     ],
 )
 def test_runs_that_cannot_continue_say_so_and_show_the_failure_reason(
@@ -195,15 +195,15 @@ def test_runs_that_cannot_continue_say_so_and_show_the_failure_reason(
     assert step["reply_text"] is None
 
 
-def test_failed_run_sentence_names_the_failure() -> None:
+def test_failed_run_needs_nothing_from_the_operator() -> None:
     step = next_step(_run("FAILED", resume_classification=None, failure_reason="boom"))
 
-    assert step["sentence"] == "The run failed. This run cannot continue."
-    assert step["resume_classification"] is None
+    assert step["kind"] == "none"
+    assert step["failure_reason"] is None
 
 
 def test_cannot_continue_failure_reason_is_the_sanitized_text_and_its_truncated_flag() -> None:
-    run = _run("FAILED", resume_classification=None, failure_reason=f"{SECRET} " + "x" * 2000)
+    run = _run(resume_classification=None, failure_reason=f"{SECRET} " + "x" * 2000)
 
     step = _step(run)
 
@@ -213,7 +213,7 @@ def test_cannot_continue_failure_reason_is_the_sanitized_text_and_its_truncated_
 
 
 def test_next_step_copies_the_failure_reason_it_is_given_without_changing_it() -> None:
-    run = _run("FAILED", resume_classification=None, failure_reason="already bounded")
+    run = _run(resume_classification=None, failure_reason="already bounded")
     run["failure_reason_truncated"] = True
 
     step = next_step(run)

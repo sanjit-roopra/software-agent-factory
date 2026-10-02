@@ -1672,15 +1672,14 @@ def test_adversarial_snapshot_provider_secrets_never_reach_runs_response() -> No
         assert SECRET_MARKER not in raw_body
         payload = json.loads(raw_body)
         for run in payload["runs"]:
-            assert set(run) <= RUN_SUMMARY_FIELDS
-            assert "usage" not in run
-            assert "invocation_count" not in run
+            assert set(run) <= RUN_SUMMARY_FIELDS | RUN_SUMMARY_VIEW_FIELDS
+            assert "calls" not in run
             assert "logs" not in run
             assert "diff" not in run
             assert "prompt" not in run
             assert "tool_output" not in run
             assert "reasoning" not in run
-            assert "failure_reason" not in run
+            assert "[REDACTED]" in run["failure_reason"]
             assert "token_usage" not in run
             assert "raw_artifact" not in run
     finally:
@@ -1725,6 +1724,8 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             "invocations",
             "totals",
             "next_step",
+            "outcome",
+            "headline",
         }
         assert "logs" not in payload
         assert "diff" not in payload
@@ -1741,7 +1742,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             assert "tool_output" not in attempt
             assert "raw_command_log" not in attempt
         for invocation in payload["invocations"]:
-            assert set(invocation) <= INVOCATION_FIELDS
+            assert set(invocation) <= INVOCATION_FIELDS | {"failure_link"}
             assert invocation["failure_reason"] == "[REDACTED]"
             assert SECRET_MARKER not in json.dumps(invocation)
     finally:
@@ -2285,9 +2286,8 @@ def test_dashboard_unreported_cost_and_tokens_show_not_reported_and_never_swap_u
     the row wiring instead of grepping for loose substrings."""
     js = dashboard_assets.APP_JS
 
-    assert function_source(js, "displayUsd") == (
-        "function displayUsd(value) { "
-        'if (!isFiniteNumber(value)) { return NOT_REPORTED; } return "$" + value.toFixed(6); }'
+    assert "if (!isFiniteNumber(value) || value < 0) { return NOT_REPORTED; }" in function_source(
+        js, "moneyText"
     )
     assert function_source(js, "displayNumber") == (
         "function displayNumber(value) { "
@@ -2298,21 +2298,21 @@ def test_dashboard_unreported_cost_and_tokens_show_not_reported_and_never_swap_u
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
     assert (
-        "appendCell(row, displayUsd(usage.usage_value_usd)); "
+        "appendCell(row, moneyText(usage.usage_value_usd)); "
         "appendCell(row, displayNumber(usage.total_premium_request_cost)); "
-        "appendCell(row, displayUsd(usage.list_price_estimate_usd));"
+        "appendCell(row, moneyText(usage.list_price_estimate_usd));"
     ) in function_source(js, "modelRow")
     code = normalized(js)
-    assert "displayUsd(usage.usage_value_usd)" in code
-    assert "displayUsd(usage.list_price_estimate_usd)" in code
+    assert "moneyText(usage.usage_value_usd)" in code
+    assert "moneyText(usage.list_price_estimate_usd)" in code
     assert "displayListPriceEstimate" not in code
 
 
 def test_dashboard_run_detail_lists_list_price_estimate_after_the_usage_value_rows() -> None:
     usage_fields = function_source(dashboard_assets.APP_JS, "usageFields")
 
-    value_row = '["AI usage value (USD)", displayUsd(usage.usage_value_usd)],'
-    estimate_row = '["List-price estimate", displayUsd(usage.list_price_estimate_usd)]'
+    value_row = '["AI usage value (USD)", moneyText(usage.usage_value_usd)],'
+    estimate_row = '["List-price estimate", moneyText(usage.list_price_estimate_usd)]'
     assert value_row in usage_fields
     assert estimate_row in usage_fields
     assert usage_fields.index(value_row) < usage_fields.index(estimate_row)
@@ -2332,20 +2332,18 @@ def test_dashboard_project_usage_table_ends_with_the_list_price_estimate_column(
     ]
 
 
-def test_dashboard_totals_show_list_price_estimate_row_as_not_reported_when_missing() -> None:
-    """renderTotals surfaces the List-price estimate row through ``displayUsd``,
-    which shows "not reported" for a missing value, rather than the generic
-    renderer's ``[object Object]`` for a field nested two levels deep
-    (``metrics.usage.list_price_estimate_usd``)."""
+def test_dashboard_overview_shows_the_list_price_estimate_through_the_money_helper() -> None:
+    """The overview reads ``list_price_usd`` from the server and formats it with
+    ``moneyText``, which shows "not reported" for a missing value. The Runs page no
+    longer dumps the nested ``metrics.usage`` object as ``[object Object]``."""
     js = dashboard_assets.APP_JS
 
-    assert function_source(js, "withListPriceEstimate") == (
-        "function withListPriceEstimate(metrics) { return { ...metrics, "
-        "list_price_estimate_usd: displayUsd(metrics.usage?.list_price_estimate_usd) }; }"
+    assert re.search(
+        r'id: "figure-list-price",\s*read: function \(overview\) '
+        r"\{ return overview\.list_price_usd; \},\s*format: moneyText",
+        js,
     )
-    assert "totals.metrics = withListPriceEstimate(totals.metrics);" in function_source(
-        js, "renderTotals"
-    )
+    assert "[object Object]" not in js
 
 
 # --------------------------------------------------------------------------
@@ -2893,6 +2891,9 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
 # Run detail call timeline (#80 slice 2, step 2.2)
 # --------------------------------------------------------------------------
 
+#: What the run list view adds to a sanitized run summary: the outcome, the reason line,
+#: the models of the calls and their total length.
+RUN_SUMMARY_VIEW_FIELDS = {"outcome", "why", "models", "duration_ms"}
 CALL_FIELD_ORDER = [
     "invocation_number",
     "role",
@@ -3389,7 +3390,7 @@ def test_run_detail_api_returns_calls_in_number_order_with_the_timeline_fields(
     )
 
     payload = _body_json(response)
-    assert [list(call) for call in payload["invocations"]] == [CALL_FIELD_ORDER]
+    assert [list(call) for call in payload["invocations"]] == [[*CALL_FIELD_ORDER, "failure_link"]]
     assert list(payload["active_invocation"]) == CALL_FIELD_ORDER
     assert payload["invocations"][0]["duration_ms"] == 300_000
     assert payload["failure_reason"] is None

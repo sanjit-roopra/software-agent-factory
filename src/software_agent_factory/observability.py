@@ -334,6 +334,14 @@ class RunStateCounts(ModelBase):
     stale_active: int = Field(ge=0)
 
 
+class RunCallBrief(ModelBase):
+    """One call reduced to what the run list shows: its role, model and length."""
+
+    role: AgentRole
+    model: str
+    duration_ms: int = Field(ge=0)
+
+
 class RunSummary(ModelBase):
     """One dashboard-safe summary of a persisted run.
 
@@ -343,6 +351,11 @@ class RunSummary(ModelBase):
     redacted with the same credential patterns applied to captured command
     output (``redaction.redact_secrets``) as defense in depth against an
     accidentally-pasted secret in a work item title.
+
+    ``failure_reason`` is the raw stored text, like the one on
+    :class:`RunDetail`: the dashboard sanitizer redacts and bounds it before it
+    leaves the process. ``calls`` lists each finished call's role, model and
+    length in call order, so the run list can show the models and the duration.
     """
 
     run_id: str
@@ -372,6 +385,8 @@ class RunSummary(ModelBase):
     effective_route: ExecutionRoute | None = None
     waiting_for_human: bool = False
     performance: PerformanceRecord | None = None
+    failure_reason: str | None = None
+    calls: list[RunCallBrief] = Field(default_factory=list)
 
 
 class RunAttemptSummary(ModelBase):
@@ -1597,7 +1612,26 @@ def _build_run_summary(
         effective_route=run.effective_route,
         waiting_for_human=run.state is WorkflowState.NEEDS_HUMAN,
         performance=run.performance,
+        failure_reason=run.failure_reason,
+        calls=_call_briefs(run.invocation_records),
     )
+
+
+def _call_briefs(invocations: Iterable[InvocationRecord]) -> list[RunCallBrief]:
+    """Each call's role, model and length, in call order."""
+    return [
+        RunCallBrief(
+            role=record.role,
+            model=record.model,
+            duration_ms=_elapsed_ms(record.started_at, record.completed_at),
+        )
+        for record in sorted(invocations, key=lambda record: record.invocation_number)
+    ]
+
+
+def _elapsed_ms(started_at: datetime, completed_at: datetime) -> int:
+    """Whole milliseconds between the two times of a call, which never ends before it starts."""
+    return (completed_at - started_at) // timedelta(milliseconds=1)
 
 
 def build_run_detail(
@@ -1633,7 +1667,7 @@ def build_run_detail(
     summary = _build_run_summary(run, observed_at, stale_after, _artifact_facts(store, run.id))
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
-        **summary.model_dump(),
+        **summary.model_dump(exclude={"calls", "failure_reason"}),
         completed_at=run.completed_at,
         commit_sha=run.commit_sha,
         pull_request_url=run.pull_request_url,

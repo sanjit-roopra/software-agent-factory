@@ -25,7 +25,7 @@ from ..models import ResumeClassification
 from . import assets
 from .actions import ResumeActions, accept_action
 from .responses import WriteRejected
-from .sanitize import sanitize_health, sanitize_run_detail, sanitize_run_summary
+from .sanitize import sanitize_health, sanitize_run_detail
 from .security import (
     TOKEN_QUERY_PARAM,
     header_token_matches,
@@ -37,7 +37,7 @@ from .security import (
     token_matches,
 )
 from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
-from .view import compare_view, project_view, run_detail_view
+from .view import compare_view, project_view, run_detail_view, run_summary_view, summary_view
 
 if TYPE_CHECKING:
     from .server import DashboardServer
@@ -420,9 +420,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 send_body,
             )
             return
-        payload = to_json_safe(snapshot)
-        if isinstance(payload, dict):
-            payload = {key: value for key, value in payload.items() if key not in ("runs", "page")}
+        payload = summary_view(to_json_safe(snapshot))
         payload["health"] = self._collect_health()
         self._respond_json(HTTPStatus.OK, payload, send_body)
 
@@ -471,7 +469,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             # includes a log, a diff, a prompt or a token in a run object
             # cannot leak it through this response.
             if isinstance(raw_runs, list):
-                runs = [sanitize_run_summary(run) for run in raw_runs]
+                runs = [run_summary_view(run) for run in raw_runs]
             else:
                 runs = []
         except TypeError:

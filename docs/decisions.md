@@ -21,7 +21,7 @@ It also shows the escalation text that a halted run needs: the approval scope an
 - A redacted reason longer than 500 characters is cut. The start and the end stay.
   A marker replaces the middle and names `factory show <run>` for the full text.
 - The call's reasoning level, such as `high`, is shown. Agent reasoning text is not.
-- The run list, the snapshot and health carry no failure reasons.
+- The snapshot and health carry no failure reasons. The run list carries one reason for each stopped run, as the second amendment below says.
 - Command logs, diffs, prompts and raw artifacts stay out, as ADR-016 says.
 
 Amendment on 2026-10-02 (issue #88):
@@ -42,6 +42,15 @@ Amendment on 2026-10-02 (issue #88):
 - When the dashboard cannot read a request file, the log names the exception type only.
   The log does the same when the run detail provider or an action fails.
   The message can quote the field input, and that input can hold a plan answer.
+
+Amendment on 2026-10-02 (dashboard overview):
+
+- The run list shows why a run stopped. A run that failed or needs a person carries its failure reason.
+- The sanitizer redacts and cuts this reason in the same way as the reason on the run detail. The cut is at 500 characters.
+- The run list also carries the role and the model name of each call. The sanitizer redacts the model names.
+- The run page marks the last call before a failure. The factory can reject the output of a call that reported success.
+  The page marks the call as rejected when the failure reason names its role. Otherwise it says that the run failed after the call.
+- Logs, diffs and prompts stay out.
 
 Consequences:
 

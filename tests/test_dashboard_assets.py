@@ -19,11 +19,19 @@ from dashboard_js import (
 )
 
 from software_agent_factory.dashboard import assets as dashboard_assets
+from software_agent_factory.dashboard.overview import (
+    FLAG_LAST_CALL,
+    FLAG_REJECTED,
+    OUTCOME_ACTIVE,
+    OUTCOME_DONE,
+    OUTCOME_FAILED,
+    OUTCOME_NEEDS_YOU,
+    snapshot_overview,
+)
 from software_agent_factory.dashboard.responses import ConflictReason
 from software_agent_factory.dashboard.security import TOKEN_HEADER
 from software_agent_factory.dashboard.snapshot import MAX_PAGE_LIMIT
 from software_agent_factory.models import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS
-from software_agent_factory.observability import MonitoringSnapshot
 from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
 # --------------------------------------------------------------------------
@@ -66,10 +74,18 @@ def test_each_view_is_one_hidden_section_with_a_focusable_heading(
     assert re.search(rf'<h1\s+id="{heading_id}"\s+tabindex="-1">', _INDEX_HTML)
 
 
-def test_totals_stay_on_the_runs_view() -> None:
+def test_the_overview_and_the_run_list_stay_on_the_runs_view() -> None:
     runs_view = _INDEX_HTML.split('<section id="view-runs"')[1].split("</section>")[0]
-    assert 'id="totals-body"' in runs_view
+    assert 'id="key-figures"' in runs_view
     assert 'id="runs-body"' in runs_view
+    assert "totals-body" not in runs_view
+
+
+def test_the_runs_view_no_longer_dumps_raw_snapshot_keys() -> None:
+    code = strip_comments(dashboard_assets.APP_JS)
+    for dump in ("totalsFields", "withListPriceEstimate", "renderTotals", "TOTALS_EXCLUDED_KEYS"):
+        assert dump not in code
+    assert "refreshTotals" in code
 
 
 def test_script_is_deferred_in_the_head_and_not_in_the_body() -> None:
@@ -230,7 +246,9 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert re.search(r"main\s*\{[^}]*min-width:\s*0;", css)
     assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
     assert "overflow-x: hidden" not in css
-    assert "overflow: hidden" not in css
+    # The one clip is the reason cell of the run list, which ends in an ellipsis.
+    clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
+    assert [selector.strip() for selector in clipped] == [".why-cell"]
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
@@ -557,6 +575,7 @@ def test_unreported_cost_and_tokens_use_one_not_reported_constant() -> None:
     assert 'const NOT_REPORTED = "not reported";' in code
     assert '"unknown"' not in code
     assert "displayListPriceEstimate" not in code
+    assert "displayUsd" not in code
 
 
 def test_project_model_rows_show_unreported_tokens_as_not_reported() -> None:
@@ -638,13 +657,13 @@ def test_the_timeline_heads_the_default_columns_in_order() -> None:
         "Model",
         "Outcome",
         "Duration",
-        "Total tokens",
+        "Tokens",
         "Cost",
     ]
 
 
 def test_the_timeline_group_is_named_by_its_heading() -> None:
-    assert '<h2 id="timeline-heading">Call timeline</h2>' in _RUN_DETAIL_HTML
+    assert '<h2 id="timeline-heading">Steps</h2>' in _RUN_DETAIL_HTML
     assert re.search(
         r'<div\s+class="timeline"\s+role="group"\s+aria-labelledby="timeline-heading">',
         _RUN_DETAIL_HTML,
@@ -734,8 +753,10 @@ def test_each_cost_unit_has_its_own_phrase_and_a_one_line_help_text() -> None:
     units = _constant_source("COST_UNITS")
     assert units.count("help:") == 3
     assert units.count("phrase:") == 3
-    assert '" USD AI usage"' in units
-    assert '" USD list price"' in units
+    assert '" AI usage"' in units
+    assert "moneyText(value)" in units
+    assert "USD list price" not in units
+    assert "USD AI usage" not in units
     for help_text in re.findall(r'help:\s*"([^"]+)"', units):
         assert help_text.endswith(".")
         assert help_text.count(".") == 1
@@ -746,8 +767,8 @@ def test_a_call_row_wires_the_default_columns_from_the_call_fields() -> None:
     for wired in (
         "displayValue(call.invocation_number)",
         "displayValue(call.role)",
-        "displayValue(call.model)",
-        "outcomeOf(call.status).text",
+        "modelText(call)",
+        "callOutcome(call).text",
         "durationText(call.duration_ms)",
         "displayNumber(call.total_tokens)",
         "costText(usage)",
@@ -1323,54 +1344,75 @@ def test_the_sidebar_no_longer_claims_the_dashboard_is_read_only() -> None:
 
 _RUNS_HTML = _INDEX_HTML.split('<section id="view-runs"')[1].split("</section>")[0]
 _COMPARE_HTML = _INDEX_HTML.split('<section id="view-compare"')[1].split("</section>")[0]
-_FIGURE_IDS = ("figure-active", "figure-needs-you", "figure-failed", "figure-tokens")
+_FIGURE_IDS = (
+    "figure-runs",
+    "figure-succeeded",
+    "figure-failed",
+    "figure-active",
+    "figure-needs-you",
+    "figure-tokens",
+    "figure-list-price",
+    "figure-premium",
+)
+#: What the overview row shows and what ``snapshot_overview`` calls it.
+_FIGURE_FIELDS = {
+    "figure-runs": "runs",
+    "figure-succeeded": "succeeded",
+    "figure-failed": "failed",
+    "figure-active": "active",
+    "figure-needs-you": "needs_you",
+    "figure-tokens": "tokens",
+    "figure-list-price": "list_price_usd",
+    "figure-premium": "premium_requests",
+}
 
 
-def test_the_runs_view_holds_one_key_figure_for_each_summary_number() -> None:
+def test_the_runs_view_holds_one_overview_figure_for_each_summary_number() -> None:
     for figure_id in _FIGURE_IDS:
         assert re.search(rf'<p\s+id="{figure_id}"\s+class="stat-value">', _RUNS_HTML)
     labels = re.findall(r'<p class="stat-label">([^<]+)</p>', _RUNS_HTML)
     assert labels == [
-        "Active runs",
+        "Runs",
+        "Succeeded",
+        "Failed",
+        "Active",
         "Needs you",
-        "Failed runs in the last 24 hours",
-        "Tokens in the last 24 hours",
+        "Tokens",
+        "List-price estimate",
+        "Premium requests",
+        "Cost",
     ]
 
 
-def test_the_key_figures_come_before_the_totals() -> None:
-    assert _RUNS_HTML.index('id="key-figures"') < _RUNS_HTML.index('id="totals-body"')
+def test_the_overview_comes_before_the_run_list() -> None:
+    assert _RUNS_HTML.index('id="key-figures"') < _RUNS_HTML.index('id="runs-body"')
     assert re.search(
         r'<ul\s+id="key-figures"[^>]*aria-labelledby="key-figures-heading">', _RUNS_HTML
     )
-    assert '<h2 id="key-figures-heading">Key figures</h2>' in _RUNS_HTML
+    assert '<h2 id="key-figures-heading">Overview</h2>' in _RUNS_HTML
 
 
-def test_each_key_figure_reads_its_summary_field() -> None:
-    figures = _constant_source("KEY_FIGURES")
-    for figure_id, field in (
-        ("figure-active", "summary?.counts?.active"),
-        ("figure-needs-you", "summary?.needs_human_count"),
-        ("figure-failed", "summary?.failed_last_24h"),
-        ("figure-tokens", "summary?.tokens_last_24h"),
-    ):
+def test_each_overview_figure_reads_its_overview_field() -> None:
+    figures = _constant_source("OVERVIEW_FIGURES")
+    for figure_id, field in _FIGURE_FIELDS.items():
         assert re.search(
-            rf'id: "{figure_id}", read: function \(summary\) {{ return {re.escape(field)};', figures
+            rf'id: "{figure_id}",\s*read: function \(overview\) {{ return overview\.{field}; }}',
+            figures,
         )
 
 
-def test_the_key_figure_fields_the_page_reads_are_snapshot_fields() -> None:
-    figures = _constant_source("KEY_FIGURES")
-    for field in ("needs_human_count", "failed_last_24h", "tokens_last_24h"):
-        assert field in MonitoringSnapshot.model_fields
-        assert f"summary?.{field};" in figures
+def test_every_overview_field_the_page_reads_is_one_the_server_sends() -> None:
+    code = strip_comments(dashboard_assets.APP_JS)
+    read = set(re.findall(r"overview\.([a-z_0-9]+)", code))
+    assert read
+    assert read <= set(snapshot_overview({}))
 
 
-def test_key_figures_show_whole_numbers_with_a_thousands_separator() -> None:
-    render = function_source(_JS, "renderKeyFigures")
-    assert (
-        "setText(document.getElementById(figure.id), displayNumber(figure.read(summary)))" in render
-    )
+def test_the_overview_shows_whole_numbers_and_money_for_the_list_price() -> None:
+    render = function_source(_JS, "renderOverview")
+    assert "const format = figure.format || displayNumber;" in render
+    assert "setText(document.getElementById(figure.id), format(figure.read(overview)))" in render
+    assert "format: moneyText" in _constant_source("OVERVIEW_FIGURES")
     assert 'value.toLocaleString("en-US")' in function_source(_JS, "displayNumber")
 
 
@@ -1380,13 +1422,29 @@ def test_an_unknown_token_figure_shows_not_reported_and_not_zero() -> None:
     assert 'const NOT_REPORTED = "not reported";' in _JS
 
 
-def test_the_summary_feeds_the_key_figures_and_the_totals() -> None:
-    assert function_source(_JS, "renderSummary") == (
-        "function renderSummary(summary) { renderKeyFigures(summary); renderTotals(summary); }"
-    )
-    assert 'apiFetch("/api/summary").then(whenLatest(request, renderSummary))' in function_source(
+def test_the_summary_feeds_the_overview() -> None:
+    assert 'apiFetch("/api/summary").then(whenLatest(request, renderOverview))' in function_source(
         _JS, "refreshTotals"
     )
+
+
+def test_a_cost_card_shows_only_when_its_cost_was_reported() -> None:
+    cards = _constant_source("COST_CARDS")
+    assert 'id: "stat-list-price", shown: hasListPrice' in cards
+    assert 'id: "stat-premium", shown: hasPremiumRequests' in cards
+    assert "!hasListPrice(overview) && !hasPremiumRequests(overview)" in cards
+    for card_id in ("stat-list-price", "stat-premium", "stat-cost-none"):
+        assert re.search(rf'<li\s+id="{card_id}"\s+class="stat"\s+hidden>', _RUNS_HTML)
+    assert "document.getElementById(card.id).hidden = !card.shown(overview);" in function_source(
+        _JS, "renderOverview"
+    )
+
+
+def test_the_two_cost_units_are_never_added_in_the_overview_row() -> None:
+    assert "list_price_usd" in _constant_source("OVERVIEW_FIGURES")
+    assert "premium_requests" in _constant_source("OVERVIEW_FIGURES")
+    assert "list_price_usd +" not in strip_comments(_JS)
+    assert "+ overview.premium_requests" not in strip_comments(_JS)
 
 
 def test_the_needs_you_figure_is_a_real_link_to_the_filtered_list() -> None:
@@ -1427,17 +1485,93 @@ def test_runs_that_need_you_come_first_and_a_filter_keeps_only_them() -> None:
     assert "orderRuns(asArray(payload.runs), request.filter)" in function_source(_JS, "renderRuns")
 
 
-def test_a_run_that_needs_you_carries_a_badge_that_is_text_and_not_only_color() -> None:
-    assert function_source(_JS, "needsYouCell") == (
-        "function needsYouCell(run) { return needsYou(run) ? "
-        '{ value: NEEDS_YOU_TEXT, className: "badge-needs-you" } : ""; }'
+def test_a_run_state_is_a_badge_that_is_text_and_not_only_color() -> None:
+    cell = function_source(_JS, "stateCell")
+    assert "badge: badgeKind(run.outcome)" in cell
+    assert "value: label" in cell
+    assert 'badge.className = "badge badge-" + entry.badge;' in function_source(
+        _JS, "patchBadgeCell"
     )
-    assert 'const NEEDS_YOU_TEXT = "Needs you";' in _JS
-    assert re.search(
-        r"\.badge-needs-you\s*\{[^}]*color:\s*var\(--warn\);", dashboard_assets.STYLE_CSS
+    assert 'const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active"]);' in _JS
+    css = dashboard_assets.STYLE_CSS
+    for kind, token in (
+        ("done", "ok"),
+        ("failed", "error"),
+        ("needs_you", "warn"),
+        ("active", "accent"),
+    ):
+        assert re.search(rf"\.badge-{kind}\s*\{{[^}}]*color:\s*var\(--{token}\);", css)
+    assert re.search(r"\.badge\s*\{[^}]*font-weight:\s*700;", css)
+    assert '<th scope="col">State</th>' in _RUNS_HTML
+
+
+def test_the_badge_kinds_match_the_server_outcome_kinds() -> None:
+    kinds = re.findall(
+        r'"([a-z_]+)"', _JS.split("const OUTCOME_KINDS = new Set([")[1].split("]")[0]
     )
-    assert re.search(r"\.badge-needs-you\s*\{[^}]*font-weight:\s*700;", dashboard_assets.STYLE_CSS)
-    assert '<th scope="col">Attention</th>' in _RUNS_HTML
+    assert kinds == [OUTCOME_DONE, OUTCOME_FAILED, OUTCOME_NEEDS_YOU, OUTCOME_ACTIVE]
+
+
+def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
+    head = _RUNS_HTML.split("<thead>")[1].split("</thead>")[0]
+    assert re.findall(r'<th scope="col">(?:<span[^>]*>)?([^<]+)', head) == [
+        "Title",
+        "State",
+        "Why",
+        "Models",
+        "Calls",
+        "Duration",
+        "Cost",
+        "Started",
+        "Compare",
+    ]
+    cells = function_source(_JS, "runRowSpec")
+    for wired in (
+        "titleCell(run, runId)",
+        "stateCell(run)",
+        "whyCell(run)",
+        "modelsCell(run)",
+        "run.invocation_count",
+        "durationCell(run)",
+        "listCostText(run.usage)",
+        "startedCell(run, nowMs)",
+        "compareCell(runId)",
+    ):
+        assert wired in cells
+
+
+def test_the_run_list_drops_the_columns_an_operator_never_used() -> None:
+    head = _RUNS_HTML.split("<thead>")[1].split("</thead>")[0]
+    for dropped in ("Source", "Idle", "Stale", "Attempts", "Attention", "Review", "Created"):
+        assert f">{dropped}<" not in head
+
+
+def test_a_title_links_to_its_run_and_names_the_run_id_in_a_tooltip() -> None:
+    cell = function_source(_JS, "titleCell")
+    assert 'href: "#run/" + encodeURIComponent(runId)' in cell
+    assert "value: displayValue(run.title, runId)" in cell
+    assert "title: runId" in cell
+
+
+def test_a_reason_is_cut_to_one_line_and_its_full_text_is_the_tooltip() -> None:
+    assert 'className: "why-cell"' in function_source(_JS, "whyCell")
+    assert 'title: displayValue(run.why, "")' in function_source(_JS, "whyCell")
+    assert re.search(r"\.why-cell\s*\{[^}]*white-space:\s*nowrap;", dashboard_assets.STYLE_CSS)
+    assert re.search(r"\.why-cell\s*\{[^}]*text-overflow:\s*ellipsis;", dashboard_assets.STYLE_CSS)
+
+
+def test_a_start_time_is_relative_and_its_tooltip_is_the_absolute_time() -> None:
+    cell = function_source(_JS, "startedCell")
+    assert "value: relativeTimeText(run.created_at, nowMs)" in cell
+    assert 'title: absoluteTimeText(run.created_at, "")' in cell
+    assert "Date.now()" in function_source(_JS, "renderRuns")
+
+
+def test_a_run_list_cost_keeps_each_unit_apart() -> None:
+    cost = function_source(_JS, "listCostText")
+    assert "moneyText(usage.list_price_estimate_usd)" in cost
+    assert '" premium req."' in cost
+    assert 'parts.join(" \\u00b7 ")' in cost
 
 
 def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> None:
@@ -1455,15 +1589,20 @@ def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> Non
     assert '"No runs need you."' in function_source(_JS, "emptyRunsText")
 
 
-def test_each_run_row_has_a_compare_with_link_that_makes_that_run_run_a() -> None:
-    assert '<th scope="col">Compare</th>' in _RUNS_HTML
+def test_each_run_row_has_a_compare_link_that_makes_that_run_run_a() -> None:
+    assert '<th scope="col"><span class="visually-hidden">Compare</span></th>' in _RUNS_HTML
     assert function_source(_JS, "compareCell") == (
         'function compareCell(runId) { if (typeof runId !== "string") { '
         'return { value: "", className: "" }; } '
-        'return { value: "Compare with\\u2026", '
-        'href: COMPARE_HASH + "/" + encodeURIComponent(runId), hidden: " " + runId }; }'
+        "return { value: COMPARE_ICON, icon: true, "
+        'href: COMPARE_HASH + "/" + encodeURIComponent(runId), '
+        'hidden: "Compare with another run: " + runId, '
+        'title: "Compare this run with another run" }; }'
     )
     assert "compareCell(runId)" in function_source(_JS, "runRowSpec")
+    assert 'link.firstElementChild.setAttribute("aria-hidden", ' in function_source(
+        _JS, "patchLinkCell"
+    )
 
 
 def test_the_compare_link_names_its_run_for_a_screen_reader_and_survives_a_refresh() -> None:
@@ -1743,3 +1882,103 @@ def test_the_compare_status_is_announced_as_a_status() -> None:
 def test_each_run_heading_spans_its_own_group_of_columns() -> None:
     table = _COMPARE_HTML.split("<thead>")[0]
     assert re.findall(r'<colgroup span="(\d+)"></colgroup>', table) == ["1", "6", "6"]
+
+
+# --------------------------------------------------------------------------
+# Run detail as an overview: summary, steps, collapsed details (#88 follow-up)
+# --------------------------------------------------------------------------
+
+
+def _position(marker: str) -> int:
+    return _RUN_DETAIL_HTML.index(marker)
+
+
+def test_the_summary_card_comes_first_then_the_needs_you_panel_then_the_steps() -> None:
+    order = ['id="run-summary"', 'id="next-step"', 'id="timeline-heading"', 'id="run-details"']
+    positions = [_position(marker) for marker in order]
+    assert positions == sorted(positions)
+
+
+def test_the_summary_card_holds_the_title_the_state_badge_the_outcome_line_and_key_numbers() -> (
+    None
+):
+    summary = _RUN_DETAIL_HTML.split('id="run-summary"')[1].split("</section>")[0]
+    for element_id in ("run-title", "run-badge", "run-headline", "run-key-numbers"):
+        assert f'id="{element_id}"' in summary
+    assert re.search(r'<section\s+id="run-summary"[^>]*aria-labelledby="run-title">', _INDEX_HTML)
+
+
+def test_the_outcome_line_and_badge_come_from_the_server_and_name_the_state_in_words() -> None:
+    render = function_source(_JS, "renderRunSummary")
+    assert 'badge.className = "badge badge-" + kind;' in render
+    assert "detail.outcome?.label" in render
+    assert "detail.headline?.text" in render
+    assert 'headline.className = "headline headline-" + badgeKind(detail.headline);' in render
+    assert 'headline.hidden = headline.textContent === "";' in render
+    css = dashboard_assets.STYLE_CSS
+    for kind, token in (("done", "ok"), ("failed", "error"), ("needs_you", "warn")):
+        assert re.search(rf"\.headline-{kind}\s*\{{[^}}]*color:\s*var\(--{token}\);", css)
+
+
+def test_the_key_numbers_are_duration_calls_tokens_and_the_costs_that_were_reported() -> None:
+    cards = function_source(_JS, "keyNumberCards")
+    assert "return [duration, calls, tokens, ...(costs.length === 0 ? [cost] : costs)];" in cards
+    assert 'figureCard("Tokens", totals.total_tokens, totals.calls, displayNumber)' in cards
+    assert 'syncStats(document.getElementById("run-key-numbers")' in function_source(
+        _JS, "renderRunSummary"
+    )
+
+
+def test_the_steps_are_a_group_of_calls_with_a_total_row() -> None:
+    assert '<div id="timeline-total" class="timeline-total"></div>' in _RUN_DETAIL_HTML
+    timeline = function_source(_JS, "renderTimeline")
+    assert 'patchTotalRow(document.getElementById("timeline-total"), detail.totals || {})' in (
+        timeline
+    )
+    total = function_source(_JS, "totalCells")
+    for wired in ("TOTAL_LABEL", "totals.calls", "totals.duration_ms?.total", "totalCostText"):
+        assert wired in total
+    assert "totals.total_tokens?.total" in total
+
+
+TOTAL_ROW_CELLS = 5
+
+
+def test_a_total_row_cell_is_labelled_for_a_screen_reader_like_a_call_cell() -> None:
+    assert "row.append(...TOTAL_COLUMNS.map(buildCell))" in function_source(_JS, "patchTotalRow")
+    columns = re.search(r"const TOTAL_COLUMNS = \[([^\]]+)\]", strip_comments(_JS))
+    assert columns is not None
+    assert len(re.findall(r'"[^"]+"', columns.group(1))) == TOTAL_ROW_CELLS
+
+
+def test_a_call_a_failed_run_failed_on_is_marked_in_red_and_in_words() -> None:
+    assert "callOutcome(call).className" in function_source(_JS, "patchCall")
+    assert 'details.classList.toggle("call-rejected", call.failure_link === "rejected");' in (
+        function_source(_JS, "patchCall")
+    )
+    assert re.search(r"\.call-rejected\s*\{[^}]*var\(--error\)", dashboard_assets.STYLE_CSS)
+    links = _constant_source("FAILURE_LINKS")
+    assert '"rejected", { text: "rejected", className: "status-error" }' in links
+    assert 'text: "success, run failed after"' in links
+
+
+def test_the_failure_link_values_match_the_server() -> None:
+    links = re.findall(r'\["([a-z_]+)", \{ text', _constant_source("FAILURE_LINKS"))
+    assert links == [FLAG_REJECTED, FLAG_LAST_CALL]
+
+
+def test_the_long_key_value_block_sits_in_a_details_element_that_starts_closed() -> None:
+    details = re.search(r'<details\s+id="run-details"([^>]*)>', _RUN_DETAIL_HTML)
+    assert details is not None
+    assert "open" not in details.group(1).split()
+    body = _RUN_DETAIL_HTML.split('id="run-details"')[1].split("</details>")[0]
+    for element_id in ("run-detail-body", "run-totals", "attempts-body"):
+        assert f'id="{element_id}"' in body
+    assert "<summary>Details</summary>" in body
+
+
+def test_the_details_list_hides_the_rows_that_have_nothing_to_show() -> None:
+    assert "fields.filter(function (field) { return !isBlankField(field); })" in function_source(
+        _JS, "renderRunDetail"
+    )
+    assert "isBlankField" in strip_comments(_JS)

@@ -402,9 +402,16 @@ Legacy premium-request units also remain separate and are never multiplied.
 The Compare view shows two runs side by side. For each agent role, it lists calls,
 failed calls, models, tokens, duration and cost for run A and run B. Each run keeps
 its cost in its own units. The `/api/compare` route serves this view.
-The Runs view starts with four key figures. They are active runs, runs that need
-you, failed runs in the last 24 hours and tokens in the last 24 hours. The token
-figure shows `not reported` when no recent call reported tokens.
+The Runs view starts with one overview row. It shows the number of runs, the
+succeeded, failed and active runs, and the runs that need you. It also shows total
+tokens and the cost of all runs. The cost is the list-price estimate in USD and the
+premium requests. The page shows each cost only when a call reported it. The page
+never adds the two costs together. A note shows the failed runs and the tokens of the
+last 24 hours when they differ from the totals.
+
+The run list shows these columns for each run: title, state badge, the reason it
+stopped, models, calls, duration, cost and start time. The run page starts with a
+summary and the steps of the run. The long list of run facts is under Details.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Two `POST` routes are the

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import NamedTuple
 
@@ -51,6 +52,33 @@ def _case(function: str, case_id: str, expected: object, *args: object) -> Case:
     return Case(f"{function}-{case_id}", JsCall(function, args), expected)
 
 
+_TOTALS = {
+    "calls": 6,
+    "failed_calls": {"total": 0, "reported_count": 6},
+    "duration_ms": {"total": 63_000, "reported_count": 6},
+    "total_tokens": {"total": 40_990, "reported_count": 6},
+    "costs": {LIST_USD: {"total": 0.039188, "reported_count": 6}},
+}
+_FAILED_RUN = {
+    RUN_ID: "run-1",
+    TITLE: BUG_TITLE,
+    "state": "FAILED",
+    "outcome": {"kind": "failed", "label": "Failed"},
+    "why": "reason",
+    "models": {"text": "gpt-5-mini \u00d74", "detail": "detail"},
+    "invocation_count": 6,
+    "duration_ms": 63_000,
+    "usage": {LIST_USD: 0.039188},
+    "created_at": "2026-10-02T11:48:00Z",
+}
+_NOW = datetime(2026, 10, 2, 12, 0, tzinfo=UTC).timestamp() * 1000
+
+
+def _minutes_before(minutes: float) -> str:
+    moment = datetime.fromtimestamp(_NOW / 1000, UTC) - timedelta(minutes=minutes)
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 def _paragraph(text: str) -> dict[str, str]:
     return {"tagName": "p", "className": "", "textContent": text}
 
@@ -59,6 +87,19 @@ _duration = partial(_case, "durationText")
 _partial_note = partial(_case, "partialNote")
 _cost = partial(_case, "costText")
 _premium = partial(_case, "premiumRequestsPhrase")
+_money = partial(_case, "moneyText")
+_relative = partial(_case, "relativeTimeText")
+_absolute = partial(_case, "absoluteTimeText")
+_list_cost = partial(_case, "listCostText")
+_note = partial(_case, "last24HoursNote")
+_blank = partial(_case, "isBlankField")
+_badge = partial(_case, "badgeKind")
+_model = partial(_case, "modelText")
+_row = partial(_case, "runRowSpec")
+_title_cell = partial(_case, "titleCell")
+_key_numbers = partial(_case, "keyNumberCards")
+_total_cells = partial(_case, "totalCells")
+_call_outcome = partial(_case, "callOutcome")
 _reopens = partial(_case, "reopensLine")
 
 # A number that is not finite is not a reported number. Every formatter below keeps it out
@@ -80,8 +121,10 @@ FORMATTER_CASES = [
     _duration("rounds-to-a-minute", "1 min 0 s", 59500),
     _duration("one-minute", "1 min 0 s", 60000),
     _duration("minute-and-second", "1 min 1 s", 61000),
-    _duration("one-hour-stays-in-minutes", "60 min 0 s", 3_600_000),
-    _duration("large", "2057 min 37 s", 123_456_789),
+    _duration("last-second-of-an-hour", "59 min 59 s", 3_599_000),
+    _duration("one-hour", "1 h 0 min", 3_600_000),
+    _duration("hour-and-minutes", "1 h 5 min", 3_900_000),
+    _duration("large", "34 h 17 min", 123_456_789),
     _partial_note("reported-missing", "", None, 3),
     _partial_note("calls-missing", "", 3, None),
     _partial_note("reported-undefined", "", UNDEFINED, 3),
@@ -110,20 +153,210 @@ FORMATTER_CASES = [
     _cost("two-premium-requests", TWO_PREMIUM_REQUESTS, {PREMIUM: 2}),
     _cost("fractional-premium-requests", "1.5 premium requests", {PREMIUM: 1.5}),
     _cost("large-premium-requests", "1,234,567 premium requests", {PREMIUM: 1_234_567}),
-    _cost("zero-usd", "0.00 USD AI usage", {USAGE_USD: 0}),
-    _cost("usd-two-decimals", "0.50 USD AI usage", {USAGE_USD: 0.5}),
-    _cost("usd-separator", "1,234.50 USD AI usage", {USAGE_USD: 1234.5}),
-    _cost("usd-rounds-at-six-decimals", "0.123457 USD AI usage", {USAGE_USD: 0.1234567}),
-    _cost("list-price", "12.00 USD list price", {LIST_USD: 12}),
+    _cost("zero-usd", "$0 AI usage", {USAGE_USD: 0}),
+    _cost("usd-three-decimals-under-a-dollar", "$0.500 AI usage", {USAGE_USD: 0.5}),
+    _cost("usd-separator", "$1,234.50 AI usage", {USAGE_USD: 1234.5}),
+    _cost("usd-rounds-at-three-decimals", "$0.123 AI usage", {USAGE_USD: 0.1234567}),
+    _cost("list-price-has-no-unit-suffix", "$12.00", {LIST_USD: 12}),
+    _cost("list-price-under-a-dollar", "$0.039", {LIST_USD: 0.039188}),
     _cost(
         "all-units-in-order",
-        "2 premium requests, 3.25 USD AI usage, 4.00 USD list price",
+        "2 premium requests, $3.25 AI usage, $4.00",
         {LIST_USD: 4, USAGE_USD: 3.25, PREMIUM: 2},
     ),
     _cost(
         "skips-the-unreported-unit",
-        "2 premium requests, 4.00 USD list price",
+        "2 premium requests, $4.00",
         {PREMIUM: 2, USAGE_USD: None, LIST_USD: 4},
+    ),
+    _money("null", NOT_REPORTED, None),
+    _money("text", NOT_REPORTED, "1"),
+    _money("nan", NOT_REPORTED, NAN),
+    _money("infinity", NOT_REPORTED, INF),
+    _money("negative", NOT_REPORTED, -0.01),
+    _money("zero", "$0", 0),
+    _money("too-small-for-three-decimals", "<$0.001", 0.0004),
+    _money("smallest-shown", "$0.001", 0.0005),
+    _money("three-decimals", "$0.039", 0.039188),
+    _money("keeps-trailing-zeros", "$0.500", 0.5),
+    _money("just-under-a-dollar", "$0.999", 0.9994),
+    _money("rounds-up-to-a-dollar-with-two-decimals", "$1.00", 0.9996),
+    _money("one-dollar", "$1.00", 1),
+    _money("two-decimals-from-a-dollar", "$12.35", 12.345),
+    _money("separator", "$1,234.50", 1234.5),
+    _relative("minutes-ago", "12 min ago", _minutes_before(12), _NOW),
+    _relative("under-a-minute", "just now", _minutes_before(0.5), _NOW),
+    _relative("in-the-future", "just now", _minutes_before(-5), _NOW),
+    _relative("last-minute-of-an-hour", "59 min ago", _minutes_before(59.9), _NOW),
+    _relative("one-hour", "1 h ago", _minutes_before(60), _NOW),
+    _relative("last-hour-of-a-day", "23 h ago", _minutes_before(24 * 60 - 1), _NOW),
+    _relative("days", "3 d ago", _minutes_before(3 * 24 * 60), _NOW),
+    _relative(
+        "a-month-or-more-shows-the-date", "2026-09-02 12:00 UTC", _minutes_before(30 * 1440), _NOW
+    ),
+    _relative("microseconds-parse", "52 min ago", "2026-10-02T11:07:17.854307Z", _NOW),
+    _relative("no-time", DASH, None, _NOW),
+    _relative("text-that-is-not-a-time", DASH, "soon", _NOW),
+    _relative("no-now", DASH, _minutes_before(5), None),
+    _absolute("utc-minute", "2026-10-02 11:22 UTC", "2026-10-02T11:22:17.854307Z"),
+    _absolute("offset-is-converted", "2026-10-02 10:22 UTC", "2026-10-02T12:22:00+02:00"),
+    _absolute("fallback", DASH, None),
+    _absolute("custom-fallback", "", "nope", ""),
+    _list_cost("nothing", DASH, {}),
+    _list_cost("no-usage", DASH, None),
+    _list_cost("list-price", "$0.039", {LIST_USD: 0.039188}),
+    _list_cost("premium", "2 premium req.", {"premium_request_cost": 2}),
+    _list_cost(
+        "both-units-stay-apart",
+        "$0.039 \u00b7 2 premium req.",
+        {LIST_USD: 0.039188, "premium_request_cost": 2},
+    ),
+    _list_cost(
+        "reported-zero", "$0 \u00b7 0 premium req.", {LIST_USD: 0, "premium_request_cost": 0}
+    ),
+    _list_cost("not-numbers", DASH, {LIST_USD: "1", "premium_request_cost": NAN}),
+    _note("same-as-total", "", 3, 3),
+    _note("less-than-total", "1 in the last 24 hours", 1, 3),
+    _note("none", "", None, 3),
+    _note("zero-of-some", "0 in the last 24 hours", 0, 3),
+    _blank("undefined", True, ["x", UNDEFINED]),
+    _blank("null", True, ["x", None]),
+    _blank("empty", True, ["x", ""]),
+    _blank("dash", True, ["x", DASH]),
+    _blank("not-reported", True, ["x", NOT_REPORTED]),
+    _blank("false-is-a-value", False, ["x", False]),
+    _blank("zero-is-a-value", False, ["x", 0]),
+    _blank("text", False, ["x", "value"]),
+    _badge("known", "failed", {"kind": "failed", "label": "Failed"}),
+    _badge("needs-you", "needs_you", {"kind": "needs_you"}),
+    _badge("unknown-kind", "neutral", {"kind": "paused"}),
+    _badge("no-outcome", "neutral", None),
+    _key_numbers(
+        "duration-calls-tokens-and-the-reported-cost",
+        [
+            {"label": "Duration", "value": "1 min 3 s", "note": "", "help": ""},
+            {"label": "Calls", "value": "6", "note": "", "help": ""},
+            {"label": "Tokens", "value": "40,990", "note": "", "help": ""},
+            {
+                "label": "List-price estimate (USD)",
+                "value": "$0.039",
+                "note": "",
+                "help": "Estimate in USD from list prices, not what a provider billed.",
+            },
+        ],
+        _TOTALS,
+    ),
+    _key_numbers(
+        "one-card-says-no-cost-was-reported",
+        [
+            {"label": "Duration", "value": NOT_REPORTED, "note": "", "help": ""},
+            {"label": "Calls", "value": "0", "note": "", "help": ""},
+            {"label": "Tokens", "value": NOT_REPORTED, "note": "", "help": ""},
+            {"label": "Cost", "value": NOT_REPORTED, "note": "", "help": ""},
+        ],
+        {"calls": 0},
+    ),
+    _total_cells(
+        "the-total-row",
+        ["Total", "6 calls", "1 min 3 s", "40,990", "$0.039"],
+        _TOTALS,
+    ),
+    _total_cells(
+        "the-total-row-keeps-each-cost-unit",
+        ["Total", "1 call", "1 s", "5", "2 premium requests, $0.500 AI usage, $0.039"],
+        {
+            "calls": 1,
+            "duration_ms": {"total": 1000},
+            "total_tokens": {"total": 5},
+            "costs": {
+                PREMIUM: {"total": 2},
+                USAGE_USD: {"total": 0.5},
+                LIST_USD: {"total": 0.039188},
+            },
+        },
+    ),
+    _total_cells(
+        "an-empty-total-row",
+        ["Total", NOT_REPORTED, NOT_REPORTED, NOT_REPORTED, NOT_REPORTED],
+        {},
+    ),
+    _row(
+        "a-failed-run",
+        {
+            "runId": "run-1",
+            "cells": [
+                {
+                    "href": "#run/run-1",
+                    "value": BUG_TITLE,
+                    "hidden": "",
+                    "title": "run-1",
+                },
+                {"badge": "failed", "value": "Failed", "title": "FAILED"},
+                {"value": "reason", "className": "why-cell", "title": "reason"},
+                {"value": "gpt-5-mini \u00d74", "className": "models-cell", "title": "detail"},
+                6,
+                "1 min 3 s",
+                "$0.039",
+                {"value": "12 min ago", "title": "2026-10-02 11:48 UTC"},
+                {
+                    "value": "\u21c4",
+                    "icon": True,
+                    "href": "#compare/run-1",
+                    "hidden": "Compare with another run: run-1",
+                    "title": "Compare this run with another run",
+                },
+            ],
+        },
+        _FAILED_RUN,
+        _NOW,
+    ),
+    _row(
+        "a-run-with-nothing-to-show",
+        {
+            "runId": UNDEFINED,
+            "cells": [
+                DASH,
+                {"badge": "neutral", "value": DASH, "title": ""},
+                {"value": DASH, "className": "why-cell", "title": ""},
+                {"value": DASH, "className": "models-cell", "title": ""},
+                UNDEFINED,
+                DASH,
+                DASH,
+                {"value": DASH, "title": ""},
+                {"value": "", "className": ""},
+            ],
+        },
+        {},
+        _NOW,
+    ),
+    _title_cell(
+        "no-title-links-by-the-run-id-and-encodes-it",
+        {"href": "#run/r%201", "value": "r 1", "hidden": "", "title": "r 1"},
+        {RUN_ID: "r 1"},
+        "r 1",
+    ),
+    _title_cell("no-run-id-is-plain-text", BUG_TITLE, {TITLE: BUG_TITLE}, UNDEFINED),
+    _model("with-reasoning", "gpt-6.1-sol (high)", {"model": "gpt-6.1-sol", "reasoning": "high"}),
+    _model("without-reasoning", "gpt-6.1-sol", {"model": "gpt-6.1-sol"}),
+    _model("without-a-model", DASH, {}),
+    _call_outcome("success", {"text": "success", "className": "status-ok"}, {"status": "SUCCESS"}),
+    _call_outcome(
+        "rejected",
+        {"text": "rejected", "className": "status-error"},
+        {"status": "SUCCESS", "failure_link": "rejected"},
+    ),
+    _call_outcome(
+        "run-failed-after",
+        {"text": "success, run failed after", "className": "status-warn"},
+        {"status": "SUCCESS", "failure_link": "last_call"},
+    ),
+    _call_outcome(
+        "unknown-link-falls-back-to-the-status",
+        {"text": "failed", "className": "status-error"},
+        {"status": "FAILED", "failure_link": "other"},
+    ),
+    _call_outcome(
+        "no-link-no-status", {"text": NOT_REPORTED, "className": ""}, {"failure_link": None}
     ),
     _premium("one", "1 premium request", 1),
     _premium("zero", "0 premium requests", 0),
