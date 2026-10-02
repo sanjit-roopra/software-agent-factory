@@ -1,14 +1,21 @@
-"""Read the dashboard script as text.
+"""Read the dashboard script as text, and run its pure helpers in ``node``.
 
-No JavaScript runner is available in the test suite (ADR-016), so asset tests
-pin the wiring in the source. These helpers cut a function out of the script so
-a test can assert on that function alone instead of on the whole file.
+Asset tests pin DOM wiring and security rules in the source. The readers cut a
+function out of the script so a test can assert on that function alone instead
+of on the whole file. ``run_functions`` loads selected helpers, with the
+constants and helpers they use, into one ``node`` process and calls them with
+JSON arguments. It needs plain ``node`` only: no npm and no bundler (ADR-016).
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+from collections.abc import Iterable, Mapping, Sequence
 from functools import cache
+from typing import NamedTuple
 
 _QUOTES = "\"'"
 
@@ -119,3 +126,141 @@ def listener_source(js: str, function: str, target: str, event: str) -> str:
         raise AssertionError(f"no {event} listener on {target} in function {function}")
     open_index = body.find("{", body.index("function", start))
     return _balanced_source(body, start, open_index, f"{event} listener on {target}")
+
+
+# --------------------------------------------------------------------------
+# Running pure helpers in node
+# --------------------------------------------------------------------------
+
+_DEFINITION = re.compile(r"^  ((?:function (\w+)\(|(?:const|let) (\w+) =))", re.MULTILINE)
+_STRING = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'")
+_IDENTIFIER = re.compile(r"(?<![\w.$])[A-Za-z_]\w*")
+_NODE_TIMEOUT_SECONDS = 30
+
+# The page needs a browser. A call gets the few globals the helpers read: a fake
+# ``document`` whose elements are plain objects, and ``location`` and ``history``
+# set per call, so a test can see what a helper wrote to the address bar.
+_PRELUDE = """\
+"use strict";
+const calls = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const document = {
+  createElement: (tagName) => ({ tagName: tagName, className: "", textContent: "" })
+};
+"""
+_RUNNER = """\
+const results = calls.map((call) => {
+  const entries = [];
+  globalThis.location = call.location;
+  globalThis.history = { replaceState: (...entry) => entries.push(entry) };
+  try {
+    return { value: api[call.function](...call.args), history: entries };
+  } catch (error) {
+    return { error: String(error) };
+  }
+});
+process.stdout.write(JSON.stringify(results));
+"""
+
+
+class JsCall(NamedTuple):
+    """One call of a top-level helper with JSON arguments and an optional ``location``."""
+
+    function: str
+    args: tuple[object, ...] = ()
+    location: Mapping[str, str] | None = None
+
+
+class JsResult(NamedTuple):
+    """What a call returned as JSON, and the ``history.replaceState`` calls it made."""
+
+    value: object
+    history: list[list[object]]
+
+
+def find_node() -> str | None:
+    """Path of ``node`` on ``PATH``, or ``None`` when it is not installed."""
+    return shutil.which("node")
+
+
+def _definition_end(code: str, start: int) -> int:
+    """Index just past the top-level ``function`` or ``const`` that starts at ``start``."""
+    is_function = code.startswith("function", start)
+    depth = 0
+    index = start
+    while index < len(code):
+        char = code[index]
+        if char in _QUOTES:
+            index = _skip_string(code, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0 and char == "}" and is_function:
+                return index + 1
+        elif char == ";" and depth == 0:
+            return index + 1
+        index += 1
+    raise AssertionError(f"declaration at offset {start} is not closed")
+
+
+def _names_used(source: str) -> set[str]:
+    """Identifiers in ``source`` outside string literals and property accesses."""
+    return set(_IDENTIFIER.findall(_STRING.sub('""', source)))
+
+
+def _definitions_for(js: str, wanted: Iterable[str]) -> list[str]:
+    """Source of the top-level definitions ``wanted`` needs, in script order."""
+    code = strip_comments(js)
+    starts = {m.group(2) or m.group(3): m.start(1) for m in _DEFINITION.finditer(code)}
+    chosen: dict[str, str] = {}
+    pending = list(wanted)
+    while pending:
+        name = pending.pop()
+        if name in chosen:
+            continue
+        if name not in starts:
+            raise AssertionError(f"{name} is not a top-level definition in the dashboard script")
+        chosen[name] = code[starts[name] : _definition_end(code, starts[name])]
+        pending.extend(used for used in _names_used(chosen[name]) if used in starts)
+    return [chosen[name] for name in sorted(chosen, key=starts.__getitem__)]
+
+
+def _call_payload(call: JsCall) -> dict[str, object]:
+    return {"function": call.function, "args": list(call.args), "location": call.location}
+
+
+def _parse_result(call: JsCall, outcome: dict[str, object]) -> JsResult:
+    if "error" in outcome:
+        raise AssertionError(f"{call.function} threw in node: {outcome['error']}")
+    history = outcome["history"]
+    assert isinstance(history, list)
+    return JsResult(outcome.get("value"), history)
+
+
+def run_functions(js: str, calls: Sequence[JsCall]) -> list[JsResult]:
+    """Call top-level helpers of the script in one ``node`` process.
+
+    The script is not run as a whole. Each called helper is loaded with the
+    constants and helpers it names, so no DOM is needed. Raises when a helper
+    is missing, throws, or when ``node`` fails.
+    """
+    node = find_node()
+    if node is None:
+        raise AssertionError("node is not on PATH")
+    names = sorted({call.function for call in calls})
+    script = "\n".join(
+        [_PRELUDE, *_definitions_for(js, names), f"const api = {{ {', '.join(names)} }};", _RUNNER]
+    )
+    completed = subprocess.run(
+        [node, "-e", script],
+        input=json.dumps([_call_payload(call) for call in calls]),
+        capture_output=True,
+        text=True,
+        timeout=_NODE_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"node failed ({completed.returncode}): {completed.stderr.strip()}")
+    outcomes = json.loads(completed.stdout)
+    return [_parse_result(call, outcome) for call, outcome in zip(calls, outcomes, strict=True)]

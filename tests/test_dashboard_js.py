@@ -1,9 +1,18 @@
-"""Tests for the JavaScript source readers in ``dashboard_js`` (ADR-016)."""
+"""Tests for the JavaScript source readers and the node runner in ``dashboard_js`` (ADR-016)."""
 
 from __future__ import annotations
 
 import pytest
-from dashboard_js import function_source, listener_source, object_literal_source, strip_comments
+from dashboard_js import (
+    JsCall,
+    JsResult,
+    find_node,
+    function_source,
+    listener_source,
+    object_literal_source,
+    run_functions,
+    strip_comments,
+)
 
 
 def test_function_source_returns_the_balanced_body_without_comments() -> None:
@@ -108,3 +117,85 @@ def test_listener_source_looks_only_inside_the_named_function() -> None:
 def test_listener_source_raises_when_the_listener_is_missing() -> None:
     with pytest.raises(AssertionError, match="no keydown listener on button in function wire"):
         listener_source(_WIRING, "wire", "button", "keydown")
+
+
+_PAGE = """
+(function () {
+  "use strict";
+  const GREETING = "hello; {world}";
+  const unused = document.getElementById("missing").value;
+  function shout(name) {
+    return name.toUpperCase() + "!";
+  }
+  function greet(name) {
+    return GREETING + " " + shout(name) + " " + obj.shout;
+  }
+  function boom() {
+    throw new Error("broken helper");
+  }
+  function dropQuery() {
+    globalThis.history.replaceState(null, "", globalThis.location.pathname);
+  }
+  function makeNode() {
+    const node = document.createElement("p");
+    node.textContent = "text";
+    return node;
+  }
+  const obj = { shout: 1 };
+  start();
+})();
+"""
+
+needs_node = pytest.mark.skipif(find_node() is None, reason="node is not on PATH")
+
+
+@needs_node
+def test_run_functions_loads_the_constants_and_helpers_a_function_names() -> None:
+    results = run_functions(_PAGE, [JsCall("greet", ("ann",))])
+
+    assert results == [JsResult("hello; {world} ANN! 1", [])]
+
+
+@needs_node
+def test_run_functions_runs_many_calls_in_order_in_one_process() -> None:
+    calls = [JsCall("shout", ("a",)), JsCall("shout", ("b",)), JsCall("greet", ("c",))]
+
+    values = [result.value for result in run_functions(_PAGE, calls)]
+
+    assert values == ["A!", "B!", "hello; {world} C! 1"]
+
+
+@needs_node
+def test_run_functions_gives_a_helper_a_plain_object_for_each_element() -> None:
+    results = run_functions(_PAGE, [JsCall("makeNode")])
+
+    assert results[0].value == {"tagName": "p", "className": "", "textContent": "text"}
+
+
+@needs_node
+def test_run_functions_reports_the_address_writes_of_each_call() -> None:
+    location = {"pathname": "/page"}
+
+    results = run_functions(_PAGE, [JsCall("dropQuery", (), location), JsCall("shout", ("a",))])
+
+    assert [result.history for result in results] == [[[None, "", "/page"]], []]
+
+
+@needs_node
+def test_run_functions_raises_when_a_helper_throws() -> None:
+    with pytest.raises(AssertionError, match="boom threw in node: Error: broken helper"):
+        run_functions(_PAGE, [JsCall("boom")])
+
+
+@needs_node
+def test_run_functions_raises_when_the_script_does_not_define_the_helper() -> None:
+    with pytest.raises(AssertionError, match="absent is not a top-level definition"):
+        run_functions(_PAGE, [JsCall("absent")])
+
+
+@needs_node
+def test_run_functions_raises_when_node_fails_to_load_the_script() -> None:
+    js = "  const crash = null.value;\n  function broken() { return crash; }"
+
+    with pytest.raises(AssertionError, match="node failed"):
+        run_functions(js, [JsCall("broken")])
