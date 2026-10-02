@@ -24,8 +24,9 @@ _PEM_LABEL = r"[A-Z0-9_ -]{0,40}"
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # GitHub personal access / app / OAuth tokens. Eight characters is the
-    # shortest body any caller ever redacted; the class includes ``_``.
-    re.compile(r"gh[pousr]_[A-Za-z0-9_]{8,}"),
+    # shortest body any caller ever redacted; the class includes ``_``. The guard keeps a
+    # snake_case word such as ``num_highs_and_lows`` whole.
+    re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_\w{20,}"),
     # GitLab personal access tokens, OpenAI and Anthropic keys (``sk-``, ``sk-proj-``,
     # ``sk-ant-``), and Slack tokens.

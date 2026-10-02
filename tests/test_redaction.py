@@ -157,6 +157,15 @@ def test_a_github_token_body_with_underscores_is_redacted_whole() -> None:
     assert redact_secrets("x ghp_abc_def_ghi_jkl y") == f"x {REDACTION_PLACEHOLDER} y"
 
 
+def test_snake_case_word_that_ends_in_a_token_prefix_is_left_alone() -> None:
+    assert redact_secrets("num_highs_and_lows") == "num_highs_and_lows"
+
+
+@pytest.mark.parametrize("prefix", ["x_", " ", "=", "/"])
+def test_a_github_token_after_a_non_alphanumeric_character_is_redacted(prefix: str) -> None:
+    assert redact_secrets(f"{prefix}ghp_abcdefgh12345678") == f"{prefix}{REDACTION_PLACEHOLDER}"
+
+
 def _cut_shape(limit: int = REASON_LIMIT, run_id: str | None = None) -> tuple[int, str, int]:
     """Read the head size, marker and tail size from a real cut."""
     reason, truncated = bounded_reason("H" * (limit * 2) + "T" * (limit * 2), limit, run_id)
@@ -190,8 +199,8 @@ def test_secret_in_the_dropped_middle_leaves_no_trace() -> None:
 def test_secret_straddling_the_head_edge_is_redacted() -> None:
     head, _, _ = _cut_shape()
     start = head - len(_SECRET) // 2
-    text = "x" * start + _SECRET + " " + "y" * (REASON_LIMIT * 2)
-    assert start < head < start + len(_SECRET)
+    text = "x" * (start - 1) + " " + _SECRET + " " + "y" * (REASON_LIMIT * 2)
+    assert text.index(_SECRET) < head < text.index(_SECRET) + len(_SECRET)
 
     reason, truncated = bounded_reason(text)
 
@@ -202,7 +211,7 @@ def test_secret_straddling_the_head_edge_is_redacted() -> None:
 
 def test_secret_straddling_the_tail_edge_is_redacted() -> None:
     _, _, tail = _cut_shape()
-    prefix = "x" * (REASON_LIMIT * 2)
+    prefix = "x" * (REASON_LIMIT * 2) + " "
     suffix = " " + "y" * (tail - len(_SECRET) // 2 - 1)
     text = prefix + _SECRET + suffix
     boundary = len(text) - tail
