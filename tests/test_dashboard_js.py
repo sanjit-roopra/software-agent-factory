@@ -248,23 +248,29 @@ def test_reading_the_value_of_a_case_that_threw_raises() -> None:
 
 
 def test_run_functions_raises_when_the_script_does_not_define_the_helper() -> None:
+    calls = [JsCall("absent")]
+
     with pytest.raises(AssertionError, match="absent is not a top-level definition"):
-        run_functions(_PAGE, [JsCall("absent")])
+        run_functions(_PAGE, calls)
 
 
 def test_run_functions_raises_when_node_fails_to_load_the_script() -> None:
     js = "  const crash = null.value;\n  function broken() { return crash; }"
 
+    calls = [JsCall("broken")]
+
     with pytest.raises(AssertionError, match="node failed"):
-        run_functions(js, [JsCall("broken")])
+        run_functions(js, calls)
 
 
 def test_run_functions_fails_in_ci_when_node_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_FIND_NODE, lambda: None)
     monkeypatch.setenv("CI", "true")
 
+    calls = [JsCall(_SHOUT, ("a",))]
+
     with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
-        run_functions(_PAGE, [JsCall(_SHOUT, ("a",))])
+        run_functions(_PAGE, calls)
 
 
 def test_run_functions_sends_undefined_nan_and_infinity_as_arguments() -> None:
