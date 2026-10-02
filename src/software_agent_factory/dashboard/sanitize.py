@@ -18,8 +18,10 @@ questions are free text too, so each string gets the same redact and cut, and
 an over-long list is dropped whole. ``reasoning`` on a call is the reasoning
 level (for example ``high``), never model text: it is kept only when it is a
 short token.
-The run ``title`` and the attempt and call ``model`` names are redacted with
-:func:`software_agent_factory.redaction.redact_secrets`. They are not cut.
+The run and task ``title`` and the attempt, call and project ``model`` names are
+redacted with :func:`software_agent_factory.redaction.redact_secrets`. They are not cut.
+A value that is not text becomes ``None``. The health messages, remediation text,
+degraded reasons and error get the same redaction.
 
 Nothing here composes a view model. :mod:`software_agent_factory.dashboard.view`
 adds the run totals and the next step to what these functions return.
@@ -63,6 +65,9 @@ _GITHUB_LOGIN_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 _SHORT_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _SAFE_ARTIFACT_NAMES = frozenset(ARTIFACT_FILENAMES.values())
 
+#: The one spelling of the title field: it is allowlisted and redacted by this name.
+_TITLE_FIELD = "title"
+
 #: Fields rendered in the paginated run table (``/api/runs``). Includes both
 #: ``run_id`` (the real ``observability.RunSummary`` field name) and ``id``
 #: (accepted from simpler providers/tests) since the client tolerates either.
@@ -72,7 +77,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "id",
         "work_item_id",
         "source_external_id",
-        "title",
+        _TITLE_FIELD,
         "state",
         "complexity",
         "risk",
@@ -242,7 +247,7 @@ PROJECT_FIELDS: frozenset[str] = frozenset(
 PROJECT_TASK_FIELDS: frozenset[str] = frozenset(
     {
         "task_id",
-        "title",
+        _TITLE_FIELD,
         "state",
         "run_id",
         "issue_url",
@@ -338,14 +343,32 @@ def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
 
 
-def _redacted(value: Any) -> Any:
-    """``value`` with secret shapes redacted when it is text, else unchanged."""
-    return redact_secrets(value) if isinstance(value, str) else value
+#: Name fields that hold free text: a run or task title and a model name.
+_NAME_KEYS = (_TITLE_FIELD, "model")
+
+#: Free text in a health report: a check message, its fix and the report error.
+_HEALTH_TEXT_KEYS = ("message", "remediation", "error")
 
 
-def _sanitize_summary_fields(data: dict[str, Any], sanitized: dict[str, Any]) -> None:
-    if "title" in sanitized:
-        sanitized["title"] = _redacted(sanitized["title"])
+def _redacted(value: Any) -> str | None:
+    """``value`` with secret shapes redacted when it is text, else ``None``."""
+    return redact_secrets(value) if isinstance(value, str) else None
+
+
+def _redact_keys(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """``data`` with the value under each present key redacted, in place."""
+    for key in keys:
+        if key in data:
+            data[key] = _redacted(data[key])
+    return data
+
+
+def _redact_names(data: dict[str, Any]) -> dict[str, Any]:
+    return _redact_keys(data, _NAME_KEYS)
+
+
+def _sanitize_summary_fields(sanitized: dict[str, Any]) -> None:
+    _redact_names(sanitized)
     external_id = sanitized.get("source_external_id")
     if not isinstance(external_id, str) or not _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(external_id):
         sanitized.pop("source_external_id", None)
@@ -397,7 +420,7 @@ def sanitize_run_summary(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("run summary must serialize to a JSON object")
     sanitized = _allowlist(data, RUN_SUMMARY_FIELDS)
-    _sanitize_summary_fields(data, sanitized)
+    _sanitize_summary_fields(sanitized)
     if "performance" in sanitized:
         sanitized["performance"] = sanitize_performance(sanitized["performance"])
     return sanitized
@@ -449,9 +472,7 @@ def sanitize_attempt(raw: Any, run_id: str | None = None) -> dict[str, Any]:
     data = to_json_safe(raw)
     if not isinstance(data, dict):
         return {}
-    sanitized = _allowlist(data, ATTEMPT_FIELDS)
-    if "model" in sanitized:
-        sanitized["model"] = _redacted(sanitized["model"])
+    sanitized = _redact_names(_allowlist(data, ATTEMPT_FIELDS))
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     return sanitized
 
@@ -486,11 +507,11 @@ def _outcome_status(success: Any) -> str | None:
 def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
     success = data.get("success")
     usage = _call_usage(data.get("usage"))
-    return {
+    call = {
         "invocation_number": _positive_int(data.get("invocation_number")),
         "role": data.get("role"),
         "purpose": _short_token(data.get("purpose")),
-        "model": _redacted(data.get("model")),
+        "model": data.get("model"),
         "reasoning": _short_token(data.get("reasoning")),
         "context_tier": data.get("context_tier"),
         "status": _outcome_status(success),
@@ -503,6 +524,7 @@ def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         "total_tokens": call_total_tokens(usage),
         **_reason_fields(data.get("failure_reason"), run_id),
     }
+    return _redact_names(call)
 
 
 def sanitize_invocation(raw: Any, run_id: str | None = None) -> dict[str, Any]:
@@ -654,7 +676,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("run detail must serialize to a JSON object")
     sanitized = _allowlist(data, RUN_DETAIL_FIELDS)
-    _sanitize_summary_fields(data, sanitized)
+    _sanitize_summary_fields(sanitized)
     if "usage" in sanitized:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
     if "performance" in sanitized:
@@ -763,7 +785,9 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
     tasks = data.get("tasks")
     if isinstance(tasks, list):
         sanitized["tasks"] = [
-            _allowlist(task, PROJECT_TASK_FIELDS) for task in tasks if isinstance(task, dict)
+            _redact_names(_allowlist(task, PROJECT_TASK_FIELDS))
+            for task in tasks
+            if isinstance(task, dict)
         ]
     models = data.get("models")
     if isinstance(models, list):
@@ -771,7 +795,7 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
         for model in models:
             if not isinstance(model, dict):
                 continue
-            model_data = _allowlist(model, PROJECT_MODEL_FIELDS)
+            model_data = _redact_names(_allowlist(model, PROJECT_MODEL_FIELDS))
             model_data["status"] = model_data.get("status") or _outcome_status(
                 model_data.get("success")
             )
@@ -841,7 +865,10 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
 
-    sanitized = _allowlist(data, HEALTH_ALLOWED_FIELDS)
+    sanitized = _redact_keys(_allowlist(data, HEALTH_ALLOWED_FIELDS), _HEALTH_TEXT_KEYS)
+    reasons = sanitized.get("degraded_reasons")
+    if isinstance(reasons, list):
+        sanitized["degraded_reasons"] = [_redacted(reason) for reason in reasons]
 
     stale_runs = data.get("stale_runs")
     if isinstance(stale_runs, list):
@@ -877,7 +904,12 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
             check_safe = to_json_safe(check)
             if isinstance(check_safe, dict):
                 sanitized_checks.append(
-                    _allowlist(check_safe, frozenset({"name", "status", "message", "remediation"}))
+                    _redact_keys(
+                        _allowlist(
+                            check_safe, frozenset({"name", "status", "message", "remediation"})
+                        ),
+                        _HEALTH_TEXT_KEYS,
+                    )
                 )
         sanitized["checks"] = sanitized_checks
 

@@ -3399,6 +3399,27 @@ def _token_run_detail(run_id: str) -> dict[str, Any]:
     }
 
 
+def _token_project_provider() -> dict[str, Any]:
+    project = fake_project_provider()["projects"][0]
+    task = {**project["tasks"][0], "title": f"Fix {_TITLE_TOKEN} now"}
+    model = {**project["models"][0], "model": f"model-{_TITLE_TOKEN}"}
+    return {"projects": [{**project, "tasks": [task], "models": [model]}]}
+
+
+_LEAKY_HEALTH_TEXT = f"saw {_TITLE_TOKEN} here"
+_REDACTED_HEALTH_TEXT = "saw [REDACTED] here"
+
+
+def _token_health_provider() -> dict[str, Any]:
+    check = {"name": "git", "status": "fail"}
+    return {
+        "success": False,
+        "error": _LEAKY_HEALTH_TEXT,
+        "degraded_reasons": [_LEAKY_HEALTH_TEXT],
+        "checks": [{**check, "message": _LEAKY_HEALTH_TEXT, "remediation": _LEAKY_HEALTH_TEXT}],
+    }
+
+
 @pytest.fixture
 def token_server() -> Iterator[RunningServer]:
     running = _start(
@@ -3407,6 +3428,8 @@ def token_server() -> Iterator[RunningServer]:
             port=0,
             snapshot_provider=_token_snapshot_provider,
             run_detail_provider=_token_run_detail,
+            project_provider=_token_project_provider,
+            health_provider=_token_health_provider,
         )
     )
     try:
@@ -3451,6 +3474,39 @@ def test_a_secret_in_a_title_or_model_is_redacted_in_the_compare_view(
     assert payload["a"]["models"] == [_REDACTED_MODEL]
 
 
-@pytest.mark.parametrize("value", [None, 7, ["x"]], ids=repr)
-def test_a_title_that_is_not_text_passes_through_the_sanitizer(value: Any) -> None:
-    assert sanitize_run_summary({"run_id": "r", "title": value})["title"] == value
+def test_a_secret_in_a_project_task_title_or_model_is_redacted(token_server: RunningServer) -> None:
+    raw, payload = _get_json(token_server, "/api/projects")
+
+    assert _TITLE_TOKEN not in raw
+    (project,) = payload["projects"]
+    assert project["tasks"][0]["title"] == _REDACTED_TITLE
+    assert project["models"][0]["model"] == _REDACTED_MODEL
+
+
+def test_a_secret_in_health_text_is_redacted_in_the_summary(token_server: RunningServer) -> None:
+    raw, payload = _get_json(token_server, "/api/summary")
+
+    assert _TITLE_TOKEN not in raw
+    health = payload["health"]
+    assert health["error"] == _REDACTED_HEALTH_TEXT
+    assert health["degraded_reasons"] == [_REDACTED_HEALTH_TEXT]
+    assert health["checks"][0]["message"] == _REDACTED_HEALTH_TEXT
+    assert health["checks"][0]["remediation"] == _REDACTED_HEALTH_TEXT
+
+
+_NOT_TEXT = [None, 7, ["x"], {"k": "v"}]
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT, ids=repr)
+def test_a_title_that_is_not_text_is_dropped_by_the_sanitizer(value: Any) -> None:
+    assert sanitize_run_summary({"run_id": "r", "title": value})["title"] is None
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT, ids=repr)
+def test_a_project_task_title_or_model_that_is_not_text_is_dropped(value: Any) -> None:
+    project = sanitize_project(
+        {"tasks": [{"task_id": 1, "title": value}], "models": [{"scope": "p", "model": value}]}
+    )
+
+    assert project["tasks"][0]["title"] is None
+    assert project["models"][0]["model"] is None
