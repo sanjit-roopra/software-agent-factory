@@ -685,6 +685,33 @@ class UsageMetrics(ModelBase):
     field existed)."""
 
 
+#: Token classes and cost units a call reports, named once here. The dashboard
+#: totals, the key figures and the page keys all read these. An unreported value
+#: is ``None``, never ``0``. ``usage_value_usd`` is derived from ``total_nano_aiu``,
+#: so it is not a ``UsageMetrics`` field.
+TOKEN_CLASS_FIELDS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+COST_UNIT_FIELDS: tuple[str, ...] = (
+    "total_premium_request_cost",
+    "usage_value_usd",
+    "list_price_estimate_usd",
+)
+
+#: The token classes one call's total adds up. Reasoning tokens stay out: the
+#: runtime already counts them inside the output tokens (see "Usage mapping" in
+#: docs/specs/pi-agent-runtime.md). Cache classes stay in: they are separate from
+#: input. The Copilot usage fixture in tests/test_copilot_runtime.py reports 1195
+#: input tokens beside 47104 cache-read tokens, so cache read cannot be part of input.
+TOTAL_TOKEN_FIELDS: tuple[str, ...] = tuple(
+    field for field in TOKEN_CLASS_FIELDS if field != "reasoning_tokens"
+)
+
+
 class PerformanceMetric(ModelBase):
     """One bounded typed performance metric observation."""
 

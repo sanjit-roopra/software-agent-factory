@@ -22,6 +22,7 @@ from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.responses import ConflictReason
 from software_agent_factory.dashboard.security import TOKEN_HEADER
 from software_agent_factory.dashboard.snapshot import MAX_PAGE_LIMIT
+from software_agent_factory.models import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS
 from software_agent_factory.observability import MonitoringSnapshot
 from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
@@ -723,9 +724,7 @@ def test_the_timeline_says_there_are_no_calls_yet_until_a_call_arrives() -> None
 
 
 def test_the_script_names_the_same_token_classes_and_cost_units_as_the_server() -> None:
-    from software_agent_factory.dashboard.aggregate import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS
-
-    assert re.findall(r'key: "([a-z_]+_tokens)"', _constant_source("TOKEN_CLASSES")) == list(
+    assert re.findall(r'key: "([a-z_]+)"', _constant_source("TOKEN_CLASSES")) == list(
         TOKEN_CLASS_FIELDS
     )
     assert re.findall(r'key: "([a-z_]+)"', _constant_source("COST_UNITS")) == list(COST_UNIT_FIELDS)
