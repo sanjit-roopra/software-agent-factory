@@ -31,7 +31,7 @@ from software_agent_factory.cli import (
 from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
 from software_agent_factory.dashboard.actions import ResumeActions
 from software_agent_factory.dashboard.handler import MAX_BODY_BYTES
-from software_agent_factory.dashboard.security import TOKEN_HEADER
+from software_agent_factory.dashboard.security import TOKEN_HEADER, cookie_name
 from software_agent_factory.dashboard.server import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from software_agent_factory.dashboard.snapshot import ResumeRequestResult
 from software_agent_factory.models import (
@@ -424,6 +424,24 @@ def test_the_token_only_in_the_query_string_is_not_enough(make_rig: RigFactory) 
         )
 
     assert status == 401
+
+
+def test_the_session_cookie_without_the_token_header_is_not_enough(make_rig: RigFactory) -> None:
+    rig = make_rig()
+    cookie = f"{cookie_name(rig.port)}={rig.server.token}"
+    with rig.assert_writes_nothing():
+        status, _ = rig.approve(**{TOKEN_HEADER: None, "Cookie": cookie})
+
+    assert status == 401
+
+
+def test_the_token_header_with_the_session_cookie_is_accepted(make_rig: RigFactory) -> None:
+    rig = make_rig()
+    cookie = f"{cookie_name(rig.port)}={rig.server.token}"
+
+    status, _ = rig.approve(Cookie=cookie)
+
+    assert status == 202
 
 
 def test_a_body_over_16_kb_is_413(make_rig: RigFactory) -> None:

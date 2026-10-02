@@ -380,7 +380,7 @@ factory dashboard --port 0 --open-browser
 | Option | Default | Effect |
 | --- | --- | --- |
 | `--port <int>` | `8765` | Loopback port. `0` asks the OS for a free port. |
-| `--open-browser` | off | Open the tokenized URL in the default browser. |
+| `--open-browser` | off | Open the tokenized link in the default browser. |
 | `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per request. |
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
@@ -409,8 +409,26 @@ figure shows `not reported` when no recent call reported tokens.
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Two `POST` routes are the
 only writes: approve a risk halt and answer plan decisions (ADR-033). The
-tokenized URL is printed to stdout once and never written to the log. Ctrl-C stops
+tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
+
+Open the printed link once. The first request returns the page and sets a session
+cookie. The page then removes the token from the address bar and the current
+history entry. Some browsers can still keep the first address in their visit
+records until the dashboard restarts. A reload works from the cookie.
+
+A write also needs the token in a header, which the page sends. A read that has
+the token header uses the header alone. A wrong header gets `401`, even with a
+right cookie. The cookie counts only when the header is absent.
+
+The cookie is as strong as the token. Any program that holds the cookie can load
+the page and read the token. This includes another local server on `127.0.0.1`
+that the browser visits. The `Host` and `Origin` checks stop browsers only. Treat
+anything that listens on `127.0.0.1` as trusted, including a forwarded port such
+as `ssh -L` or a container port.
+
+A new `factory dashboard` start makes a new token. Open the new link after a
+restart.
 
 This is the only command that opens a socket.
 

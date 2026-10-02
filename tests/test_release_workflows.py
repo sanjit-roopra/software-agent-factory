@@ -775,7 +775,9 @@ if {bad_first_line}:
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(STATUS)
+        # Like the dashboard: the token in the URL is not enough for an asset.
+        authorized = self.headers.get("X-Factory-Token") == "t" and "?" not in self.path
+        self.send_response(STATUS if authorized else 401)
         self.send_header("Content-Length", str(len(BODY)))
         self.end_headers()
         self.wfile.write(BODY)

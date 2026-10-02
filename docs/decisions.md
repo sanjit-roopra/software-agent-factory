@@ -104,9 +104,51 @@ Authority for a local approval:
   It also records the time and the context fingerprint, and the service writes a log event.
 - A `POST` also needs the token in a header, an exact `Origin` and a JSON body of at most 16 KB.
   Other write methods return `405`.
-- The per-start token stays in the page URL and in the browser history.
-  Anyone who can read the operator's browser history or terminal can approve while that dashboard runs.
-  A server-set cookie can remove the token from the URL (follow-up).
+- The page link that `factory dashboard` prints holds the token in its query.
+  The first request for that link gets the page with status `200`.
+  The response also sets a session cookie.
+  The page script then removes the query from the address bar and from the current history entry.
+  It keeps the fragment. A reload then works from the cookie.
+- The server does not redirect the link.
+  A `303` leaves the first address in the history of Chrome and Firefox.
+  A browser can also drop a `SameSite=Strict` cookie that arrives on a redirect after a click from another site.
+  The first open then gets `401`.
+- The removal is best effort.
+  The page removes the token from the address bar and the current history entry.
+  Some browsers can still keep the first address in their visit records until the dashboard restarts.
+  The old token has no use after a restart.
+- The response for the link is never cached, and it sends `Referrer-Policy: no-referrer`.
+- The cookie is `HttpOnly`, `SameSite=Strict` and `Path=/`.
+  It has no `Max-Age`, so it ends with the browser session.
+  It has no `Secure` flag, because the server speaks plain `http` on loopback and a browser can drop a `Secure` cookie over `http`.
+  Its name ends with the port, because a browser shares cookies between the ports of one host.
+- Only the page route accepts the token in its query, and only for this first request.
+  A `GET` for the page, an asset or the API needs the cookie or the token header.
+  A token in the query of any other route never counts.
+  A `POST` still needs the token header, so the cookie alone cannot write.
+- A `GET` that has the token header uses the header alone.
+  A wrong header gets `401`, even when the cookie is right.
+  The cookie counts only when the header is absent.
+  After a restart on the same port, a tab of the old start still sends its old token in the header.
+  This rule stops that tab from working halfway.
+- The page holds the token in a `<meta>` tag, and the script sends it in the header for a write.
+  The server renders the page only for a request that holds the token.
+  So the address bar, the current history entry and referrers hold no token.
+  `HttpOnly` keeps the cookie from script, but script that runs in the page can read the `<meta>` tag.
+  The content security policy allows only scripts from the dashboard itself.
+- After a restart the server has a new token, so the old cookie gets `401`.
+  The operator opens the new link from `factory dashboard`.
+- The cookie is as strong as the token.
+  Any program that holds the cookie can load the page and read the token from the `<meta>` tag.
+  A browser counts all ports of `127.0.0.1` as one site, so it sends the cookie to every port.
+  So another local web server on `127.0.0.1` that the browser visits can receive it and reuse it.
+  The `Host` check and the `Origin` check on a write stop a page in a browser only.
+  A program that is not a browser can send any `Host` and `Origin` header.
+  The team accepts this risk: the trust boundary is anything that listens on `127.0.0.1`.
+  That includes a forwarded port, such as `ssh -L`, a container port or an editor port forward.
+  Do not forward a port to `127.0.0.1` from a host you do not trust while the dashboard runs.
+  Anyone who can read the cookie store of the browser can also approve while that dashboard runs.
+- The terminal still shows the link while it stays on screen.
 
 Consequences:
 

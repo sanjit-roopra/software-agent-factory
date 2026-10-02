@@ -82,6 +82,19 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 - Reads with `GET`. The only writes are the two actions below.
 - Requires a token generated for that process. The tokenized URL is printed to
   stdout once and never written to the log.
+- Returns the page and sets a session cookie on the first request for that URL.
+  The page then removes the token from the address bar and the current history
+  entry, and a reload works. Some browsers can still keep the first address in
+  their visit records until the dashboard restarts. After a restart, open the
+  new link.
+- Uses the token header alone when a read has that header. A wrong header gets
+  `401`, even with a right cookie. The cookie counts only when the header is
+  absent.
+- The cookie is as strong as the token. Any program that holds the cookie can
+  load the page and read the token. This includes another local server on
+  `127.0.0.1` that the browser visits. The `Host` and `Origin` checks stop
+  browsers only. Anything that listens on `127.0.0.1` is trusted, including a
+  forwarded port such as `ssh -L` or a container port.
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
 
 It shows project state, issue references, pull requests, merge progress, and
@@ -128,7 +141,7 @@ and focus moves to it. These messages come from the page.
 
 | Message | Cause |
 | --- | --- |
-| `dashboard restarted, reload the page` | The token no longer matches (`401`). |
+| `dashboard restarted, open the new link from factory dashboard` | The token no longer matches (`401`). Open the new link that `factory dashboard` printed. |
 | `open the dashboard from the link it printed` | The request did not come from the page (`403`). |
 | `this run no longer exists` | The run was removed (`404`). |
 | `already approved` (`answers already sent` for answers) | A request for this run and context exists. |

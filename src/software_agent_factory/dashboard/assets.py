@@ -13,13 +13,18 @@ from .snapshot import MAX_PAGE_LIMIT
 
 #: Name of the ``<meta>`` tag the initial HTML uses to hand the token to
 #: ``app.js`` without ever placing it in an inline ``<script>`` (the CSP
-#: below forbids inline/eval script execution entirely).
+#: below forbids inline/eval script execution entirely). The page script sends the token
+#: in a header on a write. The cookie is ``HttpOnly``, so the script cannot read it.
 TOKEN_META_NAME = "factory-dashboard-token"
 
 
 def render_index_html(*, token: str) -> str:
     """Render the single static page. ``token`` is a server-generated value,
-    never user input, so embedding it directly as an attribute is safe."""
+    never user input, so embedding it directly as an attribute is safe.
+
+    The handler renders this only for a request that holds the token. The asset links
+    carry no token: the cookie authenticates them.
+    """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -27,8 +32,8 @@ def render_index_html(*, token: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="{TOKEN_META_NAME}" content="{token}">
 <title>Software Agent Factory &mdash; Dashboard</title>
-<link rel="stylesheet" href="/assets/style.css?token={token}">
-<script defer src="/assets/app.js?token={token}"></script>
+<link rel="stylesheet" href="/assets/style.css">
+<script defer src="/assets/app.js"></script>
 </head>
 <body>
 <div class="shell">

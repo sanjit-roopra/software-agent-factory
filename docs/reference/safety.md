@@ -454,6 +454,24 @@ write actions, not a control plane.
 - Reads with `GET`. Two `POST` routes are the only writes: approve a risk
   approval, and answer plan decisions (ADR-033).
 - Token generated per process, printed once, never logged.
+- The first request for the printed link returns the page and sets an
+  `HttpOnly`, `SameSite=Strict` session cookie. The page then removes the token
+  from the address bar and the current history entry. A reload works from the
+  cookie. Only the page route accepts the token in its address, and only for
+  that first request. Every other route needs the cookie or the token header
+  (ADR-033).
+- The removal is best effort. Some browsers can still keep the first address in
+  their visit records until the dashboard restarts. The old token has no use
+  after a restart.
+- A read that has the token header uses the header alone. A wrong header gets
+  `401`, even with a right cookie. The cookie counts only when the header is
+  absent.
+- The cookie is as strong as the token. Any program that holds the cookie can
+  load the page and read the token. This includes another local server on
+  `127.0.0.1` that the browser visits. The `Host` and `Origin` checks stop
+  browsers only. The team accepts this risk: the trust boundary is anything that
+  listens on `127.0.0.1`, including a forwarded port such as `ssh -L` or a
+  container port.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object
@@ -463,8 +481,8 @@ write actions, not a control plane.
 - Failure reasons and escalation text are redacted first, then cut to 500
   characters with the start and the end kept. A cut reason names
   `factory show <run>` for the full text (ADR-033).
-- A write needs the token in a header. A token in the address never counts.
-  It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
+- A write needs the token in a header. A token in the address or in the
+  cookie never counts alone. It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
   current episode and context fingerprint. The page asks you to confirm an
   approval before it sends anything.
 - A write never changes `run.json`. It creates one request file. The factory

@@ -7,6 +7,9 @@
   const EMPTY_VALUE = "\u2014";
   const NOT_REPORTED = "not reported";
 
+  // TOKEN_QUERY_PARAM in dashboard/security.py: the query field of the page link.
+  const TOKEN_QUERY_PARAM = "token";
+
   const ERROR_UNAUTHORIZED = "unauthorized";
   const ERROR_CONNECTION = "connection";
   const ERROR_REQUEST = "request";
@@ -292,7 +295,7 @@
 
   function noticeMessage() {
     if (state.noticeKind === ERROR_UNAUTHORIZED) {
-      return "Dashboard restarted, reload the page.";
+      return "Dashboard restarted, open the new link from factory dashboard.";
     }
     if (state.noticeKind !== ERROR_CONNECTION) {
       return state.actionMessage;
@@ -1394,7 +1397,7 @@
   // Statuses with their own wording. A 400 names the decision and a 409 uses its
   // reason code, so neither is listed here. Any other status is FAILURE_TEXT.
   const STATUS_MESSAGES = {
-    401: "dashboard restarted, reload the page",
+    401: "dashboard restarted, open the new link from factory dashboard",
     403: "open the dashboard from the link it printed",
     404: "this run no longer exists"
   };
@@ -2311,8 +2314,19 @@
     });
   }
 
+  // The page link holds the token in its query. The server has set the cookie by now, so
+  // the address bar and the current history entry drop the query. The hash stays.
+  function stripTokenFromAddress() {
+    const hasToken = new URLSearchParams(globalThis.location.search).has(TOKEN_QUERY_PARAM);
+    if (hasToken) {
+      const { pathname, hash } = globalThis.location;
+      globalThis.history.replaceState(null, "", pathname + hash);
+    }
+  }
+
   function start() {
     applyStoredTheme();
+    stripTokenFromAddress();
     bindControls();
     seedBackHistory();
     applyRoute(false);

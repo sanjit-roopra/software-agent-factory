@@ -22,7 +22,7 @@ import tarfile
 import threading
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 SMOKE_PARENT_MARKER = ".software-agent-factory-smoke-parent"
@@ -267,7 +267,9 @@ def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
     """``factory dashboard`` must serve its packaged script and stylesheet.
 
     The assets are package data. A wheel, sdist or frozen bundle that misses
-    them fails here instead of on a user's first ``factory dashboard``.
+    them fails here instead of on a user's first ``factory dashboard``. The
+    printed link carries the token in its query. Only the page route accepts that
+    (ADR-033), so the asset requests send the token in the header.
     """
     process = subprocess.Popen(
         [str(executable), "dashboard", "--data-dir", str(data_dir), "--port", "0"],
@@ -278,9 +280,10 @@ def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
     try:
         url = _read_dashboard_url(process)
         parts = urlsplit(url)
+        token = parse_qs(parts.query)["token"][0]
         for asset in DASHBOARD_ASSETS:
             request = urllib.request.Request(  # noqa: S310 - fixed loopback URL
-                f"{parts.scheme}://{parts.netloc}{asset}?{parts.query}"
+                f"{parts.scheme}://{parts.netloc}{asset}", headers={"X-Factory-Token": token}
             )
             with urllib.request.urlopen(
                 request, timeout=DASHBOARD_REQUEST_TIMEOUT_SECONDS

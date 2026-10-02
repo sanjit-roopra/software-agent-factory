@@ -73,10 +73,26 @@ def test_totals_stay_on_the_runs_view() -> None:
 
 def test_script_is_deferred_in_the_head_and_not_in_the_body() -> None:
     head, body = _INDEX_HTML.split("</head>")
-    assert re.search(
-        r'<script\s+defer\s+src="/assets/app\.js\?token=fixture-token"></script>', head
-    )
+    assert re.search(r'<script\s+defer\s+src="/assets/app\.js"></script>', head)
     assert "<script" not in body
+
+
+def test_the_script_never_puts_the_token_in_a_url() -> None:
+    assert re.search(r"[?&]token=", dashboard_assets.APP_JS) is None
+
+
+def test_the_script_reads_the_token_from_the_meta_tag_the_page_renders() -> None:
+    reader = function_source(dashboard_assets.APP_JS, "readToken")
+    assert f'meta[name="{dashboard_assets.TOKEN_META_NAME}"]' in reader
+    assert (
+        f'<meta name="{dashboard_assets.TOKEN_META_NAME}" content="fixture-token">' in _INDEX_HTML
+    )
+
+
+def test_a_write_sends_the_meta_token_in_the_token_header() -> None:
+    poster = function_source(dashboard_assets.APP_JS, "postAction")
+    assert '"X-Factory-Token": token' in poster
+    assert 'credentials: "same-origin"' in poster
 
 
 def test_route_parser_pins_every_route_shape() -> None:
@@ -346,7 +362,7 @@ def test_notice_texts_report_a_lost_connection_and_a_restart() -> None:
         in message
     )
     assert '"Connection lost, not updated yet"' in message
-    assert '"Dashboard restarted, reload the page."' in message
+    assert '"Dashboard restarted, open the new link from factory dashboard."' in message
 
 
 def test_a_401_is_told_apart_from_a_network_error() -> None:
@@ -994,7 +1010,7 @@ def _plain_strings(literal: str) -> dict[str, str]:
 
 def test_each_status_has_the_message_the_plan_names() -> None:
     assert _plain_strings(object_literal_source(_JS, "STATUS_MESSAGES")) == {
-        "401": "dashboard restarted, reload the page",
+        "401": "dashboard restarted, open the new link from factory dashboard",
         "403": "open the dashboard from the link it printed",
         "404": "this run no longer exists",
     }
@@ -1289,7 +1305,12 @@ def test_leaving_the_view_drops_the_message_and_closes_an_open_dialog() -> None:
 
 def test_the_script_reads_the_token_from_the_page_and_never_from_the_address() -> None:
     assert function_source(_JS, "readToken").count("location") == 0
-    assert "location.search" not in _JS
+    assert ".get(TOKEN_QUERY_PARAM)" not in _JS
+
+
+def test_the_script_looks_at_the_address_query_only_to_drop_the_token() -> None:
+    assert _JS.count("location.search") == 1
+    assert "location.search" in function_source(_JS, "stripTokenFromAddress")
 
 
 def test_the_dialog_and_the_form_have_styles_and_a_disabled_button_looks_disabled() -> None:
