@@ -8,12 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from software_agent_factory import redaction, verification
+from software_agent_factory import redaction
 from software_agent_factory.redaction import (
     _SECRET_PATTERNS,
     REASON_LIMIT,
     REDACTION_PLACEHOLDER,
     bounded_reason,
+    contains_secret,
     redact_secrets,
 )
 
@@ -23,6 +24,7 @@ _PEM_BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
 #: must not survive redaction).
 _SAMPLES: tuple[tuple[str, str, str], ...] = (
     ("github-token", "ghp_abcdefgh12345678", "abcdefgh12345678"),
+    ("github-token-full", "x" + "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8", "A1b2C3d4E5"),
     ("github-pat", "github_pat_abcdefghij0123456789", "abcdefghij0123456789"),
     ("aws-access-key-id", "AKIAABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP"),
     ("aws-secret-key", "aws_secret_access_key=" + "A1b2C3d4E5" * 4, "A1b2C3d4E5"),
@@ -42,13 +44,23 @@ _SAMPLES: tuple[tuple[str, str, str], ...] = (
         "dozjgNryP4J3jVmNHl0w5N",
     ),
     ("assignment", "MY_API_KEY=abcdefgh12345", "abcdefgh12345"),
+    ("assignment-secret-key", "SECRET_KEY=abcdefgh12345", "abcdefgh12345"),
+    ("assignment-hyphen-api-key", "api-key: abcdefgh12345", "abcdefgh12345"),
+    ("openai-key", "sk-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("openai-project-key", "sk-proj-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("anthropic-key", "sk-ant-api03-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("gitlab-token", "glpat-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("slack-token", "xoxb-1234567890-abcdef", "1234567890-abcdef"),
+    ("url-user-password", "https://bob:hunter22@example.com/repo", "hunter22"),
+    ("url-user-only", "ssh://deploytoken@example.com/repo", "deploytoken"),
+    ("pem-header-variant", "-----BEGIN EC-P256 PRIVATE KEY-----", "EC-P256"),
 )
 
 #: (id, text, redacted?) pairs written by hand around the smallest accepted size
 #: of each quantified pattern. Change them with the quantifier when a pattern changes.
 _THRESHOLDS: tuple[tuple[str, str, bool], ...] = (
-    ("github-token-15", "ghp_" + "a" * 15, False),
-    ("github-token-16", "ghp_" + "a" * 16, True),
+    ("github-token-7", "ghp_" + "a" * 7, False),
+    ("github-token-8", "ghp_" + "a" * 8, True),
     ("github-pat-19", "github_pat_" + "a" * 19, False),
     ("github-pat-20", "github_pat_" + "a" * 20, True),
     ("aws-key-body-15", "AKIA" + "A" * 15, False),
@@ -60,6 +72,21 @@ _THRESHOLDS: tuple[tuple[str, str, bool], ...] = (
     ("bearer-20", "bearer " + "a" * 20, True),
     ("assignment-7", "MY_TOKEN=" + "a" * 7, False),
     ("assignment-8", "MY_TOKEN=" + "a" * 8, True),
+    ("secret-key-7", "SECRET_KEY=" + "a" * 7, False),
+    ("secret-key-8", "SECRET_KEY=" + "a" * 8, True),
+    ("aws-secret-39", "aws_secret_access_key=" + "a" * 39, False),
+    ("aws-secret-40", "aws_secret_access_key=" + "a" * 40, True),
+    ("basic-7", "Basic " + "a" * 7 + "=", False),
+    ("basic-8", "Basic " + "a" * 8 + "=", True),
+    ("openai-key-19", "sk-" + "a" * 19, False),
+    ("openai-key-20", "sk-" + "a" * 20, True),
+    ("gitlab-token-19", "glpat-" + "a" * 19, False),
+    ("gitlab-token-20", "glpat-" + "a" * 20, True),
+    ("slack-token-9", "xoxb-" + "1" * 9, False),
+    ("slack-token-10", "xoxb-" + "1" * 10, True),
+    ("slack-token-kind-x", "xoxx-" + "1" * 10, False),
+    ("url-without-credentials", "https://example.com/repo", False),
+    ("url-with-user", "https://u@example.com/repo", True),
 )
 
 
@@ -87,6 +114,18 @@ def test_pattern_minimum_length_boundaries(text: str, is_redacted: bool) -> None
     assert (redact_secrets(f"x {text} y") != f"x {text} y") is is_redacted
 
 
+@pytest.mark.parametrize(
+    ("sample", "secret"), [row[1:] for row in _SAMPLES], ids=[row[0] for row in _SAMPLES]
+)
+def test_contains_secret_is_true_for_each_secret_shape(sample: str, secret: str) -> None:
+    assert contains_secret(f"before {sample} after") is True
+
+
+@pytest.mark.parametrize("text", ["", "plain failure text", "configure basic authentication"])
+def test_contains_secret_is_false_without_a_secret_shape(text: str) -> None:
+    assert contains_secret(text) is False
+
+
 def test_several_secrets_in_one_text_are_all_redacted() -> None:
     text = "a ghp_abcdefgh12345678 b AKIAABCDEFGHIJKLMNOP c MY_TOKEN=abcdefgh12345 d"
 
@@ -108,8 +147,25 @@ def test_redact_secrets_leaves_empty_and_safe_text_alone() -> None:
     assert redact_secrets("plain failure text") == "plain failure text"
 
 
-def test_verification_reuses_the_redaction_functions() -> None:
-    assert verification.redact_secrets is redaction.redact_secrets
+@pytest.mark.parametrize("kind", "pousr")
+def test_every_github_token_kind_is_redacted(kind: str) -> None:
+    token = f"gh{kind}_abcdefgh"
+
+    assert redact_secrets(f"saw {token} here") == f"saw {REDACTION_PLACEHOLDER} here"
+
+
+def test_a_github_token_body_with_underscores_is_redacted_whole() -> None:
+    assert redact_secrets("x ghp_abc_def_ghi_jkl y") == f"x {REDACTION_PLACEHOLDER} y"
+
+
+@pytest.mark.parametrize("word", ["num_highs_and_lows", "use_ghs_runner_cfg"])
+def test_snake_case_word_that_holds_a_token_prefix_is_left_alone(word: str) -> None:
+    assert redact_secrets(word) == word
+
+
+@pytest.mark.parametrize("prefix", ['"', " ", "=", "/"])
+def test_a_github_token_after_a_non_alphanumeric_character_is_redacted(prefix: str) -> None:
+    assert redact_secrets(f"{prefix}ghp_abcdefgh12345678") == f"{prefix}{REDACTION_PLACEHOLDER}"
 
 
 def _cut_shape(limit: int = REASON_LIMIT, run_id: str | None = None) -> tuple[int, str, int]:
@@ -145,8 +201,8 @@ def test_secret_in_the_dropped_middle_leaves_no_trace() -> None:
 def test_secret_straddling_the_head_edge_is_redacted() -> None:
     head, _, _ = _cut_shape()
     start = head - len(_SECRET) // 2
-    text = "x" * start + _SECRET + " " + "y" * (REASON_LIMIT * 2)
-    assert start < head < start + len(_SECRET)
+    text = "x" * (start - 1) + " " + _SECRET + " " + "y" * (REASON_LIMIT * 2)
+    assert text.index(_SECRET) < head < text.index(_SECRET) + len(_SECRET)
 
     reason, truncated = bounded_reason(text)
 
@@ -157,7 +213,7 @@ def test_secret_straddling_the_head_edge_is_redacted() -> None:
 
 def test_secret_straddling_the_tail_edge_is_redacted() -> None:
     _, _, tail = _cut_shape()
-    prefix = "x" * (REASON_LIMIT * 2)
+    prefix = "x" * (REASON_LIMIT * 2) + " "
     suffix = " " + "y" * (tail - len(_SECRET) // 2 - 1)
     text = prefix + _SECRET + suffix
     boundary = len(text) - tail
@@ -259,3 +315,42 @@ def test_redaction_module_imports_only_re() -> None:
             imported.add(node.module or "")
 
     assert imported == {"__future__", "re"}
+
+
+def test_an_ssh_remote_with_the_git_user_is_left_alone() -> None:
+    remote = "ssh://git@github.com/acme/repo.git"
+    assert redact_secrets(remote) == remote
+
+
+@pytest.mark.parametrize("header", ["Authorization:", "Cookie:", "API_KEY ="])
+def test_a_header_with_an_empty_value_does_not_take_the_next_line(header: str) -> None:
+    assert redact_secrets(f"{header}\n1. keep this line") == f"{header}\n1. keep this line"
+
+
+def test_a_private_key_header_without_an_end_is_redacted_in_linear_time() -> None:
+    header = "-----BEGIN PRIVATE KEY-----"
+    text = (header + "x" * 50) * 5000
+    assert redact_secrets(text).count(REDACTION_PLACEHOLDER) == 5000
+
+
+def test_a_whole_private_key_block_is_redacted() -> None:
+    block = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
+    assert redact_secrets(f"a {block} b") == f"a {REDACTION_PLACEHOLDER} b"
+
+
+@pytest.mark.parametrize("space", ["\u00a0", "\f", "  "])
+def test_an_assignment_with_any_horizontal_space_is_redacted(space: str) -> None:
+    assert "hunter22xx" not in redact_secrets(f"password ={space}hunter22xx")
+
+
+@pytest.mark.parametrize(
+    "text", ["password:\n  hunter22xyz", "Authorization:\n\tBasic dXNlcjpwYXNz"]
+)
+def test_a_value_folded_onto_an_indented_next_line_is_redacted(text: str) -> None:
+    assert redact_secrets(text).endswith(REDACTION_PLACEHOLDER)
+
+
+@pytest.mark.parametrize("prefix", ["%3D", "\\n", "x"])
+def test_a_full_length_github_token_after_a_letter_is_redacted(prefix: str) -> None:
+    token = "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8"
+    assert redact_secrets(f"{prefix}{token}") == f"{prefix}{REDACTION_PLACEHOLDER}"

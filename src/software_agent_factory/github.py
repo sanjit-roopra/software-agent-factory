@@ -110,7 +110,7 @@ from .models import (
     VerificationReport,
     WorkItem,
 )
-from .subprocess_utils import TOKEN_PATTERNS
+from .redaction import redact_secrets
 
 COPILOT_CO_AUTHOR_TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 
@@ -170,15 +170,6 @@ def default_command_runner(
         text=True,
         timeout=timeout,
     )
-
-
-def _redact(text: str) -> str:
-    """Defensively scrub anything resembling a GitHub token before it can
-    reach an exception message, log excerpt, or return value."""
-    redacted = text
-    for pattern in TOKEN_PATTERNS:
-        redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted
 
 
 # --------------------------------------------------------------------------
@@ -248,7 +239,7 @@ class GitTimeoutError(GitPublishError):
         self.command_args = tuple(args)
         self.timeout = timeout
         joined = " ".join(str(part) for part in self.command_args)
-        super().__init__(f"git command timed out after {timeout}s: {_redact(joined)}")
+        super().__init__(f"git command timed out after {timeout}s: {redact_secrets(joined)}")
 
 
 class GitCommandError(GitPublishError):
@@ -257,7 +248,7 @@ class GitCommandError(GitPublishError):
     def __init__(self, args: Sequence[str], returncode: int, stderr: str) -> None:
         self.command_args = tuple(args)
         self.returncode = returncode
-        self.stderr = _redact(stderr)
+        self.stderr = redact_secrets(stderr)
         joined = " ".join(self.command_args)
         super().__init__(f"git {joined} failed with exit code {returncode}: {self.stderr.strip()}")
 
@@ -320,7 +311,7 @@ class GitHubCommandError(GitHubError):
     def __init__(self, args: Sequence[str], returncode: int, stderr: str) -> None:
         self.command_args = tuple(args)
         self.returncode = returncode
-        self.stderr = _redact(stderr)
+        self.stderr = redact_secrets(stderr)
         joined = " ".join(str(part) for part in self.command_args)
         super().__init__(f"gh {joined} failed with exit code {returncode}: {self.stderr.strip()}")
 
@@ -333,7 +324,7 @@ class GitHubTimeoutError(GitHubError):
         self.command_args = tuple(args)
         self.timeout = timeout
         joined = " ".join(str(part) for part in self.command_args)
-        super().__init__(f"gh command timed out after {timeout}s: {_redact(joined)}")
+        super().__init__(f"gh command timed out after {timeout}s: {redact_secrets(joined)}")
 
 
 class CIPollTimeoutError(GitHubError):
@@ -1566,7 +1557,9 @@ def normalize_status_check_rollup(items: Sequence[Mapping[str, object]]) -> list
             CheckResult(
                 name=name,
                 status=status,
-                description=_redact(str(item.get("description") or ""))[:DEFAULT_MAX_LOG_CHARS],
+                description=redact_secrets(str(item.get("description") or ""))[
+                    :DEFAULT_MAX_LOG_CHARS
+                ],
                 details_url=str(item.get("detailsUrl") or item.get("targetUrl") or ""),
             )
         )
@@ -1639,7 +1632,7 @@ def parse_pull_request_payload(payload: Mapping[str, object]) -> PullRequestStat
         merge_state_status=str(payload.get("mergeStateStatus") or "").upper(),
         review_decision=str(payload.get("reviewDecision") or "").upper(),
         merge_commit_sha=merge_commit_sha.lower(),
-        body=_redact(str(payload.get("body") or "")),
+        body=redact_secrets(str(payload.get("body") or "")),
         checks=checks,
     )
 
@@ -1711,7 +1704,7 @@ def parse_comment_payload(payload: Mapping[str, object]) -> GitHubComment:
         id=raw_id,
         url=str(payload.get("url") or ""),
         html_url=str(payload.get("html_url") or payload.get("htmlUrl") or ""),
-        body=_redact(str(payload.get("body") or "")),
+        body=redact_secrets(str(payload.get("body") or "")),
         user_login=user_login,
         user_id=user_id,
         user_type=user_type,
@@ -2705,7 +2698,7 @@ class GitHubClient:
         checks: list[CheckResult] = []
         for item in raw_checks:
             status = _normalize_bucket(str(item.get("bucket") or item.get("state") or ""))
-            description = _redact(str(item.get("description") or ""))[:DEFAULT_MAX_LOG_CHARS]
+            description = redact_secrets(str(item.get("description") or ""))[:DEFAULT_MAX_LOG_CHARS]
             check = CheckResult(
                 name=str(item.get("name") or "unknown-check"),
                 status=status,
@@ -2748,7 +2741,7 @@ class GitHubClient:
             return ""
         run_id = match.group(1)
         result = self._run(["run", "view", run_id, "--log-failed"], repo_path, check=False)
-        log_text = _redact(result.stdout or "")
+        log_text = redact_secrets(result.stdout or "")
         if not log_text:
             return ""
         relevant_lines = [

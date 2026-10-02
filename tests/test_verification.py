@@ -253,14 +253,20 @@ def test_output_is_bounded_by_the_capture_limit(tmp_path: Path) -> None:
 
 @requires_models
 def test_secrets_are_redacted_before_truncation(tmp_path: Path) -> None:
+    from software_agent_factory.redaction import REDACTION_PLACEHOLDER
     from software_agent_factory.verification import sanitize_output
 
-    noisy = "x" * 400 + " ghp_abcdefghijklmnopqrstuvwxyz012345 " + "y" * 400
+    # The kept head is 100 bytes. The secret starts at byte 90, so a cut before the
+    # redaction would keep its first ten characters. Redacted first, the whole placeholder
+    # fits the head exactly.
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz012345"
+    noisy = "x" * 89 + " " + secret + " " + "y" * 700
+    assert noisy.index(secret) < 100 < noisy.index(secret) + len(secret)
 
     sanitized = sanitize_output(noisy, 200)
 
-    assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in sanitized
-    assert len(sanitized.encode("utf-8")) < 300
+    assert sanitized.split("\n", 1)[0] == "x" * 89 + " " + REDACTION_PLACEHOLDER
+    assert "ghp_" not in sanitized
 
 
 @requires_models

@@ -54,6 +54,7 @@ from software_agent_factory.dashboard.sanitize import (
     sanitize_invocation,
     sanitize_project,
     sanitize_run_detail,
+    sanitize_run_summary,
     sanitize_usage,
 )
 from software_agent_factory.dashboard.security import TOKEN_HEADER, validate_bind_host
@@ -2240,6 +2241,50 @@ def test_a_failing_reader_shows_the_normal_panel_and_logs_the_failure(
     assert "Resume request reader failed for run run-001" in caplog.text
 
 
+def test_a_failing_reader_logs_the_exception_type_and_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    marker = "private answer"
+
+    # double-waiver: B1 — a reader that fails with text that could hold a plan answer
+    def failing_reader(run_id: str, episode_id: str) -> list[dict[str, Any]]:
+        raise ValueError(marker)
+
+    with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+        _next_step_over_http(failing_reader)
+
+    assert "Resume request reader failed for run run-001: ValueError" in caplog.text
+    assert marker not in caplog.text
+
+
+def test_a_failing_run_detail_provider_logs_the_exception_type_and_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    marker = "private run text"
+
+    # double-waiver: B1 — a provider that fails with text taken from run data
+    def failing_provider(run_id: str) -> dict[str, Any]:
+        raise ValueError(marker)
+
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=failing_provider,
+        )
+    )
+    try:
+        with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+            response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
+    finally:
+        _stop(running)
+
+    assert response.status == 503
+    assert "Run detail provider failed for run run-001: ValueError" in caplog.text
+    assert marker not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Log injection: request paths reach the log only after sanitisation.
 # ---------------------------------------------------------------------------
@@ -2602,6 +2647,7 @@ REASON_LEVELS = ("run", "attempt", "call")
 REASON_SECRETS = {
     "token assignment": (GH_SECRET, ("ghp_abcdefgh12345678",)),
     "bearer header": ("Authorization: Bearer abc.def.gh", ("abc.def.gh",)),
+    "bare token": ("saw ghp_abcdefgh12345678 here", ("ghp_abcdefgh12345678",)),
 }
 
 
@@ -3350,3 +3396,146 @@ def test_compare_with_unsanitizable_provider_data_is_503_without_run_data() -> N
 
     assert response.status == 503
     assert payload == {"error": "run detail unavailable"}
+
+
+# --------------------------------------------------------------------------
+# Redacted run title and model name (#88)
+# --------------------------------------------------------------------------
+
+_TITLE_TOKEN = "ghp_0123456789abcdefghij"
+_REDACTED_TITLE = "Fix [REDACTED] now"
+_REDACTED_MODEL = "model-[REDACTED]"
+_TOKEN_RUN = "run-token"
+_OTHER_RUN = "run-safe"
+
+
+def _token_snapshot_provider(*, limit: int, offset: int) -> dict[str, Any]:
+    base = fake_snapshot_provider(limit=limit, offset=offset)
+    runs = [{**run, "title": f"Fix {_TITLE_TOKEN} now"} for run in base["runs"]]
+    return {**base, "runs": runs}
+
+
+def _token_run_detail(run_id: str) -> dict[str, Any]:
+    token_model = f"model-{_TITLE_TOKEN}"
+    return {
+        "run_id": run_id,
+        "title": f"Fix {_TITLE_TOKEN} now",
+        "state": "DONE",
+        "created_at": "2026-10-01T09:00:00Z",
+        "attempts": [{"attempt_number": 1, "role": "IMPLEMENTER", "model": token_model}],
+        "invocations": [_compare_call("IMPLEMENTER", token_model, input_tokens=1)],
+        "active_invocation": {"role": "REVIEWER", "model": token_model},
+    }
+
+
+def _token_project_provider() -> dict[str, Any]:
+    project = fake_project_provider()["projects"][0]
+    task = {**project["tasks"][0], "title": f"Fix {_TITLE_TOKEN} now"}
+    model = {**project["models"][0], "model": f"model-{_TITLE_TOKEN}"}
+    return {"projects": [{**project, "tasks": [task], "models": [model]}]}
+
+
+_LEAKY_HEALTH_TEXT = f"saw {_TITLE_TOKEN} here"
+_REDACTED_HEALTH_TEXT = "saw [REDACTED] here"
+
+
+def _token_health_provider() -> dict[str, Any]:
+    check = {"name": "git", "status": "fail"}
+    return {
+        "success": False,
+        "error": _LEAKY_HEALTH_TEXT,
+        "degraded_reasons": [_LEAKY_HEALTH_TEXT],
+        "checks": [{**check, "message": _LEAKY_HEALTH_TEXT, "remediation": _LEAKY_HEALTH_TEXT}],
+    }
+
+
+@pytest.fixture
+def token_server() -> Iterator[RunningServer]:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=_token_snapshot_provider,
+            run_detail_provider=_token_run_detail,
+            project_provider=_token_project_provider,
+            health_provider=_token_health_provider,
+        )
+    )
+    try:
+        yield running
+    finally:
+        _stop(running)
+
+
+def _get_json(running: RunningServer, path: str) -> tuple[str, Any]:
+    response = running.request("GET", path, headers=running.authed_headers())
+    assert response.status == 200
+    raw = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
+    return raw, json.loads(raw)
+
+
+def test_a_secret_in_a_run_title_is_redacted_in_the_run_list(token_server: RunningServer) -> None:
+    raw, payload = _get_json(token_server, "/api/runs")
+
+    assert _TITLE_TOKEN not in raw
+    assert {run["title"] for run in payload["runs"]} == {_REDACTED_TITLE}
+
+
+def test_a_secret_in_a_title_or_model_is_redacted_in_the_run_detail(
+    token_server: RunningServer,
+) -> None:
+    raw, payload = _get_json(token_server, f"/api/runs/{_TOKEN_RUN}")
+
+    assert _TITLE_TOKEN not in raw
+    assert payload["title"] == _REDACTED_TITLE
+    assert payload["attempts"][0]["model"] == _REDACTED_MODEL
+    assert payload["invocations"][0]["model"] == _REDACTED_MODEL
+    assert payload["active_invocation"]["model"] == _REDACTED_MODEL
+
+
+def test_a_secret_in_a_title_or_model_is_redacted_in_the_compare_view(
+    token_server: RunningServer,
+) -> None:
+    raw, payload = _get_json(token_server, f"/api/compare?a={_TOKEN_RUN}&b={_OTHER_RUN}")
+
+    assert _TITLE_TOKEN not in raw
+    assert payload["a"]["title"] == _REDACTED_TITLE
+    assert payload["a"]["models"] == [_REDACTED_MODEL]
+
+
+def test_a_secret_in_a_project_task_title_or_model_is_redacted(token_server: RunningServer) -> None:
+    raw, payload = _get_json(token_server, "/api/projects")
+
+    assert _TITLE_TOKEN not in raw
+    (project,) = payload["projects"]
+    assert project["tasks"][0]["title"] == _REDACTED_TITLE
+    assert project["models"][0]["model"] == _REDACTED_MODEL
+
+
+def test_a_secret_in_health_text_is_redacted_in_the_summary(token_server: RunningServer) -> None:
+    raw, payload = _get_json(token_server, "/api/summary")
+
+    assert _TITLE_TOKEN not in raw
+    health = payload["health"]
+    assert health["error"] == _REDACTED_HEALTH_TEXT
+    assert health["degraded_reasons"] == [_REDACTED_HEALTH_TEXT]
+    assert health["checks"][0]["message"] == _REDACTED_HEALTH_TEXT
+    assert health["checks"][0]["remediation"] == _REDACTED_HEALTH_TEXT
+
+
+_NOT_TEXT = [None, 7, ["x"], {"k": "v"}]
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT, ids=repr)
+def test_a_title_that_is_not_text_is_dropped_by_the_sanitizer(value: Any) -> None:
+    assert sanitize_run_summary({"run_id": "r", "title": value})["title"] is None
+
+
+@pytest.mark.parametrize("value", _NOT_TEXT, ids=repr)
+def test_a_project_task_title_or_model_that_is_not_text_is_dropped(value: Any) -> None:
+    project = sanitize_project(
+        {"tasks": [{"task_id": 1, "title": value}], "models": [{"scope": "p", "model": value}]}
+    )
+
+    assert project["tasks"][0]["title"] is None
+    assert project["models"][0]["model"] is None

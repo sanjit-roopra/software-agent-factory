@@ -63,9 +63,9 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
+from software_agent_factory.redaction import redact_secrets
 from software_agent_factory.repository_profile import generic_repository_profile
 from software_agent_factory.store import FileRunStore
-from software_agent_factory.verification import redact_secrets
 from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
 from software_agent_factory.writing_policy import artifact_passages, validate_artifact_writing
@@ -2436,7 +2436,8 @@ def test_end_to_end_context_construction_and_rendering_safe_counterexamples(
 
 
 def test_redaction_replaces_auth_and_cookie_secrets_in_diagnostics() -> None:
-    from software_agent_factory.verification import redact_secrets, sanitize_output
+    from software_agent_factory.redaction import redact_secrets
+    from software_agent_factory.verification import sanitize_output
 
     sample_diagnostic = (
         "HTTP 401 Unauthorized\n"

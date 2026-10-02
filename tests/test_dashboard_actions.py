@@ -973,6 +973,27 @@ def test_the_production_request_reader_lists_the_requests_of_one_episode_without
     assert read(RUN_ID, OLD_EPISODE) == []
 
 
+def test_a_damaged_request_file_is_skipped_and_logged_by_type_only(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = FileRunStore(tmp_path)
+    run = _run(PLAN)
+    store.save_run(run)
+    assert build_resume_requester(store)(RUN_ID, _approval_request(run)) == "created"
+    (damaged,) = tmp_path.rglob("dashboard-approval-*.json")
+    marker = "private answer"
+    damaged.write_text(
+        json.dumps({"action": "NOT_AN_ACTION", "answers": [{"answer": marker}]}), encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.store"):
+        requests = build_resume_request_reader(store)(RUN_ID, EPISODE)
+
+    assert requests == []
+    assert f"skipped dashboard request {damaged.name}: ValidationError" in caplog.text
+    assert marker not in caplog.text
+
+
 def test_the_production_requester_reports_a_missing_run(tmp_path: Path) -> None:
     run = _run()
     request = _approval_request(run)
@@ -1098,6 +1119,22 @@ def test_an_unexpected_failure_is_500_and_one_event(
     assert (status, payload) == (500, {"error": "internal error"})
     assert _audit(caplog) == [_event(APPROVE, "500")]
     assert "disk on fire" not in json.dumps(payload)
+
+
+def test_an_unexpected_failure_logs_the_exception_type_and_no_text(
+    make_rig: RigFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    # double-waiver: B1 — a disk write that fails with text that could hold a plan answer
+    def failing(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
+        raise RuntimeError("private answer")
+
+    rig = make_rig(requester=failing)
+
+    with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+        rig.approve()
+
+    assert "Unhandled dashboard error for an action on a run: RuntimeError" in caplog.text
+    assert "private answer" not in caplog.text
 
 
 def test_a_hostile_run_id_cannot_forge_a_log_line(

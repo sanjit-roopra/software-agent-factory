@@ -24,6 +24,25 @@ It also shows the escalation text that a halted run needs: the approval scope an
 - The run list, the snapshot and health carry no failure reasons.
 - Command logs, diffs, prompts and raw artifacts stay out, as ADR-016 says.
 
+Amendment on 2026-10-02 (issue #88):
+
+- The sanitizer also redacts the run title, the task titles and the model names.
+  This applies to the run list, the run detail, the compare view and the projects view.
+  These values are not cut. A value that is not text becomes `null`.
+- The sanitizer also redacts the health text. This covers check messages, remediation text, degraded reasons and the report error.
+- The shared secret patterns now live in one place, `redaction.py`.
+  Other modules call `redact_secrets` from there.
+- CI logs, check descriptions and GitHub comment bodies now get the full pattern set.
+  Before, they matched GitHub token shapes only. They now also match assignment and header shapes, such as `API_KEY=...` and `Authorization: ...`.
+  This is a behavior change. The team accepts it. Local verification output already got these patterns.
+- `resume.py` no longer keeps its own credential patterns. It reads the same patterns through `contains_secret`.
+- The factory refuses a plan answer that holds a redacted secret.
+  A GitHub comment body is redacted before the factory parses it. Without this rule, an answer such as `Authorization: admins only` becomes `[REDACTED]` and passes.
+  The dashboard path refuses the same answer.
+- When the dashboard cannot read a request file, the log names the exception type only.
+  The log does the same when the run detail provider or an action fails.
+  The message can quote the field input, and that input can hold a plan answer.
+
 Consequences:
 
 - Secret patterns that miss a credential shape can now leak it to the browser as well as to logs.

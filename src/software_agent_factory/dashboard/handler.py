@@ -42,6 +42,16 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger("software_agent_factory.dashboard")
 
+
+def _log_failure_type(message: str, exc: BaseException, *args: object) -> None:
+    """Log a failure by its exception type only.
+
+    The message and traceback of a failure can quote run data or a plan
+    answer, so neither reaches the log.
+    """
+    _logger.error(message + ": %s", *args, type(exc).__name__)
+
+
 #: One event for every approve or answer request, accepted or refused. It holds the run id
 #: and the result. It never holds the token or the body.
 _audit_logger = logging.getLogger("software_agent_factory.dashboard.audit")
@@ -529,8 +539,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         """
         try:
             detail = self.server.run_detail_provider(run_id)
-        except Exception:  # noqa: BLE001
-            _logger.exception("Run detail provider failed for run %s", run_id)
+        except Exception as exc:  # noqa: BLE001
+            # The type only: the message and traceback can quote run data.
+            _log_failure_type("Run detail provider failed for run %s", exc, run_id)
             self._respond_json(
                 HTTPStatus.SERVICE_UNAVAILABLE, {"error": "run detail unavailable"}, send_body
             )
@@ -539,8 +550,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return _UNKNOWN_RUN
         try:
             return build(detail)
-        except TypeError:
-            _logger.exception("Run detail provider returned unsanitizable data for run %s", run_id)
+        except TypeError as exc:
+            _log_failure_type(
+                "Run detail provider returned unsanitizable data for run %s", exc, run_id
+            )
             self._respond_json(
                 HTTPStatus.SERVICE_UNAVAILABLE, {"error": "run detail unavailable"}, send_body
             )
@@ -553,8 +566,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return []
         try:
             return list(reader(run_id, episode_id))
-        except Exception:  # noqa: BLE001 - a damaged request must not hide the run
-            _logger.exception("Resume request reader failed for run %s", run_id)
+        except Exception as exc:  # noqa: BLE001 - a damaged request must not hide the run
+            # The type only: the message and traceback can quote a plan answer.
+            _log_failure_type("Resume request reader failed for run %s", exc, run_id)
             return []
 
     # -- writes -----------------------------------------------------------------
@@ -602,8 +616,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             payload = accept_action(actions, kind, raw_run_id, self._read_json_body(body))
         except WriteRejected as rejected:
             return rejected.status, rejected.payload, rejected.result
-        except Exception:  # noqa: BLE001 - never leak internals to the client
-            _logger.exception("Unhandled dashboard error for an action on a run")
+        except Exception as exc:  # noqa: BLE001 - never leak internals to the client
+            # The type only: the message and traceback can quote a plan answer.
+            _log_failure_type("Unhandled dashboard error for an action on a run", exc)
             error = HTTPStatus.INTERNAL_SERVER_ERROR
             return error, {"error": "internal error"}, str(error.value)
         return HTTPStatus.ACCEPTED, payload, str(HTTPStatus.ACCEPTED.value)
