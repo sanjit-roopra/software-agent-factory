@@ -27,16 +27,16 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # shortest body any caller ever redacted; the class includes ``_``. The guard skips a
     # prefix inside a word or snake_case name, such as ``num_highs_and_lows`` or
     # ``use_ghs_runner_cfg``.
-    re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{8,}"),
+    re.compile(r"(?<!\w)gh[pousr]_\w{8,}", re.ASCII),
     # A full-length token is caught even right after a letter, as in ``%3Dghp_...`` or
     # an escaped ``\\nghp_...``. Real tokens have 36 letters and digits.
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{36}(?!\w)", re.ASCII),
     re.compile(r"github_pat_\w{20,}"),
     # GitLab personal access tokens, OpenAI and Anthropic keys (``sk-``, ``sk-proj-``,
     # ``sk-ant-``), and Slack tokens.
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
-    re.compile(r"\b(?i:xox[baprse])-[0-9A-Za-z-]{10,}"),
+    re.compile(r"(?i)\bxox[baprse]-[0-9a-z-]{10,}"),
     # AWS access key ids and secret access keys.
     re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),
     re.compile(
@@ -61,7 +61,7 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)\bBasic\s+[a-z0-9+/]{8,}={1,2}(?!\S)"),
     # Cookie and Set-Cookie headers.
     re.compile(
-        r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b[^\S\r\n]*[:=][^\S\r\n]*(?:\r?\n[^\S\r\n]+)?[^\r\n]+"
+        r"(?i)\b(?:set[_-]?)?cookie2?\b[^\S\r\n]*[:=][^\S\r\n]*(?:\r?\n[^\S\r\n]+)?[^\r\n]+"
     ),
     # Standalone JWTs (JSON Web Tokens).
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
