@@ -1242,17 +1242,22 @@ def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_in_the_next_
 
 
 # The real FileRunStore still reads every run.json underneath.
-# double-waiver: B1 — counts the run.json file reads each service cycle makes
+# double-waiver: B1 — counts the run.json file reads and run listings each service cycle makes
 class _LoadCountingStore(FileRunStore):
-    """A run store that counts how often each run is loaded."""
+    """A run store that counts how often each run is loaded and how often runs are listed."""
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__(data_dir)
         self.loads: Counter[str] = Counter()
+        self.listings = 0
 
     def load_run(self, run_id: str) -> FactoryRun:
         self.loads[run_id] += 1
         return super().load_run(run_id)
+
+    def list_runs(self, *, skip_invalid: bool = False) -> list[FactoryRun]:
+        self.listings += 1
+        return super().list_runs(skip_invalid=skip_invalid)
 
 
 def test_a_finished_run_whose_request_it_accepted_is_not_read_again_by_later_cycles(
@@ -1278,6 +1283,42 @@ def test_a_finished_run_whose_request_it_accepted_is_not_read_again_by_later_cyc
     assert counting.loads[run.id] == 2 * first_cycle
     assert first_cycle == 1
     assert _request_status(store, run) == "pending"
+
+
+def test_the_steps_after_notices_share_one_run_listing_even_when_polling_replies(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir)
+    store = FileRunStore(data_dir)
+    _notified(store, _halt_for_approval(config, store, source_repo, 4), 4)
+    github = FakeGitHub()
+    service = make_service(config, github)
+    counting = _LoadCountingStore(data_dir)
+    service.store = counting
+
+    service.reconcile_escalation()
+
+    assert github.listed_issues == [4]  # the polling step ran
+    # Notice delivery lists once and saves runs; the steps after it share one more listing.
+    assert counting.listings == 2
+
+
+def test_polling_skips_a_run_a_dashboard_request_reopened_in_the_same_cycle(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, max_concurrent_tasks=2, max_reply_polls_per_tick=1)
+    store = FileRunStore(data_dir)
+    first = _notified(store, _halt_for_approval(config, store, source_repo, 1), 1, minutes_ago=60)
+    _notified(store, _halt_for_approval(config, store, source_repo, 2), 2, minutes_ago=50)
+    _approve(store, first)
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+    service.drain(60)
+
+    # Run 1 is no longer waiting, so the one poll of this cycle goes to run 2.
+    assert github.listed_issues == [2]
 
 
 def test_a_request_made_inside_the_reply_window_reopens_after_the_quota_delayed_it_past_the_window(
