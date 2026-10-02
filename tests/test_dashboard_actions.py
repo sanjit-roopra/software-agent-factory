@@ -973,6 +973,27 @@ def test_the_production_request_reader_lists_the_requests_of_one_episode_without
     assert read(RUN_ID, OLD_EPISODE) == []
 
 
+def test_a_damaged_request_file_is_skipped_and_logged_by_type_only(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = FileRunStore(tmp_path)
+    run = _run(PLAN)
+    store.save_run(run)
+    assert build_resume_requester(store)(RUN_ID, _approval_request(run)) == "created"
+    (damaged,) = tmp_path.rglob("dashboard-approval-*.json")
+    marker = "private answer"
+    damaged.write_text(
+        json.dumps({"action": "NOT_AN_ACTION", "answers": [{"answer": marker}]}), encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="software_agent_factory.store"):
+        requests = build_resume_request_reader(store)(RUN_ID, EPISODE)
+
+    assert requests == []
+    assert f"skipped dashboard request {damaged.name}: ValidationError" in caplog.text
+    assert marker not in caplog.text
+
+
 def test_the_production_requester_reports_a_missing_run(tmp_path: Path) -> None:
     run = _run()
     request = _approval_request(run)

@@ -2241,6 +2241,22 @@ def test_a_failing_reader_shows_the_normal_panel_and_logs_the_failure(
     assert "Resume request reader failed for run run-001" in caplog.text
 
 
+def test_a_failing_reader_logs_the_exception_type_and_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    marker = "private answer"
+
+    # double-waiver: B1 — a reader that fails with text that could hold a plan answer
+    def failing_reader(run_id: str, episode_id: str) -> list[dict[str, Any]]:
+        raise ValueError(marker)
+
+    with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+        _next_step_over_http(failing_reader)
+
+    assert "Resume request reader failed for run run-001: ValueError" in caplog.text
+    assert marker not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Log injection: request paths reach the log only after sanitisation.
 # ---------------------------------------------------------------------------

@@ -24,6 +24,16 @@ It also shows the escalation text that a halted run needs: the approval scope an
 - The run list, the snapshot and health carry no failure reasons.
 - Command logs, diffs, prompts and raw artifacts stay out, as ADR-016 says.
 
+Amendment on 2026-10-02 (issue #88):
+
+- The sanitizer also redacts the run title and the model name of each attempt and call.
+  This applies to the run list, the run detail and the compare view.
+  These two values are not cut.
+- The shared secret patterns now live in one place, `redaction.py`.
+  Other modules call `redact_secrets` from there.
+- When the dashboard cannot read a request file, the log names the exception type only.
+  The message can quote the field input, and that input can hold a plan answer.
+
 Consequences:
 
 - Secret patterns that miss a credential shape can now leak it to the browser as well as to logs.

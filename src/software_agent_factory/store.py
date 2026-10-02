@@ -364,7 +364,7 @@ class FileRunStore:
 
         A file that does not load, or whose name does not match its episode and context, is
         skipped and logged, so one damaged request cannot stop the service from reading the
-        others.
+        others. The log names the exception type only, never its text.
         """
         run_dir = self._run_dir_readonly(run_id)
         self._require_episode_id(episode_id)
@@ -375,7 +375,9 @@ class FileRunStore:
                     path.read_text(encoding="utf-8")
                 )
             except (OSError, ValueError) as exc:
-                logger.warning("skipped dashboard request %s: %s", path.name, exc)
+                # The type only: a validation message quotes the field input, which can
+                # hold a plan answer.
+                logger.warning("skipped dashboard request %s: %s", path.name, type(exc).__name__)
                 continue
             if request.episode_id != episode_id or path.name != self._dashboard_request_name(
                 request.episode_id, request.context_fingerprint

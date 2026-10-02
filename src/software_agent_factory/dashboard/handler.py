@@ -553,8 +553,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return []
         try:
             return list(reader(run_id, episode_id))
-        except Exception:  # noqa: BLE001 - a damaged request must not hide the run
-            _logger.exception("Resume request reader failed for run %s", run_id)
+        except Exception as exc:  # noqa: BLE001 - a damaged request must not hide the run
+            # The type only: the message and traceback can quote a plan answer.
+            _logger.error("Resume request reader failed for run %s: %s", run_id, type(exc).__name__)
             return []
 
     # -- writes -----------------------------------------------------------------
