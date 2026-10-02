@@ -60,6 +60,7 @@ from software_agent_factory.dashboard.sanitize import (
 )
 from software_agent_factory.dashboard.security import (
     TOKEN_HEADER,
+    TOKEN_QUERY_PARAM,
     cookie_name,
     cookie_token_matches,
     validate_bind_host,
@@ -379,6 +380,11 @@ def _body_json(response: http.client.HTTPResponse) -> Any:
     return json.loads(response.read_body)  # type: ignore[attr-defined]
 
 
+def _token_meta(running: RunningServer) -> str:
+    """The ``<meta>`` tag through which the page hands its script the token."""
+    return f'<meta name="{dashboard_assets.TOKEN_META_NAME}" content="{running.token}">'
+
+
 # --------------------------------------------------------------------------
 # Bind host rejection
 # --------------------------------------------------------------------------
@@ -465,6 +471,7 @@ def test_wrong_token_is_rejected(running_server: RunningServer) -> None:
 
 
 SUMMARY_PATH = "/api/summary"
+SET_COOKIE = "Set-Cookie"
 NON_ASCII_TOKENS = ["caf\u00e9", "\u00e9" * 43]
 
 
@@ -496,14 +503,28 @@ def test_wrong_query_token_is_rejected(running_server: RunningServer) -> None:
     assert response.status == 401
 
 
-def test_the_page_link_trades_the_token_for_a_cookie_and_a_bare_url(
+def test_the_page_link_answers_with_the_page_and_no_redirect(
     running_server: RunningServer,
 ) -> None:
     response = running_server.exchange()
 
-    assert response.status == 303
-    assert response.getheader("Location") == "/"
-    assert response.read_body == b""  # type: ignore[attr-defined]
+    assert response.status == 200
+    assert response.getheader("Location") is None
+
+
+def test_the_page_link_answers_with_the_page_that_holds_the_token(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.exchange()
+
+    assert _token_meta(running_server) in response.read_body.decode()  # type: ignore[attr-defined]
+
+
+def test_the_page_link_sets_the_session_cookie(running_server: RunningServer) -> None:
+    response = running_server.exchange()
+
+    morsel = SimpleCookie(response.getheader(SET_COOKIE))[cookie_name(running_server.port)]
+    assert morsel.value == running_server.token
 
 
 def test_the_session_cookie_is_http_only_same_site_strict_and_ends_with_the_session(
@@ -511,7 +532,7 @@ def test_the_session_cookie_is_http_only_same_site_strict_and_ends_with_the_sess
 ) -> None:
     response = running_server.exchange()
 
-    morsel = SimpleCookie(response.getheader("Set-Cookie"))[cookie_name(running_server.port)]
+    morsel = SimpleCookie(response.getheader(SET_COOKIE))[cookie_name(running_server.port)]
     assert morsel.value == running_server.token
     assert {
         "httponly": morsel["httponly"],
@@ -532,16 +553,25 @@ def test_the_session_cookie_is_http_only_same_site_strict_and_ends_with_the_sess
     }
 
 
-def test_the_redirect_is_never_cached(running_server: RunningServer) -> None:
+@pytest.mark.parametrize(
+    ("header", "value"),
+    [
+        pytest.param("Cache-Control", "no-store", id="never-cached"),
+        pytest.param("Referrer-Policy", "no-referrer", id="no-referrer"),
+    ],
+)
+def test_the_page_link_response_keeps_its_protective_headers(
+    running_server: RunningServer, header: str, value: str
+) -> None:
     response = running_server.exchange()
 
-    assert response.getheader("Cache-Control") == "no-store"
+    assert response.getheader(header) == value
 
 
 def test_a_wrong_token_in_the_page_link_sets_no_cookie(running_server: RunningServer) -> None:
     response = running_server.request("GET", "/?token=wrong", headers=running_server.host_header())
 
-    assert (response.status, response.getheader("Set-Cookie")) == (401, None)
+    assert (response.status, response.getheader(SET_COOKIE)) == (401, None)
 
 
 def test_each_dashboard_port_has_its_own_cookie_name() -> None:
@@ -654,7 +684,7 @@ def test_the_cookie_exchange_and_the_reads_after_it_never_log_the_token(
             "GET", SUMMARY_PATH, headers=running_server.cookie_headers("wrong-but-secret-looking")
         )
 
-    assert (exchange.status, page.status, refused.status) == (303, 200, 401)
+    assert (exchange.status, page.status, refused.status) == (200, 200, 401)
     logged = "\n".join(f"{r.getMessage()} {r.args!r}" for r in caplog.records)
     # The guard: the checks below prove nothing unless the three requests were logged.
     assert logged.count("GET /") == 3
@@ -925,6 +955,28 @@ def test_assets_are_served(running_server: RunningServer) -> None:
     assert css_response.status == 200
     assert "css" in css_response.getheader("Content-Type", "")
     assert css_response.read_body == _static_bytes("style.css")  # type: ignore[attr-defined]
+
+
+def test_the_script_names_the_same_query_parameter_as_the_server() -> None:
+    assert f'const TOKEN_QUERY_PARAM = "{TOKEN_QUERY_PARAM}";' in dashboard_assets.APP_JS
+
+
+def test_the_script_drops_the_token_query_and_keeps_the_hash() -> None:
+    source = function_source(dashboard_assets.APP_JS, "stripTokenFromAddress")
+
+    assert source == (
+        "function stripTokenFromAddress() { "
+        "const hasToken = new URLSearchParams(globalThis.location.search)"
+        ".has(TOKEN_QUERY_PARAM); "
+        "if (hasToken) { const { pathname, hash } = globalThis.location; "
+        'globalThis.history.replaceState(null, "", pathname + hash); } }'
+    )
+
+
+def test_the_script_drops_the_token_query_before_any_routing() -> None:
+    source = function_source(dashboard_assets.APP_JS, "start")
+
+    assert source.startswith("function start() { stripTokenFromAddress(); ")
 
 
 def _static_bytes(name: str) -> bytes:
@@ -2044,8 +2096,8 @@ def test_dashboard_totals_show_list_price_estimate_row_as_not_reported_when_miss
 
 def test_live_loopback_smoke(running_server: RunningServer) -> None:
     index_response = running_server.exchange()
-    assert (index_response.status, index_response.getheader("Location")) == (303, "/")
-    cookie = SimpleCookie(index_response.getheader("Set-Cookie"))
+    assert index_response.status == 200
+    cookie = SimpleCookie(index_response.getheader(SET_COOKIE))
     session = {
         **running_server.host_header(),
         "Cookie": cookie.output(attrs=[], header="").strip(),

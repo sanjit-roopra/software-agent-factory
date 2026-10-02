@@ -341,21 +341,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _exchange_token(self, send_body: bool) -> None:
-        """Set the session cookie and send the browser to the page without the token in its URL.
+        """Serve the page and set the session cookie for the page link's token.
 
-        The browser keeps a fragment across a redirect that names none (RFC 9110, 10.2.2).
+        The page script then removes the query from the address bar and the current history
+        entry. A ``303`` would leave the token in the browser's history, and a browser may
+        drop a ``SameSite=Strict`` cookie on the redirect after a cross-site click.
         ``Cache-Control: no-store`` comes with every response, so no cache keeps the cookie.
         """
         _, port = self.server.address
-        self._respond_bytes(
-            HTTPStatus.SEE_OTHER,
-            "text/plain; charset=utf-8",
-            b"",
-            send_body,
-            extra_headers=(
-                ("Location", _INDEX_PATH),
-                ("Set-Cookie", session_cookie(port, self.server.token)),
-            ),
+        self._serve_index(
+            send_body, extra_headers=(("Set-Cookie", session_cookie(port, self.server.token)),)
         )
 
     # -- routing ---------------------------------------------------------------
@@ -401,10 +396,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
 
-    def _serve_index(self, send_body: bool) -> None:
+    def _serve_index(
+        self, send_body: bool, *, extra_headers: tuple[tuple[str, str], ...] = ()
+    ) -> None:
         html = assets.render_index_html(token=self.server.token)
         self._respond_bytes(
-            HTTPStatus.OK, "text/html; charset=utf-8", html.encode("utf-8"), send_body
+            HTTPStatus.OK,
+            "text/html; charset=utf-8",
+            html.encode("utf-8"),
+            send_body,
+            extra_headers=extra_headers,
         )
 
     def _serve_summary(self, send_body: bool) -> None:

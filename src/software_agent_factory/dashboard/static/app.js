@@ -7,6 +7,9 @@
   const EMPTY_VALUE = "\u2014";
   const NOT_REPORTED = "not reported";
 
+  // TOKEN_QUERY_PARAM in dashboard/security.py: the query field of the page link.
+  const TOKEN_QUERY_PARAM = "token";
+
   const ERROR_UNAUTHORIZED = "unauthorized";
   const ERROR_CONNECTION = "connection";
   const ERROR_REQUEST = "request";
@@ -2311,7 +2314,18 @@
     });
   }
 
+  // The page link holds the token in its query. The server has set the cookie by now, so
+  // the address bar and the current history entry drop the query. The hash stays.
+  function stripTokenFromAddress() {
+    const hasToken = new URLSearchParams(globalThis.location.search).has(TOKEN_QUERY_PARAM);
+    if (hasToken) {
+      const { pathname, hash } = globalThis.location;
+      globalThis.history.replaceState(null, "", pathname + hash);
+    }
+  }
+
   function start() {
+    stripTokenFromAddress();
     applyStoredTheme();
     bindControls();
     seedBackHistory();
