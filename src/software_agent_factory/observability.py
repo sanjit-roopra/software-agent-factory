@@ -73,7 +73,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal, Protocol, TypeVar
@@ -784,7 +784,15 @@ def build_monitoring_snapshot(
 
     total_readable = len(scan.readable_runs)
     page_runs = scan.readable_runs[offset : offset + limit]
-    summaries = [_build_run_summary(store, run, reference_time, stale_after) for run in page_runs]
+    summaries = [
+        _build_run_summary(
+            run,
+            reference_time,
+            stale_after,
+            _memoized_artifact_facts(store, run.id, scan.artifact_facts),
+        )
+        for run in page_runs
+    ]
 
     return MonitoringSnapshot(
         generated_at=reference_time,
@@ -886,17 +894,34 @@ def _categorize_load_error(exc: Exception) -> str:
 
 
 @dataclass(frozen=True)
+class _ArtifactFacts:
+    """What a run summary takes from the work item and triage artifacts, already resolved."""
+
+    title: str | None
+    source_external_id: str | None
+    complexity: Complexity | None
+    risk: Risk | None
+
+
+@dataclass(frozen=True)
 class RunScanResult:
     """The one bounded run-directory scan shared by
     :func:`build_monitoring_snapshot` and :func:`build_operational_health`,
     so both agree on exactly the same readable runs, scan cap, and degraded
-    reasons for a given call."""
+    reasons for a given call.
+
+    ``artifact_facts`` memoizes the per-run artifact reads of the summaries built from this
+    scan, so builds that share the scan (and its copies) read each artifact file once.
+    """
 
     readable_runs: list[FactoryRun]
     total_directories: int
     scanned_runs: int
     scan_truncated: bool
     unreadable_reasons: dict[str, int]
+    artifact_facts: dict[str, _ArtifactFacts] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     @property
     def unreadable_runs(self) -> int:
@@ -1009,6 +1034,7 @@ class RunScanCache:
             scanned_runs=scan.scanned_runs,
             scan_truncated=scan.scan_truncated,
             unreadable_reasons=dict(scan.unreadable_reasons),
+            artifact_facts=scan.artifact_facts,
         )
 
 
@@ -1509,14 +1535,10 @@ def _escalation_summary(
     )
 
 
-def _build_run_summary(
-    store: RunStoreProtocol,
-    run: FactoryRun,
-    now: datetime,
-    stale_after: timedelta,
-) -> RunSummary:
-    work_item = _load_optional_artifact(store, run.id, WorkItem)
-    triage = _load_optional_artifact(store, run.id, TriageResult)
+def _artifact_facts(store: RunStoreProtocol, run_id: str) -> _ArtifactFacts:
+    """Read the work item and triage of one run; a missing or unreadable one counts as absent."""
+    work_item = _load_optional_artifact(store, run_id, WorkItem)
+    triage = _load_optional_artifact(store, run_id, TriageResult)
 
     title = redact_secrets(work_item.title) if work_item is not None else None
     if triage is not None:
@@ -1525,7 +1547,29 @@ def _build_run_summary(
         complexity, risk = work_item.complexity, work_item.risk
     else:
         complexity, risk = None, None
+    return _ArtifactFacts(
+        title=title,
+        source_external_id=_safe_external_id(work_item),
+        complexity=complexity,
+        risk=risk,
+    )
 
+
+def _memoized_artifact_facts(
+    store: RunStoreProtocol, run_id: str, memo: dict[str, _ArtifactFacts]
+) -> _ArtifactFacts:
+    facts = memo.get(run_id)
+    if facts is None:
+        facts = memo[run_id] = _artifact_facts(store, run_id)
+    return facts
+
+
+def _build_run_summary(
+    run: FactoryRun,
+    now: datetime,
+    stale_after: timedelta,
+    facts: _ArtifactFacts,
+) -> RunSummary:
     signal = _last_signal_at(run) or run.created_at
     finished = _is_run_finished(run)
     implementation_attempts = sum(
@@ -1538,11 +1582,11 @@ def _build_run_summary(
     return RunSummary(
         run_id=run.id,
         work_item_id=run.work_item_id,
-        source_external_id=_safe_external_id(work_item),
-        title=title,
+        source_external_id=facts.source_external_id,
+        title=facts.title,
         state=run.state,
-        complexity=complexity,
-        risk=risk,
+        complexity=facts.complexity,
+        risk=facts.risk,
         created_at=run.created_at,
         updated_at=run.updated_at,
         age_seconds=max((now - run.created_at).total_seconds(), 0.0),
@@ -1596,7 +1640,7 @@ def build_run_detail(
         return None
 
     observed_at = _normalize_now(now)
-    summary = _build_run_summary(store, run, observed_at, stale_after)
+    summary = _build_run_summary(run, observed_at, stale_after, _artifact_facts(store, run.id))
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
         **summary.model_dump(),
