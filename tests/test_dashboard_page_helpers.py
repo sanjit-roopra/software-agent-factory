@@ -25,6 +25,16 @@ PREMIUM = "total_premium_request_cost"
 USAGE_USD = "usage_value_usd"
 LIST_USD = "list_price_estimate_usd"
 RUN_ID_MAX_LENGTH = 128
+RUN_ID = "run_id"
+TITLE = "title"
+PROFILE = "performance_model_profile"
+REOPENS_USED = "reopens_used"
+MAX_REOPENS = "max_reopens"
+VALUE = "value"
+LABEL = "label"
+STARTED_AT = "2026-10-01T10:00:00Z"
+BUG_TITLE = "Fix the bug"
+TWO_PREMIUM_REQUESTS = "2 premium requests"
 FILTER_NEEDS_YOU = "needs-you"
 COMPARE = "#compare"
 NAN = math.nan
@@ -93,11 +103,11 @@ FORMATTER_CASES = [
     _cost("nan-unit", NOT_REPORTED, {PREMIUM: NAN}),
     _cost("infinite-usd", NOT_REPORTED, {USAGE_USD: INF}),
     _cost("negative-infinite-list-price", NOT_REPORTED, {LIST_USD: -INF}),
-    _cost("skips-the-non-finite-unit", "2 premium requests", {PREMIUM: 2, LIST_USD: NAN}),
+    _cost("skips-the-non-finite-unit", TWO_PREMIUM_REQUESTS, {PREMIUM: 2, LIST_USD: NAN}),
     _cost("text-unit", NOT_REPORTED, {PREMIUM: "3"}),
     _cost("one-premium-request", "1 premium request", {PREMIUM: 1}),
     _cost("zero-premium-requests", "0 premium requests", {PREMIUM: 0}),
-    _cost("two-premium-requests", "2 premium requests", {PREMIUM: 2}),
+    _cost("two-premium-requests", TWO_PREMIUM_REQUESTS, {PREMIUM: 2}),
     _cost("fractional-premium-requests", "1.5 premium requests", {PREMIUM: 1.5}),
     _cost("large-premium-requests", "1,234,567 premium requests", {PREMIUM: 1_234_567}),
     _cost("zero-usd", "0.00 USD AI usage", {USAGE_USD: 0}),
@@ -117,42 +127,40 @@ FORMATTER_CASES = [
     ),
     _premium("one", "1 premium request", 1),
     _premium("zero", "0 premium requests", 0),
-    _premium("two", "2 premium requests", 2),
+    _premium("two", TWO_PREMIUM_REQUESTS, 2),
     _premium("fraction", "0.5 premium requests", 0.5),
     _premium("thousands", "1,000 premium requests", 1000),
     _premium("millions", "1,000,000 premium requests", 1_000_000),
-    _reopens(
-        "used-of-max", _paragraph("Reopens used 1 of 3"), {"reopens_used": 1, "max_reopens": 3}
-    ),
-    _reopens("zero-used", _paragraph("Reopens used 0 of 3"), {"reopens_used": 0, "max_reopens": 3}),
-    _reopens("zero-max", _paragraph("Reopens used 0 of 0"), {"reopens_used": 0, "max_reopens": 0}),
+    _reopens("used-of-max", _paragraph("Reopens used 1 of 3"), {REOPENS_USED: 1, MAX_REOPENS: 3}),
+    _reopens("zero-used", _paragraph("Reopens used 0 of 3"), {REOPENS_USED: 0, MAX_REOPENS: 3}),
+    _reopens("zero-max", _paragraph("Reopens used 0 of 0"), {REOPENS_USED: 0, MAX_REOPENS: 0}),
     # ``null`` (None), never ``undefined`` (UNDEFINED): the line is absent, not unset.
     _reopens("no-fields", None, {}),
-    _reopens("used-nan", None, {"reopens_used": NAN, "max_reopens": 3}),
-    _reopens("used-undefined", None, {"reopens_used": UNDEFINED, "max_reopens": 3}),
-    _reopens("max-infinity", None, {"reopens_used": 1, "max_reopens": INF}),
-    _reopens("max-nan", None, {"reopens_used": 1, "max_reopens": NAN}),
-    _reopens("used-missing", None, {"max_reopens": 3}),
-    _reopens("max-missing", None, {"reopens_used": 1}),
-    _reopens("used-null", None, {"reopens_used": None, "max_reopens": 3}),
-    _reopens("max-text", None, {"reopens_used": 1, "max_reopens": "3"}),
+    _reopens("used-nan", None, {REOPENS_USED: NAN, MAX_REOPENS: 3}),
+    _reopens("used-undefined", None, {REOPENS_USED: UNDEFINED, MAX_REOPENS: 3}),
+    _reopens("max-infinity", None, {REOPENS_USED: 1, MAX_REOPENS: INF}),
+    _reopens("max-nan", None, {REOPENS_USED: 1, MAX_REOPENS: NAN}),
+    _reopens("used-missing", None, {MAX_REOPENS: 3}),
+    _reopens("max-missing", None, {REOPENS_USED: 1}),
+    _reopens("used-null", None, {REOPENS_USED: None, MAX_REOPENS: 3}),
+    _reopens("max-text", None, {REOPENS_USED: 1, MAX_REOPENS: "3"}),
 ]
 
 
 def _run(run_id: str, *, waiting: object = False) -> dict[str, object]:
-    return {"run_id": run_id, "waiting_for_human": waiting}
+    return {RUN_ID: run_id, "waiting_for_human": waiting}
 
 
 _RUNS = [_run("a"), _run("b", waiting=True), _run("c"), _run("d", waiting=True)]
-_NO_FLAG = {"run_id": "a"}
+_NO_FLAG = {RUN_ID: "a"}
 _FULL_RUN = {
-    "run_id": "r1",
-    "created_at": "2026-10-01T10:00:00Z",
+    RUN_ID: "r1",
+    "created_at": STARTED_AT,
     "state": "DONE",
-    "title": "Fix the bug",
-    "performance_model_profile": "fast",
+    TITLE: BUG_TITLE,
+    PROFILE: "fast",
 }
-_OPTION_LABEL = "2026-10-01T10:00:00Z | DONE | Fix the bug"
+_OPTION_LABEL = f"{STARTED_AT} | DONE | {BUG_TITLE}"
 
 _order = partial(_case, "orderRuns")
 _hash = partial(_case, "compareHash")
@@ -192,41 +200,41 @@ LIST_AND_COMPARE_CASES = [
     _hash("encodes-non-ascii", f"{COMPARE}/%C3%A9", _pair("é", None)),
     _option(
         "all-parts",
-        {"value": "r1", "label": f"{_OPTION_LABEL} | profile fast"},
+        {VALUE: "r1", LABEL: f"{_OPTION_LABEL} | profile fast"},
         _FULL_RUN,
     ),
     _option(
         "no-profile",
-        {"value": "r1", "label": _OPTION_LABEL},
-        _without(_FULL_RUN, "performance_model_profile"),
+        {VALUE: "r1", LABEL: _OPTION_LABEL},
+        _without(_FULL_RUN, PROFILE),
     ),
     _option(
         "empty-profile",
-        {"value": "r1", "label": _OPTION_LABEL},
-        {**_FULL_RUN, "performance_model_profile": ""},
+        {VALUE: "r1", LABEL: _OPTION_LABEL},
+        {**_FULL_RUN, PROFILE: ""},
     ),
     _option(
         "no-title-names-the-run",
-        {"value": "r1", "label": "2026-10-01T10:00:00Z | DONE | r1 | profile fast"},
-        _without(_FULL_RUN, "title"),
+        {VALUE: "r1", LABEL: f"{STARTED_AT} | DONE | r1 | profile fast"},
+        _without(_FULL_RUN, TITLE),
     ),
     _option(
         "no-start-or-state",
-        {"value": "r1", "label": f"{DASH} | {DASH} | Fix the bug"},
-        {"run_id": "r1", "title": "Fix the bug"},
+        {VALUE: "r1", LABEL: f"{DASH} | {DASH} | {BUG_TITLE}"},
+        {RUN_ID: "r1", TITLE: BUG_TITLE},
     ),
     _option(
         "id-field-when-no-run-id",
-        {"value": "r2", "label": f"{DASH} | {DASH} | r2"},
+        {VALUE: "r2", LABEL: f"{DASH} | {DASH} | r2"},
         {"id": "r2"},
     ),
     _option(
         "run-id-wins-over-id",
-        {"value": "r1", "label": f"{DASH} | {DASH} | r1"},
-        {"run_id": "r1", "id": "r2"},
+        {VALUE: "r1", LABEL: f"{DASH} | {DASH} | r1"},
+        {RUN_ID: "r1", "id": "r2"},
     ),
     # No ``run_id`` and no ``id`` leaves the value ``undefined``; the picker filters on that.
-    _option("no-id", {"value": UNDEFINED, "label": f"{DASH} | {DASH} | {DASH}"}, {}),
+    _option("no-id", {VALUE: UNDEFINED, LABEL: f"{DASH} | {DASH} | {DASH}"}, {}),
     _normalize("two-runs", _pair("r1", "r2"), "r1", "r2"),
     _normalize("b-equal-to-a-is-cleared", _pair("r1", None), "r1", "r1"),
     _normalize("no-b", _pair("r1", None), "r1", None),

@@ -88,6 +88,8 @@ def test_strip_comments_raises_on_an_unterminated_block_comment() -> None:
         strip_comments("const a = 1; /* open")
 
 
+_BUTTON = "button"
+_CLICK = "click"
 _WIRING = """
 function wire(button, form) {
   button.addEventListener("click", function () {
@@ -103,7 +105,7 @@ function other(button) { button.addEventListener("click", function () { other();
 
 
 def test_listener_source_returns_only_the_callback_that_was_asked_for() -> None:
-    assert listener_source(_WIRING, "wire", "button", "click") == (
+    assert listener_source(_WIRING, "wire", _BUTTON, _CLICK) == (
         'button.addEventListener("click", function () { send("a}"); }'
     )
     assert listener_source(_WIRING, "wire", "form", "input") == (
@@ -113,15 +115,17 @@ def test_listener_source_returns_only_the_callback_that_was_asked_for() -> None:
 
 
 def test_listener_source_looks_only_inside_the_named_function() -> None:
-    assert "other()" in listener_source(_WIRING, "other", "button", "click")
-    assert "other()" not in listener_source(_WIRING, "wire", "button", "click")
+    assert "other()" in listener_source(_WIRING, "other", _BUTTON, _CLICK)
+    assert "other()" not in listener_source(_WIRING, "wire", _BUTTON, _CLICK)
 
 
 def test_listener_source_raises_when_the_listener_is_missing() -> None:
     with pytest.raises(AssertionError, match="no keydown listener on button in function wire"):
-        listener_source(_WIRING, "wire", "button", "keydown")
+        listener_source(_WIRING, "wire", _BUTTON, "keydown")
 
 
+_SHOUT = "shout"
+_GREET = "greet"
 _FIND_NODE = "dashboard_js.find_node"
 _NO_NODE = "node is not on PATH"
 _NODE_PATH = "/usr/local/bin/node"
@@ -193,13 +197,13 @@ _PAGE = """
 
 
 def test_run_functions_loads_the_constants_and_helpers_a_function_names() -> None:
-    results = run_functions(_PAGE, [JsCall("greet", ("ann",))])
+    results = run_functions(_PAGE, [JsCall(_GREET, ("ann",))])
 
-    assert results == [JsResult("greet", "hello; {world} ANN! 1", [])]
+    assert results == [JsResult(_GREET, "hello; {world} ANN! 1", [])]
 
 
 def test_run_functions_runs_many_calls_in_order_in_one_process() -> None:
-    calls = [JsCall("shout", ("a",)), JsCall("shout", ("b",)), JsCall("greet", ("c",))]
+    calls = [JsCall(_SHOUT, ("a",)), JsCall(_SHOUT, ("b",)), JsCall(_GREET, ("c",))]
 
     values = [result.value for result in run_functions(_PAGE, calls)]
 
@@ -215,13 +219,13 @@ def test_run_functions_gives_a_helper_a_plain_object_for_each_element() -> None:
 def test_run_functions_reports_the_address_writes_of_each_call() -> None:
     location = {"pathname": "/page"}
 
-    results = run_functions(_PAGE, [JsCall("dropQuery", (), location), JsCall("shout", ("a",))])
+    results = run_functions(_PAGE, [JsCall("dropQuery", (), location), JsCall(_SHOUT, ("a",))])
 
     assert [result.history for result in results] == [[[None, "", "/page"]], []]
 
 
 def test_run_functions_returns_the_other_cases_when_one_helper_throws() -> None:
-    calls = [JsCall("shout", ("a",)), JsCall("boom"), JsCall("shout", ("b",))]
+    calls = [JsCall(_SHOUT, ("a",)), JsCall("boom"), JsCall(_SHOUT, ("b",))]
 
     results = run_functions(_PAGE, calls)
 
@@ -253,7 +257,7 @@ def test_run_functions_fails_in_ci_when_node_is_missing(monkeypatch: pytest.Monk
     monkeypatch.setenv("CI", "true")
 
     with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
-        run_functions(_PAGE, [JsCall("shout", ("a",))])
+        run_functions(_PAGE, [JsCall(_SHOUT, ("a",))])
 
 
 def test_run_functions_sends_undefined_nan_and_infinity_as_arguments() -> None:

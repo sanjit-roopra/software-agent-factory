@@ -321,7 +321,7 @@ def _decode(value: object) -> object:
 
 
 def _call_payload(call: JsCall) -> dict[str, object]:
-    return {"function": call.function, "args": _encode(call.args), "location": call.location}
+    return dict(function=call.function, args=_encode(call.args), location=call.location)
 
 
 def _parse_result(call: JsCall, outcome: dict[str, object]) -> JsResult:
