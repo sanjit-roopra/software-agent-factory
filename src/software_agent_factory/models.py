@@ -987,6 +987,10 @@ class EscalationTargetType(StrEnum):
 
 DASHBOARD_USER_LOGIN = "dashboard-local"
 
+#: The most numbered decisions one plan-decision reply can answer. Lives here so the
+#: models below can bound their lists with it; ``escalation_protocol`` re-exports it.
+MAX_PLAN_DECISIONS = 24
+
 #: ``EscalationRecord.reply_cursor`` once no further reply can resume the run.
 REPLY_CURSOR_CLOSED = "closed"
 
@@ -1102,7 +1106,7 @@ class PlanDecisionContext(ModelBase):
     """Immutable decision questions that an authorized human may answer."""
 
     plan_fingerprint: str = Field(min_length=64, max_length=64)
-    decisions: list[str] = Field(min_length=1, max_length=24)
+    decisions: list[str] = Field(min_length=1, max_length=MAX_PLAN_DECISIONS)
     context_fingerprint: str = Field(min_length=64, max_length=64)
 
     @field_validator("decisions")
@@ -1119,7 +1123,7 @@ class PlanDecisionContext(ModelBase):
 class PlanDecisionAnswer(ModelBase):
     """One validated answer to a numbered plan decision."""
 
-    decision_number: int = Field(ge=1, le=24)
+    decision_number: int = Field(ge=1, le=MAX_PLAN_DECISIONS)
     answer: str = Field(min_length=1, max_length=500)
 
     @field_validator("answer")
@@ -1145,7 +1149,7 @@ class PlanDecisionAnswers(VersionedModel):
     user_login: str = Field(min_length=1)
     user_id: int | None = None
     author_association: str = ""
-    answers: list[PlanDecisionAnswer] = Field(min_length=1, max_length=24)
+    answers: list[PlanDecisionAnswer] = Field(min_length=1, max_length=MAX_PLAN_DECISIONS)
     accepted_at: UtcDateTime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -1190,7 +1194,7 @@ class DashboardResumeRequest(VersionedModel):
     episode_id: str = Field(min_length=1)
     context_fingerprint: str
     action: DashboardRequestAction
-    answers: list[PlanDecisionAnswer] = Field(default_factory=list, max_length=24)
+    answers: list[PlanDecisionAnswer] = Field(default_factory=list, max_length=MAX_PLAN_DECISIONS)
     created_at: UtcDateTime = Field(default_factory=utc_now)
     status: DashboardRequestStatus = "pending"
     reason: DashboardRequestStaleReason | None = None
