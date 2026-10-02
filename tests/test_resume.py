@@ -72,11 +72,22 @@ def _imported_modules(module: ModuleType) -> set[str]:
     return imported
 
 
-@pytest.mark.parametrize("module", [resume, resume_writes], ids=["rules", "writes"])
-def test_resume_modules_import_no_github_subprocess_workflow_or_service(
-    module: ModuleType,
-) -> None:
-    imported = _imported_modules(module)
+# The rules module docstring promises this exact list of package imports.
+RULES_ALLOWED_PACKAGE_IMPORTS = {".models", ".config", ".escalation_protocol", ".redaction"}
+
+
+def test_the_rules_module_imports_only_its_documented_package_modules() -> None:
+    relative = {name for name in _imported_modules(resume) if name.startswith(".")}
+
+    assert relative <= RULES_ALLOWED_PACKAGE_IMPORTS
+
+
+def test_the_rules_module_imports_no_subprocess() -> None:
+    assert "subprocess" not in _imported_modules(resume)
+
+
+def test_the_writers_module_imports_no_github_subprocess_workflow_or_service() -> None:
+    imported = _imported_modules(resume_writes)
 
     forbidden = {
         "subprocess",
