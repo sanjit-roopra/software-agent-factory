@@ -2,7 +2,8 @@
 
 Each case calls one pure helper of ``app.js`` with JSON input and checks the
 JSON it returns. Every case runs in one ``node`` process per test module, so
-the suite pays for one start. The tests skip when ``node`` is not on ``PATH``.
+the suite pays for one start. Without ``node`` on ``PATH`` the tests skip on a
+developer machine and fail in CI.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from functools import partial
 from typing import NamedTuple
 
 import pytest
-from dashboard_js import JsCall, JsResult, find_node, run_functions
+from dashboard_js import JsCall, JsResult, run_functions
 
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.security import TOKEN_QUERY_PARAM
@@ -249,8 +250,6 @@ ADDRESS_CASES = [
 @pytest.fixture(scope="module")
 def results() -> Callable[[str], JsResult]:
     """Run every case in one ``node`` process and look the results up by case id."""
-    if find_node() is None:
-        pytest.skip("node is not on PATH")
     calls = [case.call for case in ALL_CASES] + [
         JsCall("stripTokenFromAddress", (), case.location) for case in ADDRESS_CASES
     ]

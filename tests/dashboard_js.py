@@ -10,12 +10,15 @@ JSON arguments. It needs plain ``node`` only: no npm and no bundler (ADR-016).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from functools import cache
 from typing import NamedTuple
+
+import pytest
 
 _QUOTES = "\"'"
 
@@ -182,6 +185,17 @@ def find_node() -> str | None:
     return shutil.which("node")
 
 
+def require_node() -> str:
+    """Path of ``node``. When it is missing, fail in CI and skip on a developer machine."""
+    node = find_node()
+    if node is not None:
+        return node
+    message = "node is not on PATH"
+    if os.environ.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def _definition_end(code: str, start: int) -> int:
     """Index just past the top-level ``function`` or ``const`` that starts at ``start``."""
     is_function = code.startswith("function", start)
@@ -243,11 +257,10 @@ def run_functions(js: str, calls: Sequence[JsCall]) -> list[JsResult]:
 
     The script is not run as a whole. Each called helper is loaded with the
     constants and helpers it names, so no DOM is needed. Raises when a helper
-    is missing, throws, or when ``node`` fails.
+    is missing, throws, or when ``node`` fails. Without ``node`` it fails in CI and skips
+    elsewhere (``require_node``).
     """
-    node = find_node()
-    if node is None:
-        raise AssertionError("node is not on PATH")
+    node = require_node()
     names = sorted({call.function for call in calls})
     script = "\n".join(
         [_PRELUDE, *_definitions_for(js, names), f"const api = {{ {', '.join(names)} }};", _RUNNER]

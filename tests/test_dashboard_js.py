@@ -6,10 +6,10 @@ import pytest
 from dashboard_js import (
     JsCall,
     JsResult,
-    find_node,
     function_source,
     listener_source,
     object_literal_source,
+    require_node,
     run_functions,
     strip_comments,
 )
@@ -119,6 +119,35 @@ def test_listener_source_raises_when_the_listener_is_missing() -> None:
         listener_source(_WIRING, "wire", "button", "keydown")
 
 
+_FIND_NODE = "dashboard_js.find_node"
+_NO_NODE = "node is not on PATH"
+_NODE_PATH = "/usr/local/bin/node"
+
+
+def test_require_node_returns_the_path_of_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: _NODE_PATH)
+
+    assert require_node() == _NODE_PATH
+
+
+def test_require_node_fails_in_ci_when_node_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: None)
+    monkeypatch.setenv("CI", "true")
+
+    with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
+        require_node()
+
+
+def test_require_node_skips_outside_ci_when_node_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: None)
+    monkeypatch.delenv("CI", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match=_NO_NODE):
+        require_node()
+
+
 _PAGE = """
 (function () {
   "use strict";
@@ -146,17 +175,13 @@ _PAGE = """
 })();
 """
 
-needs_node = pytest.mark.skipif(find_node() is None, reason="node is not on PATH")
 
-
-@needs_node
 def test_run_functions_loads_the_constants_and_helpers_a_function_names() -> None:
     results = run_functions(_PAGE, [JsCall("greet", ("ann",))])
 
     assert results == [JsResult("hello; {world} ANN! 1", [])]
 
 
-@needs_node
 def test_run_functions_runs_many_calls_in_order_in_one_process() -> None:
     calls = [JsCall("shout", ("a",)), JsCall("shout", ("b",)), JsCall("greet", ("c",))]
 
@@ -165,14 +190,12 @@ def test_run_functions_runs_many_calls_in_order_in_one_process() -> None:
     assert values == ["A!", "B!", "hello; {world} C! 1"]
 
 
-@needs_node
 def test_run_functions_gives_a_helper_a_plain_object_for_each_element() -> None:
     results = run_functions(_PAGE, [JsCall("makeNode")])
 
     assert results[0].value == {"tagName": "p", "className": "", "textContent": "text"}
 
 
-@needs_node
 def test_run_functions_reports_the_address_writes_of_each_call() -> None:
     location = {"pathname": "/page"}
 
@@ -181,21 +204,26 @@ def test_run_functions_reports_the_address_writes_of_each_call() -> None:
     assert [result.history for result in results] == [[[None, "", "/page"]], []]
 
 
-@needs_node
 def test_run_functions_raises_when_a_helper_throws() -> None:
     with pytest.raises(AssertionError, match="boom threw in node: Error: broken helper"):
         run_functions(_PAGE, [JsCall("boom")])
 
 
-@needs_node
 def test_run_functions_raises_when_the_script_does_not_define_the_helper() -> None:
     with pytest.raises(AssertionError, match="absent is not a top-level definition"):
         run_functions(_PAGE, [JsCall("absent")])
 
 
-@needs_node
 def test_run_functions_raises_when_node_fails_to_load_the_script() -> None:
     js = "  const crash = null.value;\n  function broken() { return crash; }"
 
     with pytest.raises(AssertionError, match="node failed"):
         run_functions(js, [JsCall("broken")])
+
+
+def test_run_functions_fails_in_ci_when_node_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: None)
+    monkeypatch.setenv("CI", "true")
+
+    with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
+        run_functions(_PAGE, [JsCall("shout", ("a",))])
