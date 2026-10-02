@@ -63,7 +63,10 @@ def _imported_modules(module: ModuleType) -> set[str]:
         if isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level == 0:
+            if node.level == 0 and node.module == _PACKAGE:
+                # ``from software_agent_factory import x`` names the module ``...x``
+                imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+            elif node.level == 0:
                 imported.add(node.module or "")
             elif node.module:
                 imported.add(f".{node.module}")
