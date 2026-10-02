@@ -1237,6 +1237,8 @@ def _package_imports(source: str) -> set[tuple[str, str]]:
                     pairs.add((rest.split(".")[0], WHOLE_MODULE))
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
+            if node.level > 2:
+                raise AssertionError(f"import climbs past the package: {ast.unparse(node)}")
             if node.level == 2 and module:
                 pairs.update((module.split(".")[0], alias.name) for alias in node.names)
             elif node.level == 2:
@@ -1286,6 +1288,11 @@ def test_the_import_scan_sees_every_way_to_import_a_package_module(
     source: str, expected: set[tuple[str, str]]
 ) -> None:
     assert _package_imports(source) == expected
+
+
+def test_the_import_scan_fails_on_an_import_that_climbs_past_the_package() -> None:
+    with pytest.raises(AssertionError, match="climbs past the package"):
+        _package_imports("from ...outside import thing")
 
 
 def _dashboard_sources() -> list[Path]:
