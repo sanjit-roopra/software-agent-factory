@@ -634,7 +634,7 @@ def test_dashboard_detail_carries_the_configured_reopen_limit(
     detail = fake_dashboard[0].config.run_detail_provider("run-needs-human")
     assert isinstance(detail, RunDetail)
     assert detail.escalation is not None
-    assert detail.escalation.reopen_max == 2
+    assert detail.escalation.max_reopens == 2
 
 
 def test_dashboard_wires_the_resume_readers_and_requester_to_the_data_dir(

@@ -82,6 +82,11 @@ from pydantic import Field, ValidationError, model_serializer
 
 from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
 from .models import (
+    HALT_REASON_COPY,
+    MAX_GUIDANCE_FINDINGS,
+    UNRESOLVED_DECISIONS_HALT_REASON,
+    UNRESOLVED_DECISIONS_REPLACE_ACTION,
+    ActiveInvocationStatus,
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
@@ -92,6 +97,7 @@ from .models import (
     ExecutionPlan,
     ExecutionRoute,
     FactoryRun,
+    HaltReasonCode,
     InvocationRecord,
     ModelBase,
     PerformanceRecord,
@@ -107,6 +113,8 @@ from .models import (
     VersionedModel,
     WorkflowState,
     WorkItem,
+    unresolved_decisions_count,
+    unresolved_decisions_summary,
     utc_now,
 )
 from .redaction import redact_secrets
@@ -125,6 +133,9 @@ except ImportError:  # pragma: no cover - macOS/Linux only per AGENTS.md
 #: than raising or silently reporting zero stale locks as if they were
 #: checked.
 _FCNTL_AVAILABLE = fcntl is not None
+#: The two review statuses the run view and the run guidance report.
+_ACTION_REQUIRED = "ACTION_REQUIRED"
+_ACCEPTED_WITH_FINDINGS = "ACCEPTED_WITH_FINDINGS"
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
 
 __all__ = [
@@ -438,20 +449,20 @@ class ActiveInvocationSummary(ModelBase):
     model: str
     reasoning: str
     context_tier: ContextTier
-    status: str
+    status: ActiveInvocationStatus
     started_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
 
 
 class RunGuidance(ModelBase):
     status: str
-    reason_code: str
+    reason_code: HaltReasonCode
     summary: str
     next_action: str
     artifact: str | None = None
     finding_count: int = Field(default=0, ge=0)
     decision_count: int | None = Field(default=None, ge=0)
-    finding_ids: list[str] = Field(default_factory=list, max_length=12)
+    finding_ids: list[str] = Field(default_factory=list, max_length=MAX_GUIDANCE_FINDINGS)
     category_counts: dict[ReviewFindingCategory, int] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")
@@ -459,7 +470,7 @@ class RunGuidance(ModelBase):
         data: dict[str, Any] = dict(handler(self))
         if self.decision_count is None:
             data.pop("decision_count", None)
-        if self.reason_code == "UNRESOLVED_DECISIONS":
+        if self.reason_code is HaltReasonCode.UNRESOLVED_DECISIONS:
             data.pop("finding_count", None)
             data.pop("finding_ids", None)
             data.pop("category_counts", None)
@@ -504,7 +515,7 @@ class EscalationSummary(ModelBase):
     resumed_at: UtcDateTime | None = None
     episode_id: str | None = None
     context_fingerprint: str | None = None
-    reopen_max: int | None = Field(default=None, ge=1)
+    max_reopens: int | None = Field(default=None, ge=1)
     reply_closed_cause: str | None = None
     #: Why the dashboard could not queue a resume now, or ``None`` when it can. Unlike
     #: ``reply_closed_cause`` this ignores the GitHub-only gates.
@@ -1054,6 +1065,15 @@ def _last_signal_at(run: FactoryRun) -> datetime | None:
     return max(candidates) if candidates else None
 
 
+def _review_status(run: FactoryRun) -> str | None:
+    """``action_required`` for a halted run, ``accepted_with_findings`` after an acceptance."""
+    if run.state is WorkflowState.NEEDS_HUMAN:
+        return _ACTION_REQUIRED
+    if run.review_acceptance is not None:
+        return _ACCEPTED_WITH_FINDINGS
+    return None
+
+
 def _is_stale(run: FactoryRun, now: datetime, stale_after: timedelta) -> bool:
     signal = _last_signal_at(run) or run.created_at
     return (now - signal) > stale_after
@@ -1468,7 +1488,7 @@ def _escalation_summary(
         resumed_at=escalation.updated_at if is_resumed else None,
         episode_id=escalation.episode_id,
         context_fingerprint=context.context_fingerprint if context is not None else None,
-        reopen_max=max_reopens,
+        max_reopens=max_reopens,
         reply_closed_cause=reply_closed_cause(
             escalation,
             max_reopens=max_reopens,
@@ -1539,13 +1559,7 @@ def _build_run_summary(
         usage=summarize_usage(run.invocation_records),
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
-        review_status=(
-            "ACTION_REQUIRED"
-            if run.state is WorkflowState.NEEDS_HUMAN
-            else "ACCEPTED_WITH_FINDINGS"
-            if run.review_acceptance is not None
-            else None
-        ),
+        review_status=_review_status(run),
         requested_performance_mode=run.requested_performance_mode,
         effective_performance_mode=run.effective_performance_mode,
         performance_model_profile=run.performance_model_profile,
@@ -1653,14 +1667,17 @@ def build_run_detail(
 
 def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance | None:
     if run.state is not WorkflowState.NEEDS_HUMAN and run.review_acceptance is not None:
+        copy = HALT_REASON_COPY[HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE]
         return RunGuidance(
-            status="ACCEPTED_WITH_FINDINGS",
-            reason_code="BOUNDED_REVIEW_ACCEPTANCE",
-            summary="The controller continued after the bounded review limit.",
-            next_action="Review the accepted findings in the pull request before merging.",
+            status=_ACCEPTED_WITH_FINDINGS,
+            reason_code=HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE,
+            summary=copy.summary,
+            next_action=copy.next_action,
             artifact="review-acceptance.json",
             finding_count=len(run.review_acceptance.findings),
-            finding_ids=[finding.id for finding in run.review_acceptance.findings],
+            finding_ids=[finding.id for finding in run.review_acceptance.findings][
+                :MAX_GUIDANCE_FINDINGS
+            ],
             category_counts=_review_category_counts(run.review_acceptance.findings),
         )
     if run.state is not WorkflowState.NEEDS_HUMAN:
@@ -1668,94 +1685,72 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
 
     impasse = _load_optional_artifact(store, run.id, ReviewImpasse)
     if impasse is not None:
+        copy = HALT_REASON_COPY[HaltReasonCode.REVIEW_IMPASSE]
         return RunGuidance(
-            status="ACTION_REQUIRED",
-            reason_code="REVIEW_IMPASSE",
-            summary="Independent review did not converge within the safe automatic policy.",
-            next_action=(
-                "Inspect review-impasse.json, resolve or accept the listed findings, then retry."
-            ),
+            status=_ACTION_REQUIRED,
+            reason_code=HaltReasonCode.REVIEW_IMPASSE,
+            summary=copy.summary,
+            next_action=copy.next_action,
             artifact="review-impasse.json",
             finding_count=len(impasse.finding_ids),
-            finding_ids=impasse.finding_ids,
+            finding_ids=impasse.finding_ids[:MAX_GUIDANCE_FINDINGS],
             category_counts=_review_category_counts(run.review_ledger.open_findings),
         )
 
     reason = (run.failure_reason or "").lower()
-    if reason.startswith("execution plan has unresolved decisions"):
-        plan = _load_optional_artifact(store, run.id, ExecutionPlan)
-        unresolved_count: int | None = None
-        if plan is not None and plan.unresolved_decisions:
-            unresolved_count = len(plan.unresolved_decisions)
-        if unresolved_count is None:
-            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
-                r"\((\d+)\)", reason
-            )
-            if count_match:
-                unresolved_count = int(count_match.group(1))
-        if unresolved_count is not None:
-            decisions_label = "decision" if unresolved_count == 1 else "decisions"
-            summary = (
-                f"The execution plan has {unresolved_count} unresolved architectural "
-                f"{decisions_label}."
-            )
-        else:
-            summary = "The execution plan has unresolved architectural decisions."
-        reply_enabled = (
-            run.escalation is not None
-            and run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
-            and run.escalation.status is EscalationStatus.NOTIFIED
-            and run.escalation.remote_resume_enabled
-        )
-        action = (
-            "Reply with complete numbered decisions on the escalation thread."
-            if reply_enabled
-            else (
-                "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
-            )
-        )
-        return RunGuidance(
-            status="ACTION_REQUIRED",
-            reason_code="UNRESOLVED_DECISIONS",
-            summary=summary,
-            next_action=action,
-            artifact="execution-plan.json",
-            decision_count=unresolved_count,
-        )
-    if "risk" in reason or "approval" in reason:
-        code = "RISK_APPROVAL"
-        summary = "The run requires approval under the configured risk policy."
-        action = "Review the work item risk and approve or change the policy before retrying."
-    elif "scope" in reason:
-        code = "SCOPE_REVIEW"
-        summary = "The proposed changes exceeded the approved scope."
-        action = "Review the planned and changed files, then update the scope or retry."
-    elif "budget" in reason or "attempt" in reason:
-        code = "ATTEMPT_BUDGET_EXHAUSTED"
-        summary = "The run exhausted a bounded retry budget."
-        action = "Inspect the run artifacts, correct the underlying issue, then retry."
-    elif "ci " in reason or reason.startswith("ci"):
-        code = "CI_INTERVENTION"
-        summary = "CI could not be completed or repaired automatically."
-        action = "Inspect the pull request checks, fix the failing check, then retry delivery."
-    elif any(term in reason for term in ("publish", "pull request", "merge", "permission")):
-        code = "DELIVERY_INTERVENTION"
-        summary = "The controller could not complete pull request delivery."
-        action = "Check repository permissions and delivery settings, then retry delivery."
-    elif any(term in reason for term in ("abandon", "interrupt", "workspace")):
-        code = "RECOVERY_INTERVENTION"
-        summary = "The run could not safely recover its persisted workspace."
-        action = "Inspect the run and workspace metadata before starting a replacement run."
-    else:
-        code = "MANUAL_INSPECTION"
-        summary = "The controller stopped at a manual decision boundary."
-        action = "Inspect the typed run artifacts and decide whether to retry or replace the run."
+    if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
+        return _unresolved_decisions_guidance(store, run, reason)
+    code = _halt_reason_code(reason)
+    copy = HALT_REASON_COPY[code]
     return RunGuidance(
-        status="ACTION_REQUIRED",
+        status=_ACTION_REQUIRED,
         reason_code=code,
-        summary=summary,
-        next_action=action,
+        summary=copy.summary,
+        next_action=copy.next_action,
     )
+
+
+def _unresolved_decisions_guidance(
+    store: RunStoreProtocol, run: FactoryRun, reason: str
+) -> RunGuidance:
+    plan = _load_optional_artifact(store, run.id, ExecutionPlan)
+    unresolved_count = unresolved_decisions_count(plan, reason)
+    reply_enabled = (
+        run.escalation is not None
+        and run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
+        and run.escalation.status is EscalationStatus.NOTIFIED
+        and run.escalation.remote_resume_enabled
+    )
+    action = (
+        HALT_REASON_COPY[HaltReasonCode.UNRESOLVED_DECISIONS].next_action
+        if reply_enabled
+        else UNRESOLVED_DECISIONS_REPLACE_ACTION
+    )
+    return RunGuidance(
+        status=_ACTION_REQUIRED,
+        reason_code=HaltReasonCode.UNRESOLVED_DECISIONS,
+        summary=unresolved_decisions_summary(unresolved_count),
+        next_action=action,
+        artifact="execution-plan.json",
+        decision_count=unresolved_count,
+    )
+
+
+def _halt_reason_code(reason: str) -> HaltReasonCode:
+    """The code a lowercased failure reason selects. The run view keys on the reason text alone."""
+    if "risk" in reason or "approval" in reason:
+        return HaltReasonCode.RISK_APPROVAL
+    if "scope" in reason:
+        return HaltReasonCode.SCOPE_REVIEW
+    if "budget" in reason or "attempt" in reason:
+        return HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
+    if "ci " in reason or reason.startswith("ci"):
+        return HaltReasonCode.CI_INTERVENTION
+    if any(term in reason for term in ("publish", "pull request", "merge", "permission")):
+        return HaltReasonCode.DELIVERY_INTERVENTION
+    if any(term in reason for term in ("abandon", "interrupt", "workspace")):
+        return HaltReasonCode.RECOVERY_INTERVENTION
+    return HaltReasonCode.MANUAL_INSPECTION
 
 
 def _review_category_counts(findings: Iterable[Any]) -> dict[ReviewFindingCategory, int]:
@@ -1795,7 +1790,7 @@ def _active_invocation_status(
     run: FactoryRun,
     now: datetime,
     stale_after: timedelta,
-) -> str:
+) -> ActiveInvocationStatus:
     lease = run.lease
     if lease is None:
         return "abandoned"

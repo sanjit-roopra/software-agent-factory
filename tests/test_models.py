@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +10,8 @@ from pydantic import ValidationError
 from software_agent_factory.models import (
     GENERIC_PRACTICE_VERSION_SCOPE,
     GENERIC_SKILL_TARGET,
+    MAX_GUIDANCE_FINDINGS,
+    MAX_PLAN_DECISIONS,
     REQUIRED_SKILL_TARGET_NAMES,
     AgentRole,
     AttemptBudget,
@@ -17,6 +21,7 @@ from software_agent_factory.models import (
     CommandResult,
     Complexity,
     ContextTier,
+    DashboardResumeRequest,
     DependencyEcosystem,
     ExecutionPlan,
     ExpectedScope,
@@ -24,6 +29,9 @@ from software_agent_factory.models import (
     InvocationRecord,
     ModelBase,
     ModelUsage,
+    PlanDecisionAnswer,
+    PlanDecisionAnswers,
+    PlanDecisionContext,
     PlanStep,
     ProjectBrief,
     ProjectPlan,
@@ -1046,3 +1054,77 @@ def test_project_brief_rejects_a_blank_required_scalar(field: str) -> None:
 
     with pytest.raises(ValidationError, match="must not be blank"):
         ProjectBrief.model_validate(payload)
+
+
+_DIGEST = "a" * 64
+
+
+def _answers(count: int) -> list[PlanDecisionAnswer]:
+    return [PlanDecisionAnswer(decision_number=n, answer="yes") for n in range(1, count + 1)]
+
+
+def _plan_decision_context(count: int) -> PlanDecisionContext:
+    return PlanDecisionContext(
+        plan_fingerprint=_DIGEST,
+        decisions=[f"Question {n}?" for n in range(1, count + 1)],
+        context_fingerprint=_DIGEST,
+    )
+
+
+def _plan_decision_answers(count: int) -> PlanDecisionAnswers:
+    return PlanDecisionAnswers(
+        run_id="run-1",
+        episode_id="episode-1",
+        plan_fingerprint=_DIGEST,
+        context_fingerprint=_DIGEST,
+        comment_id=1,
+        user_login="octocat",
+        answers=_answers(count),
+    )
+
+
+def _dashboard_request(count: int) -> DashboardResumeRequest:
+    return DashboardResumeRequest(
+        run_id="run-1",
+        episode_id="episode-1",
+        context_fingerprint=_DIGEST,
+        action="PLAN_DECISION",
+        answers=_answers(count),
+    )
+
+
+def test_the_wire_limits_do_not_change() -> None:
+    # Stored run files and the dashboard payload hold lists of these sizes. Changing a limit
+    # makes an old file fail to load or a new file fail to read in an old dashboard.
+    assert (MAX_PLAN_DECISIONS, MAX_GUIDANCE_FINDINGS) == (24, 12)
+
+
+_PLAN_DECISION_BUILDERS: list[Callable[[int], Any]] = [
+    _plan_decision_context,
+    _plan_decision_answers,
+    _dashboard_request,
+]
+
+
+@pytest.mark.parametrize("build", _PLAN_DECISION_BUILDERS)
+def test_a_plan_decision_model_accepts_exactly_max_plan_decisions(
+    build: Callable[[int], Any],
+) -> None:
+    assert build(MAX_PLAN_DECISIONS) is not None
+
+
+@pytest.mark.parametrize("build", _PLAN_DECISION_BUILDERS)
+def test_a_plan_decision_model_rejects_one_more_than_max_plan_decisions(
+    build: Callable[[int], Any],
+) -> None:
+    with pytest.raises(ValidationError):
+        build(MAX_PLAN_DECISIONS + 1)
+
+
+def test_a_decision_number_above_max_plan_decisions_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        PlanDecisionAnswer(decision_number=MAX_PLAN_DECISIONS + 1, answer="yes")
+
+
+def test_the_last_decision_number_is_accepted() -> None:
+    assert PlanDecisionAnswer(decision_number=MAX_PLAN_DECISIONS, answer="yes").answer == "yes"

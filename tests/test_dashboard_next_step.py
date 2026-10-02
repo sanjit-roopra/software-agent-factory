@@ -24,7 +24,6 @@ from software_agent_factory.dashboard.next_step import (
     next_step,
 )
 from software_agent_factory.dashboard.sanitize import (
-    GUIDANCE_COPY,
     MAX_SCOPE_ITEMS,
     sanitize_run_detail,
 )
@@ -89,7 +88,7 @@ def _run(
             "episode_id": EPISODE_ID,
             "context_fingerprint": FINGERPRINT,
             "reopen_count": 0,
-            "reopen_max": 3,
+            "max_reopens": 3,
             "reply_closed_cause": None,
             "dashboard_action_refusal": None,
             **escalation,
@@ -129,7 +128,7 @@ def test_risk_approval_halt_gives_approve_with_scope_reopens_and_reply() -> None
         "conditions_in_force": ["Quality gates must pass."],
     }
     assert step["decisions"] == []
-    assert (step["reopens_used"], step["reopens_max"]) == (0, 3)
+    assert (step["reopens_used"], step["max_reopens"]) == (0, 3)
     assert step["episode_id"] == EPISODE_ID
     assert step["context_fingerprint"] == FINGERPRINT
     assert step["reply_text"] == f"@factory resume v1 run={RUN_ID} episode={EPISODE_ID}"
@@ -440,8 +439,8 @@ def test_the_action_is_hidden_once_the_provider_reports_the_reopen_limit() -> No
 
 
 def test_the_reopen_count_alone_neither_shows_nor_hides_the_action() -> None:
-    at_the_limit = next_step(_risk_run(reopen_count=3, reopen_max=3))
-    numbers_unknown = next_step(_plan_run(reopen_count=None, reopen_max=None))
+    at_the_limit = next_step(_risk_run(reopen_count=3, max_reopens=3))
+    numbers_unknown = next_step(_plan_run(reopen_count=None, max_reopens=None))
 
     assert (at_the_limit["kind"], numbers_unknown["kind"]) == ("approve", "answer")
     assert at_the_limit["reply_text"] is not None
@@ -480,11 +479,6 @@ def test_no_two_reason_codes_share_a_sentence() -> None:
 
 def test_every_reason_sentence_starts_with_the_run() -> None:
     assert all(sentence.startswith("The run ") for sentence in REASON_SENTENCES.values())
-
-
-def test_every_reason_sentence_belongs_to_a_known_reason_code() -> None:
-    assert set(REASON_SENTENCES) <= set(GUIDANCE_COPY)
-    assert set(GUIDANCE_COPY) - set(REASON_SENTENCES) == {"BOUNDED_REVIEW_ACCEPTANCE"}
 
 
 @pytest.mark.parametrize("code", ["SOMETHING_NEW", "", None])
@@ -537,15 +531,15 @@ def test_comment_link_is_kept_only_for_https(url: str | None, kept: bool) -> Non
 
 @pytest.mark.parametrize(("used", "maximum"), [(0, 3), (2, 3), (3, 3)])
 def test_reopens_show_used_and_max(used: int, maximum: int) -> None:
-    step = next_step(_risk_run(reopen_count=used, reopen_max=maximum))
+    step = next_step(_risk_run(reopen_count=used, max_reopens=maximum))
 
-    assert (step["reopens_used"], step["reopens_max"]) == (used, maximum)
+    assert (step["reopens_used"], step["max_reopens"]) == (used, maximum)
 
 
 def test_unknown_reopen_numbers_stay_none() -> None:
-    step = next_step(_risk_run(reopen_count=None, reopen_max="three"))
+    step = next_step(_risk_run(reopen_count=None, max_reopens="three"))
 
-    assert (step["reopens_used"], step["reopens_max"]) == (None, None)
+    assert (step["reopens_used"], step["max_reopens"]) == (None, None)
 
 
 def test_sanitized_run_detail_carries_the_next_step_and_redacts_the_escalation() -> None:
@@ -559,7 +553,7 @@ def test_sanitized_run_detail_carries_the_next_step_and_redacts_the_escalation()
             "episode_id": EPISODE_ID,
             "context_fingerprint": FINGERPRINT,
             "reopen_count": 1,
-            "reopen_max": 3,
+            "max_reopens": 3,
             "reply_closed_cause": None,
             "dashboard_action_refusal": None,
             "comment_url": "https://github.com/o/r/pull/1#c-1",
@@ -587,7 +581,7 @@ def test_sanitized_run_detail_drops_malformed_escalation_context() -> None:
             "resume_classification": "RISK_APPROVAL",
             "episode_id": "ep one",
             "context_fingerprint": "short",
-            "reopen_max": -1,
+            "max_reopens": -1,
             "approval_scope": {"decision_requested": 5},
             "decisions": "not a list",
         },
@@ -595,7 +589,7 @@ def test_sanitized_run_detail_drops_malformed_escalation_context() -> None:
 
     escalation = sanitize_run_detail(detail)["escalation"]
 
-    for key in ("episode_id", "context_fingerprint", "reopen_max", "approval_scope", "decisions"):
+    for key in ("episode_id", "context_fingerprint", "max_reopens", "approval_scope", "decisions"):
         assert key not in escalation
 
 
@@ -667,7 +661,7 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
     step = run_detail_view(detail)["next_step"]
 
     assert step["kind"] == "approve"
-    assert (step["reopens_used"], step["reopens_max"]) == (1, 3)
+    assert (step["reopens_used"], step["max_reopens"]) == (1, 3)
     assert step["approval_scope"]["decision_requested"] == "Approve it."
     assert step["comment_url"] == "https://github.com/o/r/pull/1#c-1"
     assert parse_resume_command(step["reply_text"]) == (RUN_ID, EPISODE_ID)

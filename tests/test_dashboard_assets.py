@@ -358,11 +358,15 @@ def test_notices_live_in_one_polite_status_region() -> None:
 def test_notice_texts_report_a_lost_connection_and_a_restart() -> None:
     message = function_source(dashboard_assets.APP_JS, "noticeMessage")
     assert (
-        '"Connection lost, updated " + Math.floor((Date.now() - lastSuccessAt) / 1000) + "s ago"'
-        in message
+        '( "Connection lost, updated " + Math.floor((Date.now() - lastSuccessAt) / MS_PER_SECOND)'
+        ' + "s ago" )' in message
     )
     assert '"Connection lost, not updated yet"' in message
     assert '"Dashboard restarted, open the new link from factory dashboard."' in message
+
+
+def test_the_script_names_the_milliseconds_in_a_second_once() -> None:
+    assert re.findall(r"\b1000\b", strip_comments(dashboard_assets.APP_JS)) == ["1000"]
 
 
 def test_a_401_is_told_apart_from_a_network_error() -> None:
@@ -945,7 +949,7 @@ def test_plan_decisions_show_as_a_numbered_list() -> None:
 
 def test_reopens_show_as_used_of_max() -> None:
     source = function_source(dashboard_assets.APP_JS, "reopensLine")
-    assert '"Reopens used " + step.reopens_used + " of " + step.reopens_max' in source
+    assert '"Reopens used " + step.reopens_used + " of " + step.max_reopens' in source
 
 
 def test_the_reply_has_a_copy_button_that_announces_copied() -> None:

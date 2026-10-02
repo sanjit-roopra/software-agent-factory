@@ -17,7 +17,14 @@ from pydantic import (
     model_validator,
 )
 
-from .models import Complexity, ContextTier, ExecutionRoute, ReviewFindingCategory, Risk
+from .models import (
+    MAX_GUIDANCE_FINDINGS,
+    Complexity,
+    ContextTier,
+    ExecutionRoute,
+    ReviewFindingCategory,
+    Risk,
+)
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
 
@@ -223,7 +230,7 @@ class ReviewConfig(ConfigModel):
     """Controller-owned limits for bounded independent review."""
 
     max_rounds: int = Field(default=3, ge=1, le=10)
-    max_accepted_findings: int = Field(default=5, ge=1, le=12)
+    max_accepted_findings: int = Field(default=5, ge=1, le=MAX_GUIDANCE_FINDINGS)
     accepted_risks: list[Risk] = Field(default_factory=lambda: [Risk.R0, Risk.R1])
     blocked_categories: list[ReviewFindingCategory] = Field(
         default_factory=lambda: [

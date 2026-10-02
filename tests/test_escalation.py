@@ -31,8 +31,6 @@ from pydantic import BaseModel
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
-    UNRESOLVED_DECISIONS_HALT_PREFIX,
-    UNRESOLVED_DECISIONS_REASON_CODE,
     ValidationResult,
     build_escalation_comment,
     build_plan_decision_context,
@@ -57,6 +55,7 @@ from software_agent_factory.github import (
     GitHubError,
 )
 from software_agent_factory.models import (
+    UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     AgentRole,
     Complexity,
@@ -67,6 +66,7 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    HaltReasonCode,
     PlanDecisionAnswer,
     PlanDecisionAnswers,
     PlanDecisionContext,
@@ -529,11 +529,11 @@ def test_classify_halt_reason_unresolved_decisions_stable_prefix_wins(tmp_path: 
             id="run-test-prefix",
             work_item_id="task-1",
             state=WorkflowState.NEEDS_HUMAN,
-            failure_reason=f"{UNRESOLVED_DECISIONS_HALT_PREFIX}{suffix}",
+            failure_reason=f"{UNRESOLVED_DECISIONS_HALT_REASON}{suffix}",
         )
         classification, code, summary, action = classify_halt_reason(run)
         assert classification is ResumeClassification.PLAN_DECISION
-        assert code == UNRESOLVED_DECISIONS_REASON_CODE
+        assert code == HaltReasonCode.UNRESOLVED_DECISIONS
         assert "Reply with complete numbered decisions" in action
 
 
@@ -543,13 +543,13 @@ def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path:
         id="run-unresolved-count",
         work_item_id="task-1",
         state=WorkflowState.NEEDS_HUMAN,
-        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_REASON,
     )
     store.save_run(run)
 
     # 1. Without store or without ExecutionPlan: safe count is omitted, no model prose
     _, code, summary_no_plan, action = classify_halt_reason(run)
-    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert code == HaltReasonCode.UNRESOLVED_DECISIONS
     assert "Reply with complete numbered decisions" in action
     assert "The execution plan has unresolved architectural decisions." in summary_no_plan
 
@@ -566,7 +566,7 @@ def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path:
     store.save_artifact(run.id, plan)
 
     _, code, summary_with_plan, action = classify_halt_reason(run, store)
-    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert code == HaltReasonCode.UNRESOLVED_DECISIONS
     assert "2 unresolved architectural decisions" in summary_with_plan
     assert "Reply with complete numbered decisions" in action
     # Verify no model prose in summary or action
@@ -1522,6 +1522,8 @@ def test_a_poll_without_a_valid_reply_keeps_a_reopen_it_read_too_late(
     assert saved.escalation.reopen_count == 1
 
 
+# The real FileRunStore still does every read and write underneath.
+# double-waiver: B1 — stands in for a second process writing run.json between reads
 class _ReopeningStore(FileRunStore):
     """A store where a reopen lands right after the poller's first read of the run."""
 
@@ -1584,7 +1586,7 @@ def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -
         id="run-plan-poll",
         work_item_id="task-1",
         state=WorkflowState.NEEDS_HUMAN,
-        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_REASON,
     )
     store.save_run(run)
     store.save_artifact(

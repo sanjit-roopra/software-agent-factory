@@ -12,7 +12,7 @@ from typing import Any
 from ..models import WorkflowState
 from .aggregate import compare_roles, models_of, run_totals
 from .next_step import next_step
-from .sanitize import sanitize_project, sanitize_run_detail
+from .sanitize import is_active_status, sanitize_project, sanitize_run_detail
 from .validators import is_episode_id, run_id_of
 
 RequestsFor = Callable[[str, str], Iterable[Any]]
@@ -47,10 +47,15 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
 
 
 def project_view(raw: Any) -> dict[str, Any]:
-    """A sanitized project with its ``totals`` over the models it lists."""
+    """A sanitized project with its ``totals`` over the finished calls in the models it lists.
+
+    The active calls stay in ``models`` for the page, but they have no usage yet, so
+    the totals leave them out.
+    """
     project = sanitize_project(raw)
     if "models" in project:
-        project["totals"] = run_totals(project["models"])
+        finished = [call for call in project["models"] if not is_active_status(call.get("status"))]
+        project["totals"] = run_totals(finished)
     return project
 
 

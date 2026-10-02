@@ -43,6 +43,7 @@ from software_agent_factory.dashboard.handler import (
 )
 from software_agent_factory.dashboard.sanitize import (
     ACTIVE_INVOCATION_FIELDS,
+    ACTIVE_INVOCATION_STATUSES,
     ATTEMPT_FIELDS,
     INVOCATION_FIELDS,
     PROJECT_FIELDS,
@@ -50,6 +51,7 @@ from software_agent_factory.dashboard.sanitize import (
     PROJECT_TASK_FIELDS,
     RUN_DETAIL_FIELDS,
     RUN_SUMMARY_FIELDS,
+    is_active_status,
     sanitize_active_invocation,
     sanitize_attempt,
     sanitize_invocation,
@@ -71,6 +73,7 @@ from software_agent_factory.dashboard.snapshot import (
     to_json_safe,
 )
 from software_agent_factory.dashboard.view import project_view, run_detail_view
+from software_agent_factory.models import MAX_GUIDANCE_FINDINGS, MAX_PLAN_DECISIONS
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -1535,6 +1538,24 @@ def test_sanitize_run_detail_omits_list_price_estimate_when_not_reported() -> No
     assert "list_price_estimate_usd" not in payload["usage"]
 
 
+def test_the_active_statuses_are_the_ones_the_page_names_an_outcome_for() -> None:
+    assert ACTIVE_INVOCATION_STATUSES == {"running", "stale", "crashed", "abandoned"}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("running", True),
+        ("abandoned", True),
+        ("success", False),
+        (None, False),
+        (["running"], False),
+    ],
+)
+def test_is_active_status_accepts_only_the_active_status_names(value: Any, expected: bool) -> None:
+    assert is_active_status(value) is expected
+
+
 def test_non_object_active_invocation_is_dropped() -> None:
     sanitized = sanitize_run_detail(
         {
@@ -1845,6 +1866,48 @@ def test_run_guidance_is_reconstructed_from_safe_reason_code() -> None:
     assert guidance["finding_ids"] == ["review-correctness-1234"]
     assert guidance["category_counts"] == {"CORRECTNESS": 1}
     assert SECRET_MARKER not in json.dumps(guidance)
+
+
+def _review_guidance(**fields: Any) -> dict[str, Any]:
+    guidance = {"reason_code": "REVIEW_IMPASSE", **fields}
+    return sanitize_run_detail({**FIXTURE_DETAILS["run-001"], "guidance": guidance})["guidance"]
+
+
+def test_a_finding_count_up_to_the_guidance_cap_is_kept() -> None:
+    kept = _review_guidance(finding_count=MAX_GUIDANCE_FINDINGS)
+    dropped = _review_guidance(finding_count=MAX_GUIDANCE_FINDINGS + 1)
+
+    assert kept["finding_count"] == MAX_GUIDANCE_FINDINGS
+    assert "finding_count" not in dropped
+
+
+def test_finding_ids_are_cut_to_the_guidance_cap() -> None:
+    ids = [f"review-correctness-{n}" for n in range(MAX_GUIDANCE_FINDINGS + 1)]
+
+    guidance = _review_guidance(finding_ids=ids)
+
+    assert guidance["finding_ids"] == ids[:MAX_GUIDANCE_FINDINGS]
+
+
+def test_a_category_count_over_the_guidance_cap_is_dropped() -> None:
+    guidance = _review_guidance(
+        category_counts={"CORRECTNESS": MAX_GUIDANCE_FINDINGS, "SCOPE": MAX_GUIDANCE_FINDINGS + 1}
+    )
+
+    assert guidance["category_counts"] == {"CORRECTNESS": MAX_GUIDANCE_FINDINGS}
+
+
+def _decision_guidance(**fields: Any) -> dict[str, Any]:
+    guidance = {"reason_code": "UNRESOLVED_DECISIONS", **fields}
+    return sanitize_run_detail({**FIXTURE_DETAILS["run-001"], "guidance": guidance})["guidance"]
+
+
+def test_a_decision_count_up_to_the_plan_decision_cap_is_kept() -> None:
+    kept = _decision_guidance(decision_count=MAX_PLAN_DECISIONS)
+    dropped = _decision_guidance(decision_count=MAX_PLAN_DECISIONS + 1)
+
+    assert kept["decision_count"] == MAX_PLAN_DECISIONS
+    assert "decision_count" not in dropped
 
 
 def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count() -> None:
@@ -2605,7 +2668,7 @@ def _waiting_detail(run_id: str) -> dict[str, Any] | None:
             "episode_id": "ep-1",
             "context_fingerprint": _FINGERPRINT,
             "reopen_count": 0,
-            "reopen_max": 3,
+            "max_reopens": 3,
             "reply_closed_cause": None,
             "dashboard_action_refusal": None,
             "approval_scope": {
@@ -3396,6 +3459,30 @@ def test_project_carries_totals_over_its_models() -> None:
 
     assert project["totals"]["calls"] == 2
     assert project["totals"]["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}
+
+
+def test_project_totals_leave_out_the_active_calls_but_the_models_still_list_them() -> None:
+    project = project_view(
+        {
+            "project_id": "project-001",
+            "models": [
+                {"usage": {"total_nano_aiu": 100_000_000_000}, "success": True},
+                {"status": "running", "success": None, "usage": None},
+                {"status": "stale", "success": None, "usage": None},
+            ],
+        }
+    )
+
+    assert project["totals"]["calls"] == 1
+    assert len(project["models"]) == 3
+
+
+def test_project_totals_count_a_call_whose_status_is_not_a_known_word() -> None:
+    project = project_view(
+        {"project_id": "project-001", "models": [{"status": ["running"]}, {"status": 7}]}
+    )
+
+    assert project["totals"]["calls"] == 2
 
 
 # --------------------------------------------------------------------------

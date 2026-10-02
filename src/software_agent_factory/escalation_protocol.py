@@ -19,16 +19,14 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
+from .models import MAX_PLAN_DECISIONS as MAX_PLAN_DECISIONS
 from .models import REPLY_CURSOR_CLOSED, EscalationRecord, EscalationStatus
 
 #: Characters allowed in a run id or an episode id inside a reply command.
 _ID_CHARS = "A-Za-z0-9._-"
 
-#: The most numbered decisions one plan-decision reply can answer.
-MAX_PLAN_DECISIONS = 24
-
-# ``EPISODE_ID_PATTERN`` (an episode id as a whole) lives in ``models`` and is re-exported
-# here. The command patterns below do not cap the length.
+# ``EPISODE_ID_PATTERN`` (an episode id as a whole) and ``MAX_PLAN_DECISIONS`` live in
+# ``models`` and are re-exported here. The command patterns below do not cap the length.
 
 RESUME_COMMAND_PATTERN = re.compile(
     rf"^@factory\s+resume\s+v1\s+run=(?P<run>[{_ID_CHARS}]+)\s+episode=(?P<episode>[{_ID_CHARS}]+)$"

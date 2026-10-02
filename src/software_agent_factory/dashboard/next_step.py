@@ -35,7 +35,7 @@ from enum import StrEnum
 from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
-from ..models import ResumeClassification, WorkflowState
+from ..models import HaltReasonCode, ResumeClassification, WorkflowState
 from .validators import (
     RESUME_CLASSIFICATIONS,
     is_context_fingerprint,
@@ -46,16 +46,32 @@ from .validators import (
 )
 
 #: Why a run stopped, one plain sentence per halt reason code.
-REASON_SENTENCES: dict[str, str] = {
-    "RISK_APPROVAL": "The run stopped because its risk level needs a person to approve it.",
-    "UNRESOLVED_DECISIONS": "The run stopped because its plan needs decisions from a person.",
-    "SCOPE_REVIEW": "The run stopped because its changes went beyond the approved scope.",
-    "REVIEW_IMPASSE": "The run stopped because the review did not settle on an answer.",
-    "ATTEMPT_BUDGET_EXHAUSTED": "The run stopped because it used all of its retry attempts.",
-    "CI_INTERVENTION": "The run stopped because CI could not pass or be repaired by itself.",
-    "DELIVERY_INTERVENTION": "The run stopped because it could not deliver the pull request.",
-    "RECOVERY_INTERVENTION": "The run stopped because it could not safely recover its workspace.",
-    "MANUAL_INSPECTION": "The run stopped at a point where a person must decide.",
+REASON_SENTENCES: dict[HaltReasonCode, str] = {
+    HaltReasonCode.RISK_APPROVAL: (
+        "The run stopped because its risk level needs a person to approve it."
+    ),
+    HaltReasonCode.UNRESOLVED_DECISIONS: (
+        "The run stopped because its plan needs decisions from a person."
+    ),
+    HaltReasonCode.SCOPE_REVIEW: (
+        "The run stopped because its changes went beyond the approved scope."
+    ),
+    HaltReasonCode.REVIEW_IMPASSE: (
+        "The run stopped because the review did not settle on an answer."
+    ),
+    HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED: (
+        "The run stopped because it used all of its retry attempts."
+    ),
+    HaltReasonCode.CI_INTERVENTION: (
+        "The run stopped because CI could not pass or be repaired by itself."
+    ),
+    HaltReasonCode.DELIVERY_INTERVENTION: (
+        "The run stopped because it could not deliver the pull request."
+    ),
+    HaltReasonCode.RECOVERY_INTERVENTION: (
+        "The run stopped because it could not safely recover its workspace."
+    ),
+    HaltReasonCode.MANUAL_INSPECTION: "The run stopped at a point where a person must decide.",
 }
 FALLBACK_SENTENCE = "The run stopped and needs a person to look at it."
 FAILED_SENTENCE = "The run failed."
@@ -128,7 +144,7 @@ def _empty(kind: NextStepKind) -> dict[str, Any]:
         "approval_scope": None,
         "decisions": [],
         "reopens_used": None,
-        "reopens_max": None,
+        "max_reopens": None,
         "comment_url": None,
         "episode_id": None,
         "context_fingerprint": None,
@@ -141,12 +157,8 @@ def _empty(kind: NextStepKind) -> dict[str, Any]:
 
 
 def _reason_sentence(escalation: dict[str, Any]) -> str:
-    code = escalation.get("reason_code")
-    return (
-        REASON_SENTENCES.get(code, FALLBACK_SENTENCE)
-        if isinstance(code, str)
-        else FALLBACK_SENTENCE
-    )
+    code = HaltReasonCode.parse(escalation.get("reason_code"))
+    return REASON_SENTENCES.get(code, FALLBACK_SENTENCE) if code is not None else FALLBACK_SENTENCE
 
 
 def _comment_url(escalation: dict[str, Any]) -> str | None:
@@ -167,7 +179,7 @@ def _halt_step(kind: NextStepKind, sentence: str, escalation: dict[str, Any]) ->
             resume_classification if resume_classification in RESUME_CLASSIFICATIONS else None
         ),
         reopens_used=_count_or_none(escalation.get("reopen_count")),
-        reopens_max=_count_or_none(escalation.get("reopen_max")),
+        max_reopens=_count_or_none(escalation.get("max_reopens")),
         comment_url=_comment_url(escalation),
     )
     return step

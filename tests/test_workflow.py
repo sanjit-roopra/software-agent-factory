@@ -29,6 +29,7 @@ from software_agent_factory.governance import (
 )
 from software_agent_factory.models import (
     GENERIC_SKILL_TARGET,
+    UNRESOLVED_DECISIONS_HALT_REASON,
     AgentPurpose,
     AgentRole,
     AttemptBudget,
@@ -89,7 +90,6 @@ from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, File
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
-    UNRESOLVED_DECISIONS_HALT_REASON,
     TransitionError,
     WorkflowController,
     _RunContext,

@@ -24,24 +24,30 @@ import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_args
 
 import pytest
+from pydantic import ValidationError
 
 from software_agent_factory.models import (
+    MAX_GUIDANCE_FINDINGS,
     AcceptedReplyReceipt,
     ActiveInvocation,
+    ActiveInvocationStatus,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
     AttemptTrigger,
     CommandResult,
     Complexity,
+    ContextTier,
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    HaltReasonCode,
     InvocationRecord,
     ModelUsage,
     PerformanceRecord,
@@ -71,9 +77,11 @@ from software_agent_factory.observability import (
     DEFAULT_MAX_SCANNED_RUNS,
     DEFAULT_SCAN_CACHE_TTL,
     DEFAULT_STALE_AFTER,
+    ActiveInvocationSummary,
     MonitoringSnapshot,
     OperationalHealthReport,
     OrphanedWorkspaceFinding,
+    RunGuidance,
     RunScanCache,
     RunScanResult,
     RunStoreProtocol,
@@ -2079,7 +2087,7 @@ def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path
     assert detail.escalation is not None
     assert detail.escalation.episode_id == "ep-1"
     assert detail.escalation.context_fingerprint == "a" * 64
-    assert detail.escalation.reopen_max == 3
+    assert detail.escalation.max_reopens == 3
     assert detail.escalation.approval_scope is not None
     assert detail.escalation.approval_scope.model_dump() == {
         "decision_requested": "Approve advancing the run to REFINING.",
@@ -2119,7 +2127,7 @@ def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
     assert detail.escalation.decisions == ["Use SQLite?", "Keep the API?"]
     assert detail.escalation.context_fingerprint == "c" * 64
     assert detail.escalation.approval_scope is None
-    assert detail.escalation.reopen_max is None
+    assert detail.escalation.max_reopens is None
 
 
 def test_build_run_detail_shows_live_active_invocation(
@@ -2335,6 +2343,66 @@ def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -
         "category_counts": {"CORRECTNESS": 1},
     }
     assert finding.message not in json.dumps(payload)
+
+
+def _review_finding(number: int) -> ReviewFinding:
+    return ReviewFinding(
+        id=f"review-correctness-{number}",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message="repository text must stay server-side",
+        locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+
+
+def test_build_run_detail_cuts_the_finding_ids_of_a_stored_impasse_to_the_guidance_cap(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    ids = [f"review-correctness-{n}" for n in range(MAX_GUIDANCE_FINDINGS + 1)]
+    run = _run("run-wide-impasse", state=WorkflowState.NEEDS_HUMAN)
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+    store.add_artifact(run.id, ReviewImpasse(snapshot=1, reason="no progress", finding_ids=ids))
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None
+    assert detail.guidance is not None
+    assert detail.guidance.finding_ids == ids[:MAX_GUIDANCE_FINDINGS]
+    assert detail.guidance.finding_count == len(ids)
+
+
+def test_build_run_detail_cuts_the_finding_ids_of_an_acceptance_to_the_guidance_cap(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    findings = [_review_finding(n) for n in range(MAX_GUIDANCE_FINDINGS + 1)]
+    acceptance = ReviewAcceptance(
+        snapshot=1,
+        reason=ReviewAcceptanceReason.REVIEW_ROUND_LIMIT,
+        risk=Risk.R1,
+        review_rounds=3,
+        reviewed_tree_sha="a" * 40,
+        findings=findings,
+    )
+    run = _run("run-wide-acceptance", state=WorkflowState.PR_READY).model_copy(
+        update={"review_acceptance": acceptance}
+    )
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None
+    assert detail.guidance is not None
+    assert (
+        detail.guidance.finding_ids == [finding.id for finding in findings][:MAX_GUIDANCE_FINDINGS]
+    )
+    assert detail.guidance.finding_count == len(findings)
 
 
 def test_build_run_detail_unresolved_decisions_exposes_decision_count_without_leaking_prose(
@@ -2838,3 +2906,47 @@ def test_runs_with_rework_increments_only_when_actual_rework_gt_zero() -> None:
     assert metrics_all.performance.rework.total_rework_attempts == 1
     assert metrics_all.performance.rework.runs_with_rework == 1
     assert metrics_all.performance.rework.rework_rate == pytest.approx(1 / 3)
+
+
+def _guidance_with_ids(count: int) -> RunGuidance:
+    return RunGuidance(
+        status="ACTION_REQUIRED",
+        reason_code=HaltReasonCode.REVIEW_IMPASSE,
+        summary="s",
+        next_action="a",
+        finding_ids=[f"review-correctness-{n}" for n in range(count)],
+    )
+
+
+def test_run_guidance_keeps_up_to_the_guidance_cap_of_finding_ids() -> None:
+    assert len(_guidance_with_ids(MAX_GUIDANCE_FINDINGS).finding_ids) == MAX_GUIDANCE_FINDINGS
+
+
+def test_run_guidance_rejects_more_finding_ids_than_the_guidance_cap() -> None:
+    with pytest.raises(ValidationError):
+        _guidance_with_ids(MAX_GUIDANCE_FINDINGS + 1)
+
+
+def _active_summary(status: str) -> ActiveInvocationSummary:
+    return ActiveInvocationSummary.model_validate(
+        {
+            "invocation_number": 1,
+            "role": AgentRole.IMPLEMENTER,
+            "purpose": "implement",
+            "model": "m",
+            "reasoning": "low",
+            "context_tier": ContextTier.DEFAULT,
+            "status": status,
+            "started_at": T0,
+        }
+    )
+
+
+@pytest.mark.parametrize("status", get_args(ActiveInvocationStatus))
+def test_an_active_summary_takes_each_liveness_status(status: str) -> None:
+    assert _active_summary(status).status == status
+
+
+def test_an_active_summary_rejects_any_other_status() -> None:
+    with pytest.raises(ValidationError):
+        _active_summary("paused")
