@@ -67,7 +67,8 @@ from .models import (
     utc_now,
 )
 from .observability import log_run_event
-from .resume import awaits_human, ingest_dashboard_request, unsettled_requests
+from .resume import awaits_human, unsettled_requests
+from .resume_writes import ingest_dashboard_request
 from .scheduler import (
     DispatchOutcome,
     ReconciliationAction,

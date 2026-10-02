@@ -38,7 +38,7 @@ from software_agent_factory.models import (
     WorkflowState,
     utc_now,
 )
-from software_agent_factory.resume import ReplyIdentity, accept_resume
+from software_agent_factory.resume_writes import ReplyIdentity, accept_resume
 from software_agent_factory.scheduler import (
     ReconciliationAction,
     TrackerItem,

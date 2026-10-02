@@ -82,7 +82,7 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
-from software_agent_factory.resume import ingest_dashboard_request
+from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.scheduler import TrackerItem
 from software_agent_factory.service import AlreadyRunFilter, FactoryService
 from software_agent_factory.store import FileRunStore

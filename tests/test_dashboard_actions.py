@@ -1213,16 +1213,9 @@ def test_the_logs_hold_neither_the_token_nor_the_body(
 
 PACKAGE = "software_agent_factory"
 #: The package-internal modules ``dashboard/`` may import. Each is a leaf for the dashboard:
-#: none of them runs a workflow, calls GitHub, starts a process or writes a run.
+#: none of them runs a workflow, calls GitHub, starts a process or writes a run. ``resume`` is
+#: the pure rules module. The writers are in ``resume_writes``, which is not on the list.
 ALLOWED_PACKAGE_MODULES = {"models", RESUME, "escalation_protocol", "redaction", "store"}
-#: What ``dashboard/`` may take from ``resume``: the read functions it uses, and the type of
-#: one of their results. A write function, or the whole module, is not on the list.
-ALLOWED_RESUME_NAMES = {
-    "RequestMismatch",
-    "build_plan_answers",
-    "clean_plan_answer",
-    "request_refusal",
-}
 WHOLE_MODULE = "*"
 
 
@@ -1265,6 +1258,7 @@ def _package_imports(source: str) -> set[tuple[str, str]]:
             {(RESUME, "clean_plan_answer"), (RESUME, "request_refusal")},
         ),
         ("from ..resume.sub import thing", {(RESUME, "thing")}),
+        ("from ..resume_writes import accept_resume", {("resume_writes", "accept_resume")}),
         ("from .. import workflow", {("workflow", WHOLE_MODULE)}),
         ("import software_agent_factory.github", {("github", WHOLE_MODULE)}),
         ("from software_agent_factory.service import run", {("service", "run")}),
@@ -1277,6 +1271,7 @@ def _package_imports(source: str) -> set[tuple[str, str]]:
     ids=[
         "names from a module",
         "names from a sub-module",
+        "names from the writers module",
         "a module from the package root",
         "an absolute module import",
         "absolute names",
@@ -1343,14 +1338,3 @@ def test_the_dashboard_package_imports_no_subprocess() -> None:
     ]
 
     assert importing == []
-
-
-def test_the_dashboard_package_takes_only_read_functions_from_resume() -> None:
-    taken = {
-        name
-        for path in _dashboard_sources()
-        for module, name in _package_imports(path.read_text(encoding=ENCODING))
-        if module == RESUME
-    }
-
-    assert taken - ALLOWED_RESUME_NAMES == set()

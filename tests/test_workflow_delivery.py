@@ -34,7 +34,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
-from software_agent_factory.resume import ingest_dashboard_request
+from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController, delivery_policy_fingerprint
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError

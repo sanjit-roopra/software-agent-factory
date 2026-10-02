@@ -6,12 +6,13 @@ import ast
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
 from factory_testing import REPLY_POLICY
 
-from software_agent_factory import resume
+from software_agent_factory import resume, resume_writes
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
     is_valid_plan_decision_answers,
@@ -36,26 +37,29 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.resume import (
     MAX_PLAN_DECISION_ANSWER_CHARS,
-    ReplyIdentity,
-    accept_resume,
     build_plan_answers,
     clean_plan_answer,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
-    ingest_dashboard_request,
     request_mismatch,
     resume_refusal,
     resume_refusal_within,
+)
+from software_agent_factory.resume_writes import (
+    ReplyIdentity,
+    accept_resume,
+    ingest_dashboard_request,
 )
 from software_agent_factory.store import FileRunStore
 
 # -- imports ------------------------------------------------------------------
 
 
-def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
+def _imported_modules(module: ModuleType) -> set[str]:
     # The package __init__ imports subprocess, so a sys.modules check cannot tell.
     # Inspect the module's own imports instead.
-    tree = ast.parse(Path(resume.__file__).read_text(encoding="utf-8"))
+    assert module.__file__ is not None
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -67,6 +71,14 @@ def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
                 imported.add(f".{node.module}")
             else:  # ``from . import x`` names the module ``.x``
                 imported.update(f".{alias.name}" for alias in node.names)
+    return imported
+
+
+@pytest.mark.parametrize("module", [resume, resume_writes], ids=["rules", "writes"])
+def test_resume_modules_import_no_github_subprocess_workflow_or_service(
+    module: ModuleType,
+) -> None:
+    imported = _imported_modules(module)
 
     forbidden = {
         "subprocess",
@@ -83,7 +95,11 @@ def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
     named = {
         name for name in imported if any(name == f or name.startswith(f + ".") for f in forbidden)
     }
-    assert not named
+    assert named == set()
+
+
+def test_the_rules_module_does_not_import_the_writers() -> None:
+    assert ".resume_writes" not in _imported_modules(resume)
 
 
 # -- answer rules ------------------------------------------------------------

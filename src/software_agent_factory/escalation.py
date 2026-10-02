@@ -74,8 +74,6 @@ from .models import (
 )
 from .redaction import redact_secrets
 from .resume import (
-    ReplyIdentity,
-    accept_resume,
     build_plan_answers,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
@@ -84,6 +82,7 @@ from .resume import (
 )
 from .resume import is_valid_plan_decision_context as is_valid_plan_decision_context
 from .resume import is_valid_risk_approval_context as is_valid_risk_approval_context
+from .resume_writes import ReplyIdentity, accept_resume
 from .store import FileRunStore
 
 logger = logging.getLogger(__name__)
