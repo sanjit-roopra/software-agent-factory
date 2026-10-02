@@ -2257,6 +2257,34 @@ def test_a_failing_reader_logs_the_exception_type_and_no_text(
     assert marker not in caplog.text
 
 
+def test_a_failing_run_detail_provider_logs_the_exception_type_and_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    marker = "private run text"
+
+    # double-waiver: B1 — a provider that fails with text taken from run data
+    def failing_provider(run_id: str) -> dict[str, Any]:
+        raise ValueError(marker)
+
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=failing_provider,
+        )
+    )
+    try:
+        with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+            response = running.request("GET", "/api/runs/run-001", headers=running.authed_headers())
+    finally:
+        _stop(running)
+
+    assert response.status == 503
+    assert "Run detail provider failed for run run-001: ValueError" in caplog.text
+    assert marker not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Log injection: request paths reach the log only after sanitisation.
 # ---------------------------------------------------------------------------

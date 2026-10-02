@@ -1121,6 +1121,22 @@ def test_an_unexpected_failure_is_500_and_one_event(
     assert "disk on fire" not in json.dumps(payload)
 
 
+def test_an_unexpected_failure_logs_the_exception_type_and_no_text(
+    make_rig: RigFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    # double-waiver: B1 — a disk write that fails with text that could hold a plan answer
+    def failing(run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult:
+        raise RuntimeError("private answer")
+
+    rig = make_rig(requester=failing)
+
+    with caplog.at_level(logging.ERROR, logger="software_agent_factory.dashboard"):
+        rig.approve()
+
+    assert "Unhandled dashboard error for an action on a run: RuntimeError" in caplog.text
+    assert "private answer" not in caplog.text
+
+
 def test_a_hostile_run_id_cannot_forge_a_log_line(
     make_rig: RigFactory, caplog: pytest.LogCaptureFixture
 ) -> None:

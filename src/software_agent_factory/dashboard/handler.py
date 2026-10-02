@@ -529,8 +529,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         """
         try:
             detail = self.server.run_detail_provider(run_id)
-        except Exception:  # noqa: BLE001
-            _logger.exception("Run detail provider failed for run %s", run_id)
+        except Exception as exc:  # noqa: BLE001
+            # The type only: the message and traceback can quote run data.
+            _logger.error("Run detail provider failed for run %s: %s", run_id, type(exc).__name__)
             self._respond_json(
                 HTTPStatus.SERVICE_UNAVAILABLE, {"error": "run detail unavailable"}, send_body
             )
@@ -539,8 +540,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return _UNKNOWN_RUN
         try:
             return build(detail)
-        except TypeError:
-            _logger.exception("Run detail provider returned unsanitizable data for run %s", run_id)
+        except TypeError as exc:
+            _logger.error(
+                "Run detail provider returned unsanitizable data for run %s: %s",
+                run_id,
+                type(exc).__name__,
+            )
             self._respond_json(
                 HTTPStatus.SERVICE_UNAVAILABLE, {"error": "run detail unavailable"}, send_body
             )
@@ -603,8 +608,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             payload = accept_action(actions, kind, raw_run_id, self._read_json_body(body))
         except WriteRejected as rejected:
             return rejected.status, rejected.payload, rejected.result
-        except Exception:  # noqa: BLE001 - never leak internals to the client
-            _logger.exception("Unhandled dashboard error for an action on a run")
+        except Exception as exc:  # noqa: BLE001 - never leak internals to the client
+            # The type only: the message and traceback can quote a plan answer.
+            _logger.error(
+                "Unhandled dashboard error for an action on a run: %s", type(exc).__name__
+            )
             error = HTTPStatus.INTERNAL_SERVER_ERROR
             return error, {"error": "internal error"}, str(error.value)
         return HTTPStatus.ACCEPTED, payload, str(HTTPStatus.ACCEPTED.value)
