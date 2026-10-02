@@ -853,6 +853,15 @@ ORPHANED_WORKSPACE_ALLOWED_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def _redact_health_text(report: dict[str, Any]) -> dict[str, Any]:
+    """``report`` with its free text redacted in place: one check, or the whole report."""
+    _redact_keys(report, _HEALTH_TEXT_KEYS)
+    reasons = report.get("degraded_reasons")
+    if isinstance(reasons, list):
+        report["degraded_reasons"] = [_redacted(reason) for reason in reasons]
+    return report
+
+
 def sanitize_health(raw: Any) -> dict[str, Any] | None:
     """Sanitize operational health report for dashboard JSON responses.
 
@@ -865,10 +874,7 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
 
-    sanitized = _redact_keys(_allowlist(data, HEALTH_ALLOWED_FIELDS), _HEALTH_TEXT_KEYS)
-    reasons = sanitized.get("degraded_reasons")
-    if isinstance(reasons, list):
-        sanitized["degraded_reasons"] = [_redacted(reason) for reason in reasons]
+    sanitized = _redact_health_text(_allowlist(data, HEALTH_ALLOWED_FIELDS))
 
     stale_runs = data.get("stale_runs")
     if isinstance(stale_runs, list):
@@ -904,11 +910,10 @@ def sanitize_health(raw: Any) -> dict[str, Any] | None:
             check_safe = to_json_safe(check)
             if isinstance(check_safe, dict):
                 sanitized_checks.append(
-                    _redact_keys(
+                    _redact_health_text(
                         _allowlist(
                             check_safe, frozenset({"name", "status", "message", "remediation"})
-                        ),
-                        _HEALTH_TEXT_KEYS,
+                        )
                     )
                 )
         sanitized["checks"] = sanitized_checks
