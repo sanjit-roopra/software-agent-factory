@@ -193,7 +193,7 @@ def test_sanitize_output_ignores_scrubbed_values_shorter_than_four_chars() -> No
 def test_sanitize_output_redacts_token_shaped_substrings_not_in_scrubbed_values(
     token: str,
 ) -> None:
-    result = sanitize_output(f"token={token}", set())
+    result = sanitize_output(f"saw {token} here", set())
 
     assert token not in result
     assert "[REDACTED]" in result

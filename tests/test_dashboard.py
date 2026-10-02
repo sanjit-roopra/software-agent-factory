@@ -2647,6 +2647,7 @@ REASON_LEVELS = ("run", "attempt", "call")
 REASON_SECRETS = {
     "token assignment": (GH_SECRET, ("ghp_abcdefgh12345678",)),
     "bearer header": ("Authorization: Bearer abc.def.gh", ("abc.def.gh",)),
+    "bare token": ("saw ghp_abcdefgh12345678 here", ("ghp_abcdefgh12345678",)),
 }
 
 
