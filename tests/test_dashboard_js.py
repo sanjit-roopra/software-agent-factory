@@ -190,6 +190,13 @@ _PAGE = """
   function wrap(value) {
     return { inner: value, list: [value] };
   }
+  const DEFAULTS = { a: 1 };
+  function merged() {
+    return { ...DEFAULTS, b: 2 };
+  }
+  function readProperty(entry) {
+    return entry.unused;
+  }
   const obj = { shout: 1 };
   start();
 })();
@@ -295,3 +302,15 @@ def test_run_functions_returns_undefined_nested_in_a_result() -> None:
     results = run_functions(_PAGE, [JsCall("wrap", (UNDEFINED,))])
 
     assert results[0].value == {"inner": UNDEFINED, "list": [UNDEFINED]}
+
+
+def test_run_functions_loads_a_constant_that_a_helper_spreads() -> None:
+    results = run_functions(_PAGE, [JsCall("merged")])
+
+    assert results[0].value == {"a": 1, "b": 2}
+
+
+def test_run_functions_does_not_load_a_definition_named_like_a_property() -> None:
+    results = run_functions(_PAGE, [JsCall("readProperty", ({"unused": 5},))])
+
+    assert results[0].value == 5

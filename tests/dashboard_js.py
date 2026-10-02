@@ -139,7 +139,8 @@ def listener_source(js: str, function: str, target: str, event: str) -> str:
 
 _DEFINITION = re.compile(r"^  ((?:function (\w+)\(|(?:const|let) (\w+) =))", re.MULTILINE)
 _STRING = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'")
-_IDENTIFIER = re.compile(r"(?<![\w.$])[A-Za-z_]\w*")
+# A name after one ``.`` is a property. A name after ``...`` is a spread, so it counts.
+_IDENTIFIER = re.compile(r"(?:(?<![\w.$])|(?<=\.\.\.))[A-Za-z_]\w*")
 _NODE_TIMEOUT_SECONDS = 30
 _SENTINEL_KEY = "$js"
 
@@ -273,7 +274,7 @@ def _definition_end(code: str, start: int) -> int:
 
 
 def _names_used(source: str) -> set[str]:
-    """Identifiers in ``source`` outside string literals and property accesses."""
+    """Identifiers in ``source`` outside string literals and single-dot property accesses."""
     return set(_IDENTIFIER.findall(_STRING.sub('""', source)))
 
 
