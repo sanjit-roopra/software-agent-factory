@@ -8,12 +8,13 @@ developer machine and fail in CI.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from functools import partial
 from typing import NamedTuple
 
 import pytest
-from dashboard_js import JsCall, JsResult, run_functions
+from dashboard_js import UNDEFINED, JsCall, JsResult, run_functions
 
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.security import TOKEN_QUERY_PARAM
@@ -26,6 +27,8 @@ LIST_USD = "list_price_estimate_usd"
 RUN_ID_MAX_LENGTH = 128
 FILTER_NEEDS_YOU = "needs-you"
 COMPARE = "#compare"
+NAN = math.nan
+INF = math.inf
 
 
 class Case(NamedTuple):
@@ -48,9 +51,15 @@ _cost = partial(_case, "costText")
 _premium = partial(_case, "premiumRequestsPhrase")
 _reopens = partial(_case, "reopensLine")
 
+# A number that is not finite is not a reported number. Every formatter below keeps it out
+# through ``isFiniteNumber``, so NaN, Infinity and a missing value read as "not reported".
 FORMATTER_CASES = [
     _duration("null", NOT_REPORTED, None),
     _duration("text", NOT_REPORTED, "5"),
+    _duration("undefined", NOT_REPORTED, UNDEFINED),
+    _duration("nan", NOT_REPORTED, NAN),
+    _duration("infinity", NOT_REPORTED, INF),
+    _duration("negative-infinity", NOT_REPORTED, -INF),
     _duration("zero", "0 ms", 0),
     _duration("fraction", "0.5 ms", 0.5),
     _duration("last-millisecond", "999 ms", 999),
@@ -65,6 +74,12 @@ FORMATTER_CASES = [
     _duration("large", "2057 min 37 s", 123_456_789),
     _partial_note("reported-missing", "", None, 3),
     _partial_note("calls-missing", "", 3, None),
+    _partial_note("reported-undefined", "", UNDEFINED, 3),
+    _partial_note("calls-undefined", "", 3, UNDEFINED),
+    _partial_note("reported-nan", "", NAN, 3),
+    _partial_note("calls-nan", "", 1, NAN),
+    _partial_note("reported-infinity", "", INF, 3),
+    _partial_note("calls-infinity", "", 1, INF),
     _partial_note("reported-text", "", "2", 3),
     _partial_note("none-reported", "", 0, 3),
     _partial_note("all-reported", "", 3, 3),
@@ -74,6 +89,11 @@ FORMATTER_CASES = [
     _partial_note("two-of-three", "2 of 3 calls reported", 2, 3),
     _cost("empty", NOT_REPORTED, {}),
     _cost("null-units", NOT_REPORTED, {PREMIUM: None, USAGE_USD: None, LIST_USD: None}),
+    _cost("undefined-unit", NOT_REPORTED, {PREMIUM: UNDEFINED}),
+    _cost("nan-unit", NOT_REPORTED, {PREMIUM: NAN}),
+    _cost("infinite-usd", NOT_REPORTED, {USAGE_USD: INF}),
+    _cost("negative-infinite-list-price", NOT_REPORTED, {LIST_USD: -INF}),
+    _cost("skips-the-non-finite-unit", "2 premium requests", {PREMIUM: 2, LIST_USD: NAN}),
     _cost("text-unit", NOT_REPORTED, {PREMIUM: "3"}),
     _cost("one-premium-request", "1 premium request", {PREMIUM: 1}),
     _cost("zero-premium-requests", "0 premium requests", {PREMIUM: 0}),
@@ -106,7 +126,12 @@ FORMATTER_CASES = [
     ),
     _reopens("zero-used", _paragraph("Reopens used 0 of 3"), {"reopens_used": 0, "max_reopens": 3}),
     _reopens("zero-max", _paragraph("Reopens used 0 of 0"), {"reopens_used": 0, "max_reopens": 0}),
+    # ``null`` (None), never ``undefined`` (UNDEFINED): the line is absent, not unset.
     _reopens("no-fields", None, {}),
+    _reopens("used-nan", None, {"reopens_used": NAN, "max_reopens": 3}),
+    _reopens("used-undefined", None, {"reopens_used": UNDEFINED, "max_reopens": 3}),
+    _reopens("max-infinity", None, {"reopens_used": 1, "max_reopens": INF}),
+    _reopens("max-nan", None, {"reopens_used": 1, "max_reopens": NAN}),
     _reopens("used-missing", None, {"max_reopens": 3}),
     _reopens("max-missing", None, {"reopens_used": 1}),
     _reopens("used-null", None, {"reopens_used": None, "max_reopens": 3}),
@@ -200,7 +225,8 @@ LIST_AND_COMPARE_CASES = [
         {"value": "r1", "label": f"{DASH} | {DASH} | r1"},
         {"run_id": "r1", "id": "r2"},
     ),
-    _option("no-id", {"label": f"{DASH} | {DASH} | {DASH}"}, {}),
+    # No ``run_id`` and no ``id`` leaves the value ``undefined``; the picker filters on that.
+    _option("no-id", {"value": UNDEFINED, "label": f"{DASH} | {DASH} | {DASH}"}, {}),
     _normalize("two-runs", _pair("r1", "r2"), "r1", "r2"),
     _normalize("b-equal-to-a-is-cleared", _pair("r1", None), "r1", "r1"),
     _normalize("no-b", _pair("r1", None), "r1", None),

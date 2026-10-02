@@ -10,6 +10,7 @@ JSON arguments. It needs plain ``node`` only: no npm and no bundler (ADR-016).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -17,7 +18,7 @@ import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 import pytest
 
@@ -140,13 +141,52 @@ _DEFINITION = re.compile(r"^  ((?:function (\w+)\(|(?:const|let) (\w+) =))", re.
 _STRING = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'")
 _IDENTIFIER = re.compile(r"(?<![\w.$])[A-Za-z_]\w*")
 _NODE_TIMEOUT_SECONDS = 30
+_SENTINEL_KEY = "$js"
+
+
+class _Undefined:
+    def __repr__(self) -> str:
+        return "UNDEFINED"
+
+
+# JSON cannot carry these JavaScript values. Each crosses the boundary as
+# ``{"$js": name}``: in arguments and in results, nested anywhere.
+UNDEFINED: Final = _Undefined()
+_FROM_NAME: Final[dict[str, object]] = {
+    "undefined": UNDEFINED,
+    "NaN": math.nan,
+    "Infinity": math.inf,
+    "-Infinity": -math.inf,
+}
 
 # The page needs a browser. A call gets the few globals the helpers read: a fake
 # ``document`` whose elements are plain objects, and ``location`` and ``history``
 # set per call, so a test can see what a helper wrote to the address bar.
 _PRELUDE = """\
 "use strict";
-const calls = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const NON_JSON = {
+  "undefined": undefined, "NaN": NaN, "Infinity": Infinity, "-Infinity": -Infinity
+};
+function reviveValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(reviveValue);
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  const keys = Object.keys(value);
+  if (keys.length === 1 && keys[0] === "$js") {
+    return NON_JSON[value.$js];
+  }
+  return Object.fromEntries(keys.map((key) => [key, reviveValue(value[key])]));
+}
+function replaceValue(key, value) {
+  if (value === undefined || (typeof value === "number" && !Number.isFinite(value))) {
+    return { $js: String(value) };
+  }
+  return value;
+}
+const calls = reviveValue(JSON.parse(require("fs").readFileSync(0, "utf8")));
 const document = {
   createElement: (tagName) => ({ tagName: tagName, className: "", textContent: "" })
 };
@@ -162,7 +202,7 @@ const results = calls.map((call) => {
     return { error: String(error), history: entries };
   }
 });
-process.stdout.write(JSON.stringify(results));
+process.stdout.write(JSON.stringify(results, replaceValue));
 """
 
 
@@ -254,16 +294,42 @@ def _definitions_for(js: str, wanted: Iterable[str]) -> list[str]:
     return [chosen[name] for name in sorted(chosen, key=starts.__getitem__)]
 
 
+def _encode(value: object) -> object:
+    """``value`` with the JavaScript-only values replaced by their ``{"$js": name}`` form."""
+    if value is UNDEFINED:
+        return {_SENTINEL_KEY: "undefined"}
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return {_SENTINEL_KEY: "NaN"}
+        return {_SENTINEL_KEY: "Infinity" if value > 0 else "-Infinity"}
+    if isinstance(value, Mapping):
+        return {key: _encode(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_encode(item) for item in value]
+    return value
+
+
+def _decode(value: object) -> object:
+    """Reverse of ``_encode`` on a parsed JSON result."""
+    if isinstance(value, list):
+        return [_decode(item) for item in value]
+    if isinstance(value, dict):
+        if value.keys() == {_SENTINEL_KEY}:
+            return _FROM_NAME[value[_SENTINEL_KEY]]
+        return {key: _decode(item) for key, item in value.items()}
+    return value
+
+
 def _call_payload(call: JsCall) -> dict[str, object]:
-    return {"function": call.function, "args": list(call.args), "location": call.location}
+    return {"function": call.function, "args": _encode(call.args), "location": call.location}
 
 
 def _parse_result(call: JsCall, outcome: dict[str, object]) -> JsResult:
-    history = outcome["history"]
+    history = _decode(outcome["history"])
     assert isinstance(history, list)
     error = outcome.get("error")
     assert error is None or isinstance(error, str)
-    return JsResult(call.function, outcome.get("value"), history, error)
+    return JsResult(call.function, _decode(outcome.get("value")), history, error)
 
 
 def run_functions(js: str, calls: Sequence[JsCall]) -> list[JsResult]:

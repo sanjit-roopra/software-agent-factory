@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from dashboard_js import (
+    UNDEFINED,
     JsCall,
     JsResult,
     function_source,
@@ -170,6 +173,19 @@ _PAGE = """
     node.textContent = "text";
     return node;
   }
+  function kindOf(value) {
+    return typeof value + ":" + String(value);
+  }
+  function innerKind(value) {
+    return kindOf(value.inner[0]);
+  }
+  function echo(value) {
+    return value;
+  }
+  function nothing() {}
+  function wrap(value) {
+    return { inner: value, list: [value] };
+  }
   const obj = { shout: 1 };
   start();
 })();
@@ -238,3 +254,40 @@ def test_run_functions_fails_in_ci_when_node_is_missing(monkeypatch: pytest.Monk
 
     with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
         run_functions(_PAGE, [JsCall("shout", ("a",))])
+
+
+def test_run_functions_sends_undefined_nan_and_infinity_as_arguments() -> None:
+    values = [math.nan, math.inf, -math.inf, None, UNDEFINED]
+
+    results = run_functions(_PAGE, [JsCall("kindOf", (value,)) for value in values])
+
+    assert [result.value for result in results] == [
+        "number:NaN",
+        "number:Infinity",
+        "number:-Infinity",
+        "object:null",
+        "undefined:undefined",
+    ]
+
+
+def test_run_functions_sends_non_json_values_nested_in_arguments() -> None:
+    results = run_functions(_PAGE, [JsCall("innerKind", ({"inner": [math.inf]},))])
+
+    assert results[0].value == "number:Infinity"
+
+
+def test_run_functions_returns_undefined_nan_and_infinity() -> None:
+    calls = [
+        JsCall("echo", (value,)) for value in (math.nan, math.inf, -math.inf, None, UNDEFINED)
+    ] + [JsCall("nothing")]
+
+    values = [result.value for result in run_functions(_PAGE, calls)]
+
+    assert [repr(value) for value in values[:3]] == ["nan", "inf", "-inf"]
+    assert values[3:] == [None, UNDEFINED, UNDEFINED]
+
+
+def test_run_functions_returns_undefined_nested_in_a_result() -> None:
+    results = run_functions(_PAGE, [JsCall("wrap", (UNDEFINED,))])
+
+    assert results[0].value == {"inner": UNDEFINED, "list": [UNDEFINED]}
