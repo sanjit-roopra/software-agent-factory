@@ -352,7 +352,7 @@ FORMATTER_CASES = [
         {
             "runId": UNDEFINED,
             "cells": [
-                DASH,
+                {VALUE: DASH},
                 {"badge": NEUTRAL, VALUE: DASH, TITLE: ""},
                 {VALUE: DASH, "clamp": True, CLASS_NAME: "why-cell", TITLE: ""},
                 {VALUE: DASH, "chunks": [], CLASS_NAME: "models-cell", TITLE: ""},
@@ -372,7 +372,7 @@ FORMATTER_CASES = [
         {RUN_ID: "r 1"},
         "r 1",
     ),
-    _title_cell("no-run-id-is-plain-text", BUG_TITLE, {TITLE: BUG_TITLE}, UNDEFINED),
+    _title_cell("no-run-id-is-plain-text", {VALUE: BUG_TITLE}, {TITLE: BUG_TITLE}, UNDEFINED),
     _model("with-reasoning", "gpt-6.1-sol (high)", {"model": SOL, "reasoning": "high"}),
     _model("without-reasoning", SOL, {"model": SOL}),
     _model("without-a-model", DASH, {}),
