@@ -29,7 +29,6 @@
   // MAX_PAGE_LIMIT in dashboard/snapshot.py: the most runs one request returns.
   const MAX_RUNS_LIMIT = 100;
   const NOT_FOUND_STATUS = 404;
-  const NEEDS_YOU_TEXT = "Needs you";
   const LOADING_TEXT = "Loading\u2026";
   const TITLE_SUFFIX = " \u2014 Factory dashboard";
   const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);
@@ -778,7 +777,7 @@
   // the run has no title.
   function titleCell(run, runId) {
     if (typeof runId !== "string") {
-      return displayValue(run.title);
+      return { value: displayValue(run.title) };
     }
     return {
       href: "#run/" + encodeURIComponent(runId),
