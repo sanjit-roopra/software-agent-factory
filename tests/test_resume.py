@@ -99,7 +99,7 @@ def test_the_rules_module_imports_no_subprocess() -> None:
 
 
 def test_the_writers_module_imports_no_github_subprocess_workflow_or_service() -> None:
-    imported = _imported_modules(resume_writes)
+    imported = _imported_modules(resume_writes) | _package_modules(resume_writes)
 
     forbidden = {
         "subprocess",
@@ -120,7 +120,7 @@ def test_the_writers_module_imports_no_github_subprocess_workflow_or_service() -
 
 
 def test_the_rules_module_does_not_import_the_writers() -> None:
-    assert ".resume_writes" not in _imported_modules(resume)
+    assert ".resume_writes" not in _package_modules(resume)
 
 
 # -- answer rules ------------------------------------------------------------
