@@ -108,7 +108,7 @@ from .prompts import (
 from .subprocess_utils import (
     build_child_env,
     kill_process_group,
-    redact_secrets,
+    redact_with_scrubbed_values,
     sanitize_output,
 )
 from .usage_values import non_negative_float, non_negative_int
@@ -640,7 +640,9 @@ class PiAgentRuntime(AgentRuntime):
         answer then fails artifact parsing.
         """
         request = ctx.request
-        client = PiRpcClient(process, redact=lambda text: redact_secrets(text, ctx.scrubbed_values))
+        client = PiRpcClient(
+            process, redact=lambda text: redact_with_scrubbed_values(text, ctx.scrubbed_values)
+        )
         usage: UsageMetrics | None = None
         try:
             deadline = time.monotonic() + request.timeout_seconds

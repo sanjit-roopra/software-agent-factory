@@ -32,7 +32,7 @@ from software_agent_factory.pi_rpc import (
     PiRpcTimeout,
     messages_since_last_prompt,
 )
-from software_agent_factory.subprocess_utils import redact_secrets
+from software_agent_factory.subprocess_utils import redact_with_scrubbed_values
 
 _DEADLINE = 5.0
 
@@ -252,7 +252,7 @@ def test_stderr_tail_hides_a_long_secret_cut_by_the_raw_window_when_redaction_sh
     kept_of_secret = 600
     after = " ".join([token] * ((window - (len(secret) - kept_of_secret)) // (len(token) + 1)))
     process = FakePiProcess()
-    client = PiRpcClient(process, redact=lambda text: redact_secrets(text, {secret}))
+    client = PiRpcClient(process, redact=lambda text: redact_with_scrubbed_values(text, {secret}))
     process.exit(1)
     process.write_stderr("P" * 100 + secret + " " + after)
     process.close_stdout()
@@ -292,7 +292,7 @@ def test_stderr_tail_redacts_a_token_shaped_secret_split_across_reads(
     characters are enough), so redacting per read would leak the second half."""
     token = "ghp_" + "A" * 8 + "SECONDHALF12345"
     process = FakePiProcess()
-    client = PiRpcClient(process, redact=lambda text: redact_secrets(text, set()))
+    client = PiRpcClient(process, redact=lambda text: redact_with_scrubbed_values(text, set()))
     process.exit(1)
     process.write_stderr("auth failed for " + token[:12])
     deadline = pi_fake_clock.deadline(0.05)

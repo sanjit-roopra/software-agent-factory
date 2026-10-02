@@ -2,7 +2,7 @@
 
 Process-group termination, the GitHub-credential env-var scrub set, and the
 credential-hygiene helpers built on it (:func:`build_child_env`,
-:func:`redact_secrets`, :func:`sanitize_output`) are used by more than one
+:func:`redact_with_scrubbed_values`, :func:`sanitize_output`) are used by more than one
 ``AgentRuntime`` implementation (Copilot, pi from Slice 3 of
 ``plans/pi-agent-runtime.md``, and the pi cache probe script), so no single
 runtime owns them. Tolerant dotted-version parsing is shared by the runtime
@@ -89,7 +89,7 @@ def build_child_env() -> tuple[dict[str, str], set[str]]:
     return env, scrubbed_values
 
 
-def redact_secrets(text: str, scrubbed_values: set[str]) -> str:
+def redact_with_scrubbed_values(text: str, scrubbed_values: set[str]) -> str:
     """Redact scrubbed credential values and secret shapes from text.
 
     Secret shapes come from :func:`software_agent_factory.redaction.redact_secrets`.
@@ -112,7 +112,7 @@ def sanitize_output(text: str, scrubbed_values: set[str]) -> str:
     Collapses whitespace and truncates to 600 characters, matching the
     excerpt length used in failure-reason and log messages.
     """
-    sanitized = " ".join(redact_secrets(text, scrubbed_values).split())
+    sanitized = " ".join(redact_with_scrubbed_values(text, scrubbed_values).split())
     if len(sanitized) <= 600:
         return sanitized
     return f"{sanitized[:597].rstrip()}..."

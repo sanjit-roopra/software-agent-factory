@@ -11,7 +11,7 @@ from software_agent_factory.subprocess_utils import (
     build_child_env,
     kill_process_group,
     parse_version,
-    redact_secrets,
+    redact_with_scrubbed_values,
     sanitize_output,
 )
 
@@ -157,16 +157,18 @@ def test_build_child_env_omits_unset_credential_vars(monkeypatch: pytest.MonkeyP
     assert scrubbed_values == set()
 
 
-def test_redact_secrets_redacts_values_and_token_shapes_without_reshaping_text() -> None:
+def test_redact_with_scrubbed_values_redacts_values_and_token_shapes_without_reshaping_text() -> (
+    None
+):
     text = "a  plainsecretvalue1234\n" + "x" * 700 + " ghp_1234567890abcdef"
 
-    result = redact_secrets(text, {"plainsecretvalue1234"})
+    result = redact_with_scrubbed_values(text, {"plainsecretvalue1234"})
 
     assert result == "a  [REDACTED]\n" + "x" * 700 + " [REDACTED]"
 
 
-def test_redact_secrets_ignores_values_shorter_than_four_chars() -> None:
-    assert redact_secrets("the pin is abc", {"abc"}) == "the pin is abc"
+def test_redact_with_scrubbed_values_ignores_values_shorter_than_four_chars() -> None:
+    assert redact_with_scrubbed_values("the pin is abc", {"abc"}) == "the pin is abc"
 
 
 def test_sanitize_output_redacts_scrubbed_values() -> None:
@@ -219,5 +221,8 @@ def test_sanitize_output_collapses_whitespace_and_truncates_long_text() -> None:
         "MY_API_KEY=abcdefgh12345",
     ],
 )
-def test_redact_secrets_covers_the_union_of_secret_shapes(secret: str) -> None:
-    assert redact_secrets(f"saw {secret} here", set()) == f"saw {REDACTION_PLACEHOLDER} here"
+def test_redact_with_scrubbed_values_covers_the_union_of_secret_shapes(secret: str) -> None:
+    assert (
+        redact_with_scrubbed_values(f"saw {secret} here", set())
+        == f"saw {REDACTION_PLACEHOLDER} here"
+    )
