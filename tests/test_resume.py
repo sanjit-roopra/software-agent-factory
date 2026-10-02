@@ -76,10 +76,22 @@ def _imported_modules(module: ModuleType) -> set[str]:
 RULES_ALLOWED_PACKAGE_IMPORTS = {".models", ".config", ".escalation_protocol", ".redaction"}
 
 
-def test_the_rules_module_imports_only_its_documented_package_modules() -> None:
-    relative = {name for name in _imported_modules(resume) if name.startswith(".")}
+_PACKAGE = "software_agent_factory"
 
-    assert relative <= RULES_ALLOWED_PACKAGE_IMPORTS
+
+def _package_modules(module: ModuleType) -> set[str]:
+    """The module's package imports, relative or absolute, each written as ``.name``."""
+    names: set[str] = set()
+    for name in _imported_modules(module):
+        if name.startswith("."):
+            names.add(name)
+        elif name == _PACKAGE or name.startswith(f"{_PACKAGE}."):
+            names.add(name.removeprefix(_PACKAGE) or ".")
+    return names
+
+
+def test_the_rules_module_imports_only_its_documented_package_modules() -> None:
+    assert _package_modules(resume) <= RULES_ALLOWED_PACKAGE_IMPORTS
 
 
 def test_the_rules_module_imports_no_subprocess() -> None:
