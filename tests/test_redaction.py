@@ -24,6 +24,7 @@ _PEM_BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
 #: must not survive redaction).
 _SAMPLES: tuple[tuple[str, str, str], ...] = (
     ("github-token", "ghp_abcdefgh12345678", "abcdefgh12345678"),
+    ("github-token-full", "x" + "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8", "A1b2C3d4E5"),
     ("github-pat", "github_pat_abcdefghij0123456789", "abcdefghij0123456789"),
     ("aws-access-key-id", "AKIAABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP"),
     ("aws-secret-key", "aws_secret_access_key=" + "A1b2C3d4E5" * 4, "A1b2C3d4E5"),
@@ -335,3 +336,21 @@ def test_a_private_key_header_without_an_end_is_redacted_in_linear_time() -> Non
 def test_a_whole_private_key_block_is_redacted() -> None:
     block = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
     assert redact_secrets(f"a {block} b") == f"a {REDACTION_PLACEHOLDER} b"
+
+
+@pytest.mark.parametrize("space", ["\u00a0", "\f", "  "])
+def test_an_assignment_with_any_horizontal_space_is_redacted(space: str) -> None:
+    assert "hunter22xx" not in redact_secrets(f"password ={space}hunter22xx")
+
+
+@pytest.mark.parametrize(
+    "text", ["password:\n  hunter22xyz", "Authorization:\n\tBasic dXNlcjpwYXNz"]
+)
+def test_a_value_folded_onto_an_indented_next_line_is_redacted(text: str) -> None:
+    assert redact_secrets(text).endswith(REDACTION_PLACEHOLDER)
+
+
+@pytest.mark.parametrize("prefix", ["%3D", "\\n", "x"])
+def test_a_full_length_github_token_after_a_letter_is_redacted(prefix: str) -> None:
+    token = "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8"
+    assert redact_secrets(f"{prefix}{token}") == f"{prefix}{REDACTION_PLACEHOLDER}"

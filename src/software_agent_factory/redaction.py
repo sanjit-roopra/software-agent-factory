@@ -28,6 +28,9 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # prefix inside a word or snake_case name, such as ``num_highs_and_lows`` or
     # ``use_ghs_runner_cfg``.
     re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{8,}"),
+    # A full-length token is caught even right after a letter, as in ``%3Dghp_...`` or
+    # an escaped ``\\nghp_...``. Real tokens have 36 letters and digits.
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])"),
     re.compile(r"github_pat_\w{20,}"),
     # GitLab personal access tokens, OpenAI and Anthropic keys (``sk-``, ``sk-proj-``,
     # ``sk-ant-``), and Slack tokens.
@@ -36,7 +39,9 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?i:xox[baprse])-[0-9A-Za-z-]{10,}"),
     # AWS access key ids and secret access keys.
     re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),
-    re.compile(r"(?i)\baws_secret_access_key\b[ \t]*[:=][ \t]*[\"']?[a-z0-9/+=]{40}[\"']?"),
+    re.compile(
+        r"(?i)\baws_secret_access_key\b[^\S\r\n]*[:=][^\S\r\n]*(?:\r?\n[^\S\r\n]+)?[\"']?[a-z0-9/+=]{40}[\"']?"
+    ),
     # Credentials in a URL: ``scheme://user:password@host`` or ``scheme://token@host``.
     # The scheme is at most 32 characters, so a scan from each start stays short. The
     # fixed ``git@`` user of an SSH remote is not a secret.
@@ -49,17 +54,21 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(rf"-----BEGIN {_PEM_LABEL}PRIVATE KEY-----"),
     # Authorization and proxy-authorization headers (all schemes: Basic, Bearer, Digest, etc.).
-    re.compile(r"(?i)\b(?:authorization|proxy[_-]?authorization)\b[ \t]*[:=][ \t]*[^\r\n]+"),
+    re.compile(
+        r"(?i)\b(?:authorization|proxy[_-]?authorization)\b[^\S\r\n]*[:=][^\S\r\n]*(?:\r?\n[^\S\r\n]+)?[^\r\n]+"
+    ),
     re.compile(r"(?i)\bbearer\b\s*(?:[:=]\s*)?[a-z0-9._\-/+=]{20,}"),
     re.compile(r"(?i)\bBasic\s+[a-z0-9+/]{8,}={1,2}(?!\S)"),
     # Cookie and Set-Cookie headers.
-    re.compile(r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b[ \t]*[:=][ \t]*[^\r\n]+"),
+    re.compile(
+        r"(?i)\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\b[^\S\r\n]*[:=][^\S\r\n]*(?:\r?\n[^\S\r\n]+)?[^\r\n]+"
+    ),
     # Standalone JWTs (JSON Web Tokens).
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     # Explicit token/secret/password/session assignments.
     re.compile(
         r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|SECRET[_-]?KEY|SESSION[_-]?ID|SESSION[_-]?KEY|SESSION[_-]?TOKEN|JSESSIONID|PHPSESSID))\b"
-        r"[ \t]*[:=][ \t]*"
+        r"[^\S\r\n]*[:=][^\S\r\n]*(?:\r?\n[^\S\r\n]+)?"
         r"[\"']?[^\s\"';]{8,}[\"']?"
     ),
 )
