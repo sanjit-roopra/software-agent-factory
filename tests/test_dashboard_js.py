@@ -179,7 +179,7 @@ _PAGE = """
 def test_run_functions_loads_the_constants_and_helpers_a_function_names() -> None:
     results = run_functions(_PAGE, [JsCall("greet", ("ann",))])
 
-    assert results == [JsResult("hello; {world} ANN! 1", [])]
+    assert results == [JsResult("greet", "hello; {world} ANN! 1", [])]
 
 
 def test_run_functions_runs_many_calls_in_order_in_one_process() -> None:
@@ -204,9 +204,20 @@ def test_run_functions_reports_the_address_writes_of_each_call() -> None:
     assert [result.history for result in results] == [[[None, "", "/page"]], []]
 
 
-def test_run_functions_raises_when_a_helper_throws() -> None:
+def test_run_functions_returns_the_other_cases_when_one_helper_throws() -> None:
+    calls = [JsCall("shout", ("a",)), JsCall("boom"), JsCall("shout", ("b",))]
+
+    results = run_functions(_PAGE, calls)
+
+    assert [result.error for result in results] == [None, "Error: broken helper", None]
+    assert [results[0].value, results[2].value] == ["A!", "B!"]
+
+
+def test_reading_the_value_of_a_case_that_threw_raises() -> None:
+    [result] = run_functions(_PAGE, [JsCall("boom")])
+
     with pytest.raises(AssertionError, match="boom threw in node: Error: broken helper"):
-        run_functions(_PAGE, [JsCall("boom")])
+        _ = result.value
 
 
 def test_run_functions_raises_when_the_script_does_not_define_the_helper() -> None:

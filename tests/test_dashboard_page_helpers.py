@@ -278,4 +278,7 @@ def test_a_list_or_compare_helper_returns(case: Case, results: Callable[[str], J
 def test_the_token_query_is_dropped_from_the_address_and_the_hash_stays(
     case: AddressCase, results: Callable[[str], JsResult]
 ) -> None:
-    assert results(case.case_id).history == case.history
+    result = results(case.case_id)
+
+    assert result.error is None
+    assert result.history == case.history

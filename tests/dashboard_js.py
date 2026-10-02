@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import cache
 from typing import NamedTuple
 
@@ -158,7 +159,7 @@ const results = calls.map((call) => {
   try {
     return { value: api[call.function](...call.args), history: entries };
   } catch (error) {
-    return { error: String(error) };
+    return { error: String(error), history: entries };
   }
 });
 process.stdout.write(JSON.stringify(results));
@@ -173,11 +174,24 @@ class JsCall(NamedTuple):
     location: Mapping[str, str] | None = None
 
 
-class JsResult(NamedTuple):
-    """What a call returned as JSON, and the ``history.replaceState`` calls it made."""
+@dataclass(frozen=True)
+class JsResult:
+    """What one call returned as JSON and the ``history.replaceState`` calls it made.
 
-    value: object
+    When the helper threw, ``error`` holds the message and reading ``value`` raises, so one
+    bad case fails only the tests that read it.
+    """
+
+    function: str
+    returned: object
     history: list[list[object]]
+    error: str | None = None
+
+    @property
+    def value(self) -> object:
+        if self.error is not None:
+            raise AssertionError(f"{self.function} threw in node: {self.error}")
+        return self.returned
 
 
 def find_node() -> str | None:
@@ -245,11 +259,11 @@ def _call_payload(call: JsCall) -> dict[str, object]:
 
 
 def _parse_result(call: JsCall, outcome: dict[str, object]) -> JsResult:
-    if "error" in outcome:
-        raise AssertionError(f"{call.function} threw in node: {outcome['error']}")
     history = outcome["history"]
     assert isinstance(history, list)
-    return JsResult(outcome.get("value"), history)
+    error = outcome.get("error")
+    assert error is None or isinstance(error, str)
+    return JsResult(call.function, outcome.get("value"), history, error)
 
 
 def run_functions(js: str, calls: Sequence[JsCall]) -> list[JsResult]:
@@ -257,8 +271,9 @@ def run_functions(js: str, calls: Sequence[JsCall]) -> list[JsResult]:
 
     The script is not run as a whole. Each called helper is loaded with the
     constants and helpers it names, so no DOM is needed. Raises when a helper
-    is missing, throws, or when ``node`` fails. Without ``node`` it fails in CI and skips
-    elsewhere (``require_node``).
+    is missing or when ``node`` fails. A helper that throws gives a result whose
+    ``error`` is set. Without ``node`` it fails in CI and skips elsewhere
+    (``require_node``).
     """
     node = require_node()
     names = sorted({call.function for call in calls})
