@@ -81,6 +81,7 @@ from software_agent_factory.models import (
     utc_now,
 )
 from software_agent_factory.resume import (
+    compute_approval_context_fingerprint,
     is_valid_plan_decision_answers,
     receipt_approves_risk_context,
 )
@@ -233,8 +234,6 @@ def _make_approval_context(
     risk: Risk = Risk.R2,
     complexity: Complexity = Complexity.L1,
 ) -> RiskApprovalContext:
-    from software_agent_factory.escalation import compute_approval_context_fingerprint
-
     rationale = RiskRationale(
         intended_outcome="Update production database schema safely.",
         sensitive_boundary="Production database trust boundary.",

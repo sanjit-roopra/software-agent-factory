@@ -30,8 +30,6 @@ from software_agent_factory.escalation import (
     EscalationTargetType,
     build_escalation_comment,
     build_risk_approval_context,
-    compute_approval_context_fingerprint,
-    contains_unsafe_content,
     deliver_escalation_notification,
     escape_notice_text,
     normalize_whitespace,
@@ -64,7 +62,11 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.redaction import redact_secrets
 from software_agent_factory.repository_profile import generic_repository_profile
-from software_agent_factory.resume import is_valid_risk_approval_context
+from software_agent_factory.resume import (
+    compute_approval_context_fingerprint,
+    contains_unsafe_content,
+    is_valid_risk_approval_context,
+)
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
