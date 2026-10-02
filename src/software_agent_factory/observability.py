@@ -83,6 +83,7 @@ from pydantic import Field, ValidationError, model_serializer
 from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
 from .models import (
     MAX_GUIDANCE_FINDINGS,
+    ActiveInvocationStatus,
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
@@ -440,7 +441,7 @@ class ActiveInvocationSummary(ModelBase):
     model: str
     reasoning: str
     context_tier: ContextTier
-    status: str
+    status: ActiveInvocationStatus
     started_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
 
@@ -1797,7 +1798,7 @@ def _active_invocation_status(
     run: FactoryRun,
     now: datetime,
     stale_after: timedelta,
-) -> str:
+) -> ActiveInvocationStatus:
     lease = run.lease
     if lease is None:
         return "abandoned"

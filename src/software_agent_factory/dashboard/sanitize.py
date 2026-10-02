@@ -32,10 +32,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, get_args
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
-from ..models import MAX_GUIDANCE_FINDINGS, HaltReasonCode
+from ..models import MAX_GUIDANCE_FINDINGS, ActiveInvocationStatus, HaltReasonCode
 from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import (
@@ -201,7 +201,9 @@ ACTIVE_INVOCATION_FIELDS: frozenset[str] = INVOCATION_FIELDS - {"performance"}
 
 #: What the provider may say about the active call. Any other value shows as
 #: ``running``.
-ACTIVE_INVOCATION_STATUSES: frozenset[str] = frozenset({"running", "stale", "crashed", "abandoned"})
+ACTIVE_INVOCATION_STATUSES: frozenset[ActiveInvocationStatus] = frozenset(
+    get_args(ActiveInvocationStatus)
+)
 
 _ACTIVE_INPUT_KEYS = (
     "invocation_number",

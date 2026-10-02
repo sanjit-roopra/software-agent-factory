@@ -1035,6 +1035,10 @@ CONTEXT_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 ReplySource = Literal["github", "dashboard"]
 
+#: How alive the call recorded as active looks. The run view reports it and the dashboard
+#: shows it; the page names an outcome for each one.
+ActiveInvocationStatus = Literal["running", "stale", "crashed", "abandoned"]
+
 
 def _check_reply_source(source: ReplySource, comment_id: int | None, user_login: str) -> None:
     """Shared rule: a GitHub reply has a comment id, a dashboard reply has the fixed login."""

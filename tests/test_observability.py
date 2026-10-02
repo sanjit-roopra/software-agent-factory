@@ -24,6 +24,7 @@ import socket
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -32,12 +33,14 @@ from software_agent_factory.models import (
     MAX_GUIDANCE_FINDINGS,
     AcceptedReplyReceipt,
     ActiveInvocation,
+    ActiveInvocationStatus,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
     AttemptTrigger,
     CommandResult,
     Complexity,
+    ContextTier,
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
@@ -74,6 +77,7 @@ from software_agent_factory.observability import (
     DEFAULT_MAX_SCANNED_RUNS,
     DEFAULT_SCAN_CACHE_TTL,
     DEFAULT_STALE_AFTER,
+    ActiveInvocationSummary,
     MonitoringSnapshot,
     OperationalHealthReport,
     OrphanedWorkspaceFinding,
@@ -2861,3 +2865,28 @@ def test_run_guidance_keeps_up_to_the_guidance_cap_of_finding_ids() -> None:
 def test_run_guidance_rejects_more_finding_ids_than_the_guidance_cap() -> None:
     with pytest.raises(ValidationError):
         _guidance_with_ids(MAX_GUIDANCE_FINDINGS + 1)
+
+
+def _active_summary(status: str) -> ActiveInvocationSummary:
+    return ActiveInvocationSummary.model_validate(
+        {
+            "invocation_number": 1,
+            "role": AgentRole.IMPLEMENTER,
+            "purpose": "implement",
+            "model": "m",
+            "reasoning": "low",
+            "context_tier": ContextTier.DEFAULT,
+            "status": status,
+            "started_at": T0,
+        }
+    )
+
+
+@pytest.mark.parametrize("status", get_args(ActiveInvocationStatus))
+def test_an_active_summary_takes_each_liveness_status(status: str) -> None:
+    assert _active_summary(status).status == status
+
+
+def test_an_active_summary_rejects_any_other_status() -> None:
+    with pytest.raises(ValidationError):
+        _active_summary("paused")

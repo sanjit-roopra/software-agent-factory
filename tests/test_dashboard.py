@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from urllib.parse import quote
 
 import pytest
@@ -43,6 +43,7 @@ from software_agent_factory.dashboard.handler import (
 )
 from software_agent_factory.dashboard.sanitize import (
     ACTIVE_INVOCATION_FIELDS,
+    ACTIVE_INVOCATION_STATUSES,
     ATTEMPT_FIELDS,
     INVOCATION_FIELDS,
     PROJECT_FIELDS,
@@ -71,7 +72,7 @@ from software_agent_factory.dashboard.snapshot import (
     to_json_safe,
 )
 from software_agent_factory.dashboard.view import project_view, run_detail_view
-from software_agent_factory.models import MAX_GUIDANCE_FINDINGS
+from software_agent_factory.models import MAX_GUIDANCE_FINDINGS, ActiveInvocationStatus
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -1534,6 +1535,10 @@ def test_sanitize_run_detail_omits_list_price_estimate_when_not_reported() -> No
     payload = sanitize_run_detail({"run_id": "run-001", "usage": {"total_nano_aiu": 1}})
 
     assert "list_price_estimate_usd" not in payload["usage"]
+
+
+def test_the_active_statuses_are_the_ones_the_run_view_can_send() -> None:
+    assert ACTIVE_INVOCATION_STATUSES == frozenset(get_args(ActiveInvocationStatus))
 
 
 def test_non_object_active_invocation_is_dropped() -> None:
