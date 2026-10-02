@@ -1171,18 +1171,6 @@ def test_the_script_names_the_same_query_parameter_as_the_server() -> None:
     assert f'const TOKEN_QUERY_PARAM = "{TOKEN_QUERY_PARAM}";' in dashboard_assets.APP_JS
 
 
-def test_the_script_drops_the_token_query_and_keeps_the_hash() -> None:
-    source = function_source(dashboard_assets.APP_JS, "stripTokenFromAddress")
-
-    assert source == (
-        "function stripTokenFromAddress() { "
-        "const hasToken = new URLSearchParams(globalThis.location.search)"
-        ".has(TOKEN_QUERY_PARAM); "
-        "if (hasToken) { const { pathname, hash } = globalThis.location; "
-        'globalThis.history.replaceState(null, "", pathname + hash); } }'
-    )
-
-
 @pytest.mark.parametrize("step", ["bindControls();", "seedBackHistory();", "applyRoute(false);"])
 def test_the_script_drops_the_token_query_before_any_routing(step: str) -> None:
     source = function_source(dashboard_assets.APP_JS, "start")

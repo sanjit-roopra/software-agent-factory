@@ -1,7 +1,7 @@
 """Asset tests for the dashboard shell, routes, refresh and layout (slice 1 of #80).
 
-No JavaScript runner is available (ADR-016), so these tests read ``app.js``,
-``style.css`` and the index page as text.
+These tests read ``app.js``, ``style.css`` and the index page as text, to guard DOM
+wiring and security rules. Pure helpers run in node: see ``test_dashboard_page_helpers.py``.
 """
 
 from __future__ import annotations
@@ -736,7 +736,6 @@ def test_each_cost_unit_has_its_own_phrase_and_a_one_line_help_text() -> None:
     assert units.count("phrase:") == 3
     assert '" USD AI usage"' in units
     assert '" USD list price"' in units
-    assert "premium request" in function_source(dashboard_assets.APP_JS, "premiumRequestsPhrase")
     for help_text in re.findall(r'help:\s*"([^"]+)"', units):
         assert help_text.endswith(".")
         assert help_text.count(".") == 1
@@ -796,21 +795,13 @@ def test_the_script_names_an_outcome_for_every_status_the_server_sends() -> None
     assert sorted(keys) == sorted({STATUS_SUCCESS, STATUS_FAILED, *ACTIVE_INVOCATION_STATUSES})
 
 
-def test_a_total_cost_and_a_call_cost_skip_the_unreported_units() -> None:
-    cost = function_source(dashboard_assets.APP_JS, "costText")
-    assert "isFiniteNumber(usage[unit.key])" in cost
-    assert 'join(", ")' in cost
-    assert "return NOT_REPORTED;" in cost
+def test_the_script_has_no_token_sum_of_its_own() -> None:
     # The server adds the token classes up, so the script has no sum of its own.
     assert "totalTokens" not in dashboard_assets.APP_JS
 
 
 def test_totals_name_the_calls_that_reported_a_partial_figure() -> None:
     js = dashboard_assets.APP_JS
-    note = function_source(js, "partialNote")
-    assert 'reported + " of " + calls + " calls reported"' in note
-    assert "reported === 0" in note
-    assert "reported >= calls" in note
     card = function_source(js, "figureCard")
     assert "isFiniteNumber(total) ? format(total) : NOT_REPORTED" in card
     assert "partialNote(figure?.reported_count, calls)" in card
@@ -944,11 +935,6 @@ def test_plan_decisions_show_as_a_numbered_list() -> None:
     assert 'listSection("Decisions", items.map(' in source
     assert "decision.question" in source
     assert '"ol"' in function_source(dashboard_assets.APP_JS, "listSection")
-
-
-def test_reopens_show_as_used_of_max() -> None:
-    source = function_source(dashboard_assets.APP_JS, "reopensLine")
-    assert '"Reopens used " + step.reopens_used + " of " + step.max_reopens' in source
 
 
 def test_the_reply_has_a_copy_button_that_announces_copied() -> None:
@@ -1438,11 +1424,6 @@ def test_runs_that_need_you_come_first_and_a_filter_keeps_only_them() -> None:
     assert function_source(_JS, "needsYou") == (
         "function needsYou(run) { return run.waiting_for_human === true; }"
     )
-    assert function_source(_JS, "orderRuns") == (
-        "function orderRuns(runs, filter) { const waiting = runs.filter(needsYou); "
-        "if (filter !== null) { return waiting; } "
-        "return [...waiting, ...runs.filter(function (run) { return !needsYou(run); })]; }"
-    )
     assert "orderRuns(asArray(payload.runs), request.filter)" in function_source(_JS, "renderRuns")
 
 
@@ -1542,24 +1523,11 @@ def test_the_compare_table_names_every_column_and_row_for_a_screen_reader() -> N
     assert 'head.scope = "row";' in function_source(_JS, "compareRow")
 
 
-def test_a_picker_option_shows_the_start_time_state_task_and_model_profile() -> None:
-    assert function_source(_JS, "runOption") == (
-        "function runOption(run) { const runId = runIdOf(run); "
-        "const parts = [run.created_at, run.state, run.title || runId]; "
-        "if (run.performance_model_profile) { "
-        'parts.push("profile " + run.performance_model_profile); } '
-        'return { value: runId, label: parts.map((part) => displayValue(part)).join(" | ") }; }'
-    )
-
-
 def test_run_a_is_not_offered_as_run_b() -> None:
     renderer = function_source(_JS, "renderCompareRuns")
     assert "pickerOptions(runs, selection.a, null), selection.a" in renderer
     assert "pickerOptions(runs, selection.b, selection.a)" in renderer
     assert "option.value !== excluded" in function_source(_JS, "pickerOptions")
-    assert function_source(_JS, "normalizeSelection") == (
-        "function normalizeSelection(a, b) { return { a: a, b: b === a ? null : b }; }"
-    )
     assert "return normalizeSelection(a, b);" in function_source(_JS, "readCompareSelection")
     assert "return normalizeSelection(a, b);" in function_source(_JS, "compareSelection")
 
@@ -1671,17 +1639,6 @@ def test_a_pick_updates_the_address_without_a_route_change_and_refreshes() -> No
             in bindings
         )
     assert "force" not in function_source(_JS, "refreshView")
-
-
-def test_the_compare_address_carries_run_a_then_run_b() -> None:
-    assert function_source(_JS, "compareHash") == (
-        "function compareHash(selection) { if (selection.b !== null) { "
-        'return COMPARE_HASH + "/" + encodeURIComponent(selection.a ?? "") + "/" + '
-        "encodeURIComponent(selection.b); } "
-        "return selection.a === null ? COMPARE_HASH : "
-        'COMPARE_HASH + "/" + encodeURIComponent(selection.a); }'
-    )
-    assert 'const COMPARE_HASH = "#compare";' in _JS
 
 
 def test_a_response_keeps_its_status_and_body_so_a_404_can_name_the_missing_run() -> None:

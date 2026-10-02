@@ -1,9 +1,21 @@
-"""Tests for the JavaScript source readers in ``dashboard_js`` (ADR-016)."""
+"""Tests for the JavaScript source readers and the node runner in ``dashboard_js`` (ADR-016)."""
 
 from __future__ import annotations
 
+import math
+
 import pytest
-from dashboard_js import function_source, listener_source, object_literal_source, strip_comments
+from dashboard_js import (
+    UNDEFINED,
+    JsCall,
+    JsResult,
+    function_source,
+    listener_source,
+    object_literal_source,
+    require_node,
+    run_functions,
+    strip_comments,
+)
 
 
 def test_function_source_returns_the_balanced_body_without_comments() -> None:
@@ -76,6 +88,8 @@ def test_strip_comments_raises_on_an_unterminated_block_comment() -> None:
         strip_comments("const a = 1; /* open")
 
 
+_BUTTON = "button"
+_CLICK = "click"
 _WIRING = """
 function wire(button, form) {
   button.addEventListener("click", function () {
@@ -91,7 +105,7 @@ function other(button) { button.addEventListener("click", function () { other();
 
 
 def test_listener_source_returns_only_the_callback_that_was_asked_for() -> None:
-    assert listener_source(_WIRING, "wire", "button", "click") == (
+    assert listener_source(_WIRING, "wire", _BUTTON, _CLICK) == (
         'button.addEventListener("click", function () { send("a}"); }'
     )
     assert listener_source(_WIRING, "wire", "form", "input") == (
@@ -101,10 +115,208 @@ def test_listener_source_returns_only_the_callback_that_was_asked_for() -> None:
 
 
 def test_listener_source_looks_only_inside_the_named_function() -> None:
-    assert "other()" in listener_source(_WIRING, "other", "button", "click")
-    assert "other()" not in listener_source(_WIRING, "wire", "button", "click")
+    assert "other()" in listener_source(_WIRING, "other", _BUTTON, _CLICK)
+    assert "other()" not in listener_source(_WIRING, "wire", _BUTTON, _CLICK)
 
 
 def test_listener_source_raises_when_the_listener_is_missing() -> None:
     with pytest.raises(AssertionError, match="no keydown listener on button in function wire"):
-        listener_source(_WIRING, "wire", "button", "keydown")
+        listener_source(_WIRING, "wire", _BUTTON, "keydown")
+
+
+_SHOUT = "shout"
+_GREET = "greet"
+_FIND_NODE = "dashboard_js.find_node"
+_NO_NODE = "node is not on PATH"
+_NODE_PATH = "/usr/local/bin/node"
+
+
+def test_require_node_returns_the_path_of_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: _NODE_PATH)
+
+    assert require_node() == _NODE_PATH
+
+
+def test_require_node_fails_in_ci_when_node_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: None)
+    monkeypatch.setenv("CI", "true")
+
+    with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
+        require_node()
+
+
+def test_require_node_skips_outside_ci_when_node_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: None)
+    monkeypatch.delenv("CI", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match=_NO_NODE):
+        require_node()
+
+
+_PAGE = """
+(function () {
+  "use strict";
+  const GREETING = "hello; {world}";
+  const unused = document.getElementById("missing").value;
+  function shout(name) {
+    return name.toUpperCase() + "!";
+  }
+  function greet(name) {
+    return GREETING + " " + shout(name) + " " + obj.shout;
+  }
+  function boom() {
+    throw new Error("broken helper");
+  }
+  function dropQuery() {
+    globalThis.history.replaceState(null, "", globalThis.location.pathname);
+  }
+  function makeNode() {
+    const node = document.createElement("p");
+    node.textContent = "text";
+    return node;
+  }
+  function kindOf(value) {
+    return typeof value + ":" + String(value);
+  }
+  function innerKind(value) {
+    return kindOf(value.inner[0]);
+  }
+  function echo(value) {
+    return value;
+  }
+  function nothing() {}
+  function wrap(value) {
+    return { inner: value, list: [value] };
+  }
+  const DEFAULTS = { a: 1 };
+  function merged() {
+    return { ...DEFAULTS, b: 2 };
+  }
+  function readProperty(entry) {
+    return entry.unused;
+  }
+  const obj = { shout: 1 };
+  start();
+})();
+"""
+
+
+def test_run_functions_loads_the_constants_and_helpers_a_function_names() -> None:
+    results = run_functions(_PAGE, [JsCall(_GREET, ("ann",))])
+
+    assert results == [JsResult(_GREET, "hello; {world} ANN! 1", [])]
+
+
+def test_run_functions_runs_many_calls_in_order_in_one_process() -> None:
+    calls = [JsCall(_SHOUT, ("a",)), JsCall(_SHOUT, ("b",)), JsCall(_GREET, ("c",))]
+
+    values = [result.value for result in run_functions(_PAGE, calls)]
+
+    assert values == ["A!", "B!", "hello; {world} C! 1"]
+
+
+def test_run_functions_gives_a_helper_a_plain_object_for_each_element() -> None:
+    results = run_functions(_PAGE, [JsCall("makeNode")])
+
+    assert results[0].value == {"tagName": "p", "className": "", "textContent": "text"}
+
+
+def test_run_functions_reports_the_address_writes_of_each_call() -> None:
+    location = {"pathname": "/page"}
+
+    results = run_functions(_PAGE, [JsCall("dropQuery", (), location), JsCall(_SHOUT, ("a",))])
+
+    assert [result.history for result in results] == [[[None, "", "/page"]], []]
+
+
+def test_run_functions_returns_the_other_cases_when_one_helper_throws() -> None:
+    calls = [JsCall(_SHOUT, ("a",)), JsCall("boom"), JsCall(_SHOUT, ("b",))]
+
+    results = run_functions(_PAGE, calls)
+
+    assert [result.error for result in results] == [None, "Error: broken helper", None]
+    assert [results[0].value, results[2].value] == ["A!", "B!"]
+
+
+def test_reading_the_value_of_a_case_that_threw_raises() -> None:
+    [result] = run_functions(_PAGE, [JsCall("boom")])
+
+    with pytest.raises(AssertionError, match="boom threw in node: Error: broken helper"):
+        _ = result.value
+
+
+def test_run_functions_raises_when_the_script_does_not_define_the_helper() -> None:
+    calls = [JsCall("absent")]
+
+    with pytest.raises(AssertionError, match="absent is not a top-level definition"):
+        run_functions(_PAGE, calls)
+
+
+def test_run_functions_raises_when_node_fails_to_load_the_script() -> None:
+    js = "  const crash = null.value;\n  function broken() { return crash; }"
+
+    calls = [JsCall("broken")]
+
+    with pytest.raises(AssertionError, match="node failed"):
+        run_functions(js, calls)
+
+
+def test_run_functions_fails_in_ci_when_node_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_FIND_NODE, lambda: None)
+    monkeypatch.setenv("CI", "true")
+
+    calls = [JsCall(_SHOUT, ("a",))]
+
+    with pytest.raises(pytest.fail.Exception, match=_NO_NODE):
+        run_functions(_PAGE, calls)
+
+
+def test_run_functions_sends_undefined_nan_and_infinity_as_arguments() -> None:
+    values = [math.nan, math.inf, -math.inf, None, UNDEFINED]
+
+    results = run_functions(_PAGE, [JsCall("kindOf", (value,)) for value in values])
+
+    assert [result.value for result in results] == [
+        "number:NaN",
+        "number:Infinity",
+        "number:-Infinity",
+        "object:null",
+        "undefined:undefined",
+    ]
+
+
+def test_run_functions_sends_non_json_values_nested_in_arguments() -> None:
+    results = run_functions(_PAGE, [JsCall("innerKind", ({"inner": [math.inf]},))])
+
+    assert results[0].value == "number:Infinity"
+
+
+def test_run_functions_returns_undefined_nan_and_infinity() -> None:
+    calls = [
+        JsCall("echo", (value,)) for value in (math.nan, math.inf, -math.inf, None, UNDEFINED)
+    ] + [JsCall("nothing")]
+
+    values = [result.value for result in run_functions(_PAGE, calls)]
+
+    assert [repr(value) for value in values[:3]] == ["nan", "inf", "-inf"]
+    assert values[3:] == [None, UNDEFINED, UNDEFINED]
+
+
+def test_run_functions_returns_undefined_nested_in_a_result() -> None:
+    results = run_functions(_PAGE, [JsCall("wrap", (UNDEFINED,))])
+
+    assert results[0].value == {"inner": UNDEFINED, "list": [UNDEFINED]}
+
+
+def test_run_functions_loads_a_constant_that_a_helper_spreads() -> None:
+    results = run_functions(_PAGE, [JsCall("merged")])
+
+    assert results[0].value == {"a": 1, "b": 2}
+
+
+def test_run_functions_does_not_load_a_definition_named_like_a_property() -> None:
+    results = run_functions(_PAGE, [JsCall("readProperty", ({"unused": 5},))])
+
+    assert results[0].value == 5
