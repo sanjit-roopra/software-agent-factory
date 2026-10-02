@@ -144,7 +144,7 @@ def _empty(kind: NextStepKind) -> dict[str, Any]:
         "approval_scope": None,
         "decisions": [],
         "reopens_used": None,
-        "reopens_max": None,
+        "max_reopens": None,
         "comment_url": None,
         "episode_id": None,
         "context_fingerprint": None,
@@ -179,7 +179,7 @@ def _halt_step(kind: NextStepKind, sentence: str, escalation: dict[str, Any]) ->
             resume_classification if resume_classification in RESUME_CLASSIFICATIONS else None
         ),
         reopens_used=_count_or_none(escalation.get("reopen_count")),
-        reopens_max=_count_or_none(escalation.get("reopen_max")),
+        max_reopens=_count_or_none(escalation.get("max_reopens")),
         comment_url=_comment_url(escalation),
     )
     return step

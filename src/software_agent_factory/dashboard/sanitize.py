@@ -145,7 +145,7 @@ ESCALATION_FIELDS: frozenset[str] = frozenset(
         "resumed_at",
         "episode_id",
         "context_fingerprint",
-        "reopen_max",
+        "max_reopens",
         "reply_closed_cause",
         "dashboard_action_refusal",
         "approval_scope",
@@ -605,7 +605,7 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "last_action": _one_of({None, "ANSWER", "RESUME"}),
     "episode_id": is_episode_id,
     "context_fingerprint": is_context_fingerprint,
-    "reopen_max": is_count,
+    "max_reopens": is_count,
     "reply_closed_cause": _one_of({None, *REPLY_CLOSED_CAUSES}),
     "dashboard_action_refusal": _one_of({None, *RESUME_REFUSALS}),
 }

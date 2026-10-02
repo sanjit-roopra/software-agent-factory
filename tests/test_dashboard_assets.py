@@ -945,7 +945,7 @@ def test_plan_decisions_show_as_a_numbered_list() -> None:
 
 def test_reopens_show_as_used_of_max() -> None:
     source = function_source(dashboard_assets.APP_JS, "reopensLine")
-    assert '"Reopens used " + step.reopens_used + " of " + step.reopens_max' in source
+    assert '"Reopens used " + step.reopens_used + " of " + step.max_reopens' in source
 
 
 def test_the_reply_has_a_copy_button_that_announces_copied() -> None:

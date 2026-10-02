@@ -2087,7 +2087,7 @@ def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path
     assert detail.escalation is not None
     assert detail.escalation.episode_id == "ep-1"
     assert detail.escalation.context_fingerprint == "a" * 64
-    assert detail.escalation.reopen_max == 3
+    assert detail.escalation.max_reopens == 3
     assert detail.escalation.approval_scope is not None
     assert detail.escalation.approval_scope.model_dump() == {
         "decision_requested": "Approve advancing the run to REFINING.",
@@ -2127,7 +2127,7 @@ def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
     assert detail.escalation.decisions == ["Use SQLite?", "Keep the API?"]
     assert detail.escalation.context_fingerprint == "c" * 64
     assert detail.escalation.approval_scope is None
-    assert detail.escalation.reopen_max is None
+    assert detail.escalation.max_reopens is None
 
 
 def test_build_run_detail_shows_live_active_invocation(

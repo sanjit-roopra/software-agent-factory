@@ -1272,10 +1272,10 @@
   }
 
   function reopensLine(step) {
-    if (!isFiniteNumber(step.reopens_used) || !isFiniteNumber(step.reopens_max)) {
+    if (!isFiniteNumber(step.reopens_used) || !isFiniteNumber(step.max_reopens)) {
       return null;
     }
-    return element("p", "", "Reopens used " + step.reopens_used + " of " + step.reopens_max);
+    return element("p", "", "Reopens used " + step.reopens_used + " of " + step.max_reopens);
   }
 
   function decisionRequestedLine(scope) {

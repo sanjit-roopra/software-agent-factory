@@ -2640,7 +2640,7 @@ def _waiting_detail(run_id: str) -> dict[str, Any] | None:
             "episode_id": "ep-1",
             "context_fingerprint": _FINGERPRINT,
             "reopen_count": 0,
-            "reopen_max": 3,
+            "max_reopens": 3,
             "reply_closed_cause": None,
             "dashboard_action_refusal": None,
             "approval_scope": {

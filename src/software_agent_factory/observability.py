@@ -507,7 +507,7 @@ class EscalationSummary(ModelBase):
     resumed_at: UtcDateTime | None = None
     episode_id: str | None = None
     context_fingerprint: str | None = None
-    reopen_max: int | None = Field(default=None, ge=1)
+    max_reopens: int | None = Field(default=None, ge=1)
     reply_closed_cause: str | None = None
     #: Why the dashboard could not queue a resume now, or ``None`` when it can. Unlike
     #: ``reply_closed_cause`` this ignores the GitHub-only gates.
@@ -1471,7 +1471,7 @@ def _escalation_summary(
         resumed_at=escalation.updated_at if is_resumed else None,
         episode_id=escalation.episode_id,
         context_fingerprint=context.context_fingerprint if context is not None else None,
-        reopen_max=max_reopens,
+        max_reopens=max_reopens,
         reply_closed_cause=reply_closed_cause(
             escalation,
             max_reopens=max_reopens,
