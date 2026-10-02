@@ -32,7 +32,6 @@ from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRu
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
     UNRESOLVED_DECISIONS_HALT_PREFIX,
-    UNRESOLVED_DECISIONS_REASON_CODE,
     ValidationResult,
     build_escalation_comment,
     build_plan_decision_context,
@@ -67,6 +66,7 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    HaltReasonCode,
     PlanDecisionAnswer,
     PlanDecisionAnswers,
     PlanDecisionContext,
@@ -533,7 +533,7 @@ def test_classify_halt_reason_unresolved_decisions_stable_prefix_wins(tmp_path: 
         )
         classification, code, summary, action = classify_halt_reason(run)
         assert classification is ResumeClassification.PLAN_DECISION
-        assert code == UNRESOLVED_DECISIONS_REASON_CODE
+        assert code == HaltReasonCode.UNRESOLVED_DECISIONS
         assert "Reply with complete numbered decisions" in action
 
 
@@ -549,7 +549,7 @@ def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path:
 
     # 1. Without store or without ExecutionPlan: safe count is omitted, no model prose
     _, code, summary_no_plan, action = classify_halt_reason(run)
-    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert code == HaltReasonCode.UNRESOLVED_DECISIONS
     assert "Reply with complete numbered decisions" in action
     assert "The execution plan has unresolved architectural decisions." in summary_no_plan
 
@@ -566,7 +566,7 @@ def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path:
     store.save_artifact(run.id, plan)
 
     _, code, summary_with_plan, action = classify_halt_reason(run, store)
-    assert code == UNRESOLVED_DECISIONS_REASON_CODE
+    assert code == HaltReasonCode.UNRESOLVED_DECISIONS
     assert "2 unresolved architectural decisions" in summary_with_plan
     assert "Reply with complete numbered decisions" in action
     # Verify no model prose in summary or action

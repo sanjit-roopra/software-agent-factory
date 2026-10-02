@@ -60,6 +60,7 @@ from .models import (
     DashboardResumeRequest,
     EscalationStatus,
     FactoryRun,
+    HaltReasonCode,
     ResumeClassification,
     WorkflowState,
     WorkItem,
@@ -471,7 +472,7 @@ class FactoryService:
             self.controller._fail_reopen(
                 run,
                 f"run {run.id} exceeded maximum reopens ({max_limit})",
-                reason_code="ATTEMPT_BUDGET_EXHAUSTED",
+                reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
             )
         return True
 

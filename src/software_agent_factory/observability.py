@@ -92,6 +92,7 @@ from .models import (
     ExecutionPlan,
     ExecutionRoute,
     FactoryRun,
+    HaltReasonCode,
     InvocationRecord,
     ModelBase,
     PerformanceRecord,
@@ -445,7 +446,7 @@ class ActiveInvocationSummary(ModelBase):
 
 class RunGuidance(ModelBase):
     status: str
-    reason_code: str
+    reason_code: HaltReasonCode
     summary: str
     next_action: str
     artifact: str | None = None
@@ -459,7 +460,7 @@ class RunGuidance(ModelBase):
         data: dict[str, Any] = dict(handler(self))
         if self.decision_count is None:
             data.pop("decision_count", None)
-        if self.reason_code == "UNRESOLVED_DECISIONS":
+        if self.reason_code is HaltReasonCode.UNRESOLVED_DECISIONS:
             data.pop("finding_count", None)
             data.pop("finding_ids", None)
             data.pop("category_counts", None)
@@ -1655,7 +1656,7 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
     if run.state is not WorkflowState.NEEDS_HUMAN and run.review_acceptance is not None:
         return RunGuidance(
             status="ACCEPTED_WITH_FINDINGS",
-            reason_code="BOUNDED_REVIEW_ACCEPTANCE",
+            reason_code=HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE,
             summary="The controller continued after the bounded review limit.",
             next_action="Review the accepted findings in the pull request before merging.",
             artifact="review-acceptance.json",
@@ -1670,7 +1671,7 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
     if impasse is not None:
         return RunGuidance(
             status="ACTION_REQUIRED",
-            reason_code="REVIEW_IMPASSE",
+            reason_code=HaltReasonCode.REVIEW_IMPASSE,
             summary="Independent review did not converge within the safe automatic policy.",
             next_action=(
                 "Inspect review-impasse.json, resolve or accept the listed findings, then retry."
@@ -1716,38 +1717,38 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
         )
         return RunGuidance(
             status="ACTION_REQUIRED",
-            reason_code="UNRESOLVED_DECISIONS",
+            reason_code=HaltReasonCode.UNRESOLVED_DECISIONS,
             summary=summary,
             next_action=action,
             artifact="execution-plan.json",
             decision_count=unresolved_count,
         )
     if "risk" in reason or "approval" in reason:
-        code = "RISK_APPROVAL"
+        code = HaltReasonCode.RISK_APPROVAL
         summary = "The run requires approval under the configured risk policy."
         action = "Review the work item risk and approve or change the policy before retrying."
     elif "scope" in reason:
-        code = "SCOPE_REVIEW"
+        code = HaltReasonCode.SCOPE_REVIEW
         summary = "The proposed changes exceeded the approved scope."
         action = "Review the planned and changed files, then update the scope or retry."
     elif "budget" in reason or "attempt" in reason:
-        code = "ATTEMPT_BUDGET_EXHAUSTED"
+        code = HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
         summary = "The run exhausted a bounded retry budget."
         action = "Inspect the run artifacts, correct the underlying issue, then retry."
     elif "ci " in reason or reason.startswith("ci"):
-        code = "CI_INTERVENTION"
+        code = HaltReasonCode.CI_INTERVENTION
         summary = "CI could not be completed or repaired automatically."
         action = "Inspect the pull request checks, fix the failing check, then retry delivery."
     elif any(term in reason for term in ("publish", "pull request", "merge", "permission")):
-        code = "DELIVERY_INTERVENTION"
+        code = HaltReasonCode.DELIVERY_INTERVENTION
         summary = "The controller could not complete pull request delivery."
         action = "Check repository permissions and delivery settings, then retry delivery."
     elif any(term in reason for term in ("abandon", "interrupt", "workspace")):
-        code = "RECOVERY_INTERVENTION"
+        code = HaltReasonCode.RECOVERY_INTERVENTION
         summary = "The run could not safely recover its persisted workspace."
         action = "Inspect the run and workspace metadata before starting a replacement run."
     else:
-        code = "MANUAL_INSPECTION"
+        code = HaltReasonCode.MANUAL_INSPECTION
         summary = "The controller stopped at a manual decision boundary."
         action = "Inspect the typed run artifacts and decide whether to retry or replace the run."
     return RunGuidance(

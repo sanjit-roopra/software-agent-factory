@@ -980,6 +980,36 @@ class ResumeClassification(StrEnum):
     NOT_RESUMABLE = "NOT_RESUMABLE"
 
 
+class HaltReasonCode(StrEnum):
+    """Why a run stopped, or why its guidance reads as it does.
+
+    The values are stored in run files and sent to the dashboard, so they never change.
+    Every copy table keys on this enum: the escalation classifier, the run guidance,
+    the dashboard guidance copy and the dashboard halt sentences.
+    """
+
+    BOUNDED_REVIEW_ACCEPTANCE = "BOUNDED_REVIEW_ACCEPTANCE"
+    REVIEW_IMPASSE = "REVIEW_IMPASSE"
+    UNRESOLVED_DECISIONS = "UNRESOLVED_DECISIONS"
+    RISK_APPROVAL = "RISK_APPROVAL"
+    SCOPE_REVIEW = "SCOPE_REVIEW"
+    ATTEMPT_BUDGET_EXHAUSTED = "ATTEMPT_BUDGET_EXHAUSTED"
+    CI_INTERVENTION = "CI_INTERVENTION"
+    DELIVERY_INTERVENTION = "DELIVERY_INTERVENTION"
+    RECOVERY_INTERVENTION = "RECOVERY_INTERVENTION"
+    MANUAL_INSPECTION = "MANUAL_INSPECTION"
+
+    @classmethod
+    def parse(cls, value: object) -> HaltReasonCode | None:
+        """The code a stored or sent value names, or ``None`` for anything else."""
+        if not isinstance(value, str):
+            return None
+        try:
+            return cls(value)
+        except ValueError:
+            return None
+
+
 class EscalationTargetType(StrEnum):
     PULL_REQUEST = "PULL_REQUEST"
     ISSUE = "ISSUE"

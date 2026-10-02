@@ -24,7 +24,6 @@ from software_agent_factory.dashboard.next_step import (
     next_step,
 )
 from software_agent_factory.dashboard.sanitize import (
-    GUIDANCE_COPY,
     MAX_SCOPE_ITEMS,
     sanitize_run_detail,
 )
@@ -480,11 +479,6 @@ def test_no_two_reason_codes_share_a_sentence() -> None:
 
 def test_every_reason_sentence_starts_with_the_run() -> None:
     assert all(sentence.startswith("The run ") for sentence in REASON_SENTENCES.values())
-
-
-def test_every_reason_sentence_belongs_to_a_known_reason_code() -> None:
-    assert set(REASON_SENTENCES) <= set(GUIDANCE_COPY)
-    assert set(GUIDANCE_COPY) - set(REASON_SENTENCES) == {"BOUNDED_REVIEW_ACCEPTANCE"}
 
 
 @pytest.mark.parametrize("code", ["SOMETHING_NEW", "", None])

@@ -108,6 +108,7 @@ from .models import (
     ExecutionRoute,
     ExpectedScope,
     FactoryRun,
+    HaltReasonCode,
     InvocationRecord,
     PlanDecisionAnswers,
     PlanStep,
@@ -1046,7 +1047,7 @@ class WorkflowController:
         run: FactoryRun,
         reason: str,
         *,
-        reason_code: str = "RECOVERY_INTERVENTION",
+        reason_code: HaltReasonCode = HaltReasonCode.RECOVERY_INTERVENTION,
     ) -> FactoryRun:
         """Handle a failure during workspace validation or pre-transition reconciliation in reopen.
 
@@ -1137,7 +1138,7 @@ class WorkflowController:
                 run,
                 f"run {run_id} has no accepted reply receipt bound to "
                 f"episode {escalation.episode_id}",
-                reason_code="RECOVERY_INTERVENTION",
+                reason_code=HaltReasonCode.RECOVERY_INTERVENTION,
             )
 
         if escalation.resume_classification not in {
@@ -1147,14 +1148,14 @@ class WorkflowController:
             return self._fail_reopen(
                 run,
                 f"halt category {escalation.resume_classification} is not resumable via reopen",
-                reason_code="MANUAL_INSPECTION",
+                reason_code=HaltReasonCode.MANUAL_INSPECTION,
             )
 
         if escalation.reopen_count > self._config.escalation.max_reopens:
             return self._fail_reopen(
                 run,
                 f"run {run_id} exceeded maximum reopens ({self._config.escalation.max_reopens})",
-                reason_code="ATTEMPT_BUDGET_EXHAUSTED",
+                reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
             )
 
         workspace = GitWorktreeWorkspace(
