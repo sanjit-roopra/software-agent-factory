@@ -16,11 +16,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Self
 
 from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
 from .models import MAX_PLAN_DECISIONS as MAX_PLAN_DECISIONS
 from .models import REPLY_CURSOR_CLOSED, EscalationRecord, EscalationStatus
+
+if TYPE_CHECKING:
+    from .config import EscalationConfig
 
 #: Characters allowed in a run id or an episode id inside a reply command.
 _ID_CHARS = "A-Za-z0-9._-"
@@ -85,15 +90,32 @@ def notice_host(record: EscalationRecord, allowed_hosts: Sequence[str]) -> str:
     return record.target_host or (allowed_hosts[0] if allowed_hosts else "github.com")
 
 
-def reply_closed_cause(
-    record: EscalationRecord,
-    *,
-    max_reopens: int | None,
-    reply_window_hours: float | None,
-    enabled: bool | None,
-    allowed_hosts: Sequence[str] | None,
-    now: datetime,
-) -> str | None:
+@dataclass(frozen=True, kw_only=True)
+class ReplyPolicy:
+    """The configured limits that decide whether a reply is read.
+
+    One required value for every caller of :func:`reply_closed_cause` and
+    :func:`.resume.resume_refusal_within`. There is no unknown limit: build it with
+    :meth:`from_config`.
+    """
+
+    max_reopens: int
+    reply_window_hours: int
+    escalation_enabled: bool
+    allowed_hosts: tuple[str, ...]
+
+    @classmethod
+    def from_config(cls, escalation: EscalationConfig) -> Self:
+        """The policy of an ``escalation`` config. The one place a policy is built."""
+        return cls(
+            max_reopens=escalation.max_reopens,
+            reply_window_hours=escalation.reply_window_hours,
+            escalation_enabled=escalation.enabled,
+            allowed_hosts=tuple(escalation.allowed_hosts),
+        )
+
+
+def reply_closed_cause(record: EscalationRecord, policy: ReplyPolicy, now: datetime) -> str | None:
     """Why the reply poller would ignore a reply to ``record`` at ``now``, or ``None``.
 
     This mirrors the accept checks of ``poll_escalation_reply`` and
@@ -102,10 +124,9 @@ def reply_closed_cause(
     reply instructions, the reply cursor is open, the reply window has not passed, a reopen
     is left and the notice host is still allowed. A parity test keeps the mirror in line.
     The poller also checks the stored decision context; this predicate does not.
-    A config value that is ``None`` is unknown and does not close the reply.
     The result is one short plain-English phrase from :data:`REPLY_CLOSED_CAUSES`.
     """
-    if enabled is False:
+    if not policy.escalation_enabled:
         return _ESCALATION_OFF
     if record.status is not EscalationStatus.NOTIFIED:
         return _STATUS_CAUSES.get(record.status, _STATUS_UNKNOWN)
@@ -113,14 +134,12 @@ def reply_closed_cause(
         return _NO_INSTRUCTIONS
     if record.reply_cursor == REPLY_CURSOR_CLOSED:
         return _CURSOR_CLOSED
-    if reply_window_hours is not None and now > record.created_at + timedelta(
-        hours=reply_window_hours
-    ):
+    if now > record.created_at + timedelta(hours=policy.reply_window_hours):
         return _WINDOW_EXPIRED
-    if max_reopens is not None and record.reopen_count >= max_reopens:
+    if record.reopen_count >= policy.max_reopens:
         return _REOPEN_LIMIT
-    if allowed_hosts is not None and notice_host(record, allowed_hosts).casefold() not in {
-        host.casefold() for host in allowed_hosts
+    if notice_host(record, policy.allowed_hosts).casefold() not in {
+        host.casefold() for host in policy.allowed_hosts
     }:
         return _HOST_NOT_ALLOWED
     return None

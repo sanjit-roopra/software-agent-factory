@@ -48,7 +48,7 @@ from software_agent_factory.escalation import (
     resolve_escalation_target,
     validate_reply_candidate,
 )
-from software_agent_factory.escalation_protocol import reply_closed_cause
+from software_agent_factory.escalation_protocol import ReplyPolicy, reply_closed_cause
 from software_agent_factory.github import (
     GitHubClient,
     GitHubComment,
@@ -1321,12 +1321,7 @@ def _parity_run(
 def _parity_cause(run: FactoryRun, config: FactoryConfig) -> str | None:
     assert run.escalation is not None
     return reply_closed_cause(
-        run.escalation,
-        max_reopens=config.escalation.max_reopens,
-        reply_window_hours=config.escalation.reply_window_hours,
-        enabled=config.escalation.enabled,
-        allowed_hosts=config.escalation.allowed_hosts,
-        now=_PARITY_NOW,
+        run.escalation, ReplyPolicy.from_config(config.escalation), _PARITY_NOW
     )
 
 

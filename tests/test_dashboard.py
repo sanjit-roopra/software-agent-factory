@@ -27,6 +27,7 @@ from urllib.parse import quote
 
 import pytest
 from dashboard_js import function_source, normalized, strip_comments
+from factory_testing import REPLY_POLICY
 
 from software_agent_factory.dashboard import (
     DashboardConfig,
@@ -2518,7 +2519,9 @@ def _stored_run_detail_payload(tmp_path: Path, reason: str) -> dict[str, Any]:
         host="127.0.0.1",
         port=0,
         snapshot_provider=fake_snapshot_provider,
-        run_detail_provider=lambda run_id: build_run_detail(store, run_id),
+        run_detail_provider=lambda run_id: build_run_detail(
+            store, run_id, reply_policy=REPLY_POLICY
+        ),
     )
     running = _start(config)
     try:
@@ -3502,7 +3505,9 @@ def _stored_detail(tmp_path: Path, **run_fields: Any) -> Any:
     store.save_run(
         FactoryRun(id="stored-run", work_item_id="WI-1", state=state, **run_fields),
     )
-    return build_run_detail(store, "stored-run", now=datetime(2026, 9, 1, 12, 5, tzinfo=UTC))
+    return build_run_detail(
+        store, "stored-run", now=datetime(2026, 9, 1, 12, 5, tzinfo=UTC), reply_policy=REPLY_POLICY
+    )
 
 
 def _usage_call(number: int, usage: Any) -> Any:

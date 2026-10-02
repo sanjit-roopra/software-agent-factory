@@ -663,7 +663,10 @@ def test_dashboard_resume_actions_use_the_configured_limits(
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
 
     actions = fake_dashboard[0].config.resume_actions
-    assert (actions.max_reopens, actions.reply_window_hours) == (2, 5)
+    assert actions is not None
+    policy = actions.reply_policy
+    actual = (policy.max_reopens, policy.reply_window_hours)
+    assert actual == (2, 5)
 
 
 @pytest.mark.parametrize(

@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Literal, Protocol, TypeIs, get_args
 
 from .config import FactoryConfig
-from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
+from .escalation_protocol import (
+    MAX_PLAN_DECISIONS,
+    ReplyPolicy,
+    format_answer_command,
+    format_resume_command,
+)
 from .models import (
     DASHBOARD_USER_LOGIN,
     REPLY_CURSOR_CLOSED,
@@ -304,36 +309,25 @@ def resume_refusal(run: FactoryRun, config: FactoryConfig, now: datetime) -> Res
     dashboard request when its human made it. ``remote_resume_enabled`` is not part of this
     check: it covers GitHub replies only.
     """
-    return resume_refusal_within(
-        run,
-        reply_window_hours=config.escalation.reply_window_hours,
-        max_reopens=config.escalation.max_reopens,
-        now=now,
-    )
+    return resume_refusal_within(run, ReplyPolicy.from_config(config.escalation), now)
 
 
 def resume_refusal_within(
-    run: FactoryRun,
-    *,
-    reply_window_hours: float | None,
-    max_reopens: int | None,
-    now: datetime,
+    run: FactoryRun, policy: ReplyPolicy, now: datetime
 ) -> ResumeRefusal | None:
-    """:func:`resume_refusal` for a caller that holds the two limits, not the whole config.
+    """:func:`resume_refusal` for a caller that holds the policy, not the whole config.
 
-    A limit that is ``None`` is unknown and is not checked, as in
-    :func:`.escalation_protocol.reply_closed_cause`.
+    It reads the window and the reopen limit only. The switch and the hosts of ``policy``
+    are for GitHub replies, as in :func:`.escalation_protocol.reply_closed_cause`.
     """
     escalation = run.escalation
     if escalation is None or not awaits_human(run):
         return "state_changed"
     if not _has_valid_resume_context(run):
         return "context_changed"
-    if reply_window_hours is not None and now > escalation.created_at + timedelta(
-        hours=reply_window_hours
-    ):
+    if now > escalation.created_at + timedelta(hours=policy.reply_window_hours):
         return "expired"
-    if max_reopens is not None and escalation.reopen_count >= max_reopens:
+    if escalation.reopen_count >= policy.max_reopens:
         return "reopen_limit"
     return None
 
@@ -390,8 +384,7 @@ def request_refusal(
     episode_id: str,
     fingerprint: str | None,
     action: ResumeClassification,
-    reply_window_hours: float | None,
-    max_reopens: int | None,
+    policy: ReplyPolicy,
     now: datetime,
 ) -> ResumeRefusal | RequestMismatch | None:
     """The one reason a request for ``run`` is not taken at ``now``, or ``None``.
@@ -402,9 +395,7 @@ def request_refusal(
     current context, so both give the same reason for that request. The stamp of a stored
     request is judged by the service alone, after the refusals and before the mismatch.
     """
-    refusal = resume_refusal_within(
-        run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
-    )
+    refusal = resume_refusal_within(run, policy, now)
     if refusal is not None:
         return refusal
     escalation = run.escalation
@@ -614,8 +605,7 @@ def _request_refusal(
         episode_id=request.episode_id,
         fingerprint=request.context_fingerprint,
         action=request.action,
-        reply_window_hours=config.escalation.reply_window_hours,
-        max_reopens=config.escalation.max_reopens,
+        policy=ReplyPolicy.from_config(config.escalation),
         now=request.created_at,
     )
     if refusal is not None and not _is_mismatch(refusal):

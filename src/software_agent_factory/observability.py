@@ -80,7 +80,7 @@ from typing import Any, Iterable, Literal, Protocol, TypeVar
 
 from pydantic import Field, ValidationError, model_serializer
 
-from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
+from .escalation_protocol import ANSWER_COMMAND_PATTERN, ReplyPolicy, reply_closed_cause
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
@@ -1451,10 +1451,7 @@ def _escalation_summary(
     run: FactoryRun,
     escalation: EscalationRecord | None,
     now: datetime,
-    max_reopens: int | None = None,
-    reply_window_hours: int | None = None,
-    escalation_enabled: bool | None = None,
-    allowed_hosts: Sequence[str] | None = None,
+    policy: ReplyPolicy,
 ) -> EscalationSummary | None:
     if escalation is None:
         return None
@@ -1488,18 +1485,9 @@ def _escalation_summary(
         resumed_at=escalation.updated_at if is_resumed else None,
         episode_id=escalation.episode_id,
         context_fingerprint=context.context_fingerprint if context is not None else None,
-        max_reopens=max_reopens,
-        reply_closed_cause=reply_closed_cause(
-            escalation,
-            max_reopens=max_reopens,
-            reply_window_hours=reply_window_hours,
-            enabled=escalation_enabled,
-            allowed_hosts=allowed_hosts,
-            now=now,
-        ),
-        dashboard_action_refusal=resume_refusal_within(
-            run, reply_window_hours=reply_window_hours, max_reopens=max_reopens, now=now
-        ),
+        max_reopens=policy.max_reopens,
+        reply_closed_cause=reply_closed_cause(escalation, policy, now),
+        dashboard_action_refusal=resume_refusal_within(run, policy, now),
         approval_scope=(
             ApprovalScopeSummary(
                 decision_requested=approval.decision_requested,
@@ -1577,10 +1565,7 @@ def build_run_detail(
     *,
     now: datetime | None = None,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
-    max_reopens: int | None = None,
-    reply_window_hours: int | None = None,
-    escalation_enabled: bool | None = None,
-    allowed_hosts: Sequence[str] | None = None,
+    reply_policy: ReplyPolicy,
 ) -> RunDetail | None:
     """Derive one run's read-only detail view, or ``None`` if it is not
     readable.
@@ -1614,15 +1599,7 @@ def build_run_detail(
         merge_commit_sha=run.merge_commit_sha,
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),
-        escalation=_escalation_summary(
-            run,
-            run.escalation,
-            observed_at,
-            max_reopens=max_reopens,
-            reply_window_hours=reply_window_hours,
-            escalation_enabled=escalation_enabled,
-            allowed_hosts=allowed_hosts,
-        ),
+        escalation=_escalation_summary(run, run.escalation, observed_at, reply_policy),
         attempts=[
             RunAttemptSummary(
                 attempt_number=attempt.attempt_number,
