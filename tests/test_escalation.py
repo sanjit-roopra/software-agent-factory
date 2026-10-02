@@ -1522,8 +1522,8 @@ def test_a_poll_without_a_valid_reply_keeps_a_reopen_it_read_too_late(
     assert saved.escalation.reopen_count == 1
 
 
-# double-waiver: B1 — stands in for a second process writing run.json between the
-# poller's reads; the real FileRunStore still does every read and write underneath.
+# The real FileRunStore still does every read and write underneath.
+# double-waiver: B1 — stands in for a second process writing run.json between reads
 class _ReopeningStore(FileRunStore):
     """A store where a reopen lands right after the poller's first read of the run."""
 
