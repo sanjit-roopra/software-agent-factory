@@ -54,6 +54,7 @@ from software_agent_factory.dashboard.sanitize import (
     sanitize_invocation,
     sanitize_project,
     sanitize_run_detail,
+    sanitize_run_summary,
     sanitize_usage,
 )
 from software_agent_factory.dashboard.security import TOKEN_HEADER, validate_bind_host
@@ -3350,3 +3351,90 @@ def test_compare_with_unsanitizable_provider_data_is_503_without_run_data() -> N
 
     assert response.status == 503
     assert payload == {"error": "run detail unavailable"}
+
+
+# --------------------------------------------------------------------------
+# Redacted run title and model name (#88)
+# --------------------------------------------------------------------------
+
+_TITLE_TOKEN = "ghp_0123456789abcdefghij"
+_REDACTED_TITLE = "Fix [REDACTED] now"
+_REDACTED_MODEL = "model-[REDACTED]"
+_TOKEN_RUN = "run-token"
+_OTHER_RUN = "run-safe"
+
+
+def _token_snapshot_provider(*, limit: int, offset: int) -> dict[str, Any]:
+    base = fake_snapshot_provider(limit=limit, offset=offset)
+    runs = [{**run, "title": f"Fix {_TITLE_TOKEN} now"} for run in base["runs"]]
+    return {**base, "runs": runs}
+
+
+def _token_run_detail(run_id: str) -> dict[str, Any]:
+    token_model = f"model-{_TITLE_TOKEN}"
+    return {
+        "run_id": run_id,
+        "title": f"Fix {_TITLE_TOKEN} now",
+        "state": "DONE",
+        "created_at": "2026-10-01T09:00:00Z",
+        "attempts": [{"attempt_number": 1, "role": "IMPLEMENTER", "model": token_model}],
+        "invocations": [_compare_call("IMPLEMENTER", token_model, input_tokens=1)],
+        "active_invocation": {"role": "REVIEWER", "model": token_model},
+    }
+
+
+@pytest.fixture
+def token_server() -> Iterator[RunningServer]:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=_token_snapshot_provider,
+            run_detail_provider=_token_run_detail,
+        )
+    )
+    try:
+        yield running
+    finally:
+        _stop(running)
+
+
+def _get_json(running: RunningServer, path: str) -> tuple[str, Any]:
+    response = running.request("GET", path, headers=running.authed_headers())
+    assert response.status == 200
+    raw = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
+    return raw, json.loads(raw)
+
+
+def test_a_secret_in_a_run_title_is_redacted_in_the_run_list(token_server: RunningServer) -> None:
+    raw, payload = _get_json(token_server, "/api/runs")
+
+    assert _TITLE_TOKEN not in raw
+    assert {run["title"] for run in payload["runs"]} == {_REDACTED_TITLE}
+
+
+def test_a_secret_in_a_title_or_model_is_redacted_in_the_run_detail(
+    token_server: RunningServer,
+) -> None:
+    raw, payload = _get_json(token_server, f"/api/runs/{_TOKEN_RUN}")
+
+    assert _TITLE_TOKEN not in raw
+    assert payload["title"] == _REDACTED_TITLE
+    assert payload["attempts"][0]["model"] == _REDACTED_MODEL
+    assert payload["invocations"][0]["model"] == _REDACTED_MODEL
+    assert payload["active_invocation"]["model"] == _REDACTED_MODEL
+
+
+def test_a_secret_in_a_title_or_model_is_redacted_in_the_compare_view(
+    token_server: RunningServer,
+) -> None:
+    raw, payload = _get_json(token_server, f"/api/compare?a={_TOKEN_RUN}&b={_OTHER_RUN}")
+
+    assert _TITLE_TOKEN not in raw
+    assert payload["a"]["title"] == _REDACTED_TITLE
+    assert payload["a"]["models"] == [_REDACTED_MODEL]
+
+
+@pytest.mark.parametrize("value", [None, 7, ["x"]], ids=repr)
+def test_a_title_that_is_not_text_passes_through_the_sanitizer(value: Any) -> None:
+    assert sanitize_run_summary({"run_id": "r", "title": value})["title"] == value

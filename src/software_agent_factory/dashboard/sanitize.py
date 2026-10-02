@@ -18,6 +18,8 @@ questions are free text too, so each string gets the same redact and cut, and
 an over-long list is dropped whole. ``reasoning`` on a call is the reasoning
 level (for example ``high``), never model text: it is kept only when it is a
 short token.
+The run ``title`` and the attempt and call ``model`` names are redacted with
+:func:`software_agent_factory.redaction.redact_secrets`. They are not cut.
 
 Nothing here composes a view model. :mod:`software_agent_factory.dashboard.view`
 adds the run totals and the next step to what these functions return.
@@ -31,7 +33,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
-from ..redaction import bounded_reason
+from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import (
     COST_UNIT_FIELDS,
@@ -336,7 +338,14 @@ def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
     return {key: data[key] for key in fields if key in data}
 
 
+def _redacted(value: Any) -> Any:
+    """``value`` with secret shapes redacted when it is text, else unchanged."""
+    return redact_secrets(value) if isinstance(value, str) else value
+
+
 def _sanitize_summary_fields(data: dict[str, Any], sanitized: dict[str, Any]) -> None:
+    if "title" in sanitized:
+        sanitized["title"] = _redacted(sanitized["title"])
     external_id = sanitized.get("source_external_id")
     if not isinstance(external_id, str) or not _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(external_id):
         sanitized.pop("source_external_id", None)
@@ -441,6 +450,8 @@ def sanitize_attempt(raw: Any, run_id: str | None = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
     sanitized = _allowlist(data, ATTEMPT_FIELDS)
+    if "model" in sanitized:
+        sanitized["model"] = _redacted(sanitized["model"])
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     return sanitized
 
@@ -479,7 +490,7 @@ def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         "invocation_number": _positive_int(data.get("invocation_number")),
         "role": data.get("role"),
         "purpose": _short_token(data.get("purpose")),
-        "model": data.get("model"),
+        "model": _redacted(data.get("model")),
         "reasoning": _short_token(data.get("reasoning")),
         "context_tier": data.get("context_tier"),
         "status": _outcome_status(success),
