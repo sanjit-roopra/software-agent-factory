@@ -207,6 +207,9 @@ def test_github_reply_with_a_bare_carriage_return_is_ignored_not_a_crash() -> No
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 RUN_ID = "run-resume"
 EPISODE = "ep-resume"
+OTHER_EPISODE = "ep-earlier"
+OLD_EPISODE = "ep-old"
+WORK_ITEM_ID = "task-1"
 PLAN_FINGERPRINT = "a" * 64
 DECISIONS = ["Pick a storage format.", "Pick a cache size."]
 
@@ -238,7 +241,7 @@ def _risk_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> RiskApprov
     return RiskApprovalContext(
         risk=Risk.R2,
         complexity=Complexity.L1,
-        work_item_id="task-1",
+        work_item_id=WORK_ITEM_ID,
         work_item_title="Task",
         risk_rationale=rationale,
         decision_requested=decision,
@@ -249,7 +252,7 @@ def _risk_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> RiskApprov
         context_fingerprint=compute_approval_context_fingerprint(
             run_id=run_id,
             episode_id=episode_id,
-            work_item_id="task-1",
+            work_item_id=WORK_ITEM_ID,
             work_item_title="Task",
             risk=Risk.R2.value,
             complexity=Complexity.L1.value,
@@ -294,7 +297,7 @@ def _run(
     elif kind is ResumeClassification.PLAN_DECISION:
         fields["plan_decision_context"] = _plan_context()
     escalation = EscalationRecord.model_validate({**fields, **record})
-    return FactoryRun(id=RUN_ID, work_item_id="task-1", state=state, escalation=escalation)
+    return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
 
 
 def _store(tmp_path: Path, run: FactoryRun) -> FileRunStore:
@@ -384,7 +387,7 @@ def test_a_run_outside_needs_human_has_a_changed_state() -> None:
 
 
 def test_a_run_without_an_escalation_has_a_changed_state() -> None:
-    run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
+    run = FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.NEEDS_HUMAN)
 
     assert resume_refusal(run, _config(), NOW) == "state_changed"
 
@@ -499,7 +502,7 @@ def test_no_request_means_nothing_happens(tmp_path: Path) -> None:
 
 
 def test_a_run_without_an_escalation_is_left_alone(tmp_path: Path) -> None:
-    run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
+    run = FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.NEEDS_HUMAN)
     store = _store(tmp_path, run)
 
     assert ingest_dashboard_request(run, store, _config(), NOW) is None
@@ -810,16 +813,16 @@ def test_a_pending_request_for_a_run_that_moved_on_goes_stale(tmp_path: Path) ->
 def test_a_request_of_another_episode_is_not_read(tmp_path: Path) -> None:
     run = _run()
     store = _store(tmp_path, run)
-    other = _request(run, episode_id="ep-earlier")
+    other = _request(run, episode_id=OTHER_EPISODE)
     store.create_dashboard_request(RUN_ID, other)
 
     assert ingest_dashboard_request(run, store, _config(), NOW) is None
 
-    assert store.load_dashboard_request(RUN_ID, "ep-earlier", _fingerprint(run)) == other
+    assert store.load_dashboard_request(RUN_ID, OTHER_EPISODE, _fingerprint(run)) == other
 
 
 def test_accept_resume_needs_an_escalation() -> None:
-    run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
+    run = FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.NEEDS_HUMAN)
     reply = ReplyIdentity("github", 1, "lead-dev", None, "", NOW)
     store = FileRunStore(Path("unused"))
     config = _config()
@@ -899,7 +902,7 @@ def test_a_github_reply_makes_every_pending_request_of_its_episode_stale(tmp_pat
     store = _store(tmp_path, run)
     _submit(store, run)
     _submit(store, run, context_fingerprint="f" * 64)
-    elsewhere = _request(run, episode_id="ep-earlier")
+    elsewhere = _request(run, episode_id=OTHER_EPISODE)
     store.create_dashboard_request(RUN_ID, elsewhere)
 
     assert accept_resume(run, store, _config(), reply=_github_reply(), answers=None, now=NOW)
@@ -907,7 +910,7 @@ def test_a_github_reply_makes_every_pending_request_of_its_episode_stale(tmp_pat
     assert [(r.status, r.reason) for r in store.list_dashboard_requests(RUN_ID, EPISODE)] == [
         ("stale", "state_changed")
     ] * 2
-    assert store.load_dashboard_request(RUN_ID, "ep-earlier", _fingerprint(run)) == elsewhere
+    assert store.load_dashboard_request(RUN_ID, OTHER_EPISODE, _fingerprint(run)) == elsewhere
 
 
 def test_a_github_reply_that_is_refused_leaves_the_request_pending(tmp_path: Path) -> None:
@@ -938,7 +941,7 @@ def test_ingest_uses_the_listing_it_is_given(tmp_path: Path) -> None:
 def test_ingest_ignores_listed_requests_of_another_episode(tmp_path: Path) -> None:
     run = _run()
     store = _store(tmp_path, run)
-    earlier = _request(run, episode_id="ep-earlier")
+    earlier = _request(run, episode_id=OTHER_EPISODE)
 
     # Not on disk: marking it stale would raise, so it must not be touched.
     assert ingest_dashboard_request(run, store, _config(), NOW, requests=[earlier]) is None
@@ -1048,7 +1051,7 @@ def test_a_request_mismatch_names_the_first_difference_in_the_documented_order(
 
     mismatch = request_mismatch(
         run.escalation,
-        "ep-old" if other_episode else EPISODE,
+        OLD_EPISODE if other_episode else EPISODE,
         "b" * 64 if other_fingerprint else _fingerprint(run),
         PLAN if other_action else RISK,
     )
@@ -1076,7 +1079,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
         pytest.param(_run(RISK, status=EscalationStatus.REOPENED), {}, "state_changed", id="state"),
         pytest.param(
             _run(RISK, state=WorkflowState.IMPLEMENTING),
-            {"episode_id": "ep-old"},
+            {"episode_id": OLD_EPISODE},
             "state_changed",
             id="state before the episode",
         ),
@@ -1094,7 +1097,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
         ),
         pytest.param(
             _run(RISK, created_at=NOW - timedelta(hours=25)),
-            {"episode_id": "ep-old"},
+            {"episode_id": OLD_EPISODE},
             "expired",
             id="window before the episode",
         ),
@@ -1104,7 +1107,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
             "reopen_limit",
             id="reopen limit before the action",
         ),
-        pytest.param(_run(RISK), {"episode_id": "ep-old"}, "episode", id="episode"),
+        pytest.param(_run(RISK), {"episode_id": OLD_EPISODE}, "episode", id="episode"),
         pytest.param(_run(RISK), {"fingerprint": "b" * 64}, "fingerprint", id="fingerprint"),
         pytest.param(_run(RISK), {"action": PLAN}, "action", id="action"),
     ],
