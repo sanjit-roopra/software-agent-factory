@@ -26,6 +26,7 @@ from software_agent_factory.config import FactoryConfig
 from software_agent_factory.escalation_protocol import format_resume_command
 from software_agent_factory.github import GitHubClient, GitHubCommandError
 from software_agent_factory.models import (
+    REPLY_CURSOR_CLOSED,
     AgentRole,
     DashboardResumeRequest,
     EscalationStatus,
@@ -38,7 +39,7 @@ from software_agent_factory.models import (
     WorkflowState,
     utc_now,
 )
-from software_agent_factory.resume import ReplyIdentity, accept_resume
+from software_agent_factory.resume_writes import ReplyIdentity, accept_resume
 from software_agent_factory.scheduler import (
     ReconciliationAction,
     TrackerItem,
@@ -855,6 +856,38 @@ def test_reply_polling_rotates_through_the_waiting_runs(
     assert github.listed_issues == [1, 2, 3, 1]
 
 
+def test_a_notified_run_no_reply_can_resume_has_only_its_cursor_closed(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir)
+    store = FileRunStore(data_dir)
+    halted = _notified(store, _halt_for_approval(config, store, source_repo, 6), 6)
+    assert halted.escalation is not None
+    unresumable = halted.escalation.model_copy(
+        update={
+            "resume_classification": ResumeClassification.NOT_RESUMABLE,
+            "reply_cursor": '{"page": 1}',
+        }
+    )
+    store.save_run(halted.model_copy(update={"escalation": unresumable}))
+    before = store.load_run(halted.id).escalation
+    assert before is not None
+    github = FakeGitHub()
+    service = make_service(config, github)
+
+    service.reconcile_escalation()
+
+    after = store.load_run(halted.id).escalation
+    assert after is not None
+    assert after.model_dump() == {
+        **before.model_dump(),
+        "reply_cursor": REPLY_CURSOR_CLOSED,
+        "updated_at": after.updated_at,
+    }
+    assert after.updated_at > before.updated_at
+    assert github.listed_issues == []
+
+
 def test_a_notice_is_delivered_even_when_no_slot_is_free(
     source_repo: Path, data_dir: Path, make_service
 ) -> None:
@@ -1208,6 +1241,8 @@ def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_in_the_next_
     assert (stale.status, stale.reason) == ("stale", "state_changed")
 
 
+# The real FileRunStore still reads every run.json underneath.
+# double-waiver: B1 — counts the run.json file reads each service cycle makes
 class _LoadCountingStore(FileRunStore):
     """A run store that counts how often each run is loaded."""
 

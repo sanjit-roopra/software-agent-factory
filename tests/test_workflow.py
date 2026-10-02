@@ -85,7 +85,7 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
-from software_agent_factory.resume import ingest_dashboard_request
+from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, FileRunStore
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,

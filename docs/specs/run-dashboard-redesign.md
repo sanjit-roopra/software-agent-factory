@@ -25,7 +25,7 @@ Out of scope: changes to what runtimes record, hosting beyond localhost, retryin
 | New `src/software_agent_factory/dashboard/actions.py` | Validates an approve or answer request. Calls an injected requester. |
 | `src/software_agent_factory/store.py` | Create-only request file per run, episode and fingerprint. |
 | `src/software_agent_factory/models.py` | `AcceptedReplyReceipt` and `PlanDecisionAnswers` gain `source`. A new `DashboardResumeRequest` model. |
-| New `src/software_agent_factory/resume.py` | Pure answer rules, acceptance check and ingest, shared by `escalation.py`, `service.py` and the dashboard. |
+| New `src/software_agent_factory/resume.py` and `resume_writes.py` | `resume.py` holds the pure answer rules and refusal checks. The dashboard imports only this module. `resume_writes.py` holds acceptance and ingest. Only `escalation.py` and `service.py` call it. |
 | `src/software_agent_factory/service.py` | Ingests requests and reopens the run, even when GitHub escalation is off. |
 | `src/software_agent_factory/observability.py` | Derives 24-hour key figures. |
 | Docs | ADR-033 in `docs/decisions.md`, `AGENTS.md`, `docs/architecture.md`, `docs/guides/operations.md`, `docs/reference/safety.md`. |

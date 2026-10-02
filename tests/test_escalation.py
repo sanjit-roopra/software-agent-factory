@@ -32,7 +32,7 @@ from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRu
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
     ValidationResult,
-    _gate_update,
+    _gate_transition,
     build_escalation_comment,
     build_plan_decision_context,
     build_risk_approval_context,
@@ -41,11 +41,9 @@ from software_agent_factory.escalation import (
     format_escalation_marker,
     has_dispatched_risk_approval,
     is_authorized_author,
-    is_valid_plan_decision_answers,
     parse_plan_decision_answers,
     parse_resume_command,
     poll_escalation_reply,
-    receipt_approves_risk_context,
     resolve_escalation_target,
     validate_reply_candidate,
 )
@@ -82,7 +80,12 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
-from software_agent_factory.resume import ingest_dashboard_request
+from software_agent_factory.resume import (
+    compute_approval_context_fingerprint,
+    is_valid_plan_decision_answers,
+    receipt_approves_risk_context,
+)
+from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.scheduler import TrackerItem
 from software_agent_factory.service import AlreadyRunFilter, FactoryService
 from software_agent_factory.store import FileRunStore
@@ -231,8 +234,6 @@ def _make_approval_context(
     risk: Risk = Risk.R2,
     complexity: Complexity = Complexity.L1,
 ) -> RiskApprovalContext:
-    from software_agent_factory.escalation import compute_approval_context_fingerprint
-
     rationale = RiskRationale(
         intended_outcome="Update production database schema safely.",
         sensitive_boundary="Production database trust boundary.",
@@ -1468,14 +1469,23 @@ def test_the_gate_update_table_names_every_cause() -> None:
 
 @pytest.mark.parametrize("context_is_valid", [True, False], ids=["context-reads", "context-lost"])
 @pytest.mark.parametrize("cause", list(_GATE_UPDATES), ids=str)
-def test_the_gate_update_closes_expires_or_skips_for_each_cause(
+def test_the_gate_transition_closes_expires_or_skips_for_each_cause(
     cause: ReplyClosedCause | None, context_is_valid: bool
 ) -> None:
     valid_update, invalid_update = _GATE_UPDATES[cause]
+    update = valid_update if context_is_valid else invalid_update
+    record = EscalationRecord(
+        episode_id="ep-gate",
+        status=EscalationStatus.NOTIFIED,
+        remote_resume_enabled=True,
+        reply_cursor="cursor-1",
+    )
 
-    update = _gate_update(cause, context_is_valid, _GATE_NOW)
+    transition = _gate_transition(cause, context_is_valid, _GATE_NOW)
 
-    assert update == (valid_update if context_is_valid else invalid_update)
+    assert (transition is None) == (update is None)
+    if transition is not None:
+        assert transition(record) == record.model_copy(update=update)
 
 
 _NOT_ACTIVE = "run does not have an active notified escalation"

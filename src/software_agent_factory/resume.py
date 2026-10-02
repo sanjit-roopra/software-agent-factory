@@ -4,36 +4,26 @@ Both paths end in the same place: a receipt, a reopen count, and ``REOPENED``. T
 that decide whether a run may resume, and what a valid answer looks like, live here once, so
 the two paths cannot drift apart.
 
-This module does no I/O of its own. It imports only :mod:`.models`, :mod:`.config`,
-:mod:`.escalation_protocol` and the standard library: no GitHub client, no subprocess, no
-workflow and no service. It writes only through the :class:`ResumeStore` it is given, and
-only the service calls the write functions (:func:`accept_resume` and
-:func:`ingest_dashboard_request`). The dashboard never does. Tests check both.
+This module is pure. It reads runs and requests and returns answers. It never writes, and it
+imports only :mod:`.models`, :mod:`.config`, :mod:`.escalation_protocol`, :mod:`.redaction`
+and the standard library: no store, no GitHub client, no subprocess, no workflow and no
+service. The writes live in :mod:`.resume_writes`, and only the service and the reply poller
+call those. The dashboard imports this module and never that one. Tests check both.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import re
 import secrets
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Literal, Protocol, TypeIs, get_args
+from typing import Literal, TypeIs, get_args
 
 from .config import FactoryConfig
-from .escalation_protocol import (
-    MAX_PLAN_DECISIONS,
-    ReplyPolicy,
-    format_answer_command,
-    format_resume_command,
-)
+from .escalation_protocol import MAX_PLAN_DECISIONS, ReplyPolicy
 from .models import (
-    DASHBOARD_USER_LOGIN,
-    REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
     DashboardResumeRequest,
     EscalationRecord,
@@ -42,7 +32,6 @@ from .models import (
     PlanDecisionAnswer,
     PlanDecisionAnswers,
     PlanDecisionContext,
-    ReplySource,
     ResumeClassification,
     ResumeRefusal,
     Risk,
@@ -51,8 +40,6 @@ from .models import (
     WorkflowState,
 )
 from .redaction import REDACTION_PLACEHOLDER, contains_secret
-
-logger = logging.getLogger(__name__)
 
 MAX_PLAN_DECISION_ANSWER_CHARS = 500
 
@@ -399,171 +386,8 @@ def request_refusal(
     return request_mismatch(escalation, episode_id, fingerprint, action)
 
 
-class ResumeStore(Protocol):
-    """The run store calls resume needs. ``FileRunStore`` satisfies it."""
-
-    def load_run(self, run_id: str) -> FactoryRun: ...
-
-    def save_run(self, run: FactoryRun) -> Path: ...
-
-    def save_artifact(self, run_id: str, artifact: PlanDecisionAnswers) -> Path: ...
-
-    def list_dashboard_requests(
-        self, run_id: str, episode_id: str
-    ) -> list[DashboardResumeRequest]: ...
-
-    def replace_dashboard_request(self, run_id: str, request: DashboardResumeRequest) -> None: ...
-
-
-@dataclass(frozen=True)
-class ReplyIdentity:
-    """Who gave an accepted reply and when. A dashboard reply has no comment id."""
-
-    source: ReplySource
-    comment_id: int | None
-    user_login: str
-    user_id: int | None
-    author_association: str
-    created_at: datetime
-
-
-def _same_context(fresh: EscalationRecord, seen: EscalationRecord) -> bool:
-    """Whether ``fresh`` is still the episode and context the reply was checked against."""
-    return fresh.episode_id == seen.episode_id and (
-        current_context_fingerprint(fresh) == current_context_fingerprint(seen)
-    )
-
-
-def _accept(
-    run: FactoryRun,
-    store: ResumeStore,
-    config: FactoryConfig,
-    *,
-    reply: ReplyIdentity,
-    answers: list[PlanDecisionAnswer] | None,
-    now: datetime,
-) -> AcceptedReplyReceipt | ResumeRefusal:
-    seen = run.escalation
-    if seen is None:
-        raise ValueError(f"run {run.id} has no escalation to resume")
-    # The caller's run may be older than the stored one: the other path can have accepted a
-    # reply since it was read. Check and save the stored run, never the snapshot.
-    fresh = store.load_run(run.id)
-    # A dashboard request is judged when its human made it, so waiting for a free slot or the
-    # daily quota cannot end its window. A GitHub reply is judged when the poller reads it.
-    window_at = reply.created_at if reply.source == "dashboard" else now
-    refusal = resume_refusal(fresh, config, window_at)
-    if refusal is not None:
-        return refusal
-    escalation = fresh.escalation
-    assert escalation is not None  # resume_refusal returned None
-    if not _same_context(escalation, seen):
-        return "context_changed"
-    receipt = _build_receipt(fresh, escalation, reply, now)
-    if answers is not None:
-        _save_plan_answers(store, fresh, escalation, reply, answers, now)
-    reopened = escalation.model_copy(
-        update={
-            "accepted_replies": [*escalation.accepted_replies, receipt],
-            "reopen_count": escalation.reopen_count + 1,
-            "status": EscalationStatus.REOPENED,
-            "reply_cursor": REPLY_CURSOR_CLOSED,
-            "updated_at": now,
-        }
-    )
-    store.save_run(fresh.model_copy(update={"escalation": reopened}))
-    if reply.source == "github":
-        # The run is reopened, so a dashboard request made for this episode can no longer
-        # be applied. A request this run accepted itself stays pending.
-        for request in store.list_dashboard_requests(fresh.id, escalation.episode_id):
-            if request.status == "pending":
-                _mark_stale(store, fresh.id, request, "state_changed")
-    return receipt
-
-
-def _build_receipt(
-    fresh: FactoryRun,
-    escalation: EscalationRecord,
-    reply: ReplyIdentity,
-    now: datetime,
-) -> AcceptedReplyReceipt:
-    """The receipt for ``reply``, carrying the fingerprint of the context the human saw."""
-    approval = escalation.approval_context
-    plan = escalation.plan_decision_context
-    is_risk = escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-    is_plan = escalation.resume_classification is ResumeClassification.PLAN_DECISION
-    return AcceptedReplyReceipt(
-        source=reply.source,
-        comment_id=reply.comment_id,
-        user_login=reply.user_login,
-        user_id=reply.user_id,
-        author_association=reply.author_association,
-        created_at=reply.created_at,
-        accepted_at=now,
-        command=(
-            format_resume_command(fresh.id, escalation.episode_id)
-            if is_risk
-            else format_answer_command(fresh.id, escalation.episode_id)
-        ),
-        episode_id=escalation.episode_id,
-        run_id=fresh.id,
-        approval_context_fingerprint=approval.context_fingerprint if is_risk and approval else None,
-        plan_decision_context_fingerprint=plan.context_fingerprint if is_plan and plan else None,
-    )
-
-
-def _save_plan_answers(
-    store: ResumeStore,
-    fresh: FactoryRun,
-    escalation: EscalationRecord,
-    reply: ReplyIdentity,
-    answers: list[PlanDecisionAnswer],
-    now: datetime,
-) -> None:
-    plan = escalation.plan_decision_context
-    if plan is None:
-        raise ValueError(f"run {fresh.id} has no plan decision context for the answers")
-    store.save_artifact(
-        fresh.id,
-        PlanDecisionAnswers(
-            run_id=fresh.id,
-            episode_id=escalation.episode_id,
-            plan_fingerprint=plan.plan_fingerprint,
-            context_fingerprint=plan.context_fingerprint,
-            source=reply.source,
-            comment_id=reply.comment_id,
-            user_login=reply.user_login,
-            user_id=reply.user_id,
-            author_association=reply.author_association,
-            answers=answers,
-            accepted_at=now,
-        ),
-    )
-
-
-def accept_resume(
-    run: FactoryRun,
-    store: ResumeStore,
-    config: FactoryConfig,
-    *,
-    reply: ReplyIdentity,
-    answers: list[PlanDecisionAnswer] | None,
-    now: datetime,
-) -> AcceptedReplyReceipt | None:
-    """Record an accepted reply: the receipt, the plan answers, a reopen and a closed cursor.
-
-    The caller has already checked the reply. ``run`` may be a snapshot read earlier, so this
-    reloads the stored run and checks :func:`resume_refusal` again, and that the episode and
-    context are still the ones ``run`` shows. If any check fails, nothing is saved and the
-    result is ``None``. Otherwise the stored run is saved, not ``run``. The receipt carries
-    the fingerprint of the context the human saw. Plan answers are saved before the run, so
-    a run never reopens without them.
-    """
-    result = _accept(run, store, config, reply=reply, answers=answers, now=now)
-    return result if isinstance(result, AcceptedReplyReceipt) else None
-
-
-def _dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) -> bool:
+def dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) -> bool:
+    """Whether ``escalation`` holds a dashboard receipt of this episode for ``fingerprint``."""
     return any(
         receipt.source == "dashboard"
         and receipt.episode_id == escalation.episode_id
@@ -587,11 +411,11 @@ def unsettled_requests(
     return [
         request
         for request in requests
-        if not _dashboard_already_accepted(escalation, request.context_fingerprint)
+        if not dashboard_already_accepted(escalation, request.context_fingerprint)
     ]
 
 
-def _request_refusal(
+def dashboard_request_refusal(
     run: FactoryRun, request: DashboardResumeRequest, config: FactoryConfig, now: datetime
 ) -> tuple[ResumeRefusal | None, list[PlanDecisionAnswer] | None]:
     """The stale reason for ``request`` (or ``None``), and its re-validated plan answers."""
@@ -623,104 +447,46 @@ def _request_refusal(
     return ("context_changed" if answers is None else None), answers
 
 
-def _mark_stale(
-    store: ResumeStore,
-    run_id: str,
-    request: DashboardResumeRequest,
-    reason: ResumeRefusal,
-) -> None:
-    store.replace_dashboard_request(run_id, request.marked_stale(reason))
-
-
-def _settle_other_contexts(
-    store: ResumeStore,
-    run_id: str,
-    escalation: EscalationRecord,
-    requests: Sequence[DashboardResumeRequest],
-) -> DashboardResumeRequest | None:
-    """Mark the pending requests for another context stale; return the one for this context.
-
-    A request for this context but another action is returned too: :func:`_request_refusal`
-    judges it, so a closed window or a changed state is still the reason it gets.
-    """
-    current: DashboardResumeRequest | None = None
-    for request in requests:
-        if request.status != "pending":
-            continue
-        mismatch = request_mismatch(
-            escalation, request.episode_id, request.context_fingerprint, request.action
-        )
-        if mismatch == "episode":
-            continue
-        if mismatch == "fingerprint":
-            _mark_stale(store, run_id, request, "context_changed")
-        else:
-            current = request
-    return current
-
-
-def ingest_dashboard_request(
-    run: FactoryRun,
-    store: ResumeStore,
-    config: FactoryConfig,
-    now: datetime,
-    *,
-    requests: Sequence[DashboardResumeRequest] | None = None,
-) -> AcceptedReplyReceipt | None:
-    """Turn the pending dashboard request for ``run``'s current context into a reopen.
-
-    Only the service calls this. It reads the requests of the current episode, checks the
-    one for the current context again, and either records it like an accepted GitHub reply
-    (source ``dashboard``) and returns the receipt, or marks it stale with the reason and
-    returns ``None``. A pending request for any other context of the episode goes stale as
-    ``context_changed``. A request the run already accepted stays pending, and so does a
-    request nobody has read yet: capacity and quota never make a request stale, because the
-    reply window is judged when the request was made, not at ``now``.
-    A request stamped before its escalation or after ``now`` is stale as ``expired``.
-
-    A caller that already read the requests of the episode can pass them as ``requests``, to
-    save a second directory listing. Requests of another episode in it are ignored.
-    """
-    # Work from the stored run, never the caller's snapshot: an older snapshot could miss
-    # this request's own acceptance and mark it stale.
-    run = store.load_run(run.id)
-    escalation = run.escalation
-    if escalation is None:
-        return None
-    fingerprint = current_context_fingerprint(escalation)
-    if requests is None:
-        requests = store.list_dashboard_requests(run.id, escalation.episode_id)
-    current = _settle_other_contexts(store, run.id, escalation, requests)
-    if current is None or fingerprint is None:
-        return None
-    if _dashboard_already_accepted(escalation, fingerprint):
-        return None
-    reason, answers = _request_refusal(run, current, config, now)
-    if reason is not None:
-        logger.info("dashboard request for run %s is stale: %s", run.id, reason)
-        _mark_stale(store, run.id, current, reason)
-        return None
-    result = _accept(
-        run,
-        store,
-        config,
-        reply=ReplyIdentity(
-            source="dashboard",
-            comment_id=None,
-            user_login=DASHBOARD_USER_LOGIN,
-            user_id=None,
-            author_association="",
-            created_at=current.created_at,
-        ),
-        answers=answers,
-        now=now,
+def receipt_approves_risk_context(
+    receipt: AcceptedReplyReceipt, context: RiskApprovalContext
+) -> bool:
+    """Whether ``receipt`` carries the fingerprint of exactly this approval ``context``."""
+    return receipt.approval_context_fingerprint is not None and secrets.compare_digest(
+        receipt.approval_context_fingerprint, context.context_fingerprint
     )
-    if isinstance(result, AcceptedReplyReceipt):
-        return result
-    # ``run`` may be older than the stored run, which can hold this request's own acceptance.
-    stored = store.load_run(run.id).escalation
-    if stored is not None and _dashboard_already_accepted(stored, fingerprint):
-        return None
-    logger.info("dashboard request for run %s is stale: %s", run.id, result)
-    _mark_stale(store, run.id, current, result)
-    return None
+
+
+def is_valid_plan_decision_answers(
+    answers: PlanDecisionAnswers | None,
+    context: PlanDecisionContext,
+    *,
+    run_id: str,
+    episode_id: str,
+    receipt: AcceptedReplyReceipt,
+) -> bool:
+    """Verify persisted human answers still bind to the active decision episode."""
+    if not isinstance(answers, PlanDecisionAnswers):
+        return False
+    if (
+        answers.run_id != run_id
+        or answers.episode_id != episode_id
+        or answers.source != receipt.source
+        or answers.comment_id != receipt.comment_id
+        or answers.user_login != receipt.user_login
+        or answers.user_id != receipt.user_id
+        or answers.author_association != receipt.author_association
+    ):
+        return False
+    if not (
+        secrets.compare_digest(answers.plan_fingerprint, context.plan_fingerprint)
+        and secrets.compare_digest(answers.context_fingerprint, context.context_fingerprint)
+        and receipt.plan_decision_context_fingerprint is not None
+        and secrets.compare_digest(
+            receipt.plan_decision_context_fingerprint, context.context_fingerprint
+        )
+    ):
+        return False
+    rebuilt = build_plan_answers(
+        [answer.answer for answer in answers.answers], decision_count=len(context.decisions)
+    )
+    return rebuilt == answers.answers

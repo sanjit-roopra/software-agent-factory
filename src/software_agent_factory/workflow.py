@@ -159,6 +159,12 @@ from .repository_skills import (
     repository_skill_exhausted_warning,
     repository_skill_validation_error,
 )
+from .resume import (
+    is_valid_plan_decision_answers,
+    is_valid_plan_decision_context,
+    is_valid_risk_approval_context,
+    receipt_approves_risk_context,
+)
 from .routing import (
     COMPLEXITY_ORDER,
     JevRouteAdvisor,
@@ -950,8 +956,6 @@ class WorkflowController:
 
         target_state: WorkflowState
         if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
-            from .escalation import is_valid_risk_approval_context, receipt_approves_risk_context
-
             if escalation.approval_context is None or not is_valid_risk_approval_context(
                 escalation.approval_context, run.id, escalation.episode_id
             ):
@@ -964,8 +968,6 @@ class WorkflowController:
                 )
             target_state = WorkflowState.REFINING
         elif escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-            from .escalation import is_valid_plan_decision_answers, is_valid_plan_decision_context
-
             context = escalation.plan_decision_context
             if context is None or not is_valid_plan_decision_context(
                 context, run.id, escalation.episode_id

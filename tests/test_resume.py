@@ -6,17 +6,15 @@ import ast
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
 from factory_testing import REPLY_POLICY
 
-from software_agent_factory import resume
+from software_agent_factory import resume, resume_writes
 from software_agent_factory.config import FactoryConfig, load_config
-from software_agent_factory.escalation import (
-    is_valid_plan_decision_answers,
-    parse_plan_decision_answers,
-)
+from software_agent_factory.escalation import parse_plan_decision_answers
 from software_agent_factory.github import parse_comment_payload
 from software_agent_factory.models import (
     DASHBOARD_USER_LOGIN,
@@ -36,37 +34,75 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.resume import (
     MAX_PLAN_DECISION_ANSWER_CHARS,
-    ReplyIdentity,
-    accept_resume,
     build_plan_answers,
     clean_plan_answer,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
-    ingest_dashboard_request,
+    is_valid_plan_decision_answers,
     request_mismatch,
     resume_refusal,
     resume_refusal_within,
+)
+from software_agent_factory.resume_writes import (
+    ReplyIdentity,
+    accept_resume,
+    ingest_dashboard_request,
 )
 from software_agent_factory.store import FileRunStore
 
 # -- imports ------------------------------------------------------------------
 
 
-def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
+def _imported_modules(module: ModuleType) -> set[str]:
     # The package __init__ imports subprocess, so a sys.modules check cannot tell.
     # Inspect the module's own imports instead.
-    tree = ast.parse(Path(resume.__file__).read_text(encoding="utf-8"))
+    assert module.__file__ is not None
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level == 0:
+            if node.level == 0 and node.module == _PACKAGE:
+                # ``from software_agent_factory import x`` names the module ``...x``
+                imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+            elif node.level == 0:
                 imported.add(node.module or "")
             elif node.module:
                 imported.add(f".{node.module}")
             else:  # ``from . import x`` names the module ``.x``
                 imported.update(f".{alias.name}" for alias in node.names)
+    return imported
+
+
+# The rules module docstring promises this exact list of package imports.
+RULES_ALLOWED_PACKAGE_IMPORTS = {".models", ".config", ".escalation_protocol", ".redaction"}
+
+
+_PACKAGE = "software_agent_factory"
+
+
+def _package_modules(module: ModuleType) -> set[str]:
+    """The module's package imports, relative or absolute, each written as ``.name``."""
+    names: set[str] = set()
+    for name in _imported_modules(module):
+        if name.startswith("."):
+            names.add(name)
+        elif name == _PACKAGE or name.startswith(f"{_PACKAGE}."):
+            names.add(name.removeprefix(_PACKAGE) or ".")
+    return names
+
+
+def test_the_rules_module_imports_only_its_documented_package_modules() -> None:
+    assert _package_modules(resume) <= RULES_ALLOWED_PACKAGE_IMPORTS
+
+
+def test_the_rules_module_imports_no_subprocess() -> None:
+    assert "subprocess" not in _imported_modules(resume)
+
+
+def test_the_writers_module_imports_no_github_subprocess_workflow_or_service() -> None:
+    imported = _imported_modules(resume_writes) | _package_modules(resume_writes)
 
     forbidden = {
         "subprocess",
@@ -83,7 +119,11 @@ def test_resume_imports_no_github_subprocess_workflow_or_service() -> None:
     named = {
         name for name in imported if any(name == f or name.startswith(f + ".") for f in forbidden)
     }
-    assert not named
+    assert named == set()
+
+
+def test_the_rules_module_does_not_import_the_writers() -> None:
+    assert ".resume_writes" not in _package_modules(resume)
 
 
 # -- answer rules ------------------------------------------------------------
@@ -182,6 +222,9 @@ def test_github_reply_with_a_bare_carriage_return_is_ignored_not_a_crash() -> No
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 RUN_ID = "run-resume"
 EPISODE = "ep-resume"
+OTHER_EPISODE = "ep-earlier"
+OLD_EPISODE = "ep-old"
+WORK_ITEM_ID = "task-1"
 PLAN_FINGERPRINT = "a" * 64
 DECISIONS = ["Pick a storage format.", "Pick a cache size."]
 
@@ -213,7 +256,7 @@ def _risk_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> RiskApprov
     return RiskApprovalContext(
         risk=Risk.R2,
         complexity=Complexity.L1,
-        work_item_id="task-1",
+        work_item_id=WORK_ITEM_ID,
         work_item_title="Task",
         risk_rationale=rationale,
         decision_requested=decision,
@@ -224,7 +267,7 @@ def _risk_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> RiskApprov
         context_fingerprint=compute_approval_context_fingerprint(
             run_id=run_id,
             episode_id=episode_id,
-            work_item_id="task-1",
+            work_item_id=WORK_ITEM_ID,
             work_item_title="Task",
             risk=Risk.R2.value,
             complexity=Complexity.L1.value,
@@ -269,7 +312,7 @@ def _run(
     elif kind is ResumeClassification.PLAN_DECISION:
         fields["plan_decision_context"] = _plan_context()
     escalation = EscalationRecord.model_validate({**fields, **record})
-    return FactoryRun(id=RUN_ID, work_item_id="task-1", state=state, escalation=escalation)
+    return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
 
 
 def _store(tmp_path: Path, run: FactoryRun) -> FileRunStore:
@@ -359,7 +402,7 @@ def test_a_run_outside_needs_human_has_a_changed_state() -> None:
 
 
 def test_a_run_without_an_escalation_has_a_changed_state() -> None:
-    run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
+    run = FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.NEEDS_HUMAN)
 
     assert resume_refusal(run, _config(), NOW) == "state_changed"
 
@@ -474,7 +517,7 @@ def test_no_request_means_nothing_happens(tmp_path: Path) -> None:
 
 
 def test_a_run_without_an_escalation_is_left_alone(tmp_path: Path) -> None:
-    run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
+    run = FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.NEEDS_HUMAN)
     store = _store(tmp_path, run)
 
     assert ingest_dashboard_request(run, store, _config(), NOW) is None
@@ -785,16 +828,16 @@ def test_a_pending_request_for_a_run_that_moved_on_goes_stale(tmp_path: Path) ->
 def test_a_request_of_another_episode_is_not_read(tmp_path: Path) -> None:
     run = _run()
     store = _store(tmp_path, run)
-    other = _request(run, episode_id="ep-earlier")
+    other = _request(run, episode_id=OTHER_EPISODE)
     store.create_dashboard_request(RUN_ID, other)
 
     assert ingest_dashboard_request(run, store, _config(), NOW) is None
 
-    assert store.load_dashboard_request(RUN_ID, "ep-earlier", _fingerprint(run)) == other
+    assert store.load_dashboard_request(RUN_ID, OTHER_EPISODE, _fingerprint(run)) == other
 
 
 def test_accept_resume_needs_an_escalation() -> None:
-    run = FactoryRun(id=RUN_ID, work_item_id="task-1", state=WorkflowState.NEEDS_HUMAN)
+    run = FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.NEEDS_HUMAN)
     reply = ReplyIdentity("github", 1, "lead-dev", None, "", NOW)
     store = FileRunStore(Path("unused"))
     config = _config()
@@ -874,7 +917,7 @@ def test_a_github_reply_makes_every_pending_request_of_its_episode_stale(tmp_pat
     store = _store(tmp_path, run)
     _submit(store, run)
     _submit(store, run, context_fingerprint="f" * 64)
-    elsewhere = _request(run, episode_id="ep-earlier")
+    elsewhere = _request(run, episode_id=OTHER_EPISODE)
     store.create_dashboard_request(RUN_ID, elsewhere)
 
     assert accept_resume(run, store, _config(), reply=_github_reply(), answers=None, now=NOW)
@@ -882,7 +925,7 @@ def test_a_github_reply_makes_every_pending_request_of_its_episode_stale(tmp_pat
     assert [(r.status, r.reason) for r in store.list_dashboard_requests(RUN_ID, EPISODE)] == [
         ("stale", "state_changed")
     ] * 2
-    assert store.load_dashboard_request(RUN_ID, "ep-earlier", _fingerprint(run)) == elsewhere
+    assert store.load_dashboard_request(RUN_ID, OTHER_EPISODE, _fingerprint(run)) == elsewhere
 
 
 def test_a_github_reply_that_is_refused_leaves_the_request_pending(tmp_path: Path) -> None:
@@ -913,7 +956,7 @@ def test_ingest_uses_the_listing_it_is_given(tmp_path: Path) -> None:
 def test_ingest_ignores_listed_requests_of_another_episode(tmp_path: Path) -> None:
     run = _run()
     store = _store(tmp_path, run)
-    earlier = _request(run, episode_id="ep-earlier")
+    earlier = _request(run, episode_id=OTHER_EPISODE)
 
     # Not on disk: marking it stale would raise, so it must not be touched.
     assert ingest_dashboard_request(run, store, _config(), NOW, requests=[earlier]) is None
@@ -1023,7 +1066,7 @@ def test_a_request_mismatch_names_the_first_difference_in_the_documented_order(
 
     mismatch = request_mismatch(
         run.escalation,
-        "ep-old" if other_episode else EPISODE,
+        OLD_EPISODE if other_episode else EPISODE,
         "b" * 64 if other_fingerprint else _fingerprint(run),
         PLAN if other_action else RISK,
     )
@@ -1051,7 +1094,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
         pytest.param(_run(RISK, status=EscalationStatus.REOPENED), {}, "state_changed", id="state"),
         pytest.param(
             _run(RISK, state=WorkflowState.IMPLEMENTING),
-            {"episode_id": "ep-old"},
+            {"episode_id": OLD_EPISODE},
             "state_changed",
             id="state before the episode",
         ),
@@ -1069,7 +1112,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
         ),
         pytest.param(
             _run(RISK, created_at=NOW - timedelta(hours=25)),
-            {"episode_id": "ep-old"},
+            {"episode_id": OLD_EPISODE},
             "expired",
             id="window before the episode",
         ),
@@ -1079,7 +1122,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
             "reopen_limit",
             id="reopen limit before the action",
         ),
-        pytest.param(_run(RISK), {"episode_id": "ep-old"}, "episode", id="episode"),
+        pytest.param(_run(RISK), {"episode_id": OLD_EPISODE}, "episode", id="episode"),
         pytest.param(_run(RISK), {"fingerprint": "b" * 64}, "fingerprint", id="fingerprint"),
         pytest.param(_run(RISK), {"action": PLAN}, "action", id="action"),
     ],
