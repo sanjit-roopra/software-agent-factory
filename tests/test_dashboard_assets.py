@@ -176,6 +176,7 @@ def test_the_run_view_heading_names_the_run_or_reports_an_unknown_one() -> None:
     assert prepare == (
         "function prepareRunDetailView(runId) { "
         'const heading = document.getElementById("run-detail-heading"); '
+        'document.getElementById("run-id").hidden = true; '
         "if (!RUN_ID_PATTERN.test(runId)) { heading.textContent = VIEWS.run.label; "
         'setRunDetailStatus("Unknown run"); return; } '
         'heading.textContent = "Run " + runId; setRunDetailStatus("Loading\\u2026"); }'
@@ -246,9 +247,9 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert re.search(r"main\s*\{[^}]*min-width:\s*0;", css)
     assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
     assert "overflow-x: hidden" not in css
-    # The one clip is the reason cell of the run list, which ends in an ellipsis.
+    # The one clip is the reason block of the run list, cut to two lines.
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
-    assert [selector.strip() for selector in clipped] == [".why-cell"]
+    assert [selector.strip() for selector in clipped] == [".clamp"]
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
@@ -1553,11 +1554,18 @@ def test_a_title_links_to_its_run_and_names_the_run_id_in_a_tooltip() -> None:
     assert "title: runId" in cell
 
 
-def test_a_reason_is_cut_to_one_line_and_its_full_text_is_the_tooltip() -> None:
+def test_a_reason_is_cut_to_two_lines_and_its_full_text_is_the_tooltip() -> None:
     assert 'className: "why-cell"' in function_source(_JS, "whyCell")
+    assert "clamp: true" in function_source(_JS, "whyCell")
     assert 'title: displayValue(run.why, "")' in function_source(_JS, "whyCell")
-    assert re.search(r"\.why-cell\s*\{[^}]*white-space:\s*nowrap;", dashboard_assets.STYLE_CSS)
-    assert re.search(r"\.why-cell\s*\{[^}]*text-overflow:\s*ellipsis;", dashboard_assets.STYLE_CSS)
+    assert re.search(r"\.clamp\s*\{[^}]*-webkit-line-clamp:\s*2;", dashboard_assets.STYLE_CSS)
+    assert re.search(r"\.clamp\s*\{[^}]*\bline-clamp:\s*2;", dashboard_assets.STYLE_CSS)
+
+
+def test_a_model_part_never_breaks_inside_and_only_the_separator_may_wrap() -> None:
+    assert "chunks:" in function_source(_JS, "modelsCell")
+    assert 'element("span", "chunk", chunk)' in function_source(_JS, "patchChunksCell")
+    assert re.search(r"\.chunk\s*\{[^}]*white-space:\s*nowrap;", dashboard_assets.STYLE_CSS)
 
 
 def test_a_start_time_is_relative_and_its_tooltip_is_the_absolute_time() -> None:
@@ -1903,9 +1911,21 @@ def test_the_summary_card_holds_the_title_the_state_badge_the_outcome_line_and_k
     None
 ):
     summary = _RUN_DETAIL_HTML.split('id="run-summary"')[1].split("</section>")[0]
-    for element_id in ("run-title", "run-badge", "run-headline", "run-key-numbers"):
+    for element_id in ("run-badge", "run-headline", "run-key-numbers"):
         assert f'id="{element_id}"' in summary
-    assert re.search(r'<section\s+id="run-summary"[^>]*aria-labelledby="run-title">', _INDEX_HTML)
+    assert 'id="run-title"' not in _INDEX_HTML
+    assert re.search(
+        r'<section\s+id="run-summary"[^>]*aria-labelledby="run-detail-heading">', _INDEX_HTML
+    )
+
+
+def test_the_page_heading_is_the_title_with_the_run_id_under_it_and_never_both_ways() -> None:
+    heading = function_source(_JS, "renderRunHeading")
+    assert 'setText(document.getElementById("run-detail-heading"), title || runId || "Run")' in (
+        heading
+    )
+    assert 'idLine.hidden = title === "" || !runId;' in heading
+    assert 'id="run-id"' in _RUN_DETAIL_HTML
 
 
 def test_the_outcome_line_and_badge_come_from_the_server_and_name_the_state_in_words() -> None:

@@ -5,6 +5,8 @@
   const REQUEST_TIMEOUT_MS = 10000;
   const PAGE_SIZE = 20;
   const EMPTY_VALUE = "\u2014";
+  // Joins the model parts of a run list row. Keep it in step with models_summary.
+  const MODEL_SEPARATOR = " \u00b7 ";
   const NOT_REPORTED = "not reported";
 
   // TOKEN_QUERY_PARAM in dashboard/security.py: the query field of the page link.
@@ -527,9 +529,46 @@
     }
   }
 
+  // A chunks entry holds parts that never break inside. The separator between two
+  // parts is the only place a line may break.
+  function patchChunksCell(cell, entry) {
+    if (cell.textContent !== entry.chunks.join(MODEL_SEPARATOR) || cell.firstElementChild === null) {
+      clearChildren(cell);
+      for (const [index, chunk] of entry.chunks.entries()) {
+        if (index > 0) {
+          cell.append(MODEL_SEPARATOR);
+        }
+        cell.appendChild(element("span", "chunk", chunk));
+      }
+    }
+    cell.className = entry.className || "";
+    setTitle(cell, entry.title);
+  }
+
+  // A clamp entry shows its value in a block the style cuts to two lines. The cell stays
+  // a table cell, which a line clamp on the cell itself would break.
+  function patchClampCell(cell, entry) {
+    let block = cell.firstElementChild;
+    if (block?.className !== "clamp") {
+      clearChildren(cell);
+      block = cell.appendChild(element("div", "clamp"));
+    }
+    setText(block, displayValue(entry.value));
+    cell.className = entry.className || "";
+    setTitle(cell, entry.title);
+  }
+
   // An entry is a plain value, an object with a value, a class name and a
-  // tooltip, a link entry or a badge entry.
+  // tooltip, a link entry, a badge entry, a chunks entry or a clamp entry.
   function patchCell(cell, entry) {
+    if (isPlainObject(entry) && entry.clamp === true) {
+      patchClampCell(cell, entry);
+      return;
+    }
+    if (isPlainObject(entry) && entry.chunks?.length > 0) {
+      patchChunksCell(cell, entry);
+      return;
+    }
     if (isPlainObject(entry) && entry.href !== undefined) {
       patchLinkCell(cell, entry);
       return;
@@ -752,15 +791,23 @@
     };
   }
 
-  // The reason is cut to one line by the style. The full text is the tooltip.
+  // The reason is cut to two lines by the style. The full text is the tooltip.
   function whyCell(run) {
-    return { value: displayValue(run.why), className: "why-cell", title: displayValue(run.why, "") };
+    return {
+      value: displayValue(run.why),
+      clamp: true,
+      className: "why-cell",
+      title: displayValue(run.why, "")
+    };
   }
 
+  // Each model part is a chunk of its own, so a line breaks between parts only.
   function modelsCell(run) {
     const models = run.models || {};
+    const text = displayValue(models.text, "");
     return {
       value: displayValue(models.text),
+      chunks: text === "" ? [] : text.split(MODEL_SEPARATOR),
       className: "models-cell",
       title: displayValue(models.detail, "")
     };
@@ -2029,11 +2076,21 @@
     return [duration, calls, tokens, ...(costs.length === 0 ? [cost] : costs)];
   }
 
-  // The summary card: title, state, the one outcome line and the key numbers. The
+  // The page heading is the run title, and the run id sits under it. With no title the
+  // id is the heading and the line under it is hidden, so neither shows twice.
+  function renderRunHeading(detail, runId) {
+    const title = displayValue(detail.title, "");
+    setText(document.getElementById("run-detail-heading"), title || runId || "Run");
+    const idLine = document.getElementById("run-id");
+    setText(idLine, runId || "");
+    idLine.hidden = title === "" || !runId;
+  }
+
+  // The summary card: state, the one outcome line and the key numbers. The
   // outcome line and the badge come from the server and always name the state in words.
   function renderRunSummary(detail, runId) {
     const kind = badgeKind(detail.outcome);
-    setText(document.getElementById("run-title"), displayValue(detail.title, runId || "Run"));
+    renderRunHeading(detail, runId);
     const badge = document.getElementById("run-badge");
     badge.className = "badge badge-" + kind;
     setText(badge, displayValue(detail.outcome?.label, displayValue(detail.state)));
@@ -2397,6 +2454,7 @@
 
   function prepareRunDetailView(runId) {
     const heading = document.getElementById("run-detail-heading");
+    document.getElementById("run-id").hidden = true;
     if (!RUN_ID_PATTERN.test(runId)) {
       heading.textContent = VIEWS.run.label;
       setRunDetailStatus("Unknown run");

@@ -277,17 +277,21 @@ button:disabled {
 #runs-table td { vertical-align: middle; }
 #runs-table td:nth-child(5), #runs-table td:nth-child(6),
 #runs-table td:nth-child(8) { white-space: nowrap; }
-.why-cell {
-  max-width: 12rem;
+.why-cell { min-width: 14rem; }
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
-.models-cell { min-width: 10rem; font-size: 0.8rem; }
+.models-cell { min-width: 11rem; font-size: 0.8rem; }
+.chunk { white-space: nowrap; }
+.run-id { margin: -0.5rem 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 #runs-table + .field-hint { margin-top: 0.75rem; }
 #runs-table td:first-child { min-width: 8rem; }
 .run-summary-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
-.run-summary h2 { margin: 0; font-size: 1.4rem; overflow-wrap: anywhere; }
 .headline {
   margin: 0.75rem 0 1rem;
   font-size: 1.05rem;

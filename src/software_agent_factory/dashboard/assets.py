@@ -143,12 +143,12 @@ def render_index_html(*, token: str) -> str:
 
     <section id="view-run-detail" aria-labelledby="run-detail-heading" hidden>
       <h1 id="run-detail-heading" tabindex="-1">Run detail</h1>
+      <p id="run-id" class="run-id" hidden></p>
       <p><a href="#runs">&larr; Back to runs</a></p>
       <p id="run-detail-status">Loading&hellip;</p>
       <div id="run-detail-content" hidden>
-        <section id="run-summary" class="card run-summary" aria-labelledby="run-title">
+        <section id="run-summary" class="card run-summary" aria-labelledby="run-detail-heading">
           <div class="run-summary-head">
-            <h2 id="run-title">Run</h2>
             <span id="run-badge" class="badge">&mdash;</span>
           </div>
           <p id="run-headline" class="headline" hidden></p>
