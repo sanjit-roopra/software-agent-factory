@@ -162,19 +162,26 @@ def render_index_html(*, token: str) -> str:
           <h2 id="timeline-heading">Steps</h2>
           <p id="timeline-status">No calls yet.</p>
           <div class="table-wrap" id="timeline-wrap" hidden>
-            <div class="timeline" role="group" aria-labelledby="timeline-heading">
-              <div class="timeline-head" aria-hidden="true">
-                <span>#</span>
-                <span>Role</span>
-                <span>Model</span>
-                <span>Outcome</span>
-                <span>Duration</span>
-                <span>Tokens</span>
-                <span>Cost</span>
-              </div>
-              <div id="timeline-body"></div>
-              <div id="timeline-total" class="timeline-total"></div>
-            </div>
+            <table id="timeline-table" class="timeline" aria-labelledby="timeline-heading">
+              <thead>
+                <tr>
+                  <th scope="col">
+                    <span aria-hidden="true">#</span>
+                    <span class="visually-hidden">Call number</span>
+                  </th>
+                  <th scope="col">Role</th>
+                  <th scope="col">Model</th>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Duration</th>
+                  <th scope="col">Tokens</th>
+                  <th scope="col">Cost</th>
+                </tr>
+              </thead>
+              <tbody id="timeline-body"></tbody>
+              <tfoot>
+                <tr id="timeline-total" class="timeline-total"></tr>
+              </tfoot>
+            </table>
           </div>
           <p class="field-hint">
             Cost is the list-price estimate in USD, not what a provider billed.

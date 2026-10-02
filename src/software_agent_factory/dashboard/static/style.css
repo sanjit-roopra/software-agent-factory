@@ -153,39 +153,26 @@ a { color: var(--accent); }
 .stat-label { color: var(--text-muted); font-size: 0.85rem; }
 .stat-value { font-size: 1.15rem; font-weight: 700; overflow-wrap: anywhere; }
 .stat-note, .stat-help { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem; }
-.timeline {
-  min-width: 52rem;
-  --call-columns: 3rem 7rem minmax(10rem, 1.6fr) 11rem 6rem 6rem minmax(8rem, 1fr);
+.timeline { min-width: 52rem; }
+.timeline td { overflow-wrap: anywhere; vertical-align: top; }
+.timeline th[scope="col"] { white-space: nowrap; }
+.call-row:hover, .call-detail td { background: var(--surface-2); }
+.call-toggle {
+  background: none;
+  border: 0;
+  font: inherit;
+  padding: 0;
 }
-.timeline-head, .call-row {
-  display: grid;
-  grid-template-columns: var(--call-columns);
-  gap: 0.5rem;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.9rem;
-}
-.timeline-head { background: var(--surface-2); border: 1px solid var(--border); font-weight: 600; }
-.timeline-head span, .call-row span { overflow-wrap: anywhere; }
-.call { border: 1px solid var(--border); border-top: 0; }
-.call-row { cursor: pointer; list-style: none; }
-.call-row::-webkit-details-marker { display: none; }
-.call-row:hover, .call[open] { background: var(--surface-2); }
-.call-row > span:first-child::before { content: "\25B8"; margin-right: 0.4rem; }
-.call[open] .call-row > span:first-child::before { content: "\25BE"; }
-.call-fields { margin: 0; padding: 0.5rem 0.6rem 0.75rem 2rem; }
-.call-rejected { box-shadow: inset 4px 0 0 var(--error); }
-.timeline-total {
-  display: grid;
-  grid-template-columns: var(--call-columns);
-  gap: 0.5rem;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.9rem;
-  font-weight: 700;
+.call-toggle:hover { background: none; }
+.call-toggle::before { content: "\25B8"; content: "\25B8" / ""; margin-right: 0.4rem; }
+.call-toggle[aria-expanded="true"]::before { content: "\25BE"; content: "\25BE" / ""; }
+.call-fields { margin: 0; padding: 0.25rem 0.6rem 0.5rem 1.4rem; }
+.call-rejected > :first-child { box-shadow: inset 4px 0 0 var(--error); }
+.timeline-total th, .timeline-total td {
   background: var(--surface-2);
-  border: 1px solid var(--border);
   border-top: 2px solid var(--border);
+  font-weight: 700;
 }
-.timeline-total > span:first-child { grid-column: 1 / 4; }
 .next-step { border: 2px solid var(--warn); }
 .next-step h2 { margin-bottom: 0.5rem; }
 .next-step h3 { margin: 0.75rem 0 0.25rem; font-size: 1rem; }

@@ -47,12 +47,10 @@
 
   // What a screen reader hears before each cell of a call row. The visible header
   // row is hidden from assistive technology, so the row carries its own labels.
-  const CALL_COLUMNS = [
-    "Call number", "Role", "Model", "Outcome", "Duration", "Tokens", "Cost"
-  ];
+  const CALL_COLUMN_COUNT = 7;
   // The total row has the cells of a call row, except that its label spans the first
-  // three columns. These are the labels a screen reader hears before each of them.
-  const TOTAL_COLUMNS = ["Row", "Calls", "Duration", "Tokens", "Cost"];
+  // three columns.
+  const TOTAL_LABEL_SPAN = 3;
   const TOTAL_LABEL = "Total";
   const OUTCOME_CELL = 3;
   const STAT_PART_CLASSES = ["stat-label", "stat-value", "stat-note", "stat-help"];
@@ -707,25 +705,13 @@
         return last24HoursNote(overview.tokens_last_24h, overview.tokens);
       }
     },
-    {
-      id: "overview-note",
-      read: function (overview) {
-        return overview.scan_truncated === true
-          ? "The figures cover only the newest runs the dashboard scanned."
-          : "";
-      }
-    }
+    { id: "overview-note", read: scanTruncatedNote }
   ];
   // A cost shows only when it was reported. When neither unit was, one card says so.
   const COST_CARDS = [
     { id: "stat-list-price", shown: hasListPrice },
     { id: "stat-premium", shown: hasPremiumRequests },
-    {
-      id: "stat-cost-none",
-      shown: function (overview) {
-        return !hasListPrice(overview) && !hasPremiumRequests(overview);
-      }
-    }
+    { id: "stat-cost-none", shown: hasNoCost }
   ];
 
   function hasListPrice(overview) {
@@ -734,6 +720,17 @@
 
   function hasPremiumRequests(overview) {
     return isFiniteNumber(overview.premium_requests);
+  }
+
+  function hasNoCost(overview) {
+    return !hasListPrice(overview) && !hasPremiumRequests(overview);
+  }
+
+  // The note says so when the figures leave out older runs. It is empty otherwise.
+  function scanTruncatedNote(overview) {
+    return overview.scan_truncated === true
+      ? "The figures cover only the newest runs the dashboard scanned."
+      : "";
   }
 
   // The note adds nothing when the last 24 hours hold every run, so it shows only
@@ -1448,45 +1445,65 @@
     ];
   }
 
-  // A cell is a hidden column label followed by its value.
-  function buildCell(label) {
-    const cell = element("span");
-    cell.appendChild(element("span", "visually-hidden", label + ": "));
-    cell.appendChild(element("span"));
-    return cell;
+  // A call is two table rows: the default columns, and below them a row that holds the
+  // rest of the fields. The button in the first cell shows and hides that second row.
+  const ROWS_PER_CALL = 2;
+  const CALL_MORE_ID_PREFIX = "call-more-";
+
+  function setCallOpen(row, open) {
+    row.firstElementChild.firstElementChild.setAttribute("aria-expanded", String(open));
+    row.nextElementSibling.hidden = !open;
   }
 
-  // A call is a native details element: the summary holds the default columns,
-  // the body holds the rest.
-  function buildCall() {
-    const details = element("details", "call");
-    const summary = details.appendChild(element("summary", "call-row"));
-    for (const label of CALL_COLUMNS) {
-      summary.appendChild(buildCell(label));
+  function buildToggle(row, detailId) {
+    const button = element("button", "call-toggle");
+    button.type = "button";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", detailId);
+    button.append(element("span", "visually-hidden", "Details of call "), element("span"));
+    button.addEventListener("click", function () {
+      setCallOpen(row, button.getAttribute("aria-expanded") !== "true");
+    });
+    return button;
+  }
+
+  function buildCall(body) {
+    const detailId = CALL_MORE_ID_PREFIX + body.children.length / ROWS_PER_CALL;
+    const row = body.appendChild(element("tr", "call-row"));
+    for (let column = 0; column < CALL_COLUMN_COUNT; column += 1) {
+      row.appendChild(element("td"));
     }
-    details.appendChild(element("dl", "call-fields"));
-    return details;
+    row.firstElementChild.appendChild(buildToggle(row, detailId));
+    const detail = body.appendChild(element("tr", "call-detail"));
+    detail.id = detailId;
+    detail.hidden = true;
+    const cell = detail.appendChild(element("td"));
+    cell.colSpan = CALL_COLUMN_COUNT;
+    cell.appendChild(element("dl", "call-fields"));
+    return row;
   }
 
-  function callAt(parent, index) {
-    return parent.children[index] || parent.appendChild(buildCall());
+  function callAt(body, index) {
+    return body.children[index * ROWS_PER_CALL] || buildCall(body);
   }
 
-  // The same node is reused for the same call, so an open row stays open
-  // across a refresh. A different call in the slot starts closed.
-  function patchCall(details, call, runId) {
+  // The same rows are reused for the same call, so an open call stays open across a
+  // refresh. A different call in the slot starts closed.
+  function patchCall(row, call, runId) {
     const key = runId + "/" + displayValue(call.invocation_number);
-    if (details.dataset.call !== key) {
-      details.dataset.call = key;
-      details.open = false;
+    if (row.dataset.call !== key) {
+      row.dataset.call = key;
+      setCallOpen(row, false);
     }
-    const cells = details.firstElementChild.children;
-    for (const [index, text] of callCells(call).entries()) {
-      setText(cells[index].lastElementChild, text);
+    const [number, ...columns] = callCells(call);
+    setText(row.firstElementChild.firstElementChild.lastElementChild, number);
+    for (const [index, text] of columns.entries()) {
+      setText(row.children[index + 1], text);
     }
-    cells[OUTCOME_CELL].className = callOutcome(call).className;
-    details.classList.toggle("call-rejected", call.failure_link === "rejected");
-    syncDefinitionList(details.lastElementChild, callFields(call, runId));
+    row.children[OUTCOME_CELL].className = callOutcome(call).className;
+    row.classList.toggle("call-rejected", call.failure_link === "rejected");
+    const fields = row.nextElementSibling.firstElementChild.firstElementChild;
+    syncDefinitionList(fields, callFields(call, runId));
   }
 
   // Each cost unit the calls reported, each in its own unit.
@@ -1516,12 +1533,15 @@
     ];
   }
 
+  // The label is the header of the row; the figures follow in the last four columns.
   function patchTotalRow(row, totals) {
-    if (row.children.length === 0) {
-      row.append(...TOTAL_COLUMNS.map(buildCell));
-    }
-    for (const [index, text] of totalCells(totals).entries()) {
-      setText(row.children[index].lastElementChild, text);
+    const [label, ...figures] = totalCells(totals);
+    const header = childAt(row, 0, "th");
+    header.setAttribute("scope", "row");
+    header.colSpan = TOTAL_LABEL_SPAN;
+    setText(header, label);
+    for (const [index, text] of figures.entries()) {
+      setText(childAt(row, index + 1, "td"), text);
     }
   }
 
@@ -1531,7 +1551,7 @@
     const active = detail.active_invocation ? [detail.active_invocation] : [];
     const calls = [...asArray(detail.invocations), ...active];
     const body = document.getElementById("timeline-body");
-    trimChildren(body, calls.length);
+    trimChildren(body, calls.length * ROWS_PER_CALL);
     for (const [index, call] of calls.entries()) {
       patchCall(callAt(body, index), call, runId);
     }

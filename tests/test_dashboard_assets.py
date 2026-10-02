@@ -229,7 +229,7 @@ def test_every_static_table_has_an_id() -> None:
 
 @pytest.mark.parametrize("table_id", _TABLE_IDS)
 def test_each_static_table_sits_in_a_table_wrap(table_id: str) -> None:
-    wrapped = rf'<div\s+class="table-wrap"(?:\s+hidden)?>\s*<table\s+id="{table_id}">'
+    wrapped = rf'<div\s+class="table-wrap"[^>]*>\s*<table\s+id="{table_id}"[^>]*>'
     assert re.search(wrapped, _INDEX_HTML)
 
 
@@ -650,29 +650,31 @@ def test_the_run_detail_view_holds_every_region_the_script_renders_into(element_
     assert f'id="{element_id}"' in _RUN_DETAIL_HTML
 
 
+_TIMELINE_HTML = _RUN_DETAIL_HTML.split('<table id="timeline-table"')[1].split("</table>")[0]
+_TIMELINE_HEAD = _TIMELINE_HTML.split("</thead>")[0]
+_COLUMN_HEADERS = ["Call number", "Role", "Model", "Outcome", "Duration", "Tokens", "Cost"]
+
+
+def _column_headers() -> list[str]:
+    cells = re.findall(r'<th scope="col">(.*?)</th>', _TIMELINE_HEAD, re.DOTALL)
+    return [normalized(re.sub(r"<[^>]+>", " ", cell)) for cell in cells]
+
+
 def test_the_timeline_heads_the_default_columns_in_order() -> None:
-    head = _RUN_DETAIL_HTML.split('class="timeline-head"')[1].split("</div>")[0]
-    assert re.findall(r"<span>([^<]*)</span>", head) == [
-        "#",
-        "Role",
-        "Model",
-        "Outcome",
-        "Duration",
-        "Tokens",
-        "Cost",
-    ]
+    assert _column_headers() == ["# Call number", *_COLUMN_HEADERS[1:]]
 
 
-def test_the_timeline_group_is_named_by_its_heading() -> None:
+def test_the_timeline_is_a_table_named_by_its_heading() -> None:
     assert '<h2 id="timeline-heading">Steps</h2>' in _RUN_DETAIL_HTML
-    assert re.search(
-        r'<div\s+class="timeline"\s+role="group"\s+aria-labelledby="timeline-heading">',
-        _RUN_DETAIL_HTML,
+    assert (
+        '<table id="timeline-table" class="timeline" aria-labelledby="timeline-heading">'
+        in _RUN_DETAIL_HTML
     )
 
 
-def test_the_visual_header_row_is_hidden_from_assistive_technology() -> None:
-    assert re.search(r'<div\s+class="timeline-head"\s+aria-hidden="true">', _RUN_DETAIL_HTML)
+def test_the_timeline_header_row_stays_visible_to_assistive_technology() -> None:
+    assert _TIMELINE_HEAD.count('aria-hidden="true"') == 1
+    assert '<span aria-hidden="true">#</span>' in _TIMELINE_HEAD
 
 
 _TABLE_ROLE_CALL = re.compile(
@@ -693,24 +695,35 @@ def test_a_timeline_row_is_not_given_table_roles() -> None:
     assert _TABLE_ROLE_CALL.search(strip_comments(dashboard_assets.APP_JS)) is None
 
 
-def test_each_call_cell_starts_with_a_hidden_label_for_its_column() -> None:
-    js = dashboard_assets.APP_JS
-    assert '"visually-hidden", label + ": "' in function_source(js, "buildCell")
-    assert "buildCell(label)" in function_source(js, "buildCall")
+def test_the_call_toggle_is_a_button_named_by_hidden_text_and_says_if_it_is_open() -> None:
+    toggle = function_source(dashboard_assets.APP_JS, "buildToggle")
+    assert 'element("button", "call-toggle")' in toggle
+    assert 'button.type = "button";' in toggle
+    assert '"visually-hidden", "Details of call "' in toggle
+    assert 'button.setAttribute("aria-expanded", "false");' in toggle
+    assert 'button.setAttribute("aria-controls", detailId);' in toggle
 
 
-def test_the_call_cell_labels_match_the_visible_column_headers() -> None:
-    labels = re.findall(r'"([^"]+)"', _constant_source("CALL_COLUMNS"))
-    head = _RUN_DETAIL_HTML.split('class="timeline-head"')[1].split("</div>")[0]
-    visible = re.findall(r"<span>([^<]*)</span>", head)
-    assert labels[0] == "Call number"
-    assert labels[1:] == visible[1:]
-    assert len(labels) == len(visible)
+def test_the_call_toggle_shows_and_hides_the_row_of_the_other_fields() -> None:
+    source = function_source(dashboard_assets.APP_JS, "setCallOpen")
+    assert 'setAttribute("aria-expanded", String(open))' in source
+    assert "row.nextElementSibling.hidden = !open;" in source
 
 
-def test_patching_a_call_writes_the_value_after_the_hidden_label() -> None:
-    # The value is the last child of the cell, so the label stays in place.
-    assert "cells[index].lastElementChild" in function_source(dashboard_assets.APP_JS, "patchCall")
+def test_a_call_has_a_cell_for_every_column_and_one_more_row_for_its_fields() -> None:
+    js = strip_comments(dashboard_assets.APP_JS)
+    count = re.search(r"const CALL_COLUMN_COUNT = (\d+);", js)
+    assert count is not None
+    assert int(count.group(1)) == len(_COLUMN_HEADERS)
+    build = function_source(js, "buildCall")
+    assert 'element("tr", "call-row")' in build
+    assert 'element("tr", "call-detail")' in build
+    assert "cell.colSpan = CALL_COLUMN_COUNT;" in build
+
+
+def test_patching_a_call_writes_the_number_after_the_hidden_text_of_its_button() -> None:
+    patch = function_source(dashboard_assets.APP_JS, "patchCall")
+    assert "setText(row.firstElementChild.firstElementChild.lastElementChild, number);" in patch
 
 
 def test_the_hidden_label_style_hides_text_visually_but_not_from_screen_readers() -> None:
@@ -730,10 +743,13 @@ def test_the_hidden_label_style_hides_text_visually_but_not_from_screen_readers(
     assert "visibility: hidden" not in rule.group(1)
 
 
-def test_the_row_caret_marks_only_the_first_cell_not_its_hidden_label() -> None:
+def test_the_caret_sits_on_the_toggle_and_has_no_spoken_text() -> None:
     css = dashboard_assets.STYLE_CSS
-    assert ".call-row > span:first-child::before" in css
-    assert not re.search(r"\.call-row span:first-child", css)
+    assert re.search(r'\.call-toggle::before\s*\{[^}]*content:\s*"\\25B8"\s*/\s*"";', css)
+    assert re.search(
+        r'\.call-toggle\[aria-expanded="true"\]::before\s*\{[^}]*content:\s*"\\25BE"\s*/\s*"";',
+        css,
+    )
 
 
 def test_the_timeline_says_there_are_no_calls_yet_until_a_call_arrives() -> None:
@@ -870,14 +886,12 @@ def test_an_expanded_call_stays_open_across_a_refresh() -> None:
     # Only a different call number closes the row; the same node is reused otherwise.
     assert 'const key = runId + "/" + displayValue(call.invocation_number);' in patch
     assert (
-        "if (details.dataset.call !== key) { details.dataset.call = key; details.open = false; }"
+        "if (row.dataset.call !== key) { row.dataset.call = key; setCallOpen(row, false); }"
         in patch
     )
     timeline = function_source(js, "renderTimeline")
     assert "callAt(body, index)" in timeline
-    assert "trimChildren(body, calls.length)" in timeline
-    assert '"details"' in function_source(js, "buildCall")
-    assert '"summary"' in function_source(js, "buildCall")
+    assert "trimChildren(body, calls.length * ROWS_PER_CALL)" in timeline
 
 
 def test_the_running_call_joins_the_timeline_after_the_finished_calls() -> None:
@@ -987,7 +1001,6 @@ def test_the_timeline_scrolls_inside_its_card() -> None:
     assert re.search(r'<div\s+class="table-wrap"\s+id="timeline-wrap"\s+hidden>', _RUN_DETAIL_HTML)
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"\.timeline\s*\{[^}]*min-width:\s*\d+rem;", css)
-    assert re.search(r"\.call-row\s*\{[^}]*display:\s*grid;", css)
 
 
 @pytest.mark.parametrize(
@@ -1433,7 +1446,7 @@ def test_a_cost_card_shows_only_when_its_cost_was_reported() -> None:
     cards = _constant_source("COST_CARDS")
     assert 'id: "stat-list-price", shown: hasListPrice' in cards
     assert 'id: "stat-premium", shown: hasPremiumRequests' in cards
-    assert "!hasListPrice(overview) && !hasPremiumRequests(overview)" in cards
+    assert 'id: "stat-cost-none", shown: hasNoCost' in cards
     for card_id in ("stat-list-price", "stat-premium", "stat-cost-none"):
         assert re.search(rf'<li\s+id="{card_id}"\s+class="stat"\s+hidden>', _RUNS_HTML)
     assert "document.getElementById(card.id).hidden = !card.shown(overview);" in function_source(
@@ -1949,8 +1962,10 @@ def test_the_key_numbers_are_duration_calls_tokens_and_the_costs_that_were_repor
     )
 
 
-def test_the_steps_are_a_group_of_calls_with_a_total_row() -> None:
-    assert '<div id="timeline-total" class="timeline-total"></div>' in _RUN_DETAIL_HTML
+def test_the_steps_are_a_table_of_calls_with_a_total_row_in_its_foot() -> None:
+    assert (
+        '<tr id="timeline-total" class="timeline-total"></tr>' in _TIMELINE_HTML.split("<tfoot>")[1]
+    )
     timeline = function_source(_JS, "renderTimeline")
     assert 'patchTotalRow(document.getElementById("timeline-total"), detail.totals || {})' in (
         timeline
@@ -1961,22 +1976,20 @@ def test_the_steps_are_a_group_of_calls_with_a_total_row() -> None:
     assert "totals.total_tokens?.total" in total
 
 
-TOTAL_ROW_CELLS = 5
-
-
-def test_a_total_row_cell_is_labelled_for_a_screen_reader_like_a_call_cell() -> None:
-    assert "row.append(...TOTAL_COLUMNS.map(buildCell))" in function_source(_JS, "patchTotalRow")
-    columns = re.search(r"const TOTAL_COLUMNS = \[([^\]]+)\]", strip_comments(_JS))
-    assert columns is not None
-    assert len(re.findall(r'"[^"]+"', columns.group(1))) == TOTAL_ROW_CELLS
+def test_the_total_label_is_the_header_of_its_row_and_spans_three_columns() -> None:
+    patch = function_source(_JS, "patchTotalRow")
+    assert 'const header = childAt(row, 0, "th");' in patch
+    assert 'header.setAttribute("scope", "row");' in patch
+    assert "header.colSpan = TOTAL_LABEL_SPAN;" in patch
+    assert "const TOTAL_LABEL_SPAN = 3;" in strip_comments(_JS)
 
 
 def test_a_call_a_failed_run_failed_on_is_marked_in_red_and_in_words() -> None:
     assert "callOutcome(call).className" in function_source(_JS, "patchCall")
-    assert 'details.classList.toggle("call-rejected", call.failure_link === "rejected");' in (
+    assert 'row.classList.toggle("call-rejected", call.failure_link === "rejected");' in (
         function_source(_JS, "patchCall")
     )
-    assert re.search(r"\.call-rejected\s*\{[^}]*var\(--error\)", dashboard_assets.STYLE_CSS)
+    assert re.search(r"\.call-rejected[^{]*\{[^}]*var\(--error\)", dashboard_assets.STYLE_CSS)
     links = _constant_source("FAILURE_LINKS")
     assert '"rejected", { text: "rejected", className: "status-error" }' in links
     assert 'text: "success, run failed after"' in links
