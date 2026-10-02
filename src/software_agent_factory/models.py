@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, NamedTuple, Self
 
 from pydantic import (
     AfterValidator,
@@ -1012,6 +1012,86 @@ class HaltReasonCode(StrEnum):
             return None
 
 
+class HaltReasonCopy(NamedTuple):
+    """The words for one halt reason: what happened and what a person does next."""
+
+    summary: str
+    next_action: str
+
+
+#: The one copy source for halt reasons. The run guidance and the dashboard guidance read
+#: it as it is. The GitHub notice reads it too, except the plan-decision next action, which
+#: says "this GitHub thread" because the notice is posted there. For UNRESOLVED_DECISIONS
+#: the summary is the form without a count and the next action is the one for a reply.
+HALT_REASON_COPY: dict[HaltReasonCode, HaltReasonCopy] = {
+    HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE: HaltReasonCopy(
+        "The controller continued after the bounded review limit.",
+        "Review the accepted findings in the pull request before merging.",
+    ),
+    HaltReasonCode.REVIEW_IMPASSE: HaltReasonCopy(
+        "Independent review did not converge within the safe automatic policy.",
+        "Inspect review-impasse.json, resolve or accept the listed findings, then retry.",
+    ),
+    HaltReasonCode.UNRESOLVED_DECISIONS: HaltReasonCopy(
+        "The execution plan has unresolved architectural decisions.",
+        "Reply with complete numbered decisions on the escalation thread.",
+    ),
+    HaltReasonCode.RISK_APPROVAL: HaltReasonCopy(
+        "The run requires approval under the configured risk policy.",
+        "Review the work item risk and approve or change the policy before retrying.",
+    ),
+    HaltReasonCode.SCOPE_REVIEW: HaltReasonCopy(
+        "The proposed changes exceeded the approved scope.",
+        "Review the planned and changed files, then update the scope or retry.",
+    ),
+    HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED: HaltReasonCopy(
+        "The run exhausted a bounded retry budget.",
+        "Inspect the run artifacts, correct the underlying issue, then retry.",
+    ),
+    HaltReasonCode.CI_INTERVENTION: HaltReasonCopy(
+        "CI could not be completed or repaired automatically.",
+        "Inspect the pull request checks, fix the failing check, then retry delivery.",
+    ),
+    HaltReasonCode.DELIVERY_INTERVENTION: HaltReasonCopy(
+        "The controller could not complete pull request delivery.",
+        "Check repository permissions and delivery settings, then retry delivery.",
+    ),
+    HaltReasonCode.RECOVERY_INTERVENTION: HaltReasonCopy(
+        "The run could not safely recover its persisted workspace.",
+        "Inspect the run and workspace metadata before starting a replacement run.",
+    ),
+    HaltReasonCode.MANUAL_INSPECTION: HaltReasonCopy(
+        "The controller stopped at a manual decision boundary.",
+        "Inspect the typed run artifacts and decide whether to retry or replace the run.",
+    ),
+}
+
+#: The halt reason of a run that stopped on unresolved plan decisions. A count can follow
+#: it, so the classifiers match it as a prefix.
+UNRESOLVED_DECISIONS_HALT_REASON = "execution plan has unresolved decisions"
+
+#: The next action when no reply can resume a run that stopped on unresolved decisions.
+UNRESOLVED_DECISIONS_REPLACE_ACTION = (
+    "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
+)
+
+
+def unresolved_decisions_count(plan: ExecutionPlan | None, reason: str) -> int | None:
+    """How many decisions a halt left open: the plan's own count, else a count in ``reason``."""
+    if plan is not None and plan.unresolved_decisions:
+        return len(plan.unresolved_decisions)
+    match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(r"\((\d+)\)", reason)
+    return int(match.group(1)) if match else None
+
+
+def unresolved_decisions_summary(count: int | None) -> str:
+    """The halt summary for a plan with ``count`` unresolved decisions, or none counted."""
+    if count is None:
+        return HALT_REASON_COPY[HaltReasonCode.UNRESOLVED_DECISIONS].summary
+    label = "decision" if count == 1 else "decisions"
+    return f"The execution plan has {count} unresolved architectural {label}."
+
+
 class EscalationTargetType(StrEnum):
     PULL_REQUEST = "PULL_REQUEST"
     ISSUE = "ISSUE"
@@ -1280,6 +1360,8 @@ class EscalationRecord(ModelBase):
     target_url: str | None = None
     comment_id: int | None = Field(default=None, ge=1)
     comment_url: str | None = None
+    #: A ``HaltReasonCode`` value. It stays ``str`` so a ``run.json`` that holds a code
+    #: this version does not know still loads. Readers use ``HaltReasonCode.parse``.
     reason_code: str = ""
     delivery_attempts: int = Field(default=0, ge=0)
     delivery_error: str | None = None

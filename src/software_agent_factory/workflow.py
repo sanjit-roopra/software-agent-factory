@@ -91,8 +91,10 @@ from .governance import (
     find_protected_matches,
 )
 from .models import (
+    MAX_GUIDANCE_FINDINGS,
     MAX_OPEN_REVIEW_FINDINGS,
     REPLY_CURSOR_CLOSED,
+    UNRESOLVED_DECISIONS_HALT_REASON,
     ActiveInvocation,
     AgentPurpose,
     AgentRole,
@@ -196,7 +198,6 @@ MAX_LATE_REVIEW_ADOPTION_ROUNDS = 1
 MAX_CONSECUTIVE_BLOCKING_REVIEWS_PER_PATH = 3
 MAX_CONSECUTIVE_UNRESOLVED_REVIEWS = 3
 MAX_CONSECUTIVE_REPLACEMENT_REVIEWS = 2
-MAX_REVIEW_IMPASSE_FINDINGS = 12
 
 _DIFF_HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
@@ -299,9 +300,6 @@ def is_run_finished(run: FactoryRun) -> bool:
     if run.state in TERMINAL_STATES:
         return True
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
-
-
-UNRESOLVED_DECISIONS_HALT_REASON = "execution plan has unresolved decisions"
 
 
 def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:
@@ -1061,8 +1059,6 @@ class WorkflowController:
         from .escalation import generate_episode_id
 
         now = utc_now()
-        classification = ResumeClassification.NOT_RESUMABLE
-        code = reason_code
         prev_escalation = run.escalation
         episode_num = (prev_escalation.episode_number + 1) if prev_escalation else 1
         reopen_count = prev_escalation.reopen_count if prev_escalation else 0
@@ -1072,8 +1068,8 @@ class WorkflowController:
             episode_id=generate_episode_id(),
             episode_number=episode_num,
             status=EscalationStatus.PENDING_NOTIFICATION,
-            resume_classification=classification,
-            reason_code=code,
+            resume_classification=ResumeClassification.NOT_RESUMABLE,
+            reason_code=reason_code,
             reopen_count=reopen_count,
             accepted_replies=accepted_replies,
             reply_cursor=REPLY_CURSOR_CLOSED,
@@ -4032,7 +4028,7 @@ class WorkflowController:
         *,
         kind: ReviewImpasseKind = ReviewImpasseKind.UNKNOWN,
     ) -> ReviewImpasse:
-        findings = run.review_ledger.open_findings[:MAX_REVIEW_IMPASSE_FINDINGS]
+        findings = run.review_ledger.open_findings[:MAX_GUIDANCE_FINDINGS]
         paths = sorted(_review_finding_paths(findings))
         details = [f"[{finding.id}] {finding.message}" for finding in findings]
         reason = f"review failed to converge at snapshot {snapshot}: {summary}"

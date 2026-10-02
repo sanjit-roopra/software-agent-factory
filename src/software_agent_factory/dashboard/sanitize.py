@@ -35,7 +35,13 @@ from datetime import datetime, timedelta
 from typing import Any, get_args
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
-from ..models import MAX_GUIDANCE_FINDINGS, ActiveInvocationStatus, HaltReasonCode
+from ..models import (
+    HALT_REASON_COPY,
+    MAX_GUIDANCE_FINDINGS,
+    UNRESOLVED_DECISIONS_REPLACE_ACTION,
+    ActiveInvocationStatus,
+    HaltReasonCode,
+)
 from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import (
@@ -49,6 +55,7 @@ from .snapshot import to_json_safe
 from .validators import (
     ESCALATION_STATUSES,
     ESCALATION_TARGET_TYPES,
+    HALT_REASON_CODES,
     RESUME_CLASSIFICATIONS,
     RESUME_REFUSALS,
     is_context_fingerprint,
@@ -205,6 +212,12 @@ ACTIVE_INVOCATION_STATUSES: frozenset[ActiveInvocationStatus] = frozenset(
     get_args(ActiveInvocationStatus)
 )
 
+
+def is_active_status(value: Any) -> bool:
+    """Whether ``value`` is a status the run view can send for the active call."""
+    return isinstance(value, str) and value in ACTIVE_INVOCATION_STATUSES
+
+
 _ACTIVE_INPUT_KEYS = (
     "invocation_number",
     "role",
@@ -278,68 +291,15 @@ PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
 )
 
 NANO_AIU_PER_USD = 100_000_000_000
-GUIDANCE_COPY: dict[HaltReasonCode, tuple[str, str, str, str | None]] = {
-    HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE: (
-        "ACCEPTED_WITH_FINDINGS",
-        "The controller continued after the bounded review limit.",
-        "Review the accepted findings in the pull request before merging.",
-        "review-acceptance.json",
-    ),
-    HaltReasonCode.REVIEW_IMPASSE: (
-        "ACTION_REQUIRED",
-        "Independent review did not converge within the safe automatic policy.",
-        "Inspect review-impasse.json, resolve or accept the listed findings, then retry.",
-        "review-impasse.json",
-    ),
-    HaltReasonCode.UNRESOLVED_DECISIONS: (
-        "ACTION_REQUIRED",
-        "The execution plan has unresolved architectural decisions.",
-        "Reply with complete numbered decisions on the escalation thread.",
-        "execution-plan.json",
-    ),
-    HaltReasonCode.RISK_APPROVAL: (
-        "ACTION_REQUIRED",
-        "The run requires approval under the configured risk policy.",
-        "Review the work item risk and approve or change the policy before retrying.",
-        None,
-    ),
-    HaltReasonCode.SCOPE_REVIEW: (
-        "ACTION_REQUIRED",
-        "The proposed changes exceeded the approved scope.",
-        "Review the planned and changed files, then update the scope or retry.",
-        None,
-    ),
-    HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED: (
-        "ACTION_REQUIRED",
-        "The run exhausted a bounded retry budget.",
-        "Inspect the run artifacts, correct the underlying issue, then retry.",
-        None,
-    ),
-    HaltReasonCode.CI_INTERVENTION: (
-        "ACTION_REQUIRED",
-        "CI could not be completed or repaired automatically.",
-        "Inspect the pull request checks, fix the failing check, then retry delivery.",
-        None,
-    ),
-    HaltReasonCode.DELIVERY_INTERVENTION: (
-        "ACTION_REQUIRED",
-        "The controller could not complete pull request delivery.",
-        "Check repository permissions and delivery settings, then retry delivery.",
-        None,
-    ),
-    HaltReasonCode.RECOVERY_INTERVENTION: (
-        "ACTION_REQUIRED",
-        "The run could not safely recover its persisted workspace.",
-        "Inspect the run and workspace metadata before starting a replacement run.",
-        None,
-    ),
-    HaltReasonCode.MANUAL_INSPECTION: (
-        "ACTION_REQUIRED",
-        "The controller stopped at a manual decision boundary.",
-        "Inspect the typed run artifacts and decide whether to retry or replace the run.",
-        None,
-    ),
+
+#: The run file each guidance names. The words come from ``HALT_REASON_COPY``.
+_GUIDANCE_ARTIFACTS: dict[HaltReasonCode, str] = {
+    HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE: "review-acceptance.json",
+    HaltReasonCode.REVIEW_IMPASSE: "review-impasse.json",
+    HaltReasonCode.UNRESOLVED_DECISIONS: "execution-plan.json",
 }
+
+_GUIDANCE_CATEGORIES = frozenset({"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"})
 
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:
@@ -548,8 +508,7 @@ def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str,
         return {}
     call = _sanitize_call({key: data.get(key) for key in _ACTIVE_INPUT_KEYS}, run_id)
     status = data.get("status")
-    known = isinstance(status, str) and status in ACTIVE_INVOCATION_STATUSES
-    call["status"] = status if known else "running"
+    call["status"] = status if is_active_status(status) else "running"
     return call
 
 
@@ -594,7 +553,7 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
     "status": _one_of(ESCALATION_STATUSES),
     "target_type": _one_of(ESCALATION_TARGET_TYPES),
     "comment_url": is_safe_https_url,
-    "reason_code": _one_of(GUIDANCE_COPY.keys()),
+    "reason_code": _one_of(HALT_REASON_CODES),
     "resume_classification": _one_of(RESUME_CLASSIFICATIONS),
     "waiting_for_human": lambda value: isinstance(value, bool),
     "is_resumed": lambda value: isinstance(value, bool),
@@ -729,56 +688,61 @@ def _sanitize_detail_sections(data: dict[str, Any], run_id: str | None) -> dict[
     return sanitized
 
 
+def _valid_finding_id(item: Any) -> bool:
+    return (
+        isinstance(item, str)
+        and item.startswith("review-")
+        and len(item) <= 64
+        and item.replace("-", "").isalnum()
+    )
+
+
+def _review_guidance_extras(data: dict[str, Any]) -> dict[str, Any]:
+    """The finding count, ids and category counts of review guidance, each when valid."""
+    extras: dict[str, Any] = {}
+    count = data.get("finding_count")
+    if is_count(count) and count <= MAX_GUIDANCE_FINDINGS:
+        extras["finding_count"] = count
+    finding_ids = data.get("finding_ids")
+    if isinstance(finding_ids, list):
+        extras["finding_ids"] = [
+            item for item in finding_ids[:MAX_GUIDANCE_FINDINGS] if _valid_finding_id(item)
+        ]
+    category_counts = data.get("category_counts")
+    if isinstance(category_counts, dict):
+        extras["category_counts"] = {
+            key: value
+            for key, value in category_counts.items()
+            if key in _GUIDANCE_CATEGORIES and is_count(value) and value <= MAX_GUIDANCE_FINDINGS
+        }
+    return extras
+
+
 def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
     reason_code = HaltReasonCode.parse(data.get("reason_code"))
     if reason_code is None:
         return None
-    status, summary, next_action, artifact = GUIDANCE_COPY[reason_code]
-    plan_reply_action = "Reply with complete numbered decisions on the escalation thread."
-    if (
-        reason_code is HaltReasonCode.UNRESOLVED_DECISIONS
-        and data.get("next_action") == plan_reply_action
-    ):
-        next_action = plan_reply_action
-    elif reason_code is HaltReasonCode.UNRESOLVED_DECISIONS:
-        next_action = (
-            "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
-        )
+    copy = HALT_REASON_COPY[reason_code]
+    is_plan_decision = reason_code is HaltReasonCode.UNRESOLVED_DECISIONS
+    next_action = copy.next_action
+    if is_plan_decision and data.get("next_action") != next_action:
+        next_action = UNRESOLVED_DECISIONS_REPLACE_ACTION
+    accepted = reason_code is HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE
     result: dict[str, Any] = {
-        "status": status,
+        "status": "ACCEPTED_WITH_FINDINGS" if accepted else "ACTION_REQUIRED",
         "reason_code": reason_code,
-        "summary": summary,
+        "summary": copy.summary,
         "next_action": next_action,
     }
+    artifact = _GUIDANCE_ARTIFACTS.get(reason_code)
     if artifact is not None:
         result["artifact"] = artifact
-    if reason_code is not HaltReasonCode.UNRESOLVED_DECISIONS:
-        count = data.get("finding_count")
-        if is_count(count) and count <= MAX_GUIDANCE_FINDINGS:
-            result["finding_count"] = count
-        finding_ids = data.get("finding_ids")
-        if isinstance(finding_ids, list):
-            result["finding_ids"] = [
-                item
-                for item in finding_ids[:MAX_GUIDANCE_FINDINGS]
-                if isinstance(item, str)
-                and item.startswith("review-")
-                and len(item) <= 64
-                and item.replace("-", "").isalnum()
-            ]
-        category_counts = data.get("category_counts")
-        if isinstance(category_counts, dict):
-            result["category_counts"] = {
-                key: value
-                for key, value in category_counts.items()
-                if key in {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"}
-                and is_count(value)
-                and value <= MAX_GUIDANCE_FINDINGS
-            }
-    else:
-        decision_count = data.get("decision_count")
-        if is_count(decision_count) and decision_count <= MAX_PLAN_DECISIONS:
-            result["decision_count"] = decision_count
+    if not is_plan_decision:
+        result.update(_review_guidance_extras(data))
+        return result
+    decision_count = data.get("decision_count")
+    if is_count(decision_count) and decision_count <= MAX_PLAN_DECISIONS:
+        result["decision_count"] = decision_count
     return result
 
 

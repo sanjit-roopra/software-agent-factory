@@ -45,7 +45,9 @@ from .github import (
     parse_pull_request_url,
 )
 from .models import (
+    HALT_REASON_COPY,
     REPLY_CURSOR_CLOSED,
+    UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     EscalationRecord,
     EscalationStatus,
@@ -64,6 +66,8 @@ from .models import (
     TriageResult,
     WorkflowState,
     WorkItem,
+    unresolved_decisions_count,
+    unresolved_decisions_summary,
     utc_now,
 )
 from .redaction import redact_secrets
@@ -83,7 +87,6 @@ from .store import FileRunStore
 logger = logging.getLogger(__name__)
 
 MAX_ESCALATION_COMMENT_CHARS: int = 4000
-UNRESOLVED_DECISIONS_HALT_PREFIX: str = "execution plan has unresolved decisions"
 
 
 class EscalationComment(str):
@@ -504,6 +507,29 @@ def is_valid_plan_decision_answers(
     return rebuilt == answers.answers
 
 
+#: The plan-decision next action in the GitHub notice. The notice is posted on the thread it
+#: asks people to reply on, so it says "this GitHub thread" where ``HALT_REASON_COPY`` says
+#: "the escalation thread".
+_GITHUB_REPLY_ACTION = "Reply with complete numbered decisions on this GitHub thread."
+
+
+def _halt(
+    classification: ResumeClassification, code: HaltReasonCode
+) -> tuple[ResumeClassification, HaltReasonCode, str, str]:
+    copy = HALT_REASON_COPY[code]
+    return classification, code, copy.summary, copy.next_action
+
+
+def _load_optional(store: FileRunStore | None, run_id: str, artifact_type: type[Any]) -> Any:
+    """The run's stored artifact of this type, or ``None`` when there is none to read."""
+    if store is None:
+        return None
+    try:
+        return store.load_artifact(run_id, artifact_type)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 def classify_halt_reason(
     run: FactoryRun,
     store: FileRunStore | None = None,
@@ -521,97 +547,31 @@ def classify_halt_reason(
             "Inspect the typed run artifacts.",
         )
 
-    if store is not None:
-        try:
-            impasse = store.load_artifact(run.id, ReviewImpasse)
-        except (FileNotFoundError, ValueError):
-            impasse = None
-        if impasse is not None:
-            return (
-                ResumeClassification.NOT_RESUMABLE,
-                HaltReasonCode.REVIEW_IMPASSE,
-                "Independent review did not converge within the safe automatic policy.",
-                "Inspect review-impasse.json, resolve or accept the listed findings, then retry.",
-            )
+    if _load_optional(store, run.id, ReviewImpasse) is not None:
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.REVIEW_IMPASSE)
 
     reason = (run.failure_reason or "").lower()
-    if reason.startswith(UNRESOLVED_DECISIONS_HALT_PREFIX):
-        unresolved_count: int | None = None
-        if store is not None:
-            try:
-                plan = store.load_artifact(run.id, ExecutionPlan)
-                if plan is not None and plan.unresolved_decisions:
-                    unresolved_count = len(plan.unresolved_decisions)
-            except (FileNotFoundError, ValueError):
-                pass
-        if unresolved_count is None:
-            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
-                r"\((\d+)\)", reason
-            )
-            if count_match:
-                unresolved_count = int(count_match.group(1))
-        if unresolved_count is not None:
-            decisions_label = "decision" if unresolved_count == 1 else "decisions"
-            summary = (
-                f"The execution plan has {unresolved_count} unresolved architectural "
-                f"{decisions_label}."
-            )
-        else:
-            summary = "The execution plan has unresolved architectural decisions."
+    if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
+        plan = _load_optional(store, run.id, ExecutionPlan)
         return (
             ResumeClassification.PLAN_DECISION,
             HaltReasonCode.UNRESOLVED_DECISIONS,
-            summary,
-            "Reply with complete numbered decisions on this GitHub thread.",
+            unresolved_decisions_summary(unresolved_decisions_count(plan, reason)),
+            _GITHUB_REPLY_ACTION,
         )
     if "scope" in reason:
-        return (
-            ResumeClassification.NOT_RESUMABLE,
-            HaltReasonCode.SCOPE_REVIEW,
-            "The proposed changes exceeded the approved scope.",
-            "Review the planned and changed files, then update the scope or retry.",
-        )
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.SCOPE_REVIEW)
     if re.fullmatch(r"risk r[23] requires human approval", reason):
-        return (
-            ResumeClassification.RISK_APPROVAL,
-            HaltReasonCode.RISK_APPROVAL,
-            "The run requires approval under the configured risk policy.",
-            "Review the work item risk and approve or change the policy before retrying.",
-        )
+        return _halt(ResumeClassification.RISK_APPROVAL, HaltReasonCode.RISK_APPROVAL)
     if "budget" in reason or "attempt" in reason:
-        return (
-            ResumeClassification.NOT_RESUMABLE,
-            HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
-            "The run exhausted a bounded retry budget.",
-            "Inspect the run artifacts, correct the underlying issue, then retry.",
-        )
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED)
     if "ci " in reason or reason.startswith("ci"):
-        return (
-            ResumeClassification.NOT_RESUMABLE,
-            HaltReasonCode.CI_INTERVENTION,
-            "CI could not be completed or repaired automatically.",
-            "Inspect the pull request checks, fix the failing check, then retry delivery.",
-        )
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.CI_INTERVENTION)
     if any(term in reason for term in ("publish", "pull request", "merge", "permission")):
-        return (
-            ResumeClassification.NOT_RESUMABLE,
-            HaltReasonCode.DELIVERY_INTERVENTION,
-            "The controller could not complete pull request delivery.",
-            "Check repository permissions and delivery settings, then retry delivery.",
-        )
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.DELIVERY_INTERVENTION)
     if any(term in reason for term in ("abandon", "interrupt", "workspace")):
-        return (
-            ResumeClassification.NOT_RESUMABLE,
-            HaltReasonCode.RECOVERY_INTERVENTION,
-            "The run could not safely recover its persisted workspace.",
-            "Inspect the run and workspace metadata before starting a replacement run.",
-        )
-    return (
-        ResumeClassification.NOT_RESUMABLE,
-        HaltReasonCode.MANUAL_INSPECTION,
-        "The controller stopped at a manual decision boundary.",
-        "Inspect the typed run artifacts and decide whether to retry or replace the run.",
-    )
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.RECOVERY_INTERVENTION)
+    return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.MANUAL_INSPECTION)
 
 
 def build_escalation_comment(

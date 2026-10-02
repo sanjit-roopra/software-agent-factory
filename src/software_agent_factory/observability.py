@@ -82,7 +82,10 @@ from pydantic import Field, ValidationError, model_serializer
 
 from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
 from .models import (
+    HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
+    UNRESOLVED_DECISIONS_HALT_REASON,
+    UNRESOLVED_DECISIONS_REPLACE_ACTION,
     ActiveInvocationStatus,
     AgentRole,
     AttemptBudget,
@@ -110,6 +113,8 @@ from .models import (
     VersionedModel,
     WorkflowState,
     WorkItem,
+    unresolved_decisions_count,
+    unresolved_decisions_summary,
     utc_now,
 )
 from .redaction import redact_secrets
@@ -128,6 +133,9 @@ except ImportError:  # pragma: no cover - macOS/Linux only per AGENTS.md
 #: than raising or silently reporting zero stale locks as if they were
 #: checked.
 _FCNTL_AVAILABLE = fcntl is not None
+#: The two review statuses the run view and the run guidance report.
+_ACTION_REQUIRED = "ACTION_REQUIRED"
+_ACCEPTED_WITH_FINDINGS = "ACCEPTED_WITH_FINDINGS"
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
 
 __all__ = [
@@ -1543,9 +1551,9 @@ def _build_run_summary(
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
         review_status=(
-            "ACTION_REQUIRED"
+            _ACTION_REQUIRED
             if run.state is WorkflowState.NEEDS_HUMAN
-            else "ACCEPTED_WITH_FINDINGS"
+            else _ACCEPTED_WITH_FINDINGS
             if run.review_acceptance is not None
             else None
         ),
@@ -1656,14 +1664,17 @@ def build_run_detail(
 
 def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance | None:
     if run.state is not WorkflowState.NEEDS_HUMAN and run.review_acceptance is not None:
+        copy = HALT_REASON_COPY[HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE]
         return RunGuidance(
-            status="ACCEPTED_WITH_FINDINGS",
+            status=_ACCEPTED_WITH_FINDINGS,
             reason_code=HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE,
-            summary="The controller continued after the bounded review limit.",
-            next_action="Review the accepted findings in the pull request before merging.",
+            summary=copy.summary,
+            next_action=copy.next_action,
             artifact="review-acceptance.json",
             finding_count=len(run.review_acceptance.findings),
-            finding_ids=[finding.id for finding in run.review_acceptance.findings],
+            finding_ids=[finding.id for finding in run.review_acceptance.findings][
+                :MAX_GUIDANCE_FINDINGS
+            ],
             category_counts=_review_category_counts(run.review_acceptance.findings),
         )
     if run.state is not WorkflowState.NEEDS_HUMAN:
@@ -1671,94 +1682,72 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
 
     impasse = _load_optional_artifact(store, run.id, ReviewImpasse)
     if impasse is not None:
+        copy = HALT_REASON_COPY[HaltReasonCode.REVIEW_IMPASSE]
         return RunGuidance(
-            status="ACTION_REQUIRED",
+            status=_ACTION_REQUIRED,
             reason_code=HaltReasonCode.REVIEW_IMPASSE,
-            summary="Independent review did not converge within the safe automatic policy.",
-            next_action=(
-                "Inspect review-impasse.json, resolve or accept the listed findings, then retry."
-            ),
+            summary=copy.summary,
+            next_action=copy.next_action,
             artifact="review-impasse.json",
             finding_count=len(impasse.finding_ids),
-            finding_ids=impasse.finding_ids,
+            finding_ids=impasse.finding_ids[:MAX_GUIDANCE_FINDINGS],
             category_counts=_review_category_counts(run.review_ledger.open_findings),
         )
 
     reason = (run.failure_reason or "").lower()
-    if reason.startswith("execution plan has unresolved decisions"):
-        plan = _load_optional_artifact(store, run.id, ExecutionPlan)
-        unresolved_count: int | None = None
-        if plan is not None and plan.unresolved_decisions:
-            unresolved_count = len(plan.unresolved_decisions)
-        if unresolved_count is None:
-            count_match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(
-                r"\((\d+)\)", reason
-            )
-            if count_match:
-                unresolved_count = int(count_match.group(1))
-        if unresolved_count is not None:
-            decisions_label = "decision" if unresolved_count == 1 else "decisions"
-            summary = (
-                f"The execution plan has {unresolved_count} unresolved architectural "
-                f"{decisions_label}."
-            )
-        else:
-            summary = "The execution plan has unresolved architectural decisions."
-        reply_enabled = (
-            run.escalation is not None
-            and run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
-            and run.escalation.status is EscalationStatus.NOTIFIED
-            and run.escalation.remote_resume_enabled
-        )
-        action = (
-            "Reply with complete numbered decisions on the escalation thread."
-            if reply_enabled
-            else (
-                "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
-            )
-        )
-        return RunGuidance(
-            status="ACTION_REQUIRED",
-            reason_code=HaltReasonCode.UNRESOLVED_DECISIONS,
-            summary=summary,
-            next_action=action,
-            artifact="execution-plan.json",
-            decision_count=unresolved_count,
-        )
-    if "risk" in reason or "approval" in reason:
-        code = HaltReasonCode.RISK_APPROVAL
-        summary = "The run requires approval under the configured risk policy."
-        action = "Review the work item risk and approve or change the policy before retrying."
-    elif "scope" in reason:
-        code = HaltReasonCode.SCOPE_REVIEW
-        summary = "The proposed changes exceeded the approved scope."
-        action = "Review the planned and changed files, then update the scope or retry."
-    elif "budget" in reason or "attempt" in reason:
-        code = HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
-        summary = "The run exhausted a bounded retry budget."
-        action = "Inspect the run artifacts, correct the underlying issue, then retry."
-    elif "ci " in reason or reason.startswith("ci"):
-        code = HaltReasonCode.CI_INTERVENTION
-        summary = "CI could not be completed or repaired automatically."
-        action = "Inspect the pull request checks, fix the failing check, then retry delivery."
-    elif any(term in reason for term in ("publish", "pull request", "merge", "permission")):
-        code = HaltReasonCode.DELIVERY_INTERVENTION
-        summary = "The controller could not complete pull request delivery."
-        action = "Check repository permissions and delivery settings, then retry delivery."
-    elif any(term in reason for term in ("abandon", "interrupt", "workspace")):
-        code = HaltReasonCode.RECOVERY_INTERVENTION
-        summary = "The run could not safely recover its persisted workspace."
-        action = "Inspect the run and workspace metadata before starting a replacement run."
-    else:
-        code = HaltReasonCode.MANUAL_INSPECTION
-        summary = "The controller stopped at a manual decision boundary."
-        action = "Inspect the typed run artifacts and decide whether to retry or replace the run."
+    if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
+        return _unresolved_decisions_guidance(store, run, reason)
+    code = _halt_reason_code(reason)
+    copy = HALT_REASON_COPY[code]
     return RunGuidance(
-        status="ACTION_REQUIRED",
+        status=_ACTION_REQUIRED,
         reason_code=code,
-        summary=summary,
-        next_action=action,
+        summary=copy.summary,
+        next_action=copy.next_action,
     )
+
+
+def _unresolved_decisions_guidance(
+    store: RunStoreProtocol, run: FactoryRun, reason: str
+) -> RunGuidance:
+    plan = _load_optional_artifact(store, run.id, ExecutionPlan)
+    unresolved_count = unresolved_decisions_count(plan, reason)
+    reply_enabled = (
+        run.escalation is not None
+        and run.escalation.resume_classification is ResumeClassification.PLAN_DECISION
+        and run.escalation.status is EscalationStatus.NOTIFIED
+        and run.escalation.remote_resume_enabled
+    )
+    action = (
+        HALT_REASON_COPY[HaltReasonCode.UNRESOLVED_DECISIONS].next_action
+        if reply_enabled
+        else UNRESOLVED_DECISIONS_REPLACE_ACTION
+    )
+    return RunGuidance(
+        status=_ACTION_REQUIRED,
+        reason_code=HaltReasonCode.UNRESOLVED_DECISIONS,
+        summary=unresolved_decisions_summary(unresolved_count),
+        next_action=action,
+        artifact="execution-plan.json",
+        decision_count=unresolved_count,
+    )
+
+
+def _halt_reason_code(reason: str) -> HaltReasonCode:
+    """The code a lowercased failure reason selects. The run view keys on the reason text alone."""
+    if "risk" in reason or "approval" in reason:
+        return HaltReasonCode.RISK_APPROVAL
+    if "scope" in reason:
+        return HaltReasonCode.SCOPE_REVIEW
+    if "budget" in reason or "attempt" in reason:
+        return HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
+    if "ci " in reason or reason.startswith("ci"):
+        return HaltReasonCode.CI_INTERVENTION
+    if any(term in reason for term in ("publish", "pull request", "merge", "permission")):
+        return HaltReasonCode.DELIVERY_INTERVENTION
+    if any(term in reason for term in ("abandon", "interrupt", "workspace")):
+        return HaltReasonCode.RECOVERY_INTERVENTION
+    return HaltReasonCode.MANUAL_INSPECTION
 
 
 def _review_category_counts(findings: Iterable[Any]) -> dict[ReviewFindingCategory, int]:

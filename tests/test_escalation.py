@@ -31,7 +31,6 @@ from pydantic import BaseModel
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
-    UNRESOLVED_DECISIONS_HALT_PREFIX,
     ValidationResult,
     build_escalation_comment,
     build_plan_decision_context,
@@ -56,6 +55,7 @@ from software_agent_factory.github import (
     GitHubError,
 )
 from software_agent_factory.models import (
+    UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     AgentRole,
     Complexity,
@@ -529,7 +529,7 @@ def test_classify_halt_reason_unresolved_decisions_stable_prefix_wins(tmp_path: 
             id="run-test-prefix",
             work_item_id="task-1",
             state=WorkflowState.NEEDS_HUMAN,
-            failure_reason=f"{UNRESOLVED_DECISIONS_HALT_PREFIX}{suffix}",
+            failure_reason=f"{UNRESOLVED_DECISIONS_HALT_REASON}{suffix}",
         )
         classification, code, summary, action = classify_halt_reason(run)
         assert classification is ResumeClassification.PLAN_DECISION
@@ -543,7 +543,7 @@ def test_classify_halt_reason_unresolved_decisions_safe_count_handling(tmp_path:
         id="run-unresolved-count",
         work_item_id="task-1",
         state=WorkflowState.NEEDS_HUMAN,
-        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_REASON,
     )
     store.save_run(run)
 
@@ -1584,7 +1584,7 @@ def test_poll_escalation_reply_persists_validated_plan_answers(tmp_path: Path) -
         id="run-plan-poll",
         work_item_id="task-1",
         state=WorkflowState.NEEDS_HUMAN,
-        failure_reason=UNRESOLVED_DECISIONS_HALT_PREFIX,
+        failure_reason=UNRESOLVED_DECISIONS_HALT_REASON,
     )
     store.save_run(run)
     store.save_artifact(

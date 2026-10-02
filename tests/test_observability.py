@@ -2345,6 +2345,66 @@ def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -
     assert finding.message not in json.dumps(payload)
 
 
+def _review_finding(number: int) -> ReviewFinding:
+    return ReviewFinding(
+        id=f"review-correctness-{number}",
+        category=ReviewFindingCategory.CORRECTNESS,
+        message="repository text must stay server-side",
+        locations=[ReviewSourceLocation(path="src/app.py", start_line=1, end_line=1)],
+        origin=ReviewFindingOrigin.INITIAL,
+        first_seen_snapshot=1,
+    )
+
+
+def test_build_run_detail_cuts_the_finding_ids_of_a_stored_impasse_to_the_guidance_cap(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    ids = [f"review-correctness-{n}" for n in range(MAX_GUIDANCE_FINDINGS + 1)]
+    run = _run("run-wide-impasse", state=WorkflowState.NEEDS_HUMAN)
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+    store.add_artifact(run.id, ReviewImpasse(snapshot=1, reason="no progress", finding_ids=ids))
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None
+    assert detail.guidance is not None
+    assert detail.guidance.finding_ids == ids[:MAX_GUIDANCE_FINDINGS]
+    assert detail.guidance.finding_count == len(ids)
+
+
+def test_build_run_detail_cuts_the_finding_ids_of_an_acceptance_to_the_guidance_cap(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    findings = [_review_finding(n) for n in range(MAX_GUIDANCE_FINDINGS + 1)]
+    acceptance = ReviewAcceptance(
+        snapshot=1,
+        reason=ReviewAcceptanceReason.REVIEW_ROUND_LIMIT,
+        risk=Risk.R1,
+        review_rounds=3,
+        reviewed_tree_sha="a" * 40,
+        findings=findings,
+    )
+    run = _run("run-wide-acceptance", state=WorkflowState.PR_READY).model_copy(
+        update={"review_acceptance": acceptance}
+    )
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+
+    detail = build_run_detail(store, run.id)
+
+    assert detail is not None
+    assert detail.guidance is not None
+    assert (
+        detail.guidance.finding_ids == [finding.id for finding in findings][:MAX_GUIDANCE_FINDINGS]
+    )
+    assert detail.guidance.finding_count == len(findings)
+
+
 def test_build_run_detail_unresolved_decisions_exposes_decision_count_without_leaking_prose(
     tmp_path: Path,
 ) -> None:

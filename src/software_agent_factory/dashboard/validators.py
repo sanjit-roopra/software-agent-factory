@@ -17,13 +17,21 @@ from typing import Any, TypeGuard, get_args
 from urllib.parse import urlsplit
 
 from ..escalation_protocol import EPISODE_ID_PATTERN
-from ..models import EscalationStatus, EscalationTargetType, ResumeClassification, ResumeRefusal
+from ..models import (
+    EscalationStatus,
+    EscalationTargetType,
+    HaltReasonCode,
+    ResumeClassification,
+    ResumeRefusal,
+)
 from .snapshot import is_valid_run_id
 
 _FINGERPRINT_PATTERN = re.compile(r"[A-Za-z0-9]{64}")
 
 #: The one set of resume classifications, built from the enum.
 RESUME_CLASSIFICATIONS: frozenset[str] = frozenset(item.value for item in ResumeClassification)
+#: The one set of halt reason codes, built from the enum.
+HALT_REASON_CODES: frozenset[str] = frozenset(item.value for item in HaltReasonCode)
 #: The four codes the service gives for a resume it cannot accept, built from the type.
 RESUME_REFUSALS: frozenset[str] = frozenset(get_args(ResumeRefusal))
 #: The escalation statuses and target types, built from their enums. A run
