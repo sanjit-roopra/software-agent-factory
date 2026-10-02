@@ -412,10 +412,22 @@ only writes: approve a risk halt and answer plan decisions (ADR-033). The
 tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
 
-Open the printed link once. The first request sets a session cookie and moves the
-browser to the page address without the token. A reload then works from the
-cookie. A write also needs the token in a header, which the page sends. A new
-`factory dashboard` start makes a new token. Open the new link after a restart.
+Open the printed link once. The first request returns the page and sets a session
+cookie. The page then removes the token from the address bar and the current
+history entry. Some browsers can still keep the first address in their visit
+records until the dashboard restarts. A reload works from the cookie.
+
+A write also needs the token in a header, which the page sends. A read that has
+the token header uses the header alone. A wrong header gets `401`, even with a
+right cookie. The cookie counts only when the header is absent.
+
+The cookie is as strong as the token. Any program that holds the cookie can load
+the page and read the token. This includes another local server on `127.0.0.1`
+that the browser visits. The `Host` and `Origin` checks stop browsers only. Such a
+program already runs code on your machine.
+
+A new `factory dashboard` start makes a new token. Open the new link after a
+restart.
 
 This is the only command that opens a socket.
 

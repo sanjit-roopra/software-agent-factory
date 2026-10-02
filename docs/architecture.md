@@ -1677,8 +1677,15 @@ checks, writes the receipt and reopens the run through `controller.reopen`. The
 service is the only writer of `run.json` and of the request's `stale` status,
 and it ingests requests even when GitHub escalation is off. Holding the
 per-start token replaces the ADR-024 author checks for a local approval. The
-printed link trades its token for an `HttpOnly`, `SameSite=Strict` session
-cookie on the first request. A write still needs the token in a header. The
+first request for the printed link returns the page and sets an `HttpOnly`,
+`SameSite=Strict` session cookie. The page then removes the token from the
+address bar and the current history entry. Some browsers can still keep the
+first address in their visit records until the dashboard restarts. A write
+still needs the token in a header. A read that has the token header uses the
+header alone, and the cookie counts only when the header is absent. The cookie
+is as strong as the token. Any program that holds it can load the page and read
+the token, so the `Host` and `Origin` checks stop browsers only. The team
+accepts this risk, because such a program already runs code on the machine. The
 two POST routes are `/api/runs/<id>/approve` and `/api/runs/<id>/answer`. The
 run detail page offers them: a confirm dialog for an approval, and one field
 for each plan decision.

@@ -454,10 +454,23 @@ write actions, not a control plane.
 - Reads with `GET`. Two `POST` routes are the only writes: approve a risk
   approval, and answer plan decisions (ADR-033).
 - Token generated per process, printed once, never logged.
-- The printed link trades its token for an `HttpOnly`, `SameSite=Strict`
-  session cookie on the first request. A reload works from the cookie. Only the
-  page route accepts the token in its address, and only for that trade. Every
-  other route needs the cookie or the token header (ADR-033).
+- The first request for the printed link returns the page and sets an
+  `HttpOnly`, `SameSite=Strict` session cookie. The page then removes the token
+  from the address bar and the current history entry. A reload works from the
+  cookie. Only the page route accepts the token in its address, and only for
+  that first request. Every other route needs the cookie or the token header
+  (ADR-033).
+- The removal is best effort. Some browsers can still keep the first address in
+  their visit records until the dashboard restarts. The old token has no use
+  after a restart.
+- A read that has the token header uses the header alone. A wrong header gets
+  `401`, even with a right cookie. The cookie counts only when the header is
+  absent.
+- The cookie is as strong as the token. Any program that holds the cookie can
+  load the page and read the token. This includes another local server on
+  `127.0.0.1` that the browser visits. The `Host` and `Origin` checks stop
+  browsers only. The team accepts this risk, because such a program already runs
+  code on the machine.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object
