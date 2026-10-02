@@ -423,8 +423,9 @@ right cookie. The cookie counts only when the header is absent.
 
 The cookie is as strong as the token. Any program that holds the cookie can load
 the page and read the token. This includes another local server on `127.0.0.1`
-that the browser visits. The `Host` and `Origin` checks stop browsers only. Such a
-program already runs code on your machine.
+that the browser visits. The `Host` and `Origin` checks stop browsers only. Treat
+anything that listens on `127.0.0.1` as trusted, including a forwarded port such
+as `ssh -L` or a container port.
 
 A new `factory dashboard` start makes a new token. Open the new link after a
 restart.

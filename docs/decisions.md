@@ -124,7 +124,7 @@ Authority for a local approval:
   Its name ends with the port, because a browser shares cookies between the ports of one host.
 - Only the page route accepts the token in its query, and only for this first request.
   A `GET` for the page, an asset or the API needs the cookie or the token header.
-  A token in the query of any other route gets `401`.
+  A token in the query of any other route never counts.
   A `POST` still needs the token header, so the cookie alone cannot write.
 - A `GET` that has the token header uses the header alone.
   A wrong header gets `401`, even when the cookie is right.
@@ -133,7 +133,7 @@ Authority for a local approval:
   This rule stops that tab from working halfway.
 - The page holds the token in a `<meta>` tag, and the script sends it in the header for a write.
   The server renders the page only for a request that holds the token.
-  So the address bar, the history and referrers hold no token.
+  So the address bar, the current history entry and referrers hold no token.
   `HttpOnly` keeps the cookie from script, but script that runs in the page can read the `<meta>` tag.
   The content security policy allows only scripts from the dashboard itself.
 - After a restart the server has a new token, so the old cookie gets `401`.
@@ -144,7 +144,9 @@ Authority for a local approval:
   So another local web server on `127.0.0.1` that the browser visits can receive it and reuse it.
   The `Host` check and the `Origin` check on a write stop a page in a browser only.
   A program that is not a browser can send any `Host` and `Origin` header.
-  The team accepts this risk, because such a program already runs code on the operator's machine.
+  The team accepts this risk: the trust boundary is anything that listens on `127.0.0.1`.
+  That includes a forwarded port, such as `ssh -L`, a container port or an editor port forward.
+  Do not forward a port to `127.0.0.1` from a host you do not trust while the dashboard runs.
   Anyone who can read the cookie store of the browser can also approve while that dashboard runs.
 - The terminal still shows the link while it stays on screen.
 

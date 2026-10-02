@@ -1685,7 +1685,8 @@ still needs the token in a header. A read that has the token header uses the
 header alone, and the cookie counts only when the header is absent. The cookie
 is as strong as the token. Any program that holds it can load the page and read
 the token, so the `Host` and `Origin` checks stop browsers only. The team
-accepts this risk, because such a program already runs code on the machine. The
+accepts this risk: the trust boundary is anything that listens on `127.0.0.1`,
+including a forwarded port such as `ssh -L` or a container port. The
 two POST routes are `/api/runs/<id>/approve` and `/api/runs/<id>/answer`. The
 run detail page offers them: a confirm dialog for an approval, and one field
 for each plan decision.

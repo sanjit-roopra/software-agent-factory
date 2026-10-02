@@ -469,8 +469,9 @@ write actions, not a control plane.
 - The cookie is as strong as the token. Any program that holds the cookie can
   load the page and read the token. This includes another local server on
   `127.0.0.1` that the browser visits. The `Host` and `Origin` checks stop
-  browsers only. The team accepts this risk, because such a program already runs
-  code on the machine.
+  browsers only. The team accepts this risk: the trust boundary is anything that
+  listens on `127.0.0.1`, including a forwarded port such as `ssh -L` or a
+  container port.
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object

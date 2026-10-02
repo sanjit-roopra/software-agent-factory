@@ -93,7 +93,8 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 - The cookie is as strong as the token. Any program that holds the cookie can
   load the page and read the token. This includes another local server on
   `127.0.0.1` that the browser visits. The `Host` and `Origin` checks stop
-  browsers only. Such a program already runs code on your machine.
+  browsers only. Anything that listens on `127.0.0.1` is trusted, including a
+  forwarded port such as `ssh -L` or a container port.
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
 
 It shows project state, issue references, pull requests, merge progress, and
