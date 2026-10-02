@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -1242,7 +1243,7 @@ def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_in_the_next_
 
 
 # The real FileRunStore still reads every run.json underneath.
-# double-waiver: B1 — counts the run.json file reads and run listings each service cycle makes
+# double-waiver: B1 — FileRunStore opens run.json files; the subclass only counts loads and listings
 class _LoadCountingStore(FileRunStore):
     """A run store that counts how often each run is loaded and how often runs are listed."""
 
@@ -1295,12 +1296,115 @@ def test_the_steps_after_notices_share_one_run_listing_even_when_polling_replies
     service = make_service(config, github)
     counting = _LoadCountingStore(data_dir)
     service.store = counting
+    client = service._escalation_client()
+    assert client is not None
+    service._deliver_notices(client)
+    notice_listings = counting.listings
+    counting.listings = 0
 
     service.reconcile_escalation()
 
     assert github.listed_issues == [4]  # the polling step ran
-    # Notice delivery lists once and saves runs; the steps after it share one more listing.
-    assert counting.listings == 2
+    assert counting.listings - notice_listings == 1  # the steps after the notices share one
+
+
+# The real FileRunStore still lists run.json files underneath.
+# double-waiver: B1 — FileRunStore lists run.json files; the subclass only acts after a listing
+class _ListingHookStore(FileRunStore):
+    """A run store that runs ``act`` right after its ``listing``-th listing, as a worker or an
+    operator can between the listing and a later step."""
+
+    def __init__(self, data_dir: Path, listing: int, act: Callable[[], None]) -> None:
+        super().__init__(data_dir)
+        self._listing = listing
+        self._act = act
+        self._listings = 0
+
+    def list_runs(self, *, skip_invalid: bool = False) -> list[FactoryRun]:
+        runs = super().list_runs(skip_invalid=skip_invalid)
+        self._listings += 1
+        if self._listings == self._listing:
+            self._act()
+        return runs
+
+
+def test_a_run_deleted_after_the_cycle_listed_it_is_skipped_by_reply_polling(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir)
+    store = FileRunStore(data_dir)
+    gone = _notified(store, _halt_for_approval(config, store, source_repo, 3), 3, minutes_ago=60)
+    _notified(store, _halt_for_approval(config, store, source_repo, 4), 4, minutes_ago=50)
+    github = FakeGitHub()
+    service = make_service(config, github)
+    # Notice delivery lists first; the second listing feeds the steps after the notices.
+    service.store = _ListingHookStore(
+        data_dir, listing=2, act=lambda: shutil.rmtree(store.runs_dir / gone.id)
+    )
+
+    service.reconcile_escalation()
+
+    assert github.listed_issues == [4]
+
+
+def _over_the_reopen_limit(config: FactoryConfig, store: FileRunStore, run: FactoryRun) -> None:
+    """Persist ``run`` with one reopen more than the configured limit allows."""
+    assert run.escalation is not None
+    escalation = run.escalation.model_copy(
+        update={"reopen_count": config.escalation.max_reopens + 1}
+    )
+    store.save_run(run.model_copy(update={"escalation": escalation}))
+
+
+def test_a_reopened_run_over_the_reopen_limit_fails_closed(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False)
+    store = FileRunStore(data_dir)
+    run = _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    _over_the_reopen_limit(config, store, run)
+    service = make_service(config)
+
+    service.reconcile_escalation()
+
+    failed = store.load_run(run.id)
+    assert failed.state is WorkflowState.NEEDS_HUMAN
+    assert failed.escalation is not None
+    assert failed.escalation.status is EscalationStatus.PENDING_NOTIFICATION
+    assert failed.failure_reason == f"run {run.id} exceeded maximum reopens (3)"
+
+
+def test_a_run_a_worker_moved_on_after_the_listing_is_not_failed_for_the_reopen_limit(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False)
+    store = FileRunStore(data_dir)
+    run = _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    _over_the_reopen_limit(config, store, run)
+    resumed = store.load_run(run.id).model_copy(update={"state": WorkflowState.IMPLEMENTING})
+    service = make_service(config)
+    service.store = _ListingHookStore(data_dir, listing=1, act=lambda: store.save_run(resumed))
+
+    service.reconcile_escalation()
+
+    assert store.load_run(run.id) == resumed
+
+
+def test_a_run_deleted_after_the_listing_is_not_failed_for_the_reopen_limit(
+    source_repo: Path, data_dir: Path, make_service
+) -> None:
+    config = _escalation_config(data_dir, escalation_enabled=False)
+    store = FileRunStore(data_dir)
+    run = _reopened(config, store, _halt_for_approval(config, store, source_repo, 1))
+    _over_the_reopen_limit(config, store, run)
+    service = make_service(config)
+    service.store = _ListingHookStore(
+        data_dir, listing=1, act=lambda: shutil.rmtree(store.runs_dir / run.id)
+    )
+
+    service.reconcile_escalation()
+
+    assert not (store.runs_dir / run.id).exists()
 
 
 def test_polling_skips_a_run_a_dashboard_request_reopened_in_the_same_cycle(

@@ -460,21 +460,37 @@ class FactoryService:
             budget.take_slot()
 
     def _fail_reopen_over_limit(self, run: FactoryRun) -> bool:
-        """Fail closed when configuration changed after persistence; True if the run failed."""
+        """Fail closed when configuration changed after persistence.
+
+        True if the run is handled and must not be dispatched: it failed, or it changed or
+        vanished since the cycle listed it. Failing writes the whole run, so it starts from the
+        stored run, never the listed snapshot.
+        """
         escalation = run.escalation
         assert escalation is not None  # the caller checked
         max_limit = self.config.escalation.max_reopens
         if escalation.reopen_count <= max_limit:
             return False
+        try:
+            current = self.store.load_run(run.id)
+        except FileNotFoundError:
+            return True
+        current_escalation = current.escalation
+        if (
+            current.state is not WorkflowState.NEEDS_HUMAN
+            or current_escalation is None
+            or current_escalation.status is not EscalationStatus.REOPENED
+        ):
+            return True
         logger.warning(
             "run %s reopen limit reduced below reopen_count (%s > %s); failing reopen",
             run.id,
-            escalation.reopen_count,
+            current_escalation.reopen_count,
             max_limit,
         )
         if self.controller is not None:
             self.controller._fail_reopen(
-                run,
+                current,
                 f"run {run.id} exceeded maximum reopens ({max_limit})",
                 reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
             )
@@ -610,15 +626,25 @@ class FactoryService:
                 budget.take_quota()
 
     def _reloaded_notified_runs(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:
-        """``runs`` with each notified, waiting run read again, as earlier steps may change it."""
-        return [
-            self.store.load_run(run.id)
-            if run.state is WorkflowState.NEEDS_HUMAN
-            and run.escalation is not None
-            and run.escalation.status is EscalationStatus.NOTIFIED
-            else run
-            for run in runs
-        ]
+        """``runs`` with each notified, waiting run read again, as earlier steps may change it.
+
+        A run deleted since the listing is left out.
+        """
+        reloaded: list[FactoryRun] = []
+        for run in runs:
+            waiting = (
+                run.state is WorkflowState.NEEDS_HUMAN
+                and run.escalation is not None
+                and run.escalation.status is EscalationStatus.NOTIFIED
+            )
+            if not waiting:
+                reloaded.append(run)
+                continue
+            try:
+                reloaded.append(self.store.load_run(run.id))
+            except FileNotFoundError:
+                logger.debug("run %s was deleted after the cycle listed it; skipped", run.id)
+        return reloaded
 
     def _close_unpollable_reply_cursors(self, runs: Sequence[FactoryRun]) -> None:
         """Close the reply cursor of notified runs that no reply can resume."""
