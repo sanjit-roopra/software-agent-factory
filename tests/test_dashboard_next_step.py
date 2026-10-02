@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, get_args
 
 import pytest
+from factory_testing import REPLY_POLICY
 
 from software_agent_factory.dashboard import next_step as next_step_module
 from software_agent_factory.dashboard import sanitize
@@ -655,9 +657,7 @@ def test_stored_run_goes_from_the_provider_through_the_sanitizer_to_a_valid_repl
     )
     store.save_run(run)
 
-    detail = build_run_detail(
-        store, RUN_ID, max_reopens=3, reply_window_hours=168, escalation_enabled=True
-    )
+    detail = build_run_detail(store, RUN_ID, reply_policy=REPLY_POLICY)
     step = run_detail_view(detail)["next_step"]
 
     assert step["kind"] == "approve"
@@ -700,7 +700,7 @@ def test_a_stored_notice_with_no_reply_instructions_still_offers_the_action_end_
         )
     )
 
-    step = run_detail_view(build_run_detail(store, RUN_ID, max_reopens=3))["next_step"]
+    step = run_detail_view(build_run_detail(store, RUN_ID, reply_policy=REPLY_POLICY))["next_step"]
 
     assert step["kind"] == "answer"
     assert step["reply_text"] is None
@@ -1045,9 +1045,9 @@ def _stored_plan_run(tmp_path: Path, **record: Any) -> FileRunStore:
     return store
 
 
-def _stored_step(store: FileRunStore, **limits: Any) -> dict[str, Any]:
-    limits = {"max_reopens": 3, "reply_window_hours": 24, "escalation_enabled": True, **limits}
-    detail = build_run_detail(store, RUN_ID, now=STORED_NOW, **limits)
+def _stored_step(store: FileRunStore, **policy_changes: Any) -> dict[str, Any]:
+    policy = replace(REPLY_POLICY, **policy_changes)
+    detail = build_run_detail(store, RUN_ID, now=STORED_NOW, reply_policy=policy)
     step: dict[str, Any] = run_detail_view(detail)["next_step"]
     return step
 

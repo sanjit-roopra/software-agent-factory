@@ -17,6 +17,7 @@ from typing import IO, Any, Mapping, Sequence
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
+from software_agent_factory.escalation_protocol import ReplyPolicy
 from software_agent_factory.github import GitHubClient, GitPublisher
 from software_agent_factory.models import (
     AgentRole,
@@ -30,6 +31,15 @@ from software_agent_factory.models import (
 from software_agent_factory.publishing import CIObserver, PullRequestPublisher
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
+
+#: A reply policy for tests that do not care about it: escalation on, three reopens, a 24 hour
+#: window. Change a field with ``dataclasses.replace``.
+REPLY_POLICY = ReplyPolicy(
+    max_reopens=3,
+    reply_window_hours=24,
+    escalation_enabled=True,
+    allowed_hosts=("github.com",),
+)
 
 
 def git(cwd: Path, *args: str) -> str:

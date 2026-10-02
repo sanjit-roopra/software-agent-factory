@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
 
+from ..escalation_protocol import ReplyPolicy
 from ..models import (
     CONTEXT_FINGERPRINT_PATTERN,
     DashboardResumeRequest,
@@ -58,15 +59,13 @@ CONFLICT_REASONS: dict[ResumeRefusal | RequestMismatch, ConflictReason] = {
 class ResumeActions:
     """What the approve and answer routes need. Without it they are not routed.
 
-    ``reply_window_hours`` and ``max_reopens`` are the configured limits, with ``None``
-    for a limit that is unknown. ``clock`` stamps ``created_at``: a request never carries
-    a time the client chose.
+    ``reply_policy`` is the configured reply window and reopen limit, never unknown.
+    ``clock`` stamps ``created_at``: a request never carries a time the client chose.
     """
 
     run_reader: ResumeRunReader
     requester: ResumeRequester
-    reply_window_hours: float | None = None
-    max_reopens: int | None = None
+    reply_policy: ReplyPolicy
     clock: Callable[[], datetime] = utc_now
 
 
@@ -127,8 +126,7 @@ def _conflict_reason(
         episode_id=fields.episode_id,
         fingerprint=fields.context_fingerprint,
         action=kind,
-        reply_window_hours=actions.reply_window_hours,
-        max_reopens=actions.max_reopens,
+        policy=actions.reply_policy,
         now=now,
     )
     return None if reason is None else CONFLICT_REASONS[reason]

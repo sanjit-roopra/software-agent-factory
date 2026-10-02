@@ -1093,6 +1093,7 @@ def dashboard_command(
 
     from .dashboard import LOOPBACK_HOST, DashboardConfig
     from .dashboard.actions import ResumeActions
+    from .escalation_protocol import ReplyPolicy
     from .observability import (
         RunScanCache,
         build_active_invocation_summary,
@@ -1106,6 +1107,7 @@ def dashboard_command(
 
     store = FileRunStore(factory_config.data_dir)
     stale_after = _stale_after(factory_config, None)
+    reply_policy = ReplyPolicy.from_config(factory_config.escalation)
     scan_cache = RunScanCache(store)
 
     def snapshot_provider(*, limit: int, offset: int) -> object:
@@ -1128,10 +1130,7 @@ def dashboard_command(
             store,
             run_id,
             stale_after=stale_after,
-            max_reopens=factory_config.escalation.max_reopens,
-            reply_window_hours=factory_config.escalation.reply_window_hours,
-            escalation_enabled=factory_config.escalation.enabled,
-            allowed_hosts=factory_config.escalation.allowed_hosts,
+            reply_policy=reply_policy,
         )
 
     def health_provider() -> object:
@@ -1249,8 +1248,7 @@ def dashboard_command(
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),
                     requester=build_resume_requester(store),
-                    reply_window_hours=factory_config.escalation.reply_window_hours,
-                    max_reopens=factory_config.escalation.max_reopens,
+                    reply_policy=reply_policy,
                 ),
                 host=LOOPBACK_HOST,
                 port=port,

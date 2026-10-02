@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from factory_testing import REPLY_POLICY
 
+from software_agent_factory.config import EscalationConfig
 from software_agent_factory.escalation import (
     parse_plan_decision_answers,
     parse_resume_command,
 )
 from software_agent_factory.escalation_protocol import (
     MAX_PLAN_DECISIONS,
-    REPLY_CLOSED_CAUSES,
+    ReplyClosedCause,
+    ReplyPolicy,
     format_answer_command,
     format_resume_command,
     reply_closed_cause,
@@ -62,13 +66,8 @@ def _record(**fields: Any) -> EscalationRecord:
     return EscalationRecord(episode_id="ep-1", **fields)
 
 
-def _cause(record: EscalationRecord, **config: Any) -> str | None:
-    config.setdefault("max_reopens", 3)
-    config.setdefault("reply_window_hours", WINDOW_HOURS)
-    config.setdefault("enabled", True)
-    config.setdefault("allowed_hosts", ["github.com"])
-    config.setdefault("now", NOW)
-    return reply_closed_cause(record, **config)
+def _cause(record: EscalationRecord, *, now: datetime = NOW, **policy_changes: Any) -> str | None:
+    return reply_closed_cause(record, replace(REPLY_POLICY, **policy_changes), now)
 
 
 def test_a_notified_notice_with_instructions_inside_its_window_is_open() -> None:
@@ -125,59 +124,85 @@ def test_a_notice_host_that_is_not_allowed_closes_the_reply() -> None:
     record = _record(target_host="ghe.example.com")
 
     assert _cause(record) == "the notice host is no longer allowed"
-    assert _cause(record, allowed_hosts=["github.com", "ghe.example.com"]) is None
+    assert _cause(record, allowed_hosts=("github.com", "ghe.example.com")) is None
 
 
 def test_the_notice_host_is_compared_without_regard_to_case() -> None:
     assert _cause(_record(target_host="GitHub.com")) is None
-    assert _cause(_record(target_host="github.com"), allowed_hosts=["GitHub.com"]) is None
+    assert _cause(_record(target_host="github.com"), allowed_hosts=("GitHub.com",)) is None
 
 
 def test_a_notice_without_a_stored_host_uses_the_first_allowed_host() -> None:
-    assert _cause(_record(), allowed_hosts=["ghe.example.com", "github.com"]) is None
-    assert _cause(_record(), allowed_hosts=[]) == "the notice host is no longer allowed"
-
-
-@pytest.mark.parametrize(
-    "record",
-    [
-        _record(status=EscalationStatus.NOTIFICATION_FAILED),
-        _record(status=EscalationStatus.EXPIRED),
-        _record(remote_resume_enabled=False),
-        _record(reply_cursor="closed"),
-        _record(created_at=NOW - timedelta(days=30)),
-        _record(reopen_count=3),
-        _record(target_host="ghe.example.com"),
-    ],
-)
-def test_every_closed_cause_is_a_known_phrase(record: EscalationRecord) -> None:
-    cause = _cause(record)
-
-    assert cause in REPLY_CLOSED_CAUSES
-
-
-def test_the_disabled_cause_is_a_known_phrase() -> None:
-    assert _cause(_record(), enabled=False) in REPLY_CLOSED_CAUSES
+    assert _cause(_record(), allowed_hosts=("ghe.example.com", "github.com")) is None
+    assert _cause(_record(), allowed_hosts=()) == "the notice host is no longer allowed"
 
 
 def test_a_disabled_escalation_closes_the_reply() -> None:
-    assert _cause(_record(), enabled=False) == "escalation replies are turned off"
+    assert _cause(_record(), escalation_enabled=False) == "escalation replies are turned off"
 
 
-def test_unknown_config_values_do_not_close_the_reply() -> None:
-    record = _record(
-        reopen_count=9, created_at=NOW - timedelta(days=30), target_host="ghe.example.com"
+_LAPSED = {"created_at": NOW - timedelta(days=30)}
+_AT_REOPEN_LIMIT = {"reopen_count": 3}
+_OTHER_HOST = {"target_host": "ghe.example.com"}
+_NO_INSTRUCTIONS = {"remote_resume_enabled": False}
+_CURSOR_CLOSED = {"reply_cursor": "closed"}
+
+#: Per pair of neighbouring checks: the record, the policy changes and the check that wins.
+_PRECEDENCE: list[tuple[dict[str, Any], dict[str, Any], ReplyClosedCause]] = [
+    (
+        {"status": EscalationStatus.EXPIRED},
+        {"escalation_enabled": False},
+        ReplyClosedCause.ESCALATION_OFF,
+    ),
+    (
+        {"status": EscalationStatus.PENDING_NOTIFICATION, **_NO_INSTRUCTIONS},
+        {},
+        ReplyClosedCause.NOT_SENT_YET,
+    ),
+    ({**_NO_INSTRUCTIONS, **_CURSOR_CLOSED}, {}, ReplyClosedCause.NO_INSTRUCTIONS),
+    ({**_CURSOR_CLOSED, **_LAPSED}, {}, ReplyClosedCause.CURSOR_CLOSED),
+    ({**_LAPSED, **_AT_REOPEN_LIMIT}, {}, ReplyClosedCause.WINDOW_EXPIRED),
+    ({**_AT_REOPEN_LIMIT, **_OTHER_HOST}, {}, ReplyClosedCause.REOPEN_LIMIT),
+]
+
+
+@pytest.mark.parametrize(
+    ("changes", "policy_changes", "expected"),
+    _PRECEDENCE,
+    ids=[expected.name for _, _, expected in _PRECEDENCE],
+)
+def test_the_first_check_that_fails_names_the_cause_when_two_neighbours_fail(
+    changes: dict[str, Any], policy_changes: dict[str, Any], expected: ReplyClosedCause
+) -> None:
+    assert _cause(_record(**changes), **policy_changes) == expected
+
+
+def test_a_reply_policy_is_built_from_the_escalation_config() -> None:
+    config = EscalationConfig(
+        enabled=True,
+        authorized_identities=["lead-dev"],
+        max_reopens=2,
+        reply_window_hours=5,
+        allowed_hosts=["ghe.example.com"],
     )
-    unknown: dict[str, Any] = {
-        "max_reopens": None,
-        "reply_window_hours": None,
-        "enabled": None,
-        "allowed_hosts": None,
-    }
 
-    assert _cause(record, **unknown) is None
-    assert _cause(record, **{**unknown, "max_reopens": 3}) == "the reopen limit is reached"
-    assert _cause(record, **{**unknown, "reply_window_hours": 24}) == "the reply window expired"
-    assert _cause(record, **{**unknown, "allowed_hosts": ["github.com"]}) == (
-        "the notice host is no longer allowed"
+    policy = ReplyPolicy.from_config(config)
+
+    assert policy == ReplyPolicy(
+        max_reopens=2,
+        reply_window_hours=5,
+        escalation_enabled=True,
+        allowed_hosts=("ghe.example.com",),
     )
+
+
+def test_a_reply_policy_cannot_change_after_it_is_built() -> None:
+    policy = replace(REPLY_POLICY)
+
+    with pytest.raises(FrozenInstanceError):
+        policy.max_reopens = 1  # type: ignore[misc]
+
+
+def test_a_reply_policy_has_no_default_that_reads_as_open() -> None:
+    with pytest.raises(TypeError):
+        ReplyPolicy()  # type: ignore[call-arg]

@@ -32,9 +32,11 @@ from .escalation_protocol import (
     ANSWER_COMMAND_PATTERN,
     MAX_PLAN_DECISIONS,
     RESUME_COMMAND_PATTERN,
+    ReplyClosedCause,
+    ReplyPolicy,
     format_answer_command,
     format_resume_command,
-    notice_host,
+    reply_closed_cause,
 )
 from .github import (
     GitHubClient,
@@ -78,7 +80,7 @@ from .resume import (
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
     contains_unsafe_content,
-    resume_refusal,
+    has_valid_resume_context,
 )
 from .resume import is_valid_plan_decision_context as is_valid_plan_decision_context
 from .resume import is_valid_risk_approval_context as is_valid_risk_approval_context
@@ -405,6 +407,25 @@ def has_dispatched_risk_approval(
         if receipt_approves_risk_context(receipt, context):
             return True
     return False
+
+
+_REPLY_NOT_ACTIVE = "run does not have an active notified escalation"
+
+#: The reason the validator gives for a cause that closes the reply gate and has no text of its
+#: own. A cause not listed here gives its dashboard phrase. ``reopens``, ``max_reopens`` and
+#: ``host`` fill the templates that name them.
+_GATE_REFUSALS: dict[ReplyClosedCause, str] = {
+    ReplyClosedCause.NOT_SENT_YET: _REPLY_NOT_ACTIVE,
+    ReplyClosedCause.NOT_SENT: _REPLY_NOT_ACTIVE,
+    ReplyClosedCause.ALREADY_RESUMED: _REPLY_NOT_ACTIVE,
+    ReplyClosedCause.STATUS_UNKNOWN: _REPLY_NOT_ACTIVE,
+    ReplyClosedCause.NO_INSTRUCTIONS: (
+        "remote resume is disabled for this escalation; local inspection required"
+    ),
+    ReplyClosedCause.WINDOW_EXPIRED: "reply window has expired",
+    ReplyClosedCause.REOPEN_LIMIT: "reopen limit reached ({reopens}/{max_reopens})",
+    ReplyClosedCause.HOST_NOT_ALLOWED: "target host {host!r} is not allowed",
+}
 
 
 class ValidationResult(tuple[bool, str]):
@@ -1287,8 +1308,8 @@ def validate_reply_candidate(
     Returns ValidationResult(is_valid, reason, retryable=...).
     """
     escalation = run.escalation
-    if escalation is None or escalation.status is not EscalationStatus.NOTIFIED:
-        return ValidationResult(False, "run does not have an active notified escalation")
+    if escalation is None:
+        return ValidationResult(False, _REPLY_NOT_ACTIVE)
 
     if escalation.target_repository is None or escalation.target_number is None:
         return ValidationResult(False, "run escalation target is incomplete")
@@ -1337,24 +1358,15 @@ def validate_reply_candidate(
             False, "comment was created before escalation notification was posted"
         )
 
-    # Window check
-    current_time = now or utc_now()
-    window_deadline = escalation.created_at + timedelta(hours=config.escalation.reply_window_hours)
-    if current_time > window_deadline:
-        return ValidationResult(False, "reply window has expired")
-
-    # Reopen limits
-    if escalation.reopen_count >= config.escalation.max_reopens:
-        return ValidationResult(
-            False,
-            f"reopen limit reached ({escalation.reopen_count}/{config.escalation.max_reopens})",
+    # Reply gate: the one predicate the poller uses
+    policy = ReplyPolicy.from_config(config.escalation)
+    target_host = policy.notice_host(escalation)
+    cause = reply_closed_cause(escalation, policy, now or utc_now())
+    if cause is not None:
+        reason = _GATE_REFUSALS.get(cause, str(cause)).format(
+            reopens=escalation.reopen_count, max_reopens=policy.max_reopens, host=target_host
         )
-
-    # Remote resume enabled check
-    if not escalation.remote_resume_enabled:
-        return ValidationResult(
-            False, "remote resume is disabled for this escalation; local inspection required"
-        )
+        return ValidationResult(False, reason)
 
     # Decision context check
     if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
@@ -1374,12 +1386,6 @@ def validate_reply_candidate(
         for receipt in escalation.accepted_replies
     ):
         return ValidationResult(False, f"comment {comment.id} has already been accepted")
-
-    # Target host check
-    target_host = notice_host(escalation, config.escalation.allowed_hosts)
-    allowed_hosts = {h.casefold() for h in config.escalation.allowed_hosts}
-    if target_host.casefold() not in allowed_hosts:
-        return ValidationResult(False, f"target host {target_host!r} is not allowed")
 
     # Author authorization (must verify authenticated factory identity to fail closed)
     if factory_login is None and factory_id is None:
@@ -1494,6 +1500,47 @@ def _save_poll_update_if_unchanged(
     store.save_run(stored.model_copy(update={"escalation": current.model_copy(update=update)}))
 
 
+#: The causes after which the poller stops reading replies for good.
+_CLOSING_CAUSES = frozenset({ReplyClosedCause.NO_INSTRUCTIONS, ReplyClosedCause.REOPEN_LIMIT})
+#: The causes after which a stored decision context that no longer reads also closes the reply.
+_CONTEXT_CHECKED_CAUSES = frozenset(
+    {None, ReplyClosedCause.WINDOW_EXPIRED, ReplyClosedCause.HOST_NOT_ALLOWED}
+)
+
+
+def _gate_update(
+    cause: ReplyClosedCause | None, context_is_valid: bool, now: datetime
+) -> dict[str, Any] | None:
+    """The change the poller makes to an escalation whose reply gate is closed, or ``None``.
+
+    A reply that can no longer be read closes the escalation. A reply window that passed
+    expires it, unless the stored decision context no longer reads, which closes it first.
+    Every other cause only skips the poll.
+    """
+    closing = {"remote_resume_enabled": False, "reply_cursor": REPLY_CURSOR_CLOSED}
+    if cause in _CLOSING_CAUSES or (not context_is_valid and cause in _CONTEXT_CHECKED_CAUSES):
+        return {**closing, "updated_at": now}
+    if cause is ReplyClosedCause.WINDOW_EXPIRED:
+        return {"status": EscalationStatus.EXPIRED, **closing, "updated_at": now}
+    return None
+
+
+def _close_reply_gate(
+    store: FileRunStore,
+    run_id: str,
+    escalation: EscalationRecord,
+    cause: ReplyClosedCause | None,
+    context_is_valid: bool,
+    now: datetime,
+) -> None:
+    """Save what the closed gate calls for. A cursor that is closed already has nothing to close."""
+    if escalation.reply_cursor == REPLY_CURSOR_CLOSED:
+        return
+    update = _gate_update(cause, context_is_valid, now)
+    if update is not None:
+        _save_poll_update_if_unchanged(store, run_id, escalation, update)
+
+
 def _cursor_json(page: int, since: datetime, last_id: int | None) -> str:
     return json.dumps({"page": page, "since": since.isoformat(), "last_id": last_id})
 
@@ -1554,7 +1601,7 @@ def poll_escalation_reply(
     missing comments and avoid unbounded scans. If a valid reply is found,
     records the decision receipt on the run and persists it to disk before returning.
     """
-    if not config.escalation.enabled or _pollable_escalation(run) is None:
+    if _pollable_escalation(run) is None:
         return None
 
     # The caller's run may be older than the stored one (the dashboard path can have reopened
@@ -1565,47 +1612,20 @@ def poll_escalation_reply(
         return None  # the stored run no longer waits for a reply
     notified_at = escalation.last_notified_at
 
-    if escalation.reply_cursor == REPLY_CURSOR_CLOSED:
-        return None
-
     target_repo = escalation.target_repository
     target_num = escalation.target_number
     if target_repo is None or target_num is None:
         return None
 
+    policy = ReplyPolicy.from_config(config.escalation)
     current_time = now or utc_now()
-    refusal = resume_refusal(run, config, current_time)
-    if not escalation.remote_resume_enabled or refusal in {"context_changed", "reopen_limit"}:
-        _save_poll_update_if_unchanged(
-            store,
-            run.id,
-            escalation,
-            {
-                "remote_resume_enabled": False,
-                "reply_cursor": REPLY_CURSOR_CLOSED,
-                "updated_at": current_time,
-            },
-        )
+    cause = reply_closed_cause(escalation, policy, current_time)
+    context_is_valid = has_valid_resume_context(run)
+    if cause is not None or not context_is_valid:
+        _close_reply_gate(store, run.id, escalation, cause, context_is_valid, current_time)
         return None
 
-    if refusal == "expired":
-        _save_poll_update_if_unchanged(
-            store,
-            run.id,
-            escalation,
-            {
-                "status": EscalationStatus.EXPIRED,
-                "remote_resume_enabled": False,
-                "reply_cursor": REPLY_CURSOR_CLOSED,
-                "updated_at": current_time,
-            },
-        )
-        return None
-
-    target_host = notice_host(escalation, config.escalation.allowed_hosts)
-    allowed_hosts = {h.casefold() for h in config.escalation.allowed_hosts}
-    if target_host.casefold() not in allowed_hosts:
-        return None
+    target_host = policy.notice_host(escalation)
 
     if factory_login is None and factory_id is None:
         try:

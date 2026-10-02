@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from factory_testing import REPLY_POLICY
 
 from software_agent_factory import resume
 from software_agent_factory.config import FactoryConfig, load_config
@@ -37,7 +39,6 @@ from software_agent_factory.resume import (
     ReplyIdentity,
     accept_resume,
     build_plan_answers,
-    can_accept_resume,
     clean_plan_answer,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
@@ -315,7 +316,7 @@ def _stored_request(store: FileRunStore, run: FactoryRun) -> DashboardResumeRequ
     return request
 
 
-# -- can_accept_resume -------------------------------------------------------
+# -- resume_refusal ----------------------------------------------------------
 
 PLAN = ResumeClassification.PLAN_DECISION
 RISK = ResumeClassification.RISK_APPROVAL
@@ -336,13 +337,12 @@ def test_a_waiting_run_with_a_valid_context_can_accept_a_resume(
     run = _run(kind, status=status)
 
     assert resume_refusal(run, _config(), NOW) is None
-    assert can_accept_resume(run, _config(), NOW) is True
 
 
 def test_a_dashboard_resume_does_not_need_remote_resume_enabled() -> None:
     run = _run(remote_resume_enabled=False, reply_cursor="closed")
 
-    assert can_accept_resume(run, _config(), NOW) is True
+    assert resume_refusal(run, _config(), NOW) is None
 
 
 @pytest.mark.parametrize(
@@ -994,15 +994,13 @@ def test_the_dashboard_package_never_names_a_resume_write_function() -> None:
     assert named == {}
 
 
-def test_refusal_within_skips_a_limit_that_is_unknown() -> None:
+def test_refusal_within_reads_the_window_and_the_reopen_limit_of_the_policy() -> None:
     run = _run(created_at=NOW - timedelta(hours=500), reopen_count=9)
+    reopens_only = replace(REPLY_POLICY, reply_window_hours=1000)
 
-    assert resume_refusal_within(run, reply_window_hours=None, max_reopens=None, now=NOW) is None
-    assert resume_refusal_within(run, reply_window_hours=24, max_reopens=None, now=NOW) == "expired"
-    assert (
-        resume_refusal_within(run, reply_window_hours=None, max_reopens=3, now=NOW)
-        == "reopen_limit"
-    )
+    assert resume_refusal_within(run, REPLY_POLICY, NOW) == "expired"
+    assert resume_refusal_within(run, reopens_only, NOW) == "reopen_limit"
+    assert resume_refusal_within(run, replace(reopens_only, max_reopens=10), NOW) is None
 
 
 @pytest.mark.parametrize(
@@ -1037,8 +1035,7 @@ def _request_refusal_of(run: FactoryRun, **overrides: Any) -> str | None:
     fields: dict[str, Any] = {
         "episode_id": EPISODE,
         "action": RISK,
-        "reply_window_hours": 24,
-        "max_reopens": 3,
+        "policy": REPLY_POLICY,
         "now": NOW,
         **overrides,
     }
@@ -1091,9 +1088,3 @@ def test_a_request_refusal_names_one_reason_in_the_service_order(
     run: FactoryRun, overrides: dict[str, Any], expected: str | None
 ) -> None:
     assert _request_refusal_of(run, **overrides) == expected
-
-
-def test_a_request_refusal_skips_a_limit_that_is_unknown() -> None:
-    run = _run(RISK, created_at=NOW - timedelta(hours=500), reopen_count=9)
-
-    assert _request_refusal_of(run, reply_window_hours=None, max_reopens=None) is None

@@ -15,12 +15,13 @@ import socket
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from factory_testing import REPLY_POLICY
 
 from software_agent_factory import dashboard
 from software_agent_factory.cli import (
@@ -34,6 +35,7 @@ from software_agent_factory.dashboard.handler import MAX_BODY_BYTES
 from software_agent_factory.dashboard.security import TOKEN_HEADER, cookie_name
 from software_agent_factory.dashboard.server import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from software_agent_factory.dashboard.snapshot import ResumeRequestResult
+from software_agent_factory.escalation_protocol import ReplyPolicy
 from software_agent_factory.models import (
     Complexity,
     DashboardResumeRequest,
@@ -276,8 +278,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
     def build(
         run: FactoryRun | None = None,
         *,
-        max_reopens: int | None = 3,
-        reply_window_hours: float | None = 24,
+        reply_policy: ReplyPolicy = REPLY_POLICY,
         requester: Callable[[str, DashboardResumeRequest], ResumeRequestResult] | None = None,
         actions: bool = True,
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -293,8 +294,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),
                     requester=requester or build_resume_requester(store),
-                    reply_window_hours=reply_window_hours,
-                    max_reopens=max_reopens,
+                    reply_policy=reply_policy,
                     clock=lambda: NOW,
                 )
                 if actions
@@ -874,23 +874,32 @@ def test_an_existing_request_for_the_episode_is_409(make_rig: RigFactory) -> Non
         pytest.param(4, 2, (202, None), id="both limits above what the run used"),
         pytest.param(3, 2, (409, "reopen_limit"), id="reopen limit equal to the reopens used"),
         pytest.param(4, 1, (409, EXPIRED), id="window shorter than the run's age"),
-        pytest.param(None, None, (202, None), id="unknown limits are not checked"),
     ],
 )
 def test_the_limits_are_the_configured_ones(
     make_rig: RigFactory,
-    max_reopens: int | None,
-    window_hours: float | None,
+    max_reopens: int,
+    window_hours: int,
     expected: tuple[int, str | None],
 ) -> None:
     # Three reopens used and escalated 90 minutes ago.
     run = _run(reopen_count=3, created_at=NOW - timedelta(minutes=90))
-    rig = make_rig(run, max_reopens=max_reopens, reply_window_hours=window_hours)
+    policy = replace(REPLY_POLICY, max_reopens=max_reopens, reply_window_hours=window_hours)
+    rig = make_rig(run, reply_policy=policy)
 
     status, payload = rig.approve()
 
     actual = (status, payload.get(REASON))
     assert actual == expected
+
+
+def test_resume_actions_require_a_reply_policy(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run_reader = build_resume_run_reader(store)
+    requester = build_resume_requester(store)
+
+    with pytest.raises(TypeError, match="reply_policy"):
+        ResumeActions(run_reader=run_reader, requester=requester)  # type: ignore[call-arg]
 
 
 def test_two_approvals_at_once_make_one_request(make_rig: RigFactory) -> None:

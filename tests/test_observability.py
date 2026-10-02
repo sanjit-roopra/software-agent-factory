@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import get_args
 
 import pytest
+from factory_testing import REPLY_POLICY
 from pydantic import ValidationError
 
 from software_agent_factory.models import (
@@ -996,7 +997,7 @@ def test_runtime_reported_usage_is_summed_without_estimating_missing_values(
     assert usage.premium_request_cost == 1.0
     assert usage.total_nano_aiu == 123
     assert snapshot.runs[0].usage == usage
-    detail = build_run_detail(store, "run-1", now=T0)
+    detail = build_run_detail(store, "run-1", now=T0, reply_policy=REPLY_POLICY)
     assert detail is not None
     assert detail.invocations[0].usage is not None
     assert detail.invocations[0].usage.model_usage[0].output_tokens == 20
@@ -1132,7 +1133,7 @@ def test_build_run_detail_resolves_each_calls_usage_like_the_run_usage(tmp_path:
         )
     )
 
-    detail = build_run_detail(store, "run-1", now=T0)
+    detail = build_run_detail(store, "run-1", now=T0, reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert [call.usage.input_tokens for call in detail.invocations if call.usage] == [40, 40]
@@ -1949,7 +1950,9 @@ def test_build_run_detail_returns_summary_fields_plus_attempts(tmp_path: Path) -
     store.add_run(run)
     store.add_artifact("run-detail", WorkItem(id="WI-1", title="Title", description="D"))
 
-    detail = build_run_detail(store, "run-detail", now=T0 + timedelta(minutes=10))
+    detail = build_run_detail(
+        store, "run-detail", now=T0 + timedelta(minutes=10), reply_policy=REPLY_POLICY
+    )
 
     assert isinstance(detail, RunDetail)
     assert detail.run_id == "run-detail"
@@ -2020,7 +2023,7 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
     )
     store.save_patch(run.id, "secret patch")
 
-    payload = build_run_detail(store, run.id).model_dump(mode="json")
+    payload = build_run_detail(store, run.id, reply_policy=REPLY_POLICY).model_dump(mode="json")
 
     assert payload["source_external_id"] == "acme/example#17"
     assert payload["requested_performance_mode"] == "fast"
@@ -2081,13 +2084,13 @@ def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path
     )
     store.save_run(run)
 
-    detail = build_run_detail(store, run.id, max_reopens=3)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert detail.escalation is not None
     assert detail.escalation.episode_id == "ep-1"
     assert detail.escalation.context_fingerprint == "a" * 64
-    assert detail.escalation.max_reopens == 3
+    assert detail.escalation.max_reopens == REPLY_POLICY.max_reopens
     assert detail.escalation.approval_scope is not None
     assert detail.escalation.approval_scope.model_dump() == {
         "decision_requested": "Approve advancing the run to REFINING.",
@@ -2098,7 +2101,7 @@ def test_build_run_detail_carries_approval_scope_and_reopen_limit(tmp_path: Path
     assert detail.escalation.decisions == []
 
 
-def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
+def test_build_run_detail_carries_plan_decisions_and_the_reopen_limit_of_the_policy(
     tmp_path: Path,
 ) -> None:
     from software_agent_factory.observability import build_run_detail
@@ -2120,14 +2123,14 @@ def test_build_run_detail_carries_plan_decisions_and_defaults_reopen_limit(
     )
     store.save_run(run)
 
-    detail = build_run_detail(store, run.id)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert detail.escalation is not None
     assert detail.escalation.decisions == ["Use SQLite?", "Keep the API?"]
     assert detail.escalation.context_fingerprint == "c" * 64
     assert detail.escalation.approval_scope is None
-    assert detail.escalation.max_reopens is None
+    assert detail.escalation.max_reopens == REPLY_POLICY.max_reopens
 
 
 def test_build_run_detail_shows_live_active_invocation(
@@ -2162,6 +2165,7 @@ def test_build_run_detail_shows_live_active_invocation(
         "run-active",
         now=T0 + timedelta(minutes=30),
         stale_after=timedelta(minutes=15),
+        reply_policy=REPLY_POLICY,
     )
 
     assert detail is not None
@@ -2199,11 +2203,22 @@ def test_build_run_detail_marks_active_invocation_crashed(
     store.add_run(run)
     store.add_artifact("run-crashed", WorkItem(id="WI-crashed", title="Title", description="D"))
 
-    detail = build_run_detail(store, "run-crashed", now=T0 + timedelta(minutes=1))
+    detail = build_run_detail(
+        store, "run-crashed", now=T0 + timedelta(minutes=1), reply_policy=REPLY_POLICY
+    )
 
     assert detail is not None
     assert detail.active_invocation is not None
     assert detail.active_invocation.status == "crashed"
+
+
+def test_build_run_detail_requires_a_reply_policy(tmp_path: Path) -> None:
+    from software_agent_factory.observability import build_run_detail
+
+    store = FileRunStore(tmp_path / "data")
+
+    with pytest.raises(TypeError, match="reply_policy"):
+        build_run_detail(store, "run-absent")  # type: ignore[call-arg]
 
 
 def test_build_run_detail_returns_none_for_missing_or_unreadable_runs(
@@ -2214,8 +2229,8 @@ def test_build_run_detail_returns_none_for_missing_or_unreadable_runs(
     store = _fake_store(tmp_path)
     store.add_broken("run-corrupt", ValueError("bad json"))
 
-    assert build_run_detail(store, "run-absent") is None
-    assert build_run_detail(store, "run-corrupt") is None
+    assert build_run_detail(store, "run-absent", reply_policy=REPLY_POLICY) is None
+    assert build_run_detail(store, "run-corrupt", reply_policy=REPLY_POLICY) is None
 
 
 def test_build_run_detail_rejects_a_hostile_run_id_without_touching_disk(
@@ -2227,7 +2242,7 @@ def test_build_run_detail_rejects_a_hostile_run_id_without_touching_disk(
 
     store = FileRunStore(tmp_path / "data")
 
-    assert build_run_detail(store, "../../etc/passwd") is None
+    assert build_run_detail(store, "../../etc/passwd", reply_policy=REPLY_POLICY) is None
     assert not (tmp_path / "data").exists()
 
 
@@ -2242,8 +2257,8 @@ def test_build_run_detail_carries_the_run_failure_reason_as_stored(tmp_path: Pat
     )
     store.add_run(_run("run-ok", state=WorkflowState.DONE))
 
-    assert build_run_detail(store, "run-failed").failure_reason == reason
-    assert build_run_detail(store, "run-ok").failure_reason is None
+    assert build_run_detail(store, "run-failed", reply_policy=REPLY_POLICY).failure_reason == reason
+    assert build_run_detail(store, "run-ok", reply_policy=REPLY_POLICY).failure_reason is None
 
 
 def test_build_run_detail_carries_attempt_failure_reason_but_not_attempt_reasoning(
@@ -2255,7 +2270,7 @@ def test_build_run_detail_carries_attempt_failure_reason_but_not_attempt_reasoni
     failed = _attempt(2).model_copy(update={"outcome": "failed", "failure_reason": "tests red"})
     store.add_run(_run("run-attempts", attempt_records=[_attempt(1), failed]))
 
-    detail = build_run_detail(store, "run-attempts")
+    detail = build_run_detail(store, "run-attempts", reply_policy=REPLY_POLICY)
 
     assert [attempt.failure_reason for attempt in detail.attempts] == [None, "tests red"]
     payload = detail.model_dump(mode="json")
@@ -2290,7 +2305,7 @@ def test_build_run_detail_carries_invocation_reasoning_level_and_failure_reason(
     )
     store.add_run(run)
 
-    calls = build_run_detail(store, "run-calls").invocations
+    calls = build_run_detail(store, "run-calls", reply_policy=REPLY_POLICY).invocations
 
     assert [(call.reasoning, call.failure_reason) for call in calls] == [
         ("xhigh", None),
@@ -2327,7 +2342,7 @@ def test_build_run_detail_exposes_safe_review_impasse_guidance(tmp_path: Path) -
     store.add_run(run)
     store.add_artifact(run.id, impasse)
 
-    payload = build_run_detail(store, run.id).model_dump(mode="json")
+    payload = build_run_detail(store, run.id, reply_policy=REPLY_POLICY).model_dump(mode="json")
 
     assert "secret raw review failure" not in json.dumps(payload["guidance"])
     assert payload["guidance"] == {
@@ -2367,7 +2382,7 @@ def test_build_run_detail_cuts_the_finding_ids_of_a_stored_impasse_to_the_guidan
     store.add_run(run)
     store.add_artifact(run.id, ReviewImpasse(snapshot=1, reason="no progress", finding_ids=ids))
 
-    detail = build_run_detail(store, run.id)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert detail.guidance is not None
@@ -2395,7 +2410,7 @@ def test_build_run_detail_cuts_the_finding_ids_of_an_acceptance_to_the_guidance_
     store = _fake_store(tmp_path)
     store.add_run(run)
 
-    detail = build_run_detail(store, run.id)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert detail.guidance is not None
@@ -2427,7 +2442,7 @@ def test_build_run_detail_unresolved_decisions_exposes_decision_count_without_le
     store.add_run(run)
     store.add_artifact(run.id, plan)
 
-    detail = build_run_detail(store, run.id)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
     assert detail is not None
     assert detail.guidance is not None
     assert detail.guidance.reason_code == "UNRESOLVED_DECISIONS"
@@ -2468,7 +2483,7 @@ def test_build_run_detail_labels_plan_decision_answer_action(tmp_path: Path) -> 
     store = _fake_store(tmp_path)
     store.add_run(run)
 
-    detail = build_run_detail(store, run.id)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert detail.escalation is not None
@@ -2500,7 +2515,7 @@ def test_run_detail_reports_dashboard_local_as_last_responder(tmp_path: Path) ->
         )
     )
 
-    detail = build_run_detail(store, "r1")
+    detail = build_run_detail(store, "r1", reply_policy=REPLY_POLICY)
 
     assert detail is not None
     assert detail.escalation is not None
@@ -2543,8 +2558,12 @@ def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(
     store.add_run(accepted)
     store.add_run(halted)
 
-    accepted_payload = build_run_detail(store, accepted.id).model_dump(mode="json")
-    halted_payload = build_run_detail(store, halted.id).model_dump(mode="json")
+    accepted_payload = build_run_detail(store, accepted.id, reply_policy=REPLY_POLICY).model_dump(
+        mode="json"
+    )
+    halted_payload = build_run_detail(store, halted.id, reply_policy=REPLY_POLICY).model_dump(
+        mode="json"
+    )
 
     assert accepted_payload["review_status"] == "ACCEPTED_WITH_FINDINGS"
     assert accepted_payload["guidance"]["reason_code"] == "BOUNDED_REVIEW_ACCEPTANCE"
@@ -2578,7 +2597,7 @@ def test_build_run_detail_guidance_classifies_action_required_without_the_reason
     store = _fake_store(tmp_path)
     store.add_run(run)
 
-    payload = build_run_detail(store, run.id).model_dump(mode="json")
+    payload = build_run_detail(store, run.id, reply_policy=REPLY_POLICY).model_dump(mode="json")
 
     assert payload["guidance"]["reason_code"] == reason_code
     assert failure_reason not in json.dumps(payload["guidance"])
@@ -2592,7 +2611,7 @@ def test_build_run_detail_is_read_only(tmp_path: Path) -> None:
     store.save_run(_run("run-readonly", state=WorkflowState.DONE, completed_at=T0))
     before = sorted(path.name for path in (data_dir / "runs" / "run-readonly").iterdir())
 
-    assert build_run_detail(store, "run-readonly") is not None
+    assert build_run_detail(store, "run-readonly", reply_policy=REPLY_POLICY) is not None
 
     after = sorted(path.name for path in (data_dir / "runs" / "run-readonly").iterdir())
     assert after == before
