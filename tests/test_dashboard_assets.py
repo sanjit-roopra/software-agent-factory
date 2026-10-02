@@ -1305,7 +1305,12 @@ def test_leaving_the_view_drops_the_message_and_closes_an_open_dialog() -> None:
 
 def test_the_script_reads_the_token_from_the_page_and_never_from_the_address() -> None:
     assert function_source(_JS, "readToken").count("location") == 0
-    assert "location.search" not in _JS
+    assert ".get(TOKEN_QUERY_PARAM)" not in _JS
+
+
+def test_the_script_looks_at_the_address_query_only_to_drop_the_token() -> None:
+    assert _JS.count("location.search") == 1
+    assert "location.search" in function_source(_JS, "stripTokenFromAddress")
 
 
 def test_the_dialog_and_the_form_have_styles_and_a_disabled_button_looks_disabled() -> None:

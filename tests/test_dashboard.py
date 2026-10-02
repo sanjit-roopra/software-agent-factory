@@ -1174,10 +1174,11 @@ def test_the_script_drops_the_token_query_and_keeps_the_hash() -> None:
     )
 
 
-def test_the_script_drops_the_token_query_before_any_routing() -> None:
+@pytest.mark.parametrize("step", ["bindControls();", "seedBackHistory();", "applyRoute(false);"])
+def test_the_script_drops_the_token_query_before_any_routing(step: str) -> None:
     source = function_source(dashboard_assets.APP_JS, "start")
 
-    assert source.startswith("function start() { stripTokenFromAddress(); ")
+    assert source.index("stripTokenFromAddress();") < source.index(step)
 
 
 def _static_bytes(name: str) -> bytes:

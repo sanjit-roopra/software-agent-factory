@@ -2325,8 +2325,8 @@
   }
 
   function start() {
-    stripTokenFromAddress();
     applyStoredTheme();
+    stripTokenFromAddress();
     bindControls();
     seedBackHistory();
     applyRoute(false);
