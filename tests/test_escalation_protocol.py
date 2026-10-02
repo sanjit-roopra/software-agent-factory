@@ -197,8 +197,10 @@ def test_a_reply_policy_is_built_from_the_escalation_config() -> None:
 
 
 def test_a_reply_policy_cannot_change_after_it_is_built() -> None:
+    policy = replace(REPLY_POLICY)
+
     with pytest.raises(FrozenInstanceError):
-        REPLY_POLICY.max_reopens = 1  # type: ignore[misc]
+        policy.max_reopens = 1  # type: ignore[misc]
 
 
 def test_a_reply_policy_has_no_default_that_reads_as_open() -> None:

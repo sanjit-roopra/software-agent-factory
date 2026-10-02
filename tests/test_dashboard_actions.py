@@ -895,11 +895,11 @@ def test_the_limits_are_the_configured_ones(
 
 def test_resume_actions_require_a_reply_policy(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path)
+    run_reader = build_resume_run_reader(store)
+    requester = build_resume_requester(store)
 
     with pytest.raises(TypeError, match="reply_policy"):
-        ResumeActions(  # type: ignore[call-arg]
-            run_reader=build_resume_run_reader(store), requester=build_resume_requester(store)
-        )
+        ResumeActions(run_reader=run_reader, requester=requester)  # type: ignore[call-arg]
 
 
 def test_two_approvals_at_once_make_one_request(make_rig: RigFactory) -> None:

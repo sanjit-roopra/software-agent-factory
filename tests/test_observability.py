@@ -2215,8 +2215,10 @@ def test_build_run_detail_marks_active_invocation_crashed(
 def test_build_run_detail_requires_a_reply_policy(tmp_path: Path) -> None:
     from software_agent_factory.observability import build_run_detail
 
+    store = FileRunStore(tmp_path / "data")
+
     with pytest.raises(TypeError, match="reply_policy"):
-        build_run_detail(FileRunStore(tmp_path / "data"), "run-absent")  # type: ignore[call-arg]
+        build_run_detail(store, "run-absent")  # type: ignore[call-arg]
 
 
 def test_build_run_detail_returns_none_for_missing_or_unreadable_runs(
