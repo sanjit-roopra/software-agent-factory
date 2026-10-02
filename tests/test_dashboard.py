@@ -19,6 +19,7 @@ import socket
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from http.cookies import SimpleCookie
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -57,7 +58,12 @@ from software_agent_factory.dashboard.sanitize import (
     sanitize_run_summary,
     sanitize_usage,
 )
-from software_agent_factory.dashboard.security import TOKEN_HEADER, validate_bind_host
+from software_agent_factory.dashboard.security import (
+    TOKEN_HEADER,
+    cookie_name,
+    cookie_token_matches,
+    validate_bind_host,
+)
 from software_agent_factory.dashboard.snapshot import (
     MAX_PAGE_LIMIT,
     is_valid_run_id,
@@ -326,6 +332,18 @@ class RunningServer:
     def authed_headers(self) -> dict[str, str]:
         return {TOKEN_HEADER: self.token, "Host": f"127.0.0.1:{self.port}"}
 
+    def host_header(self) -> dict[str, str]:
+        return {"Host": f"127.0.0.1:{self.port}"}
+
+    def cookie_headers(self, value: str | None = None) -> dict[str, str]:
+        """The headers of a browser that holds the session cookie, with ``value`` in it."""
+        cookie = f"{cookie_name(self.port)}={self.token if value is None else value}"
+        return {**self.host_header(), "Cookie": cookie}
+
+    def exchange(self) -> http.client.HTTPResponse:
+        """Open the page link ``factory dashboard`` prints."""
+        return self.request("GET", f"/?token={self.token}", headers=self.host_header())
+
 
 def _start(config: DashboardConfig) -> RunningServer:
     server = create_server(config)
@@ -446,6 +464,7 @@ def test_wrong_token_is_rejected(running_server: RunningServer) -> None:
     assert response.status == 401
 
 
+SUMMARY_PATH = "/api/summary"
 NON_ASCII_TOKENS = ["caf\u00e9", "\u00e9" * 43]
 
 
@@ -477,11 +496,171 @@ def test_wrong_query_token_is_rejected(running_server: RunningServer) -> None:
     assert response.status == 401
 
 
-def test_correct_query_token_authenticates_index(running_server: RunningServer) -> None:
-    headers = {"Host": f"127.0.0.1:{running_server.port}"}
-    response = running_server.request("GET", f"/?token={running_server.token}", headers=headers)
+def test_the_page_link_trades_the_token_for_a_cookie_and_a_bare_url(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.exchange()
+
+    assert response.status == 303
+    assert response.getheader("Location") == "/"
+    assert response.read_body == b""  # type: ignore[attr-defined]
+
+
+def test_the_session_cookie_is_http_only_same_site_strict_and_ends_with_the_session(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.exchange()
+
+    morsel = SimpleCookie(response.getheader("Set-Cookie"))[cookie_name(running_server.port)]
+    assert morsel.value == running_server.token
+    assert {
+        "httponly": morsel["httponly"],
+        "samesite": morsel["samesite"],
+        "path": morsel["path"],
+        "max-age": morsel["max-age"],
+        "expires": morsel["expires"],
+        "secure": morsel["secure"],
+        "domain": morsel["domain"],
+    } == {
+        "httponly": True,
+        "samesite": "Strict",
+        "path": "/",
+        "max-age": "",
+        "expires": "",
+        "secure": "",
+        "domain": "",
+    }
+
+
+def test_the_redirect_is_never_cached(running_server: RunningServer) -> None:
+    response = running_server.exchange()
+
+    assert response.getheader("Cache-Control") == "no-store"
+
+
+def test_a_wrong_token_in_the_page_link_sets_no_cookie(running_server: RunningServer) -> None:
+    response = running_server.request("GET", "/?token=wrong", headers=running_server.host_header())
+
+    assert (response.status, response.getheader("Set-Cookie")) == (401, None)
+
+
+def test_each_dashboard_port_has_its_own_cookie_name() -> None:
+    assert cookie_name(8765) != cookie_name(8766)
+
+
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [
+        pytest.param("/", "text/html", id="page"),
+        pytest.param("/assets/app.js", "javascript", id="script"),
+        pytest.param("/assets/style.css", "css", id="stylesheet"),
+        pytest.param(SUMMARY_PATH, "application/json", id="api"),
+    ],
+)
+def test_the_cookie_alone_authenticates_a_read(
+    running_server: RunningServer, path: str, content_type: str
+) -> None:
+    response = running_server.request("GET", path, headers=running_server.cookie_headers())
+
+    assert (response.status, content_type in response.getheader("Content-Type", "")) == (200, True)
+
+
+@pytest.mark.parametrize("path", ["/", "/assets/app.js", SUMMARY_PATH])
+def test_a_cookie_of_another_start_is_401(running_server: RunningServer, path: str) -> None:
+    headers = running_server.cookie_headers("the-token-of-an-earlier-start")
+
+    response = running_server.request("GET", path, headers=headers)
+
+    assert response.status == 401
+
+
+def test_a_cookie_of_another_port_is_401(running_server: RunningServer) -> None:
+    other_name = cookie_name(running_server.port + 1)
+    headers = {**running_server.host_header(), "Cookie": f"{other_name}={running_server.token}"}
+
+    response = running_server.request("GET", SUMMARY_PATH, headers=headers)
+
+    assert response.status == 401
+
+
+@pytest.mark.parametrize("path", [SUMMARY_PATH, "/api/runs", "/assets/app.js", "/assets/style.css"])
+def test_the_token_in_the_url_authenticates_nothing_but_the_page_link(
+    running_server: RunningServer, path: str
+) -> None:
+    response = running_server.request(
+        "GET", f"{path}?token={running_server.token}", headers=running_server.host_header()
+    )
+
+    assert response.status == 401
+
+
+@pytest.mark.parametrize(
+    "extra_cookies",
+    [
+        pytest.param("a=1; {cookie}; b=2", id="among-others"),
+        pytest.param("a=1;{cookie}", id="no-space"),
+    ],
+)
+def test_the_session_cookie_is_found_among_other_cookies(
+    running_server: RunningServer, extra_cookies: str
+) -> None:
+    session = running_server.cookie_headers()["Cookie"]
+    headers = {**running_server.host_header(), "Cookie": extra_cookies.format(cookie=session)}
+
+    response = running_server.request("GET", SUMMARY_PATH, headers=headers)
+
     assert response.status == 200
-    assert b"<html" in response.read_body.lower()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "cookie",
+    ["", "garbage", "=", ";;;", "caf\u00e9=caf\u00e9", "factory_dashboard_0"],
+)
+def test_an_unusable_cookie_header_is_401_not_an_error(
+    running_server: RunningServer, cookie: str
+) -> None:
+    headers = {**running_server.host_header(), "Cookie": cookie}
+
+    response = running_server.request("GET", SUMMARY_PATH, headers=headers)
+
+    assert response.status == 401
+
+
+def test_the_cookie_check_sees_no_cookie_header_as_no_match() -> None:
+    assert cookie_token_matches("token", {}, 8765) is False
+
+
+def test_the_page_holds_the_token_only_for_a_request_that_holds_it(
+    running_server: RunningServer,
+) -> None:
+    meta = f'<meta name="{dashboard_assets.TOKEN_META_NAME}" content="{running_server.token}">'
+    by_cookie = running_server.request("GET", "/", headers=running_server.cookie_headers())
+    by_header = running_server.request("GET", "/", headers=running_server.authed_headers())
+    unauthenticated = running_server.request("GET", "/", headers=running_server.host_header())
+
+    assert meta in by_cookie.read_body.decode()  # type: ignore[attr-defined]
+    assert meta in by_header.read_body.decode()  # type: ignore[attr-defined]
+    assert unauthenticated.status == 401
+    assert running_server.token not in unauthenticated.read_body.decode()  # type: ignore[attr-defined]
+
+
+def test_the_cookie_exchange_and_the_reads_after_it_never_log_the_token(
+    running_server: RunningServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.DEBUG):
+        exchange = running_server.exchange()
+        page = running_server.request("GET", "/", headers=running_server.cookie_headers())
+        refused = running_server.request(
+            "GET", SUMMARY_PATH, headers=running_server.cookie_headers("wrong-but-secret-looking")
+        )
+
+    assert (exchange.status, page.status, refused.status) == (303, 200, 401)
+    logged = "\n".join(f"{r.getMessage()} {r.args!r}" for r in caplog.records)
+    # The guard: the checks below prove nothing unless the three requests were logged.
+    assert logged.count("GET /") == 3
+    assert running_server.token not in logged
+    assert "wrong-but-secret-looking" not in logged
+    assert "Set-Cookie" not in logged
 
 
 def test_correct_header_token_authenticates_api(running_server: RunningServer) -> None:
@@ -734,18 +913,14 @@ def test_unknown_route_is_404(running_server: RunningServer) -> None:
 
 def test_assets_are_served(running_server: RunningServer) -> None:
     js_response = running_server.request(
-        "GET",
-        f"/assets/app.js?token={running_server.token}",
-        headers={"Host": f"127.0.0.1:{running_server.port}"},
+        "GET", "/assets/app.js", headers=running_server.cookie_headers()
     )
     assert js_response.status == 200
     assert "javascript" in js_response.getheader("Content-Type", "")
     assert js_response.read_body == _static_bytes("app.js")  # type: ignore[attr-defined]
 
     css_response = running_server.request(
-        "GET",
-        f"/assets/style.css?token={running_server.token}",
-        headers={"Host": f"127.0.0.1:{running_server.port}"},
+        "GET", "/assets/style.css", headers=running_server.cookie_headers()
     )
     assert css_response.status == 200
     assert "css" in css_response.getheader("Content-Type", "")
@@ -1571,7 +1746,8 @@ def test_index_html_has_no_inline_script_body() -> None:
     assert "<script>" not in html
     assert "onclick=" not in html
     assert "onerror=" not in html
-    assert 'src="/assets/app.js?token=fixture-token"' in html
+    assert 'src="/assets/app.js"' in html
+    assert html.count("fixture-token") == 1
 
 
 # --------------------------------------------------------------------------
@@ -1867,18 +2043,18 @@ def test_dashboard_totals_show_list_price_estimate_row_as_not_reported_when_miss
 
 
 def test_live_loopback_smoke(running_server: RunningServer) -> None:
-    host_header = {"Host": f"127.0.0.1:{running_server.port}"}
+    index_response = running_server.exchange()
+    assert (index_response.status, index_response.getheader("Location")) == (303, "/")
+    cookie = SimpleCookie(index_response.getheader("Set-Cookie"))
+    session = {
+        **running_server.host_header(),
+        "Cookie": cookie.output(attrs=[], header="").strip(),
+    }
 
-    index_response = running_server.request(
-        "GET", f"/?token={running_server.token}", headers=host_header
-    )
-    assert index_response.status == 200
+    page_response = running_server.request("GET", "/", headers=session)
+    assert page_response.status == 200
 
-    js_response = running_server.request(
-        "GET",
-        f"/assets/app.js?token={running_server.token}",
-        headers=host_header,
-    )
+    js_response = running_server.request("GET", "/assets/app.js", headers=session)
     assert js_response.status == 200
 
     summary_response = running_server.request(

@@ -16,14 +16,18 @@ from typing import Protocol
 #: range for a token that only needs to survive the lifetime of one process.
 TOKEN_BYTES = 32
 
-#: Header a browser-side script must use to authenticate API/asset requests
-#: it issues itself (as opposed to the initial page navigation, which can
-#: only carry the token as a query parameter).
+#: Header the page script sends. A write must carry it (the CSRF defence), and a read
+#: may carry it instead of the cookie.
 TOKEN_HEADER = "X-Factory-Token"
 
-#: Query parameter accepted as an alternative to the header, used for the
-#: initial HTML page load where a browser cannot attach a custom header.
+#: Query parameter of the page link ``factory dashboard`` prints. Only the page route
+#: accepts it, and only to trade it for the cookie below (ADR-033). It never
+#: authenticates an API, asset or write request.
 TOKEN_QUERY_PARAM = "token"
+
+#: Prefix of the cookie name. The port follows it: a cookie is shared by every port of
+#: ``127.0.0.1``, so two dashboards on two ports would replace each other's cookie.
+COOKIE_NAME_PREFIX = "factory_dashboard"
 
 #: The one literal address this server ever binds to. Deliberately a single
 #: constant rather than a set of "loopback-equivalent" aliases: accepting
@@ -53,6 +57,23 @@ def token_matches(expected: str, candidate: str | None) -> bool:
     )
 
 
+def cookie_name(port: int) -> str:
+    """The name of the session cookie of the dashboard bound to ``port``."""
+    return f"{COOKIE_NAME_PREFIX}_{port}"
+
+
+def session_cookie(port: int, token: str) -> str:
+    """The ``Set-Cookie`` value that carries ``token`` for the rest of the browser session.
+
+    ``HttpOnly`` keeps the cookie out of ``document.cookie``. ``SameSite=Strict`` keeps it off
+    requests that another site starts. There is no ``Max-Age``, so it ends with the browser
+    session, and no ``Domain``, so only ``127.0.0.1`` gets it. There is no ``Secure`` flag:
+    the server speaks plain ``http`` on loopback, and a browser may drop a ``Secure``
+    cookie that arrives over ``http``.
+    """
+    return f"{cookie_name(port)}={token}; HttpOnly; SameSite=Strict; Path=/"
+
+
 class HeaderSource(Protocol):
     """Anything that looks a header up by name, such as ``http.client.HTTPMessage``."""
 
@@ -66,6 +87,15 @@ def header_token_matches(expected: str, headers: HeaderSource) -> bool:
     history and referrers, so it must never authorize a change.
     """
     return token_matches(expected, headers.get(TOKEN_HEADER))
+
+
+def cookie_token_matches(expected: str, headers: HeaderSource, port: int) -> bool:
+    """Whether the ``Cookie`` header holds this dashboard's cookie with ``expected`` in it."""
+    name = cookie_name(port)
+    pairs = (pair.partition("=") for pair in (headers.get("Cookie") or "").split(";"))
+    return any(
+        key.strip() == name and token_matches(expected, value.strip()) for key, _, value in pairs
+    )
 
 
 class InvalidBindHostError(ValueError):

@@ -1,7 +1,7 @@
 """HTTP request handling for the local dashboard.
 
-Routing, auth (token/Host/Origin), method enforcement and security headers
-all live here. ``GET`` serves reads. The only ``POST`` routes are the approve and
+Routing, auth (cookie or header token, Host, Origin), method enforcement and security
+headers all live here. ``GET`` serves reads. The only ``POST`` routes are the approve and
 answer actions (ADR-033): they check the transport here and the run in
 :mod:`.actions`. Nothing in this module -- or anywhere in this package --
 imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
@@ -28,10 +28,12 @@ from .responses import WriteRejected
 from .sanitize import sanitize_health, sanitize_run_detail, sanitize_run_summary
 from .security import (
     TOKEN_QUERY_PARAM,
+    cookie_token_matches,
     header_token_matches,
     host_header_is_valid,
     origin_header_is_valid,
     required_origin_is_valid,
+    session_cookie,
     token_matches,
 )
 from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
@@ -82,6 +84,7 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("Cache-Control", "no-store"),
 )
 
+_INDEX_PATH = "/"
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
 
 
@@ -269,7 +272,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if not origin_header_is_valid(self.headers.get("Origin"), bound_host, port):
             self._respond_json(HTTPStatus.FORBIDDEN, {"error": "invalid origin"}, send_body)
             return
-        if not self._token_is_valid(query):
+        if self._is_token_exchange(path, query):
+            self._exchange_token(send_body)
+            return
+        if not self._is_authenticated():
             self._respond_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}, send_body)
             return
 
@@ -316,17 +322,46 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             extra_headers=(("Allow", allow),),
         )
 
-    def _token_is_valid(self, query: dict[str, list[str]]) -> bool:
-        if header_token_matches(self.server.token, self.headers):
-            return True
-        query_values = query.get(TOKEN_QUERY_PARAM)
-        query_token = query_values[0] if query_values else None
-        return token_matches(self.server.token, query_token)
+    def _is_authenticated(self) -> bool:
+        """Whether the header or the cookie holds the token. The query never counts."""
+        _, port = self.server.address
+        return header_token_matches(self.server.token, self.headers) or cookie_token_matches(
+            self.server.token, self.headers, port
+        )
+
+    def _is_token_exchange(self, path: str, query: dict[str, list[str]]) -> bool:
+        """Whether this is the page link ``factory dashboard`` printed, with the right token.
+
+        Only the page route trades the token in its query for the cookie. Any other route
+        needs the cookie or the header, so a token in a URL never reads an API or an asset.
+        """
+        values = query.get(TOKEN_QUERY_PARAM)
+        return path == _INDEX_PATH and token_matches(
+            self.server.token, values[0] if values else None
+        )
+
+    def _exchange_token(self, send_body: bool) -> None:
+        """Set the session cookie and send the browser to the page without the token in its URL.
+
+        The browser keeps a fragment across a redirect that names none (RFC 9110, 10.2.2).
+        ``Cache-Control: no-store`` comes with every response, so no cache keeps the cookie.
+        """
+        _, port = self.server.address
+        self._respond_bytes(
+            HTTPStatus.SEE_OTHER,
+            "text/plain; charset=utf-8",
+            b"",
+            send_body,
+            extra_headers=(
+                ("Location", _INDEX_PATH),
+                ("Set-Cookie", session_cookie(port, self.server.token)),
+            ),
+        )
 
     # -- routing ---------------------------------------------------------------
 
     def _route(self, path: str, query: dict[str, list[str]], send_body: bool) -> None:
-        if path == "/":
+        if path == _INDEX_PATH:
             self._serve_index(send_body)
             return
         if path == "/assets/app.js":

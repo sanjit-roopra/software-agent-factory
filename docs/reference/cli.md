@@ -380,7 +380,7 @@ factory dashboard --port 0 --open-browser
 | Option | Default | Effect |
 | --- | --- | --- |
 | `--port <int>` | `8765` | Loopback port. `0` asks the OS for a free port. |
-| `--open-browser` | off | Open the tokenized URL in the default browser. |
+| `--open-browser` | off | Open the tokenized link in the default browser. |
 | `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per request. |
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
@@ -409,8 +409,13 @@ figure shows `not reported` when no recent call reported tokens.
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Two `POST` routes are the
 only writes: approve a risk halt and answer plan decisions (ADR-033). The
-tokenized URL is printed to stdout once and never written to the log. Ctrl-C stops
+tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
+
+Open the printed link once. The first request sets a session cookie and moves the
+browser to the page address without the token. A reload then works from the
+cookie. A write also needs the token in a header, which the page sends. A new
+`factory dashboard` start makes a new token. Open the new link after a restart.
 
 This is the only command that opens a socket.
 

@@ -82,6 +82,9 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 - Reads with `GET`. The only writes are the two actions below.
 - Requires a token generated for that process. The tokenized URL is printed to
   stdout once and never written to the log.
+- Trades the token in that URL for a session cookie on the first request. Then
+  the address bar shows the page address without the token, and a reload works.
+  After a restart, open the new link.
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
 
 It shows project state, issue references, pull requests, merge progress, and
@@ -128,7 +131,7 @@ and focus moves to it. These messages come from the page.
 
 | Message | Cause |
 | --- | --- |
-| `dashboard restarted, reload the page` | The token no longer matches (`401`). |
+| `dashboard restarted, open the new link from factory dashboard` | The token no longer matches (`401`). Open the new link that `factory dashboard` printed. |
 | `open the dashboard from the link it printed` | The request did not come from the page (`403`). |
 | `this run no longer exists` | The run was removed (`404`). |
 | `already approved` (`answers already sent` for answers) | A request for this run and context exists. |

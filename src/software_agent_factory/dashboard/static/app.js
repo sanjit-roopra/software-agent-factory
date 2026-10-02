@@ -292,7 +292,7 @@
 
   function noticeMessage() {
     if (state.noticeKind === ERROR_UNAUTHORIZED) {
-      return "Dashboard restarted, reload the page.";
+      return "Dashboard restarted, open the new link from factory dashboard.";
     }
     if (state.noticeKind !== ERROR_CONNECTION) {
       return state.actionMessage;
@@ -1394,7 +1394,7 @@
   // Statuses with their own wording. A 400 names the decision and a 409 uses its
   // reason code, so neither is listed here. Any other status is FAILURE_TEXT.
   const STATUS_MESSAGES = {
-    401: "dashboard restarted, reload the page",
+    401: "dashboard restarted, open the new link from factory dashboard",
     403: "open the dashboard from the link it printed",
     404: "this run no longer exists"
   };

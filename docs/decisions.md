@@ -104,9 +104,31 @@ Authority for a local approval:
   It also records the time and the context fingerprint, and the service writes a log event.
 - A `POST` also needs the token in a header, an exact `Origin` and a JSON body of at most 16 KB.
   Other write methods return `405`.
-- The per-start token stays in the page URL and in the browser history.
-  Anyone who can read the operator's browser history or terminal can approve while that dashboard runs.
-  A server-set cookie can remove the token from the URL (follow-up).
+- The page link that `factory dashboard` prints holds the token in its query.
+  The first request for that link sets a session cookie and answers `303 See Other` with `Location: /`.
+  The address bar and the browser history then hold no token.
+  The browser keeps a fragment across the redirect, because the `Location` value names none (RFC 9110).
+  The `303` is never cached.
+- The cookie is `HttpOnly`, `SameSite=Strict` and `Path=/`.
+  It has no `Max-Age`, so it ends with the browser session.
+  It has no `Secure` flag, because the server speaks plain `http` on loopback and a browser can drop a `Secure` cookie over `http`.
+  Its name ends with the port, because a browser shares cookies between the ports of one host.
+- Only the page route accepts the token in its query, and only for this exchange.
+  A `GET` for the page, an asset or the API needs the cookie or the token header.
+  A token in the query of any other route gets `401`.
+  A `POST` still needs the token header, so the cookie alone cannot write.
+- The page holds the token in a `<meta>` tag, and the script sends it in the header for a write.
+  The server renders the page only for a request that holds the token.
+  So `HttpOnly` keeps the token out of the address bar, the history and referrers.
+  It does not hide the token from script that runs in the page.
+  The content security policy allows only scripts from the dashboard itself.
+- After a restart the server has a new token, so the old cookie gets `401`.
+  The operator opens the new link from `factory dashboard`.
+- The terminal still shows the link while it stays on screen.
+  A browser does not send `SameSite` cookies across sites, but it counts all ports of `127.0.0.1` as one site.
+  Another web server on that host can receive the cookie.
+  The exact `Host` check and the exact `Origin` check on a write stop a page on another port from using it.
+  Anyone who can read the cookie store of the browser can approve while that dashboard runs.
 
 Consequences:
 

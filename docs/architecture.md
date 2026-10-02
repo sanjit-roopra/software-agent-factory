@@ -1677,6 +1677,8 @@ checks, writes the receipt and reopens the run through `controller.reopen`. The
 service is the only writer of `run.json` and of the request's `stale` status,
 and it ingests requests even when GitHub escalation is off. Holding the
 per-start token replaces the ADR-024 author checks for a local approval. The
+printed link trades its token for an `HttpOnly`, `SameSite=Strict` session
+cookie on the first request. A write still needs the token in a header. The
 two POST routes are `/api/runs/<id>/approve` and `/api/runs/<id>/answer`. The
 run detail page offers them: a confirm dialog for an approval, and one field
 for each plan decision.

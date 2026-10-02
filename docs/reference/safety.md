@@ -454,6 +454,10 @@ write actions, not a control plane.
 - Reads with `GET`. Two `POST` routes are the only writes: approve a risk
   approval, and answer plan decisions (ADR-033).
 - Token generated per process, printed once, never logged.
+- The printed link trades its token for an `HttpOnly`, `SameSite=Strict`
+  session cookie on the first request. A reload works from the cookie. Only the
+  page route accepts the token in its address, and only for that trade. Every
+  other route needs the cookie or the token header (ADR-033).
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object
@@ -463,8 +467,8 @@ write actions, not a control plane.
 - Failure reasons and escalation text are redacted first, then cut to 500
   characters with the start and the end kept. A cut reason names
   `factory show <run>` for the full text (ADR-033).
-- A write needs the token in a header. A token in the address never counts.
-  It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
+- A write needs the token in a header. A token in the address or in the
+  cookie never counts alone. It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
   current episode and context fingerprint. The page asks you to confirm an
   approval before it sends anything.
 - A write never changes `run.json`. It creates one request file. The factory
