@@ -1360,9 +1360,38 @@ def test_summary_never_includes_run_list(running_server: RunningServer) -> None:
     payload = _body_json(response)
     assert "runs" not in payload
     assert "page" not in payload
-    assert "counts" in payload
+    assert "overview" in payload
     assert "health" in payload
     assert payload["health"]["success"] is True
+
+
+def test_summary_sends_only_what_the_page_reads(running_server: RunningServer) -> None:
+    response = running_server.request(
+        "GET", "/api/summary", headers=running_server.authed_headers()
+    )
+
+    assert sorted(_body_json(response)) == ["health", "overview"]
+
+
+def test_summary_never_sends_a_secret_shaped_model_name() -> None:
+    def provider(*, limit: int, offset: int) -> dict[str, Any]:
+        snapshot = fake_snapshot_provider(limit=limit, offset=offset)
+        return {**snapshot, "attempts_by_model": {GH_SECRET: 5}}
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=provider,
+        run_detail_provider=fake_run_detail_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/summary", headers=running.authed_headers())
+        body = response.read_body.decode("utf-8")  # type: ignore[attr-defined]
+    finally:
+        _stop(running)
+
+    assert "ghp_abcdefgh12345678" not in body
 
 
 @pytest.mark.parametrize(
@@ -1390,9 +1419,10 @@ def test_summary_passes_the_key_figures_through(tokens: int | None) -> None:
     finally:
         _stop(running)
 
-    assert payload["needs_human_count"] == 1
-    assert payload["failed_last_24h"] == 2
-    assert payload["tokens_last_24h"] == tokens
+    overview = payload["overview"]
+    assert overview["needs_you"] == 1
+    assert overview["failed_last_24h"] == 2
+    assert overview["tokens_last_24h"] == tokens
 
 
 def test_summary_reports_null_health_when_not_configured() -> None:
@@ -1428,7 +1458,7 @@ def test_summary_degrades_gracefully_when_health_provider_fails() -> None:
         # computed.
         assert response.status == 200
         payload = _body_json(response)
-        assert "counts" in payload
+        assert "overview" in payload
         assert payload["health"] == {"error": "health check unavailable"}
     finally:
         _stop(running)
@@ -2428,8 +2458,8 @@ def test_wires_real_observability_and_store_end_to_end(tmp_path: Path) -> None:
         summary_response = running.request("GET", "/api/summary", headers=running.authed_headers())
         assert summary_response.status == 200
         summary_payload = _body_json(summary_response)
-        assert summary_payload["counts"]["succeeded"] == 2
-        assert summary_payload["counts"]["failed"] == 1
+        assert summary_payload["overview"]["succeeded"] == 2
+        assert summary_payload["overview"]["failed"] == 1
         assert "runs" not in summary_payload
 
         runs_response = running.request(
@@ -2617,7 +2647,7 @@ def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> No
         summary_response = running.request("GET", "/api/summary", headers=running.authed_headers())
         assert summary_response.status == 200
         summary_payload = _body_json(summary_response)
-        assert summary_payload["counts"]["succeeded"] == 3
+        assert summary_payload["overview"]["succeeded"] == 3
 
         runs_response = running.request(
             "GET", "/api/runs?limit=10&offset=0", headers=running.authed_headers()

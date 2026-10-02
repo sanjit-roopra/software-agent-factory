@@ -48,13 +48,15 @@ def run_outcome(run: Mapping[str, Any]) -> dict[str, str]:
     """The outcome of a run as a ``kind`` and a ``label``: done, failed, needs you or active.
 
     The label always names the outcome in words, so a badge never relies on its color.
+    ``PR_READY`` is done only once the run is finished (``is_finished``). Until then it is
+    active, as :func:`software_agent_factory.observability.build_monitoring_snapshot` counts it.
     """
     state = _state(run)
     if state == WorkflowState.FAILED:
         return _outcome(OUTCOME_FAILED)
     if state == WorkflowState.NEEDS_HUMAN:
         return _outcome(OUTCOME_NEEDS_YOU)
-    if state == WorkflowState.PR_READY:
+    if state == WorkflowState.PR_READY and run.get("is_finished") is True:
         return _outcome(OUTCOME_DONE, _PR_READY_LABEL)
     if state == WorkflowState.DONE:
         return _outcome(OUTCOME_DONE)

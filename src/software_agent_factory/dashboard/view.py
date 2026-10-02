@@ -18,6 +18,7 @@ from .sanitize import (
     sanitize_project,
     sanitize_run_detail,
     sanitize_run_summary,
+    sanitize_summary,
 )
 from .validators import is_episode_id, run_id_of
 
@@ -78,14 +79,12 @@ def run_summary_view(raw: Any) -> dict[str, Any]:
 
 
 def summary_view(snapshot: Any) -> dict[str, Any]:
-    """The snapshot without its run page, plus the ``overview`` row the Runs page shows."""
-    payload = {
-        key: value
-        for key, value in (snapshot if isinstance(snapshot, dict) else {}).items()
-        if key not in ("runs", "page")
-    }
-    payload["overview"] = snapshot_overview(payload)
-    return payload
+    """The ``overview`` row the Runs page shows. The handler adds ``health``.
+
+    Nothing else of the snapshot is passed on (see :data:`.sanitize.SUMMARY_FIELDS`).
+    """
+    raw = snapshot if isinstance(snapshot, dict) else {}
+    return sanitize_summary({"overview": snapshot_overview(raw)})
 
 
 def project_view(raw: Any) -> dict[str, Any]:
