@@ -15,6 +15,7 @@ from software_agent_factory.escalation import (
     is_valid_plan_decision_answers,
     parse_plan_decision_answers,
 )
+from software_agent_factory.github import parse_comment_payload
 from software_agent_factory.models import (
     DASHBOARD_USER_LOGIN,
     Complexity,
@@ -104,7 +105,14 @@ def test_blank_and_multi_line_answers_are_rejected(text: str) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["see https://example.com/x", "edit /etc/passwd", "token ghp_" + "a" * 20],
+    [
+        "see https://example.com/x",
+        "edit /etc/passwd",
+        "token ghp_" + "a" * 20,
+        "key sk-ant-" + "a" * 20,
+        "clone ssh://bob:hunter22@example.com/repo",
+        "set secret_key=abcdefgh1234",
+    ],
 )
 def test_unsafe_answers_are_rejected(text: str) -> None:
     assert clean_plan_answer(text) is None
@@ -143,6 +151,23 @@ def _reply(*answers: str) -> str:
 def test_github_reply_follows_the_same_answer_rules() -> None:
     assert parse_plan_decision_answers(_reply("a" * 500), decision_count=1) is not None
     assert parse_plan_decision_answers(_reply("a" * 501), decision_count=1) is None
+
+
+CREDENTIAL_ANSWERS = ["Authorization: admins only", "API_KEY=abcdefgh12345", "keep [REDACTED] here"]
+
+
+@pytest.mark.parametrize("answer", CREDENTIAL_ANSWERS)
+def test_dashboard_answer_with_a_credential_shape_is_refused(answer: str) -> None:
+    assert clean_plan_answer(answer) is None
+
+
+@pytest.mark.parametrize("answer", CREDENTIAL_ANSWERS)
+def test_github_comment_with_a_credential_shape_is_refused_after_redaction(answer: str) -> None:
+    comment = parse_comment_payload(
+        {"id": 7, "body": _reply(answer), "created_at": "2026-10-01T12:00:00Z"}
+    )
+
+    assert parse_plan_decision_answers(comment.body, decision_count=1) is None
 
 
 def test_github_reply_with_a_bare_carriage_return_is_ignored_not_a_crash() -> None:

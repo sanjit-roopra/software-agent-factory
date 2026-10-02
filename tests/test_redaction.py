@@ -14,6 +14,7 @@ from software_agent_factory.redaction import (
     REASON_LIMIT,
     REDACTION_PLACEHOLDER,
     bounded_reason,
+    contains_secret,
     redact_secrets,
 )
 
@@ -42,6 +43,16 @@ _SAMPLES: tuple[tuple[str, str, str], ...] = (
         "dozjgNryP4J3jVmNHl0w5N",
     ),
     ("assignment", "MY_API_KEY=abcdefgh12345", "abcdefgh12345"),
+    ("assignment-secret-key", "SECRET_KEY=abcdefgh12345", "abcdefgh12345"),
+    ("assignment-hyphen-api-key", "api-key: abcdefgh12345", "abcdefgh12345"),
+    ("openai-key", "sk-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("openai-project-key", "sk-proj-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("anthropic-key", "sk-ant-api03-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("gitlab-token", "glpat-" + "a1B2c3D4e5" * 3, "a1B2c3D4e5"),
+    ("slack-token", "xoxb-1234567890-abcdef", "1234567890-abcdef"),
+    ("url-user-password", "https://bob:hunter22@example.com/repo", "hunter22"),
+    ("url-user-only", "ssh://deploytoken@example.com/repo", "deploytoken"),
+    ("pem-header-variant", "-----BEGIN EC-P256 PRIVATE KEY-----", "EC-P256"),
 )
 
 #: (id, text, redacted?) pairs written by hand around the smallest accepted size
@@ -60,6 +71,21 @@ _THRESHOLDS: tuple[tuple[str, str, bool], ...] = (
     ("bearer-20", "bearer " + "a" * 20, True),
     ("assignment-7", "MY_TOKEN=" + "a" * 7, False),
     ("assignment-8", "MY_TOKEN=" + "a" * 8, True),
+    ("secret-key-7", "SECRET_KEY=" + "a" * 7, False),
+    ("secret-key-8", "SECRET_KEY=" + "a" * 8, True),
+    ("aws-secret-39", "aws_secret_access_key=" + "a" * 39, False),
+    ("aws-secret-40", "aws_secret_access_key=" + "a" * 40, True),
+    ("basic-7", "Basic " + "a" * 7 + "=", False),
+    ("basic-8", "Basic " + "a" * 8 + "=", True),
+    ("openai-key-19", "sk-" + "a" * 19, False),
+    ("openai-key-20", "sk-" + "a" * 20, True),
+    ("gitlab-token-19", "glpat-" + "a" * 19, False),
+    ("gitlab-token-20", "glpat-" + "a" * 20, True),
+    ("slack-token-9", "xoxb-" + "1" * 9, False),
+    ("slack-token-10", "xoxb-" + "1" * 10, True),
+    ("slack-token-kind-x", "xoxx-" + "1" * 10, False),
+    ("url-without-credentials", "https://example.com/repo", False),
+    ("url-with-user", "https://u@example.com/repo", True),
 )
 
 
@@ -85,6 +111,18 @@ def test_every_secret_pattern_matches_some_sample(pattern: re.Pattern[str]) -> N
 )
 def test_pattern_minimum_length_boundaries(text: str, is_redacted: bool) -> None:
     assert (redact_secrets(f"x {text} y") != f"x {text} y") is is_redacted
+
+
+@pytest.mark.parametrize(
+    ("sample", "secret"), [row[1:] for row in _SAMPLES], ids=[row[0] for row in _SAMPLES]
+)
+def test_contains_secret_is_true_for_each_secret_shape(sample: str, secret: str) -> None:
+    assert contains_secret(f"before {sample} after") is True
+
+
+@pytest.mark.parametrize("text", ["", "plain failure text", "configure basic authentication"])
+def test_contains_secret_is_false_without_a_secret_shape(text: str) -> None:
+    assert contains_secret(text) is False
 
 
 def test_several_secrets_in_one_text_are_all_redacted() -> None:

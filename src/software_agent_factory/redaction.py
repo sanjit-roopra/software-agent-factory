@@ -19,20 +19,31 @@ REDACTION_PLACEHOLDER = "[REDACTED]"
 #: Default cap, in characters, for a reason shown to an operator.
 REASON_LIMIT = 500
 
+#: The words before ``PRIVATE KEY`` in a PEM header, such as ``RSA `` or ``EC-P256 ``.
+_PEM_LABEL = r"[A-Z0-9_ -]{0,40}"
+
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # GitHub personal access / app / OAuth tokens. Eight characters is the
     # shortest body any caller ever redacted; the class includes ``_``.
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_\w{20,}"),
+    # GitLab personal access tokens, OpenAI and Anthropic keys (``sk-``, ``sk-proj-``,
+    # ``sk-ant-``), and Slack tokens.
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\b(?i:xox[baprse])-[0-9A-Za-z-]{10,}"),
     # AWS access key ids and secret access keys.
     re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),
     re.compile(r"(?i)\baws_secret_access_key\b\s*[:=]\s*[\"']?[a-z0-9/+=]{40}[\"']?"),
+    # Credentials in a URL: ``scheme://user:password@host`` or ``scheme://token@host``.
+    # The scheme is at most 32 characters, so a scan from each start stays short.
+    re.compile(r"[A-Za-z][A-Za-z0-9+.-]{0,31}://[^/\s@]+@[^\s/]+"),
     # PEM-encoded private keys (any flavor), including the body.
     re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        rf"-----BEGIN {_PEM_LABEL}PRIVATE KEY-----.*?-----END {_PEM_LABEL}PRIVATE KEY-----",
         re.DOTALL,
     ),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(rf"-----BEGIN {_PEM_LABEL}PRIVATE KEY-----"),
     # Authorization and proxy-authorization headers (all schemes: Basic, Bearer, Digest, etc.).
     re.compile(r"(?i)\b(?:authorization|proxy[_-]?authorization)\b\s*[:=]\s*[^\r\n]+"),
     re.compile(r"(?i)\bbearer\b\s*(?:[:=]\s*)?[a-z0-9._\-/+=]{20,}"),
@@ -43,7 +54,7 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     # Explicit token/secret/password/session assignments.
     re.compile(
-        r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|SESSION[_-]?ID|SESSION[_-]?KEY|SESSION[_-]?TOKEN|JSESSIONID|PHPSESSID))\b\s*[:=]\s*"
+        r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|SECRET[_-]?KEY|SESSION[_-]?ID|SESSION[_-]?KEY|SESSION[_-]?TOKEN|JSESSIONID|PHPSESSID))\b\s*[:=]\s*"
         r"[\"']?[^\s\"';]{8,}[\"']?"
     ),
 )
@@ -57,6 +68,11 @@ def redact_secrets(text: str) -> str:
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub(REDACTION_PLACEHOLDER, redacted)
     return redacted
+
+
+def contains_secret(text: str) -> bool:
+    """Whether ``text`` holds any credential shape that :func:`redact_secrets` would replace."""
+    return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
 
 
 def bounded_reason(

@@ -45,6 +45,7 @@ from .models import (
     RiskRationale,
     WorkflowState,
 )
+from .redaction import REDACTION_PLACEHOLDER, contains_secret
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +59,6 @@ _ABSOLUTE_OR_NETWORK_PATH_PATTERN = re.compile(
     r"|(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'`>)]*)"
     r"|(?:(?<![A-Za-z0-9_.-])\\\\[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
     r"|(?:(?<![A-Za-z0-9_.:])//[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
-)
-
-# Credentials embedded in URLs
-_URL_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@[^\s/]+"
-    r"|\b[a-z][a-z0-9+.-]*://[^/\s@]+@[^\s/]+"
-)
-
-# Tokens, API keys, credentials, and private keys
-_TOKEN_AND_KEY_PATTERN = re.compile(
-    r"(?i)\bxox[baprse]-[0-9A-Za-z-]{10,}\b"
-    r"|\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,})\b"
-    r"|\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b"
-    r"|\bsk-(?:proj-|ant-)?[0-9a-zA-Z_-]{20,}\b"
-    r"|\b(?:authorization|proxy[_-]?authorization)\s*[:=]\s*[^\r\n]+"
-    r"|\b(?:cookie|set[_-]?cookie|set[_-]?cookie2)\s*[:=]\s*[^\r\n]+"
-    r"|\bBearer\s+[A-Za-z0-9_.\-/+=]{20,}"
-    r"|\bBasic\s+[A-Za-z0-9+/]{8,}={1,2}(?!\S)"
-    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
-    r"|\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|session[_-]?id|session[_-]?token|session[_-]?key)\s*[:=]\s*['\"]?[A-Za-z0-9_.-]{8,}"
-    r"|-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----"
 )
 
 # External URLs (http, https, ftp) and bare www. domains
@@ -98,12 +78,10 @@ def contains_unsafe_content(text: str) -> tuple[bool, str]:
     """Check whether text contains paths, embedded credentials, tokens, URLs, or diagnostics."""
     if not text:
         return False, ""
-    if _URL_CREDENTIAL_PATTERN.search(text):
-        return True, "contains URL-embedded credentials"
+    if contains_secret(text):
+        return True, "contains token or credential"
     if _EXTERNAL_URL_PATTERN.search(text):
         return True, "contains external URL or link"
-    if _TOKEN_AND_KEY_PATTERN.search(text):
-        return True, "contains token or credential"
     if _ABSOLUTE_OR_NETWORK_PATH_PATTERN.search(text):
         return True, "contains local or network file system path"
     if _RAW_DIAGNOSTIC_PATTERN.search(text):
@@ -115,14 +93,16 @@ def clean_plan_answer(text: str) -> str | None:
     """The answer to one plan decision once trimmed, or ``None`` when it breaks a rule.
 
     An answer is one line of 1 to :data:`MAX_PLAN_DECISION_ANSWER_CHARS` characters with no
-    path, URL, credential or diagnostic text.
+    path, URL, credential or diagnostic text. An answer that holds the redaction placeholder is
+    refused too: a GitHub comment body is redacted before it is parsed, so the placeholder shows
+    that a credential shape was there.
     """
     answer = text.strip()
     if not answer or len(answer) > MAX_PLAN_DECISION_ANSWER_CHARS:
         return None
     if "\r" in answer or "\n" in answer:
         return None
-    if contains_unsafe_content(answer)[0]:
+    if REDACTION_PLACEHOLDER in answer or contains_unsafe_content(answer)[0]:
         return None
     return answer
 
