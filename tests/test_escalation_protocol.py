@@ -17,6 +17,7 @@ from software_agent_factory.escalation import (
 from software_agent_factory.escalation_protocol import (
     MAX_PLAN_DECISIONS,
     REPLY_CLOSED_CAUSES,
+    ReplyClosedCause,
     ReplyPolicy,
     format_answer_command,
     format_resume_command,
@@ -190,3 +191,10 @@ def test_a_reply_policy_cannot_change_after_it_is_built() -> None:
 def test_a_reply_policy_has_no_default_that_reads_as_open() -> None:
     with pytest.raises(TypeError):
         ReplyPolicy()  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "status", [s for s in EscalationStatus if s is not EscalationStatus.NOTIFIED]
+)
+def test_every_status_other_than_notified_has_a_cause_of_its_own(status: EscalationStatus) -> None:
+    assert _cause(_record(status=status)) != ReplyClosedCause.STATUS_UNKNOWN

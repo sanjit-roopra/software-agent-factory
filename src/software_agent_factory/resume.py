@@ -274,7 +274,8 @@ WAITING_STATUSES = frozenset(
 )
 
 
-def _has_valid_resume_context(run: FactoryRun) -> bool:
+def has_valid_resume_context(run: FactoryRun) -> bool:
+    """Whether the stored decision context of ``run`` is the one its escalation asks about."""
     escalation = run.escalation
     if escalation is None:
         return False
@@ -323,7 +324,7 @@ def resume_refusal_within(
     escalation = run.escalation
     if escalation is None or not awaits_human(run):
         return "state_changed"
-    if not _has_valid_resume_context(run):
+    if not has_valid_resume_context(run):
         return "context_changed"
     if now > escalation.created_at + timedelta(hours=policy.reply_window_hours):
         return "expired"

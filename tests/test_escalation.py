@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
+    _GATE_REFUSALS,
     ValidationResult,
     build_escalation_comment,
     build_plan_decision_context,
@@ -48,13 +49,14 @@ from software_agent_factory.escalation import (
     resolve_escalation_target,
     validate_reply_candidate,
 )
-from software_agent_factory.escalation_protocol import ReplyPolicy, reply_closed_cause
+from software_agent_factory.escalation_protocol import ReplyClosedCause
 from software_agent_factory.github import (
     GitHubClient,
     GitHubComment,
     GitHubError,
 )
 from software_agent_factory.models import (
+    REPLY_CURSOR_CLOSED,
     UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     AgentRole,
@@ -1123,6 +1125,7 @@ def test_validate_reply_candidate_rejects_expired_window(tmp_path: Path) -> None
         target_number=1,
         created_at=now - timedelta(hours=25),
         last_notified_at=now - timedelta(hours=25),
+        remote_resume_enabled=True,
     )
     run = FactoryRun(
         id="run-1",
@@ -1256,36 +1259,15 @@ def test_poll_escalation_reply_accepts_valid_comment(tmp_path: Path) -> None:
 
 _PARITY_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
-#: Per case: record changes, config changes and whether the reply is open.
-_PARITY_CASES: dict[str, tuple[dict[str, object], dict[str, object], bool]] = {
-    "open": ({}, {}, True),
-    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}, True),
-    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, False),
-    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, False),
-    "expired": ({"status": EscalationStatus.EXPIRED}, {}, False),
-    "reopened": ({"status": EscalationStatus.REOPENED}, {}, False),
-    "resumed": ({"status": EscalationStatus.RESUMED}, {}, False),
-    "notice-fallback": ({"remote_resume_enabled": False, "reply_cursor": "closed"}, {}, False),
-    "no-reply-instructions": ({"remote_resume_enabled": False}, {}, False),
-    "cursor-closed": ({"reply_cursor": "closed"}, {}, False),
-    "window-passed": ({"created_at": _PARITY_NOW - timedelta(hours=25)}, {}, False),
-    "reopen-limit": ({"reopen_count": 3}, {}, False),
-    "reopens-left": ({"reopen_count": 2}, {}, True),
-    "escalation-off": ({}, {"escalation_enabled": False}, False),
-    "host-not-allowed": ({"target_host": "ghe.example.com"}, {}, False),
+#: Per case: record changes and config changes of a reply that is still open.
+_OPEN_CASES: dict[str, tuple[dict[str, object], dict[str, object]]] = {
+    "open": ({}, {}),
+    "window-last-moment": ({"created_at": _PARITY_NOW - timedelta(hours=24)}, {}),
+    "reopens-left": ({"reopen_count": 2}, {}),
     "host-allowed": (
         {"target_host": "ghe.example.com"},
         {"allowed_hosts": ["github.com", "ghe.example.com"]},
-        True,
     ),
-}
-
-#: The validator does not read the reply cursor or the config switch: the poller guards
-#: both before it calls the validator.
-_VALIDATOR_PARITY_CASES = {
-    case: values
-    for case, values in _PARITY_CASES.items()
-    if case not in {"cursor-closed", "escalation-off"}
 }
 
 
@@ -1318,18 +1300,11 @@ def _parity_run(
     return config, store, run
 
 
-def _parity_cause(run: FactoryRun, config: FactoryConfig) -> str | None:
-    assert run.escalation is not None
-    return reply_closed_cause(
-        run.escalation, ReplyPolicy.from_config(config.escalation), _PARITY_NOW
-    )
-
-
-@pytest.mark.parametrize("case", _PARITY_CASES, ids=list(_PARITY_CASES))
-def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_open(
+@pytest.mark.parametrize("case", _OPEN_CASES, ids=list(_OPEN_CASES))
+def test_the_reply_poller_reads_a_reply_while_the_reply_gate_is_open(
     case: str, tmp_path: Path
 ) -> None:
-    record_changes, config_changes, expect_open = _PARITY_CASES[case]
+    record_changes, config_changes = _OPEN_CASES[case]
     config, store, run = _parity_run(tmp_path, record_changes, config_changes)
     comment = _make_comment_payload(
         555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
@@ -1345,15 +1320,14 @@ def test_the_reply_poller_reads_a_reply_exactly_when_the_protocol_says_it_is_ope
 
     receipt = poll_escalation_reply(run, store, config, client, tmp_path, now=_PARITY_NOW)
 
-    assert (receipt is not None) is expect_open
-    assert (_parity_cause(run, config) is None) is expect_open
+    assert receipt is not None
 
 
-@pytest.mark.parametrize("case", _VALIDATOR_PARITY_CASES, ids=list(_VALIDATOR_PARITY_CASES))
-def test_the_reply_validator_accepts_a_reply_exactly_when_the_protocol_says_it_is_open(
+@pytest.mark.parametrize("case", _OPEN_CASES, ids=list(_OPEN_CASES))
+def test_the_reply_validator_accepts_a_reply_while_the_reply_gate_is_open(
     case: str, tmp_path: Path
 ) -> None:
-    record_changes, config_changes, expect_open = _VALIDATOR_PARITY_CASES[case]
+    record_changes, config_changes = _OPEN_CASES[case]
     config, _store, run = _parity_run(tmp_path, record_changes, config_changes)
     comment = _make_comment_payload(
         555, "@factory resume v1 run=run-parity episode=ep-1234", created_at=_PARITY_NOW
@@ -1379,8 +1353,148 @@ def test_the_reply_validator_accepts_a_reply_exactly_when_the_protocol_says_it_i
         now=_PARITY_NOW,
     )
 
-    assert verdict.is_valid is expect_open
-    assert (_parity_cause(run, config) is None) is expect_open
+    assert verdict.is_valid is True
+
+
+_LAPSED = {"created_at": _PARITY_NOW - timedelta(hours=25)}
+_OTHER_HOST = {"target_host": "ghe.example.com"}
+_NO_CONTEXT = {"approval_context": None}
+_NO_INSTRUCTIONS = {"remote_resume_enabled": False}
+_STOPPED_READING = {"remote_resume_enabled": False, "reply_cursor": REPLY_CURSOR_CLOSED}
+
+#: Per case: record changes, config changes. The poller makes no call and no save.
+_POLL_LEAVES_ALONE: dict[str, tuple[dict[str, object], dict[str, object]]] = {
+    "escalation-off": ({}, {"escalation_enabled": False}),
+    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}),
+    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}),
+    "reopened": ({"status": EscalationStatus.REOPENED}, {}),
+    "resumed": ({"status": EscalationStatus.RESUMED}, {}),
+    "already-expired": ({"status": EscalationStatus.EXPIRED, **_STOPPED_READING}, {}),
+    "cursor-closed": ({"reply_cursor": REPLY_CURSOR_CLOSED}, {}),
+    "notice-fallback": (_STOPPED_READING, {}),
+    "host-not-allowed": (_OTHER_HOST, {}),
+    "no-notice-target": ({"target_number": None, **_NO_INSTRUCTIONS}, {}),
+    "unreadable-context-and-escalation-off": (_NO_CONTEXT, {"escalation_enabled": False}),
+    "unreadable-context-and-failed-notice": (
+        {"status": EscalationStatus.NOTIFICATION_FAILED, **_NO_CONTEXT},
+        {},
+    ),
+}
+
+_CLOSED = (EscalationStatus.NOTIFIED, False, REPLY_CURSOR_CLOSED)
+_EXPIRED = (EscalationStatus.EXPIRED, False, REPLY_CURSOR_CLOSED)
+
+#: Per case: record changes, and the (status, remote_resume_enabled, reply_cursor) the poller saves.
+_POLL_CHANGES: dict[str, tuple[dict[str, object], tuple[EscalationStatus, bool, str]]] = {
+    "no-reply-instructions": (_NO_INSTRUCTIONS, _CLOSED),
+    "reopen-limit": ({"reopen_count": 3}, _CLOSED),
+    "window-passed": (_LAPSED, _EXPIRED),
+    "window-before-reopen-limit": ({**_LAPSED, "reopen_count": 3}, _EXPIRED),
+    "no-reply-instructions-before-window": ({**_LAPSED, **_NO_INSTRUCTIONS}, _CLOSED),
+    "unreadable-context": (_NO_CONTEXT, _CLOSED),
+    "unreadable-context-before-window": ({**_LAPSED, **_NO_CONTEXT}, _CLOSED),
+    "unreadable-context-before-host": ({**_OTHER_HOST, **_NO_CONTEXT}, _CLOSED),
+}
+
+
+@pytest.mark.parametrize("case", _POLL_LEAVES_ALONE, ids=list(_POLL_LEAVES_ALONE))
+def test_the_poller_makes_no_call_and_no_save_while_the_reply_gate_is_closed_for_a_skip_cause(
+    case: str, tmp_path: Path
+) -> None:
+    record_changes, config_changes = _POLL_LEAVES_ALONE[case]
+    config, store, run = _parity_run(tmp_path, record_changes, config_changes)
+    runner = FakeRunner()
+
+    receipt = poll_escalation_reply(
+        run, store, config, GitHubClient(runner=runner), tmp_path, now=_PARITY_NOW
+    )
+
+    assert receipt is None
+    assert runner.calls == []
+    assert store.load_run(run.id) == run
+
+
+@pytest.mark.parametrize("case", _POLL_CHANGES, ids=list(_POLL_CHANGES))
+def test_the_poller_closes_or_expires_the_escalation_for_the_cause_that_closed_the_gate(
+    case: str, tmp_path: Path
+) -> None:
+    record_changes, expected = _POLL_CHANGES[case]
+    config, store, run = _parity_run(tmp_path, record_changes, {})
+    runner = FakeRunner()
+
+    receipt = poll_escalation_reply(
+        run, store, config, GitHubClient(runner=runner), tmp_path, now=_PARITY_NOW
+    )
+
+    saved = store.load_run(run.id).escalation
+    assert saved is not None
+    actual = (saved.status, saved.remote_resume_enabled, saved.reply_cursor)
+    assert receipt is None
+    assert runner.calls == []
+    assert actual == expected
+
+
+_NOT_ACTIVE = "run does not have an active notified escalation"
+
+#: Per case: record changes, config changes, and the reason the validator gives.
+_VALIDATOR_REFUSALS: dict[str, tuple[dict[str, object], dict[str, object], str]] = {
+    "pending-notification": ({"status": EscalationStatus.PENDING_NOTIFICATION}, {}, _NOT_ACTIVE),
+    "notification-failed": ({"status": EscalationStatus.NOTIFICATION_FAILED}, {}, _NOT_ACTIVE),
+    "expired": ({"status": EscalationStatus.EXPIRED}, {}, "reply window has expired"),
+    "reopened": ({"status": EscalationStatus.REOPENED}, {}, _NOT_ACTIVE),
+    "resumed": ({"status": EscalationStatus.RESUMED}, {}, _NOT_ACTIVE),
+    "window-passed": (_LAPSED, {}, "reply window has expired"),
+    "reopen-limit": ({"reopen_count": 3}, {}, "reopen limit reached (3/3)"),
+    "no-reply-instructions": (
+        _NO_INSTRUCTIONS,
+        {},
+        "remote resume is disabled for this escalation; local inspection required",
+    ),
+    "host-not-allowed": (_OTHER_HOST, {}, "target host 'ghe.example.com' is not allowed"),
+    "cursor-closed": (
+        {"reply_cursor": REPLY_CURSOR_CLOSED},
+        {},
+        "the factory stopped reading replies",
+    ),
+    "escalation-off": ({}, {"escalation_enabled": False}, "escalation replies are turned off"),
+}
+
+
+@pytest.mark.parametrize("case", _VALIDATOR_REFUSALS, ids=list(_VALIDATOR_REFUSALS))
+def test_the_validator_refuses_a_reply_with_the_reason_of_the_cause_that_closed_the_gate(
+    case: str, tmp_path: Path
+) -> None:
+    record_changes, config_changes, reason = _VALIDATOR_REFUSALS[case]
+    config, _store, run = _parity_run(tmp_path, record_changes, config_changes)
+    body = "@factory resume v1 run=run-parity episode=ep-1234"
+    candidate = GitHubComment(
+        id=555,
+        user_login="lead-dev",
+        user_id=1001,
+        user_type="User",
+        author_association="MEMBER",
+        created_at=_PARITY_NOW,
+        updated_at=_PARITY_NOW,
+        body=body,
+    )
+    runner = FakeRunner()
+
+    verdict = validate_reply_candidate(
+        candidate,
+        run=run,
+        config=config,
+        client=GitHubClient(runner=runner),
+        repo_path=tmp_path,
+        now=_PARITY_NOW,
+    )
+
+    actual = (verdict.is_valid, verdict.reason)
+    assert actual == (False, reason)
+    assert runner.calls == []
+
+
+def test_the_validator_has_a_reason_for_every_cause_that_can_close_the_reply_gate() -> None:
+    assert set(_GATE_REFUSALS) == set(ReplyClosedCause)
 
 
 def test_a_dashboard_request_accepted_first_stops_the_github_poller(tmp_path: Path) -> None:
