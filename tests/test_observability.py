@@ -1352,6 +1352,41 @@ def _store_with_mixed_artifacts(tmp_path: Path) -> FileRunStore:
     return store
 
 
+# What the summaries of _store_with_mixed_artifacts resolve: (run id, title, source external id,
+# complexity, risk). A triage wins over a work item; an unreadable or missing artifact is absent.
+MIXED_ARTIFACT_FACTS = [
+    ("run-a", "Fix [REDACTED]", "acme/example#17", Complexity.L2, Risk.R2),
+    ("run-b", "Plain", None, Complexity.L1, Risk.R1),
+    ("run-c", None, None, Complexity.L1, Risk.R0),
+    ("run-d", None, None, None, None),
+]
+
+
+def _resolved_facts(snapshot: MonitoringSnapshot) -> list[tuple[Any, ...]]:
+    return [(s.run_id, s.title, s.source_external_id, s.complexity, s.risk) for s in snapshot.runs]
+
+
+# The real FileRunStore still opens every artifact file underneath.
+# double-waiver: B1 — FileRunStore opens run artifact files; the subclass only counts reads
+class _ArtifactReadCountingStore(FileRunStore):
+    """A run store that counts how often each artifact of each run is read."""
+
+    def __init__(self, data_dir: Path) -> None:
+        super().__init__(data_dir)
+        self.reads: Counter[tuple[str, str]] = Counter()
+
+    def load_artifact(
+        self,
+        run_id: str,
+        artifact_type: type[Any],
+        filename: str | None = None,
+        *,
+        attempt: int | None = None,
+    ) -> Any:
+        self.reads[(run_id, artifact_type.__name__)] += 1
+        return super().load_artifact(run_id, artifact_type, filename, attempt=attempt)
+
+
 def test_summaries_resolve_title_complexity_and_risk_from_whatever_artifacts_exist(
     tmp_path: Path,
 ) -> None:
@@ -1359,36 +1394,38 @@ def test_summaries_resolve_title_complexity_and_risk_from_whatever_artifacts_exi
 
     snapshot = build_monitoring_snapshot(store, now=T0)
 
-    resolved = [
-        (s.run_id, s.title, s.source_external_id, s.complexity, s.risk) for s in snapshot.runs
-    ]
-    assert resolved == [
-        ("run-a", "Fix [REDACTED]", "acme/example#17", Complexity.L2, Risk.R2),
-        ("run-b", "Plain", None, Complexity.L1, Risk.R1),
-        ("run-c", None, None, Complexity.L1, Risk.R0),
-        ("run-d", None, None, None, None),
-    ]
+    assert _resolved_facts(snapshot) == MIXED_ARTIFACT_FACTS
 
 
 def test_builds_sharing_one_scan_read_each_run_artifact_once(tmp_path: Path) -> None:
-    store = _store_with_mixed_artifacts(tmp_path)
-    reads: Counter[tuple[str, str]] = Counter()
-    real_load_artifact = store.load_artifact
-
-    def counting_load_artifact(run_id: str, artifact_type: type, *args: Any, **kwargs: Any) -> Any:
-        reads[(run_id, artifact_type.__name__)] += 1
-        return real_load_artifact(run_id, artifact_type, *args, **kwargs)
-
-    store.load_artifact = counting_load_artifact  # type: ignore[method-assign]
+    _store_with_mixed_artifacts(tmp_path)
+    store = _ArtifactReadCountingStore(tmp_path / "data")
     scan = scan_readable_runs(store)
 
     # The dashboard poll builds a one-run summary page and a full runs page from one scan.
     build_monitoring_snapshot(store, now=T0, limit=1, scan=scan)
-    build_monitoring_snapshot(store, now=T0, limit=100, scan=scan)
-    build_monitoring_snapshot(store, now=T0, limit=100, scan=scan)
+    second = build_monitoring_snapshot(store, now=T0, limit=100, scan=scan)
+    third = build_monitoring_snapshot(store, now=T0, limit=100, scan=scan)
 
-    assert set(reads.values()) == {1}
-    assert sum(reads.values()) == 2 * 4  # a WorkItem and a TriageResult per run
+    assert _resolved_facts(second) == MIXED_ARTIFACT_FACTS
+    assert _resolved_facts(third) == MIXED_ARTIFACT_FACTS
+    assert set(store.reads.values()) == {1}
+    assert sum(store.reads.values()) == 2 * 4  # a WorkItem and a TriageResult per run
+
+
+def test_two_scans_of_one_cache_share_their_artifact_reads(tmp_path: Path) -> None:
+    _store_with_mixed_artifacts(tmp_path)
+    store = _ArtifactReadCountingStore(tmp_path / "data")
+    cache = RunScanCache(store, ttl=60.0)
+
+    first = build_monitoring_snapshot(store, now=T0, scan=cache.get_scan())
+    second = build_monitoring_snapshot(store, now=T0, scan=cache.get_scan())
+
+    assert cache.hits == 1
+    assert _resolved_facts(first) == MIXED_ARTIFACT_FACTS
+    assert _resolved_facts(second) == MIXED_ARTIFACT_FACTS
+    assert set(store.reads.values()) == {1}
+    assert sum(store.reads.values()) == 2 * 4
 
 
 # ---------------------------------------------------------------------------

@@ -1558,9 +1558,14 @@ def _artifact_facts(store: RunStoreProtocol, run_id: str) -> _ArtifactFacts:
 def _memoized_artifact_facts(
     store: RunStoreProtocol, run_id: str, memo: dict[str, _ArtifactFacts]
 ) -> _ArtifactFacts:
+    """The facts of ``run_id`` from ``memo``, read on a miss.
+
+    Threads share ``memo`` and only look up or add one key, never iterate it, and
+    ``setdefault`` adds atomically: two threads that miss together agree on one value.
+    """
     facts = memo.get(run_id)
     if facts is None:
-        facts = memo[run_id] = _artifact_facts(store, run_id)
+        facts = memo.setdefault(run_id, _artifact_facts(store, run_id))
     return facts
 
 
