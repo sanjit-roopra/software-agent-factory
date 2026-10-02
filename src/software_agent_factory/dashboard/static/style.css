@@ -235,6 +235,26 @@ button:disabled {
   cursor: not-allowed;
 }
 .field-hint { color: var(--text-muted); font-size: 0.85rem; margin: 0.25rem 0 0; }
+.key-figures { list-style: none; margin: 0; padding: 0; }
+.key-figures a { display: inline-block; margin-top: 0.25rem; }
+.badge-needs-you { color: var(--warn); font-weight: 700; }
+.compare-pickers { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 0.75rem; }
+.picker { flex: 1 1 18rem; min-width: 0; }
+.picker label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+.picker select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  max-width: 100%;
+  padding: 0.35rem 0.6rem;
+  width: 100%;
+}
+#compare-table caption { color: var(--text-muted); padding: 0 0 0.5rem; text-align: left; }
+#compare-table td, #compare-table th { vertical-align: top; }
+.figure-list { list-style: none; margin: 0; padding: 0; }
+.no-calls { color: var(--text-muted); font-style: italic; }
 @media (max-width: 900px) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar {

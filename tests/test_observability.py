@@ -112,6 +112,7 @@ def _run(
     attempt_records: list[AttemptRecord] | None = None,
     workspace_path: str | None = None,
     active_invocation: ActiveInvocation | None = None,
+    invocation_records: list[InvocationRecord] | None = None,
 ) -> FactoryRun:
     return FactoryRun(
         id=run_id,
@@ -125,6 +126,7 @@ def _run(
         attempt_records=attempt_records or [],
         workspace_path=workspace_path,
         active_invocation=active_invocation,
+        invocation_records=invocation_records or [],
     )
 
 
@@ -272,6 +274,250 @@ def test_counts_classify_every_terminal_and_active_state(tmp_path: Path) -> None
     by_id = {run.run_id: run for run in snapshot.runs}
     assert by_id["pr-ready-finalized"].is_finished is True
     assert by_id["pr-ready-unfinalized"].is_finished is False
+
+
+# ---------------------------------------------------------------------------
+# Key figures: needs you, failed and tokens in the last 24 hours
+# ---------------------------------------------------------------------------
+
+KEY_FIGURES_NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+WINDOW = timedelta(hours=24)
+
+
+def _token_call(
+    number: int,
+    completed_at: datetime,
+    *,
+    usage: UsageMetrics | None = None,
+) -> InvocationRecord:
+    return InvocationRecord(
+        invocation_number=number,
+        role=AgentRole.IMPLEMENTER,
+        model="claude-sonnet-5",
+        reasoning="medium",
+        started_at=completed_at - timedelta(seconds=1),
+        completed_at=completed_at,
+        success=True,
+        usage=usage,
+    )
+
+
+def _run_with_calls(run_id: str, *calls: InvocationRecord) -> FactoryRun:
+    return _run(
+        run_id,
+        state=WorkflowState.IMPLEMENTING,
+        updated_at=KEY_FIGURES_NOW,
+        invocation_records=list(calls),
+    )
+
+
+def test_key_figures_are_zero_for_an_empty_store(tmp_path: Path) -> None:
+    snapshot = build_monitoring_snapshot(FileRunStore(tmp_path / "data"), now=KEY_FIGURES_NOW)
+
+    assert snapshot.counts.active == 0
+    assert snapshot.needs_human_count == 0
+    assert snapshot.failed_last_24h == 0
+    assert snapshot.tokens_last_24h == 0
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        pytest.param(WINDOW - timedelta(minutes=1), 1, id="23h59-ago-counted"),
+        pytest.param(WINDOW + timedelta(minutes=1), 0, id="24h01-ago-not-counted"),
+        pytest.param(WINDOW, 0, id="exactly-24h-ago-not-counted"),
+        pytest.param(None, 0, id="no-completion-time-not-counted"),
+    ],
+)
+def test_failed_last_24h_counts_only_failures_completed_after_the_cutoff(
+    tmp_path: Path, age: timedelta | None, expected: int
+) -> None:
+    completed_at = None if age is None else KEY_FIGURES_NOW - age
+    store = _fake_store(tmp_path)
+    store.add_run(_run("failed", state=WorkflowState.FAILED, completed_at=completed_at))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.failed_last_24h == expected
+
+
+def test_failed_last_24h_ignores_recent_runs_that_did_not_fail(tmp_path: Path) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    store.add_run(_run("done", state=WorkflowState.DONE, completed_at=recent))
+    store.add_run(_run("needs-human", state=WorkflowState.NEEDS_HUMAN, completed_at=recent))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.failed_last_24h == 0
+
+
+def test_needs_human_count_is_the_runs_waiting_for_a_person(tmp_path: Path) -> None:
+    store = _fake_store(tmp_path)
+    store.add_run(_run("needs-human-1", state=WorkflowState.NEEDS_HUMAN))
+    store.add_run(_run("needs-human-2", state=WorkflowState.NEEDS_HUMAN))
+    store.add_run(_run("failed", state=WorkflowState.FAILED))
+    store.add_run(_run("implementing", state=WorkflowState.IMPLEMENTING, updated_at=T0))
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert snapshot.needs_human_count == 2
+    assert snapshot.needs_human_count == snapshot.counts.escalated
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        pytest.param(WINDOW - timedelta(minutes=1), 100, id="23h59-ago-counted"),
+        pytest.param(WINDOW + timedelta(minutes=1), 0, id="24h01-ago-not-counted"),
+        pytest.param(WINDOW, 0, id="exactly-24h-ago-not-counted"),
+    ],
+)
+def test_tokens_last_24h_counts_only_calls_completed_after_the_cutoff(
+    tmp_path: Path, age: timedelta, expected: int
+) -> None:
+    store = _fake_store(tmp_path)
+    call = _token_call(1, KEY_FIGURES_NOW - age, usage=UsageMetrics(input_tokens=100))
+    store.add_run(_run_with_calls("run", call))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == expected
+
+
+def test_tokens_last_24h_adds_the_token_classes_of_a_call_but_not_reasoning(
+    tmp_path: Path,
+) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    flat = UsageMetrics(
+        input_tokens=1,
+        output_tokens=2,
+        reasoning_tokens=1000,
+        cache_read_tokens=4,
+        cache_write_tokens=8,
+    )
+    per_model = UsageMetrics(
+        model_usage=(ModelUsage(model="claude-sonnet-5", input_tokens=16, output_tokens=32),)
+    )
+    store.add_run(_run_with_calls("flat", _token_call(1, recent, usage=flat)))
+    store.add_run(_run_with_calls("per-model", _token_call(1, recent, usage=per_model)))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == 1 + 2 + 4 + 8 + 16 + 32
+
+
+def test_tokens_last_24h_counts_only_reported_values(tmp_path: Path) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls(
+            "run",
+            _token_call(1, recent, usage=None),
+            _token_call(2, recent, usage=UsageMetrics()),
+            _token_call(3, recent, usage=UsageMetrics(output_tokens=0)),
+            _token_call(4, recent, usage=UsageMetrics(output_tokens=7)),
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == 7
+
+
+def test_tokens_last_24h_is_unknown_when_no_recent_call_reported_a_token_class(
+    tmp_path: Path,
+) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    outside = KEY_FIGURES_NOW - WINDOW - timedelta(minutes=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls(
+            "run",
+            _token_call(1, recent, usage=None),
+            _token_call(2, recent, usage=UsageMetrics(reasoning_tokens=9)),
+            _token_call(3, outside, usage=UsageMetrics(input_tokens=500)),
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h is None
+
+
+def test_tokens_last_24h_is_zero_when_a_call_reported_zero(tmp_path: Path) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls("run", _token_call(1, recent, usage=UsageMetrics(input_tokens=0)))
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == 0
+
+
+def test_tokens_last_24h_is_zero_when_no_call_is_recent(tmp_path: Path) -> None:
+    outside = KEY_FIGURES_NOW - WINDOW - timedelta(minutes=1)
+    store = _fake_store(tmp_path)
+    store.add_run(_run_with_calls("run", _token_call(1, outside, usage=None)))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.tokens_last_24h == 0
+
+
+def test_key_figures_cover_every_scanned_run_whatever_the_page(tmp_path: Path) -> None:
+    recent = KEY_FIGURES_NOW - timedelta(hours=1)
+    store = _fake_store(tmp_path)
+    for number in range(3):
+        store.add_run(
+            _run_with_calls(
+                f"active-{number}", _token_call(1, recent, usage=UsageMetrics(input_tokens=10))
+            )
+        )
+    store.add_run(_run("needs-you", state=WorkflowState.NEEDS_HUMAN))
+    store.add_run(_run("failed", state=WorkflowState.FAILED, completed_at=recent))
+
+    one = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW, limit=1)
+    many = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW, limit=100)
+
+    assert one.page.returned == 1
+    assert (one.needs_human_count, one.failed_last_24h, one.tokens_last_24h) == (1, 1, 30)
+    assert (one.needs_human_count, one.failed_last_24h, one.tokens_last_24h) == (
+        many.needs_human_count,
+        many.failed_last_24h,
+        many.tokens_last_24h,
+    )
+
+
+def test_key_figures_example_from_the_plan(tmp_path: Path) -> None:
+    just_inside = KEY_FIGURES_NOW - WINDOW + timedelta(minutes=1)
+    just_outside = KEY_FIGURES_NOW - WINDOW - timedelta(minutes=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls(
+            "active-1",
+            _token_call(1, just_inside, usage=UsageMetrics(input_tokens=700)),
+            _token_call(2, just_outside, usage=UsageMetrics(input_tokens=300)),
+        )
+    )
+    store.add_run(
+        _run_with_calls(
+            "active-2", _token_call(1, KEY_FIGURES_NOW, usage=UsageMetrics(output_tokens=500))
+        )
+    )
+    store.add_run(_run("needs-you", state=WorkflowState.NEEDS_HUMAN))
+    store.add_run(_run("failed-in", state=WorkflowState.FAILED, completed_at=just_inside))
+    store.add_run(_run("failed-out", state=WorkflowState.FAILED, completed_at=just_outside))
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert snapshot.counts.active == 2
+    assert snapshot.needs_human_count == 1
+    assert snapshot.failed_last_24h == 1
+    assert snapshot.tokens_last_24h == 1200
 
 
 # ---------------------------------------------------------------------------
@@ -1227,7 +1473,12 @@ def test_scan_truncation_limits_counts_to_scanned_subset(tmp_path: Path) -> None
 
 def test_snapshot_schema_excludes_prohibited_fields() -> None:
     prohibited_substrings = ("prompt", "diff", "log", "token", "stdout", "stderr", "secret")
-    all_field_names = list(MonitoringSnapshot.model_fields) + list(RunSummary.model_fields)
+    # ``tokens_last_24h`` is a usage figure, not a credential.
+    all_field_names = [
+        name
+        for name in (*MonitoringSnapshot.model_fields, *RunSummary.model_fields)
+        if name != "tokens_last_24h"
+    ]
     lowered = " ".join(all_field_names).lower()
     for substring in prohibited_substrings:
         assert substring not in lowered

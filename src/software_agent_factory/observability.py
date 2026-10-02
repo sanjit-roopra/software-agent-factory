@@ -174,6 +174,21 @@ DEFAULT_STALE_AFTER = timedelta(seconds=900)
 
 DEFAULT_PAGE_LIMIT = 100
 
+#: How far back the "last 24 hours" key figures look, measured from the
+#: snapshot's own ``now`` so a fixed clock gives a fixed answer.
+KEY_FIGURE_WINDOW = timedelta(hours=24)
+
+#: The token classes one call's total adds up, the same four the dashboard's
+#: totals cell adds (``dashboard.aggregate.TOTAL_TOKEN_FIELDS``; a test pins the
+#: two together). Reasoning tokens stay out: the runtime already counts them
+#: inside the output tokens.
+KEY_FIGURE_TOKEN_FIELDS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
 #: Conservative hard cap on how many ``run.json`` files one call to
 #: :func:`build_monitoring_snapshot` will open and parse, independent of
 #: ``limit``/``offset``. Directory enumeration to *find* candidates is cheap
@@ -656,6 +671,16 @@ class MonitoringSnapshot(VersionedModel):
     not be read, or the scan itself was truncated -- an honest signal, never
     suppressed to claim a healthy/complete store when something on disk is
     actually corrupt, missing, or simply too large to fully scan in one call.
+
+    The key figures are derived from ``generated_at`` on every call, never
+    stored (ADR-017). ``needs_human_count`` is the same count as ``counts.escalated``:
+    the runs in ``NEEDS_HUMAN``, which the dashboard shows as "Needs you".
+    ``failed_last_24h`` counts ``FAILED`` runs whose ``completed_at`` is strictly
+    after ``generated_at`` minus 24 hours. ``tokens_last_24h`` adds the reported
+    tokens of every invocation whose ``completed_at`` is strictly after that
+    cutoff; a value a call did not report adds nothing. It is ``None`` when calls
+    completed after the cutoff and none reported a counted token class, and ``0`` when
+    no call did (unknown is never zero). All three cover only the scanned subset.
     """
 
     generated_at: UtcDateTime
@@ -668,6 +693,9 @@ class MonitoringSnapshot(VersionedModel):
     degraded: bool
     degraded_reasons: list[str] = Field(default_factory=list)
     counts: RunStateCounts
+    needs_human_count: int = Field(default=0, ge=0)
+    failed_last_24h: int = Field(default=0, ge=0)
+    tokens_last_24h: int | None = Field(default=0, ge=0)
     attempts_by_role: dict[str, int] = Field(default_factory=dict)
     attempts_by_model: dict[str, int] = Field(default_factory=dict)
     metrics: AggregateMetrics
@@ -732,6 +760,7 @@ def build_monitoring_snapshot(
         scan = scan_readable_runs(store, max_scanned_runs)
 
     counts = _compute_state_counts(scan.readable_runs, reference_time, stale_after)
+    cutoff = reference_time - KEY_FIGURE_WINDOW
     attempts_by_role, attempts_by_model = _compute_attempt_tallies(scan.readable_runs)
     metrics = _compute_aggregate_metrics(scan.readable_runs)
 
@@ -750,6 +779,9 @@ def build_monitoring_snapshot(
         degraded=scan.degraded,
         degraded_reasons=scan.degraded_reasons(max_scanned_runs=max_scanned_runs),
         counts=counts,
+        needs_human_count=counts.escalated,
+        failed_last_24h=_failed_since(scan.readable_runs, cutoff),
+        tokens_last_24h=_tokens_since(scan.readable_runs, cutoff),
         attempts_by_role=attempts_by_role,
         attempts_by_model=attempts_by_model,
         metrics=metrics,
@@ -1052,6 +1084,56 @@ def _compute_state_counts(
         active=active,
         stale_active=stale_active,
     )
+
+
+def _failed_since(runs: list[FactoryRun], cutoff: datetime) -> int:
+    """Failed runs that completed strictly after ``cutoff``."""
+    return sum(
+        1
+        for run in runs
+        if _classify_run(run) == "failed"
+        and run.completed_at is not None
+        and run.completed_at > cutoff
+    )
+
+
+def _reported_tokens(usage: UsageMetrics | None) -> int | None:
+    """One invocation's tokens across ``KEY_FIGURE_TOKEN_FIELDS``, or ``None`` if it reported none.
+
+    A class the call did not report adds nothing, but a call that reported no class at all is
+    unknown, not zero (ADR-017).
+    """
+    if usage is None:
+        return None
+    resolved = resolve_usage(usage)
+    values = [
+        value
+        for field in KEY_FIGURE_TOKEN_FIELDS
+        if (value := getattr(resolved, field)) is not None
+    ]
+    return sum(values) if values else None
+
+
+def _tokens_since(runs: list[FactoryRun], cutoff: datetime) -> int | None:
+    """Reported tokens of every invocation that completed strictly after ``cutoff``.
+
+    ``0`` when no invocation completed after ``cutoff``. ``None`` when some did and none of
+    them reported a counted token class.
+    """
+    recent = [
+        invocation
+        for run in runs
+        for invocation in run.invocation_records
+        if invocation.completed_at > cutoff
+    ]
+    if not recent:
+        return 0
+    reported = [
+        tokens
+        for invocation in recent
+        if (tokens := _reported_tokens(invocation.usage)) is not None
+    ]
+    return sum(reported) if reported else None
 
 
 def _compute_attempt_tallies(

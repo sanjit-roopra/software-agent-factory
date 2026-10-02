@@ -21,6 +21,8 @@ from dashboard_js import (
 from software_agent_factory.dashboard import assets as dashboard_assets
 from software_agent_factory.dashboard.responses import ConflictReason
 from software_agent_factory.dashboard.security import TOKEN_HEADER
+from software_agent_factory.dashboard.snapshot import MAX_PAGE_LIMIT
+from software_agent_factory.observability import MonitoringSnapshot
 from software_agent_factory.resume import MAX_PLAN_DECISION_ANSWER_CHARS
 
 # --------------------------------------------------------------------------
@@ -80,13 +82,13 @@ def test_script_is_deferred_in_the_head_and_not_in_the_body() -> None:
 def test_route_parser_pins_every_route_shape() -> None:
     js = dashboard_assets.APP_JS
     parser = function_source(js, "parseRoute")
-    # A run needs exactly one id part; compare takes none or a pair of ids.
+    # A run needs exactly one id part; compare takes up to two ids, run A then run B.
     assert 'name === "run" && parts.length === 2' in parser
     assert 'return { view: "run", runId: parts[1] };' in parser
-    assert 'name === "compare" && (parts.length === 1 || parts.length === 3)' in parser
-    assert 'return { view: "compare" };' in parser
+    assert 'name === "compare" && parts.length <= 3' in parser
+    assert 'return { view: "compare", a: parts[1], b: parts[2] };' in parser
     assert "parts.length === 1 && SIMPLE_VIEWS.has(name)" in parser
-    assert "return { view: name };" in parser
+    assert "return { view: name, filter: routeFilter(query) };" in parser
     assert parser.endswith("return null; }")
     assert 'const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);' in js
 
@@ -170,7 +172,8 @@ def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
 
 def test_loading_and_empty_states() -> None:
     js = dashboard_assets.APP_JS
-    assert '"No runs yet."' in function_source(js, "renderRunsStatus")
+    assert '"No runs yet."' in function_source(js, "emptyRunsText")
+    assert "emptyRunsText(request)" in function_source(js, "renderRunsStatus")
     assert 'setRunDetailStatus("Loading\\u2026");' in function_source(js, "prepareRunDetailView")
     assert re.search(r'<p\s+id="runs-status">Loading&hellip;</p>', _INDEX_HTML)
 
@@ -183,11 +186,6 @@ def test_empty_run_table_stays_hidden_until_rows_arrive() -> None:
         'document.querySelector("#view-runs .table-wrap").hidden = shown === 0;'
         in function_source(dashboard_assets.APP_JS, "renderRunsStatus")
     )
-
-
-def test_compare_view_is_a_placeholder_card() -> None:
-    compare = _INDEX_HTML.split('<section id="view-compare"')[1].split("</section>")[0]
-    assert "Compare two runs &mdash; coming soon" in compare
 
 
 def test_every_static_table_has_an_id() -> None:
@@ -256,7 +254,7 @@ def test_one_poll_refreshes_only_the_open_view() -> None:
     assert code.count("setInterval(") == 1
     assert "globalThis.setInterval(pollView, POLL_INTERVAL_MS);" in code
     refreshers = object_literal_source(js, "REFRESHERS")
-    assert re.findall(r"(\w+): function", refreshers) == [
+    assert re.findall(r"(\w+): (?:function|refreshCompare)", refreshers) == [
         "runs",
         "run",
         "compare",
@@ -288,7 +286,7 @@ def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
     js = dashboard_assets.APP_JS
     guard = function_source(js, "isDirty")
     assert "region.contains(active)" in guard
-    assert 'active.matches("input, textarea, select")' in guard
+    assert 'active.matches("input, textarea")' in guard
     assert 'region.querySelector("dialog[open]") !== null' in guard
     refresh_view = function_source(js, "refreshView")
     assert "isDirty(document.getElementById(VIEWS[view].section))" in refresh_view
@@ -334,7 +332,11 @@ def test_a_failed_refresh_leaves_the_views_as_they_were() -> None:
 def test_notices_live_in_one_polite_status_region() -> None:
     notice = r'<p\s+id="notice"\s+role="status"\s+aria-live="polite"\s+tabindex="-1"></p>'
     assert re.search(notice, _INDEX_HTML)
-    assert _INDEX_HTML.count('role="status"') == 1
+    # The compare status line is the only other status region (slice 5 review).
+    assert re.findall(r'<p\s+id="([^"]+)"\s+role="status"', _INDEX_HTML) == [
+        "notice",
+        "compare-status",
+    ]
 
 
 def test_notice_texts_report_a_lost_connection_and_a_restart() -> None:
@@ -377,7 +379,6 @@ def test_views_with_nothing_to_load_still_check_the_server() -> None:
     assert 'apiFetch("/healthz")' in function_source(js, "pingServer")
     refreshers = object_literal_source(js, "REFRESHERS")
     assert "request.runId === null ? [pingServer()]" in refreshers
-    assert "compare: function () { return [pingServer()]; }" in refreshers
 
 
 def test_a_refresh_stays_in_flight_until_every_task_ends() -> None:
@@ -797,7 +798,11 @@ def test_totals_name_the_calls_that_reported_a_partial_figure() -> None:
 
 
 def test_totals_cards_cover_calls_failures_duration_tokens_and_each_cost_unit() -> None:
-    cards = function_source(dashboard_assets.APP_JS, "totalsCards")
+    js = dashboard_assets.APP_JS
+    cards = " ".join(
+        function_source(js, name)
+        for name in ("totalsCards", "headlineCards", "tokenCards", "costCards")
+    )
     for wired in (
         'label: "Calls"',
         'figureCard("Failed calls", totals.failed_calls',
@@ -807,6 +812,10 @@ def test_totals_cards_cover_calls_failures_duration_tokens_and_each_cost_unit() 
         "help: unit.help",
     ):
         assert wired in cards
+    assert function_source(js, "totalsCards") == (
+        "function totalsCards(totals) { return [...headlineCards(totals), "
+        "...tokenCards(totals), ...costCards(totals)]; }"
+    )
 
 
 def test_the_run_detail_render_patches_every_region_in_place() -> None:
@@ -1296,3 +1305,460 @@ def test_the_dialog_and_the_form_have_styles_and_a_disabled_button_looks_disable
 def test_the_sidebar_no_longer_claims_the_dashboard_is_read_only() -> None:
     assert "Read-only" not in _INDEX_HTML
     assert "no mutation" not in _INDEX_HTML
+
+
+# --------------------------------------------------------------------------
+# Key figures and the "needs you" list (slice 5, step 5.3; asset tests, ADR-016)
+# --------------------------------------------------------------------------
+
+_RUNS_HTML = _INDEX_HTML.split('<section id="view-runs"')[1].split("</section>")[0]
+_COMPARE_HTML = _INDEX_HTML.split('<section id="view-compare"')[1].split("</section>")[0]
+_FIGURE_IDS = ("figure-active", "figure-needs-you", "figure-failed", "figure-tokens")
+
+
+def test_the_runs_view_holds_one_key_figure_for_each_summary_number() -> None:
+    for figure_id in _FIGURE_IDS:
+        assert re.search(rf'<p\s+id="{figure_id}"\s+class="stat-value">', _RUNS_HTML)
+    labels = re.findall(r'<p class="stat-label">([^<]+)</p>', _RUNS_HTML)
+    assert labels == [
+        "Active runs",
+        "Needs you",
+        "Failed runs in the last 24 hours",
+        "Tokens in the last 24 hours",
+    ]
+
+
+def test_the_key_figures_come_before_the_totals() -> None:
+    assert _RUNS_HTML.index('id="key-figures"') < _RUNS_HTML.index('id="totals-body"')
+    assert re.search(
+        r'<ul\s+id="key-figures"[^>]*aria-labelledby="key-figures-heading">', _RUNS_HTML
+    )
+    assert '<h2 id="key-figures-heading">Key figures</h2>' in _RUNS_HTML
+
+
+def test_each_key_figure_reads_its_summary_field() -> None:
+    figures = _constant_source("KEY_FIGURES")
+    for figure_id, field in (
+        ("figure-active", "summary?.counts?.active"),
+        ("figure-needs-you", "summary?.needs_human_count"),
+        ("figure-failed", "summary?.failed_last_24h"),
+        ("figure-tokens", "summary?.tokens_last_24h"),
+    ):
+        assert re.search(
+            rf'id: "{figure_id}", read: function \(summary\) {{ return {re.escape(field)};', figures
+        )
+
+
+def test_the_key_figure_fields_the_page_reads_are_snapshot_fields() -> None:
+    figures = _constant_source("KEY_FIGURES")
+    for field in ("needs_human_count", "failed_last_24h", "tokens_last_24h"):
+        assert field in MonitoringSnapshot.model_fields
+        assert f"summary?.{field};" in figures
+
+
+def test_key_figures_show_whole_numbers_with_a_thousands_separator() -> None:
+    render = function_source(_JS, "renderKeyFigures")
+    assert (
+        "setText(document.getElementById(figure.id), displayNumber(figure.read(summary)))" in render
+    )
+    assert 'value.toLocaleString("en-US")' in function_source(_JS, "displayNumber")
+
+
+def test_an_unknown_token_figure_shows_not_reported_and_not_zero() -> None:
+    display = function_source(_JS, "displayNumber")
+    assert "if (!isFiniteNumber(value)) { return NOT_REPORTED; }" in display
+    assert 'const NOT_REPORTED = "not reported";' in _JS
+
+
+def test_the_summary_feeds_the_key_figures_and_the_totals() -> None:
+    assert function_source(_JS, "renderSummary") == (
+        "function renderSummary(summary) { renderKeyFigures(summary); renderTotals(summary); }"
+    )
+    assert 'apiFetch("/api/summary").then(whenLatest(request, renderSummary))' in function_source(
+        _JS, "refreshTotals"
+    )
+
+
+def test_the_needs_you_figure_is_a_real_link_to_the_filtered_list() -> None:
+    assert re.search(
+        r'<a\s+id="figure-needs-you-link"\s+href="#runs\?filter=needs-you">'
+        r"Show runs that need you</a>",
+        _RUNS_HTML,
+    )
+    assert 'const FILTER_NEEDS_YOU = "needs-you";' in _JS
+
+
+def test_the_route_filter_accepts_only_needs_you() -> None:
+    assert function_source(_JS, "routeFilter") == (
+        "function routeFilter(query) { "
+        'const filter = new URLSearchParams(query).get("filter"); '
+        "return filter === FILTER_NEEDS_YOU ? filter : null; }"
+    )
+    assert 'hash.replace(/^#/, "").split("?")' in function_source(_JS, "parseRoute")
+
+
+def test_a_filter_reads_one_page_of_the_most_runs_the_server_returns() -> None:
+    from software_agent_factory.dashboard.snapshot import MAX_PAGE_LIMIT
+
+    assert f"const MAX_RUNS_LIMIT = {MAX_PAGE_LIMIT};" in _JS
+    assert function_source(_JS, "applyRunsFilter") == (
+        "function applyRunsFilter(filter) { state.filter = filter; "
+        "state.limit = filter === null ? PAGE_SIZE : MAX_RUNS_LIMIT; "
+        "if (filter !== null) { state.offset = 0; } }"
+    )
+    assert "applyRunsFilter(route.filter ?? null);" in function_source(_JS, "applyRoute")
+    assert "filter: state.filter" in function_source(_JS, "beginRequest")
+
+
+def test_runs_that_need_you_come_first_and_a_filter_keeps_only_them() -> None:
+    assert function_source(_JS, "needsYou") == (
+        "function needsYou(run) { return run.waiting_for_human === true; }"
+    )
+    assert function_source(_JS, "orderRuns") == (
+        "function orderRuns(runs, filter) { const waiting = runs.filter(needsYou); "
+        "if (filter !== null) { return waiting; } "
+        "return [...waiting, ...runs.filter(function (run) { return !needsYou(run); })]; }"
+    )
+    assert "orderRuns(asArray(payload.runs), request.filter)" in function_source(_JS, "renderRuns")
+
+
+def test_a_run_that_needs_you_carries_a_badge_that_is_text_and_not_only_color() -> None:
+    assert function_source(_JS, "needsYouCell") == (
+        "function needsYouCell(run) { return needsYou(run) ? "
+        '{ value: NEEDS_YOU_TEXT, className: "badge-needs-you" } : ""; }'
+    )
+    assert 'const NEEDS_YOU_TEXT = "Needs you";' in _JS
+    assert re.search(
+        r"\.badge-needs-you\s*\{[^}]*color:\s*var\(--warn\);", dashboard_assets.STYLE_CSS
+    )
+    assert re.search(r"\.badge-needs-you\s*\{[^}]*font-weight:\s*700;", dashboard_assets.STYLE_CSS)
+    assert '<th scope="col">Attention</th>' in _RUNS_HTML
+
+
+def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> None:
+    assert re.search(
+        r'<p\s+id="runs-filter"\s+hidden>.*?<a href="#runs">Show all runs</a>',
+        _RUNS_HTML,
+        flags=re.DOTALL,
+    )
+    assert function_source(_JS, "renderRunsFilter") == (
+        "function renderRunsFilter(filter) { "
+        'document.getElementById("runs-filter").hidden = filter === null; '
+        'document.getElementById("runs-toolbar").hidden = filter !== null; }'
+    )
+    assert "renderRunsFilter(request.filter);" in function_source(_JS, "renderRuns")
+    assert '"No runs need you."' in function_source(_JS, "emptyRunsText")
+
+
+def test_each_run_row_has_a_compare_with_link_that_makes_that_run_run_a() -> None:
+    assert '<th scope="col">Compare</th>' in _RUNS_HTML
+    assert function_source(_JS, "compareCell") == (
+        'function compareCell(runId) { if (typeof runId !== "string") { '
+        'return { value: "", className: "" }; } '
+        'return { value: "Compare with\\u2026", '
+        'href: COMPARE_HASH + "/" + encodeURIComponent(runId), hidden: " " + runId }; }'
+    )
+    assert "compareCell(runId)" in function_source(_JS, "runRowSpec")
+
+
+def test_the_compare_link_names_its_run_for_a_screen_reader_and_survives_a_refresh() -> None:
+    patch = function_source(_JS, "patchLinkCell")
+    assert 'link.append(element("span"), element("span", "visually-hidden"))' in patch
+    assert "setText(link.lastElementChild, entry.hidden)" in patch
+    assert 'if (link?.tagName !== "A")' in patch
+    assert "patchLinkCell(cell, entry)" in function_source(_JS, "patchCell")
+
+
+def test_a_click_on_a_link_in_a_run_row_does_not_open_the_run() -> None:
+    click = listener_source(_JS, "bindControls", 'document.getElementById("runs-body")', "click")
+    assert 'if (row && !event.target.closest("a"))' in click
+
+
+# --------------------------------------------------------------------------
+# Compare view (slice 5, step 5.3; asset tests, ADR-016)
+# --------------------------------------------------------------------------
+
+
+def test_the_compare_view_is_a_pair_of_labelled_pickers_a_status_line_and_a_table() -> None:
+    assert "coming soon" not in _COMPARE_HTML
+    for letter in ("a", "b"):
+        assert re.search(
+            rf'<label for="compare-{letter}">Run {letter.upper()}</label>\s*'
+            rf'<select id="compare-{letter}"></select>',
+            _COMPARE_HTML,
+        )
+    assert re.search(
+        r'<p id="compare-status" role="status" aria-live="polite">Choose two runs to compare.</p>',
+        _COMPARE_HTML,
+    )
+    assert re.search(r'<div id="compare-content" class="card" hidden>', _COMPARE_HTML)
+    assert "<caption>The roles of run A and run B side by side</caption>" in _COMPARE_HTML
+    assert '<tbody id="compare-body"></tbody>' in _COMPARE_HTML
+
+
+def test_the_compare_table_names_every_column_and_row_for_a_screen_reader() -> None:
+    head = _COMPARE_HTML.split("<thead>")[1].split("</thead>")[0]
+    assert '<th scope="col" rowspan="2">Role</th>' in head
+    assert re.search(r'<th id="compare-a-head" scope="colgroup" colspan="6">Run A</th>', head)
+    assert re.search(r'<th id="compare-b-head" scope="colgroup" colspan="6">Run B</th>', head)
+    second_row = head.split("</tr>")[1]
+    assert (
+        re.findall(r'<th scope="col">([^<]+)</th>', second_row)
+        == [
+            "Calls",
+            "Failed calls",
+            "Models",
+            "Tokens",
+            "Duration",
+            "Cost",
+        ]
+        * 2
+    )
+    assert "const COMPARE_RUN_COLUMNS = 6;" in _JS
+    assert 'head.scope = "row";' in function_source(_JS, "compareRow")
+
+
+def test_a_picker_option_shows_the_start_time_state_task_and_model_profile() -> None:
+    assert function_source(_JS, "runOption") == (
+        "function runOption(run) { const runId = runIdOf(run); "
+        "const parts = [run.created_at, run.state, run.title || runId]; "
+        "if (run.performance_model_profile) { "
+        'parts.push("profile " + run.performance_model_profile); } '
+        'return { value: runId, label: parts.map((part) => displayValue(part)).join(" | ") }; }'
+    )
+
+
+def test_run_a_is_not_offered_as_run_b() -> None:
+    renderer = function_source(_JS, "renderCompareRuns")
+    assert "pickerOptions(runs, selection.a, null), selection.a" in renderer
+    assert "pickerOptions(runs, selection.b, selection.a)" in renderer
+    assert "option.value !== excluded" in function_source(_JS, "pickerOptions")
+    assert function_source(_JS, "normalizeSelection") == (
+        "function normalizeSelection(a, b) { return { a: a, b: b === a ? null : b }; }"
+    )
+    assert "return normalizeSelection(a, b);" in function_source(_JS, "readCompareSelection")
+    assert "return normalizeSelection(a, b);" in function_source(_JS, "compareSelection")
+
+
+def test_a_picked_run_missing_from_the_list_keeps_its_option() -> None:
+    options = function_source(_JS, "pickerOptions")
+    assert "options.unshift({ value: selected, label: selected })" in options
+
+
+def test_a_picker_is_rebuilt_only_when_its_options_or_pick_changed() -> None:
+    picker = function_source(_JS, "renderPicker")
+    assert "JSON.stringify([options, selected])" in picker
+    assert "select.dataset.signature === signature" in picker
+    assert 'select.value = selected ?? "";' in picker
+    assert 'optionNode("", PICKER_PLACEHOLDER)' in picker
+    assert 'const PICKER_PLACEHOLDER = "Choose a run";' in _JS
+
+
+def test_a_role_one_run_did_not_use_shows_no_calls_across_that_runs_columns() -> None:
+    cells = function_source(_JS, "appendRunCells")
+    assert "if (!isPlainObject(entry))" in cells
+    assert 'element("td", "no-calls", NO_CALLS_TEXT)).colSpan = COMPARE_RUN_COLUMNS' in cells
+    assert 'const NO_CALLS_TEXT = "no calls";' in _JS
+    assert re.search(
+        r"\.no-calls\s*\{[^}]*color:\s*var\(--text-muted\);", dashboard_assets.STYLE_CSS
+    )
+
+
+def test_each_run_shows_calls_failures_models_tokens_duration_and_cost_in_its_own_cells() -> None:
+    cells = function_source(_JS, "appendRunCells")
+    order = [
+        "textCell(figureText(calls))",
+        "textCell(figureText(failed))",
+        "textCell(displayValue(joinList(entry.models)))",
+        "figureListCell(tokenCards(entry))",
+        "textCell(figureText(duration))",
+        "figureListCell(costCards(entry))",
+    ]
+    positions = [cells.index(call) for call in order]
+    assert positions == sorted(positions)
+    assert "headlineCards(entry)" in cells
+    assert "appendRunCells(row, role.a);" in function_source(_JS, "compareRow")
+    assert "appendRunCells(row, role.b);" in function_source(_JS, "compareRow")
+
+
+def test_the_compare_cells_reuse_the_run_detail_figures_and_never_add_cost_units() -> None:
+    # One card per cost unit, each from the run's own figure, so no unit is summed.
+    assert "totals.costs?.[unit.key]" in function_source(_JS, "costCards")
+    cell = function_source(_JS, "figureListCell")
+    assert 'card.label + ": " + figureText(card)' in cell
+    assert "card.value !== NOT_REPORTED" in cell
+    assert "return textCell(NOT_REPORTED);" in cell
+    assert "reduce(" not in function_source(_JS, "appendRunCells")
+    assert "partialNote(figure?.reported_count, calls)" in function_source(_JS, "figureCard")
+
+
+def test_a_run_heading_names_the_run_and_its_task() -> None:
+    assert function_source(_JS, "runHeading") == (
+        "function runHeading(letter, run) { "
+        'const title = run?.title ? " \\u2014 " + run.title : ""; '
+        'return "Run " + letter + ": " + displayValue(run?.run_id) + title; }'
+    )
+
+
+def test_the_comparison_table_is_rebuilt_only_when_the_comparison_changed() -> None:
+    render = function_source(_JS, "renderComparison")
+    assert "body.dataset.signature !== signature" in render
+    assert "body.replaceChildren(...roles.map(compareRow))" in render
+    assert "setCompareStatus(roles.length === 0 ? NO_ROLES_TEXT : null)" in render
+
+
+def test_compare_routes_carry_up_to_two_run_ids_checked_with_the_run_pattern() -> None:
+    assert function_source(_JS, "validCompareId") == (
+        "function validCompareId(value) { "
+        'return typeof value === "string" && RUN_ID_PATTERN.test(value) ? value : null; }'
+    )
+    assert "state.compare = compareSelection(route);" in function_source(_JS, "applyRoute")
+    assert "compare: state.compare" in function_source(_JS, "beginRequest")
+    assert "resetCompareStatus(state.compare);" in function_source(_JS, "applyRoute")
+
+
+def test_the_pickers_always_load_and_the_comparison_loads_once_both_runs_are_chosen() -> None:
+    refresh = function_source(_JS, "refreshCompare")
+    assert "const tasks = [refreshCompareRuns(request)];" in refresh
+    assert (
+        "if (isCompleteSelection(request.compare)) { tasks.push(refreshComparison(request)); }"
+        in refresh
+    )
+    assert "compare: refreshCompare," in object_literal_source(_JS, "REFRESHERS")
+    compare_path = function_source(_JS, "refreshComparison")
+    assert "encodeURIComponent(request.compare.a)" in compare_path
+    assert '"&b=" + encodeURIComponent(request.compare.b)' in compare_path
+    assert "whenLatest(request, renderComparison)" in compare_path
+    assert 'const query = "limit=" + MAX_RUNS_LIMIT + "&offset=0";' in function_source(
+        _JS, "refreshCompareRuns"
+    )
+
+
+def test_a_pick_updates_the_address_without_a_route_change_and_refreshes() -> None:
+    pick = function_source(_JS, "onComparePick")
+    assert "state.compare = readCompareSelection();" in pick
+    assert 'globalThis.history.replaceState(null, "", compareHash(state.compare));' in pick
+    assert "location.hash" not in pick
+    assert pick.endswith("void refreshView(); }")
+    bindings = function_source(_JS, "bindControls")
+    for picker in ("compare-a", "compare-b"):
+        assert (
+            f'document.getElementById("{picker}").addEventListener("change", onComparePick);'
+            in bindings
+        )
+    assert "force" not in function_source(_JS, "refreshView")
+
+
+def test_the_compare_address_carries_run_a_then_run_b() -> None:
+    assert function_source(_JS, "compareHash") == (
+        "function compareHash(selection) { if (selection.b !== null) { "
+        'return COMPARE_HASH + "/" + encodeURIComponent(selection.a ?? "") + "/" + '
+        "encodeURIComponent(selection.b); } "
+        "return selection.a === null ? COMPARE_HASH : "
+        'COMPARE_HASH + "/" + encodeURIComponent(selection.a); }'
+    )
+    assert 'const COMPARE_HASH = "#compare";' in _JS
+
+
+def test_a_response_keeps_its_status_and_body_so_a_404_can_name_the_missing_run() -> None:
+    reader = function_source(_JS, "readResponse")
+    assert "error.status = response.status;" in reader
+    assert "error.body = body;" in reader
+    assert "response.json().catch(" in reader
+    assert "const NOT_FOUND_STATUS = 404;" in _JS
+
+
+def test_a_deleted_run_is_named_in_the_status_line_from_the_answer() -> None:
+    text = function_source(_JS, "missingRunsText")
+    assert 'return "Runs A and B are no longer available.";' in text
+    assert 'return "Run A is no longer available.";' in text
+    assert 'return b ? "Run B is no longer available." : null;' in text
+    assert 'sides.includes("a")' in text
+    assert 'sides.includes("b")' in text
+    for retired in ("reportMissingRuns", "runExists", "rethrow"):
+        assert retired not in _JS
+
+
+def test_a_failed_comparison_still_reaches_the_refresh_dispatcher() -> None:
+    failure = function_source(_JS, "onCompareFailure")
+    assert failure.count("throw error;") == 1
+    assert failure.endswith("throw error; }; }")
+    assert "if (isLatest(request)) {" in failure
+    assert (
+        "error.status === NOT_FOUND_STATUS ? missingRunsText(error.body?.missing) : null" in failure
+    )
+    assert "if (gone !== null) { setCompareStatus(gone); }" in failure
+    assert "onCompareFailure(request)" in function_source(_JS, "refreshComparison")
+
+
+def test_a_loaded_table_stays_after_a_failure_that_is_not_a_missing_run() -> None:
+    failure = function_source(_JS, "onCompareFailure")
+    # Only a table that is still hidden gets the "unavailable" line; a shown one stays.
+    assert (
+        'else if (document.getElementById("compare-content").hidden) '
+        "{ setCompareStatus(COMPARE_UNAVAILABLE_TEXT); }"
+    ) in failure
+    assert "replaceChildren" not in failure
+    assert "clearChildren" not in failure
+
+
+def test_the_compare_status_message_hides_the_table_and_a_null_shows_it() -> None:
+    assert function_source(_JS, "setCompareStatus") == (
+        "function setCompareStatus(message) { "
+        'const status = document.getElementById("compare-status"); '
+        'setText(status, message === null ? "" : message); '
+        "status.hidden = message === null; "
+        'document.getElementById("compare-content").hidden = message !== null; }'
+    )
+    assert function_source(_JS, "resetCompareStatus") == (
+        "function resetCompareStatus(selection) { "
+        "setCompareStatus(isCompleteSelection(selection) ? LOADING_TEXT : CHOOSE_TWO_TEXT); }"
+    )
+
+
+def test_the_compare_view_has_styles_that_use_only_theme_tokens() -> None:
+    css = dashboard_assets.STYLE_CSS
+    for selector in (".compare-pickers", ".picker label", ".picker select", ".figure-list"):
+        assert re.search(rf"{re.escape(selector)}\s*\{{", css)
+    select_rule = re.search(r"\.picker select\s*\{([^}]*)\}", css)
+    assert select_rule is not None
+    assert "background: var(--surface);" in select_rule.group(1)
+    assert "color: var(--text);" in select_rule.group(1)
+
+
+def test_a_focused_picker_skips_only_its_own_redraw_so_the_comparison_still_refreshes() -> None:
+    picker = function_source(_JS, "renderPicker")
+    assert picker.startswith("function renderPicker(select, options, selected) { ")
+    assert "if (select === document.activeElement) { return; }" in picker
+    assert picker.index("document.activeElement") < picker.index("select.replaceChildren(")
+    assert "isDirty" not in function_source(_JS, "refreshCompare")
+    assert "isDirty" not in function_source(_JS, "renderComparison")
+    assert 'matches("input, textarea")' in function_source(_JS, "isDirty")
+
+
+def test_the_compare_pickers_take_only_valid_ids_from_the_page() -> None:
+    read = function_source(_JS, "readCompareSelection")
+    assert 'validCompareId(document.getElementById("compare-a").value)' in read
+    assert 'validCompareId(document.getElementById("compare-b").value)' in read
+
+
+def test_one_helper_reads_a_run_id_from_a_run_or_a_detail() -> None:
+    assert function_source(_JS, "runIdOf") == (
+        "function runIdOf(entry) { return preferDefined(entry.run_id, entry.id); }"
+    )
+    assert re.findall(r"preferDefined\(\w+\.run_id, \w+\.id\)", _JS) == [
+        "preferDefined(entry.run_id, entry.id)"
+    ]
+
+
+def test_the_run_list_note_names_the_page_limit_the_server_applies() -> None:
+    assert f"from the newest {MAX_PAGE_LIMIT} runs." in _RUNS_HTML
+
+
+def test_the_compare_status_is_announced_as_a_status() -> None:
+    assert re.search(r'<p id="compare-status" role="status" aria-live="polite">', _COMPARE_HTML)
+
+
+def test_each_run_heading_spans_its_own_group_of_columns() -> None:
+    table = _COMPARE_HTML.split("<thead>")[0]
+    assert re.findall(r'<colgroup span="(\d+)"></colgroup>', table) == ["1", "6", "6"]

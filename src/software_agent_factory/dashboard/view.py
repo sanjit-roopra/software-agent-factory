@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from ..models import WorkflowState
-from .aggregate import run_totals
+from .aggregate import compare_roles, models_of, run_totals
 from .next_step import next_step
 from .sanitize import sanitize_project, sanitize_run_detail
 from .validators import is_episode_id, run_id_of
@@ -52,3 +52,28 @@ def project_view(raw: Any) -> dict[str, Any]:
     if "models" in project:
         project["totals"] = run_totals(project["models"])
     return project
+
+
+def _run_header(run_id: str, detail: dict[str, Any]) -> dict[str, Any]:
+    """What the picker shows for one run: its start time, state, task and models."""
+    return {
+        "run_id": run_id,
+        "created_at": detail.get("created_at"),
+        "state": detail.get("state"),
+        "title": detail.get("title"),
+        "models": models_of(detail.get("invocations", ())),
+    }
+
+
+def compare_view(
+    a_id: str, a_detail: dict[str, Any], b_id: str, b_detail: dict[str, Any]
+) -> dict[str, Any]:
+    """Two sanitized run details side by side: a header per run and the roles of both.
+
+    ``a_detail`` and ``b_detail`` are the output of :func:`sanitize_run_detail`.
+    """
+    return {
+        "a": _run_header(a_id, a_detail),
+        "b": _run_header(b_id, b_detail),
+        "roles": compare_roles(a_detail.get("invocations", ()), b_detail.get("invocations", ())),
+    }

@@ -82,3 +82,52 @@ def run_totals(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "tokens": {field: _usage_figure(calls, field) for field in TOKEN_CLASS_FIELDS},
         "costs": {field: _usage_figure(calls, field) for field in COST_UNIT_FIELDS},
     }
+
+
+#: The role of a call that names no usable role.
+UNKNOWN_ROLE = "UNKNOWN"
+
+
+def _role_of(call: Mapping[str, Any]) -> str:
+    role = call.get("role")
+    return role if isinstance(role, str) and role else UNKNOWN_ROLE
+
+
+def models_of(calls: Iterable[Mapping[str, Any]]) -> list[str]:
+    """The distinct model names the calls report, sorted. Calls without one add none."""
+    return sorted(
+        {model for call in calls if isinstance(model := call.get("model"), str) and model}
+    )
+
+
+def role_breakdown(calls: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """One :func:`run_totals` per role, plus the ``models`` that role's calls used.
+
+    Roles come in the order of their first call. A call without a usable role counts
+    under ``UNKNOWN_ROLE``. No calls gives no roles.
+    """
+    by_role: dict[str, list[Mapping[str, Any]]] = {}
+    for call in calls:
+        by_role.setdefault(_role_of(call), []).append(call)
+    return {
+        role: {**run_totals(role_calls), "models": models_of(role_calls)}
+        for role, role_calls in by_role.items()
+    }
+
+
+def compare_roles(
+    a_calls: Sequence[Mapping[str, Any]], b_calls: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """The roles of two runs side by side: one row per role in either run.
+
+    A row is ``{"role", "a", "b"}``. A side holds that run's :func:`role_breakdown`
+    entry, or ``None`` when the run made no call in the role. Rows come in order of first
+    call: run A's roles, then the roles only run B used. Costs of the two runs are never
+    added: each side keeps its own.
+    """
+    a_roles = role_breakdown(a_calls)
+    b_roles = role_breakdown(b_calls)
+    return [
+        {"role": role, "a": a_roles.get(role), "b": b_roles.get(role)}
+        for role in (*a_roles, *(role for role in b_roles if role not in a_roles))
+    ]

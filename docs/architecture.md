@@ -620,7 +620,7 @@ Three commands support guidance.
 `factory skill validate --repo PATH` validates current files without changes.
 `factory skill refresh --repo PATH [--runtime fake|copilot]` refreshes generated
 guidance only. It is the only command that can replace generated guidance.
-The read-only dashboard has no skill or overlay write path.
+The dashboard has no skill or overlay write path.
 
 #### Per-run snapshots
 
