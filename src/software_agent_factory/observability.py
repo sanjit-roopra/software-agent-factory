@@ -109,9 +109,9 @@ from .models import (
     WorkItem,
     utc_now,
 )
+from .redaction import redact_secrets
 from .resume import resume_refusal_within
 from .store import ARTIFACT_FILENAMES
-from .verification import redact_secrets
 
 try:
     import fcntl
@@ -334,7 +334,7 @@ class RunSummary(ModelBase):
     prompts, tool output, diffs, or tokens/secrets: no command logs, no
     patch text, no agent reasoning, no raw artifact bodies. ``title`` is
     redacted with the same credential patterns applied to captured command
-    output (``verification.redact_secrets``) as defense in depth against an
+    output (``redaction.redact_secrets``) as defense in depth against an
     accidentally-pasted secret in a work item title.
     """
 
@@ -2108,7 +2108,7 @@ class _RedactingJsonFormatter(logging.Formatter):
     ``extra``.
 
     The rendered message is passed through the same credential redaction
-    used for captured command output (``verification.redact_secrets``).
+    used for captured command output (``redaction.redact_secrets``).
     Exception tracebacks are intentionally never rendered: this module has
     no way to know whether a caller logged an exception that happened to
     wrap repository content, so it stays out of the log line entirely

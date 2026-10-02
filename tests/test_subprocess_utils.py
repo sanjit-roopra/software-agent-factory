@@ -5,9 +5,9 @@ import subprocess
 
 import pytest
 
+from software_agent_factory.redaction import REDACTION_PLACEHOLDER
 from software_agent_factory.subprocess_utils import (
     GITHUB_CREDENTIAL_ENV_VARS,
-    TOKEN_PATTERNS,
     build_child_env,
     kill_process_group,
     parse_version,
@@ -209,6 +209,15 @@ def test_sanitize_output_collapses_whitespace_and_truncates_long_text() -> None:
     assert "\n" not in result
 
 
-def test_token_patterns_match_known_github_token_shapes() -> None:
-    assert TOKEN_PATTERNS[0].search("ghp_1234567890abcdef") is not None
-    assert TOKEN_PATTERNS[1].search("github_pat_12345678901234567890") is not None
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "ghp_12345678",
+        "ghs_abc_def_ghi",
+        "github_pat_12345678901234567890",
+        "AKIAABCDEFGHIJKLMNOP",
+        "MY_API_KEY=abcdefgh12345",
+    ],
+)
+def test_redact_secrets_covers_the_union_of_secret_shapes(secret: str) -> None:
+    assert redact_secrets(f"saw {secret} here", set()) == f"saw {REDACTION_PLACEHOLDER} here"

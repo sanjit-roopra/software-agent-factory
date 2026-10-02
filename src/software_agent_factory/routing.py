@@ -32,7 +32,7 @@ from .models import (
     RouteOption,
     WorkItem,
 )
-from .verification import redact_secrets
+from .redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 

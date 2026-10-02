@@ -1,8 +1,8 @@
 """Runtime-neutral subprocess helpers shared by agent runtimes.
 
 Process-group termination, the GitHub-credential env-var scrub set, and the
-credential-hygiene helpers built on it (:data:`TOKEN_PATTERNS`,
-:func:`build_child_env`, :func:`sanitize_output`) are used by more than one
+credential-hygiene helpers built on it (:func:`build_child_env`,
+:func:`redact_secrets`, :func:`sanitize_output`) are used by more than one
 ``AgentRuntime`` implementation (Copilot, pi from Slice 3 of
 ``plans/pi-agent-runtime.md``, and the pi cache probe script), so no single
 runtime owns them. Tolerant dotted-version parsing is shared by the runtime
@@ -16,6 +16,8 @@ import re
 import signal
 import subprocess
 from typing import Protocol
+
+from . import redaction
 
 #: Environment variables scrubbed from a child agent process's environment so
 #: a GitHub credential in the factory's own environment cannot leak into a
@@ -31,15 +33,6 @@ GITHUB_CREDENTIAL_ENV_VARS = frozenset(
         "GITHUB_PAT",
         "GITHUB_TOKEN",
     }
-)
-
-#: Patterns matching GitHub token literals, used to scrub tokens that reach a
-#: child process's output even when they were not sourced from one of
-#: :data:`GITHUB_CREDENTIAL_ENV_VARS` (e.g. embedded in a URL or error body).
-#: ``(?a:\w)`` is exactly ``[A-Za-z0-9_]`` while ``\b`` keeps its Unicode-aware meaning.
-TOKEN_PATTERNS = (
-    re.compile(r"\bgh[pousr]_(?a:\w){8,}\b"),
-    re.compile(r"\bgithub_pat_(?a:\w){20,}\b"),
 )
 
 _VERSION_PATTERN = re.compile(r"(\d+(?:\.\d+)*)")
@@ -97,8 +90,9 @@ def build_child_env() -> tuple[dict[str, str], set[str]]:
 
 
 def redact_secrets(text: str, scrubbed_values: set[str]) -> str:
-    """Redact scrubbed credential values and token-shaped substrings from text.
+    """Redact scrubbed credential values and secret shapes from text.
 
+    Secret shapes come from :func:`software_agent_factory.redaction.redact_secrets`.
     Does not collapse whitespace or truncate, so a caller can redact a whole
     buffer *before* truncating it: a secret cut in half by the truncation
     would otherwise escape exact-value redaction. Values shorter than four
@@ -108,14 +102,12 @@ def redact_secrets(text: str, scrubbed_values: set[str]) -> str:
     redacted = text
     for value in sorted(scrubbed_values, key=len, reverse=True):
         if len(value) >= 4:
-            redacted = redacted.replace(value, "[REDACTED]")
-    for pattern in TOKEN_PATTERNS:
-        redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted
+            redacted = redacted.replace(value, redaction.REDACTION_PLACEHOLDER)
+    return redaction.redact_secrets(redacted)
 
 
 def sanitize_output(text: str, scrubbed_values: set[str]) -> str:
-    """Redact scrubbed credential values and token-shaped substrings from text.
+    """Redact scrubbed credential values and secret shapes from text.
 
     Collapses whitespace and truncates to 600 characters, matching the
     excerpt length used in failure-reason and log messages.

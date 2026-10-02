@@ -65,6 +65,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
+from .redaction import redact_secrets
 from .resume import (
     ReplyIdentity,
     accept_resume,
@@ -77,7 +78,6 @@ from .resume import (
 from .resume import is_valid_plan_decision_context as is_valid_plan_decision_context
 from .resume import is_valid_risk_approval_context as is_valid_risk_approval_context
 from .store import FileRunStore
-from .verification import redact_secrets
 
 logger = logging.getLogger(__name__)
 

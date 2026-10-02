@@ -59,9 +59,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .models import CommandResult, VerificationReport
-
-# Re-exported: observability, escalation and routing import it from here.
-from .redaction import redact_secrets as redact_secrets
+from .redaction import redact_secrets
 
 #: Environment variables always provided to repository commands. Anything
 #: else must be named explicitly by repository configuration.

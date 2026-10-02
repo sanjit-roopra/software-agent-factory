@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from software_agent_factory import redaction, verification
+from software_agent_factory import redaction
 from software_agent_factory.redaction import (
     _SECRET_PATTERNS,
     REASON_LIMIT,
@@ -47,8 +47,8 @@ _SAMPLES: tuple[tuple[str, str, str], ...] = (
 #: (id, text, redacted?) pairs written by hand around the smallest accepted size
 #: of each quantified pattern. Change them with the quantifier when a pattern changes.
 _THRESHOLDS: tuple[tuple[str, str, bool], ...] = (
-    ("github-token-15", "ghp_" + "a" * 15, False),
-    ("github-token-16", "ghp_" + "a" * 16, True),
+    ("github-token-7", "ghp_" + "a" * 7, False),
+    ("github-token-8", "ghp_" + "a" * 8, True),
     ("github-pat-19", "github_pat_" + "a" * 19, False),
     ("github-pat-20", "github_pat_" + "a" * 20, True),
     ("aws-key-body-15", "AKIA" + "A" * 15, False),
@@ -108,8 +108,15 @@ def test_redact_secrets_leaves_empty_and_safe_text_alone() -> None:
     assert redact_secrets("plain failure text") == "plain failure text"
 
 
-def test_verification_reuses_the_redaction_functions() -> None:
-    assert verification.redact_secrets is redaction.redact_secrets
+@pytest.mark.parametrize("kind", "pousr")
+def test_every_github_token_kind_is_redacted(kind: str) -> None:
+    token = f"gh{kind}_abcdefgh"
+
+    assert redact_secrets(f"saw {token} here") == f"saw {REDACTION_PLACEHOLDER} here"
+
+
+def test_a_github_token_body_with_underscores_is_redacted_whole() -> None:
+    assert redact_secrets("x ghp_abc_def_ghi_jkl y") == f"x {REDACTION_PLACEHOLDER} y"
 
 
 def _cut_shape(limit: int = REASON_LIMIT, run_id: str | None = None) -> tuple[int, str, int]:

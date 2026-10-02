@@ -20,8 +20,9 @@ REDACTION_PLACEHOLDER = "[REDACTED]"
 REASON_LIMIT = 500
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # GitHub personal access / app / OAuth tokens.
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"),
+    # GitHub personal access / app / OAuth tokens. Eight characters is the
+    # shortest body any caller ever redacted; the class includes ``_``.
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_\w{20,}"),
     # AWS access key ids and secret access keys.
     re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),

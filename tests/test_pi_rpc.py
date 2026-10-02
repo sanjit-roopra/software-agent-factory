@@ -288,8 +288,8 @@ def test_stderr_tail_redacts_a_secret_split_across_reads(pi_fake_clock: FakePiCl
 def test_stderr_tail_redacts_a_token_shaped_secret_split_across_reads(
     pi_fake_clock: FakePiClock,
 ) -> None:
-    """A GitHub token's first half already matches ``TOKEN_PATTERNS`` (``\\b`` fires
-    at the end of the text), so redacting per read would leak the second half."""
+    """A GitHub token's first half already matches the token shape (eight body
+    characters are enough), so redacting per read would leak the second half."""
     token = "ghp_" + "A" * 8 + "SECONDHALF12345"
     process = FakePiProcess()
     client = PiRpcClient(process, redact=lambda text: redact_secrets(text, set()))
