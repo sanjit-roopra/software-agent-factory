@@ -341,9 +341,15 @@ class RunningServer:
         cookie = f"{cookie_name(self.port)}={self.token if value is None else value}"
         return {**self.host_header(), "Cookie": cookie}
 
-    def exchange(self) -> http.client.HTTPResponse:
+    def exchange(
+        self, method: str = "GET", headers: dict[str, str] | None = None
+    ) -> http.client.HTTPResponse:
         """Open the page link ``factory dashboard`` prints."""
-        return self.request("GET", f"/?token={self.token}", headers=self.host_header())
+        return self.request(
+            method,
+            f"/?token={self.token}",
+            headers=self.host_header() if headers is None else headers,
+        )
 
 
 def _start(config: DashboardConfig) -> RunningServer:
@@ -472,6 +478,8 @@ def test_wrong_token_is_rejected(running_server: RunningServer) -> None:
 
 SUMMARY_PATH = "/api/summary"
 SET_COOKIE = "Set-Cookie"
+WRONG_TOKEN = "not-the-token"
+STALE_TOKEN = "the-token-of-an-earlier-start"
 NON_ASCII_TOKENS = ["caf\u00e9", "\u00e9" * 43]
 
 
@@ -574,6 +582,76 @@ def test_a_wrong_token_in_the_page_link_sets_no_cookie(running_server: RunningSe
     assert (response.status, response.getheader(SET_COOKIE)) == (401, None)
 
 
+def test_the_page_link_with_a_wrong_host_is_400(running_server: RunningServer) -> None:
+    headers = {"Host": "evil.example"}
+
+    response = running_server.exchange(headers=headers)
+
+    assert response.status == 400
+
+
+def test_the_page_link_with_a_wrong_host_sets_no_cookie(running_server: RunningServer) -> None:
+    headers = {"Host": "evil.example"}
+
+    response = running_server.exchange(headers=headers)
+
+    assert response.getheader(SET_COOKIE) is None
+
+
+def test_the_page_link_with_a_foreign_origin_is_403(running_server: RunningServer) -> None:
+    headers = {**running_server.host_header(), "Origin": "http://evil.example"}
+
+    response = running_server.exchange(headers=headers)
+
+    assert response.status == 403
+
+
+def test_the_page_link_with_a_foreign_origin_sets_no_cookie(
+    running_server: RunningServer,
+) -> None:
+    headers = {**running_server.host_header(), "Origin": "http://evil.example"}
+
+    response = running_server.exchange(headers=headers)
+
+    assert response.getheader(SET_COOKIE) is None
+
+
+def test_a_head_page_link_is_200(running_server: RunningServer) -> None:
+    response = running_server.exchange("HEAD")
+
+    assert response.status == 200
+
+
+def test_a_head_page_link_has_no_body(running_server: RunningServer) -> None:
+    response = running_server.exchange("HEAD")
+
+    assert response.read_body == b""  # type: ignore[attr-defined]
+
+
+def test_a_head_page_link_sets_the_session_cookie(running_server: RunningServer) -> None:
+    response = running_server.exchange("HEAD")
+
+    morsel = SimpleCookie(response.getheader(SET_COOKIE))[cookie_name(running_server.port)]
+    assert morsel.value == running_server.token
+
+
+@pytest.mark.parametrize(
+    ("query", "status"),
+    [
+        pytest.param("token={token}&token=other", 200, id="valid-first"),
+        pytest.param("token=other&token={token}", 401, id="valid-second"),
+    ],
+)
+def test_the_first_token_in_the_page_link_decides(
+    running_server: RunningServer, query: str, status: int
+) -> None:
+    path = "/?" + query.format(token=running_server.token)
+
+    response = running_server.request("GET", path, headers=running_server.host_header())
+
+    assert response.status == status
+
+
 def test_each_dashboard_port_has_its_own_cookie_name() -> None:
     assert cookie_name(8765) != cookie_name(8766)
 
@@ -592,12 +670,13 @@ def test_the_cookie_alone_authenticates_a_read(
 ) -> None:
     response = running_server.request("GET", path, headers=running_server.cookie_headers())
 
-    assert (response.status, content_type in response.getheader("Content-Type", "")) == (200, True)
+    assert response.status == 200
+    assert content_type in response.getheader("Content-Type", "")
 
 
 @pytest.mark.parametrize("path", ["/", "/assets/app.js", SUMMARY_PATH])
 def test_a_cookie_of_another_start_is_401(running_server: RunningServer, path: str) -> None:
-    headers = running_server.cookie_headers("the-token-of-an-earlier-start")
+    headers = running_server.cookie_headers(STALE_TOKEN)
 
     response = running_server.request("GET", path, headers=headers)
 
@@ -613,7 +692,7 @@ def test_a_cookie_of_another_port_is_401(running_server: RunningServer) -> None:
     assert response.status == 401
 
 
-@pytest.mark.parametrize("header_value", ["not-the-token", ""], ids=["wrong", "empty"])
+@pytest.mark.parametrize("header_value", [WRONG_TOKEN, ""], ids=["wrong", "empty"])
 def test_a_token_header_that_is_present_and_wrong_beats_a_valid_cookie(
     running_server: RunningServer, header_value: str
 ) -> None:
@@ -627,7 +706,7 @@ def test_a_token_header_that_is_present_and_wrong_beats_a_valid_cookie(
 def test_a_valid_token_header_beats_a_cookie_of_another_start(
     running_server: RunningServer,
 ) -> None:
-    stale = running_server.cookie_headers("the-token-of-an-earlier-start")
+    stale = running_server.cookie_headers(STALE_TOKEN)
     headers = {**stale, TOKEN_HEADER: running_server.token}
 
     response = running_server.request("GET", SUMMARY_PATH, headers=headers)
@@ -644,6 +723,60 @@ def test_the_token_in_the_url_authenticates_nothing_but_the_page_link(
     )
 
     assert response.status == 401
+
+
+@dataclass(frozen=True)
+class _Credential:
+    """What a request carries as proof, and whether a read with it must be refused."""
+
+    headers: Callable[[RunningServer], dict[str, str]]
+    refused: bool
+    in_query: bool = False
+
+
+_CREDENTIALS = {
+    "none": _Credential(RunningServer.host_header, refused=True),
+    "query-token": _Credential(RunningServer.host_header, refused=True, in_query=True),
+    "wrong-cookie": _Credential(lambda running: running.cookie_headers(WRONG_TOKEN), refused=True),
+    "wrong-header": _Credential(
+        lambda running: {**running.host_header(), TOKEN_HEADER: WRONG_TOKEN}, refused=True
+    ),
+    "valid-cookie": _Credential(RunningServer.cookie_headers, refused=False),
+    "valid-header": _Credential(RunningServer.authed_headers, refused=False),
+}
+#: Every path a ``GET`` can reach, with one that no route serves.
+_GET_ROUTES = (
+    "/",
+    "/assets/app.js",
+    "/assets/style.css",
+    "/healthz",
+    SUMMARY_PATH,
+    "/api/runs",
+    "/api/runs/run-001",
+    "/api/compare?a=run-001&b=run-002",
+    "/api/projects",
+    "/nope",
+)
+#: The page link is the one place a query token is valid, so the page has no query-token case.
+_ROUTE_CREDENTIAL_CASES = [
+    pytest.param(route, name, id=f"{route}-{name}")
+    for route in _GET_ROUTES
+    for name, credential in _CREDENTIALS.items()
+    if not (route == "/" and credential.in_query)
+]
+
+
+@pytest.mark.parametrize(("route", "credential_name"), _ROUTE_CREDENTIAL_CASES)
+def test_every_get_route_needs_a_valid_cookie_or_header(
+    running_server: RunningServer, route: str, credential_name: str
+) -> None:
+    credential = _CREDENTIALS[credential_name]
+    separator = "&" if "?" in route else "?"
+    path = f"{route}{separator}token={running_server.token}" if credential.in_query else route
+
+    response = running_server.request("GET", path, headers=credential.headers(running_server))
+
+    assert (response.status == 401) is credential.refused
 
 
 @pytest.mark.parametrize(
@@ -666,12 +799,22 @@ def test_the_session_cookie_is_found_among_other_cookies(
 
 @pytest.mark.parametrize(
     "cookie",
-    ["", "garbage", "=", ";;;", "caf\u00e9=caf\u00e9", "factory_dashboard_0"],
+    [
+        pytest.param("", id="empty"),
+        pytest.param("garbage", id="no-name-or-value"),
+        pytest.param("=", id="bare-equals"),
+        pytest.param(";;;", id="only-separators"),
+        pytest.param("caf\u00e9=caf\u00e9", id="non-ascii"),
+        pytest.param("{name}", id="name-without-equals"),
+        pytest.param("{name}=", id="name-with-empty-value"),
+        pytest.param('{name}="{token}"', id="quoted-token-is-not-unquoted"),
+    ],
 )
 def test_an_unusable_cookie_header_is_401_not_an_error(
     running_server: RunningServer, cookie: str
 ) -> None:
-    headers = {**running_server.host_header(), "Cookie": cookie}
+    value = cookie.format(name=cookie_name(running_server.port), token=running_server.token)
+    headers = {**running_server.host_header(), "Cookie": value}
 
     response = running_server.request("GET", SUMMARY_PATH, headers=headers)
 
@@ -682,37 +825,73 @@ def test_the_cookie_check_sees_no_cookie_header_as_no_match() -> None:
     assert cookie_token_matches("token", {}, 8765) is False
 
 
-def test_the_page_holds_the_token_only_for_a_request_that_holds_it(
+def test_the_page_holds_the_token_for_a_request_with_the_cookie(
     running_server: RunningServer,
 ) -> None:
-    meta = f'<meta name="{dashboard_assets.TOKEN_META_NAME}" content="{running_server.token}">'
-    by_cookie = running_server.request("GET", "/", headers=running_server.cookie_headers())
-    by_header = running_server.request("GET", "/", headers=running_server.authed_headers())
-    unauthenticated = running_server.request("GET", "/", headers=running_server.host_header())
+    response = running_server.request("GET", "/", headers=running_server.cookie_headers())
 
-    assert meta in by_cookie.read_body.decode()  # type: ignore[attr-defined]
-    assert meta in by_header.read_body.decode()  # type: ignore[attr-defined]
-    assert unauthenticated.status == 401
-    assert running_server.token not in unauthenticated.read_body.decode()  # type: ignore[attr-defined]
+    assert _token_meta(running_server) in response.read_body.decode()  # type: ignore[attr-defined]
 
 
-def test_the_cookie_exchange_and_the_reads_after_it_never_log_the_token(
+def test_the_page_holds_the_token_for_a_request_with_the_header(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.request("GET", "/", headers=running_server.authed_headers())
+
+    assert _token_meta(running_server) in response.read_body.decode()  # type: ignore[attr-defined]
+
+
+def test_the_page_is_401_without_a_credential(running_server: RunningServer) -> None:
+    response = running_server.request("GET", "/", headers=running_server.host_header())
+
+    assert response.status == 401
+
+
+def test_the_401_answer_for_the_page_does_not_hold_the_token(
+    running_server: RunningServer,
+) -> None:
+    response = running_server.request("GET", "/", headers=running_server.host_header())
+
+    assert running_server.token not in response.read_body.decode()  # type: ignore[attr-defined]
+
+
+WRONG_COOKIE_VALUE = "wrong-but-secret-looking"
+
+
+def _logged_cookie_requests(running: RunningServer, caplog: pytest.LogCaptureFixture) -> str:
+    """The log text of a page link, a cookie read and a refused cookie read."""
+    with caplog.at_level(logging.DEBUG):
+        running.exchange()
+        running.request("GET", "/", headers=running.cookie_headers())
+        running.request("GET", SUMMARY_PATH, headers=running.cookie_headers(WRONG_COOKIE_VALUE))
+    logged = "\n".join(f"{r.getMessage()} {r.args!r}" for r in caplog.records)
+    # The guard: the checks on this text prove nothing unless the three requests were logged.
+    assert logged.count("GET /") == 3
+    return logged
+
+
+def test_the_cookie_requests_never_log_the_token(
     running_server: RunningServer, caplog: pytest.LogCaptureFixture
 ) -> None:
-    with caplog.at_level(logging.DEBUG):
-        exchange = running_server.exchange()
-        page = running_server.request("GET", "/", headers=running_server.cookie_headers())
-        refused = running_server.request(
-            "GET", SUMMARY_PATH, headers=running_server.cookie_headers("wrong-but-secret-looking")
-        )
+    logged = _logged_cookie_requests(running_server, caplog)
 
-    assert (exchange.status, page.status, refused.status) == (200, 200, 401)
-    logged = "\n".join(f"{r.getMessage()} {r.args!r}" for r in caplog.records)
-    # The guard: the checks below prove nothing unless the three requests were logged.
-    assert logged.count("GET /") == 3
     assert running_server.token not in logged
-    assert "wrong-but-secret-looking" not in logged
-    assert "Set-Cookie" not in logged
+
+
+def test_the_cookie_requests_never_log_a_wrong_cookie_value(
+    running_server: RunningServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    logged = _logged_cookie_requests(running_server, caplog)
+
+    assert WRONG_COOKIE_VALUE not in logged
+
+
+def test_the_cookie_requests_never_log_the_set_cookie_header(
+    running_server: RunningServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    logged = _logged_cookie_requests(running_server, caplog)
+
+    assert SET_COOKIE not in logged
 
 
 def test_correct_header_token_authenticates_api(running_server: RunningServer) -> None:
