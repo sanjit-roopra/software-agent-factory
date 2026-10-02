@@ -14,7 +14,6 @@ cause. The stored-context validity check (``is_valid_risk_approval_context`` and
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -80,11 +79,6 @@ _STATUS_CAUSES: dict[EscalationStatus, ReplyClosedCause] = {
 REPLY_CLOSED_CAUSES: frozenset[ReplyClosedCause] = frozenset(ReplyClosedCause)
 
 
-def notice_host(record: EscalationRecord, allowed_hosts: Sequence[str]) -> str:
-    """The host the poller would read replies from: the stored one, else the first allowed."""
-    return record.target_host or (allowed_hosts[0] if allowed_hosts else "github.com")
-
-
 @dataclass(frozen=True, kw_only=True)
 class ReplyPolicy:
     """The configured limits that decide whether a reply is read.
@@ -109,6 +103,22 @@ class ReplyPolicy:
             allowed_hosts=tuple(escalation.allowed_hosts),
         )
 
+    def window_passed(self, record: EscalationRecord, now: datetime) -> bool:
+        """Whether ``now`` is after the last moment the reply window of ``record`` is open."""
+        return now > record.created_at + timedelta(hours=self.reply_window_hours)
+
+    def reopens_left(self, record: EscalationRecord) -> bool:
+        """Whether ``record`` can still be reopened: its count is below the limit."""
+        return record.reopen_count < self.max_reopens
+
+    def notice_host(self, record: EscalationRecord) -> str:
+        """The host a reply is read from: the stored one, else the first allowed one."""
+        return record.target_host or (self.allowed_hosts[0] if self.allowed_hosts else "github.com")
+
+    def allows_host(self, host: str) -> bool:
+        """Whether ``host`` is one of the allowed hosts, compared without regard to case."""
+        return host.casefold() in {allowed.casefold() for allowed in self.allowed_hosts}
+
 
 def reply_closed_cause(
     record: EscalationRecord, policy: ReplyPolicy, now: datetime
@@ -128,12 +138,10 @@ def reply_closed_cause(
         return ReplyClosedCause.NO_INSTRUCTIONS
     if record.reply_cursor == REPLY_CURSOR_CLOSED:
         return ReplyClosedCause.CURSOR_CLOSED
-    if now > record.created_at + timedelta(hours=policy.reply_window_hours):
+    if policy.window_passed(record, now):
         return ReplyClosedCause.WINDOW_EXPIRED
-    if record.reopen_count >= policy.max_reopens:
+    if not policy.reopens_left(record):
         return ReplyClosedCause.REOPEN_LIMIT
-    if notice_host(record, policy.allowed_hosts).casefold() not in {
-        host.casefold() for host in policy.allowed_hosts
-    }:
+    if not policy.allows_host(policy.notice_host(record)):
         return ReplyClosedCause.HOST_NOT_ALLOWED
     return None

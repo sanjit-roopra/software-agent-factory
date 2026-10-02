@@ -80,7 +80,12 @@ from typing import Any, Iterable, Literal, Protocol, TypeVar
 
 from pydantic import Field, ValidationError, model_serializer
 
-from .escalation_protocol import ANSWER_COMMAND_PATTERN, ReplyPolicy, reply_closed_cause
+from .escalation_protocol import (
+    ANSWER_COMMAND_PATTERN,
+    ReplyClosedCause,
+    ReplyPolicy,
+    reply_closed_cause,
+)
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
@@ -515,8 +520,10 @@ class EscalationSummary(ModelBase):
     resumed_at: UtcDateTime | None = None
     episode_id: str | None = None
     context_fingerprint: str | None = None
-    max_reopens: int | None = Field(default=None, ge=1)
-    reply_closed_cause: str | None = None
+    max_reopens: int = Field(ge=1)
+    #: Why a GitHub reply is not read now, or ``None`` when it is. No default: an omitted
+    #: cause must not read as an open reply.
+    reply_closed_cause: ReplyClosedCause | None
     #: Why the dashboard could not queue a resume now, or ``None`` when it can. Unlike
     #: ``reply_closed_cause`` this ignores the GitHub-only gates.
     dashboard_action_refusal: ResumeRefusal | None = None

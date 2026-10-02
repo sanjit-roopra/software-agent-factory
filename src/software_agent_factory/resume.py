@@ -20,7 +20,7 @@ import re
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Protocol, TypeIs, get_args
 
@@ -326,16 +326,11 @@ def resume_refusal_within(
         return "state_changed"
     if not has_valid_resume_context(run):
         return "context_changed"
-    if now > escalation.created_at + timedelta(hours=policy.reply_window_hours):
+    if policy.window_passed(escalation, now):
         return "expired"
-    if escalation.reopen_count >= policy.max_reopens:
+    if not policy.reopens_left(escalation):
         return "reopen_limit"
     return None
-
-
-def can_accept_resume(run: FactoryRun, config: FactoryConfig, now: datetime) -> bool:
-    """Whether ``run`` can accept a resume at ``now``. See :func:`resume_refusal` for why not."""
-    return resume_refusal(run, config, now) is None
 
 
 def current_context_fingerprint(escalation: EscalationRecord) -> str | None:

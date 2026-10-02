@@ -39,7 +39,6 @@ from software_agent_factory.resume import (
     ReplyIdentity,
     accept_resume,
     build_plan_answers,
-    can_accept_resume,
     clean_plan_answer,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
@@ -317,7 +316,7 @@ def _stored_request(store: FileRunStore, run: FactoryRun) -> DashboardResumeRequ
     return request
 
 
-# -- can_accept_resume -------------------------------------------------------
+# -- resume_refusal ----------------------------------------------------------
 
 PLAN = ResumeClassification.PLAN_DECISION
 RISK = ResumeClassification.RISK_APPROVAL
@@ -338,13 +337,12 @@ def test_a_waiting_run_with_a_valid_context_can_accept_a_resume(
     run = _run(kind, status=status)
 
     assert resume_refusal(run, _config(), NOW) is None
-    assert can_accept_resume(run, _config(), NOW) is True
 
 
 def test_a_dashboard_resume_does_not_need_remote_resume_enabled() -> None:
     run = _run(remote_resume_enabled=False, reply_cursor="closed")
 
-    assert can_accept_resume(run, _config(), NOW) is True
+    assert resume_refusal(run, _config(), NOW) is None
 
 
 @pytest.mark.parametrize(
