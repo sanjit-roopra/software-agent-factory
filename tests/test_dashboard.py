@@ -3433,6 +3433,30 @@ def test_project_carries_totals_over_its_models() -> None:
     assert project["totals"]["costs"]["usage_value_usd"] == {"total": 1.0, "reported_count": 1}
 
 
+def test_project_totals_leave_out_the_active_calls_but_the_models_still_list_them() -> None:
+    project = project_view(
+        {
+            "project_id": "project-001",
+            "models": [
+                {"usage": {"total_nano_aiu": 100_000_000_000}, "success": True},
+                {"status": "running", "success": None, "usage": None},
+                {"status": "stale", "success": None, "usage": None},
+            ],
+        }
+    )
+
+    assert project["totals"]["calls"] == 1
+    assert len(project["models"]) == 3
+
+
+def test_project_totals_count_a_call_whose_status_is_not_a_known_word() -> None:
+    project = project_view(
+        {"project_id": "project-001", "models": [{"status": ["running"]}, {"status": 7}]}
+    )
+
+    assert project["totals"]["calls"] == 2
+
+
 # --------------------------------------------------------------------------
 # Provider -> sanitizer: one usage definition and the running call's reasoning
 # --------------------------------------------------------------------------
