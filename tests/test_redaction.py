@@ -157,11 +157,12 @@ def test_a_github_token_body_with_underscores_is_redacted_whole() -> None:
     assert redact_secrets("x ghp_abc_def_ghi_jkl y") == f"x {REDACTION_PLACEHOLDER} y"
 
 
-def test_snake_case_word_that_ends_in_a_token_prefix_is_left_alone() -> None:
-    assert redact_secrets("num_highs_and_lows") == "num_highs_and_lows"
+@pytest.mark.parametrize("word", ["num_highs_and_lows", "use_ghs_runner_cfg"])
+def test_snake_case_word_that_holds_a_token_prefix_is_left_alone(word: str) -> None:
+    assert redact_secrets(word) == word
 
 
-@pytest.mark.parametrize("prefix", ["x_", " ", "=", "/"])
+@pytest.mark.parametrize("prefix", ['"', " ", "=", "/"])
 def test_a_github_token_after_a_non_alphanumeric_character_is_redacted(prefix: str) -> None:
     assert redact_secrets(f"{prefix}ghp_abcdefgh12345678") == f"{prefix}{REDACTION_PLACEHOLDER}"
 
@@ -313,3 +314,24 @@ def test_redaction_module_imports_only_re() -> None:
             imported.add(node.module or "")
 
     assert imported == {"__future__", "re"}
+
+
+def test_an_ssh_remote_with_the_git_user_is_left_alone() -> None:
+    remote = "ssh://git@github.com/acme/repo.git"
+    assert redact_secrets(remote) == remote
+
+
+@pytest.mark.parametrize("header", ["Authorization:", "Cookie:", "API_KEY ="])
+def test_a_header_with_an_empty_value_does_not_take_the_next_line(header: str) -> None:
+    assert redact_secrets(f"{header}\n1. keep this line") == f"{header}\n1. keep this line"
+
+
+def test_a_private_key_header_without_an_end_is_redacted_in_linear_time() -> None:
+    header = "-----BEGIN PRIVATE KEY-----"
+    text = (header + "x" * 50) * 5000
+    assert redact_secrets(text).count(REDACTION_PLACEHOLDER) == 5000
+
+
+def test_a_whole_private_key_block_is_redacted() -> None:
+    block = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
+    assert redact_secrets(f"a {block} b") == f"a {REDACTION_PLACEHOLDER} b"
