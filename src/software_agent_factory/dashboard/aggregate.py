@@ -37,12 +37,18 @@ def call_total_tokens(usage: Mapping[str, Any]) -> int | float | None:
     return total
 
 
+def _total_tokens_of(call: Mapping[str, Any]) -> int | float | None:
+    usage = call.get("usage")
+    return call_total_tokens(usage) if isinstance(usage, Mapping) else None
+
+
 def run_totals(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Total sanitized finished calls by token class and by cost unit.
 
     ``calls`` is the finished calls only; the active call has no usage yet.
     ``failed_calls`` counts calls whose ``status`` is ``STATUS_FAILED`` out of those
-    that reported a ``STATUS_SUCCESS`` or ``STATUS_FAILED`` status.
+    that reported a ``STATUS_SUCCESS`` or ``STATUS_FAILED`` status. ``total_tokens`` adds
+    each call's :func:`call_total_tokens`.
     """
     outcomes = (STATUS_SUCCESS, STATUS_FAILED)
     statuses = [call.get("status") for call in calls if call.get("status") in outcomes]
@@ -53,6 +59,7 @@ def run_totals(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "reported_count": len(statuses),
         },
         "duration_ms": _figure(call.get("duration_ms") for call in calls),
+        "total_tokens": _figure(_total_tokens_of(call) for call in calls),
         "tokens": {field: _usage_figure(calls, field) for field in TOKEN_CLASS_FIELDS},
         "costs": {field: _usage_figure(calls, field) for field in COST_UNIT_FIELDS},
     }
@@ -105,3 +112,44 @@ def compare_roles(
         {"role": role, "a": a_roles.get(role), "b": b_roles.get(role)}
         for role in (*a_roles, *(role for role in b_roles if role not in a_roles))
     ]
+
+
+#: How the run list names a role. A role not listed shows as its lower-case name.
+ROLE_LABELS: dict[str, str] = {
+    "TRIAGE": "triage",
+    "REFINER": "refiner",
+    "RESEARCHER": "researcher",
+    "PLANNER": "planner",
+    "IMPLEMENTER": "impl",
+    "TESTER": "tester",
+    "REVIEWER": "review",
+}
+
+
+def role_label(role: str) -> str:
+    return ROLE_LABELS.get(role, role.lower())
+
+
+def models_summary(calls: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """The models of a run on one line, plus the full role by role list for a tooltip.
+
+    A model comes in order of its first call. A model that two or more roles used shows once
+    with the count of those roles (``gpt-5-mini x4``). A model one role used shows after that
+    role's label (``impl gpt-6.1-sol``). Calls without a model add nothing. ``text`` is empty
+    when no call named a model.
+    """
+    roles_by_model: dict[str, list[str]] = {}
+    for call in calls:
+        model = call.get("model")
+        if not isinstance(model, str) or not model:
+            continue
+        roles = roles_by_model.setdefault(model, [])
+        if (role := _role_of(call)) not in roles:
+            roles.append(role)
+    parts: list[str] = []
+    details: list[str] = []
+    for model, roles in roles_by_model.items():
+        labels = [role_label(role) for role in roles]
+        parts.append(f"{model} \u00d7{len(roles)}" if len(roles) > 1 else f"{labels[0]} {model}")
+        details.append(f"{', '.join(labels)}: {model}")
+    return {"text": " \u00b7 ".join(parts), "detail": "; ".join(details)}

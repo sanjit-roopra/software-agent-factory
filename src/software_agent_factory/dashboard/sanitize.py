@@ -71,6 +71,8 @@ _SAFE_ARTIFACT_NAMES = frozenset(ARTIFACT_FILENAMES.values())
 
 #: The one spelling of the title field: it is allowlisted and redacted by this name.
 _TITLE_FIELD = "title"
+#: The one spelling of the run list's call field: it is allowlisted and sanitized by this name.
+_CALLS_FIELD = "calls"
 
 #: Fields rendered in the paginated run table (``/api/runs``). Includes both
 #: ``run_id`` (the real ``observability.RunSummary`` field name) and ``id``
@@ -90,8 +92,13 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "age_seconds",
         "idle_seconds",
         "attempt_count",
+        "invocation_count",
         "implementation_attempts",
         "ci_repair_attempts",
+        "usage",
+        "failure_reason",
+        "failure_reason_truncated",
+        _CALLS_FIELD,
         "is_finished",
         "is_stale",
         "stale",
@@ -108,20 +115,16 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
 #: Fields rendered on the run detail page (``/api/runs/{id}``), excluding the
 #: ``attempts`` list itself (handled separately via ``ATTEMPT_FIELDS`` so each
 #: attempt is independently minimized too).
-RUN_DETAIL_FIELDS: frozenset[str] = RUN_SUMMARY_FIELDS | frozenset(
+RUN_DETAIL_FIELDS: frozenset[str] = (RUN_SUMMARY_FIELDS - {_CALLS_FIELD}) | frozenset(
     {
         "completed_at",
         "commit_sha",
         "pull_request_url",
         "merge_commit_sha",
-        "invocation_count",
-        "usage",
         "guidance",
         "verification",
         "artifacts",
         "escalation",
-        "failure_reason",
-        "failure_reason_truncated",
     }
 )
 
@@ -373,6 +376,17 @@ def sanitize_performance(raw: Any) -> dict[str, Any]:
     return sanitized
 
 
+def _sanitize_call_brief(raw: Any) -> dict[str, Any]:
+    """One call of the run list: a role, a model name and a length."""
+    data = raw if isinstance(raw, dict) else {}
+    duration = data.get("duration_ms")
+    return {
+        "role": _short_token(data.get("role")),
+        "model": _redacted(data.get("model")),
+        "duration_ms": duration if is_count(duration) else None,
+    }
+
+
 def sanitize_run_summary(raw: Any) -> dict[str, Any]:
     """Reduce one provider-supplied run to only the fields the UI renders."""
     data = to_json_safe(raw)
@@ -382,6 +396,14 @@ def sanitize_run_summary(raw: Any) -> dict[str, Any]:
     _sanitize_summary_fields(sanitized)
     if "performance" in sanitized:
         sanitized["performance"] = sanitize_performance(sanitized["performance"])
+    if "usage" in sanitized:
+        sanitized["usage"] = sanitize_usage(sanitized["usage"])
+    if _CALLS_FIELD in sanitized:
+        calls = sanitized[_CALLS_FIELD]
+        sanitized[_CALLS_FIELD] = (
+            [_sanitize_call_brief(call) for call in calls] if isinstance(calls, list) else []
+        )
+    sanitized.update(_reason_fields(data.get("failure_reason"), run_id_of(data)))
     return sanitized
 
 
@@ -769,6 +791,16 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
                 model_data["usage"] = sanitize_usage(model_data["usage"])
             sanitized["models"].append(model_data)
     return sanitized
+
+
+#: Fields of ``/api/summary``: the two the page reads. The snapshot behind it also lists
+#: tallies keyed by model name, which nothing here redacts, so none of it is passed on.
+SUMMARY_FIELDS: frozenset[str] = frozenset({"overview", "health"})
+
+
+def sanitize_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` cut down to :data:`SUMMARY_FIELDS`."""
+    return _allowlist(data, SUMMARY_FIELDS)
 
 
 HEALTH_ALLOWED_FIELDS: frozenset[str] = frozenset(

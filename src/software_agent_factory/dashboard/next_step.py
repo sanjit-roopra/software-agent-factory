@@ -74,7 +74,6 @@ REASON_SENTENCES: dict[HaltReasonCode, str] = {
     HaltReasonCode.MANUAL_INSPECTION: "The run stopped at a point where a person must decide.",
 }
 FALLBACK_SENTENCE = "The run stopped and needs a person to look at it."
-FAILED_SENTENCE = "The run failed."
 CANNOT_CONTINUE = "This run cannot continue."
 
 ANSWER_PLACEHOLDER = "<answer>"
@@ -382,13 +381,13 @@ def _resume_step(
 def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, Any]:
     """What the operator must do to continue ``run``, or ``kind == "none"``.
 
-    ``requests`` are the dashboard requests of the run's current episode, oldest first.
+    ``requests`` are the dashboard requests of the run's current episode, oldest first. A
+    failed run needs nothing from the operator: the page shows its failure reason in the run
+    outcome, so its step is ``none``.
     """
     state = run.get("state")
     raw = run.get("escalation")
     escalation: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    if state == WorkflowState.FAILED:
-        return _cannot_continue(run, FAILED_SENTENCE, {})
     if state != WorkflowState.NEEDS_HUMAN:
         return _empty(NextStepKind.NONE)
     if escalation.get("resume_classification") in (

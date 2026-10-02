@@ -56,10 +56,23 @@ def render_index_html(*, token: str) -> str:
     <section id="view-runs" aria-labelledby="runs-heading" hidden>
       <h1 id="runs-heading" tabindex="-1">Runs</h1>
       <div class="card">
-        <h2 id="key-figures-heading">Key figures</h2>
+        <h2 id="key-figures-heading">Overview</h2>
         <ul id="key-figures" class="stats key-figures" aria-labelledby="key-figures-heading">
           <li class="stat">
-            <p class="stat-label">Active runs</p>
+            <p class="stat-label">Runs</p>
+            <p id="figure-runs" class="stat-value">&mdash;</p>
+          </li>
+          <li class="stat">
+            <p class="stat-label">Succeeded</p>
+            <p id="figure-succeeded" class="stat-value">&mdash;</p>
+          </li>
+          <li class="stat">
+            <p class="stat-label">Failed</p>
+            <p id="figure-failed" class="stat-value">&mdash;</p>
+            <p id="figure-failed-note" class="stat-note" hidden></p>
+          </li>
+          <li class="stat">
+            <p class="stat-label">Active</p>
             <p id="figure-active" class="stat-value">&mdash;</p>
           </li>
           <li class="stat">
@@ -68,18 +81,28 @@ def render_index_html(*, token: str) -> str:
             <a id="figure-needs-you-link" href="#runs?filter=needs-you">Show runs that need you</a>
           </li>
           <li class="stat">
-            <p class="stat-label">Failed runs in the last 24 hours</p>
-            <p id="figure-failed" class="stat-value">&mdash;</p>
-          </li>
-          <li class="stat">
-            <p class="stat-label">Tokens in the last 24 hours</p>
+            <p class="stat-label">Tokens</p>
             <p id="figure-tokens" class="stat-value">&mdash;</p>
+            <p id="figure-tokens-note" class="stat-note" hidden></p>
+          </li>
+          <li id="stat-list-price" class="stat" hidden>
+            <p class="stat-label">List-price estimate</p>
+            <p id="figure-list-price" class="stat-value">&mdash;</p>
+          </li>
+          <li id="stat-premium" class="stat" hidden>
+            <p class="stat-label">Premium requests</p>
+            <p id="figure-premium" class="stat-value">&mdash;</p>
+          </li>
+          <li id="stat-cost-none" class="stat" hidden>
+            <p class="stat-label">Cost</p>
+            <p class="stat-value">not reported</p>
           </li>
         </ul>
-      </div>
-      <div class="card">
-        <h2 id="totals-heading">Totals</h2>
-        <div id="totals-body">Loading&hellip;</div>
+        <p class="field-hint">
+          List-price estimate is in USD from list prices, not what a provider billed.
+          Premium requests are the count the calls reported. The two are never added.
+        </p>
+        <p id="overview-note" class="stat-note" hidden></p>
       </div>
       <div class="card">
         <h2 id="run-list-heading">Run list</h2>
@@ -97,60 +120,80 @@ def render_index_html(*, token: str) -> str:
           <table id="runs-table">
             <thead>
               <tr>
-                <th scope="col">Run</th>
-                <th scope="col">Source</th>
+                <th scope="col">Title</th>
                 <th scope="col">State</th>
-                <th scope="col">Review</th>
-                <th scope="col">Created</th>
-                <th scope="col">Idle</th>
-                <th scope="col">Attempts</th>
-                <th scope="col">Stale</th>
-                <th scope="col">Attention</th>
-                <th scope="col">Compare</th>
+                <th scope="col">Why</th>
+                <th scope="col">Models</th>
+                <th scope="col">Calls</th>
+                <th scope="col">Duration</th>
+                <th scope="col">Cost</th>
+                <th scope="col">Started</th>
+                <th scope="col"><span class="visually-hidden">Compare</span></th>
               </tr>
             </thead>
             <tbody id="runs-body"></tbody>
           </table>
         </div>
+        <p class="field-hint">
+          Cost is the list-price estimate in USD, not what a provider billed.
+          A run that reported premium requests shows them too.
+        </p>
       </div>
     </section>
 
     <section id="view-run-detail" aria-labelledby="run-detail-heading" hidden>
       <h1 id="run-detail-heading" tabindex="-1">Run detail</h1>
+      <p id="run-id" class="run-id" hidden></p>
       <p><a href="#runs">&larr; Back to runs</a></p>
       <p id="run-detail-status">Loading&hellip;</p>
       <div id="run-detail-content" hidden>
+        <section id="run-summary" class="card run-summary" aria-labelledby="run-detail-heading">
+          <div class="run-summary-head">
+            <span id="run-badge" class="badge">&mdash;</span>
+          </div>
+          <p id="run-headline" class="headline" hidden></p>
+          <div id="run-key-numbers" class="stats"></div>
+        </section>
         <section id="next-step" class="card next-step" aria-labelledby="next-step-heading" hidden>
           <h2 id="next-step-heading">Needs you</h2>
           <div id="next-step-body"></div>
         </section>
         <div class="card">
-          <dl id="run-detail-body"></dl>
-        </div>
-        <div class="card">
-          <h2>Totals</h2>
-          <div id="run-totals" class="stats"></div>
-        </div>
-        <div class="card">
-          <h2 id="timeline-heading">Call timeline</h2>
+          <h2 id="timeline-heading">Steps</h2>
           <p id="timeline-status">No calls yet.</p>
           <div class="table-wrap" id="timeline-wrap" hidden>
-            <div class="timeline" role="group" aria-labelledby="timeline-heading">
-              <div class="timeline-head" aria-hidden="true">
-                <span>#</span>
-                <span>Role</span>
-                <span>Model</span>
-                <span>Outcome</span>
-                <span>Duration</span>
-                <span>Total tokens</span>
-                <span>Cost</span>
-              </div>
-              <div id="timeline-body"></div>
-            </div>
+            <table id="timeline-table" class="timeline" aria-labelledby="timeline-heading">
+              <thead>
+                <tr>
+                  <th scope="col">
+                    <span aria-hidden="true">#</span>
+                    <span class="visually-hidden">Call number</span>
+                  </th>
+                  <th scope="col">Role</th>
+                  <th scope="col">Model</th>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Duration</th>
+                  <th scope="col">Tokens</th>
+                  <th scope="col">Cost</th>
+                </tr>
+              </thead>
+              <tbody id="timeline-body"></tbody>
+              <tfoot>
+                <tr id="timeline-total" class="timeline-total"></tr>
+              </tfoot>
+            </table>
           </div>
+          <p class="field-hint">
+            Cost is the list-price estimate in USD, not what a provider billed.
+          </p>
         </div>
-        <div class="card">
-          <h2>Attempts</h2>
+        <details id="run-details" class="card details-card">
+          <summary>Details</summary>
+          <h3>Totals</h3>
+          <div id="run-totals" class="stats"></div>
+          <h3>Run facts</h3>
+          <dl id="run-detail-body"></dl>
+          <h3>Attempts</h3>
           <div class="table-wrap">
             <table id="attempts-table">
               <thead>
@@ -169,7 +212,7 @@ def render_index_html(*, token: str) -> str:
               <tbody id="attempts-body"></tbody>
             </table>
           </div>
-        </div>
+        </details>
       </div>
     </section>
 

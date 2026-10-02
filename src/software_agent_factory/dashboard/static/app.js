@@ -5,6 +5,8 @@
   const REQUEST_TIMEOUT_MS = 10000;
   const PAGE_SIZE = 20;
   const EMPTY_VALUE = "\u2014";
+  // Joins the model parts of a run list row. Keep it in step with models_summary.
+  const MODEL_SEPARATOR = " \u00b7 ";
   const NOT_REPORTED = "not reported";
 
   // TOKEN_QUERY_PARAM in dashboard/security.py: the query field of the page link.
@@ -23,10 +25,10 @@
   const RUN_ID_PATTERN = /^[\w-]{1,128}$/;
   const FILTER_NEEDS_YOU = "needs-you";
   const COMPARE_HASH = "#compare";
+  const COMPARE_ICON = "\u21c4";
   // MAX_PAGE_LIMIT in dashboard/snapshot.py: the most runs one request returns.
   const MAX_RUNS_LIMIT = 100;
   const NOT_FOUND_STATUS = 404;
-  const NEEDS_YOU_TEXT = "Needs you";
   const LOADING_TEXT = "Loading\u2026";
   const TITLE_SUFFIX = " \u2014 Factory dashboard";
   const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);
@@ -42,12 +44,13 @@
     health: { section: "view-health", heading: "health-heading", nav: "health", label: "Health" }
   };
 
-  const TOTALS_EXCLUDED_KEYS = new Set(["health", "runs", "page"]);
   // What a screen reader hears before each cell of a call row. The visible header
   // row is hidden from assistive technology, so the row carries its own labels.
-  const CALL_COLUMNS = [
-    "Call number", "Role", "Model", "Outcome", "Duration", "Total tokens", "Cost"
-  ];
+  const CALL_COLUMN_COUNT = 7;
+  // The total row has the cells of a call row, except that its label spans the first
+  // three columns.
+  const TOTAL_LABEL_SPAN = 3;
+  const TOTAL_LABEL = "Total";
   const OUTCOME_CELL = 3;
   const STAT_PART_CLASSES = ["stat-label", "stat-value", "stat-note", "stat-help"];
   const COPIED_TEXT = "Copied";
@@ -55,6 +58,14 @@
   const COPIED_VISIBLE_MS = 2000;
   const MS_PER_SECOND = 1000;
   const SECONDS_PER_MINUTE = 60;
+  const MINUTES_PER_HOUR = 60;
+  const HOURS_PER_DAY = 24;
+  const DAYS_SHOWN_RELATIVE = 30;
+  const UTC_MINUTE_LENGTH = 16;
+  const SMALLEST_SHOWN_USD = 0.0005;
+  const ONE_DOLLAR_ROUNDED = 0.9995;
+  const SMALL_USD_DECIMALS = 3;
+  const USD_DECIMALS = 2;
   // Field names and order match TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS in models.py;
   // an asset test pins them. The labels, help and phrases here are display text only.
   const TOKEN_CLASSES = [
@@ -77,16 +88,14 @@
       label: "AI usage value (USD)",
       help: "Copilot AI usage in USD at 1 credit = 1 cent; your invoice may be lower or zero.",
       phrase: function (value) {
-        return usdAmount(value) + " USD AI usage";
+        return moneyText(value) + " AI usage";
       }
     },
     {
       key: "list_price_estimate_usd",
       label: "List-price estimate (USD)",
       help: "Estimate in USD from list prices, not what a provider billed.",
-      phrase: function (value) {
-        return usdAmount(value) + " USD list price";
-      }
+      phrase: moneyText
     }
   ];
   // SUCCESS and FAILED are STATUS_SUCCESS and STATUS_FAILED in dashboard/aggregate.py.
@@ -100,6 +109,13 @@
     ["abandoned", { text: "abandoned", className: "status-warn" }]
   ]);
   const UNREPORTED_OUTCOME = { text: NOT_REPORTED, className: "" };
+  // failure_link is FLAG_REJECTED and FLAG_LAST_CALL in dashboard/overview.py. A call
+  // reports success when the factory rejects what it returned, so the server marks the
+  // call a failed run failed on.
+  const FAILURE_LINKS = new Map([
+    ["rejected", { text: "rejected", className: "status-error" }],
+    ["last_call", { text: "success, run failed after", className: "status-warn" }]
+  ]);
   const TASK_HEADERS = [
     "Task", "Title", "State", "Run", "Issue", "Pull request", "Merged commit"
   ];
@@ -381,13 +397,6 @@
     return value === undefined || value === null || value === "" ? fallback : String(value);
   }
 
-  function displayUsd(value) {
-    if (!isFiniteNumber(value)) {
-      return NOT_REPORTED;
-    }
-    return "$" + value.toFixed(6);
-  }
-
   // A reported 0 shows as 0; only a missing value shows as not reported.
   function displayNumber(value) {
     if (!isFiniteNumber(value)) {
@@ -484,20 +493,91 @@
       link.setAttribute("href", entry.href);
     }
     setText(link.firstElementChild, entry.value);
+    link.firstElementChild.setAttribute("aria-hidden", entry.icon === true ? "true" : "false");
     setText(link.lastElementChild, entry.hidden);
+    setTitle(link, entry.title);
     cell.className = "";
+    setTitle(cell, undefined);
   }
 
-  // An entry is a plain value, an object with a value and a class name, or a
-  // link entry.
+  // A badge entry holds the badge kind and the text of the badge. The text is
+  // always words, so the color is never the only sign of the outcome.
+  function patchBadgeCell(cell, entry) {
+    let badge = cell.firstElementChild;
+    if (badge?.tagName !== "SPAN") {
+      clearChildren(cell);
+      badge = cell.appendChild(element("span"));
+    }
+    badge.className = "badge badge-" + entry.badge;
+    setText(badge, entry.value);
+    setTitle(badge, entry.title);
+    cell.className = "";
+    setTitle(cell, undefined);
+  }
+
+  // A title is the tooltip. An empty or missing one removes the attribute.
+  function setTitle(node, text) {
+    if (typeof text === "string" && text !== "") {
+      if (node.getAttribute("title") !== text) {
+        node.setAttribute("title", text);
+      }
+    } else {
+      node.removeAttribute("title");
+    }
+  }
+
+  // A chunks entry holds parts that never break inside. The separator between two
+  // parts is the only place a line may break.
+  function patchChunksCell(cell, entry) {
+    if (cell.textContent !== entry.chunks.join(MODEL_SEPARATOR) || cell.firstElementChild === null) {
+      clearChildren(cell);
+      for (const [index, chunk] of entry.chunks.entries()) {
+        if (index > 0) {
+          cell.append(MODEL_SEPARATOR);
+        }
+        cell.appendChild(element("span", "chunk", chunk));
+      }
+    }
+    cell.className = entry.className || "";
+    setTitle(cell, entry.title);
+  }
+
+  // A clamp entry shows its value in a block the style cuts to two lines. The cell stays
+  // a table cell, which a line clamp on the cell itself would break.
+  function patchClampCell(cell, entry) {
+    let block = cell.firstElementChild;
+    if (block?.className !== "clamp") {
+      clearChildren(cell);
+      block = cell.appendChild(element("div", "clamp"));
+    }
+    setText(block, displayValue(entry.value));
+    cell.className = entry.className || "";
+    setTitle(cell, entry.title);
+  }
+
+  // An entry is a plain value, an object with a value, a class name and a
+  // tooltip, a link entry, a badge entry, a chunks entry or a clamp entry.
   function patchCell(cell, entry) {
+    if (isPlainObject(entry) && entry.clamp === true) {
+      patchClampCell(cell, entry);
+      return;
+    }
+    if (isPlainObject(entry) && entry.chunks?.length > 0) {
+      patchChunksCell(cell, entry);
+      return;
+    }
     if (isPlainObject(entry) && entry.href !== undefined) {
       patchLinkCell(cell, entry);
       return;
     }
+    if (isPlainObject(entry) && entry.badge !== undefined) {
+      patchBadgeCell(cell, entry);
+      return;
+    }
     const isObject = entry !== null && typeof entry === "object";
     setText(cell, displayValue(isObject ? entry.value : entry));
-    cell.className = isObject ? entry.className : "";
+    cell.className = isObject ? entry.className || "" : "";
+    setTitle(cell, isObject ? entry.title : undefined);
   }
 
   // A spec holds the cell entries, an optional row class name and an optional
@@ -592,72 +672,164 @@
     renderKeyValueList(container, health, "No health data available.");
   }
 
-  // Every scalar or one-level-nested field except "health", which has its own
-  // view, and "runs" and "page", which the API never includes here.
-  function totalsFields(summary) {
-    return Object.fromEntries(
-      Object.entries(summary || {}).filter(function (entry) {
-        return !TOTALS_EXCLUDED_KEYS.has(entry[0]);
-      })
-    );
-  }
+  // ---- Overview row ------------------------------------------------------
 
-  // "metrics.usage" is nested two levels deep, past what the generic one-level
-  // flattening descends into, so its estimate (or "not reported") is shown
-  // directly on "metrics" as its own row.
-  function withListPriceEstimate(metrics) {
-    return {
-      ...metrics,
-      list_price_estimate_usd: displayUsd(metrics.usage?.list_price_estimate_usd)
-    };
-  }
-
-  function renderTotals(summary) {
-    const totals = totalsFields(summary);
-    if (totals.metrics && typeof totals.metrics === "object") {
-      totals.metrics = withListPriceEstimate(totals.metrics);
-    }
-    renderKeyValueList(document.getElementById("totals-body"), totals, "No totals available.");
-  }
-
-  // ---- Key figures -------------------------------------------------------
-
-  // Each figure reads one field of the summary. The server derives the three
-  // 24 hour figures, so the page only formats them.
-  const KEY_FIGURES = [
-    { id: "figure-active", read: function (summary) { return summary?.counts?.active; } },
-    { id: "figure-needs-you", read: function (summary) { return summary?.needs_human_count; } },
-    { id: "figure-failed", read: function (summary) { return summary?.failed_last_24h; } },
-    { id: "figure-tokens", read: function (summary) { return summary?.tokens_last_24h; } }
+  // The server derives every figure in "overview" of /api/summary, so the page only
+  // formats them. A figure the server could not report shows as "not reported".
+  const OVERVIEW_FIGURES = [
+    { id: "figure-runs", read: function (overview) { return overview.runs; } },
+    { id: "figure-succeeded", read: function (overview) { return overview.succeeded; } },
+    { id: "figure-failed", read: function (overview) { return overview.failed; } },
+    { id: "figure-active", read: function (overview) { return overview.active; } },
+    { id: "figure-needs-you", read: function (overview) { return overview.needs_you; } },
+    { id: "figure-tokens", read: function (overview) { return overview.tokens; } },
+    {
+      id: "figure-list-price",
+      read: function (overview) { return overview.list_price_usd; },
+      format: moneyText
+    },
+    { id: "figure-premium", read: function (overview) { return overview.premium_requests; } }
+  ];
+  // A note shows only while it has text.
+  const OVERVIEW_NOTES = [
+    {
+      id: "figure-failed-note",
+      read: function (overview) {
+        return last24HoursNote(overview.failed_last_24h, overview.failed);
+      }
+    },
+    {
+      id: "figure-tokens-note",
+      read: function (overview) {
+        return last24HoursNote(overview.tokens_last_24h, overview.tokens);
+      }
+    },
+    { id: "overview-note", read: scanTruncatedNote }
+  ];
+  // A cost shows only when it was reported. When neither unit was, one card says so.
+  const COST_CARDS = [
+    { id: "stat-list-price", shown: hasListPrice },
+    { id: "stat-premium", shown: hasPremiumRequests },
+    { id: "stat-cost-none", shown: hasNoCost }
   ];
 
-  function renderKeyFigures(summary) {
-    for (const figure of KEY_FIGURES) {
-      setText(document.getElementById(figure.id), displayNumber(figure.read(summary)));
-    }
+  function hasListPrice(overview) {
+    return isFiniteNumber(overview.list_price_usd);
   }
 
-  function renderSummary(summary) {
-    renderKeyFigures(summary);
-    renderTotals(summary);
+  function hasPremiumRequests(overview) {
+    return isFiniteNumber(overview.premium_requests);
+  }
+
+  function hasNoCost(overview) {
+    return !hasListPrice(overview) && !hasPremiumRequests(overview);
+  }
+
+  // The note says so when the figures leave out older runs. It is empty otherwise.
+  function scanTruncatedNote(overview) {
+    return overview.scan_truncated === true
+      ? "The figures cover only the newest runs the dashboard scanned."
+      : "";
+  }
+
+  // The note adds nothing when the last 24 hours hold every run, so it shows only
+  // when the figure above it is a different number.
+  function last24HoursNote(value, total) {
+    return isFiniteNumber(value) && value !== total
+      ? displayNumber(value) + " in the last 24 hours"
+      : "";
+  }
+
+  function renderOverview(summary) {
+    const overview = isPlainObject(summary?.overview) ? summary.overview : {};
+    for (const figure of OVERVIEW_FIGURES) {
+      const format = figure.format || displayNumber;
+      setText(document.getElementById(figure.id), format(figure.read(overview)));
+    }
+    for (const note of OVERVIEW_NOTES) {
+      patchOptional(document.getElementById(note.id), note.read(overview));
+    }
+    for (const card of COST_CARDS) {
+      document.getElementById(card.id).hidden = !card.shown(overview);
+    }
   }
 
   // ---- Runs view ---------------------------------------------------------
-
-  function staleCell(isStale) {
-    if (isStale) {
-      return { value: "yes", className: "stale-yes" };
-    }
-    return { value: "no", className: "" };
-  }
 
   function needsYou(run) {
     return run.waiting_for_human === true;
   }
 
-  // The badge is text, so it does not rely on its color.
-  function needsYouCell(run) {
-    return needsYou(run) ? { value: NEEDS_YOU_TEXT, className: "badge-needs-you" } : "";
+  // The badge names the outcome in words, so it does not rely on its color. The kind
+  // comes from the server; a kind the page does not know gets no color class.
+  const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active"]);
+
+  function badgeKind(outcome) {
+    return OUTCOME_KINDS.has(outcome?.kind) ? outcome.kind : "neutral";
+  }
+
+  function stateCell(run) {
+    const label = displayValue(run.outcome?.label, displayValue(run.state));
+    return { badge: badgeKind(run.outcome), value: label, title: displayValue(run.state, "") };
+  }
+
+  // A title links to the run. Its run id is the tooltip, and the link text when
+  // the run has no title.
+  function titleCell(run, runId) {
+    if (typeof runId !== "string") {
+      return { value: displayValue(run.title) };
+    }
+    return {
+      href: "#run/" + encodeURIComponent(runId),
+      value: displayValue(run.title, runId),
+      hidden: "",
+      title: runId
+    };
+  }
+
+  // The reason is cut to two lines by the style. The full text is the tooltip.
+  function whyCell(run) {
+    return {
+      value: displayValue(run.why),
+      clamp: true,
+      className: "why-cell",
+      title: displayValue(run.why, "")
+    };
+  }
+
+  // Each model part is a chunk of its own, so a line breaks between parts only.
+  function modelsCell(run) {
+    const models = run.models || {};
+    const text = displayValue(models.text, "");
+    return {
+      value: displayValue(models.text),
+      chunks: text === "" ? [] : text.split(MODEL_SEPARATOR),
+      className: "models-cell",
+      title: displayValue(models.detail, "")
+    };
+  }
+
+  function durationCell(run) {
+    return isFiniteNumber(run.duration_ms) ? durationText(run.duration_ms) : EMPTY_VALUE;
+  }
+
+  // Each cost unit the run reported, in its own unit and never added to another.
+  function listCostText(usage) {
+    const parts = [];
+    if (isFiniteNumber(usage?.list_price_estimate_usd)) {
+      parts.push(moneyText(usage.list_price_estimate_usd));
+    }
+    if (isFiniteNumber(usage?.premium_request_cost)) {
+      parts.push(displayNumber(usage.premium_request_cost) + " premium req.");
+    }
+    return parts.length === 0 ? EMPTY_VALUE : parts.join(" \u00b7 ");
+  }
+
+  function startedCell(run, nowMs) {
+    return {
+      value: relativeTimeText(run.created_at, nowMs),
+      title: absoluteTimeText(run.created_at, "")
+    };
   }
 
   function compareCell(runId) {
@@ -665,26 +837,27 @@
       return { value: "", className: "" };
     }
     return {
-      value: "Compare with\u2026",
+      value: COMPARE_ICON,
+      icon: true,
       href: COMPARE_HASH + "/" + encodeURIComponent(runId),
-      hidden: " " + runId
+      hidden: "Compare with another run: " + runId,
+      title: "Compare this run with another run"
     };
   }
 
-  function runRowSpec(run) {
+  function runRowSpec(run, nowMs) {
     const runId = runIdOf(run);
     return {
       runId: runId,
       cells: [
-        runId,
-        run.source_external_id || run.work_item_id,
-        run.state,
-        run.review_status,
-        run.created_at,
-        run.idle_seconds,
-        run.attempt_count,
-        staleCell(preferDefined(run.is_stale, run.stale)),
-        needsYouCell(run),
+        titleCell(run, runId),
+        stateCell(run),
+        whyCell(run),
+        modelsCell(run),
+        run.invocation_count,
+        durationCell(run),
+        listCostText(run.usage),
+        startedCell(run, nowMs),
         compareCell(runId)
       ]
     };
@@ -745,7 +918,11 @@
 
   function renderRuns(payload, request) {
     const runs = orderRuns(asArray(payload.runs), request.filter);
-    syncRows(document.getElementById("runs-body"), runs.map(runRowSpec));
+    const nowMs = Date.now();
+    syncRows(
+      document.getElementById("runs-body"),
+      runs.map(function (run) { return runRowSpec(run, nowMs); })
+    );
     renderRunsPager(payload.page || {}, runs.length, request);
     renderRunsStatus(runs.length, request);
     renderRunsFilter(request.filter);
@@ -759,7 +936,7 @@
   }
 
   function refreshTotals(request) {
-    return apiFetch("/api/summary").then(whenLatest(request, renderSummary));
+    return apiFetch("/api/summary").then(whenLatest(request, renderOverview));
   }
 
   function refreshHealth(request) {
@@ -827,9 +1004,9 @@
     appendCell(row, model.started_at);
     appendCell(row, displayNumber(usage.input_tokens));
     appendCell(row, displayNumber(usage.output_tokens));
-    appendCell(row, displayUsd(usage.usage_value_usd));
+    appendCell(row, moneyText(usage.usage_value_usd));
     appendCell(row, displayNumber(usage.total_premium_request_cost));
-    appendCell(row, displayUsd(usage.list_price_estimate_usd));
+    appendCell(row, moneyText(usage.list_price_estimate_usd));
     return row;
   }
 
@@ -845,7 +1022,7 @@
 
   function usageSummary(totals) {
     const usageValue = totals?.costs?.usage_value_usd;
-    return "AI usage value: " + displayUsd(usageValue?.total) + ". " + USAGE_NOTE;
+    return "AI usage value: " + moneyText(usageValue?.total) + ". " + USAGE_NOTE;
   }
 
   function projectCard(project) {
@@ -940,10 +1117,10 @@
       ["Output tokens", displayNumber(usage.output_tokens)],
       ["Reasoning tokens", displayNumber(usage.reasoning_tokens)],
       ["Cache read tokens", displayNumber(usage.cache_read_tokens)],
-      ["AI usage value (USD)", displayUsd(usage.usage_value_usd)],
+      ["AI usage value (USD)", moneyText(usage.usage_value_usd)],
       ["Premium requests", displayNumber(usage.premium_request_cost)],
       ["Nano AIU", usage.total_nano_aiu],
-      ["List-price estimate", displayUsd(usage.list_price_estimate_usd)]
+      ["List-price estimate", moneyText(usage.list_price_estimate_usd)]
     ];
   }
 
@@ -1044,8 +1221,24 @@
     return displayNumber(value) + (value === 1 ? " premium request" : " premium requests");
   }
 
-  function usdAmount(value) {
-    return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  // Money for a person: under one dollar it keeps three decimals ($0.039), from one
+  // dollar up it keeps two ($12.35). An amount too small for three decimals says so.
+  function moneyText(value) {
+    if (!isFiniteNumber(value) || value < 0) {
+      return NOT_REPORTED;
+    }
+    if (value === 0) {
+      return "$0";
+    }
+    if (value < SMALLEST_SHOWN_USD) {
+      return "<$0.001";
+    }
+    if (value < ONE_DOLLAR_ROUNDED) {
+      return "$" + value.toFixed(SMALL_USD_DECIMALS);
+    }
+    return "$" + value.toLocaleString("en-US", {
+      minimumFractionDigits: USD_DECIMALS, maximumFractionDigits: USD_DECIMALS
+    });
   }
 
   function durationText(ms) {
@@ -1056,9 +1249,46 @@
       return ms + " ms";
     }
     const seconds = Math.round(ms / MS_PER_SECOND);
-    return seconds < SECONDS_PER_MINUTE
-      ? seconds + " s"
-      : Math.floor(seconds / SECONDS_PER_MINUTE) + " min " + (seconds % SECONDS_PER_MINUTE) + " s";
+    if (seconds < SECONDS_PER_MINUTE) {
+      return seconds + " s";
+    }
+    const minutes = Math.floor(seconds / SECONDS_PER_MINUTE);
+    if (minutes < MINUTES_PER_HOUR) {
+      return minutes + " min " + (seconds % SECONDS_PER_MINUTE) + " s";
+    }
+    return Math.floor(minutes / MINUTES_PER_HOUR) + " h " + (minutes % MINUTES_PER_HOUR) + " min";
+  }
+
+  // The time as "2026-10-02 11:22 UTC", or the fallback when it is not a time.
+  function absoluteTimeText(iso, fallback = EMPTY_VALUE) {
+    const time = typeof iso === "string" ? Date.parse(iso) : Number.NaN;
+    if (Number.isNaN(time)) {
+      return fallback;
+    }
+    return new Date(time).toISOString().slice(0, UTC_MINUTE_LENGTH).replace("T", " ") + " UTC";
+  }
+
+  // How long ago the time was, "12 min ago". Older than a month it shows the date.
+  // The caller passes the current time in milliseconds, so the text is the same on
+  // every call with the same input.
+  function relativeTimeText(iso, nowMs) {
+    const time = typeof iso === "string" ? Date.parse(iso) : Number.NaN;
+    if (Number.isNaN(time) || !isFiniteNumber(nowMs)) {
+      return EMPTY_VALUE;
+    }
+    const minutes = Math.floor((nowMs - time) / (MS_PER_SECOND * SECONDS_PER_MINUTE));
+    if (minutes < 1) {
+      return "just now";
+    }
+    if (minutes < MINUTES_PER_HOUR) {
+      return minutes + " min ago";
+    }
+    const hours = Math.floor(minutes / MINUTES_PER_HOUR);
+    if (hours < HOURS_PER_DAY) {
+      return hours + " h ago";
+    }
+    const days = Math.floor(hours / HOURS_PER_DAY);
+    return days < DAYS_SHOWN_RELATIVE ? days + " d ago" : absoluteTimeText(iso);
   }
 
   function outcomeOf(status) {
@@ -1179,13 +1409,22 @@
 
   // ---- Run detail: call timeline -----------------------------------------
 
+  function modelText(call) {
+    const model = displayValue(call.model);
+    return call.reasoning ? model + " (" + call.reasoning + ")" : model;
+  }
+
+  function callOutcome(call) {
+    return FAILURE_LINKS.get(call.failure_link) || outcomeOf(call.status);
+  }
+
   function callCells(call) {
     const usage = call.usage || {};
     return [
       displayValue(call.invocation_number),
       displayValue(call.role),
-      displayValue(call.model),
-      outcomeOf(call.status).text,
+      modelText(call),
+      callOutcome(call).text,
       durationText(call.duration_ms),
       displayNumber(call.total_tokens),
       costText(usage)
@@ -1205,55 +1444,117 @@
     ];
   }
 
-  // A cell is a hidden column label followed by its value.
-  function buildCell(label) {
-    const cell = element("span");
-    cell.appendChild(element("span", "visually-hidden", label + ": "));
-    cell.appendChild(element("span"));
-    return cell;
+  // A call is two table rows: the default columns, and below them a row that holds the
+  // rest of the fields. The button in the first cell shows and hides that second row.
+  const ROWS_PER_CALL = 2;
+  const CALL_MORE_ID_PREFIX = "call-more-";
+
+  function setCallOpen(row, open) {
+    row.firstElementChild.firstElementChild.setAttribute("aria-expanded", String(open));
+    row.nextElementSibling.hidden = !open;
   }
 
-  // A call is a native details element: the summary holds the default columns,
-  // the body holds the rest.
-  function buildCall() {
-    const details = element("details", "call");
-    const summary = details.appendChild(element("summary", "call-row"));
-    for (const label of CALL_COLUMNS) {
-      summary.appendChild(buildCell(label));
+  function buildToggle(row, detailId) {
+    const button = element("button", "call-toggle");
+    button.type = "button";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", detailId);
+    button.append(element("span", "visually-hidden", "Details of call "), element("span"));
+    button.addEventListener("click", function () {
+      setCallOpen(row, button.getAttribute("aria-expanded") !== "true");
+    });
+    return button;
+  }
+
+  function buildCall(body) {
+    const detailId = CALL_MORE_ID_PREFIX + body.children.length / ROWS_PER_CALL;
+    const row = body.appendChild(element("tr", "call-row"));
+    for (let column = 0; column < CALL_COLUMN_COUNT; column += 1) {
+      row.appendChild(element("td"));
     }
-    details.appendChild(element("dl", "call-fields"));
-    return details;
+    row.firstElementChild.appendChild(buildToggle(row, detailId));
+    const detail = body.appendChild(element("tr", "call-detail"));
+    detail.id = detailId;
+    detail.hidden = true;
+    const cell = detail.appendChild(element("td"));
+    cell.colSpan = CALL_COLUMN_COUNT;
+    cell.appendChild(element("dl", "call-fields"));
+    return row;
   }
 
-  function callAt(parent, index) {
-    return parent.children[index] || parent.appendChild(buildCall());
+  function callAt(body, index) {
+    return body.children[index * ROWS_PER_CALL] || buildCall(body);
   }
 
-  // The same node is reused for the same call, so an open row stays open
-  // across a refresh. A different call in the slot starts closed.
-  function patchCall(details, call, runId) {
+  // The same rows are reused for the same call, so an open call stays open across a
+  // refresh. A different call in the slot starts closed.
+  function patchCall(row, call, runId) {
     const key = runId + "/" + displayValue(call.invocation_number);
-    if (details.dataset.call !== key) {
-      details.dataset.call = key;
-      details.open = false;
+    if (row.dataset.call !== key) {
+      row.dataset.call = key;
+      setCallOpen(row, false);
     }
-    const cells = details.firstElementChild.children;
-    for (const [index, text] of callCells(call).entries()) {
-      setText(cells[index].lastElementChild, text);
+    const [number, ...columns] = callCells(call);
+    setText(row.firstElementChild.firstElementChild.lastElementChild, number);
+    for (const [index, text] of columns.entries()) {
+      setText(row.children[index + 1], text);
     }
-    cells[OUTCOME_CELL].className = outcomeOf(call.status).className;
-    syncDefinitionList(details.lastElementChild, callFields(call, runId));
+    row.children[OUTCOME_CELL].className = callOutcome(call).className;
+    row.classList.toggle("call-rejected", call.failure_link === "rejected");
+    const fields = row.nextElementSibling.firstElementChild.firstElementChild;
+    syncDefinitionList(fields, callFields(call, runId));
   }
 
-  // Finished calls come sorted by number; the running call comes last.
+  // Each cost unit the calls reported, each in its own unit.
+  function totalCostText(totals) {
+    const phrases = COST_UNITS.filter(function (unit) {
+      return isFiniteNumber(totals.costs?.[unit.key]?.total);
+    }).map(function (unit) {
+      return unit.phrase(totals.costs[unit.key].total);
+    });
+    return phrases.length === 0 ? NOT_REPORTED : phrases.join(", ");
+  }
+
+  function callCountText(calls) {
+    if (!isFiniteNumber(calls)) {
+      return NOT_REPORTED;
+    }
+    return displayNumber(calls) + (calls === 1 ? " call" : " calls");
+  }
+
+  function totalCells(totals) {
+    return [
+      TOTAL_LABEL,
+      callCountText(totals.calls),
+      durationText(totals.duration_ms?.total),
+      displayNumber(totals.total_tokens?.total),
+      totalCostText(totals)
+    ];
+  }
+
+  // The label is the header of the row; the figures follow in the last four columns.
+  function patchTotalRow(row, totals) {
+    const [label, ...figures] = totalCells(totals);
+    const header = childAt(row, 0, "th");
+    header.setAttribute("scope", "row");
+    header.colSpan = TOTAL_LABEL_SPAN;
+    setText(header, label);
+    for (const [index, text] of figures.entries()) {
+      setText(childAt(row, index + 1, "td"), text);
+    }
+  }
+
+  // Finished calls come sorted by number; the running call comes last. The total row
+  // sums the finished calls: the running call has no usage yet.
   function renderTimeline(detail, runId) {
     const active = detail.active_invocation ? [detail.active_invocation] : [];
     const calls = [...asArray(detail.invocations), ...active];
     const body = document.getElementById("timeline-body");
-    trimChildren(body, calls.length);
+    trimChildren(body, calls.length * ROWS_PER_CALL);
     for (const [index, call] of calls.entries()) {
       patchCall(callAt(body, index), call, runId);
     }
+    patchTotalRow(document.getElementById("timeline-total"), detail.totals || {});
     document.getElementById("timeline-status").hidden = calls.length > 0;
     document.getElementById("timeline-wrap").hidden = calls.length === 0;
   }
@@ -1782,6 +2083,50 @@
     return typeof runId === "string" && RUN_ID_PATTERN.test(runId) ? runId : null;
   }
 
+  // The key numbers under the title: what the run took and cost. Only a cost unit the
+  // calls reported gets a card, and one card says so when none did.
+  function keyNumberCards(totals) {
+    const [calls, , duration] = headlineCards(totals);
+    const tokens = figureCard("Tokens", totals.total_tokens, totals.calls, displayNumber);
+    const costs = costCards(totals).filter(function (card) {
+      return card.value !== NOT_REPORTED;
+    });
+    const cost = { label: "Cost", value: NOT_REPORTED, note: "", help: "" };
+    return [duration, calls, tokens, ...(costs.length === 0 ? [cost] : costs)];
+  }
+
+  // The page heading is the run title, and the run id sits under it. With no title the
+  // id is the heading and the line under it is hidden, so neither shows twice.
+  function renderRunHeading(detail, runId) {
+    const title = displayValue(detail.title, "");
+    setText(document.getElementById("run-detail-heading"), title || runId || "Run");
+    const idLine = document.getElementById("run-id");
+    setText(idLine, runId || "");
+    idLine.hidden = title === "" || !runId;
+  }
+
+  // The summary card: state, the one outcome line and the key numbers. The
+  // outcome line and the badge come from the server and always name the state in words.
+  function renderRunSummary(detail, runId) {
+    const kind = badgeKind(detail.outcome);
+    renderRunHeading(detail, runId);
+    const badge = document.getElementById("run-badge");
+    badge.className = "badge badge-" + kind;
+    setText(badge, displayValue(detail.outcome?.label, displayValue(detail.state)));
+    const headline = document.getElementById("run-headline");
+    headline.className = "headline headline-" + badgeKind(detail.headline);
+    setText(headline, displayValue(detail.headline?.text, ""));
+    headline.hidden = headline.textContent === "";
+    syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
+  }
+
+  // The details list leaves out a row that has nothing to show.
+  function isBlankField(field) {
+    const value = field[1];
+    return value === undefined || value === null || value === "" ||
+      value === EMPTY_VALUE || value === NOT_REPORTED;
+  }
+
   function renderRunDetail(detail) {
     const runId = knownRunId(detail);
     const fields = [
@@ -1793,7 +2138,11 @@
       ...escalationFields(detail),
       ...referenceFields(detail)
     ];
-    syncDefinitionList(document.getElementById("run-detail-body"), fields);
+    renderRunSummary(detail, runId);
+    syncDefinitionList(
+      document.getElementById("run-detail-body"),
+      fields.filter(function (field) { return !isBlankField(field); })
+    );
     syncRows(
       document.getElementById("attempts-body"), asArray(detail.attempts).map(attemptRowSpec)
     );
@@ -2124,6 +2473,7 @@
 
   function prepareRunDetailView(runId) {
     const heading = document.getElementById("run-detail-heading");
+    document.getElementById("run-id").hidden = true;
     if (!RUN_ID_PATTERN.test(runId)) {
       heading.textContent = VIEWS.run.label;
       setRunDetailStatus("Unknown run");

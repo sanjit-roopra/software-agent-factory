@@ -3094,3 +3094,78 @@ def test_an_active_summary_takes_each_liveness_status(status: str) -> None:
 def test_an_active_summary_rejects_any_other_status() -> None:
     with pytest.raises(ValidationError):
         _active_summary("paused")
+
+
+# ---------------------------------------------------------------------------
+# What the run list shows: failure reason, models and call length
+# ---------------------------------------------------------------------------
+
+
+def _call_of(
+    number: int, role: AgentRole, model: str, *, seconds: float, started_at: datetime = T0
+) -> InvocationRecord:
+    return InvocationRecord(
+        invocation_number=number,
+        role=role,
+        model=model,
+        reasoning="low",
+        started_at=started_at,
+        completed_at=started_at + timedelta(seconds=seconds),
+        success=True,
+    )
+
+
+def _only_summary(tmp_path: Path, run: FactoryRun) -> RunSummary:
+    store = _fake_store(tmp_path)
+    store.add_run(run)
+    return build_monitoring_snapshot(store, now=T0 + timedelta(hours=1)).runs[0]
+
+
+def test_a_run_summary_lists_each_call_in_call_order_with_role_model_and_length(
+    tmp_path: Path,
+) -> None:
+    run = _run(
+        "run-calls",
+        invocation_records=[
+            _call_of(2, AgentRole.REVIEWER, "claude-haiku-4.5", seconds=22.5),
+            _call_of(1, AgentRole.TRIAGE, "gpt-5-mini", seconds=12),
+        ],
+    )
+
+    summary = _only_summary(tmp_path, run)
+
+    assert [(call.role, call.model, call.duration_ms) for call in summary.calls] == [
+        (AgentRole.TRIAGE, "gpt-5-mini", 12_000),
+        (AgentRole.REVIEWER, "claude-haiku-4.5", 22_500),
+    ]
+
+
+def test_a_run_summary_without_calls_lists_none(tmp_path: Path) -> None:
+    assert _only_summary(tmp_path, _run("run-none")).calls == []
+
+
+def test_a_run_summary_carries_the_raw_failure_reason(tmp_path: Path) -> None:
+    run = _run("run-failed", state=WorkflowState.FAILED, completed_at=T0)
+    run = run.model_copy(update={"failure_reason": "reviewer used legacy fields"})
+
+    assert _only_summary(tmp_path, run).failure_reason == "reviewer used legacy fields"
+
+
+def test_a_run_summary_without_a_failure_reason_has_none(tmp_path: Path) -> None:
+    assert _only_summary(tmp_path, _run("run-fine")).failure_reason is None
+
+
+def test_run_detail_keeps_its_failure_reason_and_leaves_the_call_list_to_its_invocations(
+    tmp_path: Path,
+) -> None:
+    from software_agent_factory.observability import RunDetail, build_run_detail
+
+    store = _fake_store(tmp_path)
+    run = _run("run-detail-reason", state=WorkflowState.FAILED, completed_at=T0)
+    store.add_run(run.model_copy(update={"failure_reason": "boom"}))
+
+    detail = build_run_detail(store, "run-detail-reason", now=T0, reply_policy=REPLY_POLICY)
+
+    assert detail is not None
+    assert detail.failure_reason == "boom"
+    assert "calls" not in RunDetail.model_fields

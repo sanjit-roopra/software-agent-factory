@@ -1,4 +1,4 @@
-"""View models composed from sanitized data: run totals and the next step.
+"""View models composed from sanitized data: run totals, the next step and the overview figures.
 
 ``sanitize_*`` only allowlists, redacts and validates. These functions run it
 first, then add the figures the page shows. Pure: no I/O.
@@ -10,9 +10,16 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from ..models import WorkflowState
-from .aggregate import compare_roles, models_of, run_totals
+from .aggregate import compare_roles, models_of, models_summary, run_totals
 from .next_step import next_step
-from .sanitize import is_active_status, sanitize_project, sanitize_run_detail
+from .overview import flag_failing_call, headline, reason_line, run_outcome, snapshot_overview
+from .sanitize import (
+    is_active_status,
+    sanitize_project,
+    sanitize_run_detail,
+    sanitize_run_summary,
+    sanitize_summary,
+)
 from .validators import is_episode_id, run_id_of
 
 RequestsFor = Callable[[str, str], Iterable[Any]]
@@ -34,16 +41,50 @@ def _queued_requests(detail: dict[str, Any], requests_for: RequestsFor | None) -
 
 
 def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[str, Any]:
-    """A sanitized run detail with its ``totals`` and ``next_step``.
+    """A sanitized run detail with its ``totals``, ``next_step``, ``outcome`` and ``headline``.
 
     ``requests_for`` supplies the dashboard requests of the run's current episode. Only a
-    waiting run asks for them.
+    waiting run asks for them. The finished call a failed run most likely failed on carries
+    ``failure_link`` (see :func:`.overview.flag_failing_call`).
     """
     detail = sanitize_run_detail(raw)
     if "invocations" in detail:
         detail["totals"] = run_totals(detail["invocations"])
+        flag_failing_call(detail, detail["invocations"])
     detail["next_step"] = next_step(detail, _queued_requests(detail, requests_for))
+    detail["outcome"] = run_outcome(detail)
+    detail["headline"] = headline(detail)
     return detail
+
+
+def _duration_ms(calls: list[dict[str, Any]]) -> int | None:
+    """The total length of the calls, or ``None`` when no call reported one."""
+    lengths = [ms for call in calls if (ms := call.get("duration_ms")) is not None]
+    return sum(lengths) if lengths else None
+
+
+def run_summary_view(raw: Any) -> dict[str, Any]:
+    """A sanitized run list row with what the list shows: outcome, reason, models and length.
+
+    ``calls`` is replaced by ``models`` (``text`` for the cell, ``detail`` for its tooltip)
+    and ``duration_ms``. ``why`` is the redacted, bounded failure reason of a stopped run.
+    """
+    run = sanitize_run_summary(raw)
+    calls = run.pop("calls", [])
+    run["outcome"] = run_outcome(run)
+    run["why"] = reason_line(run)
+    run["models"] = models_summary(calls)
+    run["duration_ms"] = _duration_ms(calls)
+    return run
+
+
+def summary_view(snapshot: Any) -> dict[str, Any]:
+    """The ``overview`` row the Runs page shows. The handler adds ``health``.
+
+    Nothing else of the snapshot is passed on (see :data:`.sanitize.SUMMARY_FIELDS`).
+    """
+    raw = snapshot if isinstance(snapshot, dict) else {}
+    return sanitize_summary({"overview": snapshot_overview(raw)})
 
 
 def project_view(raw: Any) -> dict[str, Any]:
