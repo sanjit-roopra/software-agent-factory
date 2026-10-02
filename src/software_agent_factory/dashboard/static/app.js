@@ -303,7 +303,11 @@
     if (lastSuccessAt === null) {
       return "Connection lost, not updated yet";
     }
-    return "Connection lost, updated " + Math.floor((Date.now() - lastSuccessAt) / 1000) + "s ago";
+    return (
+      "Connection lost, updated " +
+      Math.floor((Date.now() - lastSuccessAt) / MS_PER_SECOND) +
+      "s ago"
+    );
   }
 
   function renderNotice() {
