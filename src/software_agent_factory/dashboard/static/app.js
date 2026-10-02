@@ -55,7 +55,8 @@
   const COPIED_VISIBLE_MS = 2000;
   const MS_PER_SECOND = 1000;
   const SECONDS_PER_MINUTE = 60;
-  // Field names match the server's TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS.
+  // Field names and order match TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS in models.py;
+  // an asset test pins them. The labels, help and phrases here are display text only.
   const TOKEN_CLASSES = [
     { key: "input_tokens", label: "Input tokens" },
     { key: "output_tokens", label: "Output tokens" },

@@ -7,16 +7,13 @@ from typing import Any
 import pytest
 
 from software_agent_factory.dashboard.aggregate import (
-    COST_UNIT_FIELDS,
-    TOKEN_CLASS_FIELDS,
-    TOTAL_TOKEN_FIELDS,
     UNKNOWN_ROLE,
     compare_roles,
     role_breakdown,
     run_totals,
 )
 from software_agent_factory.dashboard.sanitize import USAGE_FIELDS
-from software_agent_factory.observability import KEY_FIGURE_TOKEN_FIELDS
+from software_agent_factory.models import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS
 
 
 def _call(
@@ -237,7 +234,3 @@ def test_compare_roles_marks_a_role_one_run_never_used_with_none() -> None:
 
 def test_compare_roles_of_runs_without_calls_has_no_rows() -> None:
     assert compare_roles([], []) == []
-
-
-def test_key_figure_token_fields_match_the_dashboard_totals_cell() -> None:
-    assert set(KEY_FIGURE_TOKEN_FIELDS) == set(TOTAL_TOKEN_FIELDS)

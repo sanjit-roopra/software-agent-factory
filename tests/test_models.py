@@ -8,11 +8,14 @@ import pytest
 from pydantic import ValidationError
 
 from software_agent_factory.models import (
+    COST_UNIT_FIELDS,
     GENERIC_PRACTICE_VERSION_SCOPE,
     GENERIC_SKILL_TARGET,
     MAX_GUIDANCE_FINDINGS,
     MAX_PLAN_DECISIONS,
     REQUIRED_SKILL_TARGET_NAMES,
+    TOKEN_CLASS_FIELDS,
+    TOTAL_TOKEN_FIELDS,
     AgentRole,
     AttemptBudget,
     AttemptRecord,
@@ -1128,3 +1131,15 @@ def test_a_decision_number_above_max_plan_decisions_is_rejected() -> None:
 
 def test_the_last_decision_number_is_accepted() -> None:
     assert PlanDecisionAnswer(decision_number=MAX_PLAN_DECISIONS, answer="yes").answer == "yes"
+
+
+def test_every_token_class_is_a_usage_metrics_field() -> None:
+    assert set(TOKEN_CLASS_FIELDS) <= set(UsageMetrics.model_fields)
+
+
+def test_every_cost_unit_but_the_derived_one_is_a_usage_metrics_field() -> None:
+    assert set(COST_UNIT_FIELDS) - set(UsageMetrics.model_fields) == {"usage_value_usd"}
+
+
+def test_the_total_leaves_out_only_the_reasoning_tokens() -> None:
+    assert set(TOKEN_CLASS_FIELDS) - set(TOTAL_TOKEN_FIELDS) == {"reasoning_tokens"}

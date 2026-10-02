@@ -11,39 +11,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from ..models import COST_UNIT_FIELDS, TOKEN_CLASS_FIELDS, TOTAL_TOKEN_FIELDS
 from .validators import is_number
 
 #: The two outcomes a finished call reports. ``OUTCOMES`` in ``static/app.js``
 #: keys on these same strings.
 STATUS_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
-
-#: Token classes and cost units a call always reports. An unreported value is
-#: ``None``, never ``0``.
-TOKEN_CLASS_FIELDS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-)
-COST_UNIT_FIELDS: tuple[str, ...] = (
-    "total_premium_request_cost",
-    "usage_value_usd",
-    "list_price_estimate_usd",
-)
-
-#: The token classes one call's total adds up. Reasoning tokens stay out: the
-#: runtime already counts them inside the output tokens (see "Usage mapping" in
-#: docs/specs/pi-agent-runtime.md). Cache classes stay in: they are separate from
-#: input. The Copilot usage fixture in tests/test_copilot_runtime.py reports 1195
-#: input tokens beside 47104 cache-read tokens, so cache read cannot be part of input.
-TOTAL_TOKEN_FIELDS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-)
 
 
 def _figure(values: Iterable[Any]) -> dict[str, Any]:

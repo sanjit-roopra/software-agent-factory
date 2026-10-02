@@ -74,7 +74,12 @@ from software_agent_factory.dashboard.snapshot import (
     to_json_safe,
 )
 from software_agent_factory.dashboard.view import project_view, run_detail_view
-from software_agent_factory.models import MAX_GUIDANCE_FINDINGS, MAX_PLAN_DECISIONS
+from software_agent_factory.models import (
+    COST_UNIT_FIELDS,
+    MAX_GUIDANCE_FINDINGS,
+    MAX_PLAN_DECISIONS,
+    TOKEN_CLASS_FIELDS,
+)
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -2918,14 +2923,7 @@ CALL_FIELD_ORDER = [
     "failure_reason",
     "failure_reason_truncated",
 ]
-TOKEN_CLASSES = (
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-)
-COST_UNITS = ("total_premium_request_cost", "usage_value_usd", "list_price_estimate_usd")
+USAGE_KEYS = (*TOKEN_CLASS_FIELDS, *COST_UNIT_FIELDS)
 
 
 def _raw_call(**overrides: Any) -> dict[str, Any]:
@@ -2989,9 +2987,7 @@ def test_reported_zero_stays_zero_and_unreported_is_null(
 def test_every_token_class_and_cost_unit_is_present_and_null_without_usage() -> None:
     call = sanitize_invocation(_raw_call(usage=None))
 
-    assert {key: call["usage"][key] for key in (*TOKEN_CLASSES, *COST_UNITS)} == dict.fromkeys(
-        (*TOKEN_CLASSES, *COST_UNITS)
-    )
+    assert {key: call["usage"][key] for key in USAGE_KEYS} == dict.fromkeys(USAGE_KEYS)
 
 
 def test_each_call_reports_cost_in_its_own_unit() -> None:
@@ -3019,7 +3015,7 @@ def test_reported_zero_cost_stays_zero() -> None:
         )
     )["usage"]
 
-    assert [usage[unit] for unit in COST_UNITS] == [0, 0.0, 0.0]
+    assert [usage[unit] for unit in COST_UNIT_FIELDS] == [0, 0.0, 0.0]
 
 
 @pytest.mark.parametrize(
@@ -3359,9 +3355,7 @@ def test_running_call_has_the_shape_of_a_finished_call_with_nothing_reported() -
     assert call["duration_ms"] is None
     assert call["failure_reason"] is None
     assert call["failure_reason_truncated"] is False
-    assert {key: call["usage"][key] for key in (*TOKEN_CLASSES, *COST_UNITS)} == dict.fromkeys(
-        (*TOKEN_CLASSES, *COST_UNITS)
-    )
+    assert {key: call["usage"][key] for key in USAGE_KEYS} == dict.fromkeys(USAGE_KEYS)
 
 
 @pytest.mark.parametrize("status", ["stale", "crashed", "abandoned"])

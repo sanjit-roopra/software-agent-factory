@@ -89,6 +89,8 @@ from .escalation_protocol import (
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
+    TOKEN_CLASS_FIELDS,
+    TOTAL_TOKEN_FIELDS,
     UNRESOLVED_DECISIONS_HALT_REASON,
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     ActiveInvocationStatus,
@@ -193,17 +195,6 @@ DEFAULT_PAGE_LIMIT = 100
 #: How far back the "last 24 hours" key figures look, measured from the
 #: snapshot's own ``now`` so a fixed clock gives a fixed answer.
 KEY_FIGURE_WINDOW = timedelta(hours=24)
-
-#: The token classes one call's total adds up, the same four the dashboard's
-#: totals cell adds (``dashboard.aggregate.TOTAL_TOKEN_FIELDS``; a test pins the
-#: two together). Reasoning tokens stay out: the runtime already counts them
-#: inside the output tokens.
-KEY_FIGURE_TOKEN_FIELDS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-)
 
 #: Conservative hard cap on how many ``run.json`` files one call to
 #: :func:`build_monitoring_snapshot` will open and parse, independent of
@@ -1151,7 +1142,7 @@ def _failed_since(runs: list[FactoryRun], cutoff: datetime) -> int:
 
 
 def _reported_tokens(usage: UsageMetrics | None) -> int | None:
-    """One invocation's tokens across ``KEY_FIGURE_TOKEN_FIELDS``, or ``None`` if it reported none.
+    """One invocation's tokens across ``TOTAL_TOKEN_FIELDS``, or ``None`` if it reported none.
 
     A class the call did not report adds nothing, but a call that reported no class at all is
     unknown, not zero (ADR-017).
@@ -1160,9 +1151,7 @@ def _reported_tokens(usage: UsageMetrics | None) -> int | None:
         return None
     resolved = resolve_usage(usage)
     values = [
-        value
-        for field in KEY_FIGURE_TOKEN_FIELDS
-        if (value := getattr(resolved, field)) is not None
+        value for field in TOTAL_TOKEN_FIELDS if (value := getattr(resolved, field)) is not None
     ]
     return sum(values) if values else None
 
@@ -1364,11 +1353,7 @@ def _reported_or_model_sum(
 # UsageMetrics fields that also have a per-model ModelUsage counterpart of the
 # same name, so a runtime may report them only per model.
 _MODEL_BACKED_USAGE_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
+    *TOKEN_CLASS_FIELDS,
     "total_nano_aiu",
     "list_price_estimate_usd",
 )
