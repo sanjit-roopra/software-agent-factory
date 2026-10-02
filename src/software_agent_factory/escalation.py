@@ -22,8 +22,9 @@ import json
 import logging
 import re
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -1435,9 +1436,12 @@ def _pollable_escalation(run: FactoryRun) -> EscalationRecord | None:
 
 
 def _save_poll_update_if_unchanged(
-    store: FileRunStore, run_id: str, seen: EscalationRecord, update: dict[str, Any]
+    store: FileRunStore,
+    run_id: str,
+    seen: EscalationRecord,
+    transition: Callable[[EscalationRecord], EscalationRecord],
 ) -> None:
-    """Apply ``update`` to the stored escalation, unless it moved on since the poll read it.
+    """Apply ``transition`` to the stored escalation, unless it moved on since the poll read it.
 
     The poller works on a copy of the run. If the dashboard path reopened the run, or the
     episode or cursor changed, since that copy was read, saving it would undo that work, so
@@ -1451,7 +1455,7 @@ def _save_poll_update_if_unchanged(
         seen.reply_cursor,
     ):
         return
-    store.save_run(stored.model_copy(update={"escalation": current.model_copy(update=update)}))
+    store.save_run(stored.model_copy(update={"escalation": transition(current)}))
 
 
 #: The causes after which the poller stops reading replies for good.
@@ -1462,20 +1466,19 @@ _CONTEXT_CHECKED_CAUSES = frozenset(
 )
 
 
-def _gate_update(
+def _gate_transition(
     cause: ReplyClosedCause | None, context_is_valid: bool, now: datetime
-) -> dict[str, Any] | None:
+) -> Callable[[EscalationRecord], EscalationRecord] | None:
     """The change the poller makes to an escalation whose reply gate is closed, or ``None``.
 
     A reply that can no longer be read closes the escalation. A reply window that passed
     expires it, unless the stored decision context no longer reads, which closes it first.
     Every other cause only skips the poll.
     """
-    closing = {"remote_resume_enabled": False, "reply_cursor": REPLY_CURSOR_CLOSED}
     if cause in _CLOSING_CAUSES or (not context_is_valid and cause in _CONTEXT_CHECKED_CAUSES):
-        return {**closing, "updated_at": now}
+        return lambda record: record.closed_to_replies(now)
     if cause is ReplyClosedCause.WINDOW_EXPIRED:
-        return {"status": EscalationStatus.EXPIRED, **closing, "updated_at": now}
+        return lambda record: record.expired(now)
     return None
 
 
@@ -1490,9 +1493,9 @@ def _close_reply_gate(
     """Save what the closed gate calls for. A cursor that is closed already has nothing to close."""
     if escalation.reply_cursor == REPLY_CURSOR_CLOSED:
         return
-    update = _gate_update(cause, context_is_valid, now)
-    if update is not None:
-        _save_poll_update_if_unchanged(store, run_id, escalation, update)
+    transition = _gate_transition(cause, context_is_valid, now)
+    if transition is not None:
+        _save_poll_update_if_unchanged(store, run_id, escalation, transition)
 
 
 def _cursor_json(page: int, since: datetime, last_id: int | None) -> str:
@@ -1705,7 +1708,10 @@ def poll_escalation_reply(
 
     if next_cursor is not None and next_cursor != escalation.reply_cursor:
         _save_poll_update_if_unchanged(
-            store, run.id, escalation, {"reply_cursor": next_cursor, "updated_at": current_time}
+            store,
+            run.id,
+            escalation,
+            partial(EscalationRecord.advanced_cursor, cursor=next_cursor, now=current_time),
         )
 
     return None

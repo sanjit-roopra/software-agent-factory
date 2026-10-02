@@ -618,9 +618,7 @@ class FactoryService:
                 }
                 and run.escalation.reply_cursor != REPLY_CURSOR_CLOSED
             ):
-                escalation = run.escalation.model_copy(
-                    update={"reply_cursor": REPLY_CURSOR_CLOSED, "updated_at": utc_now()}
-                )
+                escalation = run.escalation.advanced_cursor(REPLY_CURSOR_CLOSED, utc_now())
                 self.store.save_run(run.model_copy(update={"escalation": escalation}))
 
     def _next_runs_to_poll(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:

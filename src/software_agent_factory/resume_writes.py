@@ -23,11 +23,9 @@ from .config import FactoryConfig
 from .escalation_protocol import format_answer_command, format_resume_command
 from .models import (
     DASHBOARD_USER_LOGIN,
-    REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
     DashboardResumeRequest,
     EscalationRecord,
-    EscalationStatus,
     FactoryRun,
     PlanDecisionAnswer,
     PlanDecisionAnswers,
@@ -109,15 +107,7 @@ def _accept(
     receipt = _build_receipt(fresh, escalation, reply, now)
     if answers is not None:
         _save_plan_answers(store, fresh, escalation, reply, answers, now)
-    reopened = escalation.model_copy(
-        update={
-            "accepted_replies": [*escalation.accepted_replies, receipt],
-            "reopen_count": escalation.reopen_count + 1,
-            "status": EscalationStatus.REOPENED,
-            "reply_cursor": REPLY_CURSOR_CLOSED,
-            "updated_at": now,
-        }
-    )
+    reopened = escalation.reopened(receipt, now)
     store.save_run(fresh.model_copy(update={"escalation": reopened}))
     if reply.source == "github":
         # The run is reopened, so a dashboard request made for this episode can no longer

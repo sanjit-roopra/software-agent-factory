@@ -1375,6 +1375,36 @@ class EscalationRecord(ModelBase):
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
 
+    def advanced_cursor(self, cursor: str, now: datetime) -> Self:
+        """This record with the reply cursor at ``cursor``, stamped ``now``."""
+        return self.model_copy(update={"reply_cursor": cursor, "updated_at": now})
+
+    def closed_to_replies(self, now: datetime) -> Self:
+        """This record with the cursor closed and remote resume off, stamped ``now``."""
+        return self.model_copy(
+            update={
+                "remote_resume_enabled": False,
+                "reply_cursor": REPLY_CURSOR_CLOSED,
+                "updated_at": now,
+            }
+        )
+
+    def expired(self, now: datetime) -> Self:
+        """:meth:`closed_to_replies`, with the status ``EXPIRED``."""
+        return self.closed_to_replies(now).model_copy(update={"status": EscalationStatus.EXPIRED})
+
+    def reopened(self, receipt: AcceptedReplyReceipt, now: datetime) -> Self:
+        """This record after ``receipt`` reopened the run: one more reopen, the cursor closed."""
+        return self.model_copy(
+            update={
+                "accepted_replies": [*self.accepted_replies, receipt],
+                "reopen_count": self.reopen_count + 1,
+                "status": EscalationStatus.REOPENED,
+                "reply_cursor": REPLY_CURSOR_CLOSED,
+                "updated_at": now,
+            }
+        )
+
 
 class RouteAdjustment(ModelBase):
     from_route: ExecutionRoute
