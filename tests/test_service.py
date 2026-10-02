@@ -1241,6 +1241,8 @@ def test_a_pending_request_of_a_run_that_stopped_waiting_goes_stale_in_the_next_
     assert (stale.status, stale.reason) == ("stale", "state_changed")
 
 
+# The real FileRunStore still reads every run.json underneath.
+# double-waiver: B1 — counts the run.json file reads each service cycle makes
 class _LoadCountingStore(FileRunStore):
     """A run store that counts how often each run is loaded."""
 
