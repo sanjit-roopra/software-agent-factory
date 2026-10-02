@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
-from ..models import HaltReasonCode
+from ..models import MAX_GUIDANCE_FINDINGS, HaltReasonCode
 from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import (
@@ -752,13 +752,13 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
         result["artifact"] = artifact
     if reason_code is not HaltReasonCode.UNRESOLVED_DECISIONS:
         count = data.get("finding_count")
-        if is_count(count) and count <= 12:
+        if is_count(count) and count <= MAX_GUIDANCE_FINDINGS:
             result["finding_count"] = count
         finding_ids = data.get("finding_ids")
         if isinstance(finding_ids, list):
             result["finding_ids"] = [
                 item
-                for item in finding_ids[:12]
+                for item in finding_ids[:MAX_GUIDANCE_FINDINGS]
                 if isinstance(item, str)
                 and item.startswith("review-")
                 and len(item) <= 64
@@ -771,7 +771,7 @@ def _sanitize_guidance(data: dict[str, Any]) -> dict[str, Any] | None:
                 for key, value in category_counts.items()
                 if key in {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"}
                 and is_count(value)
-                and value <= 12
+                and value <= MAX_GUIDANCE_FINDINGS
             }
     else:
         decision_count = data.get("decision_count")

@@ -82,6 +82,7 @@ from pydantic import Field, ValidationError, model_serializer
 
 from .escalation_protocol import ANSWER_COMMAND_PATTERN, reply_closed_cause
 from .models import (
+    MAX_GUIDANCE_FINDINGS,
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
@@ -452,7 +453,7 @@ class RunGuidance(ModelBase):
     artifact: str | None = None
     finding_count: int = Field(default=0, ge=0)
     decision_count: int | None = Field(default=None, ge=0)
-    finding_ids: list[str] = Field(default_factory=list, max_length=12)
+    finding_ids: list[str] = Field(default_factory=list, max_length=MAX_GUIDANCE_FINDINGS)
     category_counts: dict[ReviewFindingCategory, int] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")

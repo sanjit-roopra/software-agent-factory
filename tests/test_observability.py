@@ -26,8 +26,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from software_agent_factory.models import (
+    MAX_GUIDANCE_FINDINGS,
     AcceptedReplyReceipt,
     ActiveInvocation,
     AgentRole,
@@ -42,6 +44,7 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
+    HaltReasonCode,
     InvocationRecord,
     ModelUsage,
     PerformanceRecord,
@@ -74,6 +77,7 @@ from software_agent_factory.observability import (
     MonitoringSnapshot,
     OperationalHealthReport,
     OrphanedWorkspaceFinding,
+    RunGuidance,
     RunScanCache,
     RunScanResult,
     RunStoreProtocol,
@@ -2838,3 +2842,22 @@ def test_runs_with_rework_increments_only_when_actual_rework_gt_zero() -> None:
     assert metrics_all.performance.rework.total_rework_attempts == 1
     assert metrics_all.performance.rework.runs_with_rework == 1
     assert metrics_all.performance.rework.rework_rate == pytest.approx(1 / 3)
+
+
+def _guidance_with_ids(count: int) -> RunGuidance:
+    return RunGuidance(
+        status="ACTION_REQUIRED",
+        reason_code=HaltReasonCode.REVIEW_IMPASSE,
+        summary="s",
+        next_action="a",
+        finding_ids=[f"review-correctness-{n}" for n in range(count)],
+    )
+
+
+def test_run_guidance_keeps_up_to_the_guidance_cap_of_finding_ids() -> None:
+    assert len(_guidance_with_ids(MAX_GUIDANCE_FINDINGS).finding_ids) == MAX_GUIDANCE_FINDINGS
+
+
+def test_run_guidance_rejects_more_finding_ids_than_the_guidance_cap() -> None:
+    with pytest.raises(ValidationError):
+        _guidance_with_ids(MAX_GUIDANCE_FINDINGS + 1)

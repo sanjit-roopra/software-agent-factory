@@ -71,6 +71,7 @@ from software_agent_factory.dashboard.snapshot import (
     to_json_safe,
 )
 from software_agent_factory.dashboard.view import project_view, run_detail_view
+from software_agent_factory.models import MAX_GUIDANCE_FINDINGS
 
 FIXTURE_RUNS: list[dict[str, Any]] = [
     {
@@ -1845,6 +1846,35 @@ def test_run_guidance_is_reconstructed_from_safe_reason_code() -> None:
     assert guidance["finding_ids"] == ["review-correctness-1234"]
     assert guidance["category_counts"] == {"CORRECTNESS": 1}
     assert SECRET_MARKER not in json.dumps(guidance)
+
+
+def _review_guidance(**fields: Any) -> dict[str, Any]:
+    guidance = {"reason_code": "REVIEW_IMPASSE", **fields}
+    return sanitize_run_detail({**FIXTURE_DETAILS["run-001"], "guidance": guidance})["guidance"]
+
+
+def test_a_finding_count_up_to_the_guidance_cap_is_kept() -> None:
+    kept = _review_guidance(finding_count=MAX_GUIDANCE_FINDINGS)
+    dropped = _review_guidance(finding_count=MAX_GUIDANCE_FINDINGS + 1)
+
+    assert kept["finding_count"] == MAX_GUIDANCE_FINDINGS
+    assert "finding_count" not in dropped
+
+
+def test_finding_ids_are_cut_to_the_guidance_cap() -> None:
+    ids = [f"review-correctness-{n}" for n in range(MAX_GUIDANCE_FINDINGS + 1)]
+
+    guidance = _review_guidance(finding_ids=ids)
+
+    assert guidance["finding_ids"] == ids[:MAX_GUIDANCE_FINDINGS]
+
+
+def test_a_category_count_over_the_guidance_cap_is_dropped() -> None:
+    guidance = _review_guidance(
+        category_counts={"CORRECTNESS": MAX_GUIDANCE_FINDINGS, "SCOPE": MAX_GUIDANCE_FINDINGS + 1}
+    )
+
+    assert guidance["category_counts"] == {"CORRECTNESS": MAX_GUIDANCE_FINDINGS}
 
 
 def test_run_guidance_unresolved_decisions_sanitized_with_bounded_decision_count() -> None:

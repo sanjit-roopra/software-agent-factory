@@ -57,6 +57,8 @@ def _without_blank_entries(data: object, fields: tuple[str, ...]) -> object:
 
 
 MAX_OPEN_REVIEW_FINDINGS = 24
+#: The most findings the run guidance names, and the largest count it shows for one category.
+MAX_GUIDANCE_FINDINGS = 12
 MAX_PERFORMANCE_METRICS = 250
 MAX_PERFORMANCE_NAME_LENGTH = 100
 MAX_PERFORMANCE_STAGE_LENGTH = 50
