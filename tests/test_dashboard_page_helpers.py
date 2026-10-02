@@ -38,6 +38,35 @@ BUG_TITLE = "Fix the bug"
 TWO_PREMIUM_REQUESTS = "2 premium requests"
 FILTER_NEEDS_YOU = "needs-you"
 COMPARE = "#compare"
+CALLS = "calls"
+DURATION_MS = "duration_ms"
+RUN_1 = "run-1"
+STATE_FAILED = "FAILED"
+REASON = "reason"
+TOTAL = "total"
+REPORTED_COUNT = "reported_count"
+KIND_FAILED = "failed"
+LABEL_FAILED = "Failed"
+DETAIL = "detail"
+CLASS_NAME = "className"
+EMPTY = "empty"
+LIST_PRICE_TEXT = "$0.039"
+NEUTRAL = "neutral"
+SOL = "gpt-6.1-sol"
+REJECTED = "rejected"
+PREMIUM_REQUEST_COST = "premium_request_cost"
+TOTAL_LABEL = "Total"
+DURATION_TEXT = "1 min 3 s"
+HIDDEN = "hidden"
+STATUS = "status"
+SUCCESS = "SUCCESS"
+FAILURE_LINK = "failure_link"
+OVERVIEW_LIST_PRICE = "list_price_usd"
+OVERVIEW_PREMIUM = "premium_requests"
+SCAN_TRUNCATED = "scan_truncated"
+SCAN_NOTE = "The figures cover only the newest runs the dashboard scanned."
+INFINITY_ID = "infinity"
+MISSING_ID = "missing"
 NAN = math.nan
 INF = math.inf
 
@@ -53,21 +82,21 @@ def _case(function: str, case_id: str, expected: object, *args: object) -> Case:
 
 
 _TOTALS = {
-    "calls": 6,
-    "failed_calls": {"total": 0, "reported_count": 6},
-    "duration_ms": {"total": 63_000, "reported_count": 6},
-    "total_tokens": {"total": 40_990, "reported_count": 6},
-    "costs": {LIST_USD: {"total": 0.039188, "reported_count": 6}},
+    CALLS: 6,
+    "failed_calls": {TOTAL: 0, REPORTED_COUNT: 6},
+    DURATION_MS: {TOTAL: 63_000, REPORTED_COUNT: 6},
+    "total_tokens": {TOTAL: 40_990, REPORTED_COUNT: 6},
+    "costs": {LIST_USD: {TOTAL: 0.039188, REPORTED_COUNT: 6}},
 }
 _FAILED_RUN = {
-    RUN_ID: "run-1",
+    RUN_ID: RUN_1,
     TITLE: BUG_TITLE,
-    "state": "FAILED",
-    "outcome": {"kind": "failed", "label": "Failed"},
-    "why": "reason",
-    "models": {"text": "gpt-5-mini \u00d74 \u00b7 impl gpt-6.1-sol", "detail": "detail"},
+    "state": STATE_FAILED,
+    "outcome": {"kind": KIND_FAILED, LABEL: LABEL_FAILED},
+    "why": REASON,
+    "models": {"text": "gpt-5-mini \u00d74 \u00b7 impl gpt-6.1-sol", DETAIL: DETAIL},
     "invocation_count": 6,
-    "duration_ms": 63_000,
+    DURATION_MS: 63_000,
     "usage": {LIST_USD: 0.039188},
     "created_at": "2026-10-02T11:48:00Z",
 }
@@ -80,7 +109,7 @@ def _minutes_before(minutes: float) -> str:
 
 
 def _paragraph(text: str) -> dict[str, str]:
-    return {"tagName": "p", "className": "", "textContent": text}
+    return {"tagName": "p", CLASS_NAME: "", "textContent": text}
 
 
 _duration = partial(_case, "durationText")
@@ -101,6 +130,10 @@ _key_numbers = partial(_case, "keyNumberCards")
 _total_cells = partial(_case, "totalCells")
 _call_outcome = partial(_case, "callOutcome")
 _reopens = partial(_case, "reopensLine")
+_has_list_price = partial(_case, "hasListPrice")
+_has_premium = partial(_case, "hasPremiumRequests")
+_has_no_cost = partial(_case, "hasNoCost")
+_scan_note = partial(_case, "scanTruncatedNote")
 
 # A number that is not finite is not a reported number. Every formatter below keeps it out
 # through ``isFiniteNumber``, so NaN, Infinity and a missing value read as "not reported".
@@ -109,7 +142,7 @@ FORMATTER_CASES = [
     _duration("text", NOT_REPORTED, "5"),
     _duration("undefined", NOT_REPORTED, UNDEFINED),
     _duration("nan", NOT_REPORTED, NAN),
-    _duration("infinity", NOT_REPORTED, INF),
+    _duration(INFINITY_ID, NOT_REPORTED, INF),
     _duration("negative-infinity", NOT_REPORTED, -INF),
     _duration("zero", "0 ms", 0),
     _duration("fraction", "0.5 ms", 0.5),
@@ -140,7 +173,7 @@ FORMATTER_CASES = [
     _partial_note("no-calls", "", 0, 0),
     _partial_note("one-of-three", "1 of 3 calls reported", 1, 3),
     _partial_note("two-of-three", "2 of 3 calls reported", 2, 3),
-    _cost("empty", NOT_REPORTED, {}),
+    _cost(EMPTY, NOT_REPORTED, {}),
     _cost("null-units", NOT_REPORTED, {PREMIUM: None, USAGE_USD: None, LIST_USD: None}),
     _cost("undefined-unit", NOT_REPORTED, {PREMIUM: UNDEFINED}),
     _cost("nan-unit", NOT_REPORTED, {PREMIUM: NAN}),
@@ -158,7 +191,7 @@ FORMATTER_CASES = [
     _cost("usd-separator", "$1,234.50 AI usage", {USAGE_USD: 1234.5}),
     _cost("usd-rounds-at-three-decimals", "$0.123 AI usage", {USAGE_USD: 0.1234567}),
     _cost("list-price-has-no-unit-suffix", "$12.00", {LIST_USD: 12}),
-    _cost("list-price-under-a-dollar", "$0.039", {LIST_USD: 0.039188}),
+    _cost("list-price-under-a-dollar", LIST_PRICE_TEXT, {LIST_USD: 0.039188}),
     _cost(
         "all-units-in-order",
         "2 premium requests, $3.25 AI usage, $4.00",
@@ -172,12 +205,12 @@ FORMATTER_CASES = [
     _money("null", NOT_REPORTED, None),
     _money("text", NOT_REPORTED, "1"),
     _money("nan", NOT_REPORTED, NAN),
-    _money("infinity", NOT_REPORTED, INF),
+    _money(INFINITY_ID, NOT_REPORTED, INF),
     _money("negative", NOT_REPORTED, -0.01),
     _money("zero", "$0", 0),
     _money("too-small-for-three-decimals", "<$0.001", 0.0004),
     _money("smallest-shown", "$0.001", 0.0005),
-    _money("three-decimals", "$0.039", 0.039188),
+    _money("three-decimals", LIST_PRICE_TEXT, 0.039188),
     _money("keeps-trailing-zeros", "$0.500", 0.5),
     _money("just-under-a-dollar", "$0.999", 0.9994),
     _money("rounds-up-to-a-dollar-with-two-decimals", "$1.00", 0.9996),
@@ -188,6 +221,7 @@ FORMATTER_CASES = [
     _relative("under-a-minute", "just now", _minutes_before(0.5), _NOW),
     _relative("in-the-future", "just now", _minutes_before(-5), _NOW),
     _relative("last-minute-of-an-hour", "59 min ago", _minutes_before(59.9), _NOW),
+    _relative("exactly-one-minute", "1 min ago", _minutes_before(1), _NOW),
     _relative("one-hour", "1 h ago", _minutes_before(60), _NOW),
     _relative("last-hour-of-a-day", "23 h ago", _minutes_before(24 * 60 - 1), _NOW),
     _relative("days", "3 d ago", _minutes_before(3 * 24 * 60), _NOW),
@@ -204,42 +238,40 @@ FORMATTER_CASES = [
     _absolute("custom-fallback", "", "nope", ""),
     _list_cost("nothing", DASH, {}),
     _list_cost("no-usage", DASH, None),
-    _list_cost("list-price", "$0.039", {LIST_USD: 0.039188}),
-    _list_cost("premium", "2 premium req.", {"premium_request_cost": 2}),
+    _list_cost("list-price", LIST_PRICE_TEXT, {LIST_USD: 0.039188}),
+    _list_cost("premium", "2 premium req.", {PREMIUM_REQUEST_COST: 2}),
     _list_cost(
         "both-units-stay-apart",
         "$0.039 \u00b7 2 premium req.",
-        {LIST_USD: 0.039188, "premium_request_cost": 2},
+        {LIST_USD: 0.039188, PREMIUM_REQUEST_COST: 2},
     ),
-    _list_cost(
-        "reported-zero", "$0 \u00b7 0 premium req.", {LIST_USD: 0, "premium_request_cost": 0}
-    ),
-    _list_cost("not-numbers", DASH, {LIST_USD: "1", "premium_request_cost": NAN}),
+    _list_cost("reported-zero", "$0 \u00b7 0 premium req.", {LIST_USD: 0, PREMIUM_REQUEST_COST: 0}),
+    _list_cost("not-numbers", DASH, {LIST_USD: "1", PREMIUM_REQUEST_COST: NAN}),
     _note("same-as-total", "", 3, 3),
     _note("less-than-total", "1 in the last 24 hours", 1, 3),
     _note("none", "", None, 3),
     _note("zero-of-some", "0 in the last 24 hours", 0, 3),
     _blank("undefined", True, ["x", UNDEFINED]),
     _blank("null", True, ["x", None]),
-    _blank("empty", True, ["x", ""]),
+    _blank(EMPTY, True, ["x", ""]),
     _blank("dash", True, ["x", DASH]),
     _blank("not-reported", True, ["x", NOT_REPORTED]),
     _blank("false-is-a-value", False, ["x", False]),
     _blank("zero-is-a-value", False, ["x", 0]),
-    _blank("text", False, ["x", "value"]),
-    _badge("known", "failed", {"kind": "failed", "label": "Failed"}),
+    _blank("text", False, ["x", VALUE]),
+    _badge("known", KIND_FAILED, {"kind": KIND_FAILED, LABEL: LABEL_FAILED}),
     _badge("needs-you", "needs_you", {"kind": "needs_you"}),
-    _badge("unknown-kind", "neutral", {"kind": "paused"}),
-    _badge("no-outcome", "neutral", None),
+    _badge("unknown-kind", NEUTRAL, {"kind": "paused"}),
+    _badge("no-outcome", NEUTRAL, None),
     _key_numbers(
         "duration-calls-tokens-and-the-reported-cost",
         [
-            {"label": "Duration", "value": "1 min 3 s", "note": "", "help": ""},
-            {"label": "Calls", "value": "6", "note": "", "help": ""},
-            {"label": "Tokens", "value": "40,990", "note": "", "help": ""},
+            {LABEL: "Duration", VALUE: DURATION_TEXT, "note": "", "help": ""},
+            {LABEL: "Calls", VALUE: "6", "note": "", "help": ""},
+            {LABEL: "Tokens", VALUE: "40,990", "note": "", "help": ""},
             {
-                "label": "List-price estimate (USD)",
-                "value": "$0.039",
+                LABEL: "List-price estimate (USD)",
+                VALUE: LIST_PRICE_TEXT,
                 "note": "",
                 "help": "Estimate in USD from list prices, not what a provider billed.",
             },
@@ -249,66 +281,66 @@ FORMATTER_CASES = [
     _key_numbers(
         "one-card-says-no-cost-was-reported",
         [
-            {"label": "Duration", "value": NOT_REPORTED, "note": "", "help": ""},
-            {"label": "Calls", "value": "0", "note": "", "help": ""},
-            {"label": "Tokens", "value": NOT_REPORTED, "note": "", "help": ""},
-            {"label": "Cost", "value": NOT_REPORTED, "note": "", "help": ""},
+            {LABEL: "Duration", VALUE: NOT_REPORTED, "note": "", "help": ""},
+            {LABEL: "Calls", VALUE: "0", "note": "", "help": ""},
+            {LABEL: "Tokens", VALUE: NOT_REPORTED, "note": "", "help": ""},
+            {LABEL: "Cost", VALUE: NOT_REPORTED, "note": "", "help": ""},
         ],
-        {"calls": 0},
+        {CALLS: 0},
     ),
     _total_cells(
         "the-total-row",
-        ["Total", "6 calls", "1 min 3 s", "40,990", "$0.039"],
+        [TOTAL_LABEL, "6 calls", DURATION_TEXT, "40,990", LIST_PRICE_TEXT],
         _TOTALS,
     ),
     _total_cells(
         "the-total-row-keeps-each-cost-unit",
-        ["Total", "1 call", "1 s", "5", "2 premium requests, $0.500 AI usage, $0.039"],
+        [TOTAL_LABEL, "1 call", "1 s", "5", "2 premium requests, $0.500 AI usage, $0.039"],
         {
-            "calls": 1,
-            "duration_ms": {"total": 1000},
-            "total_tokens": {"total": 5},
+            CALLS: 1,
+            DURATION_MS: {TOTAL: 1000},
+            "total_tokens": {TOTAL: 5},
             "costs": {
-                PREMIUM: {"total": 2},
-                USAGE_USD: {"total": 0.5},
-                LIST_USD: {"total": 0.039188},
+                PREMIUM: {TOTAL: 2},
+                USAGE_USD: {TOTAL: 0.5},
+                LIST_USD: {TOTAL: 0.039188},
             },
         },
     ),
     _total_cells(
         "an-empty-total-row",
-        ["Total", NOT_REPORTED, NOT_REPORTED, NOT_REPORTED, NOT_REPORTED],
+        [TOTAL_LABEL, NOT_REPORTED, NOT_REPORTED, NOT_REPORTED, NOT_REPORTED],
         {},
     ),
     _row(
         "a-failed-run",
         {
-            "runId": "run-1",
+            "runId": RUN_1,
             "cells": [
                 {
                     "href": "#run/run-1",
-                    "value": BUG_TITLE,
-                    "hidden": "",
-                    "title": "run-1",
+                    VALUE: BUG_TITLE,
+                    HIDDEN: "",
+                    TITLE: RUN_1,
                 },
-                {"badge": "failed", "value": "Failed", "title": "FAILED"},
-                {"value": "reason", "clamp": True, "className": "why-cell", "title": "reason"},
+                {"badge": KIND_FAILED, VALUE: LABEL_FAILED, TITLE: STATE_FAILED},
+                {VALUE: REASON, "clamp": True, CLASS_NAME: "why-cell", TITLE: REASON},
                 {
-                    "value": "gpt-5-mini \u00d74 \u00b7 impl gpt-6.1-sol",
+                    VALUE: "gpt-5-mini \u00d74 \u00b7 impl gpt-6.1-sol",
                     "chunks": ["gpt-5-mini \u00d74", "impl gpt-6.1-sol"],
-                    "className": "models-cell",
-                    "title": "detail",
+                    CLASS_NAME: "models-cell",
+                    TITLE: DETAIL,
                 },
                 6,
-                "1 min 3 s",
-                "$0.039",
-                {"value": "12 min ago", "title": "2026-10-02 11:48 UTC"},
+                DURATION_TEXT,
+                LIST_PRICE_TEXT,
+                {VALUE: "12 min ago", TITLE: "2026-10-02 11:48 UTC"},
                 {
-                    "value": "\u21c4",
+                    VALUE: "\u21c4",
                     "icon": True,
                     "href": "#compare/run-1",
-                    "hidden": "Compare with another run: run-1",
-                    "title": "Compare this run with another run",
+                    HIDDEN: "Compare with another run: run-1",
+                    TITLE: "Compare this run with another run",
                 },
             ],
         },
@@ -321,14 +353,14 @@ FORMATTER_CASES = [
             "runId": UNDEFINED,
             "cells": [
                 DASH,
-                {"badge": "neutral", "value": DASH, "title": ""},
-                {"value": DASH, "clamp": True, "className": "why-cell", "title": ""},
-                {"value": DASH, "chunks": [], "className": "models-cell", "title": ""},
+                {"badge": NEUTRAL, VALUE: DASH, TITLE: ""},
+                {VALUE: DASH, "clamp": True, CLASS_NAME: "why-cell", TITLE: ""},
+                {VALUE: DASH, "chunks": [], CLASS_NAME: "models-cell", TITLE: ""},
                 UNDEFINED,
                 DASH,
                 DASH,
-                {"value": DASH, "title": ""},
-                {"value": "", "className": ""},
+                {VALUE: DASH, TITLE: ""},
+                {VALUE: "", CLASS_NAME: ""},
             ],
         },
         {},
@@ -336,32 +368,32 @@ FORMATTER_CASES = [
     ),
     _title_cell(
         "no-title-links-by-the-run-id-and-encodes-it",
-        {"href": "#run/r%201", "value": "r 1", "hidden": "", "title": "r 1"},
+        {"href": "#run/r%201", VALUE: "r 1", HIDDEN: "", TITLE: "r 1"},
         {RUN_ID: "r 1"},
         "r 1",
     ),
     _title_cell("no-run-id-is-plain-text", BUG_TITLE, {TITLE: BUG_TITLE}, UNDEFINED),
-    _model("with-reasoning", "gpt-6.1-sol (high)", {"model": "gpt-6.1-sol", "reasoning": "high"}),
-    _model("without-reasoning", "gpt-6.1-sol", {"model": "gpt-6.1-sol"}),
+    _model("with-reasoning", "gpt-6.1-sol (high)", {"model": SOL, "reasoning": "high"}),
+    _model("without-reasoning", SOL, {"model": SOL}),
     _model("without-a-model", DASH, {}),
-    _call_outcome("success", {"text": "success", "className": "status-ok"}, {"status": "SUCCESS"}),
+    _call_outcome("success", {"text": "success", CLASS_NAME: "status-ok"}, {STATUS: SUCCESS}),
     _call_outcome(
-        "rejected",
-        {"text": "rejected", "className": "status-error"},
-        {"status": "SUCCESS", "failure_link": "rejected"},
+        REJECTED,
+        {"text": REJECTED, CLASS_NAME: "status-error"},
+        {STATUS: SUCCESS, FAILURE_LINK: REJECTED},
     ),
     _call_outcome(
         "run-failed-after",
-        {"text": "success, run failed after", "className": "status-warn"},
-        {"status": "SUCCESS", "failure_link": "last_call"},
+        {"text": "success, run failed after", CLASS_NAME: "status-warn"},
+        {STATUS: SUCCESS, FAILURE_LINK: "last_call"},
     ),
     _call_outcome(
         "unknown-link-falls-back-to-the-status",
-        {"text": "failed", "className": "status-error"},
-        {"status": "FAILED", "failure_link": "other"},
+        {"text": KIND_FAILED, CLASS_NAME: "status-error"},
+        {STATUS: STATE_FAILED, FAILURE_LINK: "other"},
     ),
     _call_outcome(
-        "no-link-no-status", {"text": NOT_REPORTED, "className": ""}, {"failure_link": None}
+        "no-link-no-status", {"text": NOT_REPORTED, CLASS_NAME: ""}, {FAILURE_LINK: None}
     ),
     _premium("one", "1 premium request", 1),
     _premium("zero", "0 premium requests", 0),
@@ -382,6 +414,31 @@ FORMATTER_CASES = [
     _reopens("max-missing", None, {REOPENS_USED: 1}),
     _reopens("used-null", None, {REOPENS_USED: None, MAX_REOPENS: 3}),
     _reopens("max-text", None, {REOPENS_USED: 1, MAX_REOPENS: "3"}),
+    _has_list_price("finite", True, {OVERVIEW_LIST_PRICE: 0.5}),
+    _has_list_price("zero-is-reported", True, {OVERVIEW_LIST_PRICE: 0}),
+    _has_list_price("null", False, {OVERVIEW_LIST_PRICE: None}),
+    _has_list_price("nan", False, {OVERVIEW_LIST_PRICE: NAN}),
+    _has_list_price(INFINITY_ID, False, {OVERVIEW_LIST_PRICE: INF}),
+    _has_list_price("text", False, {OVERVIEW_LIST_PRICE: "0.5"}),
+    _has_list_price(MISSING_ID, False, {}),
+    _has_premium("finite", True, {OVERVIEW_PREMIUM: 2}),
+    _has_premium("zero-is-reported", True, {OVERVIEW_PREMIUM: 0}),
+    _has_premium("null", False, {OVERVIEW_PREMIUM: None}),
+    _has_premium("nan", False, {OVERVIEW_PREMIUM: NAN}),
+    _has_premium(INFINITY_ID, False, {OVERVIEW_PREMIUM: INF}),
+    _has_premium("text", False, {OVERVIEW_PREMIUM: "2"}),
+    _has_premium(MISSING_ID, False, {}),
+    _has_no_cost("nothing-reported", True, {}),
+    _has_no_cost("nothing-finite", True, {OVERVIEW_LIST_PRICE: NAN, OVERVIEW_PREMIUM: "2"}),
+    _has_no_cost("list-price-only", False, {OVERVIEW_LIST_PRICE: 0.5}),
+    _has_no_cost("premium-requests-only", False, {OVERVIEW_PREMIUM: 2}),
+    _has_no_cost("a-reported-zero-is-a-cost", False, {OVERVIEW_LIST_PRICE: 0}),
+    _has_no_cost("both-units", False, {OVERVIEW_LIST_PRICE: 0.5, OVERVIEW_PREMIUM: 2}),
+    _scan_note("cut", SCAN_NOTE, {SCAN_TRUNCATED: True}),
+    _scan_note("complete", "", {SCAN_TRUNCATED: False}),
+    _scan_note("text-is-not-true", "", {SCAN_TRUNCATED: "true"}),
+    _scan_note("number-is-not-true", "", {SCAN_TRUNCATED: 1}),
+    _scan_note(MISSING_ID, "", {}),
 ]
 
 
@@ -418,7 +475,7 @@ def _without(run: Mapping[str, object], key: str) -> dict[str, object]:
 LONGEST_ID = "x" * RUN_ID_MAX_LENGTH
 
 LIST_AND_COMPARE_CASES = [
-    _order("empty", [], [], None),
+    _order(EMPTY, [], [], None),
     _order("empty-filtered", [], [], FILTER_NEEDS_YOU),
     _order("needs-you-first-in-list-order", [_RUNS[1], _RUNS[3], _RUNS[0], _RUNS[2]], _RUNS, None),
     _order("filter-keeps-only-needs-you", [_RUNS[1], _RUNS[3]], _RUNS, FILTER_NEEDS_YOU),
@@ -431,8 +488,8 @@ LIST_AND_COMPARE_CASES = [
     ),
     _order("flag-missing", [_NO_FLAG], [_NO_FLAG], None),
     _hash("nothing-picked", COMPARE, _pair(None, None)),
-    _hash("run-a-only", f"{COMPARE}/run-1", _pair("run-1", None)),
-    _hash("both-runs", f"{COMPARE}/run-1/run-2", _pair("run-1", "run-2")),
+    _hash("run-a-only", f"{COMPARE}/run-1", _pair(RUN_1, None)),
+    _hash("both-runs", f"{COMPARE}/run-1/run-2", _pair(RUN_1, "run-2")),
     _hash("run-b-only-leaves-a-empty", f"{COMPARE}//run-2", _pair(None, "run-2")),
     _hash("encodes-reserved-characters", f"{COMPARE}/a%20b%2Fc/d%3Fe%23f", _pair("a b/c", "d?e#f")),
     _hash("encodes-non-ascii", f"{COMPARE}/%C3%A9", _pair("é", None)),
