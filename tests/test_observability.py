@@ -21,10 +21,11 @@ import json
 import logging
 import os
 import socket
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 from factory_testing import REPLY_POLICY
@@ -1301,6 +1302,130 @@ def test_complexity_and_risk_fall_back_to_work_item_without_triage(tmp_path: Pat
 
     assert snapshot.runs[0].complexity is Complexity.L1
     assert snapshot.runs[0].risk is Risk.R1
+
+
+_TRIAGE_RATIONALE = RiskRationale(
+    intended_outcome="Update deployment credentials safely.",
+    sensitive_boundary="Production deployment configuration.",
+    necessity="Task requires modifying production deployment keys.",
+    credible_scenario="Misconfiguration could cause service outage.",
+    known_mitigations=["Validate syntax before deployment."],
+    residual_risk="Manual operator review required before release.",
+)
+
+
+def _triage(complexity: Complexity, risk: Risk) -> TriageResult:
+    return TriageResult(
+        factory_eligible=True,
+        complexity=complexity,
+        risk=risk,
+        needs_research=False,
+        confidence=0.9,
+        risk_rationale=_TRIAGE_RATIONALE,
+    )
+
+
+def _store_with_mixed_artifacts(tmp_path: Path) -> FileRunStore:
+    """Four runs, newest first: both artifacts, work item only, a corrupt work item
+    beside a good triage, and none."""
+    store = FileRunStore(tmp_path / "data")
+    for index, run_id in enumerate(["run-a", "run-b", "run-c", "run-d"]):
+        store.save_run(_run(run_id, created_at=T0 - timedelta(minutes=index)))
+    store.save_artifact(
+        "run-a",
+        WorkItem(
+            id="WI-a",
+            title="Fix ghp_abcdefghijklmnopqrstuvwxyz012345",
+            description="d",
+            external_id="acme/example#17",
+            complexity=Complexity.L0,
+            risk=Risk.R0,
+        ),
+    )
+    store.save_artifact("run-a", _triage(Complexity.L2, Risk.R2))
+    store.save_artifact(
+        "run-b",
+        WorkItem(id="WI-b", title="Plain", description="d", complexity=Complexity.L1, risk=Risk.R1),
+    )
+    (store.runs_dir / "run-c" / "work-item.json").write_text("{not json", encoding="utf-8")
+    store.save_artifact("run-c", _triage(Complexity.L1, Risk.R0))
+    return store
+
+
+# What the summaries of _store_with_mixed_artifacts resolve: (run id, title, source external id,
+# complexity, risk). A triage wins over a work item; an unreadable or missing artifact is absent.
+MIXED_ARTIFACT_FACTS = [
+    ("run-a", "Fix [REDACTED]", "acme/example#17", Complexity.L2, Risk.R2),
+    ("run-b", "Plain", None, Complexity.L1, Risk.R1),
+    ("run-c", None, None, Complexity.L1, Risk.R0),
+    ("run-d", None, None, None, None),
+]
+
+
+def _resolved_facts(snapshot: MonitoringSnapshot) -> list[tuple[Any, ...]]:
+    return [(s.run_id, s.title, s.source_external_id, s.complexity, s.risk) for s in snapshot.runs]
+
+
+# The real FileRunStore still opens every artifact file underneath.
+# double-waiver: B1 — FileRunStore opens run artifact files; the subclass only counts reads
+class _ArtifactReadCountingStore(FileRunStore):
+    """A run store that counts how often each artifact of each run is read."""
+
+    def __init__(self, data_dir: Path) -> None:
+        super().__init__(data_dir)
+        self.reads: Counter[tuple[str, str]] = Counter()
+
+    def load_artifact(
+        self,
+        run_id: str,
+        artifact_type: type[Any],
+        filename: str | None = None,
+        *,
+        attempt: int | None = None,
+    ) -> Any:
+        self.reads[(run_id, artifact_type.__name__)] += 1
+        return super().load_artifact(run_id, artifact_type, filename, attempt=attempt)
+
+
+def test_summaries_resolve_title_complexity_and_risk_from_whatever_artifacts_exist(
+    tmp_path: Path,
+) -> None:
+    store = _store_with_mixed_artifacts(tmp_path)
+
+    snapshot = build_monitoring_snapshot(store, now=T0)
+
+    assert _resolved_facts(snapshot) == MIXED_ARTIFACT_FACTS
+
+
+def test_builds_sharing_one_scan_read_each_run_artifact_once(tmp_path: Path) -> None:
+    _store_with_mixed_artifacts(tmp_path)
+    store = _ArtifactReadCountingStore(tmp_path / "data")
+    scan = scan_readable_runs(store)
+
+    # The dashboard poll builds a one-run summary page and a full runs page from one scan.
+    build_monitoring_snapshot(store, now=T0, limit=1, scan=scan)
+    second = build_monitoring_snapshot(store, now=T0, limit=100, scan=scan)
+    third = build_monitoring_snapshot(store, now=T0, limit=100, scan=scan)
+
+    assert _resolved_facts(second) == MIXED_ARTIFACT_FACTS
+    assert _resolved_facts(third) == MIXED_ARTIFACT_FACTS
+    assert set(store.reads.values()) == {1}
+    assert sum(store.reads.values()) == 2 * 4  # a WorkItem and a TriageResult per run
+
+
+def test_two_scans_of_one_cache_share_their_artifact_reads(tmp_path: Path) -> None:
+    _store_with_mixed_artifacts(tmp_path)
+    store = _ArtifactReadCountingStore(tmp_path / "data")
+    cache = RunScanCache(store, ttl=60.0)
+
+    first = build_monitoring_snapshot(store, now=T0, scan=cache.get_scan())
+    second = build_monitoring_snapshot(store, now=T0, scan=cache.get_scan())
+
+    assert cache.hits == 1
+    assert _resolved_facts(first) == MIXED_ARTIFACT_FACTS
+    assert _resolved_facts(second) == MIXED_ARTIFACT_FACTS
+    assert set(store.reads.values()) == {1}
+    assert sum(store.reads.values()) == 2 * 4
 
 
 # ---------------------------------------------------------------------------

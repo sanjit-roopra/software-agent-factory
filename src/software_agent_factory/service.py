@@ -413,6 +413,9 @@ class FactoryService:
         are ingested while a slot and quota last. Reply polling comes last and uses what is
         left. The notice and polling steps run only when escalation is enabled and a client
         exists. Capacity and quota only defer a dashboard request; they never make it stale.
+
+        The runs are listed once, after the notices, and shared by every later step. A step
+        that needs a run's current state loads that run again.
         """
         client = self._escalation_client()
         if client is not None:
@@ -428,7 +431,7 @@ class FactoryService:
         self._dispatch_reopened_runs(runs, budget)
         self._ingest_dashboard_requests(runs, budget)
         if client is not None:
-            self._poll_replies(client, budget)
+            self._poll_replies(client, runs, budget)
 
     def _dispatch_reopened_runs(self, runs: Sequence[FactoryRun], budget: _CycleBudget) -> None:
         """Dispatch runs a reply already reopened (``NEEDS_HUMAN`` + ``REOPENED``).
@@ -457,21 +460,37 @@ class FactoryService:
             budget.take_slot()
 
     def _fail_reopen_over_limit(self, run: FactoryRun) -> bool:
-        """Fail closed when configuration changed after persistence; True if the run failed."""
+        """Fail closed when configuration changed after persistence.
+
+        True if the run is handled and must not be dispatched: it failed, or it changed or
+        vanished since the cycle listed it. Failing writes the whole run, so it starts from the
+        stored run, never the listed snapshot.
+        """
         escalation = run.escalation
         assert escalation is not None  # the caller checked
         max_limit = self.config.escalation.max_reopens
         if escalation.reopen_count <= max_limit:
             return False
+        try:
+            current = self.store.load_run(run.id)
+        except FileNotFoundError:
+            return True
+        current_escalation = current.escalation
+        if (
+            current.state is not WorkflowState.NEEDS_HUMAN
+            or current_escalation is None
+            or current_escalation.status is not EscalationStatus.REOPENED
+        ):
+            return True
         logger.warning(
             "run %s reopen limit reduced below reopen_count (%s > %s); failing reopen",
             run.id,
-            escalation.reopen_count,
+            current_escalation.reopen_count,
             max_limit,
         )
         if self.controller is not None:
             self.controller._fail_reopen(
-                run,
+                current,
                 f"run {run.id} exceeded maximum reopens ({max_limit})",
                 reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
             )
@@ -566,7 +585,9 @@ class FactoryService:
             expected_repository=self.github_repo,
         )
 
-    def _poll_replies(self, client: GitHubClient, budget: _CycleBudget) -> None:
+    def _poll_replies(
+        self, client: GitHubClient, runs: Sequence[FactoryRun], budget: _CycleBudget
+    ) -> None:
         """Poll authorized replies of notified runs, with the slots and quota left."""
         from .escalation import poll_escalation_reply
 
@@ -579,8 +600,8 @@ class FactoryService:
             logger.debug("escalation reply polling skipped: daily run limit reached")
             return
 
-        # Read again: the dashboard requests and failed reopens changed what runs wait for.
-        runs = self.store.list_runs()
+        # The dashboard requests and failed reopens changed what runs wait for: load those again.
+        runs = self._reloaded_notified_runs(runs)
         self._close_unpollable_reply_cursors(runs)
 
         for run in self._next_runs_to_poll(runs):
@@ -603,6 +624,27 @@ class FactoryService:
                 self._dispatch_reopen(run.id, run.work_item_id)
                 budget.take_slot()
                 budget.take_quota()
+
+    def _reloaded_notified_runs(self, runs: Sequence[FactoryRun]) -> list[FactoryRun]:
+        """``runs`` with each notified, waiting run read again, as earlier steps may change it.
+
+        A run deleted since the listing is left out.
+        """
+        reloaded: list[FactoryRun] = []
+        for run in runs:
+            waiting = (
+                run.state is WorkflowState.NEEDS_HUMAN
+                and run.escalation is not None
+                and run.escalation.status is EscalationStatus.NOTIFIED
+            )
+            if not waiting:
+                reloaded.append(run)
+                continue
+            try:
+                reloaded.append(self.store.load_run(run.id))
+            except FileNotFoundError:
+                logger.debug("run %s was deleted after the cycle listed it; skipped", run.id)
+        return reloaded
 
     def _close_unpollable_reply_cursors(self, runs: Sequence[FactoryRun]) -> None:
         """Close the reply cursor of notified runs that no reply can resume."""
