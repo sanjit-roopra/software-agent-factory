@@ -41,11 +41,9 @@ from software_agent_factory.escalation import (
     format_escalation_marker,
     has_dispatched_risk_approval,
     is_authorized_author,
-    is_valid_plan_decision_answers,
     parse_plan_decision_answers,
     parse_resume_command,
     poll_escalation_reply,
-    receipt_approves_risk_context,
     resolve_escalation_target,
     validate_reply_candidate,
 )
@@ -81,6 +79,10 @@ from software_agent_factory.models import (
     WorkflowState,
     WorkItem,
     utc_now,
+)
+from software_agent_factory.resume import (
+    is_valid_plan_decision_answers,
+    receipt_approves_risk_context,
 )
 from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.scheduler import TrackerItem

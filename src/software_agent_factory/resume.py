@@ -24,11 +24,13 @@ from typing import Literal, TypeIs, get_args
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS, ReplyPolicy
 from .models import (
+    AcceptedReplyReceipt,
     DashboardResumeRequest,
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
     PlanDecisionAnswer,
+    PlanDecisionAnswers,
     PlanDecisionContext,
     ResumeClassification,
     ResumeRefusal,
@@ -443,3 +445,48 @@ def dashboard_request_refusal(
         [answer.answer for answer in request.answers], decision_count=len(context.decisions)
     )
     return ("context_changed" if answers is None else None), answers
+
+
+def receipt_approves_risk_context(
+    receipt: AcceptedReplyReceipt, context: RiskApprovalContext
+) -> bool:
+    """Whether ``receipt`` carries the fingerprint of exactly this approval ``context``."""
+    return receipt.approval_context_fingerprint is not None and secrets.compare_digest(
+        receipt.approval_context_fingerprint, context.context_fingerprint
+    )
+
+
+def is_valid_plan_decision_answers(
+    answers: PlanDecisionAnswers | None,
+    context: PlanDecisionContext,
+    *,
+    run_id: str,
+    episode_id: str,
+    receipt: AcceptedReplyReceipt,
+) -> bool:
+    """Verify persisted human answers still bind to the active decision episode."""
+    if not isinstance(answers, PlanDecisionAnswers):
+        return False
+    if (
+        answers.run_id != run_id
+        or answers.episode_id != episode_id
+        or answers.source != receipt.source
+        or answers.comment_id != receipt.comment_id
+        or answers.user_login != receipt.user_login
+        or answers.user_id != receipt.user_id
+        or answers.author_association != receipt.author_association
+    ):
+        return False
+    if not (
+        secrets.compare_digest(answers.plan_fingerprint, context.plan_fingerprint)
+        and secrets.compare_digest(answers.context_fingerprint, context.context_fingerprint)
+        and receipt.plan_decision_context_fingerprint is not None
+        and secrets.compare_digest(
+            receipt.plan_decision_context_fingerprint, context.context_fingerprint
+        )
+    ):
+        return False
+    rebuilt = build_plan_answers(
+        [answer.answer for answer in answers.answers], decision_count=len(context.decisions)
+    )
+    return rebuilt == answers.answers

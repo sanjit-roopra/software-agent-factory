@@ -58,7 +58,6 @@ from .models import (
     FactoryRun,
     HaltReasonCode,
     PlanDecisionAnswer,
-    PlanDecisionAnswers,
     PlanDecisionContext,
     ResumeClassification,
     ReviewImpasse,
@@ -79,9 +78,10 @@ from .resume import (
     compute_plan_decision_context_fingerprint,
     contains_unsafe_content,
     has_valid_resume_context,
+    is_valid_plan_decision_context,
+    is_valid_risk_approval_context,
+    receipt_approves_risk_context,
 )
-from .resume import is_valid_plan_decision_context as is_valid_plan_decision_context
-from .resume import is_valid_risk_approval_context as is_valid_risk_approval_context
 from .resume_writes import ReplyIdentity, accept_resume
 from .store import FileRunStore
 
@@ -350,15 +350,6 @@ def build_risk_approval_context(
     )
 
 
-def receipt_approves_risk_context(
-    receipt: AcceptedReplyReceipt, context: RiskApprovalContext
-) -> bool:
-    """Whether ``receipt`` carries the fingerprint of exactly this approval ``context``."""
-    return receipt.approval_context_fingerprint is not None and secrets.compare_digest(
-        receipt.approval_context_fingerprint, context.context_fingerprint
-    )
-
-
 def has_dispatched_risk_approval(
     run: FactoryRun,
     store: FileRunStore,
@@ -489,42 +480,6 @@ def build_plan_decision_context(
             decisions=decisions,
         ),
     )
-
-
-def is_valid_plan_decision_answers(
-    answers: PlanDecisionAnswers | None,
-    context: PlanDecisionContext,
-    *,
-    run_id: str,
-    episode_id: str,
-    receipt: AcceptedReplyReceipt,
-) -> bool:
-    """Verify persisted human answers still bind to the active decision episode."""
-    if not isinstance(answers, PlanDecisionAnswers):
-        return False
-    if (
-        answers.run_id != run_id
-        or answers.episode_id != episode_id
-        or answers.source != receipt.source
-        or answers.comment_id != receipt.comment_id
-        or answers.user_login != receipt.user_login
-        or answers.user_id != receipt.user_id
-        or answers.author_association != receipt.author_association
-    ):
-        return False
-    if not (
-        secrets.compare_digest(answers.plan_fingerprint, context.plan_fingerprint)
-        and secrets.compare_digest(answers.context_fingerprint, context.context_fingerprint)
-        and receipt.plan_decision_context_fingerprint is not None
-        and secrets.compare_digest(
-            receipt.plan_decision_context_fingerprint, context.context_fingerprint
-        )
-    ):
-        return False
-    rebuilt = build_plan_answers(
-        [answer.answer for answer in answers.answers], decision_count=len(context.decisions)
-    )
-    return rebuilt == answers.answers
 
 
 #: The plan-decision next action in the GitHub notice. The notice is posted on the thread it

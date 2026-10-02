@@ -14,10 +14,7 @@ from factory_testing import REPLY_POLICY
 
 from software_agent_factory import resume, resume_writes
 from software_agent_factory.config import FactoryConfig, load_config
-from software_agent_factory.escalation import (
-    is_valid_plan_decision_answers,
-    parse_plan_decision_answers,
-)
+from software_agent_factory.escalation import parse_plan_decision_answers
 from software_agent_factory.github import parse_comment_payload
 from software_agent_factory.models import (
     DASHBOARD_USER_LOGIN,
@@ -41,6 +38,7 @@ from software_agent_factory.resume import (
     clean_plan_answer,
     compute_approval_context_fingerprint,
     compute_plan_decision_context_fingerprint,
+    is_valid_plan_decision_answers,
     request_mismatch,
     resume_refusal,
     resume_refusal_within,

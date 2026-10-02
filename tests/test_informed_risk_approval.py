@@ -34,7 +34,6 @@ from software_agent_factory.escalation import (
     contains_unsafe_content,
     deliver_escalation_notification,
     escape_notice_text,
-    is_valid_risk_approval_context,
     normalize_whitespace,
     poll_escalation_reply,
     reconcile_undelivered_notifications,
@@ -65,6 +64,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.redaction import redact_secrets
 from software_agent_factory.repository_profile import generic_repository_profile
+from software_agent_factory.resume import is_valid_risk_approval_context
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
