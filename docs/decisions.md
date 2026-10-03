@@ -82,7 +82,12 @@ The factory takes over this model, in five slices.
 - The factory never installs host-level tools, such as `semgrep`, `trivy` or `gh`.
   It records a missing tool in the run. A lens that needs the tool is skipped.
 - A failed setup run does not stop delivery runs. They use the YAML commands or the derived commands.
-- The first slice adds the command `factory setup --repo PATH`. The automatic start and the pull request follow in the next slice.
+- `factory setup --repo PATH` runs a setup by hand. `--publish` also commits, pushes and opens the pull request.
+- `factory start` checks the repository at each tick when `setup.enabled` and `pull_request.enabled` are on.
+  It plans again only when the source HEAD changes. It plans from the checkout first, so most checks create no worktree.
+  It does not open a second pull request for the commands that it already proposed.
+  It records a failed setup and does not try the same HEAD again.
+  A setup problem is logged. It never stops the backlog.
 
 ### Repository skills in the target repository
 

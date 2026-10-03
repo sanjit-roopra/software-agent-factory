@@ -12,14 +12,18 @@ repository might hold.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
+from .atomic_write import write_text_atomic
 from .command_probe import CommandRunner, ProbeLimits, command_failure_reason
-from .models import ToolchainSetupPlan
+from .models import SetupState, ToolchainSetupPlan
+from .publishing import PublishResult
 from .repository_profile import profile_repository
 from .toolchain import inventory_toolchain
 from .toolchain_setup import plan_toolchain_setup
@@ -182,3 +186,133 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
     ).stdout
+
+
+SETUP_TITLE = "Add missing development tools"
+SETUP_COMMIT_SUBJECT = "chore: add missing development tools"
+SETUP_STATE_DIR = "setup-state"
+
+
+class SetupPublisher(Protocol):
+    """The part of ``PullRequestPublisher`` a setup run uses."""
+
+    def resolve_base_branch(self, source_repo: Path) -> str: ...
+
+    def publish(
+        self,
+        *,
+        workspace_path: Path,
+        branch_name: str,
+        base_branch: str,
+        commit_message: str,
+        title: str,
+        body: str,
+    ) -> PublishResult: ...
+
+
+def publish_setup(
+    result: SetupRunResult, publisher: SetupPublisher, source_repo: Path
+) -> PublishResult:
+    """Commit the setup worktree, push its branch and open a pull request.
+
+    The pull request asks for review. The factory never merges it, because it
+    changes dependencies.
+    """
+
+    packages = ", ".join(result.plan.packages)
+    body_lines = [
+        "The factory found development tools that this repository does not have (ADR-034).",
+        "",
+        "Added development dependencies:",
+        *(f"- `{package}`" for package in result.plan.packages),
+    ]
+    if result.plan.notes:
+        body_lines += ["", "Notes:", *(f"- {note}" for note in result.plan.notes)]
+    body_lines += [
+        "",
+        "The manifest and the lockfile change. Nothing else changes, except `.factory/setup.json`.",
+        "The factory does not merge this pull request. Review the dependency changes, then merge.",
+    ]
+    return publisher.publish(
+        workspace_path=result.worktree,
+        branch_name=result.branch,
+        base_branch=publisher.resolve_base_branch(source_repo),
+        commit_message=f"{SETUP_COMMIT_SUBJECT}\n\nAdded by factory setup: {packages}.",
+        title=SETUP_TITLE,
+        body="\n".join(body_lines),
+    )
+
+
+class SetupTrigger:
+    """Open a setup pull request when the source repository misses tools (ADR-034).
+
+    The trigger plans again only when the source HEAD changes. It plans from
+    the checkout first, so most ticks create no worktree. It never opens a
+    second pull request for the commands it already proposed, and a failed
+    setup is recorded so it does not retry on every tick.
+    """
+
+    def __init__(
+        self,
+        *,
+        source_repo: Path,
+        data_dir: Path,
+        branch_prefix: str,
+        limits: ProbeLimits,
+        command_runner: CommandRunner,
+        publisher: SetupPublisher,
+    ) -> None:
+        self._source_repo = source_repo
+        self._data_dir = data_dir
+        self._branch_prefix = branch_prefix
+        self._limits = limits
+        self._command_runner = command_runner
+        self._publisher = publisher
+        key = hashlib.sha256(str(source_repo.resolve()).encode("utf-8")).hexdigest()[:16]
+        self._state_path = data_dir / SETUP_STATE_DIR / f"{key}.json"
+
+    def tick(self) -> SetupState | None:
+        """Run one check. Return the new state, or ``None`` when HEAD did not change."""
+
+        head, _dirty = source_state(self._source_repo)
+        previous = self._load()
+        if previous is not None and previous.head_commit == head:
+            return None
+        profile = profile_repository(self._source_repo)
+        plan = plan_toolchain_setup(inventory_toolchain(self._source_repo, profile), profile)
+        if plan.is_empty:
+            return self._save(SetupState(head_commit=head))
+        if previous is not None and previous.commands == plan.commands:
+            return self._save(previous.model_copy(update={"head_commit": head}))
+        result = run_toolchain_setup(
+            self._source_repo,
+            self._data_dir,
+            self._branch_prefix,
+            self._command_runner,
+            self._limits,
+            head,
+        )
+        if result.plan.is_empty:
+            return self._save(SetupState(head_commit=head))
+        if not result.outcome.succeeded:
+            note = f"setup command failed: {result.outcome.failed_command}"
+            return self._save(SetupState(head_commit=head, note=note))
+        published = publish_setup(result, self._publisher, self._source_repo)
+        return self._save(
+            SetupState(
+                head_commit=head,
+                commands=result.plan.commands,
+                pull_request_url=published.pull_request_url,
+            )
+        )
+
+    def _load(self) -> SetupState | None:
+        try:
+            return SetupState.model_validate_json(self._state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+
+    def _save(self, state: SetupState) -> SetupState:
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(self._state_path, state.model_dump_json(indent=2) + "\n")
+        return state

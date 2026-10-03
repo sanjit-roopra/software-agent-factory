@@ -1063,6 +1063,11 @@ def setup_command(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the setup plan without changing anything."
     ),
+    publish: bool = typer.Option(
+        False,
+        "--publish",
+        help="Commit the setup worktree, push its branch and open a pull request.",
+    ),
 ) -> None:
     """Add the missing development tools to a repository (ADR-034).
 
@@ -1073,11 +1078,13 @@ def setup_command(
     factory worktree at the source HEAD, on its own branch, and records the
     plan in ``.factory/setup.json``. It installs nothing, and the JavaScript
     commands run no package scripts. Python locking can run the project's
-    build backend. The source checkout is never changed, and nothing is
-    committed or pushed.
+    build backend. The source checkout is never changed. Nothing is
+    committed or pushed unless ``--publish`` is given, and the factory never
+    merges a setup pull request.
     """
     from .command_probe import ProbeLimits
-    from .setup_run import SetupError, run_toolchain_setup, source_state
+    from .publishing import PullRequestPublisher
+    from .setup_run import SetupError, publish_setup, run_toolchain_setup, source_state
     from .toolchain import inventory_toolchain
     from .toolchain_setup import plan_toolchain_setup
     from .verification import DeterministicVerifier
@@ -1096,6 +1103,8 @@ def setup_command(
             notes = (*notes, "uncommitted changes in the checkout; a setup run uses HEAD")
         _echo_setup_plan(plan.commands, notes)
         return
+    if publish and not factory_config.pull_request.enabled:
+        raise _fail("--publish needs pull_request.enabled in the configuration")
     try:
         result = run_toolchain_setup(
             repo,
@@ -1118,6 +1127,9 @@ def setup_command(
         )
     typer.echo(f"worktree: {result.worktree}")
     typer.echo(f"branch: {result.branch}")
+    if publish:
+        published = publish_setup(result, PullRequestPublisher(factory_config), repo)
+        typer.echo(f"pull request: {published.pull_request_url}")
 
 
 def _echo_setup_plan(commands: tuple[str, ...], notes: tuple[str, ...]) -> None:

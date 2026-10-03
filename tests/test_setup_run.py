@@ -7,19 +7,29 @@ import stat
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
 from software_agent_factory.cli import CONFIG_ERROR_EXIT_CODE, app
 from software_agent_factory.command_probe import ProbeLimits
-from software_agent_factory.models import CommandResult, ToolchainSetupPlan, VerificationReport
+from software_agent_factory.models import (
+    CommandResult,
+    SetupState,
+    ToolchainSetupPlan,
+    VerificationReport,
+)
+from software_agent_factory.publishing import PublishResult
+from software_agent_factory.service import FactoryService
 from software_agent_factory.setup_run import (
     SETUP_RECORD_DIR,
     SETUP_RECORD_NAME,
     SetupError,
     SetupOutcome,
+    SetupTrigger,
     apply_toolchain_setup,
+    publish_setup,
     run_toolchain_setup,
     write_setup_record,
 )
@@ -398,3 +408,158 @@ def test_setup_run_refuses_when_the_source_head_moved(bare_uv_repo: Path, tmp_pa
         run_toolchain_setup(bare_uv_repo, tmp_path / "data", "factory/", runner, _LIMITS, requested)
 
     assert runner.calls == []
+
+
+# double-waiver: B1 — the real publisher pushes to a Git remote and calls the GitHub API.
+class _Publisher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def resolve_base_branch(self, source_repo: Path) -> str:
+        return "main"
+
+    def publish(
+        self,
+        *,
+        workspace_path: Path,
+        branch_name: str,
+        base_branch: str,
+        commit_message: str,
+        title: str,
+        body: str,
+    ) -> PublishResult:
+        self.calls.append(
+            {
+                "workspace_path": workspace_path,
+                "branch_name": branch_name,
+                "base_branch": base_branch,
+                "commit_message": commit_message,
+                "title": title,
+                "body": body,
+            }
+        )
+        return PublishResult(
+            commit_sha="c" * 40,
+            base_branch=base_branch,
+            pull_request_url=f"https://github.com/o/r/pull/{len(self.calls)}",
+            created_pull_request=True,
+        )
+
+
+def _trigger(repo: Path, data_dir: Path, runner: _Runner, publisher: _Publisher) -> SetupTrigger:
+    return SetupTrigger(
+        source_repo=repo,
+        data_dir=data_dir,
+        branch_prefix="factory/",
+        limits=_LIMITS,
+        command_runner=runner,
+        publisher=publisher,
+    )
+
+
+def test_publish_setup_opens_a_review_pull_request_for_the_worktree(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    result = run_toolchain_setup(
+        bare_uv_repo, tmp_path / "data", "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
+    )
+    publisher = _Publisher()
+
+    published = publish_setup(result, publisher, bare_uv_repo)
+
+    assert published.pull_request_url == "https://github.com/o/r/pull/1"
+    call = publisher.calls[0]
+    assert call["workspace_path"] == result.worktree
+    assert call["branch_name"] == result.branch
+    assert call["base_branch"] == "main"
+    assert call["title"] == "Add missing development tools"
+    assert call["commit_message"] == (
+        "chore: add missing development tools\n\n"
+        "Added by factory setup: ruff, mypy, pytest, mutmut."
+    )
+    body = str(call["body"])
+    assert "- `ruff`" in body and "- `mutmut`" in body
+    assert "The factory does not merge this pull request." in body
+
+
+def test_trigger_opens_one_pull_request_per_head_and_plan(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    runner = _Runner()
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher)
+    first_head = _head(bare_uv_repo)
+
+    first = trigger.tick()
+    again = trigger.tick()
+    (bare_uv_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    _commit(bare_uv_repo, "unrelated change")
+    after_new_head = trigger.tick()
+
+    assert first == SetupState(
+        head_commit=first_head,
+        commands=(_UV_ADD,),
+        pull_request_url="https://github.com/o/r/pull/1",
+    )
+    assert again is None
+    assert after_new_head is not None
+    assert after_new_head.head_commit == _head(bare_uv_repo)
+    assert after_new_head.pull_request_url == "https://github.com/o/r/pull/1"
+    assert len(publisher.calls) == 1
+    assert [call[0] for call in runner.calls] == [_UV_ADD]
+
+
+def test_trigger_with_nothing_to_add_creates_no_worktree(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    (bare_uv_repo / "uv.lock").unlink()
+    _commit(bare_uv_repo, "drop the lockfile")
+    data_dir = tmp_path / "data"
+    publisher = _Publisher()
+
+    state = _trigger(bare_uv_repo, data_dir, _Runner(), publisher).tick()
+
+    assert state == SetupState(head_commit=_head(bare_uv_repo))
+    assert publisher.calls == []
+    assert not (data_dir / "workspaces").exists()
+
+
+def test_trigger_records_a_failed_setup_and_does_not_retry_it(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    runner = _Runner(failing=frozenset({_UV_ADD}))
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher)
+
+    state = trigger.tick()
+    again = trigger.tick()
+
+    assert state == SetupState(
+        head_commit=_head(bare_uv_repo), note=f"setup command failed: {_UV_ADD}"
+    )
+    assert again is None
+    assert publisher.calls == []
+    assert len(runner.calls) == 1
+
+
+def test_service_logs_a_failed_setup_check_and_goes_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _Raising:
+        def tick(self) -> SetupState | None:
+            raise SetupError("boom")
+
+    with caplog.at_level("ERROR"):
+        FactoryService.check_setup(SimpleNamespace(setup_trigger=_Raising()))  # type: ignore[arg-type]
+
+    assert "setup check failed" in caplog.text
+
+
+def test_cli_publish_needs_pull_requests_enabled(bare_uv_repo: Path, tmp_path: Path) -> None:
+    result = cli.invoke(
+        app,
+        ["setup", "--repo", str(bare_uv_repo), "--data-dir", str(tmp_path), "--publish"],
+    )
+
+    assert result.exit_code == CONFIG_ERROR_EXIT_CODE
+    assert "--publish needs pull_request.enabled" in result.output

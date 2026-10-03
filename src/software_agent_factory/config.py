@@ -734,6 +734,17 @@ class RoutingConfig(ConfigModel):
         return value
 
 
+class SetupConfig(ConfigModel):
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Let factory start open a setup pull request when the repository misses "
+            "development tools (ADR-034). It needs pull_request.enabled. The factory "
+            "never merges a setup pull request."
+        ),
+    )
+
+
 class FactoryConfig(ConfigModel):
     factory: FactorySettings
     models: ModelsConfig
@@ -752,6 +763,7 @@ class FactoryConfig(ConfigModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     pi: PiConfig = Field(default_factory=PiConfig)
+    setup: SetupConfig = Field(default_factory=SetupConfig)
 
     @model_validator(mode="after")
     def _validate_risk_rules(self) -> Self:
