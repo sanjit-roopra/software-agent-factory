@@ -1,5 +1,41 @@
 # Architecture Decisions
 
+## ADR-036: Remove fast performance mode, the security profile and per-result writing checks
+
+Status: accepted on 2026-10-03.
+This amends ADR-023 and ADR-029.
+
+### Context
+
+The leanness plan removes options and checks that add little value.
+The fast performance mode sent eligible `L0` and `L1` work with `R0` or `R1` risk to a cheaper Planner profile.
+It also skipped the polish pass, and it fell back to the standard mode when the scope grew.
+Adaptive routing already gives low-risk work a shorter path, and the next slice makes that path the light path.
+`--model-profile economy` already selects cheaper models.
+The packaged `security` model profile was almost the same as the default models.
+Since ADR-029, the controller checked each agent result against the writing policy.
+It only logged the findings and stored them in `writing_findings` on the invocation record.
+No person or process used these findings.
+
+### Decision
+
+- The controller has no performance mode. The `--performance-mode` option is removed from all commands except `factory start`.
+  `factory start` accepts and ignores it, so a service that was installed with it still starts.
+- The `performance` configuration section is removed. An old configuration file can still have it. The factory ignores it.
+- The `security` model profile is removed. A request for it fails like any unknown profile.
+- The controller does not check agent results against the writing policy.
+- The output contract of each role still states the word limit of each field.
+- The controller still checks issue, pull request and commit text before it publishes it. A finding is a log warning.
+- The routing ratchet still moves a run to `FULL_REVIEW` when the changed files include protected, manifest, version or sensitive files.
+
+### Consequences
+
+- The polish pass depends only on `polish.enabled`, the route and the attempt budget.
+- Old run records load. The factory ignores the old performance mode fields and `writing_findings`.
+- A service that an operator installed with `--performance-mode` keeps starting. The option has no effect.
+- The run detail page does not show a performance mode.
+- The offline benchmark no longer compares the standard mode with the fast mode.
+
 ## ADR-035: One planning call replaces the refiner and the researcher
 
 Status: accepted on 2026-10-03.
@@ -615,7 +651,7 @@ Runs that need a human check must keep the default.
 
 ## ADR-029: Writing rules are advisory
 
-Status: accepted on 2026-09-29. This amends ADR-023.
+Status: accepted on 2026-09-29. This amends ADR-023. Amended by ADR-036.
 
 ADR-023 made the writing policy a gate. A prose finding failed the result, and
 the factory sent one correction prompt. Publication text failed before Git or
@@ -861,6 +897,8 @@ Reopened work uses the same executor, concurrency limit, and daily run quota.
 The backlog filter continues to block the source issue from fresh dispatch.
 
 ## ADR-023: Enforce concise controlled writing
+
+Amended by ADR-029 and ADR-036.
 
 All factory-authored prose uses one controller-owned writing policy. This
 includes agent artifacts, agent prompts, generated issues, pull requests and

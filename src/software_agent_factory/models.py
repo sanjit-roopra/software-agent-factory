@@ -892,8 +892,14 @@ class InvocationRecord(ModelBase):
     budget: AttemptBudget | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
-    writing_findings: tuple[str, ...] = ()
-    """Advisory writing-policy findings for the result. They never fail an invocation."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_writing_findings(cls, data: object) -> object:
+        """Load invocation records written before ADR-036 removed ``writing_findings``."""
+        if isinstance(data, dict) and "writing_findings" in data:
+            return {key: value for key, value in data.items() if key != "writing_findings"}
+        return data
 
     @model_validator(mode="after")
     def _validate_invocation(self) -> InvocationRecord:
@@ -1552,6 +1558,16 @@ class RouteDecision(VersionedModel):
         self.effective_route = to_route
 
 
+_REMOVED_RUN_KEYS = frozenset(
+    {
+        "requested_performance_mode",
+        "effective_performance_mode",
+        "performance_model_profile",
+        "performance_fallback_reason",
+    }
+)
+
+
 class FactoryRun(VersionedModel):
     id: str = Field(min_length=1)
     work_item_id: str = Field(min_length=1)
@@ -1580,10 +1596,6 @@ class FactoryRun(VersionedModel):
     reviewed_tree_sha: str | None = None
     base_commit_sha: str | None = None
     pending_commit_sha: str | None = None
-    requested_performance_mode: Literal["standard", "fast"] = "standard"
-    effective_performance_mode: Literal["standard", "fast"] = "standard"
-    performance_model_profile: str | None = None
-    performance_fallback_reason: str | None = None
     risk_assessment_enabled: bool = True
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
@@ -1592,6 +1604,14 @@ class FactoryRun(VersionedModel):
     review_acceptance: ReviewAcceptance | None = None
     performance: PerformanceRecord = Field(default_factory=PerformanceRecord)
     escalation: EscalationRecord | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_performance_mode(cls, data: object) -> object:
+        """Load run records written before ADR-036 removed the fast performance mode."""
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if key not in _REMOVED_RUN_KEYS}
+        return data
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:

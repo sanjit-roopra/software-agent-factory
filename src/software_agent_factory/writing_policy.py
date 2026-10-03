@@ -7,14 +7,10 @@ ASD-STE100 principles but does not claim formal compliance.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Literal
 
 from ._vendor.simple_english import lint, prose_word_count
-from .agents import AgentResult
 from .models import (
-    AgentPurpose,
     ChangeSet,
     ExecutionPlan,
     ModelBase,
@@ -32,55 +28,8 @@ SIMPLE_ENGLISH_REVISION = "61ee200efbd423050aab982eed94226229891ae0"
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class WritingPassage:
-    field: str
-    text: str
-    text_type: WritingType
-    max_words: int
-    lint_prose: bool = True
-
-
-def _passage(
-    field: str,
-    text: str,
-    *,
-    text_type: WritingType = "descriptive",
-    max_words: int,
-    lint_prose: bool = True,
-) -> WritingPassage:
-    return WritingPassage(
-        field=field,
-        text=text,
-        text_type=text_type,
-        max_words=max_words,
-        lint_prose=lint_prose,
-    )
-
-
-def _items(
-    field: str,
-    values: list[str] | tuple[str, ...],
-    *,
-    text_type: WritingType = "descriptive",
-    max_words: int,
-    lint_prose: bool = True,
-) -> list[WritingPassage]:
-    return [
-        _passage(
-            f"{field}[{index}]",
-            value,
-            text_type=text_type,
-            max_words=max_words,
-            lint_prose=lint_prose,
-        )
-        for index, value in enumerate(values)
-    ]
-
-
 #: Word limits for agent-authored prose, keyed by artifact type. A ``[]`` marks a
-#: list of items, and each item has the limit. This table is the only place that
-#: holds a limit: ``artifact_passages`` checks them and the prompt states them.
+#: list of items, and each item has the limit. The prompt states them (ADR-036).
 _FIELD_LIMITS: dict[type[ModelBase], dict[str, int]] = {
     TriageResult: {
         "dependencies": 25,
@@ -175,313 +124,6 @@ def writing_limits_text(artifact_type: type[ModelBase]) -> str:
     )
 
 
-def _triage_passages(artifact: TriageResult, limit: dict[str, int]) -> list[WritingPassage]:
-    passages = [
-        *_items(
-            "dependencies",
-            artifact.dependencies,
-            max_words=limit["dependencies"],
-            lint_prose=False,
-        ),
-        *_items("unknowns", artifact.unknowns, max_words=limit["unknowns"]),
-    ]
-    if artifact.risk_rationale is not None:
-        rationale = artifact.risk_rationale
-        passages.extend(
-            [
-                _passage(name, getattr(rationale, name), max_words=limit[name])
-                for name in (
-                    "intended_outcome",
-                    "sensitive_boundary",
-                    "necessity",
-                    "credible_scenario",
-                )
-            ]
-        )
-        passages.extend(
-            _items(
-                "known_mitigations",
-                rationale.known_mitigations,
-                max_words=limit["known_mitigations"],
-            )
-        )
-        passages.append(
-            _passage("residual_risk", rationale.residual_risk, max_words=limit["residual_risk"])
-        )
-    return passages
-
-
-def _specification_passages(artifact: Specification, limit: dict[str, int]) -> list[WritingPassage]:
-    return [
-        _passage("problem", artifact.problem, max_words=limit["problem"]),
-        *_items(
-            "acceptance_criteria",
-            artifact.acceptance_criteria,
-            text_type="procedural",
-            max_words=limit["acceptance_criteria"],
-        ),
-        *_items("constraints", artifact.constraints, max_words=limit["constraints"]),
-        *_items("assumptions", artifact.assumptions, max_words=limit["assumptions"]),
-        *_items("unknowns", artifact.unknowns, max_words=limit["unknowns"]),
-        *_items(
-            "dependencies",
-            artifact.dependencies,
-            max_words=limit["dependencies"],
-            lint_prose=False,
-        ),
-        *_items("risk_flags", artifact.risk_flags, max_words=limit["risk_flags"]),
-    ]
-
-
-def _plan_passages(artifact: ExecutionPlan, limit: dict[str, int]) -> list[WritingPassage]:
-    passages = [
-        _passage("summary", artifact.summary, max_words=limit["summary"]),
-        *_items(
-            "test_strategy",
-            artifact.test_strategy,
-            text_type="procedural",
-            max_words=limit["test_strategy"],
-        ),
-        *_items("risks", artifact.risks, max_words=limit["risks"]),
-        *_items(
-            "unresolved_decisions",
-            artifact.unresolved_decisions,
-            max_words=limit["unresolved_decisions"],
-        ),
-    ]
-    for index, step in enumerate(artifact.steps):
-        passages.append(
-            _passage(
-                f"steps[{index}].goal",
-                step.goal,
-                text_type="procedural",
-                max_words=limit["steps[].goal"],
-            )
-        )
-        passages.extend(
-            _items(
-                f"steps[{index}].validation",
-                step.validation,
-                text_type="procedural",
-                max_words=limit["steps[].validation"],
-            )
-        )
-    return passages
-
-
-def _change_set_passages(artifact: ChangeSet, limit: dict[str, int]) -> list[WritingPassage]:
-    return [_passage("summary", artifact.summary, max_words=limit["summary"])]
-
-
-def _test_report_passages(artifact: TestReport, limit: dict[str, int]) -> list[WritingPassage]:
-    return [
-        *_items("findings", artifact.findings, max_words=limit["findings"]),
-        *_items(
-            "suggested_tests",
-            artifact.suggested_tests,
-            text_type="procedural",
-            max_words=limit["suggested_tests"],
-        ),
-    ]
-
-
-def _review_passages(artifact: ReviewReport, limit: dict[str, int]) -> list[WritingPassage]:
-    passages = [
-        *_items("findings", artifact.findings, max_words=limit["findings"]),
-        *_items("scope_concerns", artifact.scope_concerns, max_words=limit["scope_concerns"]),
-        *_items(
-            "security_concerns",
-            artifact.security_concerns,
-            max_words=limit["security_concerns"],
-        ),
-        *_items(
-            "compatibility_concerns",
-            artifact.compatibility_concerns,
-            max_words=limit["compatibility_concerns"],
-        ),
-        *_items(
-            "suggested_changes",
-            artifact.suggested_changes,
-            text_type="procedural",
-            max_words=limit["suggested_changes"],
-        ),
-    ]
-    for field, findings in (
-        ("blocking_findings", artifact.blocking_findings),
-        ("repair_regressions", artifact.repair_regressions),
-    ):
-        passages.extend(
-            _passage(
-                f"{field}[{index}].message",
-                finding.message,
-                max_words=limit[f"{field}[].message"],
-            )
-            for index, finding in enumerate(findings)
-        )
-    passages.extend(
-        _passage(
-            f"prior_finding_dispositions[{index}].rationale",
-            disposition.rationale,
-            max_words=limit["prior_finding_dispositions[].rationale"],
-        )
-        for index, disposition in enumerate(artifact.prior_finding_dispositions)
-    )
-    return passages
-
-
-def _project_plan_passages(artifact: ProjectPlan, limit: dict[str, int]) -> list[WritingPassage]:
-    passages = [
-        _passage("summary", artifact.summary, max_words=limit["summary"]),
-        _passage(
-            "delivery_approach",
-            artifact.delivery_approach,
-            max_words=limit["delivery_approach"],
-        ),
-    ]
-    for index, task in enumerate(artifact.tasks):
-        passages.extend(
-            [
-                _passage(f"tasks[{index}].title", task.title, max_words=limit["tasks[].title"]),
-                _passage(
-                    f"tasks[{index}].description",
-                    task.description,
-                    max_words=limit["tasks[].description"],
-                ),
-                *_items(
-                    f"tasks[{index}].acceptance_criteria",
-                    task.acceptance_criteria,
-                    text_type="procedural",
-                    max_words=limit["tasks[].acceptance_criteria"],
-                ),
-                *_items(
-                    f"tasks[{index}].constraints",
-                    task.constraints,
-                    max_words=limit["tasks[].constraints"],
-                ),
-            ]
-        )
-    return passages
-
-
-def _planning_passages(artifact: PlanningResult, limit: dict[str, int]) -> list[WritingPassage]:
-    del limit  # Each part uses the limits of its own artifact type.
-    return [
-        replace(passage, field=f"{part}.{passage.field}")
-        for part, passages in (
-            ("specification", artifact_passages(artifact.specification)),
-            ("execution_plan", artifact_passages(artifact.execution_plan)),
-        )
-        for passage in passages
-    ]
-
-
-type _PassageBuilder = Callable[[Any, dict[str, int]], list[WritingPassage]]
-
-_PASSAGE_BUILDERS: dict[type[ModelBase], _PassageBuilder] = {
-    TriageResult: _triage_passages,
-    Specification: _specification_passages,
-    PlanningResult: _planning_passages,
-    ExecutionPlan: _plan_passages,
-    ChangeSet: _change_set_passages,
-    TestReport: _test_report_passages,
-    ReviewReport: _review_passages,
-    ProjectPlan: _project_plan_passages,
-}
-
-
-def artifact_passages(artifact: ModelBase) -> list[WritingPassage]:
-    """Return the agent-authored prose fields for one typed artifact."""
-
-    builder = _PASSAGE_BUILDERS.get(type(artifact))
-    if builder is None:
-        return []
-    return builder(artifact, _FIELD_LIMITS[type(artifact)])
-
-
-def _passage_findings(passage: WritingPassage) -> list[str]:
-    findings: list[str] = []
-    word_count = prose_word_count(passage.text)
-    if word_count > passage.max_words:
-        findings.append(
-            f"{passage.field} has {word_count} words. The limit is {passage.max_words}."
-        )
-    if passage.lint_prose:
-        report = lint(passage.text, passage.text_type)
-        findings.extend(
-            f"{passage.field} has {count} {rule} finding(s)."
-            for rule, count in report["violations"].items()
-            if count
-        )
-    return findings
-
-
-def validate_passages(passages: list[WritingPassage]) -> tuple[str, ...]:
-    """Return bounded policy findings for authored prose.
-
-    Blank prose is not a finding. Model validation rejects blank agent text and
-    ``check_publication_text`` rejects blank publication text.
-    """
-
-    findings: list[str] = []
-    for passage in passages:
-        findings.extend(_passage_findings(passage))
-        if len(findings) >= 12:
-            findings.append("More writing findings were omitted.")
-            break
-    return tuple(findings)
-
-
-def validate_artifact_writing(artifact: ModelBase) -> tuple[str, ...]:
-    """Validate all selected prose fields in one agent artifact."""
-
-    return validate_passages(artifact_passages(artifact))
-
-
-def _result_artifact(result: AgentResult, purpose: AgentPurpose) -> ModelBase | None:
-    if purpose is AgentPurpose.DECOMPOSE_PROJECT:
-        return result.project_plan
-    return {
-        "TRIAGE": result.triage_result,
-        "PLANNER": (
-            PlanningResult(specification=result.specification, execution_plan=result.execution_plan)
-            if result.specification is not None and result.execution_plan is not None
-            else result.execution_plan
-        ),
-        "IMPLEMENTER": result.change_set,
-        "TESTER": result.test_report,
-        "REVIEWER": result.review_report,
-    }[result.role.value]
-
-
-def result_writing_findings(
-    result: AgentResult,
-    purpose: AgentPurpose,
-    *,
-    source: str,
-) -> tuple[str, ...]:
-    """Return and log the advisory writing findings for a successful result.
-
-    Writing rules never fail a result and never trigger a retry. The caller
-    stores the findings on the invocation record.
-    """
-
-    if not result.success:
-        return ()
-    artifact = _result_artifact(result, purpose)
-    if artifact is None:
-        return ()
-    findings = validate_artifact_writing(artifact)
-    if findings:
-        logger.warning(
-            "writing findings source=%s artifact=%s count=%d: %s",
-            source,
-            type(artifact).__name__,
-            len(findings),
-            " | ".join(findings),
-        )
-    return findings
-
-
 def validate_publication_text(
     field: str,
     text: str,
@@ -489,9 +131,22 @@ def validate_publication_text(
     text_type: WritingType = "descriptive",
     max_words: int,
 ) -> tuple[str, ...]:
-    """Validate one factory-authored publication field."""
+    """Return the policy findings for one factory-authored publication field.
 
-    return validate_passages([_passage(field, text, text_type=text_type, max_words=max_words)])
+    Blank text is not a finding. ``check_publication_text`` rejects it.
+    """
+
+    findings: list[str] = []
+    word_count = prose_word_count(text)
+    if word_count > max_words:
+        findings.append(f"{field} has {word_count} words. The limit is {max_words}.")
+    report = lint(text, text_type)
+    findings.extend(
+        f"{field} has {count} {rule} finding(s)."
+        for rule, count in report["violations"].items()
+        if count
+    )
+    return tuple(findings)
 
 
 def check_publication_text(

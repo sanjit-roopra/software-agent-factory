@@ -2099,9 +2099,6 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
     store = FileRunStore(tmp_path / "data")
     run = _run("run-visible", state=WorkflowState.NEEDS_HUMAN).model_copy(
         update={
-            "requested_performance_mode": "fast",
-            "effective_performance_mode": "standard",
-            "performance_model_profile": "economy",
             "risk_assessment_enabled": False,
             "merge_commit_sha": "a" * 40,
             "escalation": EscalationRecord(
@@ -2151,9 +2148,6 @@ def test_build_run_detail_exposes_safe_github_and_execution_metadata(tmp_path: P
     payload = build_run_detail(store, run.id, reply_policy=REPLY_POLICY).model_dump(mode="json")
 
     assert payload["source_external_id"] == "acme/example#17"
-    assert payload["requested_performance_mode"] == "fast"
-    assert payload["effective_performance_mode"] == "standard"
-    assert payload["performance_model_profile"] == "economy"
     assert payload["risk_assessment_enabled"] is False
     assert payload["waiting_for_human"] is True
     assert payload["merge_commit_sha"] == "a" * 40

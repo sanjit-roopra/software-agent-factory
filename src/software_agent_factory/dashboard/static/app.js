@@ -1098,9 +1098,6 @@
       ["State", detail.state],
       ["Complexity", detail.complexity],
       ["Risk", detail.risk],
-      ["Requested performance mode", detail.requested_performance_mode],
-      ["Effective performance mode", detail.effective_performance_mode],
-      ["Performance model profile", detail.performance_model_profile],
       ["Risk assessment", detail.risk_assessment_enabled === false ? "disabled" : "enabled"],
       ["Created", detail.created_at],
       ["Updated", detail.updated_at],
@@ -2197,14 +2194,11 @@
     setCompareStatus(isCompleteSelection(selection) ? LOADING_TEXT : CHOOSE_TWO_TEXT);
   }
 
-  // The list rows carry no model, so an option names the model profile the run
-  // was started with. The models each run used show in the table once chosen.
+  // The list rows carry no model. The models each run used show in the table
+  // once chosen.
   function runOption(run) {
     const runId = runIdOf(run);
     const parts = [run.created_at, run.state, run.title || runId];
-    if (run.performance_model_profile) {
-      parts.push("profile " + run.performance_model_profile);
-    }
     return { value: runId, label: parts.map((part) => displayValue(part)).join(" | ") };
   }
 

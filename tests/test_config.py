@@ -7,7 +7,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from software_agent_factory.config import PerformanceConfig, PolishConfig, load_config
+from software_agent_factory.config import PolishConfig, load_config
 from software_agent_factory.models import ContextTier, ReviewFindingCategory, Risk
 
 
@@ -70,7 +70,6 @@ def test_load_config_uses_packaged_defaults() -> None:
     assert config.models.reviewer.context_tier is ContextTier.DEFAULT
     assert config.repository.branch_prefix == "factory/"
     assert config.risk["R2"].human_approval is True
-    assert config.performance == PerformanceConfig()
     assert config.risk_assessment.enabled is True
 
 
@@ -83,27 +82,27 @@ def test_load_config_selects_named_model_profile() -> None:
     assert config.models.reviewer.model == "gpt-5.6-sol"
 
 
-def test_load_config_selects_security_model_profile() -> None:
-    config = load_config(model_profile="security")
-
-    assert config.models.workers["L3"].model == "claude-opus-5"
-    assert config.models.tester.model == "gpt-6-astra"
-    assert config.models.reviewer.model == "gpt-5.6-sol"
-
-
 def test_load_config_rejects_unknown_model_profile() -> None:
     with pytest.raises(ValueError, match="unknown model profile 'missing'"):
         load_config(model_profile="missing")
 
 
-def test_fast_performance_mode_requires_configured_model_profile(tmp_path: Path) -> None:
-    payload = yaml.safe_load(_MINIMAL_CONFIG)
-    payload["performance"] = {"mode": "fast", "fast_model_profile": "missing"}
-    path = tmp_path / "invalid-fast-profile.yaml"
-    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+def test_load_config_rejects_the_removed_security_model_profile() -> None:
+    """ADR-036 removed the security profile. Naming it fails like any unknown profile."""
+    with pytest.raises(ValueError, match="unknown model profile 'security'"):
+        load_config(model_profile="security")
 
-    with pytest.raises(ValidationError, match="performance.fast_model_profile"):
-        load_config(path)
+
+def test_config_ignores_the_removed_performance_section(tmp_path: Path) -> None:
+    """ADR-036: older files may still carry the fast performance mode settings."""
+    config_path = _config_with(
+        tmp_path,
+        {"performance": {"mode": "fast", "fast_model_profile": "missing"}},
+    )
+
+    config = load_config(config_path)
+
+    assert "performance" not in config.model_dump()
 
 
 def test_context_tier_defaults_for_older_configs(tmp_path: Path) -> None:

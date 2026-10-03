@@ -81,7 +81,7 @@ from .workflow import (
     is_run_finished,
 )
 from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
-from .writing_policy import check_publication_text, result_writing_findings
+from .writing_policy import check_publication_text
 
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
@@ -704,9 +704,6 @@ class ProjectRunner:
                     success=result.success,
                     failure_reason=result.failure_reason,
                     usage=result.usage,
-                    writing_findings=result_writing_findings(
-                        result, request.purpose, source=f"project {brief.id} PLANNER"
-                    ),
                 )
             )
             execution.updated_at = completed_at

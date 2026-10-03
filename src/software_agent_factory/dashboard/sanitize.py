@@ -64,7 +64,6 @@ from .validators import (
 )
 
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
-_MODEL_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 _GITHUB_LOGIN_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 _SHORT_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _SAFE_ARTIFACT_NAMES = frozenset(ARTIFACT_FILENAMES.values())
@@ -103,9 +102,6 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "is_stale",
         "stale",
         "review_status",
-        "requested_performance_mode",
-        "effective_performance_mode",
-        "performance_model_profile",
         "risk_assessment_enabled",
         "waiting_for_human",
         "performance",
@@ -334,14 +330,6 @@ def _sanitize_summary_fields(sanitized: dict[str, Any]) -> None:
     external_id = sanitized.get("source_external_id")
     if not isinstance(external_id, str) or not _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(external_id):
         sanitized.pop("source_external_id", None)
-    for key in ("requested_performance_mode", "effective_performance_mode"):
-        if sanitized.get(key) not in {"standard", "fast"}:
-            sanitized.pop(key, None)
-    model_profile = sanitized.get("performance_model_profile")
-    if model_profile is not None and (
-        not isinstance(model_profile, str) or not _MODEL_PROFILE_PATTERN.fullmatch(model_profile)
-    ):
-        sanitized.pop("performance_model_profile", None)
     for flag in ("waiting_for_human", "risk_assessment_enabled"):
         if not isinstance(sanitized.get(flag), bool):
             sanitized.pop(flag, None)

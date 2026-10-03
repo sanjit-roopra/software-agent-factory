@@ -57,7 +57,7 @@ It does not restart triage or planning.
 
 For `SINGLE` and `CRITIQUE`, the controller skips the polish attempt.
 For `FULL_REVIEW` and `FULL`, the polish attempt is eligible when `polish.enabled` is `true`.
-It requires standard performance mode, no previous polish attempt, and at least one remaining recovery attempt.
+It requires no previous polish attempt and at least one remaining recovery attempt.
 The polish attempt never runs during CI repair.
 
 ## Decision ownership

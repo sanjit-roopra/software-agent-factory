@@ -98,7 +98,7 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 - Blocks in the foreground. Ctrl-C stops it and closes the socket.
 
 It shows project state, issue references, pull requests, merge progress, and
-workflow state. Run details show model use, performance mode, retries, safe
+workflow state. Run details show model use, retries, safe
 artifact names, verification summaries, and escalation status. The dashboard
 does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
@@ -171,8 +171,7 @@ factory service install \
   --github-repo acme/example \
   --config ~/my-factory.yaml \
   --runtime copilot \
-  --model-profile economy \
-  --performance-mode fast
+  --model-profile economy
 
 factory service status --json
 factory service uninstall
@@ -195,12 +194,6 @@ spend money. Use `--runtime copilot` to opt in deliberately.
 
 Use `--model-profile economy` to persist the packaged lower-cost routing
 selection in arguments for the LaunchAgent.
-
-When a security-sensitive backlog needs the higher-cost route, use
-`--model-profile security`. This route uses the Astra Tester and Sol Reviewer.
-
-Use `--performance-mode fast` for eligible low-risk work. The controller keeps
-all verification and review gates. It falls back to standard mode when required.
 
 Useful flags:
 

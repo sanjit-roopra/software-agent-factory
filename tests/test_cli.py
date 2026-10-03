@@ -591,66 +591,6 @@ def test_show_command_fails_clearly_for_unknown_run_id(data_dir: Path) -> None:
 # -- runtime selection ---------------------------------------------------
 
 
-def test_run_accepts_fast_performance_mode(source_repo: Path, data_dir: Path) -> None:
-    from software_agent_factory.store import FileRunStore
-
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            "--repo",
-            str(source_repo),
-            "--title",
-            "Fast task",
-            "--description",
-            "A low-risk task for the fast mode.",
-            "--performance-mode",
-            "fast",
-            "--data-dir",
-            str(data_dir),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    run = FileRunStore(data_dir).list_runs()[0]
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "fast"
-    assert run.performance_model_profile == "economy"
-
-
-def test_project_accepts_fast_performance_mode(source_repo: Path, data_dir: Path) -> None:
-    from software_agent_factory.store import FileRunStore
-
-    result = runner.invoke(
-        app,
-        [
-            "project",
-            "--repo",
-            str(source_repo),
-            "--title",
-            "Fast project",
-            "--description",
-            "A project for fast mode.",
-            "--acceptance-criterion",
-            "Fast execution succeeds.",
-            "--project-id",
-            "project-fast",
-            "--data-dir",
-            str(data_dir),
-            "--performance-mode",
-            "fast",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    runs = FileRunStore(data_dir).list_runs()
-    assert len(runs) >= 1
-    child_run = runs[0]
-    assert child_run.requested_performance_mode == "fast"
-    assert child_run.effective_performance_mode == "fast"
-    assert child_run.performance_model_profile == "economy"
-
-
 def test_run_keeps_risk_assessment_on_by_default(source_repo: Path, data_dir: Path) -> None:
     from software_agent_factory.store import FileRunStore
 
@@ -725,45 +665,6 @@ def test_project_no_risk_assessment_turns_the_assessment_off(
     runs = FileRunStore(data_dir).list_runs()
     assert runs
     assert {run.risk_assessment_enabled for run in runs} == {False}
-
-
-def test_cli_rejects_fast_performance_mode_with_unconfigured_profile(
-    source_repo: Path, data_dir: Path, tmp_path: Path
-) -> None:
-    import yaml
-
-    import software_agent_factory
-    from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
-
-    assert software_agent_factory.__file__ is not None
-    packaged = Path(software_agent_factory.__file__).parent / DEFAULT_CONFIG_FILENAME
-    payload = yaml.safe_load(packaged.read_text(encoding="utf-8"))
-    payload["factory"]["data_dir"] = str(data_dir)
-    payload["performance"] = {"mode": "standard", "fast_model_profile": "unconfigured"}
-    config_path = tmp_path / "factory-unconfigured-fast.yaml"
-    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
-
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            "--repo",
-            str(source_repo),
-            "--title",
-            "Unconfigured profile task",
-            "--description",
-            "Should fail.",
-            "--config",
-            str(config_path),
-            "--performance-mode",
-            "fast",
-            "--data-dir",
-            str(data_dir),
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "fast performance mode requires performance.fast_model_profile" in result.output
 
 
 def test_run_defaults_to_the_fake_runtime_and_never_builds_copilot(
@@ -1130,6 +1031,30 @@ def test_start_refuses_to_run_when_the_scheduler_is_disabled(
     assert "scheduler is disabled" in result.output
 
 
+def test_start_accepts_and_ignores_the_removed_performance_mode_option(
+    source_repo: Path, data_dir: Path, tmp_path: Path
+) -> None:
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "start",
+            "--repo",
+            str(source_repo),
+            "--github-repo",
+            "acme/repo",
+            "--config",
+            str(config_path),
+            "--performance-mode",
+            "fast",
+        ],
+    )
+
+    assert "No such option" not in result.output
+    assert "scheduler is disabled" in result.output
+
+
 def _tracker_item(source_repo: Path, *, identifier: str = "acme/repo#11"):
     from datetime import datetime, timezone
 
@@ -1244,45 +1169,6 @@ def test_start_with_pi_runtime_selects_the_real_runtime(
     assert result.exit_code == 0, result.output
     assert len(pi_runtime_calls) == 1
     assert "dispatched: acme/repo#11" in result.output
-
-
-def test_start_accepts_fast_performance_mode(
-    source_repo: Path,
-    data_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    path_with,
-) -> None:
-    from software_agent_factory.store import FileRunStore
-
-    path_with("gh")
-    _install_local_provider(monkeypatch, source_repo, items=[_tracker_item(source_repo)])
-
-    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
-
-    result = runner.invoke(
-        app,
-        [
-            "start",
-            "--repo",
-            str(source_repo),
-            "--github-repo",
-            "acme/repo",
-            "--once",
-            "--performance-mode",
-            "fast",
-            "--config",
-            str(config_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    runs = FileRunStore(data_dir).list_runs()
-    assert len(runs) >= 1
-    dispatched_run = runs[0]
-    assert dispatched_run.requested_performance_mode == "fast"
-    assert dispatched_run.effective_performance_mode == "fast"
-    assert dispatched_run.performance_model_profile == "economy"
 
 
 def test_start_no_risk_assessment_turns_the_assessment_off(

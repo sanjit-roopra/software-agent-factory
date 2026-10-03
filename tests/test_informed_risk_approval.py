@@ -70,7 +70,7 @@ from software_agent_factory.resume import (
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
-from software_agent_factory.writing_policy import artifact_passages, validate_artifact_writing
+from software_agent_factory.writing_policy import field_word_limits
 
 
 class FakeCompletedProcess:
@@ -741,28 +741,17 @@ def test_triage_reports_a_missing_risk_rationale_only_for_r2_and_r3(
     )
 
 
-def test_writing_policy_checks_risk_rationale() -> None:
-    rationale = _sample_rationale()
-    triage = TriageResult(
-        factory_eligible=True,
-        complexity=Complexity.L1,
-        risk=Risk.R2,
-        needs_research=False,
-        confidence=0.9,
-        risk_rationale=rationale,
-    )
-    passages = artifact_passages(triage)
-    passage_names = [p.field for p in passages]
-    assert "intended_outcome" in passage_names
-    assert "sensitive_boundary" in passage_names
-    assert "necessity" in passage_names
-    assert "credible_scenario" in passage_names
-    assert any(name.startswith("known_mitigations") for name in passage_names)
-    assert "residual_risk" in passage_names
-
-    # Check writing policy passes
-    findings = validate_artifact_writing(triage)
-    assert findings == ()
+def test_writing_limits_cover_the_risk_rationale() -> None:
+    limits = field_word_limits(TriageResult)
+    for name in (
+        "intended_outcome",
+        "sensitive_boundary",
+        "necessity",
+        "credible_scenario",
+        "known_mitigations",
+        "residual_risk",
+    ):
+        assert name in limits
 
 
 def test_workflow_controller_persists_approval_context_on_risk_halt(

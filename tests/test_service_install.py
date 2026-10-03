@@ -48,7 +48,6 @@ from software_agent_factory.service_install import (
     MIN_THROTTLE_INTERVAL_SECONDS,
     ServiceInstallError,
     ServiceInstallRequest,
-    ServicePerformanceMode,
     ServiceRuntime,
     build_launch_agent_plist,
     build_program_arguments,
@@ -185,17 +184,6 @@ def test_build_program_arguments_preserves_model_profile(tmp_path: Path) -> None
     args = build_program_arguments(request)
 
     assert args[args.index("--model-profile") + 1] == "economy"
-
-
-def test_build_program_arguments_preserves_performance_mode(tmp_path: Path) -> None:
-    request = make_request(tmp_path)
-    request = ServiceInstallRequest(
-        **{**request.__dict__, "performance_mode": ServicePerformanceMode.FAST}
-    )
-
-    args = build_program_arguments(request)
-
-    assert args[args.index("--performance-mode") + 1] == "fast"
 
 
 def test_build_program_arguments_omits_no_risk_assessment_by_default(tmp_path: Path) -> None:

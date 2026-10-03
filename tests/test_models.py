@@ -605,19 +605,36 @@ def _invocation_payload() -> dict[str, object]:
     }
 
 
-def test_invocation_record_defaults_to_no_writing_findings() -> None:
-    record = InvocationRecord.model_validate(_invocation_payload())
-
-    assert record.writing_findings == ()
-
-
-def test_invocation_record_round_trips_writing_findings() -> None:
+def test_invocation_record_ignores_the_removed_writing_findings() -> None:
+    """ADR-036: old invocation records may still carry advisory writing findings."""
     payload = {**_invocation_payload(), "writing_findings": ["summary has 26 words."]}
 
     record = InvocationRecord.model_validate(payload)
-    reloaded = InvocationRecord.model_validate_json(record.model_dump_json())
 
-    assert reloaded.writing_findings == ("summary has 26 words.",)
+    assert "writing_findings" not in record.model_dump()
+
+
+def test_factory_run_ignores_the_removed_performance_mode_fields() -> None:
+    """ADR-036: old run records may still carry the fast performance mode fields."""
+    legacy_json = (
+        '{"schema_version": 1, "id": "RUN-1", "work_item_id": "WI-1", "state": "DONE",'
+        ' "created_at": "2026-09-04T10:00:00Z", "updated_at": "2026-09-04T10:00:00Z",'
+        ' "requested_performance_mode": "fast", "effective_performance_mode": "standard",'
+        ' "performance_model_profile": "economy",'
+        ' "performance_fallback_reason": "scope includes protected files: README.md",'
+        ' "invocation_records": [{"invocation_number": 1, "role": "TRIAGE", "model": "m",'
+        ' "reasoning": "low", "started_at": "2026-09-04T10:00:00Z",'
+        ' "completed_at": "2026-09-04T10:00:01Z", "success": true,'
+        ' "writing_findings": ["unknowns[0] has 2 slop_word finding(s)."]}]}'
+    )
+
+    run = FactoryRun.model_validate_json(legacy_json)
+
+    assert run.state is WorkflowState.DONE
+    assert len(run.invocation_records) == 1
+    dumped = run.model_dump()
+    assert "effective_performance_mode" not in dumped
+    assert "performance_fallback_reason" not in dumped
 
 
 def test_triage_result_no_longer_asks_the_model_for_requirements_quality() -> None:

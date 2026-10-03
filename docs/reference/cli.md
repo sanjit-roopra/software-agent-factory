@@ -76,7 +76,6 @@ factory run \
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
 | `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` avoids model calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. `pi` makes paid calls through pi. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
-| `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode. Fast mode applies only to eligible low-risk work. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for this run. See `risk_assessment` in the configuration reference. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
@@ -117,7 +116,6 @@ factory project \
 | `--github-repo <OWNER/NAME>` | no | none | Create one GitHub issue per validated task and close it after integration or confirmed merge. |
 | `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` creates one deterministic task. `copilot` and `pi` derive the real plan. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as `economy`. |
-| `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for child runs. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for every child run. |
 | `--config <path>` | no | packaged | Config YAML. |
 | `--data-dir <path>` | no | configured | Data directory override. |
@@ -177,7 +175,6 @@ factory start --repo ~/projects/example --github-repo acme/example --config ~/my
 | `--github-repo <str>` | yes | none | Backlog repository as `OWNER/NAME`. |
 | `--runtime <fake\|copilot\|pi>` | no | `fake` | Agent runtime. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile for every dispatched run. |
-| `--performance-mode <standard\|fast>` | no | configured | Override the workflow performance mode for dispatched runs. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for every dispatched run. |
 | `--once` | no | off | Run one bounded tick instead of polling forever. |
 | `--config <path>` | no | packaged | Config YAML. |
@@ -337,7 +334,7 @@ factory dashboard --port 0 --open-browser
 | `--data-dir <path>` | configured | Data directory override. |
 
 The dashboard shows active and completed projects, issue references, pull
-requests, and merge progress. Run details show performance mode, models,
+requests, and merge progress. Run details show models,
 verification summaries, safe artifact names, retries, and escalation status.
 The factory persists an active invocation before Copilot starts.
 The run lease labels it `running`, `stale`, `crashed`, or `abandoned`.
@@ -404,8 +401,7 @@ factory service install \
   --github-repo acme/example \
   --config ~/my-factory.yaml \
   --runtime copilot \
-  --model-profile economy \
-  --performance-mode fast
+  --model-profile economy
 ```
 
 | Option | Required | Default | Effect |
@@ -416,7 +412,6 @@ factory service install \
 | `--data-dir <path>` | no | configured | Data directory for the service. |
 | `--runtime <fake\|copilot\|pi>` | no | `fake` | Runtime the service runs with. `pi` prints the startup warning. Doctor accepts only a saved pi login for the service. A shell variable does not reach the service. |
 | `--model-profile <name>` | no | `default` | Profile retained in the installed `factory start` arguments. |
-| `--performance-mode <standard\|fast>` | no | configured | Performance mode retained in the installed `factory start` arguments. |
 | `--no-risk-assessment` | no | off | Flag retained in the installed `factory start` arguments. |
 | `--executable <path>` | no | this build | Explicit `factory` executable to run. |
 | `--label <str>` | no | `com.github.software-agent-factory` | LaunchAgent label. |

@@ -378,9 +378,6 @@ class RunSummary(ModelBase):
     is_finished: bool
     is_stale: bool
     review_status: str | None = None
-    requested_performance_mode: Literal["standard", "fast"] = "standard"
-    effective_performance_mode: Literal["standard", "fast"] = "standard"
-    performance_model_profile: str | None = None
     risk_assessment_enabled: bool = True
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
@@ -574,9 +571,6 @@ class RunDetail(ModelBase):
     is_finished: bool
     is_stale: bool
     review_status: str | None = None
-    requested_performance_mode: Literal["standard", "fast"] = "standard"
-    effective_performance_mode: Literal["standard", "fast"] = "standard"
-    performance_model_profile: str | None = None
     risk_assessment_enabled: bool = True
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
@@ -1600,9 +1594,6 @@ def _build_run_summary(
         is_finished=finished,
         is_stale=(not finished) and _is_stale(run, now, stale_after),
         review_status=_review_status(run),
-        requested_performance_mode=run.requested_performance_mode,
-        effective_performance_mode=run.effective_performance_mode,
-        performance_model_profile=run.performance_model_profile,
         risk_assessment_enabled=run.risk_assessment_enabled,
         initial_route=run.initial_route,
         effective_route=run.effective_route,

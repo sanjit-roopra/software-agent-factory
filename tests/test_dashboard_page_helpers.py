@@ -28,7 +28,6 @@ LIST_USD = "list_price_estimate_usd"
 RUN_ID_MAX_LENGTH = 128
 RUN_ID = "run_id"
 TITLE = "title"
-PROFILE = "performance_model_profile"
 REOPENS_USED = "reopens_used"
 MAX_REOPENS = "max_reopens"
 VALUE = "value"
@@ -453,7 +452,6 @@ _FULL_RUN = {
     "created_at": STARTED_AT,
     "state": "DONE",
     TITLE: BUG_TITLE,
-    PROFILE: "fast",
 }
 _OPTION_LABEL = f"{STARTED_AT} | DONE | {BUG_TITLE}"
 
@@ -495,22 +493,12 @@ LIST_AND_COMPARE_CASES = [
     _hash("encodes-non-ascii", f"{COMPARE}/%C3%A9", _pair("é", None)),
     _option(
         "all-parts",
-        {VALUE: "r1", LABEL: f"{_OPTION_LABEL} | profile fast"},
+        {VALUE: "r1", LABEL: _OPTION_LABEL},
         _FULL_RUN,
     ),
     _option(
-        "no-profile",
-        {VALUE: "r1", LABEL: _OPTION_LABEL},
-        _without(_FULL_RUN, PROFILE),
-    ),
-    _option(
-        "empty-profile",
-        {VALUE: "r1", LABEL: _OPTION_LABEL},
-        {**_FULL_RUN, PROFILE: ""},
-    ),
-    _option(
         "no-title-names-the-run",
-        {VALUE: "r1", LABEL: f"{STARTED_AT} | DONE | r1 | profile fast"},
+        {VALUE: "r1", LABEL: f"{STARTED_AT} | DONE | r1"},
         _without(_FULL_RUN, TITLE),
     ),
     _option(
