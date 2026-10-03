@@ -386,3 +386,15 @@ def test_setup_run_with_an_unusable_data_dir_fails_cleanly(
         run_toolchain_setup(
             bare_uv_repo, data_dir, "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
         )
+
+
+def test_setup_run_refuses_when_the_source_head_moved(bare_uv_repo: Path, tmp_path: Path) -> None:
+    requested = _head(bare_uv_repo)
+    (bare_uv_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    _commit(bare_uv_repo, "move HEAD")
+    runner = _Runner()
+
+    with pytest.raises(SetupError, match="source HEAD moved"):
+        run_toolchain_setup(bare_uv_repo, tmp_path / "data", "factory/", runner, _LIMITS, requested)
+
+    assert runner.calls == []

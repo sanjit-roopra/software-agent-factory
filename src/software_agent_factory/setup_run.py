@@ -30,6 +30,7 @@ SETUP_RECORD_NAME = "setup.json"
 SETUP_WORK_ITEM_PREFIX = "SETUP-"
 NOT_AT_BASE = "setup worktree is not clean at its base commit"
 LOCKED = "another setup run holds the lock"
+HEAD_MOVED = "the source HEAD moved while the setup worktree was prepared"
 
 
 class SetupError(Exception):
@@ -79,15 +80,15 @@ def run_toolchain_setup(
             source_repo,
             f"{SETUP_WORK_ITEM_PREFIX}{head_commit[:12]}",
             branch_prefix=branch_prefix,
-            base_ref=head_commit,
         )
         with workspace:
-            try:
-                # With a base ref, prepare() refuses a worktree that is not
-                # clean at exactly that commit, such as one a failed run kept.
-                worktree = workspace.prepare()
-            except WorkspaceError as exc:
-                raise SetupError(f"{NOT_AT_BASE}: {exc}") from exc
+            worktree = workspace.prepare()
+            # Refuse a worktree that a failed run kept, and one created after
+            # the source HEAD moved away from the commit this run was asked for.
+            if workspace.base_commit != head_commit:
+                raise SetupError(f"{HEAD_MOVED}: {worktree}")
+            if not workspace.is_at_clean_base():
+                raise SetupError(f"{NOT_AT_BASE}: {worktree}")
             profile = profile_repository(worktree)
             plan = plan_toolchain_setup(inventory_toolchain(worktree, profile), profile)
             outcome = apply_toolchain_setup(plan, command_runner, worktree, limits)
