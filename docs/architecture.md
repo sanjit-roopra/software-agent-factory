@@ -503,9 +503,9 @@ configured only in a subdirectory is not found.
 The inventory skips symbolic links and files larger than the manifest limit.
 A parse failure records the file name and the exception type, not the file content.
 
-`complete` is false when evidence is partial. This happens when the profile
-hit its scan limit or dependency limit, when profiling degraded, or when a
-manifest or root configuration file could not be read or parsed. A missing
+`complete` is false when evidence is partial. The profile can hit its scan
+limit or dependency limit, or profiling can degrade. The factory can also fail
+to read or parse a manifest or a root configuration file. A missing
 binding is then not proof that the tool is absent. If the inventory itself fails, the factory saves an empty,
 incomplete inventory and the run continues.
 
