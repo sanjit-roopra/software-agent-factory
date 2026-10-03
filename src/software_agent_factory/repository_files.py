@@ -7,14 +7,16 @@ checks, shared skills in ``.agents/skills/``, per-skill links in
 ``CLAUDE.md`` becomes a link to ``AGENTS.md`` when it does not exist.
 
 All content comes from fixed templates. No model writes it. A file that
-already exists is never replaced, except the block between the factory
-markers in ``AGENTS.md``. Text outside the markers is kept as written.
+already exists is never replaced, except the one block between the factory
+markers in ``AGENTS.md``. Text outside the markers is kept as written. A path
+that the repository ignores is skipped, because it would never be committed.
 """
 
 from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -33,6 +35,8 @@ BLOCK_BEGIN = "<!-- factory:begin"
 BLOCK_END = "<!-- factory:end -->"
 VERIFY_PLACEHOLDER = "{{verify_commands}}"
 NO_CHECKS = "# The factory found no checks. Add the repository's lint and test commands here."
+UNCLEAR_BLOCK_NOTE = "AGENTS.md left alone: it needs exactly one factory block with both markers"
+UNREADABLE_AGENTS_NOTE = "AGENTS.md left alone: it is not a readable UTF-8 file"
 MAX_AGENTS_FILE_BYTES = 1_048_576
 
 
@@ -42,60 +46,111 @@ class RepositoryFileError(Exception):
 
 @dataclass(frozen=True)
 class RepositoryFile:
-    """One file the setup run writes: text content or a relative symbolic link."""
+    """One file the setup run writes: text content or a relative symbolic link.
+
+    ``replaces`` is true only for an ``AGENTS.md`` that exists. Every other
+    file is created and must not exist when it is written.
+    """
 
     path: str
     content: str | None = None
     link_target: str | None = None
+    replaces: bool = False
 
     def __post_init__(self) -> None:
         if (self.content is None) == (self.link_target is None):
             raise ValueError("a repository file has either content or a link target")
 
 
+@dataclass(frozen=True)
+class RepositoryFilesPlan:
+    files: tuple[RepositoryFile, ...]
+    notes: tuple[str, ...] = ()
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        return tuple(repository_file.path for repository_file in self.files)
+
+
 def plan_repository_files(
     root: Path, inventory: ToolchainInventory, profile: RepositoryProfile
-) -> tuple[RepositoryFile, ...]:
+) -> RepositoryFilesPlan:
     """Return the files to write under ``root``. Nothing a person wrote is replaced."""
 
     verify = _verify_text(inventory, profile)
-    files: list[RepositoryFile] = []
-    agents = _agents_file(root, verify)
+    candidates: list[RepositoryFile] = []
+    notes: list[str] = []
+    agents, agents_note = _agents_file(root, verify)
     if agents is not None:
-        files.append(agents)
+        candidates.append(agents)
+    if agents_note is not None:
+        notes.append(agents_note)
     if not _exists(root / CLAUDE_FILE):
-        files.append(RepositoryFile(CLAUDE_FILE, link_target=AGENTS_FILE))
+        candidates.append(RepositoryFile(CLAUDE_FILE, link_target=AGENTS_FILE))
     for name in SKILL_NAMES:
         skill = f"{SHARED_SKILLS_DIR}/{name}/SKILL.md"
         if not _exists(root / skill):
             text = _template(f"skills/{name}/SKILL.md").replace(VERIFY_PLACEHOLDER, verify)
-            files.append(RepositoryFile(skill, content=text))
+            candidates.append(RepositoryFile(skill, content=text))
         link = f"{CLAUDE_SKILLS_DIR}/{name}"
         if not _exists(root / link):
-            files.append(RepositoryFile(link, link_target=f"../../{SHARED_SKILLS_DIR}/{name}"))
+            candidates.append(RepositoryFile(link, link_target=f"../../{SHARED_SKILLS_DIR}/{name}"))
     for lane in inventory.lanes:
         agent = LANE_AGENTS.get(lane)
         if agent is not None and not _exists(root / CLAUDE_AGENTS_DIR / agent):
-            files.append(
+            candidates.append(
                 RepositoryFile(f"{CLAUDE_AGENTS_DIR}/{agent}", content=_template(f"agents/{agent}"))
             )
-    return tuple(files)
+    ignored = _ignored_paths(root, [candidate.path for candidate in candidates])
+    notes.extend(f"{path} skipped: the repository ignores it" for path in sorted(ignored))
+    files = tuple(candidate for candidate in candidates if candidate.path not in ignored)
+    return RepositoryFilesPlan(files, tuple(notes))
 
 
 def write_repository_files(root: Path, files: tuple[RepositoryFile, ...]) -> None:
-    """Write ``files`` under ``root`` without following a symbolic link the repository holds."""
+    """Write ``files`` under ``root`` without following a symbolic link the repository holds.
+
+    Each parent directory is opened relative to the one before it with
+    ``O_NOFOLLOW``, so a link that appears during the write is never followed.
+    """
 
     for repository_file in files:
-        target = root / repository_file.path
-        _make_real_parents(root, target.parent)
-        if repository_file.link_target is not None:
-            try:
-                os.symlink(repository_file.link_target, target)
-            except OSError as exc:
-                raise RepositoryFileError(f"cannot link {repository_file.path}: {exc}") from exc
-            continue
-        assert repository_file.content is not None
-        _write_text(target, repository_file.path, repository_file.content)
+        parts = Path(repository_file.path).parts
+        try:
+            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError as exc:
+            raise RepositoryFileError(f"cannot open {root}: {exc}") from exc
+        try:
+            for part in parts[:-1]:
+                try:
+                    os.mkdir(part, dir_fd=directory_fd)
+                except FileExistsError:
+                    pass
+                child_fd = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                os.close(directory_fd)
+                directory_fd = child_fd
+            _write_entry(directory_fd, parts[-1], repository_file)
+        except OSError as exc:
+            raise RepositoryFileError(f"cannot write {repository_file.path}: {exc}") from exc
+        finally:
+            os.close(directory_fd)
+
+
+def _write_entry(directory_fd: int, name: str, repository_file: RepositoryFile) -> None:
+    if repository_file.link_target is not None:
+        os.symlink(repository_file.link_target, name, dir_fd=directory_fd)
+        return
+    assert repository_file.content is not None
+    create = os.O_TRUNC if repository_file.replaces else os.O_EXCL
+    descriptor = os.open(
+        name, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | create, 0o644, dir_fd=directory_fd
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise RepositoryFileError(f"not a regular file: {repository_file.path}")
+        handle.write(repository_file.content)
 
 
 def _verify_text(inventory: ToolchainInventory, profile: RepositoryProfile) -> str:
@@ -108,21 +163,50 @@ def _verify_text(inventory: ToolchainInventory, profile: RepositoryProfile) -> s
     return "\n".join(commands) or NO_CHECKS
 
 
-def _agents_file(root: Path, verify: str) -> RepositoryFile | None:
+def _agents_file(root: Path, verify: str) -> tuple[RepositoryFile | None, str | None]:
     block = _template("agents_block.md").replace(VERIFY_PLACEHOLDER, verify).rstrip("\n")
     path = root / AGENTS_FILE
     if not _exists(path):
-        return RepositoryFile(AGENTS_FILE, content=f"# Agent instructions\n\n{block}\n")
+        return RepositoryFile(AGENTS_FILE, content=f"# Agent instructions\n\n{block}\n"), None
     current = _read_regular_text(path)
     if current is None:
-        return None
-    begin = current.find(BLOCK_BEGIN)
-    end = current.find(BLOCK_END, begin)
-    if begin == -1 or end == -1:
-        separator = "" if current.endswith("\n\n") else "\n" if current.endswith("\n") else "\n\n"
-        return RepositoryFile(AGENTS_FILE, content=f"{current}{separator}{block}\n")
-    updated = current[:begin] + block + current[end + len(BLOCK_END) :]
-    return None if updated == current else RepositoryFile(AGENTS_FILE, content=updated)
+        return None, UNREADABLE_AGENTS_NOTE
+    # Work with "\n" and write back in the file's own line ending style.
+    newline = "\r\n" if "\r\n" in current else "\n"
+    text = current.replace("\r\n", "\n")
+    begins = text.count(BLOCK_BEGIN)
+    ends = text.count(BLOCK_END)
+    if begins == 0 and ends == 0:
+        separator = "" if text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
+        updated = f"{text}{separator}{block}\n"
+    elif begins == 1 and ends == 1 and text.find(BLOCK_BEGIN) < text.find(BLOCK_END):
+        begin = text.find(BLOCK_BEGIN)
+        end = text.find(BLOCK_END) + len(BLOCK_END)
+        updated = text[:begin] + block + text[end:]
+    else:
+        return None, UNCLEAR_BLOCK_NOTE
+    if updated == text:
+        return None, None
+    return RepositoryFile(AGENTS_FILE, content=updated.replace("\n", newline), replaces=True), None
+
+
+def _ignored_paths(root: Path, paths: list[str]) -> set[str]:
+    """Return the paths that the repository at ``root`` ignores. Outside Git, none."""
+    if not paths:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "-z", "--stdin"],
+            input="\0".join(paths) + "\0",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    if result.returncode not in (0, 1):
+        return set()
+    return {path for path in result.stdout.split("\0") if path}
 
 
 def _template(name: str) -> str:
@@ -138,14 +222,15 @@ def _exists(path: Path) -> bool:
 
 
 def _read_regular_text(path: Path) -> str | None:
-    """Read a regular file without following a link. Return ``None`` for anything else."""
+    """Read a regular file without following a link or blocking. ``None`` for anything else."""
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        return None
     with os.fdopen(descriptor, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            return None
         raw = handle.read(MAX_AGENTS_FILE_BYTES + 1)
     if len(raw) > MAX_AGENTS_FILE_BYTES:
         return None
@@ -153,25 +238,3 @@ def _read_regular_text(path: Path) -> str | None:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return None
-
-
-def _make_real_parents(root: Path, directory: Path) -> None:
-    """Create ``directory`` under ``root``, refusing any part that is a symbolic link."""
-    relative = directory.relative_to(root)
-    current = root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise RepositoryFileError(f"refusing to write through a symbolic link: {current}")
-        current.mkdir(exist_ok=True)
-
-
-def _write_text(target: Path, name: str, content: str) -> None:
-    try:
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-    except OSError as exc:
-        raise RepositoryFileError(f"cannot write {name}: {exc}") from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise RepositoryFileError(f"not a regular file: {name}")
-        handle.write(content)

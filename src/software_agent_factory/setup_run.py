@@ -30,6 +30,7 @@ from .publishing import PublishResult
 from .repository_files import (
     RepositoryFile,
     RepositoryFileError,
+    RepositoryFilesPlan,
     plan_repository_files,
     write_repository_files,
 )
@@ -108,7 +109,7 @@ def run_toolchain_setup(
             if not workspace.is_at_clean_base():
                 raise SetupError(f"{NOT_AT_BASE}: {worktree}")
             plan, _files = plan_setup(worktree)
-            outcome = apply_toolchain_setup(plan, command_runner, worktree, limits)
+            outcome, plan = apply_toolchain_setup(plan, command_runner, worktree, limits)
     except WorkspaceLockError as exc:
         raise SetupError(f"{LOCKED}: {exc}") from exc
     except (WorkspaceError, RepositoryFileError, OSError) as exc:
@@ -121,10 +122,8 @@ def plan_setup(root: Path) -> tuple[ToolchainSetupPlan, tuple[RepositoryFile, ..
     profile = profile_repository(root)
     inventory = inventory_toolchain(root, profile)
     files = plan_repository_files(root, inventory, profile)
-    plan = plan_toolchain_setup(inventory, profile).model_copy(
-        update={"files": tuple(repository_file.path for repository_file in files)}
-    )
-    return plan, files
+    plan = plan_toolchain_setup(inventory, profile)
+    return _with_files(plan, files), files.files
 
 
 def apply_toolchain_setup(
@@ -132,17 +131,18 @@ def apply_toolchain_setup(
     command_runner: CommandRunner,
     worktree: Path,
     limits: ProbeLimits,
-) -> SetupOutcome:
+) -> tuple[SetupOutcome, ToolchainSetupPlan]:
     """Run the plan's add commands, write the repository files and record the plan.
 
     The files are planned again after the commands, so ``AGENTS.md`` and the
     ``pr-gate`` skill name the checks of the tools that the setup just added.
+    That second plan decides the files, and the returned plan lists them.
     An empty plan runs nothing and writes nothing. A failed command stops the
     setup, writes no file and no record, and leaves the worktree for inspection.
     """
 
     if plan.is_empty:
-        return SetupOutcome(applied=())
+        return SetupOutcome(applied=()), plan
     applied: list[str] = []
     for command in plan.commands:
         report = command_runner.run(
@@ -153,20 +153,30 @@ def apply_toolchain_setup(
             capture_bytes=limits.capture_bytes,
         )
         if not report.passed:
-            return SetupOutcome(
+            outcome = SetupOutcome(
                 tuple(applied),
                 failed_command=command,
                 failure_reason=command_failure_reason(report, "during setup"),
             )
+            return outcome, plan
         applied.append(command)
-    if plan.files:
-        profile = profile_repository(worktree)
-        files = plan_repository_files(worktree, inventory_toolchain(worktree, profile), profile)
-        if tuple(repository_file.path for repository_file in files) != plan.files:
-            raise SetupError("the repository files changed while the setup ran")
-        write_repository_files(worktree, files)
-    write_setup_record(worktree, plan)
-    return SetupOutcome(tuple(applied))
+    # An add command may change only the manifest and the lockfile. Anything
+    # else, such as AGENTS.md written by a build backend, stops the setup.
+    unexpected = [path for path in changed_paths(worktree) if path not in SETUP_ALLOWED_PATHS]
+    if unexpected:
+        raise SetupError(f"an add command changed an unexpected path: {unexpected[0]}")
+    profile = profile_repository(worktree)
+    files = plan_repository_files(worktree, inventory_toolchain(worktree, profile), profile)
+    write_repository_files(worktree, files.files)
+    final = _with_files(plan, files)
+    write_setup_record(worktree, final)
+    return SetupOutcome(tuple(applied)), final
+
+
+def _with_files(plan: ToolchainSetupPlan, files: RepositoryFilesPlan) -> ToolchainSetupPlan:
+    return ToolchainSetupPlan.model_validate(
+        {**plan.model_dump(), "files": files.paths, "notes": (*plan.notes, *files.notes)}
+    )
 
 
 def write_setup_record(worktree: Path, plan: ToolchainSetupPlan) -> Path:

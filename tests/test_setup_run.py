@@ -112,50 +112,73 @@ def _read_record(worktree: Path) -> ToolchainSetupPlan:
     return ToolchainSetupPlan.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
-def test_apply_runs_every_command_in_the_worktree_and_records_the_plan(tmp_path: Path) -> None:
+@pytest.fixture
+def empty_git_dir(tmp_path: Path) -> Path:
+    """A Git repository with no stack, so the files plan names no checks."""
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    return repo
+
+
+def test_apply_runs_every_command_in_the_worktree_and_records_the_plan(
+    empty_git_dir: Path,
+) -> None:
     runner = _Runner()
 
-    outcome = apply_toolchain_setup(_TWO_LANES, runner, tmp_path, _LIMITS)
+    outcome, final = apply_toolchain_setup(_TWO_LANES, runner, empty_git_dir, _LIMITS)
 
     assert outcome == SetupOutcome(applied=_TWO_LANES.commands)
     assert runner.calls == [
-        (command, tmp_path, 7, ("NPM_CONFIG_CACHE",), 99) for command in _TWO_LANES.commands
+        (command, empty_git_dir, 7, ("NPM_CONFIG_CACHE",), 99) for command in _TWO_LANES.commands
     ]
-    assert _read_record(tmp_path) == _TWO_LANES
+    assert final.commands == _TWO_LANES.commands
+    assert final.files[:2] == ("AGENTS.md", "CLAUDE.md")
+    assert _read_record(empty_git_dir) == final
 
 
-def test_apply_stops_at_a_failure_and_writes_no_record(tmp_path: Path) -> None:
+def test_apply_stops_at_a_failure_and_writes_no_file(empty_git_dir: Path) -> None:
     runner = _Runner(failing=frozenset({"npm install --save-dev oxlint"}))
 
-    outcome = apply_toolchain_setup(_TWO_LANES, runner, tmp_path, _LIMITS)
+    outcome, final = apply_toolchain_setup(_TWO_LANES, runner, empty_git_dir, _LIMITS)
 
     assert outcome == SetupOutcome(
         applied=("uv add --dev --no-sync ruff",),
         failed_command="npm install --save-dev oxlint",
         failure_reason="failed during setup with exit code 1",
     )
+    assert final == _TWO_LANES
     assert _OUTPUT_THAT_MUST_NOT_LEAK not in (outcome.failure_reason or "")
-    assert not (tmp_path / SETUP_RECORD_DIR).exists()
+    assert sorted(path.name for path in empty_git_dir.iterdir()) == [".git"]
 
 
-def test_apply_reports_a_timeout(tmp_path: Path) -> None:
+def test_apply_reports_a_timeout(empty_git_dir: Path) -> None:
     runner = _Runner(timing_out=frozenset({"uv add --dev --no-sync ruff"}))
 
-    outcome = apply_toolchain_setup(_TWO_LANES, runner, tmp_path, _LIMITS)
+    outcome, _ = apply_toolchain_setup(_TWO_LANES, runner, empty_git_dir, _LIMITS)
 
     assert outcome.failure_reason == "timed out during setup"
 
 
-def test_empty_plan_runs_nothing_and_writes_nothing(tmp_path: Path) -> None:
-    runner = _Runner()
+def test_apply_refuses_an_add_command_that_changes_another_path(empty_git_dir: Path) -> None:
+    runner = _Runner(edits="AGENTS.md")
 
-    outcome = apply_toolchain_setup(
-        ToolchainSetupPlan(manifest_fingerprint=_FINGERPRINT), runner, tmp_path, _LIMITS
-    )
+    with pytest.raises(SetupError, match="unexpected path: AGENTS.md"):
+        apply_toolchain_setup(_TWO_LANES, runner, empty_git_dir, _LIMITS)
+
+    assert not (empty_git_dir / SETUP_RECORD_DIR).exists()
+
+
+def test_empty_plan_runs_nothing_and_writes_nothing(empty_git_dir: Path) -> None:
+    runner = _Runner()
+    empty = ToolchainSetupPlan(manifest_fingerprint=_FINGERPRINT)
+
+    outcome, final = apply_toolchain_setup(empty, runner, empty_git_dir, _LIMITS)
 
     assert outcome == SetupOutcome(applied=())
+    assert final == empty
     assert runner.calls == []
-    assert not (tmp_path / SETUP_RECORD_DIR).exists()
+    assert sorted(path.name for path in empty_git_dir.iterdir()) == [".git"]
 
 
 @pytest.mark.parametrize(
@@ -707,13 +730,9 @@ def test_publish_refuses_a_change_outside_the_manifest_and_lockfile(
     bare_uv_repo: Path, tmp_path: Path
 ) -> None:
     result = run_toolchain_setup(
-        bare_uv_repo,
-        tmp_path / "data",
-        "factory/",
-        _Runner(edits="build-output.txt"),
-        _LIMITS,
-        _head(bare_uv_repo),
+        bare_uv_repo, tmp_path / "data", "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
     )
+    (result.worktree / "build-output.txt").write_text("late file\n", encoding="utf-8")
     publisher = _Publisher()
 
     with pytest.raises(
@@ -799,3 +818,70 @@ def test_a_long_failure_note_is_cut_and_the_state_stays_readable(
 
     assert state.note == "x" * 500
     assert trigger._load() == state
+
+
+def test_setup_writes_checks_of_the_tools_it_just_added(bare_uv_repo: Path, tmp_path: Path) -> None:
+    add_tools = "uv add --dev --no-sync ruff mypy pytest mutmut"
+
+    class _AddingRunner(_Runner):
+        def run(self, commands: Sequence[str], cwd: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def,override]
+            (cwd / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\n[dependency-groups]\n'
+                'dev = ["ruff", "mypy", "pytest", "mutmut"]\n',
+                encoding="utf-8",
+            )
+            return super().run(commands, cwd, *args, **kwargs)  # type: ignore[arg-type]
+
+    result = run_toolchain_setup(
+        bare_uv_repo, tmp_path / "data", "factory/", _AddingRunner(), _LIMITS, _head(bare_uv_repo)
+    )
+
+    assert result.plan.commands == (add_tools,)
+    agents = (result.worktree / "AGENTS.md").read_text(encoding="utf-8")
+    assert "uv run --no-sync ruff check --no-fix ." in agents
+    skill = (result.worktree / ".agents/skills/pr-gate/SKILL.md").read_text(encoding="utf-8")
+    assert "uv run --no-sync mypy ." in skill
+
+
+def test_files_only_setup_runs_no_command_and_opens_a_pull_request(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    (bare_uv_repo / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n[dependency-groups]\n'
+        'dev = ["ruff", "mypy", "pytest", "mutmut"]\n',
+        encoding="utf-8",
+    )
+    _commit(bare_uv_repo, "all tools present")
+    runner = _Runner()
+    publisher = _Publisher()
+
+    state = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher).tick()
+
+    assert runner.calls == []
+    assert state is not None
+    assert state.commands == ()
+    assert state.files == _FILES
+    body = str(publisher.calls[0]["body"])
+    assert "Added development dependencies" not in body
+    assert "- `AGENTS.md`" in body
+    assert publisher.calls[0]["commit_message"] == (
+        "chore: set up development tools and agent skills\n\n"
+        f"Agent instructions and skills: {', '.join(_FILES)}."
+    )
+
+
+def test_trigger_opens_a_second_pull_request_when_only_the_files_change(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", _Runner(), publisher)
+    trigger.tick()
+    (bare_uv_repo / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    _commit(bare_uv_repo, "own CLAUDE.md")
+
+    state = trigger.tick()
+
+    assert state is not None
+    assert state.commands == (_UV_ADD,)
+    assert "CLAUDE.md" not in state.files
+    assert state.pull_request_url == "https://github.com/o/r/pull/2"
