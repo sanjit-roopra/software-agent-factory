@@ -22,6 +22,7 @@ from .models import (
 from .toolchain_commands import (
     INCOMPLETE_INVENTORY_NOTE,
     YARN_BERRY_RUNNER,
+    YARN_LOCK,
     PackageRunner,
     root_version_files,
     select_package_runner,
@@ -121,7 +122,7 @@ def _add_command(
     prefix = package_runner.add_dev
     if inventory.pnpm_workspace and package_runner.lockfile == "pnpm-lock.yaml":
         prefix = f"{prefix} {PNPM_WORKSPACE_ROOT_FLAG}"
-    yarn_classic = package_runner.lockfile == "yarn.lock" and package_runner != YARN_BERRY_RUNNER
+    yarn_classic = package_runner.lockfile == YARN_LOCK and package_runner != YARN_BERRY_RUNNER
     if inventory.yarn_workspace and yarn_classic:
         prefix = f"{prefix} {YARN_WORKSPACE_ROOT_FLAG}"
     return f"{prefix} {' '.join(packages)}"

@@ -66,6 +66,21 @@ PYTHON_RUNNERS: tuple[PackageRunner, ...] = (
     ),
 )
 
+YARN_LOCK = "yarn.lock"
+YARN_RUN = "yarn run"
+BUN_LOCKFILES = ("bun.lock", "bun.lockb")
+
+
+def _bun_runner(lockfile: str) -> PackageRunner:
+    return PackageRunner(
+        lockfile=lockfile,
+        install="bun install --frozen-lockfile",
+        exec_prefix="bun run",
+        add_dev="bun add --dev --lockfile-only --ignore-scripts",
+        script_prefix="bun run",
+    )
+
+
 JAVASCRIPT_RUNNERS: tuple[PackageRunner, ...] = (
     PackageRunner(
         lockfile="package-lock.json",
@@ -82,36 +97,23 @@ JAVASCRIPT_RUNNERS: tuple[PackageRunner, ...] = (
         script_prefix="pnpm run",
     ),
     PackageRunner(
-        lockfile="yarn.lock",
+        lockfile=YARN_LOCK,
         install="yarn install --frozen-lockfile",
-        exec_prefix="yarn run",
+        exec_prefix=YARN_RUN,
         add_dev="yarn add --dev --ignore-scripts",
-        script_prefix="yarn run",
+        script_prefix=YARN_RUN,
     ),
-    PackageRunner(
-        lockfile="bun.lock",
-        install="bun install --frozen-lockfile",
-        exec_prefix="bun run",
-        add_dev="bun add --dev --lockfile-only --ignore-scripts",
-        script_prefix="bun run",
-    ),
-    PackageRunner(
-        lockfile="bun.lockb",
-        install="bun install --frozen-lockfile",
-        exec_prefix="bun run",
-        add_dev="bun add --dev --lockfile-only --ignore-scripts",
-        script_prefix="bun run",
-    ),
+    *(_bun_runner(lockfile) for lockfile in BUN_LOCKFILES),
 )
 
 #: Yarn 2 and later (Berry) has other flags than Yarn 1. A root ``.yarnrc.yml``
 #: marks a Berry project.
 YARN_BERRY_RUNNER = PackageRunner(
-    lockfile="yarn.lock",
+    lockfile=YARN_LOCK,
     install="yarn install --immutable",
-    exec_prefix="yarn run",
+    exec_prefix=YARN_RUN,
     add_dev="yarn add --dev --mode=update-lockfile",
-    script_prefix="yarn run",
+    script_prefix=YARN_RUN,
 )
 
 #: Every lockfile a lane can have, supported or not. A lane with two lockfiles
@@ -119,7 +121,7 @@ YARN_BERRY_RUNNER = PackageRunner(
 LANE_LOCKFILES: Mapping[ToolchainLane, frozenset[str]] = {
     ToolchainLane.PYTHON: frozenset({"uv.lock", "poetry.lock", "pipfile.lock", "pylock.toml"}),
     ToolchainLane.JAVASCRIPT: frozenset(
-        {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"}
+        {"package-lock.json", "pnpm-lock.yaml", YARN_LOCK, *BUN_LOCKFILES}
     ),
 }
 
