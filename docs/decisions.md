@@ -36,15 +36,24 @@ The factory takes over this model, in five slices.
 
 - If all `repository.commands` lists are empty, the factory makes commands from the inventory.
 - If the YAML configuration has any repository command, the factory uses only the YAML commands.
+- `repository.derive_commands: false` turns derivation off. It is on by default, because the factory runs automatically.
 - The factory makes commands only for tools that the repository has. It never adds a default tool here.
 - Each lane needs exactly one supported lockfile at the repository root: `uv.lock` or `poetry.lock` for Python, `package-lock.json` or `pnpm-lock.yaml` for JavaScript.
 - A `package.json` script such as `lint` or `test` replaces the tool command for its slot.
-- Every verify command only checks. It does not change files.
+- Each verify command is meant to check and not write. Flags such as `--no-fix` and `--ci` and the variable `CI=true` turn off fixes and snapshot writes.
 - Before the agents start, the factory runs the install command and each verify command on the unchanged base commit.
   It keeps only the commands that pass there, so a check that already fails does not block every run.
-  If a command changes the Git tree, the factory discards the changes and uses no derived commands.
-- `repository-commands.json` records the source, the commands, the rejected commands and the reasons.
+  Each lane is checked on its own. One lane's failure does not reject the commands of another lane.
+- The worktree must be clean and at its base commit before this check. If it is not, the factory runs nothing and deletes nothing.
+- If a lane's commands change the Git tree, the factory discards the changes and rejects that lane's verify commands.
+- `repository-commands.json` records the source, the commands, the rejected commands and the reasons. It never records command output.
+- Run verification uses this plan.
+- The routing safety floors still use only the YAML verify commands.
+  A derived `package.json` script is a file that the agent can change, so it does not unlock the SINGLE or CRITIQUE route.
+- Project integration verification still uses only the YAML commands.
 - Autonomous merge (ADR-022) still needs explicit YAML verify commands.
+- This check runs repository code before triage. That code includes install hooks and package scripts.
+  Use `repository.derive_commands: false` for a repository that you do not trust.
 
 ### Setup run
 

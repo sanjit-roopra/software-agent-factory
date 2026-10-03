@@ -159,6 +159,14 @@ class RepositoryConfig(ConfigModel):
     branch_prefix: str = Field(min_length=1)
     command_timeout_seconds: PositiveInt
     commands: RepositoryCommandsConfig = Field(default_factory=RepositoryCommandsConfig)
+    derive_commands: bool = Field(
+        default=True,
+        description=(
+            "When every repository.commands list is empty, derive commands from the "
+            "toolchain inventory and run them on the base commit before triage (ADR-034). "
+            "This runs repository code, such as install hooks and package scripts."
+        ),
+    )
     env_passthrough: list[str] = Field(
         default_factory=list,
         description=(

@@ -876,3 +876,56 @@ def test_file_line_counts_safety_and_validation(source_repo: Path, data_dir: Pat
     for invalid_path in invalid_paths:
         with pytest.raises(WorkspaceError, match="invalid repository-relative path"):
             ws.file_line_counts(evidence.tree_sha, [invalid_path])
+
+
+def _prepared(data_dir: Path, source_repo: Path) -> GitWorktreeWorkspace:
+    workspace = GitWorktreeWorkspace(data_dir, source_repo, "WI-probe")
+    workspace.prepare()
+    return workspace
+
+
+def test_fresh_worktree_is_clean_at_its_base(data_dir: Path, source_repo: Path) -> None:
+    workspace = _prepared(data_dir, source_repo)
+
+    assert workspace.is_clean()
+    assert workspace.is_at_clean_base()
+
+
+def test_ignored_files_keep_the_worktree_clean(data_dir: Path, source_repo: Path) -> None:
+    (source_repo / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+    _git(source_repo, "add", ".gitignore")
+    _git(source_repo, "commit", "-m", "ignore venv")
+    workspace = _prepared(data_dir, source_repo)
+    (workspace.path / ".venv").mkdir()
+    (workspace.path / ".venv" / "lib.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert workspace.is_clean()
+
+
+@pytest.mark.parametrize("change", ["untracked", "modified", "committed"])
+def test_changed_worktree_is_not_at_a_clean_base(
+    data_dir: Path, source_repo: Path, change: str
+) -> None:
+    workspace = _prepared(data_dir, source_repo)
+    if change == "untracked":
+        (workspace.path / "new.txt").write_text("x\n", encoding="utf-8")
+    else:
+        (workspace.path / "README.md").write_text("changed\n", encoding="utf-8")
+    if change == "committed":
+        _git(workspace.path, "commit", "-am", "local commit")
+
+    assert not workspace.is_at_clean_base()
+
+
+def test_discard_changes_restores_tracked_and_removes_untracked_files(
+    data_dir: Path, source_repo: Path
+) -> None:
+    workspace = _prepared(data_dir, source_repo)
+    (workspace.path / "README.md").write_text("changed\n", encoding="utf-8")
+    (workspace.path / "new.txt").write_text("x\n", encoding="utf-8")
+
+    workspace.discard_changes()
+
+    assert (workspace.path / "README.md").read_text() == "hello\n"
+    assert not (workspace.path / "new.txt").exists()
+    assert workspace.is_at_clean_base()

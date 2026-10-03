@@ -155,6 +155,10 @@ repository:
     install: []
     verify: []
     build: []
+  # With all command lists empty, derive commands from the repository's own
+  # tools and keep those that pass on the base commit (ADR-034). This runs
+  # repository code before triage. Set false for an untrusted repository.
+  derive_commands: true
   # Extra environment variable names repository commands may read. The
   # verifier always provides PATH, HOME, LANG and TERM and never inherits
   # credentials (GH_TOKEN, AWS_*, ...) implicitly.

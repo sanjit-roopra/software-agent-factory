@@ -518,3 +518,38 @@ def test_only_known_package_scripts_are_recorded(tmp_path: Path) -> None:
     inventory = _inventory(tmp_path)
 
     assert inventory.package_json_scripts == ("test", "type-check")
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "self_targeting"),
+    [
+        ("pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nfiles = ["src"]\n', True),
+        ("pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nstrict = true\n', False),
+        ("mypy.ini", "[mypy]\nfiles = src\n", True),
+        ("setup.cfg", "[mypy]\nstrict = True\n", False),
+    ],
+)
+def test_mypy_config_with_files_is_self_targeting(
+    tmp_path: Path, name: str, text: str, self_targeting: bool
+) -> None:
+    _write(tmp_path, "app.py", "x = 1\n")
+    _write(tmp_path, name, text)
+
+    inventory = _inventory(tmp_path)
+
+    assert (ToolchainProvider.MYPY in inventory.self_targeting_providers) is self_targeting
+    assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.TYPECHECK).provider is (
+        ToolchainProvider.MYPY
+    )
+
+
+@pytest.mark.parametrize("scripts", [None, [], "test"])
+def test_package_json_without_a_script_table_records_no_scripts(
+    tmp_path: Path, scripts: object
+) -> None:
+    payload: dict[str, object] = {"name": "x"}
+    if scripts is not None:
+        payload["scripts"] = scripts
+    _write(tmp_path, "package.json", json.dumps(payload))
+
+    assert _inventory(tmp_path).package_json_scripts == ()

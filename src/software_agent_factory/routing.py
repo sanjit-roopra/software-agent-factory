@@ -770,13 +770,8 @@ def assess_safety_floors(
     work_item: WorkItem,
     repository_profile: RepositoryProfile,
     config: FactoryConfig,
-    *,
-    has_verify_commands: bool | None = None,
 ) -> set[str]:
     """Return the subset of configured option IDs that satisfy safety floors.
-
-    ``has_verify_commands`` overrides the configured verify commands with the
-    commands the run actually uses, such as derived commands (ADR-034).
 
     Constraints:
     - Explicit WorkItem risk requiring human approval (R2, R3): disallow SINGLE and CRITIQUE.
@@ -796,8 +791,7 @@ def assess_safety_floors(
         requires_human = config.requires_human_approval(work_item.risk)
 
     has_acceptance_criteria = bool(work_item.acceptance_criteria)
-    if has_verify_commands is None:
-        has_verify_commands = bool(config.repository.commands.verify)
+    has_verify_commands = bool(config.repository.commands.verify)
     named_paths = derive_named_paths(work_item)
     has_narrow_scope = bool(named_paths)
 
@@ -943,12 +937,8 @@ def determine_route(
     repository_profile: RepositoryProfile,
     config: FactoryConfig,
     advisor: RouteAdvisor | None,
-    *,
-    has_verify_commands: bool | None = None,
 ) -> RouteDecision:
     """Compute legal options, run RouteAdvisor if appropriate, and return RouteDecision."""
-    if has_verify_commands is None:
-        has_verify_commands = bool(config.repository.commands.verify)
     request_hash = hashlib.sha256(
         f"{work_item.id}:{work_item.title}:{work_item.description}".encode("utf-8")
     ).hexdigest()
@@ -966,9 +956,7 @@ def determine_route(
     ]
     options_by_id = {opt.id: opt for opt in all_options}
 
-    legal_ids = assess_safety_floors(
-        work_item, repository_profile, config, has_verify_commands=has_verify_commands
-    )
+    legal_ids = assess_safety_floors(work_item, repository_profile, config)
     offered_options = [opt for opt in all_options if opt.id in legal_ids]
     legal_full_fallback = find_legal_full_fallback(offered_options)
 
@@ -1075,7 +1063,7 @@ def determine_route(
         repository_markers=list(repository_profile.markers),
         technologies=[t.value for t in repository_profile.technologies],
         package_managers=[pm.value for pm in repository_profile.package_managers],
-        has_verify_commands=has_verify_commands,
+        has_verify_commands=bool(config.repository.commands.verify),
         options=offered_options,
     )
 

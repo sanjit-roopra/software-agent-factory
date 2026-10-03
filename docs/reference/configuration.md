@@ -155,6 +155,7 @@ repository:
     install: []
     verify: []
     build: []
+  derive_commands: true
   env_passthrough: []
   log_capture_bytes: 32768
   max_changed_files: 100
@@ -168,6 +169,7 @@ repository:
 | `commands.install` | list of strings | `[]` | Dependency installation, run first. |
 | `commands.verify` | list of strings | `[]` | Lint, types, tests. Run second. |
 | `commands.build` | list of strings | `[]` | Build. Run last. |
+| `derive_commands` | bool | `true` | If all `commands` lists are empty, derive commands from the tools in the repository and run them on the base commit before triage (ADR-034). This runs repository code. |
 | `env_passthrough` | list of env var names | `[]` | Extra variables repository commands can read. |
 | `log_capture_bytes` | int > 0 | `32768` | Max stdout/stderr bytes retained per command, after redaction. |
 | `max_changed_files` | int > 0 | `100` | Hard ceiling on changed files in one change. |

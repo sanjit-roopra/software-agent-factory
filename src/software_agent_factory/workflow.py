@@ -71,6 +71,7 @@ from .agents import (
     is_retryable_typed_artifact_failure,
     runtime_exception_failure_reason,
 )
+from .command_probe import ProbeLimits, probe_candidates
 from .config import (
     FactoryConfig,
     RepositoryCommandsConfig,
@@ -119,7 +120,6 @@ from .models import (
     InvocationRecord,
     PlanDecisionAnswers,
     PlanStep,
-    RejectedCommand,
     RepairContext,
     RepositoryCommandsPlan,
     RepositoryCommandsSource,
@@ -190,7 +190,7 @@ from .telemetry import (
     record_rework,
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
-from .toolchain_commands import CandidateCommands, candidate_commands
+from .toolchain_commands import candidate_commands
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -443,7 +443,9 @@ class WorkflowController:
         )
         self._command_runner = verifier if verifier is not None else DeterministicVerifier()
         self._verifier = (
-            repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
+            repository_verifier
+            if repository_verifier is not None
+            else RepositoryVerifier(self._command_runner)
         )
         self._scope_policy = (
             scope_policy
@@ -844,7 +846,7 @@ class WorkflowController:
                 )
             self._store.save_artifact(run.id, repository_profile)
             inventory = self._save_toolchain_inventory(run, workspace_path, repository_profile)
-            self._save_repository_commands(run, workspace, repository_profile, inventory)
+            self._resolve_repository_commands(run, workspace, repository_profile, inventory)
             return self._execute(
                 run,
                 work_item,
@@ -879,18 +881,18 @@ class WorkflowController:
         self._store.save_artifact(run.id, inventory)
         return inventory
 
-    def _save_repository_commands(
+    def _resolve_repository_commands(
         self,
         run: FactoryRun,
         workspace: GitWorktreeWorkspace,
         repository_profile: RepositoryProfile,
         inventory: ToolchainInventory,
-    ) -> RepositoryCommandsPlan:
+    ) -> None:
         """Persist the commands this run uses (ADR-034).
 
-        Configured commands always win. Without them, the factory derives
-        commands from the inventory and keeps only those that pass on the
-        unchanged base commit, so a red baseline never blocks every run.
+        Configured commands always win. Without them, and unless derivation is
+        turned off, the factory derives commands from the inventory and keeps
+        only those that pass on the unchanged base commit.
         """
         configured = self._config.repository.commands
         if configured.install or configured.verify or configured.build:
@@ -900,15 +902,28 @@ class WorkflowController:
                 verify=tuple(configured.verify),
                 build=tuple(configured.build),
             )
+        elif not self._config.repository.derive_commands:
+            plan = RepositoryCommandsPlan(
+                source=RepositoryCommandsSource.NONE,
+                notes=("command derivation is turned off",),
+            )
         else:
+            limits = ProbeLimits(
+                timeout_seconds=self._config.repository.command_timeout_seconds,
+                env_passthrough=tuple(self._config.repository.env_passthrough),
+                capture_bytes=self._config.repository.log_capture_bytes,
+            )
             try:
                 with measure_operation(
                     run.performance,
                     "operation.repository_commands",
                     operation="repository_commands",
                 ):
-                    plan = self._probe_derived_commands(
-                        workspace, candidate_commands(inventory, repository_profile)
+                    plan = probe_candidates(
+                        self._command_runner,
+                        workspace,
+                        candidate_commands(inventory, repository_profile),
+                        limits,
                     )
             except (OSError, ValueError, WorkspaceError) as exc:
                 plan = RepositoryCommandsPlan(
@@ -916,65 +931,8 @@ class WorkflowController:
                     notes=(f"command derivation degraded: {type(exc).__name__}",),
                 )
         self._store.save_artifact(run.id, plan)
-        return plan
 
-    def _probe_derived_commands(
-        self, workspace: GitWorktreeWorkspace, candidates: CandidateCommands
-    ) -> RepositoryCommandsPlan:
-        if not candidates.verify:
-            return RepositoryCommandsPlan(
-                source=RepositoryCommandsSource.NONE, notes=candidates.notes
-            )
-        install_report = self._run_baseline(workspace, candidates.install)
-        if not install_report.passed:
-            return RepositoryCommandsPlan(
-                source=RepositoryCommandsSource.NONE,
-                rejected=tuple(
-                    RejectedCommand(command=command, reason="install failed on the base commit")
-                    for command in (*candidates.install, *candidates.verify)
-                ),
-                notes=candidates.notes,
-            )
-        kept: list[str] = []
-        rejected: list[RejectedCommand] = []
-        for command in candidates.verify:
-            report = self._run_baseline(workspace, (command,))
-            if report.passed:
-                kept.append(command)
-            else:
-                rejected.append(RejectedCommand(command=command, reason=_baseline_failure(report)))
-        if not workspace.is_clean():
-            workspace.discard_changes()
-            return RepositoryCommandsPlan(
-                source=RepositoryCommandsSource.NONE,
-                rejected=tuple(
-                    RejectedCommand(
-                        command=command, reason="changed the Git tree on the base commit"
-                    )
-                    for command in candidates.verify
-                ),
-                notes=candidates.notes,
-            )
-        return RepositoryCommandsPlan(
-            source=RepositoryCommandsSource.DERIVED if kept else RepositoryCommandsSource.NONE,
-            install=candidates.install if kept else (),
-            verify=tuple(kept),
-            rejected=tuple(rejected),
-            notes=candidates.notes,
-        )
-
-    def _run_baseline(
-        self, workspace: GitWorktreeWorkspace, commands: Sequence[str]
-    ) -> VerificationReport:
-        return self._command_runner.run(
-            list(commands),
-            cwd=workspace.path,
-            timeout_seconds=self._config.repository.command_timeout_seconds,
-            env_passthrough=self._config.repository.env_passthrough,
-            capture_bytes=self._config.repository.log_capture_bytes,
-        )
-
-    def _repository_commands(self, run_id: str) -> RepositoryCommandsConfig:
+    def _commands_for_run(self, run_id: str) -> RepositoryCommandsConfig:
         """Return the commands a run uses. Runs without a plan use the configuration."""
         try:
             plan = self._store.load_artifact(run_id, RepositoryCommandsPlan)
@@ -1648,7 +1606,6 @@ class WorkflowController:
                 repository_profile,
                 self._config,
                 self._route_advisor,
-                has_verify_commands=bool(self._repository_commands(run.id).verify),
             )
             self._store.save_artifact(run.id, route_decision)
             run = run.model_copy(
@@ -1747,7 +1704,7 @@ class WorkflowController:
 
             run = self.transition(run, WorkflowState.PLANNING)
             execution_plan = self._synthesize_execution_plan(
-                work_item, workspace, self._repository_commands(run.id).verify
+                work_item, workspace, self._commands_for_run(run.id).verify
             )
             self._store.save_artifact(run.id, execution_plan)
 
@@ -3650,7 +3607,7 @@ class WorkflowController:
     def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
         """Run install -> verify -> build with per-command persisted logs."""
         return self._verifier.run(
-            self._repository_commands(run.id),
+            self._commands_for_run(run.id),
             cwd=context.workspace.path,
             run_dir=self._store.run_dir(run.id),
             timeout_seconds=self._config.repository.command_timeout_seconds,
@@ -4834,13 +4791,3 @@ def _commit_message(context: _RunContext, run_id: str) -> str:
         f"Factory run: `{run_id}`\n"
         f"Work item: `{context.work_item.id}`"
     )
-
-
-def _baseline_failure(report: VerificationReport) -> str:
-    """Describe a baseline failure without quoting command output."""
-    result = report.deterministic_checks[-1] if report.deterministic_checks else None
-    if result is None:
-        return "failed on the base commit"
-    if result.timed_out:
-        return "timed out on the base commit"
-    return f"failed on the base commit with exit code {result.exit_code}"

@@ -648,6 +648,13 @@ class GitWorktreeWorkspace:
         """
         return not _run_git(self.path, ["status", "--porcelain"]).stdout.strip()
 
+    def is_at_clean_base(self) -> bool:
+        """Return whether the worktree is clean and its HEAD is the base commit."""
+        if self.base_commit is None:
+            self._load_or_compute_base_commit()
+        head = _run_git(self.path, ["rev-parse", "HEAD"]).stdout.strip()
+        return head == self.base_commit and self.is_clean()
+
     def discard_changes(self) -> None:
         """Return the worktree to its HEAD, removing untracked files that are not ignored."""
         _run_git(self.path, ["reset", "--hard", "HEAD"])

@@ -109,19 +109,21 @@ def _provider_signals(
     )
 
 
-#: ``package.json`` scripts that can stand in for a slot provider. Only these
-#: names are recorded, so script names from the repository never reach an artifact.
-KNOWN_PACKAGE_SCRIPTS = (
-    "test",
-    "lint",
-    "typecheck",
-    "type-check",
-    "format:check",
-    "check:format",
-)
+#: ``package.json`` scripts that replace the provider command for a slot, in
+#: order of preference. A script is the command the repository chose.
+SLOT_SCRIPTS: Mapping[ToolchainSlot, tuple[str, ...]] = {
+    ToolchainSlot.FORMAT: ("format:check", "check:format"),
+    ToolchainSlot.LINT: ("lint",),
+    ToolchainSlot.TYPECHECK: ("typecheck", "type-check"),
+    ToolchainSlot.TEST: ("test",),
+}
+
+#: Only these script names are recorded, so other script names from the
+#: repository never reach an artifact.
+KNOWN_PACKAGE_SCRIPTS = tuple(name for names in SLOT_SCRIPTS.values() for name in names)
 
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
-_INI_FILES = ("setup.cfg", "tox.ini")
+_INI_FILES = ("setup.cfg", "tox.ini", "mypy.ini", ".mypy.ini")
 
 LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
     ToolchainLane.PYTHON: {
@@ -231,8 +233,10 @@ PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
 class _RootEvidence:
     files: frozenset[str] = frozenset()
     pyproject_tools: set[str] = field(default_factory=set)
-    #: ``(file name, section)`` pairs from ``setup.cfg`` and ``tox.ini``.
+    #: ``(file name, section)`` pairs from the root INI files.
     ini_sections: set[tuple[str, str]] = field(default_factory=set)
+    #: Providers whose own configuration names the files to check.
+    self_targeting: set[ToolchainProvider] = field(default_factory=set)
     package_json_keys: set[str] = field(default_factory=set)
     package_json_scripts: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
@@ -273,6 +277,7 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
         bindings=tuple(bindings),
         complete=not incomplete and not facts.root_evidence.warnings,
         package_json_scripts=tuple(sorted(facts.root_evidence.package_json_scripts)),
+        self_targeting_providers=tuple(sorted(facts.root_evidence.self_targeting)),
         warnings=(*incomplete, *facts.root_evidence.warnings),
     )
 
@@ -359,11 +364,16 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
         tool = payload.get("tool") if isinstance(payload, dict) else None
         if isinstance(tool, dict):
             evidence.pyproject_tools.update(str(name) for name in tool)
+            mypy = tool.get("mypy")
+            if isinstance(mypy, dict) and "files" in mypy:
+                evidence.self_targeting.add(ToolchainProvider.MYPY)
     for ini_name in _INI_FILES:
         if ini_name in names:
             sections = _parse_config(root / ini_name, _ini_sections, evidence)
             if sections is not None:
                 evidence.ini_sections.update((ini_name, section) for section in sections)
+                if "files" in sections.get("mypy", ()):
+                    evidence.self_targeting.add(ToolchainProvider.MYPY)
     if "package.json" in names:
         payload = _parse_config(root / "package.json", json.loads, evidence)
         if isinstance(payload, dict):
@@ -376,10 +386,11 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
     return evidence
 
 
-def _ini_sections(text: str) -> list[str]:
+def _ini_sections(text: str) -> dict[str, list[str]]:
+    """Return each section name with the option names it sets."""
     parser = configparser.ConfigParser(interpolation=None)
     parser.read_string(text)
-    return parser.sections()
+    return {section: parser.options(section) for section in parser.sections()}
 
 
 def _parse_config(path: Path, parse: Callable[[str], Any], evidence: _RootEvidence) -> Any | None:
