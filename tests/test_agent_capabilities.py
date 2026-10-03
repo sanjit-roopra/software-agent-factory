@@ -5,9 +5,7 @@ import pytest
 from software_agent_factory.agent_capabilities import AgentCapability, capability_for
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.models import (
-    AgentPurpose,
     AgentRole,
-    ChangeSet,
     WorkItem,
 )
 
@@ -30,27 +28,6 @@ def _request(role: AgentRole, **overrides: object) -> AgentRequest:
     }
     defaults.update(overrides)
     return AgentRequest(**defaults)
-
-
-def test_correct_change_set_purpose_is_no_tools() -> None:
-    """CORRECT_CHANGE_SET always targets IMPLEMENTER, so this also covers the
-    purpose check winning over the role (which alone would mean
-    IMPLEMENTER_WRITE); AgentRequest validation forbids pairing this purpose
-    with any other role, so that case cannot be exercised separately."""
-    change_set = ChangeSet(
-        summary="Initial summary",
-        changed_files=["app.py"],
-        tests_added=[],
-        commands_run=[],
-    )
-    request = _request(
-        AgentRole.IMPLEMENTER,
-        purpose=AgentPurpose.CORRECT_CHANGE_SET,
-        change_set=change_set,
-        workspace_path="/repo",
-    )
-
-    assert capability_for(request) is AgentCapability.NO_TOOLS
 
 
 def test_implementer_role_is_implementer_write() -> None:

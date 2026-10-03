@@ -371,11 +371,6 @@ class TransitionError(Exception):
     not present in ``ALLOWED_TRANSITIONS``."""
 
 
-class WorkItemAlreadyActiveError(Exception):
-    """Raised internally when another live run owns this work item's
-    workspace. Surfaced as a non-persisted outcome, never as a junk run."""
-
-
 def delivery_policy_fingerprint(config: FactoryConfig) -> str:
     """Bind recovery to the human policy under which the run was started."""
     payload = config.model_dump(
@@ -2408,7 +2403,6 @@ class WorkflowController:
         specification: Specification | None = None,
         research_report: ResearchReport | None = None,
         execution_plan: ExecutionPlan | None = None,
-        change_set: ChangeSet | None = None,
         diff: str | None = None,
         changed_files: list[str] | None = None,
         verification_report: VerificationReport | None = None,
@@ -2438,7 +2432,6 @@ class WorkflowController:
             specification=specification,
             research_report=research_report,
             execution_plan=execution_plan,
-            change_set=change_set,
             diff=diff,
             changed_files=changed_files or [],
             verification_report=verification_report,

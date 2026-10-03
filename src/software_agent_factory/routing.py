@@ -582,13 +582,6 @@ class FakeRouteAdvisor:
         )
 
 
-class NoOpRouteAdvisor:
-    """Always raises to simulate unconfigured or unavailable routing."""
-
-    def decide_route(self, request: RouteRequest) -> RouteResponse:
-        raise JevRouteError("routing advisor is not configured or disabled")
-
-
 # ---------------------------------------------------------------------------
 # Deterministic Safety Floors & Route Determination
 # ---------------------------------------------------------------------------

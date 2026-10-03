@@ -11,7 +11,6 @@ installed wheel or a frozen PyInstaller bundle.
 from __future__ import annotations
 
 import json
-import platform
 import sys
 import tomllib
 from functools import lru_cache
@@ -64,17 +63,6 @@ def get_version_source() -> str:
     except PackageNotFoundError:
         return "pyproject"
     return "installed-metadata"
-
-
-@lru_cache(maxsize=1)
-def get_runtime_details() -> dict[str, str]:
-    """Expose lightweight runtime details for diagnostics and build scripts."""
-    return {
-        "version": get_version(),
-        "version_source": get_version_source(),
-        "python_version": platform.python_version(),
-        "frozen": "true" if getattr(sys, "frozen", False) else "false",
-    }
 
 
 def get_program_name() -> str:

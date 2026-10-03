@@ -109,9 +109,6 @@ _NUMBERED_ANSWER_PATTERN = re.compile(r"^(?P<number>[1-9][0-9]?)\.\s+(?P<answer>
 _ESCALATION_MARKER_TEMPLATE = (
     "<!-- software-agent-factory:escalation run={run_id} episode={episode_id} -->"
 )
-_ESCALATION_MARKER_REGEX = re.compile(
-    r"<!--\s*software-agent-factory:escalation\s+run=(?P<run>[A-Za-z0-9._-]+)\s+episode=(?P<episode>[A-Za-z0-9._-]+)\s*-->"
-)
 
 
 def generate_episode_id() -> str:

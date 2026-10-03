@@ -21,7 +21,6 @@ from software_agent_factory.agents import (
     workspace_cwd,
 )
 from software_agent_factory.models import (
-    AgentPurpose,
     AgentRole,
     AttemptTrigger,
     ChangeSet,
@@ -455,36 +454,17 @@ def test_validate_runtime_request_rejects_implementer_without_workspace_path() -
         validate_runtime_request(request)
 
 
-def test_validate_runtime_request_correction_without_workspace_path_uses_correction_wording() -> (
-    None
-):
+def test_validate_runtime_request_implementer_with_empty_workspace_path_is_rejected() -> None:
     request = AgentRequest(
         role=AgentRole.IMPLEMENTER,
-        purpose=AgentPurpose.CORRECT_CHANGE_SET,
         model="claude-sonnet-5",
         reasoning="high",
         work_item=_work_item(),
-        change_set=ChangeSet(summary="Fix output shape"),
-        timeout_seconds=30,
-    )
-
-    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
-        validate_runtime_request(request)
-
-
-def test_validate_runtime_request_correction_with_empty_workspace_path_is_rejected() -> None:
-    request = AgentRequest(
-        role=AgentRole.IMPLEMENTER,
-        purpose=AgentPurpose.CORRECT_CHANGE_SET,
-        model="claude-sonnet-5",
-        reasoning="high",
-        work_item=_work_item(),
-        change_set=ChangeSet(summary="Fix output shape"),
         workspace_path="",
         timeout_seconds=30,
     )
 
-    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
+    with pytest.raises(ValueError, match="IMPLEMENTER requests require workspace_path"):
         validate_runtime_request(request)
 
 

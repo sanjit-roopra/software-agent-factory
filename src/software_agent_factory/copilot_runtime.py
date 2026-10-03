@@ -544,11 +544,6 @@ def extract_assistant_text(stdout: str) -> str:
 def _permission_profile(request: AgentRequest) -> _PermissionProfile:
     """Map the runtime-neutral :class:`AgentCapability` onto Copilot tool names."""
     capability = capability_for(request)
-    if capability is AgentCapability.NO_TOOLS:
-        return _PermissionProfile(
-            available_tools=(),
-            denied_permissions=("shell", "write", "url"),
-        )
     if capability is AgentCapability.IMPLEMENTER_WRITE:
         return _PermissionProfile(
             available_tools=IMPLEMENTER_TOOLS,

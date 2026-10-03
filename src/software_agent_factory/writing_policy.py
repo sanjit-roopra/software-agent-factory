@@ -27,8 +27,6 @@ from .models import (
 )
 
 WritingType = Literal["procedural", "descriptive"]
-POLICY_NAME = "controlled technical English"
-POLICY_VERSION = 1
 SIMPLE_ENGLISH_REVISION = "61ee200efbd423050aab982eed94226229891ae0"
 
 logger = logging.getLogger(__name__)

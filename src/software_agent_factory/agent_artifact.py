@@ -26,7 +26,6 @@ from .agents import AgentResult
 from .models import (
     AgentPurpose,
     AgentRole,
-    ChangeSet,
     ModelBase,
     PerformanceRecord,
     ProjectPlan,
@@ -96,13 +95,6 @@ def artifact_spec(
         return _ArtifactSpec(
             model_class=ProjectPlan,
             result_field="project_plan",
-        )
-    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
-        if normalize_role(role) != AgentRole.IMPLEMENTER.value:
-            raise ValueError("ChangeSet correction requires the IMPLEMENTER role")
-        return _ArtifactSpec(
-            model_class=ChangeSet,
-            result_field="change_set",
         )
     normalized_role = normalize_role(role)
     try:

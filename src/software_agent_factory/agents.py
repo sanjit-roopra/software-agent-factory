@@ -89,8 +89,8 @@ class AgentRequest(ModelBase):
     judgement, and ``repair_context`` the bounded reason a repair attempt was
     started. The tester contract is ``specification`` + ``execution_plan`` +
     ``diff`` + ``changed_files`` + ``verification_report``; the reviewer
-    contract adds ``test_report``. Neither receives ``change_set``:
-    deliberately no implementer self-justification.
+    contract adds ``test_report``. Neither receives the implementer's
+    ``ChangeSet``: deliberately no implementer self-justification.
     """
 
     role: AgentRole
@@ -103,7 +103,6 @@ class AgentRequest(ModelBase):
     specification: Specification | None = None
     research_report: ResearchReport | None = None
     execution_plan: ExecutionPlan | None = None
-    change_set: ChangeSet | None = None
     diff: str | None = None
     changed_files: list[str] = Field(default_factory=list)
     verification_report: VerificationReport | None = None
@@ -130,11 +129,6 @@ class AgentRequest(ModelBase):
                 raise ValueError("project decomposition requires the PLANNER role")
             if self.project_brief is None:
                 raise ValueError("project decomposition requires project_brief")
-        elif self.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            if self.role is not AgentRole.IMPLEMENTER:
-                raise ValueError("ChangeSet correction requires the IMPLEMENTER role")
-            if self.change_set is None:
-                raise ValueError("ChangeSet correction requires the rejected change_set")
         return self
 
 
@@ -144,10 +138,7 @@ def workspace_cwd(request: AgentRequest) -> Path:
     Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
     and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
     apply the exact same rule: the request's workspace when supplied,
-    otherwise the process's current working directory. ``CORRECT_CHANGE_SET``
-    needs an explicit workspace, but
-    :func:`validate_runtime_request` enforces that before any runtime resolves
-    a cwd.
+    otherwise the process's current working directory.
     """
     if request.workspace_path:
         return Path(request.workspace_path).expanduser().resolve()
@@ -160,18 +151,12 @@ def validate_runtime_request(request: AgentRequest) -> None:
     Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
     and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
     enforce the same runtime-neutral checks, in the same order, before
-    either builds a command or starts a subprocess: a ``CORRECT_CHANGE_SET``
-    request needs a ``workspace_path`` (a rejected ``ChangeSet`` must be
-    corrected in the workspace it was produced in), an
+    either builds a command or starts a subprocess: an
     :attr:`AgentRole.IMPLEMENTER` request always needs a ``workspace_path``
     (there is no "current directory" an implementer should ever write to),
     and ``timeout_seconds`` must be positive (a runtime cannot bound a
-    subprocess call against a non-positive deadline). The correction check
-    runs first because every correction request is an ``IMPLEMENTER`` request,
-    and its more specific wording must win.
+    subprocess call against a non-positive deadline).
     """
-    if request.purpose is AgentPurpose.CORRECT_CHANGE_SET and not request.workspace_path:
-        raise ValueError("ChangeSet correction requires workspace_path")
     if request.role is AgentRole.IMPLEMENTER and not request.workspace_path:
         raise ValueError("IMPLEMENTER requests require workspace_path")
     if request.timeout_seconds < 1:
@@ -286,15 +271,6 @@ class FakeAgentRuntime:
     def _default(self, request: AgentRequest) -> AgentResult:
         if request.purpose is AgentPurpose.DECOMPOSE_PROJECT:
             return self._default_project_plan(request)
-        if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
-            assert request.change_set is not None
-            return AgentResult(
-                role=AgentRole.IMPLEMENTER,
-                success=True,
-                change_set=request.change_set.model_copy(
-                    update={"summary": "Corrected the implementation summary."}
-                ),
-            )
         if request.role is AgentRole.TRIAGE:
             return self._default_triage(request)
         if request.role is AgentRole.REFINER:

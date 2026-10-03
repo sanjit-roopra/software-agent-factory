@@ -16,7 +16,6 @@ def _clear_version_caches() -> None:
     version.get_build_info.cache_clear()
     version.get_version.cache_clear()
     version.get_version_source.cache_clear()
-    version.get_runtime_details.cache_clear()
     version._read_pyproject_version.cache_clear()
 
 

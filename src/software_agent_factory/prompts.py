@@ -69,8 +69,6 @@ _POLISH_GUIDANCE_TITLE = "Simplify and polish guidance"
 _REPAIR_CONTEXT_TITLE = "Repair context"
 _CURRENT_DIFF_TITLE = "Current diff"
 _OUTPUT_REJECTION_TITLE = "Previous output rejection"
-_CHANGE_SET_TO_CORRECT_TITLE = "Supplied ChangeSet to correct"
-_CORRECTION_CONTEXT_TITLE = "Correction context"
 _PRIOR_FINDINGS_TITLE = "Previously reported blocking issues from this run"
 _ACCEPTED_DEBT_TITLE = "Controller-accepted review debt"
 _ACCEPTED_DEBT_RULE_TITLE = "Accepted-debt review rule"
@@ -259,12 +257,6 @@ def build_continuation_prompt(
 
     ``sections_seen`` is the section map of this request alone: a stale title
     is dropped, so it is sent again if it comes back.
-
-    A ``CORRECT_CHANGE_SET`` request is the exception. It carries only the work
-    item, the ChangeSet and the correction context, but the specification, plan
-    and research report still apply to the session. It has no "No longer
-    applies" section, and its ``sections_seen`` is ``seen`` updated with this
-    request, so the next round does not send those sections again.
     """
 
     sections = build_prompt_sections(request)
@@ -274,8 +266,7 @@ def build_continuation_prompt(
         for section in sections
         if section.title != _OUTPUT_CONTRACT_TITLE and seen.get(section.title) != section.digest
     ]
-    correction = request.purpose is AgentPurpose.CORRECT_CHANGE_SET
-    stale = [] if correction else sorted(title for title in seen if title not in current)
+    stale = sorted(title for title in seen if title not in current)
     if not changed and not stale:
         return None
     contract = next(section for section in sections if section.title == _OUTPUT_CONTRACT_TITLE)
@@ -284,8 +275,7 @@ def build_continuation_prompt(
         _CONTINUATION_LEAD,
         *(section.labelled_text for section in (*changed, *notices, contract)),
     ]
-    sections_seen = {**seen, **current} if correction else current
-    return ContinuationPrompt(text="\n\n".join(parts), sections_seen=sections_seen)
+    return ContinuationPrompt(text="\n\n".join(parts), sections_seen=current)
 
 
 def _stale_notice(titles: Sequence[str]) -> str:
@@ -305,8 +295,6 @@ _REVIEWER_REPAIR_RULES = """- Review only the targeted repair.
 def _model_class_for(normalized_role: str, purpose: AgentPurpose) -> type[ModelBase]:
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         return ProjectPlan
-    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
-        return ChangeSet
     return artifact_model_for_role(normalized_role)
 
 
@@ -325,13 +313,6 @@ def _role_instructions(
     repair_review: bool = False,
     risk_assessment: bool = True,
 ) -> str:
-    if purpose is AgentPurpose.CORRECT_CHANGE_SET:
-        return """Correct only the prose fields in the supplied ChangeSet.
-- Update the summary to describe the change accurately.
-- Do not edit files or run commands.
-- Do not change workflow state.
-- Preserve the verified changed_files, tests_added, and commands_run.
-- Return ChangeSet metadata only."""
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         return """Create the smallest sufficient DAG of reviewable work items.
 - Use one task only for one bounded pull request.
@@ -465,14 +446,6 @@ def _diff_or_none(diff: str | None) -> str | None:
 
 def _dump_findings(findings: Sequence[ReviewFinding]) -> list[dict[str, object]]:
     return [finding.model_dump(mode="json") for finding in findings]
-
-
-def _correction_sections(request: AgentRequest) -> list[tuple[str, object]]:
-    return _given(
-        (_WORK_ITEM_TITLE, _work_item_brief(request.work_item)),
-        (_CHANGE_SET_TO_CORRECT_TITLE, request.change_set),
-        (_CORRECTION_CONTEXT_TITLE, request.repair_context),
-    )
 
 
 def _decompose_sections(request: AgentRequest) -> list[tuple[str, object]]:
@@ -660,7 +633,6 @@ def _reviewer_sections(request: AgentRequest) -> list[tuple[str, object]]:
 
 
 _PURPOSE_SECTIONS: dict[AgentPurpose, Callable[[AgentRequest], list[tuple[str, object]]]] = {
-    AgentPurpose.CORRECT_CHANGE_SET: _correction_sections,
     AgentPurpose.DECOMPOSE_PROJECT: _decompose_sections,
 }
 

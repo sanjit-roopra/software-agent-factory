@@ -952,8 +952,6 @@ class RunScanResult:
         return reasons
 
 
-_RunScanResult = RunScanResult
-
 DEFAULT_SCAN_CACHE_TTL: float = 2.0
 
 
@@ -1080,9 +1078,6 @@ def scan_readable_runs(
         scan_truncated=scan_truncated,
         unreadable_reasons=unreadable_reasons,
     )
-
-
-_scan_readable_runs = scan_readable_runs
 
 
 def _last_signal_at(run: FactoryRun) -> datetime | None:

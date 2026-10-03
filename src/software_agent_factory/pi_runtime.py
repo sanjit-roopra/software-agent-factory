@@ -41,8 +41,7 @@ is the single place that decides this by role. Those roles launch pi with
 ``--session <path>``, where
 :class:`~software_agent_factory.pi_sessions.PiSessionStore` chooses the file
 of the previous call (resumed) or a new one. Every other role launches with
-``--no-session``. A ``CORRECT_CHANGE_SET`` call belongs to the IMPLEMENTER, so
-it resumes that session, with ``--no-tools`` as before. After the call, the
+``--no-session``. After the call, the
 store records whether pi settled cleanly: a timeout, a lost process, an RPC
 error or an assistant error makes the next round start a new session. A
 response that only fails artifact parsing still counts as settled, so the
@@ -55,8 +54,7 @@ sections that are new to the session or changed since it received them, then
 the output contract. The session store keeps, per session, the content hash of
 each section the session has received. A call that starts a session sends the
 full prompt and records the hash of every section. A call that continues one
-records the hashes of the sections of its own request. A ChangeSet correction
-instead keeps the earlier ones, since the sections it omits still apply. When a call could resume
+records the hashes of the sections of its own request. When a call could resume
 but nothing is new, the runtime starts a new session with
 :meth:`~software_agent_factory.pi_sessions.PiSessionStore.fresh` and sends the
 full prompt. The recorded prompt size is that of the prompt sent.
@@ -126,7 +124,6 @@ logger = logging.getLogger(__name__)
 _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.IMPLEMENTER_WRITE: ("--tools", "read,bash,edit,write,grep,find,ls"),
     AgentCapability.READ_ONLY: ("--tools", "read,grep,find,ls"),
-    AgentCapability.NO_TOOLS: ("--no-tools",),
 }
 
 #: The pi extension that filters the implementer's ``bash`` commands
