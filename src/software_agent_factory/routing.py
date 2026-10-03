@@ -44,20 +44,11 @@ class ModelRouter:
     def __init__(self, config: FactoryConfig):
         self._config = config
 
-    def model_for_role(
-        self,
-        role: AgentRole,
-        *,
-        model_profile: str | None = None,
-    ) -> RoleModelConfig:
+    def model_for_role(self, role: AgentRole) -> RoleModelConfig:
         if role is AgentRole.IMPLEMENTER:
             raise ValueError("Implementer routing requires complexity and attempt_number")
 
-        models = (
-            self._config.models
-            if model_profile is None
-            else self._config.model_profiles[model_profile]
-        )
+        models = self._config.models
         if role is AgentRole.TRIAGE:
             return models.triage
         if role is AgentRole.PLANNER:

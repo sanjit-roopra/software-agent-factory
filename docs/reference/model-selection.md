@@ -88,31 +88,6 @@ economy choice with stronger general and long-document proxies than the minimum-
 Luna or GPT-5 mini alternatives. Re-evaluate after Gemini's promotional pricing
 ends.
 
-The packaged `security` profile keeps the default route but replaces the
-Tester with GPT-6 Astra:
-
-```yaml
-model_profiles:
-  security:
-    triage:     { model: "gpt-5.6-terra",      reasoning: "medium", context_tier: "default" }
-    planner:    { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
-    workers:
-      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
-      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-      L2:       { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
-      L3:       { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
-    tester:     { model: "gpt-6-astra",        reasoning: "high",   context_tier: "default" }
-    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
-```
-
-This is a complete routing table. Astra is placed on adversarial testing
-because its strongest differentiated evidence is offensive-security
-and difficult agentic problem solving. Sol then independently performs the
-final audit-and-correct-patch review. Astra is deliberately absent from
-`economy`: the illustrative call costs 75 credits, twice Opus 5 and over 13
-times Gemini 3.8 Flash. Select the route with
-`--model-profile security`.
-
 This candidate requires Copilot Pro+ or another plan that includes Opus 5,
 GPT-5.5 and GPT-5.6 Sol. On Copilot Pro, use only rows marked `Yes` in the
 price table and re-check the reviewer-family constraint.

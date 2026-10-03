@@ -22,6 +22,13 @@ API is still `0.x`.
 - Escalation delivery and reply polling now use bounded reconciliation,
   repository identity checks, durable receipts, and fair polling.
 
+### Removed
+
+- The fast performance mode, the `--performance-mode` option and the
+  `performance` configuration section (ADR-036). Old files still load.
+- The packaged `security` model profile.
+- Per-result writing checks and `writing_findings` on invocation records.
+
 ## 0.5.0 - 2026-09-11
 
 ### Added

@@ -93,15 +93,13 @@ profiles live under `model_profiles`. Select one on any agent-invoking command:
 factory run ... --model-profile economy
 factory project ... --model-profile economy
 factory start ... --model-profile economy
-factory run ... --model-profile security
 ```
 
 `factory doctor` validates the selected profile, and `factory service install`
 stores the selected name in the LaunchAgent arguments. An unknown profile
 fails with exit code `2` before a workspace or paid call is created. Profiles
-are complete `models` blocks, not partial overlays. The `security` profile
-uses Astra for adversarial testing and Sol for an independent final review.
-It is intentionally much more expensive than `economy`.
+are complete `models` blocks, not partial overlays. Use `economy` to choose
+cheaper models.
 
 `workers` must define exactly `L0`, `L1`, `L2` and `L3`. Triage assigns the
 complexity level and that selects the worker.
@@ -118,28 +116,6 @@ source.
 See [Model selection, cost and benchmarks](model-selection.md) for the current
 Copilot catalog, prices, context and reasoning capabilities, benchmark
 evidence, and role-specific tradeoffs.
-
-## performance
-
-```yaml
-performance:
-  mode: "standard"
-  fast_model_profile: "economy"
-```
-
-The standard mode uses the selected model profile and permits the optional
-polish pass. The fast mode is an explicit low-risk optimization.
-
-The controller uses the fast mode only for `L0` or `L1` work with `R0` or
-`R1` risk. Planned and changed files must not include protected, sensitive, manifest, or version files.
-
-If a condition fails, the controller uses the standard path. It records the
-fallback reason in the run. Both modes keep deterministic verification, the
-independent Tester, the independent Reviewer, and publishing controls.
-
-The `fast_model_profile` must name a complete entry under `model_profiles`.
-The controller uses that profile for the Planner. It skips the
-optional polish pass only while the run remains eligible.
 
 ## repository
 

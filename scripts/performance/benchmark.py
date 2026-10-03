@@ -720,281 +720,6 @@ def benchmark_prompt_and_parser(iterations: int = 5, warmup: int = 1) -> dict[st
 
 
 # ---------------------------------------------------------------------------
-# Standard vs Fast Fake-Runtime Controller Comparison
-# ---------------------------------------------------------------------------
-
-
-def run_controller_standard_vs_fast(
-    repo_root: Path | None = None,
-    iterations: int = 3,
-    warmup: int = 1,
-) -> dict[str, Any]:
-    """Execute a deterministic offline controller bakeoff comparing standard
-    versus fast performance mode under fake-runtime boundaries.
-
-    Verifies latency, attempts, invocations, and that quality gates remain
-    authoritative and unweakened.
-    """
-    from software_agent_factory.agents import FakeAgentRuntime
-    from software_agent_factory.config import FactoryConfig
-    from software_agent_factory.models import (
-        AgentRole,
-        AttemptTrigger,
-        ReviewReport,
-        TestReport,
-        VerificationReport,
-        WorkItem,
-    )
-    from software_agent_factory.store import FileRunStore
-    from software_agent_factory.workflow import WorkflowController
-
-    def _execute_run(mode: str) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="benchmark_ctrl_") as temp_dir:
-            root = Path(temp_dir)
-            source_repo = root / "source"
-            data_dir = root / "data"
-            source_repo.mkdir()
-            data_dir.mkdir()
-
-            env = os.environ.copy()
-            env["GIT_CONFIG_GLOBAL"] = os.devnull
-            env["GIT_CONFIG_SYSTEM"] = os.devnull
-            env["GIT_AUTHOR_NAME"] = "Benchmark Runner"
-            env["GIT_AUTHOR_EMAIL"] = "benchmark@example.invalid"
-            env["GIT_COMMITTER_NAME"] = "Benchmark Runner"
-            env["GIT_COMMITTER_EMAIL"] = "benchmark@example.invalid"
-
-            _run_subprocess(["git", "init", "-b", "main"], cwd=source_repo, env_overrides=env)
-            _configure_synthetic_git_repo(source_repo, env)
-
-            (source_repo / "app.py").write_text("def run(): return 42\n", encoding="utf-8")
-            _run_subprocess(["git", "add", "."], cwd=source_repo, env_overrides=env)
-            _run_subprocess(
-                ["git", "commit", "-m", "Initial commit"],
-                cwd=source_repo,
-                env_overrides=env,
-            )
-
-            config = FactoryConfig.model_validate(
-                {
-                    "factory": {
-                        "data_dir": str(data_dir),
-                        "retries": {"same_model_attempts": 2, "max_total_attempts": 6},
-                    },
-                    "models": {
-                        "triage": {"model": "claude-sonnet-5", "reasoning": "medium"},
-                        "planner": {"model": "claude-opus-5", "reasoning": "high"},
-                        "workers": {
-                            "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
-                            "L1": {"model": "claude-sonnet-5", "reasoning": "medium"},
-                            "L2": {"model": "claude-opus-5", "reasoning": "high"},
-                            "L3": {"model": "claude-opus-5", "reasoning": "high"},
-                        },
-                        "tester": {"model": "claude-sonnet-5", "reasoning": "high"},
-                        "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
-                    },
-                    "model_profiles": {
-                        "economy": {
-                            "triage": {"model": "gpt-5.6-luna", "reasoning": "medium"},
-                            "planner": {"model": "gpt-5.6-terra", "reasoning": "high"},
-                            "workers": {
-                                "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
-                                "L1": {"model": "gemini-3.8-flash", "reasoning": "medium"},
-                                "L2": {"model": "claude-sonnet-5", "reasoning": "high"},
-                                "L3": {"model": "claude-opus-5", "reasoning": "high"},
-                            },
-                            "tester": {"model": "gemini-3.8-flash", "reasoning": "high"},
-                            "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
-                        }
-                    },
-                    "performance": {
-                        "mode": mode,
-                        "fast_model_profile": "economy",
-                    },
-                    "repository": {
-                        "branch_prefix": "factory/",
-                        "command_timeout_seconds": 30,
-                        "commands": {"install": [], "verify": [], "build": []},
-                    },
-                    "polish": {"enabled": True},
-                    "risk": {
-                        "R0": {"human_approval": False},
-                        "R1": {"human_approval": False},
-                        "R2": {"human_approval": True},
-                        "R3": {"human_approval": True},
-                    },
-                }
-            )
-
-            store = FileRunStore(data_dir)
-            runtime = FakeAgentRuntime()
-            controller = WorkflowController(config, store, runtime)
-            work_item = WorkItem(
-                id=f"WI-BENCH-{mode.upper()}",
-                title=f"Benchmark Controller Task ({mode})",
-                description="Controller comparison execution item",
-            )
-
-            t0 = time.perf_counter()
-            run = controller.run(work_item, source_repo)
-            t1 = time.perf_counter()
-
-            polish_attempts = [
-                att for att in run.attempt_records if att.triggered_by == AttemptTrigger.POLISH
-            ]
-
-            # Requirement 2: Inspect invocation records and persisted verification/review evidence
-            tester_invocations = [
-                inv for inv in run.invocation_records if inv.role == AgentRole.TESTER
-            ]
-            reviewer_invocations = [
-                inv for inv in run.invocation_records if inv.role == AgentRole.REVIEWER
-            ]
-            tester_ran = len(tester_invocations) > 0 and all(
-                inv.success for inv in tester_invocations
-            )
-            reviewer_ran = len(reviewer_invocations) > 0 and all(
-                inv.success for inv in reviewer_invocations
-            )
-
-            verification_report = None
-            try:
-                verification_report = store.load_artifact(run.id, VerificationReport)
-            except Exception:
-                pass
-            verification_passed = (
-                verification_report is not None and verification_report.passed is True
-            )
-
-            test_report = None
-            try:
-                test_report = store.load_artifact(run.id, TestReport)
-            except Exception:
-                pass
-
-            review_report = None
-            try:
-                review_report = store.load_artifact(run.id, ReviewReport)
-            except Exception:
-                pass
-            review_approved = review_report is not None and review_report.approved is True
-
-            gates_satisfied = bool(
-                run.state.value == "PR_READY"
-                and verification_passed
-                and tester_ran
-                and test_report is not None
-                and reviewer_ran
-                and review_approved
-            )
-
-            gate_facts = {
-                "state": run.state.value,
-                "deterministic_verification_ran": verification_report is not None,
-                "deterministic_verification_passed": verification_passed,
-                "tester_invoked": len(tester_invocations) > 0,
-                "tester_invocations_count": len(tester_invocations),
-                "tester_success": tester_ran,
-                "test_report_persisted": test_report is not None,
-                "reviewer_invoked": len(reviewer_invocations) > 0,
-                "reviewer_invocations_count": len(reviewer_invocations),
-                "reviewer_success": reviewer_ran,
-                "review_report_persisted": review_report is not None,
-                "review_approved": review_approved,
-                "gates_satisfied": gates_satisfied,
-            }
-
-            return {
-                "mode": mode,
-                "state": run.state.value,
-                "duration_ms": round((t1 - t0) * 1000.0, 2),
-                "attempts_total": len(run.attempt_records),
-                "invocations_total": len(run.invocation_records),
-                "polish_attempts": len(polish_attempts),
-                "effective_performance_mode": getattr(
-                    run, "effective_performance_mode", "standard"
-                ),
-                "performance_model_profile": getattr(run, "performance_model_profile", None),
-                "gate_facts": gate_facts,
-                "models_by_role": {inv.role.value: inv.model for inv in run.invocation_records},
-            }
-
-    for _ in range(warmup):
-        _execute_run("standard")
-        _execute_run("fast")
-
-    std_durations: list[float] = []
-    standard_summary: dict[str, Any] = {}
-    for _ in range(iterations):
-        standard_summary = _execute_run("standard")
-        std_durations.append(standard_summary["duration_ms"])
-
-    fast_durations: list[float] = []
-    fast_summary: dict[str, Any] = {}
-    for _ in range(iterations):
-        fast_summary = _execute_run("fast")
-        fast_durations.append(fast_summary["duration_ms"])
-
-    std_median = round(statistics.median(std_durations), 2)
-    fast_median = round(statistics.median(fast_durations), 2)
-    standard_summary["duration_ms"] = std_median
-    fast_summary["duration_ms"] = fast_median
-    standard_summary["samples_ms"] = std_durations
-    fast_summary["samples_ms"] = fast_durations
-
-    std_gate_facts = standard_summary.get("gate_facts", {})
-    fast_gate_facts = fast_summary.get("gate_facts", {})
-
-    gates_preserved = bool(
-        std_gate_facts.get("gates_satisfied", False)
-        and fast_gate_facts.get("gates_satisfied", False)
-    )
-
-    summary_gate_facts = {
-        "standard_gates_satisfied": std_gate_facts.get("gates_satisfied", False),
-        "fast_gates_satisfied": fast_gate_facts.get("gates_satisfied", False),
-        "deterministic_verification_passed": bool(
-            std_gate_facts.get("deterministic_verification_passed", False)
-            and fast_gate_facts.get("deterministic_verification_passed", False)
-        ),
-        "tester_verified": bool(
-            std_gate_facts.get("tester_success", False)
-            and fast_gate_facts.get("tester_success", False)
-            and std_gate_facts.get("test_report_persisted", False)
-            and fast_gate_facts.get("test_report_persisted", False)
-        ),
-        "reviewer_verified": bool(
-            std_gate_facts.get("reviewer_success", False)
-            and fast_gate_facts.get("reviewer_success", False)
-            and std_gate_facts.get("review_approved", False)
-            and fast_gate_facts.get("review_approved", False)
-        ),
-    }
-
-    speedup_pct = (
-        round(
-            (std_median - fast_median) / std_median * 100.0,
-            2,
-        )
-        if std_median > 0
-        else 0.0
-    )
-
-    return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": {
-            "standard_duration_ms": std_median,
-            "fast_duration_ms": fast_median,
-            "speedup_pct": speedup_pct,
-            "gates_preserved": gates_preserved,
-            "gate_facts": summary_gate_facts,
-        },
-        "standard": standard_summary,
-        "fast": fast_summary,
-    }
-
-
-# ---------------------------------------------------------------------------
 # Harness Runner and Baseline Comparison
 # ---------------------------------------------------------------------------
 
@@ -1147,8 +872,8 @@ def _resolve_within_cwd(path: Path) -> Path:
 
 def _confine_cli_paths(
     args: argparse.Namespace,
-) -> tuple[Path | None, Path | None, Path | None]:
-    """Resolve the output, baseline and controller-output paths inside cwd.
+) -> tuple[Path | None, Path | None]:
+    """Resolve the output and baseline paths inside cwd.
 
     Returns new values instead of mutating ``args``: SonarCloud did not
     trace the check through a getattr/setattr loop and kept reporting
@@ -1156,10 +881,7 @@ def _confine_cli_paths(
     """
     output = _resolve_within_cwd(args.output) if args.output else None
     baseline = _resolve_within_cwd(args.baseline) if args.baseline else None
-    controller_output = (
-        _resolve_within_cwd(args.controller_output) if args.controller_output else None
-    )
-    return output, baseline, controller_output
+    return output, baseline
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1204,20 +926,10 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Path to target repository root to benchmark (default: current repository root).",
     )
-    parser.add_argument(
-        "--controller-comparison",
-        action="store_true",
-        help="Run standard vs fast fake-runtime controller comparison.",
-    )
-    parser.add_argument(
-        "--controller-output",
-        type=Path,
-        help="Path to write the controller comparison JSON report.",
-    )
 
     args = parser.parse_args(argv)
     try:
-        output, baseline, controller_output = _confine_cli_paths(args)
+        output, baseline = _confine_cli_paths(args)
     except ValueError as err:
         print(f"Error: {err}", file=sys.stderr)
         return 2
@@ -1250,36 +962,6 @@ def main(argv: list[str] | None = None) -> int:
         # content (e.g. --iterations), which cannot traverse paths.
         output.write_text(json.dumps(current_results, indent=2), encoding="utf-8")  # NOSONAR(S8707)
         print(f"\nSaved benchmark results to {output}")
-
-    if args.controller_comparison or controller_output:
-        print("\nRunning Standard vs Fast Controller Comparison...")
-        ctrl_results = run_controller_standard_vs_fast(repo_root)
-        std_sum = ctrl_results["standard"]
-        fast_sum = ctrl_results["fast"]
-        print(
-            f"  Standard Duration: {ctrl_results['summary']['standard_duration_ms']:.2f} ms "
-            f"({std_sum['attempts_total']} attempts, {std_sum['invocations_total']} invocations)"
-        )
-        print(
-            f"  Fast Duration:     {ctrl_results['summary']['fast_duration_ms']:.2f} ms "
-            f"({fast_sum['attempts_total']} attempts, {fast_sum['invocations_total']} invocations)"
-        )
-        print(
-            f"  Speedup:           {ctrl_results['summary']['speedup_pct']:+.2f}% "
-            f"(Gates Preserved: {ctrl_results['summary']['gates_preserved']})"
-        )
-        gf = ctrl_results["summary"].get("gate_facts", {})
-        print(
-            f"  Gates Breakdown:   verification={gf.get('deterministic_verification_passed')} "
-            f"tester={gf.get('tester_verified')} reviewer={gf.get('reviewer_verified')}"
-        )
-        if controller_output:
-            controller_output.parent.mkdir(parents=True, exist_ok=True)
-            # Path confined above; only the report content derives from CLI input.
-            controller_output.write_text(  # NOSONAR(S8707)
-                json.dumps(ctrl_results, indent=2), encoding="utf-8"
-            )
-            print(f"Saved controller comparison to {controller_output}")
 
     has_regression = False
     if baseline:

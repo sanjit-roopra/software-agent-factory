@@ -71,7 +71,6 @@ benchmark_dashboard_shared_scan_cold = _bench.benchmark_dashboard_shared_scan_co
 benchmark_dashboard_shared_cache_warm = _bench.benchmark_dashboard_shared_cache_warm
 benchmark_scheduler_drain = _bench.benchmark_scheduler_drain
 benchmark_git_evidence_collection = _bench.benchmark_git_evidence_collection
-run_controller_standard_vs_fast = _bench.run_controller_standard_vs_fast
 compare_with_baseline = _bench.compare_with_baseline
 
 
@@ -536,66 +535,6 @@ def test_dashboard_shared_cache_fallback_on_execution_type_error(
 
     warm_res = benchmark_dashboard_shared_cache_warm(store_runs=5, iterations=1, warmup=0)
     _assert_benchmark_schema(warm_res)
-
-
-def test_run_controller_standard_vs_fast_schema() -> None:
-    res = run_controller_standard_vs_fast()
-    assert "summary" in res
-    assert "standard" in res
-    assert "fast" in res
-
-    summary = res["summary"]
-    assert summary["gates_preserved"] is True
-    assert "speedup_pct" in summary
-    assert summary["standard_duration_ms"] >= 0.0
-    assert summary["fast_duration_ms"] >= 0.0
-
-    # Requirement 2: Verify gates_preserved proves deterministic verification,
-    # Tester, and Reviewer ran
-    assert "gate_facts" in summary
-    gate_facts = summary["gate_facts"]
-    assert gate_facts["standard_gates_satisfied"] is True
-    assert gate_facts["fast_gates_satisfied"] is True
-    assert gate_facts["deterministic_verification_passed"] is True
-    assert gate_facts["tester_verified"] is True
-    assert gate_facts["reviewer_verified"] is True
-
-    standard = res["standard"]
-    assert standard["state"] == "PR_READY"
-    assert standard["mode"] == "standard"
-    assert standard["effective_performance_mode"] == "standard"
-    assert standard["polish_attempts"] == 1
-    assert "gate_facts" in standard
-    std_gates = standard["gate_facts"]
-    assert std_gates["gates_satisfied"] is True
-    assert std_gates["deterministic_verification_ran"] is True
-    assert std_gates["deterministic_verification_passed"] is True
-    assert std_gates["tester_invoked"] is True
-    assert std_gates["tester_success"] is True
-    assert std_gates["test_report_persisted"] is True
-    assert std_gates["reviewer_invoked"] is True
-    assert std_gates["reviewer_success"] is True
-    assert std_gates["review_report_persisted"] is True
-    assert std_gates["review_approved"] is True
-
-    fast = res["fast"]
-    assert fast["state"] == "PR_READY"
-    assert fast["mode"] == "fast"
-    assert fast["effective_performance_mode"] == "fast"
-    assert fast["performance_model_profile"] == "economy"
-    assert fast["polish_attempts"] == 0
-    assert "gate_facts" in fast
-    fast_gates = fast["gate_facts"]
-    assert fast_gates["gates_satisfied"] is True
-    assert fast_gates["deterministic_verification_ran"] is True
-    assert fast_gates["deterministic_verification_passed"] is True
-    assert fast_gates["tester_invoked"] is True
-    assert fast_gates["tester_success"] is True
-    assert fast_gates["test_report_persisted"] is True
-    assert fast_gates["reviewer_invoked"] is True
-    assert fast_gates["reviewer_success"] is True
-    assert fast_gates["review_report_persisted"] is True
-    assert fast_gates["review_approved"] is True
 
 
 def test_benchmark_baseline_comparison() -> None:

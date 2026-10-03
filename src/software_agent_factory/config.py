@@ -498,13 +498,6 @@ class FactorySettings(ConfigModel):
         return Path(value).expanduser()
 
 
-class PerformanceConfig(ConfigModel):
-    """Opt-in policy for the bounded low-risk fast path."""
-
-    mode: Literal["standard", "fast"] = "standard"
-    fast_model_profile: str = Field(default="economy", min_length=1, max_length=32)
-
-
 class RoutingOptionConfig(ConfigModel):
     id: str = Field(min_length=1, max_length=64)
     route: ExecutionRoute
@@ -694,7 +687,6 @@ class FactoryConfig(ConfigModel):
     scope_drift: ScopeDriftConfig = Field(default_factory=ScopeDriftConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     polish: PolishConfig = Field(default_factory=PolishConfig)
-    performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
     pull_request: PullRequestConfig = Field(default_factory=PullRequestConfig)
     ci: CiConfig = Field(default_factory=CiConfig)
     merge: MergeConfig = Field(default_factory=MergeConfig)
@@ -702,6 +694,15 @@ class FactoryConfig(ConfigModel):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     pi: PiConfig = Field(default_factory=PiConfig)
     setup: SetupConfig = Field(default_factory=SetupConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_performance_section(cls, data: object) -> object:
+        # The fast performance mode was the only use of this section (ADR-036).
+        # Older configuration files can still carry it, so drop it silently.
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if key != "performance"}
+        return data
 
     @model_validator(mode="after")
     def _validate_risk_rules(self) -> Self:
@@ -743,14 +744,6 @@ class FactoryConfig(ConfigModel):
                 raise ValueError(
                     "model profile names must be 1-32 lowercase letters, digits, '_' or '-'"
                 )
-        if (
-            self.performance.mode == "fast"
-            and self.performance.fast_model_profile not in self.model_profiles
-        ):
-            raise ValueError(
-                "performance.fast_model_profile must name a configured model profile "
-                "when performance.mode is 'fast'"
-            )
         available_profiles = {"default", *self.model_profiles}
         for opt in self.routing.options:
             if opt.model_profile is not None and opt.model_profile not in available_profiles:

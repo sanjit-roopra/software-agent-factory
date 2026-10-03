@@ -44,7 +44,6 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     FactoryRun,
-    InvocationRecord,
     MutationReport,
     MutationStatus,
     PlanDecisionAnswer,
@@ -141,8 +140,6 @@ def _config(
     same_model_attempts: int = 2,
     max_total_attempts: int = 6,
     polish_enabled: bool = False,
-    performance_mode: str = "standard",
-    fast_model_profile: str = "economy",
 ) -> FactoryConfig:
     return FactoryConfig.model_validate(
         {
@@ -178,10 +175,6 @@ def _config(
                     "tester": {"model": "gemini-3.8-flash", "reasoning": "high"},
                     "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
                 }
-            },
-            "performance": {
-                "mode": performance_mode,
-                "fast_model_profile": fast_model_profile,
             },
             "repository": {
                 "branch_prefix": "factory/",
@@ -504,162 +497,6 @@ def test_planner_retries_once_after_malformed_execution_plan(
     assert all(active is not None for active in active_invocations)
     assert [active.attempt_number for active in active_invocations if active is not None] == [1, 2]
     assert run.active_invocation is None
-
-
-_WORDY = "Use a robust and comprehensive implementation."
-
-
-def _records_for(run: FactoryRun, role: AgentRole) -> list[InvocationRecord]:
-    return [record for record in run.invocation_records if record.role is role]
-
-
-def test_planner_writing_findings_are_recorded_without_a_retry(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-    default_runtime = FakeAgentRuntime()
-
-    def planner(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        result = default_runtime.run(request)
-        assert result.execution_plan is not None
-        return result.model_copy(
-            update={"execution_plan": result.execution_plan.model_copy(update={"summary": _WORDY})}
-        )
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=3),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(planner=planner),
-    ).run(_work_item("WI-planner-writing-advisory"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert len(requests) == 1
-    (record,) = _records_for(run, AgentRole.PLANNER)
-    assert record.success is True
-    assert record.failure_reason is None
-    assert record.writing_findings == ("execution_plan.summary has 2 slop_word finding(s).",)
-    (persisted,) = _records_for(FileRunStore(data_dir).load_run(run.id), AgentRole.PLANNER)
-    assert persisted.writing_findings == record.writing_findings
-
-
-def test_triage_writing_findings_are_recorded_without_a_retry(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-    default_runtime = FakeAgentRuntime()
-
-    def triage(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        result = default_runtime.run(request)
-        assert result.triage_result is not None
-        wordy = result.triage_result.model_copy(update={"unknowns": [_WORDY]})
-        return result.model_copy(update={"triage_result": wordy})
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=3),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(triage=triage),
-    ).run(_work_item("WI-triage-writing-advisory"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert len(requests) == 1
-    (record,) = _records_for(run, AgentRole.TRIAGE)
-    assert record.success is True
-    assert record.writing_findings == ("unknowns[0] has 2 slop_word finding(s).",)
-
-
-@pytest.mark.parametrize(
-    ("role", "hook", "artifact_field", "update", "finding"),
-    [
-        (
-            AgentRole.PLANNER,
-            "planner",
-            "specification",
-            {"problem": _WORDY},
-            "specification.problem has 2 slop_word finding(s).",
-        ),
-        (
-            AgentRole.TESTER,
-            "tester",
-            "test_report",
-            {"findings": [_WORDY]},
-            "findings[0] has 2 slop_word finding(s).",
-        ),
-        (
-            AgentRole.REVIEWER,
-            "reviewer",
-            "review_report",
-            {"suggested_changes": [_WORDY]},
-            "suggested_changes[0] has 2 slop_word finding(s).",
-        ),
-    ],
-)
-def test_writing_findings_from_other_roles_are_recorded_without_a_retry(
-    source_repo: Path,
-    data_dir: Path,
-    role: AgentRole,
-    hook: str,
-    artifact_field: str,
-    update: dict[str, object],
-    finding: str,
-) -> None:
-    requests: list[AgentRequest] = []
-    default_runtime = FakeAgentRuntime()
-
-    def wordy(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        result = default_runtime.run(request)
-        artifact = getattr(result, artifact_field)
-        assert artifact is not None
-        return result.model_copy(update={artifact_field: artifact.model_copy(update=update)})
-
-    hooks: dict[str, AgentHook] = {hook: wordy}
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=3),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(**hooks),
-    ).run(_work_item(f"WI-{hook}-writing-advisory"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert len(requests) == 1
-    (record,) = _records_for(run, role)
-    assert record.success is True
-    assert record.failure_reason is None
-    assert record.writing_findings == (finding,)
-
-
-def test_implementer_writing_findings_are_recorded_without_a_retry(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    requests: list[AgentRequest] = []
-
-    def implementer(request: AgentRequest) -> AgentResult:
-        requests.append(request)
-        assert request.workspace_path is not None
-        (Path(request.workspace_path) / "FACTORY_NOTES.md").write_text("notes\n")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(summary=_WORDY),
-        )
-
-    run = WorkflowController(
-        _config(data_dir, same_model_attempts=3, max_total_attempts=4),
-        FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=implementer),
-    ).run(_work_item("WI-implementer-writing-advisory"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert len(requests) == 1
-    assert [attempt.outcome for attempt in run.attempt_records] == ["succeeded"]
-    (record,) = _records_for(run, AgentRole.IMPLEMENTER)
-    assert record.purpose is AgentPurpose.STANDARD
-    assert record.writing_findings == ("summary has 2 slop_word finding(s).",)
 
 
 @pytest.mark.parametrize(
@@ -2488,10 +2325,7 @@ def test_is_run_finished_distinguishes_completed_from_interrupted_pr_ready() -> 
     )
 
 
-# -- performance mode and fast profile ----------------------------------------
-
-
-def test_standard_performance_mode_is_default_and_runs_polish(
+def test_polish_runs_by_default_with_top_level_models(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
@@ -2502,11 +2336,10 @@ def test_standard_performance_mode_is_default_and_runs_polish(
         recorded_requests.append(request)
         return default_runtime.run(request)
 
-    config = _config(data_dir, polish_enabled=True, performance_mode="standard")
-    store = FileRunStore(data_dir)
+    config = _config(data_dir, polish_enabled=True)
     controller = WorkflowController(
         config,
-        store,
+        FileRunStore(data_dir),
         FakeAgentRuntime(
             triage=_triage_hook(Complexity.L0, Risk.R0),
             planner=recording_runtime,
@@ -2518,444 +2351,46 @@ def test_standard_performance_mode_is_default_and_runs_polish(
     run = controller.run(_work_item("WI-standard-mode"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
-    assert run.requested_performance_mode == "standard"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile is None
-    assert run.performance_fallback_reason is None
-
-    # The planner used the top-level model, not the fast profile
     planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
     assert planner_req.model == config.models.planner.model
-
-    # Optional polish pass ran because standard mode does not skip polish
     polish_attempts = [
         att for att in run.attempt_records if att.triggered_by is AttemptTrigger.POLISH
     ]
     assert len(polish_attempts) == 1
 
-    # Reload from store confirms persistence
-    persisted = store.load_run(run.id)
-    assert persisted.requested_performance_mode == "standard"
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_model_profile is None
-    assert persisted.performance_fallback_reason is None
 
-
-def test_fast_performance_mode_eligible_runs_fast_planner_and_skips_polish(
-    source_repo: Path,
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("README.md", "scope includes protected files: README.md"),
+        ("package.json", "scope includes manifest or version files: package.json"),
+        (".github/workflows/ci.yml", "scope includes sensitive files: .github/workflows/ci.yml"),
+        ("src/app.py", None),
+    ],
+)
+def test_sensitive_scope_reason_names_the_first_matching_rule(
     data_dir: Path,
+    path: str,
+    reason: str | None,
 ) -> None:
-    recorded_requests: list[AgentRequest] = []
-    default_runtime = FakeAgentRuntime()
-
-    def recording_runtime(request: AgentRequest) -> AgentResult:
-        recorded_requests.append(request)
-        return default_runtime.run(request)
-
-    config = _config(data_dir, polish_enabled=True, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L1, Risk.R1),
-            planner=recording_runtime,
-            tester=recording_runtime,
-            reviewer=recording_runtime,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-mode-eligible"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "fast"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason is None
-
-    # The planner used the fast profile model from config
-    planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
-    fast_profile = config.model_profiles["economy"]
-    assert planner_req.model == fast_profile.planner.model
-
-    # Tester and reviewer preserved independent top-level models
-    tester_req = next(r for r in recorded_requests if r.role is AgentRole.TESTER)
-    reviewer_req = next(r for r in recorded_requests if r.role is AgentRole.REVIEWER)
-    assert tester_req.model == config.models.tester.model
-    assert reviewer_req.model == config.models.reviewer.model
-
-    # Optional polish pass was skipped
-    polish_attempts = [
-        att for att in run.attempt_records if att.triggered_by is AttemptTrigger.POLISH
-    ]
-    assert len(polish_attempts) == 0
-
-    # Reload from store confirms persistence
-    persisted = store.load_run(run.id)
-    assert persisted.requested_performance_mode == "fast"
-    assert persisted.effective_performance_mode == "fast"
-    assert persisted.performance_model_profile == "economy"
-    assert persisted.performance_fallback_reason is None
-
-
-def test_fast_performance_mode_fallback_triage_ineligible_complexity(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    recorded_requests: list[AgentRequest] = []
-    default_runtime = FakeAgentRuntime()
-
-    def recording_runtime(request: AgentRequest) -> AgentResult:
-        recorded_requests.append(request)
-        return default_runtime.run(request)
-
-    config = _config(data_dir, polish_enabled=True, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L2, Risk.R1),
-            planner=recording_runtime,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-complexity"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == "complexity L2 is not eligible for fast mode"
-
-    # The planner fell back to the standard top-level model
-    planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
-    assert planner_req.model == config.models.planner.model
-
-    # Polish is not skipped after fallback to standard
-    polish_attempts = [
-        att for att in run.attempt_records if att.triggered_by is AttemptTrigger.POLISH
-    ]
-    assert len(polish_attempts) == 1
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == "complexity L2 is not eligible for fast mode"
-
-
-def test_fast_performance_mode_fallback_triage_ineligible_risk(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    config = _config(data_dir, performance_mode="fast")
-    # Allow R2 without human approval so triage can proceed to fallback evaluation
-    config.risk[Risk.R2].human_approval = False
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(triage=_triage_hook(Complexity.L1, Risk.R2)),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-risk"), source_repo)
-
-    assert run.state is WorkflowState.PR_READY
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == "risk R2 is not eligible for fast mode"
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == "risk R2 is not eligible for fast mode"
-
-
-def test_fast_performance_mode_ignores_an_old_needs_research_flag(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    runtime = RecordingRuntime(
-        FakeAgentRuntime(triage=_triage_hook(Complexity.L0, Risk.R0, needs_research=True))
-    )
-    config = _config(data_dir, performance_mode="fast")
-
-    run = WorkflowController(config, FileRunStore(data_dir), runtime).run(
-        _work_item("WI-fast-needs-research"), source_repo
-    )
-
-    assert run.state is WorkflowState.PR_READY
-    assert run.effective_performance_mode == "fast"
-    assert run.performance_fallback_reason is None
-    roles = [request.role for request in runtime.requests]
-    assert roles[: roles.index(AgentRole.IMPLEMENTER)] == [AgentRole.TRIAGE, AgentRole.PLANNER]
-
-
-def test_fast_performance_mode_fallback_after_planning_protected_file(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    def planner_planning_protected_file(request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=AgentRole.PLANNER,
-            success=True,
-            execution_plan=ExecutionPlan(
-                summary="Plan with protected file.",
-                steps=[PlanStep(id="1", goal="Edit protected file.", likely_files=["README.md"])],
-                expected_scope=ExpectedScope(
-                    modules=["README.md"],
-                    estimated_files_min=1,
-                    estimated_files_max=2,
-                ),
-            ),
-        )
-
-    config = _config(data_dir, performance_mode="fast")
+    config = _config(data_dir)
     config.repository.protected_file_patterns = ["README.md"]
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            planner=planner_planning_protected_file,
-        ),
+    controller = WorkflowController(config, FileRunStore(data_dir), FakeAgentRuntime())
+    plan = ExecutionPlan(
+        summary="Change one file.",
+        steps=[PlanStep(id="1", goal="Edit the file.", likely_files=[path])],
+        expected_scope=ExpectedScope(modules=[path], estimated_files_min=1, estimated_files_max=1),
     )
 
-    run = controller.run(_work_item("WI-fast-fallback-plan-protected"), source_repo)
-
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == "scope includes protected files: README.md"
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == "scope includes protected files: README.md"
-
-
-def test_fast_performance_mode_fallback_after_planning_manifest_or_version_file(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    def planner_planning_manifest(request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=AgentRole.PLANNER,
-            success=True,
-            execution_plan=ExecutionPlan(
-                summary="Plan updating pyproject.toml.",
-                steps=[PlanStep(id="1", goal="Add dependency.", likely_files=["pyproject.toml"])],
-                expected_scope=ExpectedScope(
-                    modules=["pyproject.toml"],
-                    estimated_files_min=1,
-                    estimated_files_max=1,
-                ),
-            ),
+    assert (
+        controller._sensitive_scope_reason(
+            [path],
+            execution_plan=plan,
+            risk=Risk.R0,
+            repository_profile=_react_profile(),
         )
-
-    config = _config(data_dir, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            planner=planner_planning_manifest,
-        ),
+        == reason
     )
-
-    run = controller.run(_work_item("WI-fast-fallback-plan-manifest"), source_repo)
-
-    expected_reason = "scope includes manifest or version files: pyproject.toml"
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == expected_reason
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == expected_reason
-
-
-def test_fast_performance_mode_fallback_after_planning_sensitive_file(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    def planner_planning_ci_workflow(request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=AgentRole.PLANNER,
-            success=True,
-            execution_plan=ExecutionPlan(
-                summary="Plan modifying CI workflow.",
-                steps=[
-                    PlanStep(
-                        id="1",
-                        goal="Update CI.",
-                        likely_files=[".github/workflows/ci.yml"],
-                    )
-                ],
-                expected_scope=ExpectedScope(
-                    modules=[".github/workflows/ci.yml"],
-                    estimated_files_min=1,
-                    estimated_files_max=1,
-                ),
-            ),
-        )
-
-    config = _config(data_dir, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            planner=planner_planning_ci_workflow,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-plan-sensitive"), source_repo)
-
-    expected_reason = "scope includes sensitive files: .github/workflows/ci.yml"
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == expected_reason
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == expected_reason
-
-
-def test_fast_performance_mode_fallback_actual_scope_manifest_file(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    def implementer_changing_manifest(request: AgentRequest) -> AgentResult:
-        assert request.workspace_path is not None
-        manifest = Path(request.workspace_path, "package.json")
-        manifest.write_text('{"name": "test-pkg"}\n', encoding="utf-8")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(changed_files=["package.json"], summary="Add package.json"),
-        )
-
-    def planner_safe(request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=AgentRole.PLANNER,
-            success=True,
-            execution_plan=ExecutionPlan(
-                summary="Safe plan.",
-                steps=[PlanStep(id="1", goal="Safe work.", likely_files=["app.py"])],
-                expected_scope=ExpectedScope(
-                    modules=["package.json"],
-                    estimated_files_min=1,
-                    estimated_files_max=2,
-                ),
-            ),
-        )
-
-    config = _config(data_dir, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            planner=planner_safe,
-            implementer=implementer_changing_manifest,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-actual-manifest"), source_repo)
-
-    expected_reason = "scope includes manifest or version files: package.json"
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == expected_reason
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == expected_reason
-
-
-def test_fast_performance_mode_fallback_actual_scope_sensitive_file(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    def implementer_changing_migration(request: AgentRequest) -> AgentResult:
-        assert request.workspace_path is not None
-        migration_dir = Path(request.workspace_path, "alembic", "versions")
-        migration_dir.mkdir(parents=True, exist_ok=True)
-        (migration_dir / "001_init.py").write_text("# migration\n", encoding="utf-8")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(
-                changed_files=["alembic/versions/001_init.py"],
-                summary="Add migration",
-            ),
-        )
-
-    config = _config(data_dir, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            implementer=implementer_changing_migration,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-actual-sensitive"), source_repo)
-
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert "scope includes sensitive files" in (run.performance_fallback_reason or "")
-    assert "alembic/versions/001_init.py" in (run.performance_fallback_reason or "")
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert "scope includes sensitive files" in (persisted.performance_fallback_reason or "")
-
-
-def test_fast_performance_mode_fallback_actual_scope_protected_file(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    def implementer_changing_protected(request: AgentRequest) -> AgentResult:
-        assert request.workspace_path is not None
-        Path(request.workspace_path, "README.md").write_text("# new readme\n", encoding="utf-8")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(changed_files=["README.md"], summary="Edit README"),
-        )
-
-    config = _config(data_dir, performance_mode="fast")
-    config.repository.protected_file_patterns = ["README.md"]
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            implementer=implementer_changing_protected,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-actual-protected"), source_repo)
-
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == "scope includes protected files: README.md"
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == "scope includes protected files: README.md"
 
 
 def test_reviewer_source_location_model_validation_rejects_invalid_paths() -> None:
@@ -3230,67 +2665,6 @@ def test_rework_telemetry_initial_plus_verification_repair(
     assert metrics.performance.rework.runs_with_rework == 1
     assert metrics.performance.rework.total_gate_failures == 1
     assert metrics.performance.rework.verification_gate_failures == 1
-
-
-def test_fast_planned_scope_fallback_does_not_rerun_planner(
-    source_repo: Path,
-    data_dir: Path,
-) -> None:
-    planner_calls = 0
-    planner_requests: list[AgentRequest] = []
-
-    def planner_planning_protected_file(request: AgentRequest) -> AgentResult:
-        nonlocal planner_calls
-        planner_calls += 1
-        planner_requests.append(request)
-        return AgentResult(
-            role=AgentRole.PLANNER,
-            success=True,
-            execution_plan=ExecutionPlan(
-                summary="Plan with protected file.",
-                steps=[PlanStep(id="1", goal="Edit protected file.", likely_files=["README.md"])],
-                expected_scope=ExpectedScope(
-                    modules=["README.md"],
-                    estimated_files_min=1,
-                    estimated_files_max=2,
-                ),
-            ),
-        )
-
-    def implementer_touching_readme(request: AgentRequest) -> AgentResult:
-        assert request.workspace_path is not None
-        (Path(request.workspace_path) / "README.md").write_text("updated readme\n")
-        return AgentResult(
-            role=AgentRole.IMPLEMENTER,
-            success=True,
-            change_set=ChangeSet(summary="Edit README", changed_files=["README.md"]),
-        )
-
-    config = _config(data_dir, performance_mode="fast")
-    config.repository.protected_file_patterns = ["README.md"]
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0),
-            planner=planner_planning_protected_file,
-            implementer=implementer_touching_readme,
-        ),
-    )
-
-    run = controller.run(_work_item("WI-fast-fallback-no-planner-rerun"), source_repo)
-
-    assert planner_calls == 1
-    fast_planner_model = controller._router.model_for_role(
-        AgentRole.PLANNER, model_profile="economy"
-    ).model
-    assert planner_requests[0].model == fast_planner_model
-    assert planner_requests[0].model != config.models.planner.model
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_fallback_reason == "scope includes protected files: README.md"
-    persisted_plan = store.load_artifact(run.id, ExecutionPlan)
-    assert persisted_plan.summary == "Plan with protected file."
 
 
 def test_unready_first_plan_then_ready_clarification_proceeds(

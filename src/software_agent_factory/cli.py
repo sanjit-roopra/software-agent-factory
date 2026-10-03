@@ -166,11 +166,6 @@ class RuntimeChoice(StrEnum):
     PI = "pi"
 
 
-class PerformanceModeChoice(StrEnum):
-    STANDARD = "standard"
-    FAST = "fast"
-
-
 def _current_system() -> str:
     """The host OS name. A function (not an inline ``platform.system()``
     call) so macOS-only commands can be exercised deterministically from any
@@ -190,7 +185,6 @@ def _load_config(
     config: Path | None,
     data_dir: Path | None,
     model_profile: str | None = None,
-    performance_mode: PerformanceModeChoice | None = None,
     no_risk_assessment: bool = False,
 ) -> FactoryConfig:
     """Load configuration, applying optional ``--data-dir`` and ``--no-risk-assessment`` overrides.
@@ -226,22 +220,6 @@ def _load_config(
         loaded = loaded.model_copy(
             update={"risk_assessment": loaded.risk_assessment.model_copy(update={"enabled": False})}
         )
-    if performance_mode is not None:
-        loaded = loaded.model_copy(
-            update={
-                "performance": loaded.performance.model_copy(
-                    update={"mode": performance_mode.value}
-                )
-            }
-        )
-        if (
-            loaded.performance.mode == "fast"
-            and loaded.performance.fast_model_profile not in loaded.model_profiles
-        ):
-            raise _fail(
-                "fast performance mode requires performance.fast_model_profile "
-                "to name a configured model profile"
-            )
     return loaded
 
 
@@ -404,11 +382,6 @@ def run_command(
         "--model-profile",
         help="Configured model profile to use (default: top-level models block).",
     ),
-    performance_mode: PerformanceModeChoice | None = typer.Option(
-        None,
-        "--performance-mode",
-        help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
-    ),
     no_risk_assessment: bool = typer.Option(
         False, NO_RISK_ASSESSMENT_FLAG, help=NO_RISK_ASSESSMENT_HELP
     ),
@@ -425,9 +398,7 @@ def run_command(
     from .models import ChangeSet, WorkItem
     from .store import FileRunStore
 
-    factory_config = _load_config(
-        config, data_dir, model_profile, performance_mode, no_risk_assessment
-    )
+    factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
     # A manual run needs ``gh`` only for the publishing/CI features it would
     # actually reach; the scheduler is irrelevant here, so an offline default
     # run requires nothing but ``git``.
@@ -542,11 +513,6 @@ def project_command(
         "--model-profile",
         help="Configured model profile to use (default: top-level models block).",
     ),
-    performance_mode: PerformanceModeChoice | None = typer.Option(
-        None,
-        "--performance-mode",
-        help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
-    ),
     no_risk_assessment: bool = typer.Option(
         False, NO_RISK_ASSESSMENT_FLAG, help=NO_RISK_ASSESSMENT_HELP
     ),
@@ -577,9 +543,7 @@ def project_command(
         if title is None or description is None:
             raise _fail("--title and --description are required unless --resume is used")
 
-    factory_config = _load_config(
-        config, data_dir, model_profile, performance_mode, no_risk_assessment
-    )
+    factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
     _require_prerequisites(
         require_gh=(
             github_repo is not None
@@ -687,16 +651,17 @@ def start_command(
         "--model-profile",
         help="Configured model profile to use (default: top-level models block).",
     ),
-    performance_mode: PerformanceModeChoice | None = typer.Option(
-        None,
-        "--performance-mode",
-        help="Workflow performance mode override: 'standard' or eligible low-risk 'fast'.",
-    ),
     no_risk_assessment: bool = typer.Option(
         False, NO_RISK_ASSESSMENT_FLAG, help=NO_RISK_ASSESSMENT_HELP
     ),
     once: bool = typer.Option(
         False, "--once", help="Run one bounded scheduler tick instead of polling forever."
+    ),
+    removed_performance_mode: str | None = typer.Option(
+        None,
+        "--performance-mode",
+        hidden=True,
+        help="Removed (ADR-036). Accepted and ignored so services installed with it still start.",
     ),
     config: Path = typer.Option(
         None, "--config", help="Path to a factory config YAML file (default: packaged config)."
@@ -710,9 +675,7 @@ def start_command(
     Refuses to run (and never touches GitHub) unless ``scheduler.enabled`` is
     set in configuration.
     """
-    factory_config = _load_config(
-        config, data_dir, model_profile, performance_mode, no_risk_assessment
-    )
+    factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "scheduler is disabled: set 'scheduler.enabled: true' in the factory "
@@ -1378,11 +1341,6 @@ def service_install_command(
         "--model-profile",
         help="Configured model profile the service will use.",
     ),
-    performance_mode: PerformanceModeChoice | None = typer.Option(
-        None,
-        "--performance-mode",
-        help="Override the workflow performance mode for every dispatched run.",
-    ),
     no_risk_assessment: bool = typer.Option(
         False,
         NO_RISK_ASSESSMENT_FLAG,
@@ -1415,9 +1373,7 @@ def service_install_command(
     """
     _require_macos()
 
-    factory_config = _load_config(
-        config, data_dir, model_profile, performance_mode, no_risk_assessment
-    )
+    factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "refusing to install a service for a disabled scheduler: set "
@@ -1449,7 +1405,6 @@ def service_install_command(
     from .service_install import (
         ServiceInstallError,
         ServiceInstallRequest,
-        ServicePerformanceMode,
         ServiceRuntime,
         resolve_factory_executable,
     )
@@ -1467,11 +1422,6 @@ def service_install_command(
             poll_interval_seconds=factory_config.scheduler.poll_interval_seconds,
             runtime=ServiceRuntime(runtime.value),
             model_profile=model_profile,
-            performance_mode=(
-                ServicePerformanceMode(performance_mode.value)
-                if performance_mode is not None
-                else None
-            ),
             risk_assessment_disabled=no_risk_assessment,
             label=label,
             allow_source_dev=allow_source_dev,
@@ -1494,7 +1444,6 @@ def service_install_command(
 
     typer.echo(f"installed service for {resolved_executable}")
     typer.echo(f"runtime: {runtime.value}")
-    typer.echo(f"performance mode: {factory_config.performance.mode}")
     typer.echo(f"poll interval: {factory_config.scheduler.poll_interval_seconds}s")
     for line in render_service_status(status):
         typer.echo(line)

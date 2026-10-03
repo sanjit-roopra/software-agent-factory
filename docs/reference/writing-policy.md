@@ -1,13 +1,12 @@
 # Writing policy
 
 The factory uses concise controlled English for all text that it authors.
-The policy is advisory. A finding is logged and stored. It never fails a run,
-never causes a retry and never blocks delivery.
+The policy is advisory. A finding is logged. It never fails a run, never
+causes a retry and never blocks delivery.
 
-The policy applies to:
+The prompts give the policy to agents. The controller checks only the text
+that it publishes:
 
-- Agent output fields
-- Instructions sent to agents
 - Generated project issues
 - Pull request titles and bodies
 - Commit messages
@@ -19,11 +18,11 @@ source is pinned to revision
 
 ## Rules
 
-The factory checks these rules and reports each finding:
+The factory checks these rules in publication text and reports each finding:
 
 - Use 20 words or fewer for an instruction sentence.
 - Use 25 words or fewer for a descriptive sentence.
-- Keep bounded artifact fields within their total word limit.
+- Keep each field within its total word limit.
 - Remove filler terms.
 - Do not use semicolons.
 - Do not use em dashes.
@@ -59,14 +58,11 @@ The gate reports each finding with its file, line, and rule.
 
 ## Findings
 
-The controller checks each successful agent result. It does not change the
-result.
+The controller does not check agent results (ADR-036). The output contract of
+each role still states the word limits.
 
-- The controller writes each finding to the log as a warning.
-- The controller stores the findings in `writing_findings` on the invocation
-  record in `run.json`.
 - The controller logs findings for generated issue, pull request and commit
-  text. It still publishes the text.
+  text as warnings. It still publishes the text.
 - Blank publication text is an error, because it is not a wording problem.
 - Blank agent text fails model validation and takes the ordinary retry.
 

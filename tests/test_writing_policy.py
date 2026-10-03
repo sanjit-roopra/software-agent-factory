@@ -6,18 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from software_agent_factory import writing_policy
 from software_agent_factory._vendor.simple_english.lint import lint
-from software_agent_factory.agents import AgentResult
 from software_agent_factory.models import (
-    AgentPurpose,
-    AgentRole,
     ChangeSet,
-    ExecutionPlan,
-    ExpectedScope,
     PlanningResult,
-    PlanStep,
-    Specification,
     TriageResult,
     WorkItem,
 )
@@ -26,8 +18,6 @@ from software_agent_factory.writing_policy import (
     SIMPLE_ENGLISH_REVISION,
     check_publication_text,
     field_word_limits,
-    result_writing_findings,
-    validate_artifact_writing,
     validate_publication_text,
     writing_limits_text,
 )
@@ -63,91 +53,20 @@ def test_policy_detects_long_sentences_and_filler() -> None:
 
 
 def test_policy_preserves_uncertainty_modals() -> None:
-    report = Specification(
-        problem="Which behavior applies?",
-        assumptions=["The API may return an empty result."],
-        unknowns=["The dependency might change this behavior."],
-        confidence=0.5,
-    )
+    text = "The API may return an empty result."
 
-    assert validate_artifact_writing(report) == ()
+    assert validate_publication_text("text", text, max_words=20) == ()
 
 
-def _wordy_plan() -> ExecutionPlan:
-    return ExecutionPlan(
-        summary="Use a robust and comprehensive implementation.",
-        steps=[PlanStep(id="one", goal="Change the parser.")],
-        expected_scope=ExpectedScope(
-            modules=["src"],
-            estimated_files_min=1,
-            estimated_files_max=1,
-        ),
-    )
+def test_publication_text_over_the_word_limit_is_a_finding() -> None:
+    findings = validate_publication_text("title", "One two three four five six.", max_words=5)
+
+    assert findings == ("title has 6 words. The limit is 5.",)
 
 
-def test_agent_result_writing_findings_are_returned_and_logged(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    result = AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=_wordy_plan())
-
-    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
-        findings = result_writing_findings(result, AgentPurpose.STANDARD, source="run RUN-1")
-
-    assert "summary has 2 slop_word finding(s)." in findings
-    assert "source=run RUN-1" in caplog.text
-    assert "artifact=ExecutionPlan" in caplog.text
-    assert result.success is True
-    assert result.failure_reason is None
-
-
-def test_planner_result_findings_name_the_specification_and_plan_parts() -> None:
-    result = AgentResult(
-        role=AgentRole.PLANNER,
-        success=True,
-        specification=Specification(problem="A robust and seamless fix.", confidence=0.5),
-        execution_plan=_wordy_plan(),
-    )
-
-    findings = result_writing_findings(result, AgentPurpose.STANDARD, source="run RUN-1")
-
-    assert "specification.problem has 2 slop_word finding(s)." in findings
-    assert "execution_plan.summary has 2 slop_word finding(s)." in findings
+def test_planning_result_limits_name_the_specification_and_plan_parts() -> None:
     assert "specification.problem=80" in writing_limits_text(PlanningResult)
     assert "execution_plan.summary=25" in writing_limits_text(PlanningResult)
-
-
-def test_clean_or_failed_results_have_no_writing_findings(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    clean = AgentResult(
-        role=AgentRole.PLANNER,
-        success=True,
-        execution_plan=_wordy_plan().model_copy(update={"summary": "Change the parser."}),
-    )
-    failed = AgentResult(role=AgentRole.PLANNER, success=False, failure_reason="boom")
-    no_artifact = AgentResult(role=AgentRole.PLANNER, success=True)
-
-    with caplog.at_level(logging.WARNING, logger="software_agent_factory.writing_policy"):
-        for result in (clean, failed, no_artifact):
-            assert result_writing_findings(result, AgentPurpose.STANDARD, source="x") == ()
-
-    assert caplog.text == ""
-
-
-def test_artifact_word_budget_limits_total_filler() -> None:
-    plan = ExecutionPlan(
-        summary=" ".join(["word"] * 26),
-        steps=[PlanStep(id="one", goal="Change the parser.")],
-        expected_scope=ExpectedScope(
-            modules=["src"],
-            estimated_files_min=1,
-            estimated_files_max=1,
-        ),
-    )
-
-    findings = validate_artifact_writing(plan)
-
-    assert "summary has 26 words. The limit is 25." in findings
 
 
 def test_policy_preserves_exact_technical_text() -> None:
@@ -164,19 +83,6 @@ def test_policy_preserves_exact_technical_text() -> None:
         assert validate_publication_text("text", text, max_words=5) == ()
 
 
-def test_dependency_identifiers_are_not_linted_as_prose() -> None:
-    result = TriageResult(
-        factory_eligible=True,
-        complexity="L1",
-        risk="R1",
-        needs_research=False,
-        confidence=0.9,
-        dependencies=["delve"],
-    )
-
-    assert validate_artifact_writing(result) == ()
-
-
 def test_paragraph_boundaries_end_sentences() -> None:
     sentence = " ".join(["word"] * 25)
 
@@ -187,50 +93,6 @@ def test_paragraph_boundaries_end_sentences() -> None:
             max_words=50,
         )
         == ()
-    )
-
-
-def test_clean_unresolved_decision_prose_passes_writing_policy() -> None:
-    plan = ExecutionPlan(
-        summary="Implement required interface changes.",
-        steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
-        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
-        test_strategy=["Run existing unit tests."],
-        risks=["The change may affect parser performance."],
-        unresolved_decisions=[
-            "The data layer requires a human choice between SQLite and PostgreSQL.",
-        ],
-    )
-    assert validate_artifact_writing(plan) == ()
-
-
-def _plan_with_decision(decision: str) -> ExecutionPlan:
-    return ExecutionPlan(
-        summary="Implement required interface changes.",
-        steps=[PlanStep(id="step-1", goal="Update parser.", likely_files=["src/parser.py"])],
-        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
-        unresolved_decisions=[decision],
-    )
-
-
-def test_unresolved_decision_over_the_word_limit_reports_the_field_and_sentence_limits() -> None:
-    findings = validate_artifact_writing(_plan_with_decision(" ".join(["word"] * 31)))
-
-    assert findings == (
-        "unresolved_decisions[0] has 31 words. The limit is 30.",
-        "unresolved_decisions[0] has 1 sentence_over_limit finding(s).",
-    )
-
-
-def test_unresolved_decision_with_banned_style_reports_each_rule() -> None:
-    findings = validate_artifact_writing(
-        _plan_with_decision("We need a robust solution; e.g. for gRPC.")
-    )
-
-    assert findings == (
-        "unresolved_decisions[0] has 1 semicolon finding(s).",
-        "unresolved_decisions[0] has 1 latin_abbrev finding(s).",
-        "unresolved_decisions[0] has 1 slop_word finding(s).",
     )
 
 
@@ -269,19 +131,6 @@ def test_blank_publication_text_still_raises() -> None:
         check_publication_text("commit message", "  ", max_words=20)
 
 
-def test_field_word_limits_come_from_the_table_that_the_check_uses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plan = _wordy_plan().model_copy(update={"summary": " ".join(["word"] * 8)})
-    assert field_word_limits(ExecutionPlan)["summary"] == 25
-    assert validate_artifact_writing(plan) == ()
-
-    monkeypatch.setitem(writing_policy._FIELD_LIMITS[ExecutionPlan], "summary", 7)
-
-    assert field_word_limits(ExecutionPlan)["summary"] == 7
-    assert "summary has 8 words. The limit is 7." in validate_artifact_writing(plan)
-
-
 def test_triage_limits_do_not_include_the_removed_requirements_quality() -> None:
     limits = field_word_limits(TriageResult)
 
@@ -310,16 +159,3 @@ def test_writing_limits_text_lists_each_limit_and_filler_examples() -> None:
 def test_filler_examples_are_words_the_prose_check_flags() -> None:
     for word in FILLER_EXAMPLES:
         assert lint(f"The change is {word} today.", "descriptive")["violations"]["slop_word"] == 1
-
-
-def test_an_artifact_type_without_prose_fields_has_no_passages() -> None:
-    assert writing_policy.artifact_passages(WorkItem(id="WI-1", title="T", description="D")) == []
-
-
-def test_findings_stop_after_twelve_with_an_omission_note() -> None:
-    report = Specification(problem="Q?", assumptions=[" ".join(["word"] * 60)] * 15, confidence=0.5)
-
-    findings = validate_artifact_writing(report)
-
-    assert len(findings) == 13
-    assert findings[-1] == "More writing findings were omitted."

@@ -103,7 +103,6 @@ from .models import (
     AttemptTrigger,
     ChangeSet,
     CIReport,
-    Complexity,
     EscalationRecord,
     EscalationStatus,
     ExecutionPlan,
@@ -187,7 +186,6 @@ from .workspace import (
     WorkspaceEvidence,
     WorkspaceLockError,
 )
-from .writing_policy import result_writing_findings
 
 logger = logging.getLogger(__name__)
 
@@ -705,13 +703,7 @@ class WorkflowController:
             created_at=created_at,
             updated_at=created_at,
             state_started_at=created_at,
-            requested_performance_mode=self._config.performance.mode,
             risk_assessment_enabled=self._config.risk_assessment.enabled,
-            performance_model_profile=(
-                self._config.performance.fast_model_profile
-                if self._config.performance.mode == "fast"
-                else None
-            ),
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
         )
         if not run.risk_assessment_enabled:
@@ -1289,7 +1281,6 @@ class WorkflowController:
                     )
                     self._store.save_run(run)
 
-                run = self._select_performance_mode(run, triage_result)
                 if run.escalation is None:
                     return self._fail_reopen(run, "reopened run is missing its escalation record")
                 resume_classification = run.escalation.resume_classification
@@ -1623,7 +1614,6 @@ class WorkflowController:
                         f"risk {triage_result.risk} requires human approval",
                     )
 
-                run = self._select_performance_mode(run, triage_result)
                 run = self.transition(run, WorkflowState.PLANNING)
                 return self._drive_from_planning(
                     run,
@@ -1699,9 +1689,6 @@ class WorkflowController:
         if run.state is not WorkflowState.PLANNING:
             raise TransitionError(f"run {run.id} must be PLANNING before plan execution")
         workspace_path = str(workspace.path)
-        fast_model_profile = (
-            run.performance_model_profile if run.effective_performance_mode == "fast" else None
-        )
         planning = self._run_planner(
             run,
             work_item,
@@ -1709,7 +1696,6 @@ class WorkflowController:
             triage_result=triage_result,
             workspace_path=workspace_path,
             repair_context=planner_context,
-            model_profile=fast_model_profile,
         )
         if planning.execution_plan.unresolved_decisions:
             clarification_context = _planner_clarification_context(
@@ -1724,19 +1710,12 @@ class WorkflowController:
                 triage_result=triage_result,
                 workspace_path=workspace_path,
                 repair_context=clarification_context,
-                model_profile=fast_model_profile,
             )
         specification = planning.specification
         execution_plan = planning.execution_plan
         self._store.save_artifact(run.id, specification)
         if execution_plan.unresolved_decisions:
             raise self._halt(run, WorkflowState.NEEDS_HUMAN, UNRESOLVED_DECISIONS_HALT_REASON)
-        run = self._check_fast_planned_scope(
-            run,
-            execution_plan,
-            repository_profile,
-            risk=triage_result.risk,
-        )
 
         context = _RunContext(
             work_item=work_item,
@@ -1777,82 +1756,7 @@ class WorkflowController:
                 logger.debug("escalation notice delivery failed: %s", exc)
         return _Halt(run)
 
-    def _select_performance_mode(
-        self,
-        run: FactoryRun,
-        triage: TriageResult,
-    ) -> FactoryRun:
-        if self._config.performance.mode != "fast":
-            return run
-
-        reason: str | None = None
-        if triage.complexity not in {Complexity.L0, Complexity.L1}:
-            reason = f"complexity {triage.complexity} is not eligible for fast mode"
-        elif triage.risk not in {Risk.R0, Risk.R1}:
-            reason = f"risk {triage.risk} is not eligible for fast mode"
-
-        if reason is not None:
-            selected = run.model_copy(
-                update={
-                    "effective_performance_mode": "standard",
-                    "performance_fallback_reason": reason,
-                    "performance_model_profile": self._config.performance.fast_model_profile,
-                    "updated_at": utc_now(),
-                }
-            )
-        else:
-            selected = run.model_copy(
-                update={
-                    "effective_performance_mode": "fast",
-                    "performance_model_profile": self._config.performance.fast_model_profile,
-                    "performance_fallback_reason": None,
-                    "updated_at": utc_now(),
-                }
-            )
-        self._store.save_run(selected)
-        return selected
-
-    def _check_fast_planned_scope(
-        self,
-        run: FactoryRun,
-        execution_plan: ExecutionPlan,
-        repository_profile: RepositoryProfile,
-        *,
-        risk: Risk = Risk.R0,
-    ) -> FactoryRun:
-        if run.effective_performance_mode != "fast":
-            return run
-        planned_paths = [
-            *execution_plan.expected_scope.modules,
-            *(path for step in execution_plan.steps for path in step.likely_files),
-        ]
-        reason = self._fast_scope_fallback_reason(
-            planned_paths,
-            execution_plan=execution_plan,
-            risk=risk,
-            repository_profile=repository_profile,
-        )
-        return self._fall_back_from_fast_mode(run, reason)
-
-    def _check_fast_actual_scope(
-        self,
-        run: FactoryRun,
-        context: _RunContext,
-        evidence: WorkspaceEvidence,
-        scope: ScopeAssessment,
-    ) -> FactoryRun:
-        if run.effective_performance_mode != "fast":
-            return run
-        reason = self._fast_scope_fallback_reason(
-            list(evidence.changed_files),
-            execution_plan=context.execution_plan,
-            risk=context.triage_result.risk,
-            repository_profile=context.repository_profile,
-            scope=scope,
-        )
-        return self._fall_back_from_fast_mode(run, reason)
-
-    def _fast_scope_fallback_reason(
+    def _sensitive_scope_reason(
         self,
         paths: list[str],
         *,
@@ -1898,23 +1802,6 @@ class WorkflowController:
         if sensitive_paths:
             return f"scope includes sensitive files: {', '.join(sensitive_paths)}"
         return None
-
-    def _fall_back_from_fast_mode(
-        self,
-        run: FactoryRun,
-        reason: str | None,
-    ) -> FactoryRun:
-        if reason is None or run.effective_performance_mode != "fast":
-            return run
-        fallback = run.model_copy(
-            update={
-                "effective_performance_mode": "standard",
-                "performance_fallback_reason": reason,
-                "updated_at": utc_now(),
-            }
-        )
-        self._store.save_run(fallback)
-        return fallback
 
     def _end_failed(self, run: FactoryRun, reason: str) -> FactoryRun:
         return self.transition(run, WorkflowState.FAILED, failure_reason=reason)
@@ -1992,7 +1879,6 @@ class WorkflowController:
         repair_context: RepairContext | str | None = None,
         diff: str | None = None,
         changed_files: list[str] | None = None,
-        model_profile: str | None = None,
     ) -> PlanningResult:
         """Run the planner. It returns the specification and the plan (ADR-035).
 
@@ -2008,7 +1894,6 @@ class WorkflowController:
             repair_context=repair_context,
             diff=diff,
             changed_files=changed_files or [],
-            model_profile=model_profile,
         )
         result: AgentResult | None = None
         current_repair_context: RepairContext | str | None = repair_context
@@ -2251,7 +2136,6 @@ class WorkflowController:
         *,
         purpose: AgentPurpose = AgentPurpose.STANDARD,
         role_model: RoleModelConfig | None = None,
-        model_profile: str | None = None,
         triage_result: TriageResult | None = None,
         specification: Specification | None = None,
         execution_plan: ExecutionPlan | None = None,
@@ -2268,11 +2152,7 @@ class WorkflowController:
         workspace_path: str | None = None,
         attempt_number: int | None = None,
     ) -> AgentRequest:
-        resolved = (
-            role_model
-            if role_model is not None
-            else self._router.model_for_role(role, model_profile=model_profile)
-        )
+        resolved = role_model if role_model is not None else self._router.model_for_role(role)
         return AgentRequest(
             role=role,
             purpose=purpose,
@@ -2364,11 +2244,6 @@ class WorkflowController:
                 success=False,
                 failure_reason=failure_reason,
             )
-        writing_findings = result_writing_findings(
-            result,
-            request.purpose,
-            source=f"run {run.id} {request.role.value}",
-        )
         completed_at = utc_now()
         invocation_duration_ms = (completed_at - started_at).total_seconds() * 1000.0
         run.performance.record_duration(
@@ -2399,7 +2274,6 @@ class WorkflowController:
                 budget=budget,
                 usage=result.usage,
                 performance=result.performance,
-                writing_findings=writing_findings,
             )
         )
         run.active_invocation = None
@@ -2435,9 +2309,7 @@ class WorkflowController:
             if context.route_decision is not None
             and context.route_decision.selected_model_profile is not None
             and budget is AttemptBudget.IMPLEMENTATION
-            else (
-                run.performance_model_profile if run.effective_performance_mode == "fast" else None
-            )
+            else None
         )
         if model_profile == "default":
             model_profile = None
@@ -2636,7 +2508,6 @@ class WorkflowController:
                 evidence.changed_files,
                 context.triage_result.risk,
             )
-            run = self._check_fast_actual_scope(run, context, evidence, scope)
             while scope.decision is ScopeDecision.REPLAN:
                 record_rework(
                     run.performance,
@@ -2683,7 +2554,7 @@ class WorkflowController:
                     )
 
             # 3. Protected/sensitive/manifest/version paths
-            protected_reason = self._fast_scope_fallback_reason(
+            protected_reason = self._sensitive_scope_reason(
                 list(evidence.changed_files),
                 execution_plan=context.execution_plan,
                 risk=context.triage_result.risk,
@@ -3007,16 +2878,7 @@ class WorkflowController:
             repair_context=repair_context,
             diff=evidence.diff,
             changed_files=list(evidence.changed_files),
-            model_profile=(
-                run.performance_model_profile if run.effective_performance_mode == "fast" else None
-            ),
         ).execution_plan
-        run = self._check_fast_planned_scope(
-            run,
-            context.execution_plan,
-            context.repository_profile,
-            risk=context.triage_result.risk,
-        )
         self._store.save_artifact_once(
             run.id,
             context.execution_plan,
@@ -3276,7 +3138,6 @@ class WorkflowController:
         if (
             budget is not AttemptBudget.IMPLEMENTATION
             or not self._config.polish.enabled
-            or run.effective_performance_mode == "fast"
             or context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}
         ):
             return False

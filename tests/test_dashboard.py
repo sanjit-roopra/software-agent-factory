@@ -107,10 +107,7 @@ FIXTURE_RUNS: list[dict[str, Any]] = [
         },
         "is_finished": True,
         "is_stale": index == 3,
-        "requested_performance_mode": "fast",
         "risk_assessment_enabled": False,
-        "effective_performance_mode": "standard",
-        "performance_model_profile": "economy",
         "waiting_for_human": False,
     }
     for index in range(1, 6)
@@ -1514,9 +1511,6 @@ def test_valid_run_id_reaches_provider(running_server: RunningServer) -> None:
     assert payload["active_invocation"]["status"] == "running"
     assert "prompt" not in payload["active_invocation"]
     assert payload["source_external_id"] == "acme/example#1"
-    assert payload["requested_performance_mode"] == "fast"
-    assert payload["effective_performance_mode"] == "standard"
-    assert payload["performance_model_profile"] == "economy"
     assert payload["risk_assessment_enabled"] is False
     assert payload["verification"] == {
         "passed": True,
@@ -1784,7 +1778,6 @@ def test_new_dashboard_fields_reject_untrusted_values() -> None:
         {
             **FIXTURE_DETAILS["run-001"],
             "source_external_id": SECRET_MARKER,
-            "performance_model_profile": "secret profile/invalid",
             "verification": {
                 "passed": True,
                 "check_count": 1,
@@ -1811,7 +1804,6 @@ def test_new_dashboard_fields_reject_untrusted_values() -> None:
     )
 
     assert "source_external_id" not in payload
-    assert "performance_model_profile" not in payload
     assert "stdout" not in payload["verification"]
     assert payload["artifacts"] == ["verification.json"]
     assert "comment_url" not in payload["escalation"]

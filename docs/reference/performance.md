@@ -2,9 +2,6 @@
 
 The factory reduces local delays without removing required quality gates.
 
-The standard mode remains the default. The fast mode is optional and applies
-only to eligible low-risk work.
-
 ## Main improvements
 
 - A worker completion wakes the scheduler.
@@ -16,14 +13,8 @@ only to eligible low-risk work.
 - Successful command output stores counts and a content hash instead of full logs.
 - The runtime records stage, process, prompt, gate, and rework measurements.
 
-The fast mode uses a configured Planner profile. It also skips the
-optional polish pass.
-
-The fast mode does not skip deterministic verification, the Tester, the
-Reviewer, scope checks, or delivery controls.
-
-See [Configuration](configuration.md#performance) and
-[CLI](cli.md) for setup and command options.
+ADR-036 removed the fast performance mode. Use `--model-profile economy` to
+choose cheaper models. See [CLI](cli.md) for command options.
 
 ## Measured results
 
@@ -43,16 +34,6 @@ measured results.
 | Dashboard warm shared scan | 11.226 ms | 5.811 ms | 12.320 ms | 6.921 ms |
 | Git evidence collection | 84.134 ms | 78.656 ms | 98.319 ms | 83.743 ms |
 | Run-store scan with 1,000 runs | 131.535 ms | 130.992 ms | 143.496 ms | 138.709 ms |
-
-The fake-runtime controller benchmark measured these median times:
-
-| Mode | Median | Attempts | Agent calls | Optional polish |
-|---|---:|---:|---:|---:|
-| Standard | 346.03 ms | 2 | 8 | yes |
-| Fast | 226.09 ms | 1 | 6 | no |
-
-The fast mode reduced controller time by 34.66 percent in this synthetic test.
-Both modes ran deterministic verification, the Tester, and the Reviewer.
 
 These local measurements do not predict remote model latency. Machine load,
 repository size, Git history, and model response time can change the results.
@@ -77,8 +58,6 @@ uv run --no-sync python scripts/performance/benchmark.py \
   --output optimized.json \
   --baseline baseline.json
 ```
-
-Add `--controller-comparison` to compare standard mode with fast mode.
 
 The benchmark uses temporary local repositories and the fake runtime. It does
 not call a paid model or use the network.

@@ -165,8 +165,7 @@ uv run factory start \
   --github-repo acme/example \
   --config ~/my-factory.yaml \
   --runtime copilot \
-  --model-profile economy \
-  --performance-mode fast
+  --model-profile economy
 ```
 
 `factory start` refuses to run, and never contacts GitHub, unless
@@ -279,7 +278,7 @@ The controller stores the accepted reply before it reopens the same run.
 The reply does not reset the attempt history or retry budget.
 
 Run `factory dashboard` to inspect the loop. The dashboard shows the issue
-reference, models, performance mode, safe artifact names, verification summary,
+reference, models, safe artifact names, verification summary,
 pull request, escalation link, and resume state.
 
 ## Next

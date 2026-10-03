@@ -54,11 +54,6 @@ Everything after "ready for PR" is strictly opt-in. With the packaged
 configuration a run performs no network access at all and completes at
 `PR_READY`.
 
-The optional fast mode applies only to low-risk `L0` and `L1` work. It can use
-a faster Planner profile. It skips the optional polish pass.
-Deterministic verification, the independent Tester, and the independent
-Reviewer remain mandatory.
-
 Still out of scope (deferred Phase 15 items):
 - staging (15.3)
 - deployment/promotion (15.4)
@@ -175,19 +170,19 @@ policy uses selected deterministic checks from SimpleEnglish revision
 The policy checks:
 
 - Sentence length
-- Total words in bounded artifact fields
+- Total words in each published field
 - Filler terms
 - Semicolons
 - Em dashes
 - Latin abbreviations
 
 A writing finding never fails a result, never causes a retry and never blocks
-publication. The controller logs each finding and stores it in
-`writing_findings` on the invocation record. Retries stay for structural
-failures such as invalid JSON, schema errors and missing required data. The
-controller never rewrites facts. See ADR-029.
+publication. The controller checks only the text that it publishes and logs
+each finding (ADR-036). Retries stay for structural failures such as invalid
+JSON, schema errors and missing required data. The controller never rewrites
+facts. See ADR-029.
 
-Issue bodies, pull request bodies, titles and commit messages pass the same
+Issue bodies, pull request bodies, titles and commit messages pass these
 checks before Git or GitHub mutation. Project child work items contain only the
 task description. They do not repeat the full project brief in every agent
 prompt.
