@@ -133,6 +133,7 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
             ".gitlab-ci.yml",
             ".circleci/*",
             "azure-pipelines.yml",
+            "azure-pipelines.yaml",
             "Jenkinsfile",
         ),
         (
@@ -153,6 +154,9 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
             "docker-compose.yml",
             "docker-compose.yaml",
             "docker-compose.*.yml",
+            "docker-compose.*.yaml",
+            "compose.*.yml",
+            "compose.*.yaml",
         ),
         (
             "Images that run as root or use a floating tag.",
