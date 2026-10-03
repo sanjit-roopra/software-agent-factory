@@ -316,3 +316,45 @@ def test_mixed_repository_derives_each_lane_with_its_runner() -> None:
         LaneCommands(_PY, ("uv sync --locked",), ("CI=true uv run --no-sync pytest -q",)),
         LaneCommands(_JS, ("pnpm install --frozen-lockfile",), ("CI=true pnpm exec oxlint",)),
     )
+
+
+@pytest.mark.parametrize(
+    ("lockfile", "yarn_berry", "install", "lint"),
+    [
+        ("yarn.lock", False, "yarn install --frozen-lockfile", "CI=true yarn run eslint ."),
+        ("yarn.lock", True, "yarn install --immutable", "CI=true yarn run eslint ."),
+        ("bun.lock", False, "bun install --frozen-lockfile", "CI=true bun run eslint ."),
+        ("bun.lockb", False, "bun install --frozen-lockfile", "CI=true bun run eslint ."),
+    ],
+)
+def test_yarn_and_bun_lanes_use_their_own_runner(
+    lockfile: str, yarn_berry: bool, install: str, lint: str
+) -> None:
+    inventory = ToolchainInventory(
+        lanes=(_JS,),
+        bindings=(_bound(_JS, ToolchainSlot.LINT, ToolchainProvider.ESLINT),),
+        yarn_berry=yarn_berry,
+    )
+
+    candidates = candidate_commands(inventory, _profile(lockfile))
+
+    assert _lane(candidates, _JS) == LaneCommands(lane=_JS, install=(install,), verify=(lint,))
+
+
+@pytest.mark.parametrize(("lockfile", "runner"), [("yarn.lock", "yarn"), ("bun.lock", "bun")])
+def test_yarn_and_bun_run_package_scripts(lockfile: str, runner: str) -> None:
+    inventory = ToolchainInventory(lanes=(_JS,), package_json_scripts=("test",))
+
+    candidates = candidate_commands(inventory, _profile(lockfile))
+
+    assert _lane(candidates, _JS).verify == (f"CI=true {runner} run test",)
+
+
+def test_yarn_and_bun_lockfiles_together_skip_the_lane() -> None:
+    inventory = ToolchainInventory(lanes=(_JS,), package_json_scripts=("test",))
+
+    candidates = candidate_commands(inventory, _profile("yarn.lock", "bun.lock"))
+
+    assert candidates.notes == (
+        "javascript lane skipped: more than one lockfile at the repository root",
+    )

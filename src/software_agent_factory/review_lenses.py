@@ -118,6 +118,8 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
             "package-lock.json",
             "pnpm-lock.yaml",
             "yarn.lock",
+            "bun.lock",
+            "bun.lockb",
         ),
         (
             "A new dependency that the change does not need.",

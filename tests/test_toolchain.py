@@ -624,3 +624,42 @@ def test_package_json_alone_is_not_a_pnpm_workspace(tmp_path: Path) -> None:
     _write(tmp_path, "package.json", '{"name": "x"}')
 
     assert _inventory(tmp_path).pnpm_workspace is False
+
+
+def test_yarnrc_yml_marks_a_yarn_berry_project(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+    _write(tmp_path, ".yarnrc.yml", "nodeLinker: node-modules\n")
+
+    assert _inventory(tmp_path).yarn_berry is True
+
+
+def test_a_plain_javascript_project_is_not_yarn_berry(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+
+    assert _inventory(tmp_path).yarn_berry is False
+
+
+@pytest.mark.parametrize(
+    ("package_json", "yarn_lock", "berry"),
+    [
+        ('{"packageManager": "yarn@4.5.0"}', None, True),
+        ('{"packageManager": "yarn@1.22.22"}', None, False),
+        ('{"packageManager": "pnpm@9.0.0"}', None, False),
+        ("{}", "# This file is generated.\n\n__metadata:\n  version: 8\n", True),
+        ("{}", "# yarn lockfile v1\n", False),
+    ],
+)
+def test_yarn_berry_is_found_from_package_manager_or_lockfile(
+    tmp_path: Path, package_json: str, yarn_lock: str | None, berry: bool
+) -> None:
+    _write(tmp_path, "package.json", package_json)
+    if yarn_lock is not None:
+        _write(tmp_path, "yarn.lock", yarn_lock)
+
+    assert _inventory(tmp_path).yarn_berry is berry
+
+
+def test_package_json_workspaces_are_recorded(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"workspaces": ["packages/*"]}')
+
+    assert _inventory(tmp_path).yarn_workspace is True

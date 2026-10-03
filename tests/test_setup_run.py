@@ -169,6 +169,13 @@ def test_apply_refuses_an_add_command_that_changes_another_path(empty_git_dir: P
     assert not (empty_git_dir / SETUP_RECORD_DIR).exists()
 
 
+@pytest.mark.parametrize("lockfile", ["yarn.lock", "bun.lock", "bun.lockb"])
+def test_apply_accepts_a_yarn_or_bun_lockfile_change(empty_git_dir: Path, lockfile: str) -> None:
+    outcome, _ = apply_toolchain_setup(_TWO_LANES, _Runner(edits=lockfile), empty_git_dir, _LIMITS)
+
+    assert outcome == SetupOutcome(applied=_TWO_LANES.commands)
+
+
 def test_empty_plan_runs_nothing_and_writes_nothing(empty_git_dir: Path) -> None:
     runner = _Runner()
     empty = ToolchainSetupPlan(manifest_fingerprint=_FINGERPRINT)

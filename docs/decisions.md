@@ -7,6 +7,8 @@ This supersedes ADR-019 in part and ADR-021 in part. ADR-020 stays.
 
 Amendment on 2026-10-03 (slice C1): a setup run with an unclear stack records a note and adds nothing. It does not escalate.
 
+Amendment on 2026-10-03 (Bun and Yarn): Yarn and Bun lockfiles are supported. Each one selects its own install, run and add commands.
+
 Amendment on 2026-10-03 (slice E): lenses go into the reviewer prompt only. The polish attempt keeps its repository guidance.
 
 Amendment on 2026-10-03 (mutation gate):
@@ -60,7 +62,7 @@ The factory takes over this model, in five slices.
 - If the YAML configuration has any repository command, the factory uses only the YAML commands.
 - `repository.derive_commands: false` turns derivation off. It is on by default, because the factory runs automatically.
 - The factory makes commands only for tools that the repository has. It never adds a default tool here.
-- Each lane needs exactly one supported lockfile at the repository root: `uv.lock` or `poetry.lock` for Python, `package-lock.json` or `pnpm-lock.yaml` for JavaScript.
+- Each lane needs exactly one supported lockfile at the repository root: `uv.lock` or `poetry.lock` for Python, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb` for JavaScript.
 - A `package.json` script such as `lint` or `test` replaces the tool command for its slot.
 - Each verify command is meant to check and not write. Flags such as `--no-fix` and `--ci` and the variable `CI=true` turn off fixes and snapshot writes.
 - Before the agents start, the factory runs the install command and each verify command on the unchanged base commit.
@@ -86,8 +88,12 @@ The factory takes over this model, in five slices.
 - For each slot without a provider, the setup run adds the default provider as a development dependency.
   It also adds the mutation tool for the stack: `mutmut` for Python, and Stryker with the runner for the test tool for JavaScript/TypeScript.
 - The package manager of the lane adds the tools, so the manifest and the lockfile change together:
-  `uv add --dev --no-sync`, `poetry add --group dev --lock`, `npm install --save-dev --package-lock-only --ignore-scripts` or `pnpm add --save-dev --lockfile-only --ignore-scripts`.
-  These commands install nothing. The JavaScript commands run no package scripts.
+  `uv add --dev --no-sync`, `poetry add --group dev --lock`, `npm install --save-dev --package-lock-only --ignore-scripts`, `pnpm add --save-dev --lockfile-only --ignore-scripts`,
+  `yarn add --dev --ignore-scripts` (Yarn 1), `yarn add --dev --mode=update-lockfile` (Yarn 2 and later) or `bun add --dev --lockfile-only --ignore-scripts`.
+  These commands install nothing, except Yarn 1, which has no lockfile-only mode. The JavaScript commands run no package scripts.
+  Yarn 2 and later skips scripts in this mode.
+  Yarn 2 and later is found from a root `.yarnrc.yml`, a `packageManager` of `yarn@2` or later, or a `yarn.lock` with a `__metadata:` header.
+  A Yarn 1 workspace root also gets `-W`.
   Python locking can run the project's build backend to read package metadata.
   A pnpm workspace root also gets `--workspace-root`.
 - A lane is skipped when it has more than one lockfile at the root, such as `package-lock.json` and `yarn.lock`.

@@ -125,6 +125,10 @@ KNOWN_PACKAGE_SCRIPTS = tuple(name for names in SLOT_SCRIPTS.values() for name i
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
 _PYPROJECT = "pyproject.toml"
 _PACKAGE_JSON = "package.json"
+_YARN_LOCK = "yarn.lock"
+_YARN_BERRY_LOCK_MARK = b"__metadata:"
+_LOCK_HEAD_BYTES = 1024
+_YARN_PACKAGE_MANAGER = re.compile(r"yarn@(?P<major>\d{1,4})\.")
 _SETUP_CFG = "setup.cfg"
 _MYPY_INI = "mypy.ini"
 _DOT_MYPY_INI = ".mypy.ini"
@@ -264,6 +268,10 @@ class _RootEvidence:
     mypy_files: dict[str, bool] = field(default_factory=dict)
     package_json_keys: set[str] = field(default_factory=set)
     package_json_scripts: set[str] = field(default_factory=set)
+    #: The major version from ``"packageManager": "yarn@<version>"``.
+    yarn_major: int | None = None
+    #: Whether the root ``yarn.lock`` has the Yarn 2 ``__metadata:`` header.
+    yarn_berry_lockfile: bool = False
     warnings: list[str] = field(default_factory=list)
 
 
@@ -306,8 +314,18 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
             lane for lane in lanes if _provider_evidence(MUTATION_SIGNALS[lane], facts)
         ),
         pnpm_workspace="pnpm-workspace.yaml" in facts.root_evidence.files,
+        yarn_berry=_is_yarn_berry(facts.root_evidence),
+        yarn_workspace="workspaces" in facts.root_evidence.package_json_keys,
         self_targeting_providers=tuple(sorted(facts.root_evidence.self_targeting)),
         warnings=(*incomplete, *facts.root_evidence.warnings),
+    )
+
+
+def _is_yarn_berry(evidence: _RootEvidence) -> bool:
+    return (
+        ".yarnrc.yml" in evidence.files
+        or (evidence.yarn_major is not None and evidence.yarn_major >= 2)
+        or evidence.yarn_berry_lockfile
     )
 
 
@@ -399,6 +417,8 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
         evidence.self_targeting.add(ToolchainProvider.MYPY)
     if _PACKAGE_JSON in names:
         _read_package_json(root / _PACKAGE_JSON, evidence)
+    if _YARN_LOCK in names:
+        evidence.yarn_berry_lockfile = _YARN_BERRY_LOCK_MARK in _read_head(root / _YARN_LOCK)
     return evidence
 
 
@@ -428,11 +448,28 @@ def _read_package_json(path: Path, evidence: _RootEvidence) -> None:
     if not isinstance(payload, dict):
         return
     evidence.package_json_keys.update(str(key) for key in payload)
+    package_manager = payload.get("packageManager")
+    if isinstance(package_manager, str):
+        match = _YARN_PACKAGE_MANAGER.match(package_manager)
+        if match is not None:
+            evidence.yarn_major = int(match["major"])
     scripts = payload.get("scripts")
     if isinstance(scripts, dict):
         evidence.package_json_scripts.update(
             name for name in KNOWN_PACKAGE_SCRIPTS if isinstance(scripts.get(name), str)
         )
+
+
+def _read_head(path: Path) -> bytes:
+    """Return the first bytes of a regular file, or nothing when it cannot be read."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return b""
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return b""
+        return handle.read(_LOCK_HEAD_BYTES)
 
 
 def _ini_sections(text: str) -> dict[str, list[str]]:
