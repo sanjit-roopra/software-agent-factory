@@ -25,12 +25,13 @@ from typing import Protocol
 
 from .atomic_write import write_text_atomic
 from .command_probe import CommandRunner, ProbeLimits, command_failure_reason
-from .models import MAX_COMMAND_TEXT_LENGTH, SetupState, ToolchainSetupPlan
+from .models import MAX_COMMAND_NOTES, MAX_COMMAND_TEXT_LENGTH, SetupState, ToolchainSetupPlan
 from .publishing import PublishResult
 from .repository_files import (
     RepositoryFile,
     RepositoryFileError,
     RepositoryFilesPlan,
+    is_file_note,
     plan_repository_files,
     write_repository_files,
 )
@@ -175,7 +176,16 @@ def apply_toolchain_setup(
 
 def _with_files(plan: ToolchainSetupPlan, files: RepositoryFilesPlan) -> ToolchainSetupPlan:
     return ToolchainSetupPlan.model_validate(
-        {**plan.model_dump(), "files": files.paths, "notes": (*plan.notes, *files.notes)}
+        {
+            **plan.model_dump(),
+            "files": files.paths,
+            # Replace the notes of an earlier file plan, and stay within the limit.
+            "notes": tuple(
+                dict.fromkeys(
+                    (*(note for note in plan.notes if not is_file_note(note)), *files.notes)
+                )
+            )[:MAX_COMMAND_NOTES],
+        }
     )
 
 

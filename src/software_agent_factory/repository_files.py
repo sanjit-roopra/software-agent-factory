@@ -37,6 +37,8 @@ VERIFY_PLACEHOLDER = "{{verify_commands}}"
 NO_CHECKS = "# The factory found no checks. Add the repository's lint and test commands here."
 UNCLEAR_BLOCK_NOTE = "AGENTS.md left alone: it needs exactly one factory block with both markers"
 UNREADABLE_AGENTS_NOTE = "AGENTS.md left alone: it is not a readable UTF-8 file"
+MIXED_NEWLINES_NOTE = "AGENTS.md left alone: it mixes line endings"
+IGNORED_NOTE_SUFFIX = " skipped: the repository ignores it"
 MAX_AGENTS_FILE_BYTES = 1_048_576
 
 
@@ -102,7 +104,7 @@ def plan_repository_files(
                 RepositoryFile(f"{CLAUDE_AGENTS_DIR}/{agent}", content=_template(f"agents/{agent}"))
             )
     ignored = _ignored_paths(root, [candidate.path for candidate in candidates])
-    notes.extend(f"{path} skipped: the repository ignores it" for path in sorted(ignored))
+    notes.extend(f"{path}{IGNORED_NOTE_SUFFIX}" for path in sorted(ignored))
     files = tuple(candidate for candidate in candidates if candidate.path not in ignored)
     return RepositoryFilesPlan(files, tuple(notes))
 
@@ -144,13 +146,22 @@ def _write_entry(directory_fd: int, name: str, repository_file: RepositoryFile) 
         return
     assert repository_file.content is not None
     create = os.O_TRUNC if repository_file.replaces else os.O_EXCL
+    # O_NONBLOCK makes a FIFO fail at once instead of hanging the setup.
     descriptor = os.open(
-        name, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | create, 0o644, dir_fd=directory_fd
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | create,
+        0o644,
+        dir_fd=directory_fd,
     )
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise RepositoryFileError(f"not a regular file: {repository_file.path}")
         handle.write(repository_file.content)
+
+
+def is_file_note(note: str) -> bool:
+    """Return whether ``note`` comes from a repository file plan."""
+    return note.startswith("AGENTS.md left alone") or note.endswith(IGNORED_NOTE_SUFFIX)
 
 
 def _verify_text(inventory: ToolchainInventory, profile: RepositoryProfile) -> str:
@@ -172,7 +183,10 @@ def _agents_file(root: Path, verify: str) -> tuple[RepositoryFile | None, str | 
     if current is None:
         return None, UNREADABLE_AGENTS_NOTE
     # Work with "\n" and write back in the file's own line ending style.
-    newline = "\r\n" if "\r\n" in current else "\n"
+    crlf = current.count("\r\n")
+    if crlf and crlf != current.count("\n"):
+        return None, MIXED_NEWLINES_NOTE
+    newline = "\r\n" if crlf else "\n"
     text = current.replace("\r\n", "\n")
     begins = text.count(BLOCK_BEGIN)
     ends = text.count(BLOCK_END)

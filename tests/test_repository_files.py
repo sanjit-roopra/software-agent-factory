@@ -11,6 +11,7 @@ from software_agent_factory.repository_files import (
     BLOCK_BEGIN,
     BLOCK_END,
     MAX_AGENTS_FILE_BYTES,
+    MIXED_NEWLINES_NOTE,
     NO_CHECKS,
     UNCLEAR_BLOCK_NOTE,
     UNREADABLE_AGENTS_NOTE,
@@ -306,3 +307,20 @@ def test_writing_refuses_a_parent_that_is_a_file(python_repo: Path) -> None:
 def test_a_file_has_content_or_a_link_target() -> None:
     with pytest.raises(ValueError, match="either content or a link target"):
         RepositoryFile("x")
+
+
+def test_mixed_line_endings_leave_agents_file_alone_with_a_note(python_repo: Path) -> None:
+    (python_repo / "AGENTS.md").write_bytes(b"# Rules\r\nkeep\nthis\n")
+
+    plan = _plan(python_repo)
+
+    assert "AGENTS.md" not in plan.paths
+    assert plan.notes == (MIXED_NEWLINES_NOTE,)
+
+
+def test_writing_fails_fast_on_a_fifo_agents_file(python_repo: Path) -> None:
+    plan = RepositoryFilesPlan(files=(RepositoryFile("AGENTS.md", content="x\n", replaces=True),))
+    os.mkfifo(python_repo / "AGENTS.md")
+
+    with pytest.raises(RepositoryFileError, match="cannot write AGENTS.md"):
+        write_repository_files(python_repo, plan.files)

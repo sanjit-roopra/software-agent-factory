@@ -885,3 +885,16 @@ def test_trigger_opens_a_second_pull_request_when_only_the_files_change(
     assert state.commands == (_UV_ADD,)
     assert "CLAUDE.md" not in state.files
     assert state.pull_request_url == "https://github.com/o/r/pull/2"
+
+
+def test_file_notes_appear_once_in_the_recorded_plan(bare_uv_repo: Path, tmp_path: Path) -> None:
+    (bare_uv_repo / ".gitignore").write_text(".claude/\n", encoding="utf-8")
+    _commit(bare_uv_repo, "ignore .claude")
+
+    result = run_toolchain_setup(
+        bare_uv_repo, tmp_path / "data", "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
+    )
+
+    ignored = [note for note in result.plan.notes if note.endswith("the repository ignores it")]
+    assert len(ignored) == len(set(ignored)) == 4
+    assert _read_record(result.worktree).notes == result.plan.notes
