@@ -14,6 +14,8 @@ from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
 ALWAYS: tuple[str, ...] = ("*",)
+TSX = "*.tsx"
+JSX = "*.jsx"
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,7 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
     ),
     ReviewLens(
         "typescript",
-        ("*.ts", "*.tsx", "*.mts", "*.cts"),
+        ("*.ts", TSX, "*.mts", "*.cts"),
         (
             "Use of any, or a type assertion that hides a real type error.",
             "Possible null or undefined values without a check.",
@@ -85,7 +87,7 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
     ),
     ReviewLens(
         "javascript",
-        ("*.js", "*.jsx", "*.mjs", "*.cjs"),
+        ("*.js", JSX, "*.mjs", "*.cjs"),
         (
             "Loose equality where the types can differ.",
             "Promises that nobody awaits.",
@@ -94,7 +96,7 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
     ),
     ReviewLens(
         "ui",
-        ("*.tsx", "*.jsx", "*.vue", "*.svelte", "*.html", "*.css", "*.scss"),
+        (TSX, JSX, "*.vue", "*.svelte", "*.html", "*.css", "*.scss"),
         (
             "Interactive elements without a label or keyboard access.",
             "Effects or watchers with missing dependencies, or subscriptions that leak.",
@@ -103,7 +105,7 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
     ),
     ReviewLens(
         "react",
-        ("*.tsx", "*.jsx", "*.ts", "*.js"),
+        (TSX, JSX, "*.ts", "*.js"),
         (
             "Hooks called in a condition or a loop, or a dependency array that is not stable.",
             "State set during render.",
