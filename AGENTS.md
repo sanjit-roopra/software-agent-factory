@@ -236,7 +236,10 @@ The repository commands step (ADR-034) is the exception to the no-execution
 rule above. When the YAML has no repository commands and
 `repository.derive_commands` is on, it runs the derived install and verify
 commands on the clean base commit before triage, and persists
-`repository-commands.json`.
+`repository-commands.json`. The setup run (`factory setup`) is the second
+exception: it runs package managers in a setup worktree to change the
+manifest and the lockfile. It installs nothing. Its JavaScript commands run
+no package scripts, but Python locking can run the project's build backend.
 
 There is no fixed built-in skill catalog and no repository-provided skill
 plugin system. Repository guidance comes from two separate artifacts with

@@ -45,15 +45,24 @@ class PackageRunner:
     lockfile: str
     install: str
     exec_prefix: str
+    #: Adds development dependencies to the manifest and the lockfile only.
+    #: It installs nothing. Python locking can still run the build backend.
+    add_dev: str
     script_prefix: str | None = None
 
 
 PYTHON_RUNNERS: tuple[PackageRunner, ...] = (
-    PackageRunner(lockfile="uv.lock", install="uv sync --locked", exec_prefix="uv run --no-sync"),
+    PackageRunner(
+        lockfile="uv.lock",
+        install="uv sync --locked",
+        exec_prefix="uv run --no-sync",
+        add_dev="uv add --dev --no-sync",
+    ),
     PackageRunner(
         lockfile="poetry.lock",
         install="poetry install --no-interaction",
         exec_prefix="poetry run",
+        add_dev="poetry add --group dev --lock",
     ),
 )
 
@@ -62,15 +71,26 @@ JAVASCRIPT_RUNNERS: tuple[PackageRunner, ...] = (
         lockfile="package-lock.json",
         install="npm ci",
         exec_prefix="npx --no-install",
+        add_dev="npm install --save-dev --package-lock-only --ignore-scripts",
         script_prefix="npm run",
     ),
     PackageRunner(
         lockfile="pnpm-lock.yaml",
         install="pnpm install --frozen-lockfile",
         exec_prefix="pnpm exec",
+        add_dev="pnpm add --save-dev --lockfile-only --ignore-scripts",
         script_prefix="pnpm run",
     ),
 )
+
+#: Every lockfile a lane can have, supported or not. A lane with two lockfiles
+#: has no clear package manager, so the factory does not guess one.
+LANE_LOCKFILES: Mapping[ToolchainLane, frozenset[str]] = {
+    ToolchainLane.PYTHON: frozenset({"uv.lock", "poetry.lock", "pipfile.lock", "pylock.toml"}),
+    ToolchainLane.JAVASCRIPT: frozenset(
+        {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"}
+    ),
+}
 
 LANE_RUNNERS: Mapping[ToolchainLane, tuple[PackageRunner, ...]] = {
     ToolchainLane.PYTHON: PYTHON_RUNNERS,
@@ -130,16 +150,14 @@ def candidate_commands(
 
     if not inventory.complete:
         return CandidateCommands((), (INCOMPLETE_INVENTORY_NOTE,))
-    root_version_files = {path for path in profile.version_files if "/" not in path}
+    root_files = root_version_files(profile)
     lanes: list[LaneCommands] = []
     notes: list[str] = []
     for lane in inventory.lanes:
-        runners = [r for r in LANE_RUNNERS[lane] if r.lockfile in root_version_files]
-        if len(runners) != 1:
-            reason = "no supported lockfile" if not runners else "more than one lockfile"
-            notes.append(f"{lane} lane skipped: {reason} at the repository root")
+        runner, skip_note = select_package_runner(lane, root_files)
+        if runner is None:
+            notes.append(skip_note)
             continue
-        runner = runners[0]
         verify = _lane_verify_commands(lane, runner, inventory)
         if not verify:
             notes.append(f"{lane} lane skipped: no bound provider has a check command")
@@ -148,6 +166,24 @@ def candidate_commands(
     if not inventory.lanes:
         notes.append("no supported language lane")
     return CandidateCommands(tuple(lanes), tuple(notes))
+
+
+def select_package_runner(
+    lane: ToolchainLane, root_files: set[str]
+) -> tuple[PackageRunner | None, str]:
+    """Return the one package runner for a lane, or a note on why there is none."""
+    lockfiles = {name.lower() for name in root_files} & LANE_LOCKFILES[lane]
+    runners = [r for r in LANE_RUNNERS[lane] if r.lockfile in lockfiles]
+    if len(lockfiles) > 1:
+        return None, f"{lane} lane skipped: more than one lockfile at the repository root"
+    if len(runners) == 1:
+        return runners[0], ""
+    return None, f"{lane} lane skipped: no supported lockfile at the repository root"
+
+
+def root_version_files(profile: RepositoryProfile) -> set[str]:
+    """Return the profile's version files at the repository root."""
+    return {path for path in profile.version_files if "/" not in path}
 
 
 def _lane_verify_commands(

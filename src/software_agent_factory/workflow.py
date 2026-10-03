@@ -908,11 +908,7 @@ class WorkflowController:
                 notes=("command derivation is turned off",),
             )
         else:
-            limits = ProbeLimits(
-                timeout_seconds=self._config.repository.command_timeout_seconds,
-                env_passthrough=tuple(self._config.repository.env_passthrough),
-                capture_bytes=self._config.repository.log_capture_bytes,
-            )
+            limits = ProbeLimits.from_repository(self._config.repository)
             try:
                 with measure_operation(
                     run.performance,

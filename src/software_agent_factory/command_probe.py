@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .config import RepositoryConfig
 from .models import (
     RejectedCommand,
     RepositoryCommandsPlan,
@@ -57,6 +58,15 @@ class ProbeLimits:
     timeout_seconds: int
     env_passthrough: tuple[str, ...]
     capture_bytes: int
+
+    @classmethod
+    def from_repository(cls, repository: RepositoryConfig) -> ProbeLimits:
+        """Use the same limits as configured repository commands."""
+        return cls(
+            timeout_seconds=repository.command_timeout_seconds,
+            env_passthrough=tuple(repository.env_passthrough),
+            capture_bytes=repository.log_capture_bytes,
+        )
 
 
 def probe_candidates(
@@ -162,11 +172,19 @@ def _run(
     )
 
 
-def baseline_failure_reason(report: VerificationReport) -> str:
-    """Describe a baseline failure without quoting command output."""
+def command_failure_reason(report: VerificationReport, where: str) -> str:
+    """Describe a failed command without quoting its output.
+
+    ``where`` names the phase, such as ``"on the base commit"``.
+    """
     result = report.deterministic_checks[-1] if report.deterministic_checks else None
     if result is None:
-        return "failed on the base commit"
+        return f"failed {where}"
     if result.timed_out:
-        return "timed out on the base commit"
-    return f"failed on the base commit with exit code {result.exit_code}"
+        return f"timed out {where}"
+    return f"failed {where} with exit code {result.exit_code}"
+
+
+def baseline_failure_reason(report: VerificationReport) -> str:
+    """Describe a baseline failure without quoting command output."""
+    return command_failure_reason(report, "on the base commit")

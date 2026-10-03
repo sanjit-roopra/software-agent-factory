@@ -539,6 +539,24 @@ configuration. The routing safety floors and project integration verification
 still use only the configuration. `repository.derive_commands: false` turns
 derivation off.
 
+### ToolchainSetupPlan
+
+Produced by `factory setup` (ADR-034) and recorded in `.factory/setup.json`
+in the setup worktree. It lists the add commands, the packages and the notes.
+
+`toolchain_setup.py` holds the plan as fixed tables. For each lane with
+exactly one supported lockfile, the plan adds the default provider package of
+each missing slot (`PROVIDER_PACKAGES`). It also adds the mutation tool when
+the lane has none (`MUTATION_PACKAGES`, and `STRYKER_TEST_RUNNER_PLUGINS` for
+JavaScript). An incomplete inventory adds nothing.
+
+`setup_run.py` applies the plan. It works in a worktree keyed by the source
+HEAD and holds the work item lock. It refuses a worktree that is not clean at
+its base. Each add command changes only the manifest and the lockfile and
+installs nothing. Python locking can run the build backend of the project. A
+failed command stops the setup and writes no record. The record write does not
+follow a symbolic link.
+
 ### RepositorySkill
 
 Generated for the repository as a whole, not selected from a catalog, and not

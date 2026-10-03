@@ -5,6 +5,8 @@
 Status: accepted on 2026-10-03.
 This supersedes ADR-019 in part and ADR-021 in part. ADR-020 stays.
 
+Amendment on 2026-10-03 (slice C1): a setup run with an unclear stack records a note and adds nothing. It does not escalate.
+
 The factory gets lint, format and test commands only from the YAML configuration.
 It installs no tools in the target repository.
 A research call to a model generates skill guidance, and that guidance stays in the factory data directory.
@@ -59,20 +61,33 @@ The factory takes over this model, in five slices.
 
 - The factory starts a setup run when it first sees a repository and when `manifest_fingerprint` changes.
 - No person answers a question. The setup run uses safe defaults.
-- The controller writes all files from fixed templates. No model writes them.
-- The setup run adds the missing repository-level tools to the development dependencies, with minimal configuration.
-  It also adds the mutation tool for the stack: `mutmut` for Python and Stryker for JavaScript/TypeScript.
-- The setup run opens a pull request and goes through the normal gates.
-  If ADR-022 delivery is on, the factory can merge it. If not, the pull request waits for review.
-- `.factory/setup.json` records the result, so the same state does not cause a second setup run.
+- A fixed table selects the tools. No model selects them.
+- For each slot without a provider, the setup run adds the default provider as a development dependency.
+  It also adds the mutation tool for the stack: `mutmut` for Python, and Stryker with the runner for the test tool for JavaScript/TypeScript.
+- The package manager of the lane adds the tools, so the manifest and the lockfile change together:
+  `uv add --dev --no-sync`, `poetry add --group dev --lock`, `npm install --save-dev --package-lock-only --ignore-scripts` or `pnpm add --save-dev --lockfile-only --ignore-scripts`.
+  These commands install nothing. The JavaScript commands run no package scripts.
+  Python locking can run the project's build backend to read package metadata.
+  A pnpm workspace root also gets `--workspace-root`.
+- A lane is skipped when it has more than one lockfile at the root, such as `package-lock.json` and `yarn.lock`.
+- A repository that declares or configures its mutation tool keeps it. Configuration counts: `[tool.mutmut]`, `[mutmut]` or a `stryker.config.*` file.
+- The setup run works in a factory worktree at the source HEAD, on its own branch. It never changes the source checkout.
+- It holds the work item lock. It refuses a worktree that is not clean at its base, so it never builds on a failed run.
+- It writes `.factory/setup.json` without following a symbolic link.
+- `.factory/setup.json` records the plan. After a setup, the inventory finds the new tools, so the same state does not cause a second setup run.
+- The setup run adds nothing from an incomplete inventory, and nothing for a lane without exactly one root lockfile.
+  It records a note instead. It does not guess.
+- The setup run opens a pull request.
+  Dependency changes are sensitive (`governance.py`), so the factory never merges a setup pull request. A person reviews it.
 - The factory never installs host-level tools, such as `semgrep`, `trivy` or `gh`.
   It records a missing tool in the run. A lens that needs the tool is skipped.
-- If the stack is not clear, the factory does not guess. The setup run escalates one time.
-- A failed setup run does not stop delivery runs. They use the YAML commands.
+- A failed setup run does not stop delivery runs. They use the YAML commands or the derived commands.
+- The first slice adds the command `factory setup --repo PATH`. The automatic start and the pull request follow in the next slice.
 
 ### Repository skills in the target repository
 
-The setup pull request also writes skills that a local agent can use without the factory:
+The setup pull request also writes skills that a local agent can use without the factory.
+The controller writes these files from fixed templates. No model writes them.
 
 ```text
 AGENTS.md                                      shared base

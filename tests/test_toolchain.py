@@ -571,3 +571,56 @@ def test_mypy_ini_without_a_mypy_section_still_wins(tmp_path: Path) -> None:
     _write(tmp_path, "setup.cfg", "[mypy]\nfiles = src\n")
 
     assert _inventory(tmp_path).self_targeting_providers == ()
+
+
+@pytest.mark.parametrize(
+    ("files", "lanes"),
+    [
+        (
+            {"pyproject.toml": '[project]\nname = "x"\n[tool.mutmut]\npaths_to_mutate = "src"\n'},
+            (ToolchainLane.PYTHON,),
+        ),
+        (
+            {"setup.cfg": "[mutmut]\npaths_to_mutate = src\n", "app.py": "x = 1\n"},
+            (ToolchainLane.PYTHON,),
+        ),
+        (
+            {"package.json": '{"name": "x"}', "stryker.config.mjs": "export default {}\n"},
+            (ToolchainLane.JAVASCRIPT,),
+        ),
+        (
+            {"package.json": '{"name": "x", "devDependencies": {"@stryker-mutator/core": "8"}}'},
+            (ToolchainLane.JAVASCRIPT,),
+        ),
+        ({"app.py": "x = 1\n"}, ()),
+        ({"package.json": '{"name": "x"}'}, ()),
+        (
+            {"pyproject.toml": '[project]\nname = "x"\n[dependency-groups]\ndev = ["mutmut"]\n'},
+            (ToolchainLane.PYTHON,),
+        ),
+        (
+            {"app.py": "x = 1\n", "package.json": '{"name": "x"}', "stryker.conf.json": "{}"},
+            (ToolchainLane.JAVASCRIPT,),
+        ),
+    ],
+)
+def test_mutation_tool_is_found_by_dependency_or_configuration(
+    tmp_path: Path, files: dict[str, str], lanes: tuple[ToolchainLane, ...]
+) -> None:
+    for name, text in files.items():
+        _write(tmp_path, name, text)
+
+    assert _inventory(tmp_path).mutation_tool_lanes == lanes
+
+
+def test_pnpm_workspace_root_is_recorded(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+    _write(tmp_path, "pnpm-workspace.yaml", "packages: ['apps/*']\n")
+
+    assert _inventory(tmp_path).pnpm_workspace is True
+
+
+def test_package_json_alone_is_not_a_pnpm_workspace(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+
+    assert _inventory(tmp_path).pnpm_workspace is False
