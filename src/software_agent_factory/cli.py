@@ -276,11 +276,7 @@ def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime
         return runtime_cls()  # type: ignore[no-any-return]
     if choice is RuntimeChoice.PI:
         pi_runtime_cls = _seam("PiAgentRuntime")
-        return pi_runtime_cls(  # type: ignore[no-any-return]
-            config.pi,
-            config.data_dir,
-            routing_api_key_env_var=config.routing.api_key_env_var,
-        )
+        return pi_runtime_cls(config.pi, config.data_dir)  # type: ignore[no-any-return]
     fake_runtime_cls = _seam("FakeAgentRuntime")
     return fake_runtime_cls()  # type: ignore[no-any-return]
 

@@ -1018,7 +1018,6 @@ def _isolated_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "GITHUB_TOKEN",
         "GH_TOKEN",
         "COPILOT_GITHUB_TOKEN",
-        "JEV_API_KEY",
         "XAI_API_KEY",
         "ACME_LABS_API_KEY",
         "KIMI_API_KEY",
@@ -1156,37 +1155,6 @@ def test_run_child_env_drops_any_other_api_key_variable_pi_could_read(
     assert env["ANTHROPIC_API_KEY"] == "anthropic-secret"
 
 
-def test_run_child_env_drops_the_default_routing_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("JEV_API_KEY", "routing-secret")
-
-    assert "JEV_API_KEY" not in _launch().env
-
-
-def test_run_child_env_drops_the_configured_routing_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CUSTOM_ROUTING_KEY", "routing-secret")
-    launches: list[_Launch] = []
-    process = _scripted_process(json.dumps(_TRIAGE_JSON))
-
-    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
-        launches.append(_Launch(list(command), cwd, env))
-        return process
-
-    runtime = PiAgentRuntime(
-        PiConfig(),
-        data_dir=Path("/data"),
-        process_factory=factory,
-        routing_api_key_env_var="CUSTOM_ROUTING_KEY",
-    )
-
-    runtime.run(make_request(AgentRole.TRIAGE))
-
-    assert "CUSTOM_ROUTING_KEY" not in launches[0].env
-
-
 @pytest.mark.parametrize("env_var", _NON_API_KEY_CREDENTIAL_ENV_VARS)
 def test_run_child_env_drops_credentials_without_an_api_key_suffix_for_github_copilot(
     monkeypatch: pytest.MonkeyPatch, env_var: str
@@ -1285,7 +1253,6 @@ def test_run_redacts_credentials_without_an_api_key_suffix_from_the_failure_reas
     [
         "GITHUB_TOKEN",
         "COPILOT_GITHUB_TOKEN",
-        "JEV_API_KEY",
         "XAI_API_KEY",
         *sorted(_PROVIDER_KEY_ENV_VARS.values()),
     ],

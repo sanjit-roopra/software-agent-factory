@@ -4,7 +4,6 @@ import re
 from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import Literal, Self
-from urllib.parse import SplitResult, urlsplit
 
 import yaml
 from pydantic import (
@@ -60,29 +59,6 @@ DEFAULT_PROTECTED_FILE_PATTERNS: tuple[str, ...] = (
 #: Maximum scheduler concurrency the factory is validated for (PLAN.md Phase
 #: 14 deliberately stops at two concurrent tasks).
 MAX_SUPPORTED_CONCURRENT_TASKS = 2
-
-
-def _parse_safe_https_url(url: str) -> SplitResult | None:
-    """Return the parsed URL when it is an unambiguous, credential-free HTTPS URL."""
-
-    if not url or url != url.strip() or any(character.isspace() for character in url):
-        return None
-    try:
-        parsed = urlsplit(url)
-        hostname = parsed.hostname
-        _ = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme != "https"
-        or not hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        return None
-    return parsed
 
 
 class ConfigModel(BaseModel):
@@ -535,22 +511,28 @@ class RoutingOptionConfig(ConfigModel):
         return self
 
 
-#: TypeSafe Choice supports at most 255 options per question.
+#: Upper bound on configured route options.
 MAX_ROUTING_OPTIONS = 255
+
+#: Keys of the removed Jev route classifier (ADR-037).
+_REMOVED_ROUTING_KEYS = frozenset(
+    {
+        "api_url",
+        "model",
+        "api_key_env_var",
+        "timeout_seconds",
+        "min_confidence",
+        "min_probability",
+        "max_prompt_chars",
+        "max_response_bytes",
+    }
+)
 
 
 class RoutingConfig(ConfigModel):
-    """Opt-in policy for adaptive Jev-driven execution routing."""
+    """Opt-in policy for deterministic execution routing (ADR-037)."""
 
     enabled: bool = False
-    api_url: str = Field(default="https://api.typesafe.ai/v1/systemone")
-    model: str = Field(default="jev-1.13.0", min_length=1)
-    api_key_env_var: str = Field(default="JEV_API_KEY", min_length=1)
-    timeout_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
-    min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-    min_probability: float = Field(default=0.5, ge=0.0, le=1.0)
-    max_prompt_chars: int = Field(default=4000, ge=500, le=16000)
-    max_response_bytes: int = Field(default=65536, ge=1024, le=1048576)
     single_max_changed_files: int = Field(default=5, ge=1, le=50)
     rubric_version: str = Field(default="1.0", min_length=1)
     full_only_terms: list[str] = Field(
@@ -631,22 +613,14 @@ class RoutingConfig(ConfigModel):
         ]
     )
 
-    @field_validator("model")
+    @model_validator(mode="before")
     @classmethod
-    def _validate_model(cls, value: str) -> str:
-        if not re.match(r"^jev-\d+\.\d+\.\d+$", value):
-            raise ValueError(
-                f"routing.model must be a pinned version like 'jev-1.13.0', got {value!r}"
-            )
-        return value
-
-    @field_validator("api_url")
-    @classmethod
-    def _validate_api_url(cls, value: str) -> str:
-        parsed = _parse_safe_https_url(value)
-        if parsed is None or parsed.scheme != "https":
-            raise ValueError("routing.api_url must be an HTTPS URL")
-        return value
+    def _drop_removed_classifier_keys(cls, data: object) -> object:
+        # The Jev route classifier used these keys (ADR-037).
+        # Older configuration files can still carry them, so drop them silently.
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if key not in _REMOVED_ROUTING_KEYS}
+        return data
 
     @field_validator("options")
     @classmethod

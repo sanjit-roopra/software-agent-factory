@@ -222,10 +222,8 @@ against real success and cost data.
 ## Adaptive execution routing
 
 Simple tasks do not always need the full pipeline.
-When enabled, Jev acts as an external classifier.
-Jev is a classifier from TypeSafe.
-The factory calls it over HTTPS.
-System One is the TypeSafe product that serves Jev.
+When enabled, fixed rules select the lightest route that the safety floors allow.
+Routing makes no network call.
 The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
 `FULL_REVIEW` is a controller-only post-implementation route.
 

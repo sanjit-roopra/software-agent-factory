@@ -49,7 +49,7 @@ tested here; the first real tag is what exercises them end to end.
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 | 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
 | 19 | Advisory controlled writing policy | implemented (ADR-023, ADR-029) |
-| 20 | Adaptive Jev-driven execution routing | implemented (ADR-027) |
+| 20 | Adaptive execution routing | implemented (ADR-027, amended by ADR-037) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -85,17 +85,15 @@ before implementation. The reply does not reset budgets or change scope.
 
 Status: done.
 
-Provide adaptive Jev-driven execution routing.
-Jev is a classifier from TypeSafe.
-The factory calls it over HTTPS.
-System One is the TypeSafe product that serves Jev.
-It selects one controller-offered Choice option with probabilities and confidence.
+Provide adaptive execution routing.
+The first version used the Jev classifier over HTTPS (ADR-027).
+ADR-037 replaced it with a fixed rule that picks the lightest legal route.
 
 - Four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`; `FULL_REVIEW` is a controller-only post-implementation route.
 - Route controls workflow stages and model profile controls worker strength.
-- Single semantic if/else router using Jev over HTTPS when enabled.
-- Deterministic safety floors constrain offered options before invoking Jev.
-- Deterministic fallback to full pipeline without network access when disabled or failed.
+- Deterministic safety floors decide which routes are legal.
+- When enabled, the controller picks the lightest legal route; ties keep configuration order.
+- When disabled, the controller runs the full pipeline. Routing makes no network call.
 - Synthesize typed triage, specification, and execution plan artifacts for `SINGLE` and `CRITIQUE`.
 - Narrow the independent review rule: deterministic verification accepts `SINGLE` only when all sufficiency conditions pass.
 - Monotonic ratchets upgrade `SINGLE` to `CRITIQUE` on verification failure, and post-implementation ratchets upgrade `SINGLE` or `CRITIQUE` to `FULL_REVIEW`.

@@ -1,5 +1,43 @@
 # Architecture Decisions
 
+## ADR-037: Deterministic routing replaces the Jev classifier
+
+Status: accepted on 2026-10-03.
+This amends ADR-027.
+
+### Context
+
+ADR-027 added an external route classifier.
+The classifier was Jev, from TypeSafe System One.
+The factory sent sanitized task text to Jev over HTTPS when more than one route was legal.
+Independent research shows that prompt-only routers are only a little better than a fixed table.
+Issue text is a weak signal of difficulty for coding tasks.
+The factory makes one route decision for each run.
+So the speed and price of Jev give no real advantage.
+Only the vendor reports the accuracy and calibration of Jev.
+Jev also adds a network call, an API key and a prompt injection surface.
+
+### Decision
+
+- The factory does not call a route classifier. It makes no network call to choose a route.
+- The safety floors decide which configured route options are legal. This does not change.
+- When routing is enabled and more than one option is legal, the controller selects the lightest legal route.
+- The order from lightest to heaviest is `SINGLE`, `CRITIQUE`, `FULL` and `MANUAL_TRIAGE`.
+- When two legal options have the same route, the controller selects the first one in the configuration.
+- The decision records the source `rule`, a confidence of 1.0 and no probabilities.
+- The rules for disabled routing, no legal option and one legal option do not change.
+- The ratchets do not change.
+- The `routing` keys `api_url`, `model`, `api_key_env_var`, `timeout_seconds`, `min_confidence`, `min_probability`, `max_prompt_chars` and `max_response_bytes` are removed.
+  An old configuration file can still have them. The factory ignores them.
+- The packaged default still disables routing.
+
+### Consequences
+
+- Routing needs no API key and no network access.
+- The same work item and configuration always give the same route.
+- Old run records with the source `jev` still load. They keep their probabilities, model identifier and usage.
+- The pi runtime still removes every `*_API_KEY` variable from the agent environment.
+
 ## ADR-036: Remove fast performance mode, the security profile and per-result writing checks
 
 Status: accepted on 2026-10-03.
@@ -717,6 +755,7 @@ Fix them, or mark a confirmed false positive in code with `# NOSONAR(<rule>)` an
 ## ADR-027: Adaptive Jev-driven execution routing
 
 Amended by ADR-035.
+Amended by ADR-037.
 
 Simple tasks do not always need the full factory pipeline.
 When enabled, Jev acts as the single semantic if/else router.
