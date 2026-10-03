@@ -194,6 +194,8 @@ WorkItem
   ↓
 RepositoryProfile
   ↓
+ToolchainInventory
+  ↓
 TriageResult
   ↓
 Specification

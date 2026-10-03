@@ -473,6 +473,42 @@ There is no fixed built-in skill catalog and no repository-provided plugin
 system. See RepositorySkill below for how version-specific guidance is
 generated, reused and customized.
 
+### ToolchainInventory
+
+Produced deterministically right after the first `RepositoryProfile` and
+persisted as `toolchain-inventory.json` (ADR-034). It lists the tools the
+repository already has. It changes no file and no workflow behavior yet.
+
+The registry in `toolchain.py` holds the facts as data:
+
+| Lane | Slot | Providers, in order | Default |
+| --- | --- | --- | --- |
+| python | format | black, ruff | ruff |
+| python | lint | ruff, flake8, pylint | ruff |
+| python | typecheck | mypy, pyright | mypy |
+| python | test | pytest | pytest |
+| javascript | format | biome, prettier | prettier |
+| javascript | lint | eslint, biome, oxlint | oxlint |
+| javascript | typecheck | tsc (TypeScript only) | tsc |
+| javascript | test | vitest, jest | vitest |
+
+Each binding names the first provider with evidence, or no provider and the
+default to add. Evidence is a dependency declaration from the profile, a
+root-level configuration file, a `[tool.*]` table in `pyproject.toml`, a
+section in `setup.cfg` or `tox.ini`, or a key in `package.json`.
+An existing tool is kept. The default never replaces it.
+
+Configuration evidence comes from the repository root only. A tool that is
+configured only in a subdirectory is not found.
+The inventory skips symbolic links and files larger than the manifest limit.
+A parse failure records the file name and the exception type, not the file content.
+
+`complete` is false when evidence is partial. The profile can hit its scan
+limit or dependency limit, or profiling can degrade. The factory can also fail
+to read or parse a manifest or a root configuration file. A missing
+binding is then not proof that the tool is absent. If the inventory itself fails, the factory saves an empty,
+incomplete inventory and the run continues.
+
 ### RepositorySkill
 
 Generated for the repository as a whole, not selected from a catalog, and not
@@ -1218,6 +1254,7 @@ Suggested layout:
 │       ├── run.json
 │       ├── work-item.json
 │       ├── repository-profile.json
+│       ├── toolchain-inventory.json
 │       ├── triage.json
 │       ├── specification.json
 │       ├── research.json

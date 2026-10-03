@@ -136,6 +136,7 @@ from .models import (
     SkillSelectionSource,
     Specification,
     TestReport,
+    ToolchainInventory,
     TriageResult,
     VerificationReport,
     VersionedModel,
@@ -180,6 +181,7 @@ from .telemetry import (
     record_gate_failure,
     record_rework,
 )
+from .toolchain import degraded_toolchain_inventory, inventory_toolchain
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -417,6 +419,7 @@ class WorkflowController:
         merger: PullRequestMerger | None = None,
         delivery_base_resolver: Callable[[Path, str], DeliveryTarget] | None = None,
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
+        toolchain_inventory: Callable[[Path, RepositoryProfile], ToolchainInventory] | None = None,
         github_client: GitHubClient | None = None,
         route_advisor: RouteAdvisor | None = None,
     ) -> None:
@@ -441,6 +444,7 @@ class WorkflowController:
         )
         self._repository_profiler = repository_profiler or profile_repository
         self._can_reuse_repository_profile = repository_profiler is None
+        self._toolchain_inventory = toolchain_inventory or inventory_toolchain
         # Constructed eagerly when the integration is enabled so two concurrent
         # runs sharing one controller cannot race on lazy initialization, and
         # so a misconfiguration surfaces before any work is done.
@@ -829,6 +833,7 @@ class WorkflowController:
                     warning=f"repository profiling degraded: {exc}"
                 )
             self._store.save_artifact(run.id, repository_profile)
+            self._save_toolchain_inventory(run, workspace_path, repository_profile)
             return self._execute(
                 run,
                 work_item,
@@ -841,6 +846,26 @@ class WorkflowController:
             # "Workspace lifecycle"): only the lock is released here, the
             # worktree itself is left in place for inspection/reuse.
             workspace.release_lock()
+
+    def _save_toolchain_inventory(
+        self,
+        run: FactoryRun,
+        workspace_path: Path,
+        repository_profile: RepositoryProfile,
+    ) -> None:
+        """Persist the toolchain inventory. It is advisory, so a failure only degrades it."""
+        try:
+            with measure_operation(
+                run.performance,
+                "operation.toolchain_inventory",
+                operation="toolchain_inventory",
+            ):
+                inventory = self._toolchain_inventory(workspace_path, repository_profile)
+        except (OSError, ValueError) as exc:
+            inventory = degraded_toolchain_inventory(
+                f"toolchain inventory degraded: {type(exc).__name__}"
+            )
+        self._store.save_artifact(run.id, inventory)
 
     def resume(self, run_id: str, source_repo: Path) -> FactoryRun:
         """Reconcile a delivery checkpoint without resetting any attempt budget.

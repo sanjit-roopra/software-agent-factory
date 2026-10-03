@@ -96,6 +96,8 @@ Nothing is hidden in a database. Everything is JSON on disk.
 ├── repository-profile.json
 │                           technologies, tools, markers, fingerprints,
 │                           version files, dependency declarations, warnings
+├── toolchain-inventory.json
+│                           format, lint, type check and test tools found or missing
 ├── triage.json           complexity, risk, whether research is needed
 ├── specification.json    acceptance criteria
 ├── execution-plan.json

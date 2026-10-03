@@ -76,6 +76,7 @@ from software_agent_factory.models import (
     SkillSource,
     SkillTarget,
     Specification,
+    ToolchainInventory,
     TriageResult,
     VerificationReport,
     WorkflowState,
@@ -376,6 +377,7 @@ def test_happy_path_reaches_pr_ready_and_persists_all_artifacts(
         "run.json",
         "work-item.json",
         "repository-profile.json",
+        "toolchain-inventory.json",
         "triage.json",
         "specification.json",
         "execution-plan.json",
@@ -1976,6 +1978,57 @@ def test_repository_profiler_failure_degrades_to_generic_profile(
     profile = store.load_artifact(run.id, RepositoryProfile)
     assert profile.dependencies == ()
     assert profile.warnings and "profiling degraded" in profile.warnings[0]
+    inventory = store.load_artifact(run.id, ToolchainInventory)
+    assert inventory.lanes == ()
+    assert inventory.complete is False
+
+
+def test_toolchain_inventory_is_built_from_the_workspace_and_its_profile(
+    source_repo: Path, data_dir: Path
+) -> None:
+    seen: list[tuple[Path, RepositoryProfile]] = []
+
+    def recording_inventory(path: Path, profile: RepositoryProfile) -> ToolchainInventory:
+        seen.append((path, profile))
+        return ToolchainInventory(warnings=("recorded",))
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(),
+        toolchain_inventory=recording_inventory,
+    )
+
+    run = controller.run(_work_item("WI-toolchain-inventory"), source_repo)
+
+    assert run.workspace_path is not None
+    assert len(seen) == 1
+    assert seen[0][0] == Path(run.workspace_path)
+    assert seen[0][1] == store.load_artifact(run.id, RepositoryProfile)
+    assert store.load_artifact(run.id, ToolchainInventory).warnings == ("recorded",)
+
+
+def test_toolchain_inventory_failure_degrades_and_the_run_continues(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def failing_inventory(path: Path, profile: RepositoryProfile) -> ToolchainInventory:
+        raise ValueError("hostile manifest")
+
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(),
+        toolchain_inventory=failing_inventory,
+    )
+
+    run = controller.run(_work_item("WI-toolchain-fallback"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    inventory = store.load_artifact(run.id, ToolchainInventory)
+    assert inventory.complete is False
+    assert inventory.warnings == ("toolchain inventory degraded: ValueError",)
 
 
 def test_post_green_research_uses_versions_changed_by_initial_implementation(

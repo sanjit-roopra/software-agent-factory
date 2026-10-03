@@ -179,6 +179,7 @@ Example:
 │   └── RUN-ID/
 │       ├── run.json
 │       ├── repository-profile.json
+│       ├── toolchain-inventory.json
 │       ├── specification.json
 │       └── ...
 └── workspaces/

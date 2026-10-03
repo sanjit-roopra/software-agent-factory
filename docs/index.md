@@ -92,7 +92,8 @@ This scan uses no shell commands or network access.
 <span class="saf-small-label">Saved evidence</span>
 
 `work-item.json`<br>
-`repository-profile.json`
+`repository-profile.json`<br>
+`toolchain-inventory.json`
 
 <p class="saf-stage-note">A project brief can produce several work items before this stage.</p>
 

@@ -55,6 +55,7 @@ from .models import (
     RouteDecision,
     Specification,
     TestReport,
+    ToolchainInventory,
     TriageResult,
     VerificationReport,
     VersionedModel,
@@ -72,6 +73,7 @@ _FINGERPRINT_PREFIX_CHARS = 16
 ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     WorkItem: "work-item.json",
     RepositoryProfile: "repository-profile.json",
+    ToolchainInventory: "toolchain-inventory.json",
     RepositorySkill: "repository-skill.json",
     RepositorySkillOverlay: "repository-skill-overlay.json",
     RepositorySkillUse: "repository-skill-use.json",

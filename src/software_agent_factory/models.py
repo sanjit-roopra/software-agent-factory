@@ -261,6 +261,96 @@ class RepositoryProfile(VersionedModel):
     warnings: tuple[str, ...] = ()
 
 
+class ToolchainLane(StrEnum):
+    """A language lane in the toolchain registry."""
+
+    PYTHON = "python"
+    JAVASCRIPT = "javascript"
+
+
+class ToolchainSlot(StrEnum):
+    """One job a toolchain provider does for a lane."""
+
+    FORMAT = "format"
+    LINT = "lint"
+    TYPECHECK = "typecheck"
+    TEST = "test"
+
+
+class ToolchainProvider(StrEnum):
+    """A recognized tool that can fill a toolchain slot."""
+
+    RUFF = "ruff"
+    BLACK = "black"
+    FLAKE8 = "flake8"
+    PYLINT = "pylint"
+    MYPY = "mypy"
+    PYRIGHT = "pyright"
+    PYTEST = "pytest"
+    PRETTIER = "prettier"
+    BIOME = "biome"
+    ESLINT = "eslint"
+    OXLINT = "oxlint"
+    TSC = "tsc"
+    VITEST = "vitest"
+    JEST = "jest"
+
+
+class ToolchainSlotBinding(ModelBase):
+    """The provider found for one lane slot, or the default to add when none is found."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lane: ToolchainLane
+    slot: ToolchainSlot
+    provider: ToolchainProvider | None = None
+    default_provider: ToolchainProvider
+    evidence: tuple[str, ...] = Field(default=(), max_length=40)
+
+    @model_validator(mode="after")
+    def _provider_matches_evidence(self) -> Self:
+        if (self.provider is None) != (not self.evidence):
+            raise ValueError("a bound provider needs evidence, and a missing one has none")
+        return self
+
+    @property
+    def is_missing(self) -> bool:
+        return self.provider is None
+
+
+class ToolchainInventory(VersionedModel):
+    """Deterministic inventory of the repository toolchain (ADR-034).
+
+    ``complete`` is false when the profile evidence or the root configuration
+    evidence was cut short, unreadable or degraded. A missing binding is then
+    not proof that the repository lacks the tool.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    registry_version: Literal[1] = 1
+    lanes: tuple[ToolchainLane, ...] = ()
+    bindings: tuple[ToolchainSlotBinding, ...] = ()
+    complete: bool = True
+    warnings: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _bindings_match_lanes(self) -> Self:
+        keys = [(binding.lane, binding.slot) for binding in self.bindings]
+        if len(keys) != len(set(keys)):
+            raise ValueError("each lane slot can have only one binding")
+        if any(binding.lane not in self.lanes for binding in self.bindings):
+            raise ValueError("every binding lane must be an inventory lane")
+        return self
+
+    def binding(self, lane: ToolchainLane, slot: ToolchainSlot) -> ToolchainSlotBinding | None:
+        """Return the binding for ``lane`` and ``slot``, if the slot applies."""
+        return next(
+            (b for b in self.bindings if b.lane is lane and b.slot is slot),
+            None,
+        )
+
+
 GENERIC_SKILL_TARGET = "repository"
 """Applicability marker for guidance that is not tied to a detected dependency."""
 
