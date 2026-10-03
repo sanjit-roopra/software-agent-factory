@@ -356,6 +356,7 @@ Filesystem JSON. No database.
 │   ├── run.json          state, attempts, budgets, lease, timestamps
 │   ├── work-item.json
 │   ├── repository-profile.json
+│   ├── toolchain-inventory.json
 │   ├── triage.json
 │   ├── specification.json
 │   ├── research.json

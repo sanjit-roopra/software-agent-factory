@@ -180,6 +180,7 @@ from .telemetry import (
     record_gate_failure,
     record_rework,
 )
+from .toolchain import inventory_toolchain
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -829,6 +830,9 @@ class WorkflowController:
                     warning=f"repository profiling degraded: {exc}"
                 )
             self._store.save_artifact(run.id, repository_profile)
+            self._store.save_artifact(
+                run.id, inventory_toolchain(workspace_path, repository_profile)
+            )
             return self._execute(
                 run,
                 work_item,

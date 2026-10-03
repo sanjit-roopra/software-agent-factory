@@ -261,6 +261,68 @@ class RepositoryProfile(VersionedModel):
     warnings: tuple[str, ...] = ()
 
 
+class ToolchainLane(StrEnum):
+    """A language lane in the toolchain registry."""
+
+    PYTHON = "python"
+    JAVASCRIPT = "javascript"
+
+
+class ToolchainSlot(StrEnum):
+    """One job a toolchain provider does for a lane."""
+
+    FORMAT = "format"
+    LINT = "lint"
+    TYPECHECK = "typecheck"
+    TEST = "test"
+
+
+class ToolchainProvider(StrEnum):
+    """A recognized tool that can fill a toolchain slot."""
+
+    RUFF = "ruff"
+    BLACK = "black"
+    FLAKE8 = "flake8"
+    PYLINT = "pylint"
+    MYPY = "mypy"
+    PYRIGHT = "pyright"
+    PYTEST = "pytest"
+    PRETTIER = "prettier"
+    BIOME = "biome"
+    ESLINT = "eslint"
+    OXLINT = "oxlint"
+    TSC = "tsc"
+    VITEST = "vitest"
+    JEST = "jest"
+
+
+class ToolchainSlotBinding(ModelBase):
+    """The provider found for one lane slot, or the default to add when none is found."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lane: ToolchainLane
+    slot: ToolchainSlot
+    provider: ToolchainProvider | None = None
+    default_provider: ToolchainProvider
+    evidence: tuple[str, ...] = Field(default=(), max_length=20)
+
+    @property
+    def missing(self) -> bool:
+        return self.provider is None
+
+
+class ToolchainInventory(VersionedModel):
+    """Deterministic inventory of the repository toolchain (ADR-034)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    registry_version: Literal[1] = 1
+    lanes: tuple[ToolchainLane, ...] = ()
+    bindings: tuple[ToolchainSlotBinding, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
 GENERIC_SKILL_TARGET = "repository"
 """Applicability marker for guidance that is not tied to a detected dependency."""
 

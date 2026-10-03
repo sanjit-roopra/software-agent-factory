@@ -376,6 +376,7 @@ def test_happy_path_reaches_pr_ready_and_persists_all_artifacts(
         "run.json",
         "work-item.json",
         "repository-profile.json",
+        "toolchain-inventory.json",
         "triage.json",
         "specification.json",
         "execution-plan.json",

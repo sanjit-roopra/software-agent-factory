@@ -459,6 +459,31 @@ instead of a version. `poetry.lock`, `yarn.lock`, `bun.lock`/`bun.lockb`,
 and are fingerprinted as `version_files`, but exact graph parsing is not
 claimed for them.
 
+### ToolchainInventory
+
+Produced deterministically right after the first `RepositoryProfile` and
+persisted as `toolchain-inventory.json` (ADR-034). It lists the tools the
+repository already has. It changes no file and no workflow behavior yet.
+
+The registry in `toolchain.py` holds the facts as data:
+
+| Lane | Slot | Providers, in order | Default |
+| --- | --- | --- | --- |
+| python | format | black, ruff | ruff |
+| python | lint | ruff, flake8, pylint | ruff |
+| python | typecheck | mypy, pyright | mypy |
+| python | test | pytest | pytest |
+| javascript | format | biome, prettier | prettier |
+| javascript | lint | eslint, biome, oxlint | oxlint |
+| javascript | typecheck | tsc (TypeScript only) | tsc |
+| javascript | test | vitest, jest | vitest |
+
+Each binding names the first provider with evidence, or no provider and the
+default to add. Evidence is a dependency declaration from the profile, a
+root-level configuration file, a `[tool.*]` table in `pyproject.toml`, a
+section in `setup.cfg` or `tox.ini`, or a key in `package.json`.
+An existing tool is kept. The default never replaces it.
+
 Two SHA-256 fingerprints are recorded and they are not interchangeable:
 
 - `dependency_fingerprint` is semantic. It digests the detected technologies,
@@ -1218,6 +1243,7 @@ Suggested layout:
 │       ├── run.json
 │       ├── work-item.json
 │       ├── repository-profile.json
+│       ├── toolchain-inventory.json
 │       ├── triage.json
 │       ├── specification.json
 │       ├── research.json
