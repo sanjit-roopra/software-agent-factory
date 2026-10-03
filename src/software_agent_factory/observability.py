@@ -126,7 +126,7 @@ from .models import (
 )
 from .redaction import redact_secrets
 from .resume import resume_refusal_within
-from .setup_run import SETUP_WORK_ITEM_PREFIX
+from .setup_run import SETUP_WORKTREE_NAME
 from .store import ARTIFACT_FILENAMES
 
 try:
@@ -2135,7 +2135,7 @@ def _find_orphaned_workspaces(
             continue
         checked += 1
         # Setup worktrees (ADR-034) belong to no run. They are kept on purpose.
-        if entry.name in referenced_names or entry.name.startswith(SETUP_WORK_ITEM_PREFIX):
+        if entry.name in referenced_names or SETUP_WORKTREE_NAME.match(entry.name):
             continue
         try:
             modified_at = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)

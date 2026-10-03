@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import logging
 import os
+import re
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 SETUP_RECORD_DIR = ".factory"
 SETUP_RECORD_NAME = "setup.json"
 SETUP_WORK_ITEM_PREFIX = "SETUP-"
+#: Setup worktree names: the prefix and the first 12 characters of the HEAD commit.
+SETUP_WORKTREE_NAME = re.compile(r"^SETUP-[0-9a-f]{12}$")
 NOT_AT_BASE = "setup worktree is not clean at its base commit"
 LOCKED = "another setup run holds the lock"
 HEAD_MOVED = "the source HEAD moved while the setup worktree was prepared"
@@ -70,6 +73,7 @@ class SetupRunResult:
     worktree: Path
     branch: str
     outcome: SetupOutcome
+    base_commit: str
 
 
 def run_toolchain_setup(
@@ -104,7 +108,7 @@ def run_toolchain_setup(
         raise SetupError(f"{LOCKED}: {exc}") from exc
     except (WorkspaceError, OSError) as exc:
         raise SetupError(str(exc)) from exc
-    return SetupRunResult(plan, worktree, workspace.branch_name, outcome)
+    return SetupRunResult(plan, worktree, workspace.branch_name, outcome, head_commit)
 
 
 def apply_toolchain_setup(
@@ -236,6 +240,8 @@ def publish_setup(
     changes dependencies.
     """
 
+    if _git(result.worktree, "rev-parse", "HEAD").strip() != result.base_commit:
+        raise SetupError("the setup worktree has a commit that the factory did not make")
     unexpected = [
         path for path in changed_paths(result.worktree) if path not in SETUP_ALLOWED_PATHS
     ]
@@ -334,19 +340,22 @@ class SetupTrigger:
             )
         except SetupError as exc:
             # Record the refusal, so this HEAD is not tried again on every tick.
-            return self._save(SetupState(head_commit=head, note=f"setup could not run: {exc}"))
+            return self._record_failure(previous, head, f"setup could not run: {exc}")
         if result.plan.is_empty:
             return self._save(SetupState(head_commit=head))
         if previous is not None and _already_proposed(previous, result.plan.commands):
             return self._save(previous.model_copy(update={"head_commit": head}))
         if not result.outcome.succeeded:
             note = f"setup command failed: {result.outcome.failed_command}"
-            return self._save(SetupState(head_commit=head, note=note))
+            return self._record_failure(previous, head, note)
         try:
             published = publish_setup(result, self._publisher, self._source_repo)
+        except SetupError as exc:
+            return self._record_failure(previous, head, f"setup publish refused: {exc}")
         except Exception as exc:  # noqa: BLE001 - record any publish failure, never retry this HEAD
-            note = f"setup publish failed: {type(exc).__name__}"
-            return self._save(SetupState(head_commit=head, note=note))
+            return self._record_failure(
+                previous, head, f"setup publish failed: {type(exc).__name__}"
+            )
         return self._save(
             SetupState(
                 head_commit=head,
@@ -354,6 +363,11 @@ class SetupTrigger:
                 pull_request_url=published.pull_request_url,
             )
         )
+
+    def _record_failure(self, previous: SetupState | None, head: str, note: str) -> SetupState:
+        """Record a failure for ``head`` and keep the last proposal for dedupe."""
+        base = previous or SetupState(head_commit=head)
+        return self._save(base.model_copy(update={"head_commit": head, "note": note}))
 
     def _load(self) -> SetupState | None:
         try:
@@ -380,5 +394,11 @@ def _already_proposed(previous: SetupState | None, commands: tuple[str, ...]) ->
 def changed_paths(worktree: Path) -> tuple[str, ...]:
     """Return every path that differs from HEAD in ``worktree``, untracked files included."""
     output = _git(worktree, "status", "--porcelain", "-z", "--untracked-files=all")
-    entries = [entry for entry in output.split("\0") if entry]
-    return tuple(sorted(entry[3:] for entry in entries))
+    entries = iter(entry for entry in output.split("\0") if entry)
+    paths: list[str] = []
+    for entry in entries:
+        paths.append(entry[3:])
+        if "R" in entry[:2] or "C" in entry[:2]:
+            # A rename or copy is followed by its source path, with no status.
+            paths.append(next(entries, ""))
+    return tuple(sorted(paths))

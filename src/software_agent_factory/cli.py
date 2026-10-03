@@ -1128,7 +1128,10 @@ def setup_command(
     typer.echo(f"worktree: {result.worktree}")
     typer.echo(f"branch: {result.branch}")
     if publish:
-        published = publish_setup(result, PullRequestPublisher(factory_config), repo)
+        try:
+            published = publish_setup(result, PullRequestPublisher(factory_config), repo)
+        except SetupError as exc:
+            raise _fail(f"setup could not publish: {exc}", code=1) from None
         typer.echo(f"pull request: {published.pull_request_url}")
 
 

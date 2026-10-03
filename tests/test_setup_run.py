@@ -29,6 +29,7 @@ from software_agent_factory.setup_run import (
     SetupRunResult,
     SetupTrigger,
     apply_toolchain_setup,
+    changed_paths,
     publish_setup,
     run_toolchain_setup,
     write_setup_record,
@@ -704,9 +705,56 @@ def test_publish_lists_plan_notes_in_the_body(bare_uv_repo: Path, tmp_path: Path
         worktree=result.worktree,
         branch=result.branch,
         outcome=result.outcome,
+        base_commit=result.base_commit,
     )
     publisher = _Publisher()
 
     publish_setup(noted, publisher, bare_uv_repo)
 
     assert "Notes:\n- javascript lane skipped: x" in str(publisher.calls[0]["body"])
+
+
+def test_changed_paths_lists_both_sides_of_a_rename(bare_uv_repo: Path) -> None:
+    _git(bare_uv_repo, "mv", "app.py", "uv.lock.new")
+
+    assert changed_paths(bare_uv_repo) == ("app.py", "uv.lock.new")
+
+
+def test_a_failure_keeps_the_open_proposal_so_no_duplicate_opens(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, data_dir, _Runner(), publisher)
+    trigger.tick()
+    (bare_uv_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    _commit(bare_uv_repo, "second head")
+    (bare_uv_repo / "notes.txt").write_text("dirty\n", encoding="utf-8")
+    holder = GitWorktreeWorkspace(data_dir, bare_uv_repo, f"SETUP-{_head(bare_uv_repo)[:12]}")
+    with holder:
+        refused = trigger.tick()
+    (bare_uv_repo / "notes.txt").unlink()
+    (bare_uv_repo / "app.py").write_text("x = 3\n", encoding="utf-8")
+    _commit(bare_uv_repo, "third head")
+
+    after = trigger.tick()
+
+    assert refused is not None and refused.pull_request_url == "https://github.com/o/r/pull/1"
+    assert after is not None and after.pull_request_url == "https://github.com/o/r/pull/1"
+    assert len(publisher.calls) == 1
+
+
+def test_publish_refuses_a_commit_made_inside_the_setup_worktree(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    result = run_toolchain_setup(
+        bare_uv_repo, tmp_path / "data", "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
+    )
+    (result.worktree / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+    _commit(result.worktree, "commit from a build backend")
+    publisher = _Publisher()
+
+    with pytest.raises(SetupError, match="commit that the factory did not make"):
+        publish_setup(result, publisher, bare_uv_repo)
+
+    assert publisher.calls == []
