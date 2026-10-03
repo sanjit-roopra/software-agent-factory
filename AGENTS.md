@@ -19,11 +19,7 @@ Profile repository
     ↓
   Triage
     ↓
-  Refine
-    ↓
- Research if needed
-    ↓
-   Plan
+   Plan (specification and plan in one call)
     ↓
  Implement
     ↓
@@ -56,8 +52,7 @@ Repository work, shell commands, Git worktrees, tests, builds and orchestration 
 
 Agents may:
 - understand work
-- refine requirements
-- research
+- write specifications
 - plan
 - edit source code
 - write tests
@@ -200,11 +195,7 @@ RepositoryCommandsPlan
   ↓
 TriageResult
   ↓
-Specification
-  ↓
-ResearchReport if required
-  ↓
-ExecutionPlan
+Specification and ExecutionPlan (one Planner call, ADR-035)
   ↓
 ChangeSet
   ↓
@@ -253,8 +244,8 @@ polish attempt is eligible, one existing Implementer attempt gets fixed
 guidance: the bodies of the factory's `simplify` and `polish` setup templates,
 and the review lenses for the changed files. It applies simplify first, then
 polish, after the first successful deterministic verification. Full
-deterministic verification runs again afterwards. The polish attempt makes no
-Researcher call and needs no web access. The guidance is advisory: it never
+deterministic verification runs again afterwards. The polish attempt needs no
+web access. The guidance is advisory: it never
 changes tools, models, commands, workflow states, retry budgets, permissions,
 quality gates, dependencies, scope or workflow authority.
 
@@ -296,7 +287,7 @@ The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `M
 `SINGLE` runs the Implementer and deterministic verification.
 `CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
 `FULL` runs the complete multi-agent pipeline.
-It retains triage, refinement, optional research, planning, implementation, verification, optional polish attempt, Tester, and Reviewer.
+It retains triage, planning, implementation, verification, optional polish attempt, Tester, and Reviewer.
 `MANUAL_TRIAGE` stops safely before implementation.
 
 When enabled, Jev acts as the single semantic router.
@@ -422,13 +413,7 @@ Initial desired routing:
 Triage
   GPT-5.6 Terra
 
-Specification Refiner
-  GPT-5.5
-
-Researcher
-  Claude Opus 5
-
-Planner
+Planner (specification and plan)
   Claude Opus 5
 
 L0 Worker

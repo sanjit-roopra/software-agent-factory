@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -894,6 +895,31 @@ def test_resume_preserves_ambiguous_implementation_without_restarting_it(
     assert recovered.state is WorkflowState.NEEDS_HUMAN
     assert "safe delivery checkpoint" in recovered.failure_reason
     assert recovered.attempt_records == []
+
+
+@pytest.mark.parametrize("state", [WorkflowState.REFINING, WorkflowState.RESEARCHING])
+def test_resume_routes_an_old_run_halted_before_planning_to_a_human(
+    tmp_path: Path, source_repo: Path, state: WorkflowState
+) -> None:
+    """ADR-035: no new run enters these states, but an old run record still loads."""
+    config = _config(tmp_path)
+    controller, store = _controller(config)
+    run = FactoryRun(
+        id=f"old-{state.value.lower()}",
+        work_item_id="WI-1",
+        state=state,
+        delivery_policy_fingerprint=delivery_policy_fingerprint(config),
+    )
+    store.save_run(run)
+    old_research = {"schema_version": 1, "question": "Which validator?", "findings": []}
+    (store.run_dir(run.id) / "research.json").write_text(json.dumps(old_research))
+
+    recovered = controller.resume(run.id, source_repo)
+
+    assert recovered.state is WorkflowState.NEEDS_HUMAN
+    assert "safe delivery checkpoint" in (recovered.failure_reason or "")
+    assert recovered.attempt_records == []
+    assert store.load_run(run.id).state is WorkflowState.NEEDS_HUMAN
 
 
 def test_resume_does_not_modify_a_live_locked_run(tmp_path: Path, source_repo: Path) -> None:

@@ -16,7 +16,7 @@ only to eligible low-risk work.
 - Successful command output stores counts and a content hash instead of full logs.
 - The runtime records stage, process, prompt, gate, and rework measurements.
 
-The fast mode uses a configured Refiner and Planner profile. It also skips the
+The fast mode uses a configured Planner profile. It also skips the
 optional polish pass.
 
 The fast mode does not skip deterministic verification, the Tester, the

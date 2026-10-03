@@ -114,12 +114,21 @@ class RoleModelConfig(ConfigModel):
 
 class ModelsConfig(ConfigModel):
     triage: RoleModelConfig
-    refiner: RoleModelConfig
-    researcher: RoleModelConfig
     planner: RoleModelConfig
     tester: RoleModelConfig
     reviewer: RoleModelConfig
     workers: dict[Complexity, RoleModelConfig]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_role_keys(cls, data: object) -> object:
+        # The planner replaced the refiner and the researcher (ADR-035).
+        # Older configuration files can still carry them, so drop them silently.
+        if isinstance(data, dict):
+            return {
+                key: value for key, value in data.items() if key not in {"refiner", "researcher"}
+            }
+        return data
 
     @model_validator(mode="after")
     def _validate_workers(self) -> Self:

@@ -783,8 +783,6 @@ def run_controller_standard_vs_fast(
                     },
                     "models": {
                         "triage": {"model": "claude-sonnet-5", "reasoning": "medium"},
-                        "refiner": {"model": "claude-opus-5", "reasoning": "high"},
-                        "researcher": {"model": "gpt-5.6-sol", "reasoning": "high"},
                         "planner": {"model": "claude-opus-5", "reasoning": "high"},
                         "workers": {
                             "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
@@ -798,8 +796,6 @@ def run_controller_standard_vs_fast(
                     "model_profiles": {
                         "economy": {
                             "triage": {"model": "gpt-5.6-luna", "reasoning": "medium"},
-                            "refiner": {"model": "gpt-5.6-terra", "reasoning": "high"},
-                            "researcher": {"model": "gemini-3.8-flash", "reasoning": "medium"},
                             "planner": {"model": "gpt-5.6-terra", "reasoning": "high"},
                             "workers": {
                                 "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},

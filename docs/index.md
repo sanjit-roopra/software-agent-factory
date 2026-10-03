@@ -113,9 +113,8 @@ Triage is the assessment of task complexity and risk.
 Complexity selects model strength.
 Risk determines the required controls.
 
-The Refiner defines acceptance criteria, which are conditions for success.
-If triage requests research, the Researcher examines open questions.
-The Planner produces an execution plan with permitted change boundaries.
+The Planner defines acceptance criteria, which are conditions for success.
+In the same call, it produces an execution plan with permitted change boundaries.
 
 [Read about the agents](concepts/how-it-works.md#the-agents)
 
@@ -125,13 +124,12 @@ The Planner produces an execution plan with permitted change boundaries.
 
 <span class="saf-small-label">Stage sequence</span>
 
-<div class="saf-flow"><span>Triage</span><span>Refine</span><span class="saf-optional">Research / optional</span><span>Plan</span></div>
+<div class="saf-flow"><span>Triage</span><span>Plan</span></div>
 
 <span class="saf-small-label">Saved evidence</span>
 
 `triage.json`<br>
 `specification.json`<br>
-`research.json` (optional)<br>
 `execution-plan.json`
 
 </div>

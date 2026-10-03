@@ -33,14 +33,12 @@ from .models import (
     AttemptTrigger,
     ChangeSet,
     CommandResult,
-    ExecutionPlan,
     ModelBase,
+    PlanningResult,
     ProjectPlan,
     RepairContext,
-    ResearchReport,
     ReviewFinding,
     ReviewReport,
-    Specification,
     TestReport,
     TriageResult,
     VerificationReport,
@@ -60,7 +58,6 @@ _WORK_ITEM_TITLE = "Work item"
 _SPECIFICATION_TITLE = "Specification"
 _EXECUTION_PLAN_TITLE = "Execution plan"
 _TRIAGE_RESULT_TITLE = "Triage result"
-_RESEARCH_REPORT_TITLE = "Research report"
 _DIFF_TITLE = "Diff"
 _VERIFICATION_TITLE = "Deterministic verification"
 _CHANGED_FILES_TITLE = "Changed files"
@@ -82,9 +79,7 @@ _NO_LONGER_APPLIES_TITLE = "No longer applies"
 
 _ARTIFACT_MODELS: dict[str, type[ModelBase]] = {
     "TRIAGE": TriageResult,
-    "REFINER": Specification,
-    "RESEARCHER": ResearchReport,
-    "PLANNER": ExecutionPlan,
+    "PLANNER": PlanningResult,
     "IMPLEMENTER": ChangeSet,
     "TESTER": TestReport,
     "REVIEWER": ReviewReport,
@@ -330,18 +325,12 @@ def _role_instructions(
 - Do not edit the repository."""
     if role == "TRIAGE":
         return _triage_instructions(risk_assessment)
-    if role == "REFINER":
-        return """Write an explicit specification.
-- Separate facts, assumptions, and unknowns.
-- Keep acceptance criteria measurable.
-- Do not invent requirements, future features, unrelated refactors, or generic hardening."""
-    if role == "RESEARCHER":
-        return """Answer the research question with available repository evidence.
-- Record evidence for each finding.
-- If evidence is missing, record the uncertainty.
-- Do not invent external facts when web access is unavailable."""
     if role == "PLANNER":
-        return """Choose the smallest implementation that satisfies the specification.
+        return """Write an explicit specification, then plan the smallest implementation.
+- In the specification, separate facts, assumptions, and unknowns.
+- Keep acceptance criteria measurable.
+- Do not invent requirements, future features, unrelated refactors, or generic hardening.
+- If a specification is given, return it unchanged unless new context changes it.
 - Reuse existing code and extension points.
 - Do not add speculative abstractions, dependencies, services, or infrastructure.
 - Give concrete steps, likely files, validation, risks, and tests.
@@ -405,8 +394,7 @@ def _triage_instructions(risk_assessment: bool) -> str:
     return f"""Assess the work item.
 - Decide whether the factory can do the work.
 - Set complexity and risk.{rationale_rule}
-- List missing information.
-- Request research only when planning needs external evidence."""
+- List missing information."""
 
 
 def _output_contract(
@@ -463,23 +451,6 @@ def _triage_sections(request: AgentRequest) -> list[tuple[str, object]]:
     )
 
 
-def _refiner_sections(request: AgentRequest) -> list[tuple[str, object]]:
-    return _given(
-        (_WORK_ITEM_TITLE, request.work_item),
-        (_TRIAGE_RESULT_TITLE, request.triage_result),
-        (_OUTPUT_REJECTION_TITLE, request.repair_context),
-    )
-
-
-def _researcher_sections(request: AgentRequest) -> list[tuple[str, object]]:
-    return _given(
-        (_WORK_ITEM_TITLE, request.work_item),
-        (_TRIAGE_RESULT_TITLE, request.triage_result),
-        (_SPECIFICATION_TITLE, request.specification),
-        (_OUTPUT_REJECTION_TITLE, request.repair_context),
-    )
-
-
 def _planner_context_title(repair_context: object) -> str:
     if not isinstance(repair_context, str):
         return "Replan context"
@@ -493,8 +464,8 @@ def _planner_context_title(repair_context: object) -> str:
 def _planner_sections(request: AgentRequest) -> list[tuple[str, object]]:
     return _given(
         (_WORK_ITEM_TITLE, request.work_item),
+        (_TRIAGE_RESULT_TITLE, request.triage_result),
         (_SPECIFICATION_TITLE, request.specification),
-        (_RESEARCH_REPORT_TITLE, request.research_report),
         (_planner_context_title(request.repair_context), request.repair_context),
         ("Changed files so far", request.changed_files or None),
         (_CURRENT_DIFF_TITLE, _diff_or_none(request.diff)),
@@ -506,7 +477,6 @@ def _implementer_sections(request: AgentRequest) -> list[tuple[str, object]]:
         *_given(
             (_WORK_ITEM_TITLE, _work_item_brief(request.work_item)),
             (_SPECIFICATION_TITLE, request.specification),
-            (_RESEARCH_REPORT_TITLE, request.research_report),
             (_EXECUTION_PLAN_TITLE, request.execution_plan),
             ("Attempt number", request.attempt_number),
             (_REPAIR_CONTEXT_TITLE, request.repair_context),
@@ -638,8 +608,6 @@ _PURPOSE_SECTIONS: dict[AgentPurpose, Callable[[AgentRequest], list[tuple[str, o
 
 _ROLE_SECTIONS: dict[str, Callable[[AgentRequest], list[tuple[str, object]]]] = {
     "TRIAGE": _triage_sections,
-    "REFINER": _refiner_sections,
-    "RESEARCHER": _researcher_sections,
     "PLANNER": _planner_sections,
     "IMPLEMENTER": _implementer_sections,
     "TESTER": _evidence_sections,

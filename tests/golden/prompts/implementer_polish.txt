@@ -33,9 +33,6 @@ Work item:
 Specification:
 {"acceptance_criteria":[],"assumptions":[],"confidence":0.9,"constraints":[],"dependencies":[],"problem":"Names must not be blank.","provenance":"AGENT","risk_flags":[],"schema_version":1,"unknowns":[]}
 
-Research report:
-{"evidence":[],"findings":[],"implications":[],"question":"Which validator rejects blank names?","schema_version":1,"uncertainty":[]}
-
 Execution plan:
 {"expected_scope":{"estimated_files_max":2,"estimated_files_min":1,"modules":["src"]},"provenance":"AGENT","risks":[],"schema_version":1,"steps":[{"goal":"Validate the name","id":"s1","likely_files":[],"validation":[]}],"summary":"Add a guard clause.","test_strategy":[],"unresolved_decisions":[]}
 

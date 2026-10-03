@@ -129,7 +129,7 @@ sufficient.
 
 Dependency-ready tasks run in waves using
 `scheduler.max_concurrent_tasks` (`1` or `2`). Each task still uses the full
-triage, refine, plan, implement, verify, test, and review pipeline. Successful
+triage, plan, implement, verify, test, and review pipeline. Successful
 task commits are cherry-picked onto one persistent project integration branch,
 so downstream tasks see predecessor changes. The configured repository commands
 run once more against the complete integration branch before the project is

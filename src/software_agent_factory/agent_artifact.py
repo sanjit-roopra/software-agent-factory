@@ -28,6 +28,7 @@ from .models import (
     AgentRole,
     ModelBase,
     PerformanceRecord,
+    PlanningResult,
     ProjectPlan,
     UsageMetrics,
 )
@@ -35,8 +36,6 @@ from .prompts import RoleName, artifact_model_for_role, normalize_role
 
 type ResultField = Literal[
     "triage_result",
-    "specification",
-    "research_report",
     "execution_plan",
     "change_set",
     "test_report",
@@ -56,14 +55,7 @@ ARTIFACT_SPECS: dict[str, _ArtifactSpec] = {
         model_class=artifact_model_for_role("TRIAGE"),
         result_field="triage_result",
     ),
-    "REFINER": _ArtifactSpec(
-        model_class=artifact_model_for_role("REFINER"),
-        result_field="specification",
-    ),
-    "RESEARCHER": _ArtifactSpec(
-        model_class=artifact_model_for_role("RESEARCHER"),
-        result_field="research_report",
-    ),
+    # The PlanningResult also fills ``specification`` (see build_success_result).
     "PLANNER": _ArtifactSpec(
         model_class=artifact_model_for_role("PLANNER"),
         result_field="execution_plan",
@@ -364,13 +356,18 @@ def _validate_payload(
     Returns ``(artifact, first_validation_error)``. The error carried across
     payloads is the first one seen, replaced by a nested candidate's error
     when that candidate carries ``schema_version`` but ``payload`` does not.
+    A ``payload`` that has fields of ``model_class`` keeps its own error: a
+    ``PlanningResult`` holds versioned artifacts, but it is not an envelope.
     """
+    payload_is_envelope = "schema_version" not in payload and not (
+        payload.keys() & model_class.model_fields.keys()
+    )
     for dict_candidate in _iter_nested_dicts(payload):
         try:
             return model_class.model_validate(dict_candidate), first_validation_error
         except ValidationError as exc:
             if first_validation_error is None or (
-                "schema_version" in dict_candidate and "schema_version" not in payload
+                payload_is_envelope and "schema_version" in dict_candidate
             ):
                 first_validation_error = exc
     return None, first_validation_error
@@ -460,16 +457,22 @@ def build_success_result(
     ``artifact_spec(role, purpose).result_field`` names which ``AgentResult``
     field (``change_set``, ``triage_result``, ...) holds the artifact for
     this role/purpose. Shared by every ``AgentRuntime`` (Copilot, pi) so this
-    mapping lives in one place instead of being duplicated per runtime.
+    mapping lives in one place instead of being duplicated per runtime. A
+    :class:`~.models.PlanningResult` fills both ``specification`` and
+    ``execution_plan``.
     """
 
-    result_field = artifact_spec(role, purpose).result_field
+    fields: dict[str, object] = (
+        {"specification": artifact.specification, "execution_plan": artifact.execution_plan}
+        if isinstance(artifact, PlanningResult)
+        else {artifact_spec(role, purpose).result_field: artifact}
+    )
     return AgentResult.model_validate(
         {
             "role": role,
             "success": True,
             "usage": usage,
             "performance": performance,
-            result_field: artifact,
+            **fields,
         }
     )

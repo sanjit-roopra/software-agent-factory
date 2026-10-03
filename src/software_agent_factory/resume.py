@@ -172,7 +172,8 @@ def is_valid_risk_approval_context(
         return False
     if context.risk not in {Risk.R2, Risk.R3}:
         return False
-    if context.next_state is not WorkflowState.REFINING:
+    # REFINING is the next state in approval contexts written before ADR-035.
+    if context.next_state not in {WorkflowState.PLANNING, WorkflowState.REFINING}:
         return False
 
     rationale = context.risk_rationale

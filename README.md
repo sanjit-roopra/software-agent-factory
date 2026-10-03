@@ -6,7 +6,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 A local factory that turns a work item into a reviewed change. Specialized
-agents triage, refine, research, plan, implement, test and review the work.
+agents triage, plan, implement, test and review the work.
 
 Git worktrees, commands and state stay on your machine. GitHub Copilot runs the
 real agents. GitHub automation stays separate and opt-in.
@@ -81,8 +81,8 @@ workspace: ./.factory-demo/workspaces/WI-c769695fc242
 changed files: FACTORY_NOTES.md
 ```
 
-The run moved through `CREATED → TRIAGING → REFINING → [RESEARCHING] → PLANNING
-→ IMPLEMENTING → VERIFYING → REVIEWING → PR_READY`.
+The run moved through `CREATED → TRIAGING → PLANNING → IMPLEMENTING
+→ VERIFYING → REVIEWING → PR_READY`.
 The run used an isolated Git worktree.
 Each stage persisted a typed artifact.
 

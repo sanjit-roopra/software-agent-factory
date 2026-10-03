@@ -11,7 +11,7 @@ The allowed transition table is declared as data (``ALLOWED_TRANSITIONS``)
 and enforced by :meth:`WorkflowController.transition`:
 
 ```text
-CREATED -> TRIAGING -> REFINING -> [RESEARCHING] -> PLANNING -> IMPLEMENTING
+CREATED -> TRIAGING -> PLANNING -> IMPLEMENTING
     -> VERIFYING -> REVIEWING -> PR_READY [-> PR_CREATED -> CI_RUNNING -> DONE]
 ```
 
@@ -115,12 +115,12 @@ from .models import (
     MutationReport,
     MutationStatus,
     PlanDecisionAnswers,
+    PlanningResult,
     PlanStep,
     RepairContext,
     RepositoryCommandsPlan,
     RepositoryCommandsSource,
     RepositoryProfile,
-    ResearchReport,
     ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
@@ -219,23 +219,12 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
         {WorkflowState.TRIAGING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
     ),
     WorkflowState.TRIAGING: frozenset(
-        {WorkflowState.REFINING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {WorkflowState.PLANNING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
     ),
-    WorkflowState.REFINING: frozenset(
-        {
-            WorkflowState.RESEARCHING,
-            WorkflowState.PLANNING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.RESEARCHING: frozenset(
-        {
-            WorkflowState.PLANNING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
+    # No new run enters REFINING or RESEARCHING (ADR-035). An old run halted
+    # there can only stop for a human, then reopen at PLANNING.
+    WorkflowState.REFINING: frozenset({WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}),
+    WorkflowState.RESEARCHING: frozenset({WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}),
     WorkflowState.PLANNING: frozenset(
         {
             WorkflowState.IMPLEMENTING,
@@ -305,14 +294,18 @@ def is_run_finished(run: FactoryRun) -> bool:
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
+_PLANNING_RESULT_REQUEST = (
+    "Return a complete PlanningResult JSON object with the specification and the execution plan."
+)
+
+
 def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:
     decisions_list = "\n".join(f"- {decision}" for decision in unresolved_decisions)
     return (
         "The previous execution plan listed these unresolved decisions:\n"
         f"{decisions_list}\n\n"
         "Resolve any item that repository evidence or existing constraints answer. "
-        "Retain only genuinely human-owned choices. "
-        "Return a complete ExecutionPlan JSON object."
+        "Retain only genuinely human-owned choices. " + _PLANNING_RESULT_REQUEST
     )
 
 
@@ -333,8 +326,7 @@ def _planner_human_decision_context(
         "An authorized human resolved these previous plan decisions. "
         "Treat each answer as a hard planning constraint. Do not change scope, policy, "
         "budgets, or delivery settings.\n\n"
-        f"{json.dumps(decisions, ensure_ascii=True)}\n\n"
-        "Return a complete ExecutionPlan JSON object."
+        f"{json.dumps(decisions, ensure_ascii=True)}\n\n" + _PLANNING_RESULT_REQUEST
     )
 
 
@@ -1042,7 +1034,8 @@ class WorkflowController:
                 raise ValueError(
                     f"run {run.id} receipt fingerprint does not match active approval context"
                 )
-            target_state = WorkflowState.REFINING
+            # Approval contexts written before ADR-035 name REFINING. Both resume at PLANNING.
+            target_state = WorkflowState.PLANNING
         elif escalation.resume_classification is ResumeClassification.PLAN_DECISION:
             context = escalation.plan_decision_context
             if context is None or not is_valid_plan_decision_context(
@@ -1181,7 +1174,8 @@ class WorkflowController:
         This is the single controller-owned path out of NEEDS_HUMAN. Validates
         workspace identity, reopen limits, durable resume-pending status,
         accepted reply receipt bound to current run and episode, and the supported
-        resumable class (RISK_APPROVAL -> REFINING) without granting additional attempt budget.
+        resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING) without granting
+        additional attempt budget.
         """
         run = self._store.load_run(run_id)
         if run.state is not WorkflowState.NEEDS_HUMAN:
@@ -1304,17 +1298,11 @@ class WorkflowController:
                     previous_plan = self._store.load_artifact(run.id, ExecutionPlan)
                     decision_answers = self._store.load_artifact(run.id, PlanDecisionAnswers)
                     specification = self._store.load_artifact(run.id, Specification)
-                    research_report = (
-                        self._store.load_artifact(run.id, ResearchReport)
-                        if triage_result.needs_research
-                        else None
-                    )
                     return self._drive_from_planning(
                         run,
                         work_item,
                         triage_result,
                         specification,
-                        research_report,
                         workspace,
                         source_repo,
                         repository_profile,
@@ -1323,10 +1311,11 @@ class WorkflowController:
                         ),
                         route_decision=route_decision,
                     )
-                return self._drive_from_refining(
+                return self._drive_from_planning(
                     run,
                     work_item,
                     triage_result,
+                    None,
                     workspace,
                     source_repo,
                     repository_profile,
@@ -1382,9 +1371,6 @@ class WorkflowController:
             work_item=work_item,
             triage_result=triage,
             specification=self._store.load_artifact(run.id, Specification),
-            research_report=(
-                self._store.load_artifact(run.id, ResearchReport) if triage.needs_research else None
-            ),
             execution_plan=self._store.load_artifact(run.id, ExecutionPlan),
             repository_profile=self._store.load_artifact(run.id, RepositoryProfile),
             workspace=workspace,
@@ -1454,7 +1440,6 @@ class WorkflowController:
             factory_eligible=True,
             complexity=route_decision.selected_worker_complexity,
             risk=route_decision.selected_risk,
-            needs_research=False,
             dependencies=[],
             unknowns=[],
             confidence=route_decision.confidence if route_decision.confidence is not None else 1.0,
@@ -1467,7 +1452,7 @@ class WorkflowController:
             problem=f"SYNTHESIZED: {work_item.description}",
             acceptance_criteria=list(work_item.acceptance_criteria),
             constraints=list(work_item.constraints),
-            assumptions=["SYNTHESIZED: Direct single-pass execution without refiner"],
+            assumptions=["SYNTHESIZED: Direct single-pass execution without a planner call"],
             unknowns=[],
             dependencies=[],
             risk_flags=[],
@@ -1639,11 +1624,12 @@ class WorkflowController:
                     )
 
                 run = self._select_performance_mode(run, triage_result)
-                run = self.transition(run, WorkflowState.REFINING)
-                return self._drive_from_refining(
+                run = self.transition(run, WorkflowState.PLANNING)
+                return self._drive_from_planning(
                     run,
                     work_item,
                     triage_result,
+                    None,
                     workspace,
                     source_repo,
                     repository_profile,
@@ -1651,7 +1637,7 @@ class WorkflowController:
                 )
 
             # 3. SINGLE or CRITIQUE route
-            saved_calls = 5 if route_decision.effective_route is ExecutionRoute.SINGLE else 4
+            saved_calls = 4 if route_decision.effective_route is ExecutionRoute.SINGLE else 3
             run.performance.record_counter(
                 "route.saved_calls",
                 saved_calls,
@@ -1662,11 +1648,9 @@ class WorkflowController:
             triage_result = self._synthesize_triage_result(work_item, route_decision)
             self._store.save_artifact(run.id, triage_result)
 
-            run = self.transition(run, WorkflowState.REFINING)
+            run = self.transition(run, WorkflowState.PLANNING)
             specification = self._synthesize_specification(work_item)
             self._store.save_artifact(run.id, specification)
-
-            run = self.transition(run, WorkflowState.PLANNING)
             execution_plan = self._synthesize_execution_plan(
                 work_item, self._commands_for_run(run.id).verify
             )
@@ -1676,7 +1660,6 @@ class WorkflowController:
                 work_item=work_item,
                 triage_result=triage_result,
                 specification=specification,
-                research_report=None,
                 execution_plan=execution_plan,
                 repository_profile=repository_profile,
                 workspace=workspace,
@@ -1695,62 +1678,12 @@ class WorkflowController:
         except _Halt as halt:
             return halt.run
 
-    def _drive_from_refining(
-        self,
-        run: FactoryRun,
-        work_item: WorkItem,
-        triage_result: TriageResult,
-        workspace: GitWorktreeWorkspace,
-        source_repo: Path,
-        repository_profile: RepositoryProfile,
-        *,
-        route_decision: RouteDecision | None = None,
-    ) -> FactoryRun:
-        workspace_path = str(workspace.path)
-        fast_model_profile = (
-            run.performance_model_profile if run.effective_performance_mode == "fast" else None
-        )
-        specification = self._run_refiner(
-            run,
-            work_item,
-            triage_result,
-            workspace_path=workspace_path,
-            model_profile=fast_model_profile,
-        )
-
-        research_report: ResearchReport | None = None
-        if triage_result.needs_research:
-            run = self.transition(run, WorkflowState.RESEARCHING)
-            research_report = self._run_researcher(
-                run,
-                work_item,
-                triage_result,
-                specification,
-                workspace_path=workspace_path,
-            )
-            run = self.transition(run, WorkflowState.PLANNING)
-        else:
-            run = self.transition(run, WorkflowState.PLANNING)
-
-        return self._drive_from_planning(
-            run,
-            work_item,
-            triage_result,
-            specification,
-            research_report,
-            workspace,
-            source_repo,
-            repository_profile,
-            route_decision=route_decision,
-        )
-
     def _drive_from_planning(
         self,
         run: FactoryRun,
         work_item: WorkItem,
         triage_result: TriageResult,
-        specification: Specification,
-        research_report: ResearchReport | None,
+        specification: Specification | None,
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
         repository_profile: RepositoryProfile,
@@ -1758,44 +1691,46 @@ class WorkflowController:
         planner_context: str | None = None,
         route_decision: RouteDecision | None = None,
     ) -> FactoryRun:
-        """Plan and continue from a controller-owned PLANNING state."""
+        """Plan and continue from a controller-owned PLANNING state.
+
+        One planner call writes the specification and the plan (ADR-035). A
+        given ``specification`` is the one an earlier planner call wrote.
+        """
         if run.state is not WorkflowState.PLANNING:
             raise TransitionError(f"run {run.id} must be PLANNING before plan execution")
         workspace_path = str(workspace.path)
         fast_model_profile = (
             run.performance_model_profile if run.effective_performance_mode == "fast" else None
         )
-        execution_plan = self._run_planner(
+        planning = self._run_planner(
             run,
             work_item,
             specification,
-            research_report,
+            triage_result=triage_result,
             workspace_path=workspace_path,
             repair_context=planner_context,
             model_profile=fast_model_profile,
         )
-        if execution_plan.unresolved_decisions:
+        if planning.execution_plan.unresolved_decisions:
             clarification_context = _planner_clarification_context(
-                execution_plan.unresolved_decisions
+                planning.execution_plan.unresolved_decisions
             )
             if planner_context is not None:
                 clarification_context = f"{planner_context}\n\n{clarification_context}"
-            execution_plan = self._run_planner(
+            planning = self._run_planner(
                 run,
                 work_item,
-                specification,
-                research_report,
+                planning.specification,
+                triage_result=triage_result,
                 workspace_path=workspace_path,
                 repair_context=clarification_context,
                 model_profile=fast_model_profile,
             )
-            if execution_plan.unresolved_decisions:
-                self._store.save_artifact(run.id, execution_plan)
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    UNRESOLVED_DECISIONS_HALT_REASON,
-                )
+        specification = planning.specification
+        execution_plan = planning.execution_plan
+        self._store.save_artifact(run.id, specification)
+        if execution_plan.unresolved_decisions:
+            raise self._halt(run, WorkflowState.NEEDS_HUMAN, UNRESOLVED_DECISIONS_HALT_REASON)
         run = self._check_fast_planned_scope(
             run,
             execution_plan,
@@ -1807,7 +1742,6 @@ class WorkflowController:
             work_item=work_item,
             triage_result=triage_result,
             specification=specification,
-            research_report=research_report,
             execution_plan=execution_plan,
             repository_profile=repository_profile,
             workspace=workspace,
@@ -1856,8 +1790,6 @@ class WorkflowController:
             reason = f"complexity {triage.complexity} is not eligible for fast mode"
         elif triage.risk not in {Risk.R0, Risk.R1}:
             reason = f"risk {triage.risk} is not eligible for fast mode"
-        elif triage.needs_research:
-            reason = "triage requires research"
 
         if reason is not None:
             selected = run.model_copy(
@@ -2049,115 +1981,29 @@ class WorkflowController:
             ),
         )
 
-    def _run_refiner(
-        self,
-        run: FactoryRun,
-        work_item: WorkItem,
-        triage_result: TriageResult,
-        *,
-        workspace_path: str,
-        model_profile: str | None = None,
-    ) -> Specification:
-        request = self._build_request(
-            AgentRole.REFINER,
-            work_item,
-            triage_result=triage_result,
-            workspace_path=workspace_path,
-            model_profile=model_profile,
-        )
-        result: AgentResult | None = None
-        repair_context: str | None = None
-        for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
-            result = self._invoke_agent(
-                run,
-                request.model_copy(
-                    update={
-                        "attempt_number": attempt_number,
-                        "repair_context": repair_context,
-                    }
-                ),
-            )
-            if result.success and result.specification is not None:
-                self._store.save_artifact(run.id, result.specification)
-                return result.specification
-            if not is_retryable_typed_artifact_failure(result, Specification):
-                break
-            assert result.failure_reason is not None
-            repair_context = _typed_artifact_repair_context(
-                result.failure_reason,
-                Specification.__name__,
-            )
-        assert result is not None
-        raise self._halt(
-            run,
-            WorkflowState.FAILED,
-            result.failure_reason or "refiner agent failed to produce a result",
-        )
-
-    def _run_researcher(
-        self,
-        run: FactoryRun,
-        work_item: WorkItem,
-        triage_result: TriageResult,
-        specification: Specification,
-        *,
-        workspace_path: str,
-    ) -> ResearchReport:
-        """Run the optional researcher exactly once (``PLAN.md`` Phase 8)."""
-        request = self._build_request(
-            AgentRole.RESEARCHER,
-            work_item,
-            triage_result=triage_result,
-            specification=specification,
-            workspace_path=workspace_path,
-        )
-        result: AgentResult | None = None
-        repair_context: str | None = None
-        for attempt_number in range(1, self._config.retries.same_model_attempts + 1):
-            result = self._invoke_agent(
-                run,
-                request.model_copy(
-                    update={
-                        "attempt_number": attempt_number,
-                        "repair_context": repair_context,
-                    }
-                ),
-            )
-            if result.success and result.research_report is not None:
-                self._store.save_artifact(run.id, result.research_report)
-                return result.research_report
-            if not is_retryable_typed_artifact_failure(result, ResearchReport):
-                break
-            assert result.failure_reason is not None
-            repair_context = _typed_artifact_repair_context(
-                result.failure_reason,
-                ResearchReport.__name__,
-            )
-        assert result is not None
-        raise self._halt(
-            run,
-            WorkflowState.FAILED,
-            result.failure_reason or "researcher agent failed to produce a result",
-        )
-
     def _run_planner(
         self,
         run: FactoryRun,
         work_item: WorkItem,
-        specification: Specification,
-        research_report: ResearchReport | None,
+        specification: Specification | None,
         *,
+        triage_result: TriageResult | None = None,
         workspace_path: str,
         repair_context: RepairContext | str | None = None,
         diff: str | None = None,
         changed_files: list[str] | None = None,
         model_profile: str | None = None,
-    ) -> ExecutionPlan:
+    ) -> PlanningResult:
+        """Run the planner. It returns the specification and the plan (ADR-035).
+
+        Only the plan is saved here. The caller decides whether to keep the
+        returned specification.
+        """
         request = self._build_request(
             AgentRole.PLANNER,
             work_item,
+            triage_result=triage_result,
             specification=specification,
-            research_report=research_report,
             workspace_path=workspace_path,
             repair_context=repair_context,
             diff=diff,
@@ -2176,15 +2022,22 @@ class WorkflowController:
                     }
                 ),
             )
-            if result.success and result.execution_plan is not None:
+            if (
+                result.success
+                and result.specification is not None
+                and result.execution_plan is not None
+            ):
                 self._store.save_artifact(run.id, result.execution_plan)
-                return result.execution_plan
-            if not is_retryable_typed_artifact_failure(result, ExecutionPlan):
+                return PlanningResult(
+                    specification=result.specification,
+                    execution_plan=result.execution_plan,
+                )
+            if not is_retryable_typed_artifact_failure(result, PlanningResult):
                 break
             assert result.failure_reason is not None
             current_repair_context = _typed_artifact_repair_context(
                 result.failure_reason,
-                ExecutionPlan.__name__,
+                PlanningResult.__name__,
                 prior_context=repair_context,
             )
         assert result is not None
@@ -2401,7 +2254,6 @@ class WorkflowController:
         model_profile: str | None = None,
         triage_result: TriageResult | None = None,
         specification: Specification | None = None,
-        research_report: ResearchReport | None = None,
         execution_plan: ExecutionPlan | None = None,
         diff: str | None = None,
         changed_files: list[str] | None = None,
@@ -2430,7 +2282,6 @@ class WorkflowController:
             work_item=work_item,
             triage_result=triage_result,
             specification=specification,
-            research_report=research_report,
             execution_plan=execution_plan,
             diff=diff,
             changed_files=changed_files or [],
@@ -3147,11 +2998,11 @@ class WorkflowController:
                 filename="execution-plan.initial.json",
             )
         run = self.transition(run, WorkflowState.PLANNING)
+        # A scope replan changes plan metadata only. It keeps the specification.
         context.execution_plan = self._run_planner(
             run,
             context.work_item,
             context.specification,
-            context.research_report,
             workspace_path=str(context.workspace.path),
             repair_context=repair_context,
             diff=evidence.diff,
@@ -3159,7 +3010,7 @@ class WorkflowController:
             model_profile=(
                 run.performance_model_profile if run.effective_performance_mode == "fast" else None
             ),
-        )
+        ).execution_plan
         run = self._check_fast_planned_scope(
             run,
             context.execution_plan,
@@ -3289,7 +3140,6 @@ class WorkflowController:
             context_tier=role_model.context_tier,
             work_item=context.work_item,
             specification=context.specification,
-            research_report=context.research_report,
             execution_plan=context.execution_plan,
             repair_context=repair_context,
             diff=current_diff if repair_context is not None else None,
@@ -4248,7 +4098,6 @@ class _RunContext:
         work_item: WorkItem,
         triage_result: TriageResult,
         specification: Specification,
-        research_report: ResearchReport | None,
         execution_plan: ExecutionPlan,
         repository_profile: RepositoryProfile,
         workspace: GitWorktreeWorkspace,
@@ -4260,7 +4109,6 @@ class _RunContext:
         self.work_item = work_item
         self.triage_result = triage_result
         self.specification = specification
-        self.research_report = research_report
         self.execution_plan = execution_plan
         self.repository_profile = repository_profile
         self.route_decision = route_decision

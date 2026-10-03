@@ -50,14 +50,12 @@ from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
-    ExecutionPlan,
     ModelBase,
+    PlanningResult,
     ProjectBrief,
     ProjectPlan,
-    ResearchReport,
     ReviewFindingCategory,
     ReviewReport,
-    Specification,
     TestReport,
     TriageResult,
 )
@@ -114,14 +112,10 @@ def _reviewer_round(**overrides: object) -> AgentRequest:
 CASES: dict[str, Callable[[], AgentRequest]] = {
     "triage": lambda: _request(AgentRole.TRIAGE),
     "triage_risk_assessment_off": lambda: _request(AgentRole.TRIAGE, risk_assessment_enabled=False),
-    "refiner": lambda: _request(AgentRole.REFINER, triage_result=triage()),
-    "researcher": lambda: _request(
-        AgentRole.RESEARCHER, triage_result=triage(), specification=specification()
-    ),
+    "planner": lambda: _request(AgentRole.PLANNER, triage_result=triage()),
     "planner_replan": lambda: _request(
         AgentRole.PLANNER,
         specification=specification(),
-        research_report=ResearchReport(question="Which validator?", findings=["Use strip()."]),
         repair_context=repair_context(),
         diff=DIFF,
         changed_files=[CHANGED_FILE],
@@ -187,9 +181,8 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
 EXPECTED_MODELS: dict[str, type[ModelBase]] = {
     "triage": TriageResult,
     "triage_risk_assessment_off": TriageResult,
-    "refiner": Specification,
-    "researcher": ResearchReport,
-    "planner_replan": ExecutionPlan,
+    "planner": PlanningResult,
+    "planner_replan": PlanningResult,
     "implementer_first": ChangeSet,
     "implementer_repair": ChangeSet,
     "tester": TestReport,

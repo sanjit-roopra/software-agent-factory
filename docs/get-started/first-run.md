@@ -43,7 +43,7 @@ The run moved through:
 
 ```text
 CREATED → prepare worktree → profile repository → TRIAGING
-        → REFINING → [RESEARCHING] → PLANNING
+        → PLANNING
         → IMPLEMENTING → VERIFYING
         → IMPLEMENTING (POLISH) → VERIFYING
         → REVIEWING → PR_READY
@@ -97,8 +97,8 @@ Nothing is hidden in a database. Everything is JSON on disk.
 ├── repository-commands.json
 │                           commands this run uses, and where they come from
 ├── mutation.json         mutation gate result for changed Python modules, if it ran
-├── triage.json           complexity, risk, whether research is needed
-├── specification.json    acceptance criteria
+├── triage.json           complexity and risk
+├── specification.json    acceptance criteria, written by the planner
 ├── execution-plan.json
 ├── change-set.json       what the implementer claims it did
 ├── patch.diff            what the controller actually observed

@@ -57,8 +57,6 @@ through the controller.
 ```text
 CREATED
 TRIAGING
-REFINING
-RESEARCHING
 PLANNING
 IMPLEMENTING
 VERIFYING
@@ -72,13 +70,14 @@ NEEDS_HUMAN
 FAILED
 ```
 
+The states `REFINING` and `RESEARCHING` stay only so that old run records load.
+No new run enters them.
+
 The allowed transitions are declared as data and enforced on every call:
 
 ```text
 CREATED      → TRIAGING
-TRIAGING     → REFINING
-REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING
+TRIAGING     → PLANNING
 PLANNING     → IMPLEMENTING
 IMPLEMENTING → VERIFYING
 VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
@@ -120,9 +119,7 @@ accumulates a giant shared transcript.
 WorkItem
   → RepositoryProfile
   → TriageResult
-  → Specification
-  → [ResearchReport]
-  → ExecutionPlan
+  → Specification and ExecutionPlan (one planner call)
   → ChangeSet
   → VerificationReport
   → TestReport
@@ -147,10 +144,8 @@ dependency declarations, a semantic `dependency_fingerprint`, and a
 
 | Agent | Job | Sees |
 | --- | --- | --- |
-| Triage | Assign complexity, risk, and whether research is needed. | The work item. |
-| Specification Refiner | Turn the request into acceptance criteria. | Work item, triage. |
-| Researcher | Answer specific open questions. | Specification. |
-| Planner | Produce an execution plan with an expected scope. | Specification, research. |
+| Triage | Assign complexity and risk. | The work item. |
+| Planner | Write the specification with measurable acceptance criteria, and an execution plan with an expected scope. | Work item, triage, and repository. A re-plan also sees the current specification. |
 | Implementer | Edit the worktree. | Plan and repository. The fixed simplify and polish guidance and the review lenses are provided only during the bounded polish attempt. |
 | Tester | Judge whether the change is actually tested. | Work item, specification, execution plan, controller-derived diff, changed files, and deterministic results. |
 | Reviewer | Independent review. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results, independent TestReport, implementation snapshot number, and typed open review findings. It also receives the review lenses for the changed files. A repair review also receives the exact diff since the previous reviewed tree. |
@@ -170,9 +165,6 @@ the open set. One late batch can also be adopted so a serious missed defect is
 not silently accepted, but later drip-fed findings are advisory. Repeated
 blockers on one path, one unresolved id, or repeated blocker replacement stop
 early with `review-impasse.json`.
-
-Research runs, but it does not escalate. A researcher that finds nothing useful
-returns a report and the run continues.
 
 Guidance and lenses never change tools, models, commands, states, retry
 budgets, permissions, gates, dependencies or scope.
@@ -198,7 +190,7 @@ No model writes or selects guidance. The polish attempt gets fixed guidance:
 the factory's `simplify` and `polish` templates, and the review lenses for the
 changed files. A stack lens for React, Vue or Angular applies only when the
 repository declares one of its dependencies. The polish attempt makes no
-Researcher call and no web request.
+web request.
 
 One bounded existing Implementer attempt applies the guidance, simplification
 first and polish second. Then the full deterministic verification runs again.
@@ -294,7 +286,6 @@ Filesystem JSON. No database.
 │   ├── mutation.json
 │   ├── triage.json
 │   ├── specification.json
-│   ├── research.json
 │   ├── execution-plan.json
 │   ├── change-set.json
 │   ├── patch.diff

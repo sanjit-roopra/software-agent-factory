@@ -70,7 +70,9 @@ MAX_PERFORMANCE_MAP_ENTRIES = 100
 class WorkflowState(StrEnum):
     CREATED = "CREATED"
     TRIAGING = "TRIAGING"
+    #: Kept so old run records load. New runs go from TRIAGING to PLANNING (ADR-035).
     REFINING = "REFINING"
+    #: Kept so old run records load. New runs go from TRIAGING to PLANNING (ADR-035).
     RESEARCHING = "RESEARCHING"
     PLANNING = "PLANNING"
     IMPLEMENTING = "IMPLEMENTING"
@@ -109,7 +111,9 @@ class Risk(StrEnum):
 
 class AgentRole(StrEnum):
     TRIAGE = "TRIAGE"
+    #: Kept so old run records load. The planner writes the specification (ADR-035).
     REFINER = "REFINER"
+    #: Kept so old run records load. Nothing invokes it (ADR-035).
     RESEARCHER = "RESEARCHER"
     PLANNER = "PLANNER"
     IMPLEMENTER = "IMPLEMENTER"
@@ -1264,6 +1268,7 @@ class RiskApprovalContext(ModelBase):
     work_item_title: str = Field(min_length=1, max_length=256)
     risk_rationale: RiskRationale
     decision_requested: str = Field(min_length=1, max_length=300)
+    #: Contexts written before ADR-035 name REFINING. New contexts set PLANNING.
     next_state: WorkflowState = WorkflowState.REFINING
     authorized_actions: list[str] = Field(min_length=1, max_length=10)
     unauthorized_actions: list[str] = Field(min_length=1, max_length=10)
@@ -1605,7 +1610,8 @@ class TriageResult(VersionedModel):
     factory_eligible: bool
     complexity: Complexity
     risk: Risk
-    needs_research: bool
+    #: No longer used (ADR-035). Kept with a default so old triage files load.
+    needs_research: bool = False
     dependencies: list[NonBlankStr] = Field(default_factory=list)
     unknowns: list[NonBlankStr] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
@@ -1640,14 +1646,6 @@ class Specification(VersionedModel):
     risk_flags: list[NonBlankStr] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     provenance: Literal["AGENT", "SYNTHESIZED"] = "AGENT"
-
-
-class ResearchReport(VersionedModel):
-    question: NonBlankStr = Field(min_length=1)
-    findings: list[NonBlankStr] = Field(default_factory=list)
-    evidence: list[NonBlankStr] = Field(default_factory=list)
-    implications: list[NonBlankStr] = Field(default_factory=list)
-    uncertainty: list[NonBlankStr] = Field(default_factory=list)
 
 
 class PlanStep(ModelBase):
@@ -1748,6 +1746,16 @@ class ExecutionPlan(VersionedModel):
     @property
     def ready(self) -> bool:
         return self.is_ready
+
+
+class PlanningResult(ModelBase):
+    """The planner's one output: the specification and the plan (ADR-035).
+
+    The controller persists the two parts as separate artifacts.
+    """
+
+    specification: Specification
+    execution_plan: ExecutionPlan
 
 
 class ChangeSet(VersionedModel):

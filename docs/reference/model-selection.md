@@ -41,8 +41,6 @@ The packaged `default` profile is:
 ```yaml
 models:
   triage:     { model: "gpt-5.6-terra",        reasoning: "medium", context_tier: "default" }
-  refiner:    { model: "gpt-5.5",              reasoning: "high",   context_tier: "default" }
-  researcher: { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
   planner:    { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
   workers:
     L0:       { model: "mai-code-1.1-flash",   reasoning: "medium", context_tier: "default" }
@@ -53,7 +51,7 @@ models:
   reviewer:   { model: "gpt-5.6-sol",          reasoning: "high",   context_tier: "default" }
 ```
 
-It keeps cheap models on L0/L1 and testing, retains Claude for research and
+It keeps cheap models on L0/L1 and testing, retains Claude for planning and
 complex implementation, and uses Sol for an independent final review.
 
 The packaged `economy` profile reduces frontier-model use while retaining Sol
@@ -63,8 +61,6 @@ for the final security-sensitive gate:
 model_profiles:
   economy:
     triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
-    refiner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
-    researcher: { model: "gemini-3.8-flash",   reasoning: "medium", context_tier: "default" }
     planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
     workers:
       L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
@@ -99,8 +95,6 @@ Tester with GPT-6 Astra:
 model_profiles:
   security:
     triage:     { model: "gpt-5.6-terra",      reasoning: "medium", context_tier: "default" }
-    refiner:    { model: "gpt-5.5",            reasoning: "high",   context_tier: "default" }
-    researcher: { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
     planner:    { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
     workers:
       L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
@@ -487,10 +481,10 @@ research product rather than the bare model.
 
 - Claude Opus 5 has the strongest directly reported single-agent BrowseComp
   result among the candidates with available evidence.
-- GPT-5.6 Sol is close and remains a strong current Researcher.
+- GPT-5.6 Sol is close and remains a strong research model.
 - Claude Sonnet 5 is the best-supported lower-cost research alternative when
   research quality is preferred over the economy profile's larger savings.
-- Gemini 3.8 Flash is the economy Researcher. It is 62.5% cheaper than Sonnet
+- Gemini 3.8 Flash is the economy research option. It is 62.5% cheaper than Sonnet
   in the illustrative call and well matched to bounded documentation synthesis.
 - GPT-6 Astra has strong factuality and analytical proxies, but no exact
   directly comparable BrowseComp result was found in this review.
@@ -592,9 +586,7 @@ by role rather than producing one global model score.
 | Role | Primary dimensions |
 | --- | --- |
 | Triage | 30% instruction following, 25% cost/latency, 20% calibration, 15% repository understanding, 10% reasoning |
-| Refiner | 30% instruction following, 25% reasoning, 20% ambiguity handling, 15% context, 10% cost |
-| Researcher | 30% source discovery, 25% source-to-claim support, 20% synthesis, 15% uncertainty calibration, 10% cost |
-| Planner | 30% decomposition/reasoning, 25% agentic reliability, 20% repository coding, 15% instruction following, 10% cost |
+| Planner | 30% decomposition/reasoning, 25% agentic reliability, 20% repository coding, 15% instruction following and ambiguity handling, 10% cost |
 | L0 worker | 35% cost/latency, 30% deterministic success, 20% instruction following, 15% low false-change rate |
 | L1 worker | 35% coding success, 25% tool use, 20% instruction following, 10% cost, 10% security |
 | L2/L3 worker | 30% repository coding, 25% reasoning, 20% tool reliability, 15% security, 10% cost |

@@ -54,7 +54,6 @@ from software_agent_factory.models import (
     RepositoryCommandsSource,
     RepositoryDependency,
     RepositoryProfile,
-    ResearchReport,
     ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
@@ -156,8 +155,6 @@ def _config(
             },
             "models": {
                 "triage": {"model": "claude-sonnet-5", "reasoning": "medium"},
-                "refiner": {"model": "claude-opus-5", "reasoning": "high"},
-                "researcher": {"model": "gpt-5.6-sol", "reasoning": "high"},
                 "planner": {"model": "claude-opus-5", "reasoning": "high"},
                 "workers": {
                     "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
@@ -171,8 +168,6 @@ def _config(
             "model_profiles": {
                 "economy": {
                     "triage": {"model": "gpt-5.6-luna", "reasoning": "medium"},
-                    "refiner": {"model": "gpt-5.6-terra", "reasoning": "high"},
-                    "researcher": {"model": "gemini-3.8-flash", "reasoning": "medium"},
                     "planner": {"model": "gpt-5.6-terra", "reasoning": "high"},
                     "workers": {
                         "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
@@ -427,6 +422,7 @@ def test_fake_agent_lying_about_changed_files_cannot_affect_persisted_evidence(
 def test_all_repository_reading_roles_receive_the_exact_workspace_path(
     source_repo: Path, data_dir: Path
 ) -> None:
+    # needs_research=True no longer adds a call: one planner call follows triage (ADR-035).
     runtime = RecordingRuntime(
         FakeAgentRuntime(triage=_triage_hook(Complexity.L1, Risk.R1, needs_research=True))
     )
@@ -441,8 +437,6 @@ def test_all_repository_reading_roles_receive_the_exact_workspace_path(
 
     expected_roles = [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
-        AgentRole.RESEARCHER,
         AgentRole.PLANNER,
         AgentRole.IMPLEMENTER,
         AgentRole.TESTER,
@@ -455,10 +449,10 @@ def test_all_repository_reading_roles_receive_the_exact_workspace_path(
         range(1, len(expected_roles) + 1)
     )
     assert all(record.context_tier.value == "default" for record in run.invocation_records)
-    assert run.invocation_records[4].budget is AttemptBudget.IMPLEMENTATION
-    assert run.invocation_records[5].attempt_number == 1
-    assert run.invocation_records[6].attempt_number == 1
-    assert run.attempt_records[0].invocation_number == 5
+    assert run.invocation_records[2].budget is AttemptBudget.IMPLEMENTATION
+    assert run.invocation_records[3].attempt_number == 1
+    assert run.invocation_records[4].attempt_number == 1
+    assert run.attempt_records[0].invocation_number == 3
     assert store.load_run(run.id).invocation_records == run.invocation_records
 
 
@@ -482,7 +476,7 @@ def test_planner_retries_once_after_malformed_execution_plan(
                 role=AgentRole.PLANNER,
                 success=False,
                 failure_reason=(
-                    "PLANNER response did not validate as ExecutionPlan: "
+                    "PLANNER response did not validate as PlanningResult: "
                     "steps.0.goal: Field required; expected_scope: Input should be a valid "
                     "dictionary"
                 ),
@@ -506,7 +500,7 @@ def test_planner_retries_once_after_malformed_execution_plan(
     assert "steps.0.goal: Field required" in requests[1].repair_context
     assert "expected_scope: Input should be a valid dictionary" in requests[1].repair_context
     assert "stdout=" not in requests[1].repair_context
-    assert "Return one complete ExecutionPlan JSON object" in requests[1].repair_context
+    assert "Return one complete PlanningResult JSON object" in requests[1].repair_context
     assert all(active is not None for active in active_invocations)
     assert [active.attempt_number for active in active_invocations if active is not None] == [1, 2]
     assert run.active_invocation is None
@@ -545,7 +539,7 @@ def test_planner_writing_findings_are_recorded_without_a_retry(
     (record,) = _records_for(run, AgentRole.PLANNER)
     assert record.success is True
     assert record.failure_reason is None
-    assert record.writing_findings == ("summary has 2 slop_word finding(s).",)
+    assert record.writing_findings == ("execution_plan.summary has 2 slop_word finding(s).",)
     (persisted,) = _records_for(FileRunStore(data_dir).load_run(run.id), AgentRole.PLANNER)
     assert persisted.writing_findings == record.writing_findings
 
@@ -581,18 +575,11 @@ def test_triage_writing_findings_are_recorded_without_a_retry(
     ("role", "hook", "artifact_field", "update", "finding"),
     [
         (
-            AgentRole.REFINER,
-            "refiner",
+            AgentRole.PLANNER,
+            "planner",
             "specification",
             {"problem": _WORDY},
-            "problem has 2 slop_word finding(s).",
-        ),
-        (
-            AgentRole.RESEARCHER,
-            "researcher",
-            "research_report",
-            {"findings": [_WORDY]},
-            "findings[0] has 2 slop_word finding(s).",
+            "specification.problem has 2 slop_word finding(s).",
         ),
         (
             AgentRole.TESTER,
@@ -630,8 +617,6 @@ def test_writing_findings_from_other_roles_are_recorded_without_a_retry(
         return result.model_copy(update={artifact_field: artifact.model_copy(update=update)})
 
     hooks: dict[str, AgentHook] = {hook: wordy}
-    if role is AgentRole.RESEARCHER:
-        hooks["triage"] = _triage_hook(Complexity.L1, Risk.R1, needs_research=True)
 
     run = WorkflowController(
         _config(data_dir, same_model_attempts=3),
@@ -681,8 +666,6 @@ def test_implementer_writing_findings_are_recorded_without_a_retry(
     ("role", "hook", "artifact"),
     [
         (AgentRole.TRIAGE, "triage", "TriageResult"),
-        (AgentRole.REFINER, "refiner", "Specification"),
-        (AgentRole.RESEARCHER, "researcher", "ResearchReport"),
     ],
 )
 def test_structural_retry_prompt_names_the_failure_for_early_roles(
@@ -703,8 +686,6 @@ def test_structural_retry_prompt_names_the_failure_for_early_roles(
         return default_runtime.run(request)
 
     hooks: dict[str, AgentHook] = {hook: failing_first}
-    if role is AgentRole.RESEARCHER:
-        hooks["triage"] = _triage_hook(Complexity.L1, Risk.R1, needs_research=True)
     runtime = FakeAgentRuntime(**hooks)
 
     run = WorkflowController(
@@ -728,8 +709,9 @@ def test_blank_plan_summary_takes_the_structural_retry(
     requests: list[AgentRequest] = []
     default_runtime = FakeAgentRuntime()
     blank_plan = (
-        '{"summary":"  ","steps":[],"expected_scope":'
-        '{"modules":["src"],"estimated_files_min":1,"estimated_files_max":1}}'
+        '{"specification":{"problem":"Fix it.","confidence":0.9},'
+        '"execution_plan":{"summary":"  ","steps":[],"expected_scope":'
+        '{"modules":["src"],"estimated_files_min":1,"estimated_files_max":1}}}'
     )
 
     def planner(request: AgentRequest) -> AgentResult:
@@ -1016,10 +998,9 @@ def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir
     run = controller.run(_work_item("WI-polish"), source_repo)
 
     assert run.state is WorkflowState.PR_READY
-    # No researcher call: the polish attempt is the only extra agent invocation.
+    # The polish attempt is the only extra agent invocation.
     assert [request.role for request in runtime.requests] == [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
         AgentRole.PLANNER,
         AgentRole.IMPLEMENTER,
         AgentRole.IMPLEMENTER,
@@ -1031,7 +1012,7 @@ def test_post_green_polish_is_bounded_and_reverified(source_repo: Path, data_dir
         AttemptTrigger.INITIAL,
         AttemptTrigger.POLISH,
     ]
-    polish_request = runtime.requests[4]
+    polish_request = runtime.requests[3]
     assert isinstance(polish_request.repair_context, RepairContext)
     assert polish_request.repair_context.trigger is AttemptTrigger.POLISH
     assert "fixed simplify and polish guidance" in polish_request.repair_context.summary
@@ -1466,7 +1447,6 @@ def test_tester_receives_repair_diff_and_prior_accepted_findings_during_review_r
                 factory_eligible=True,
                 complexity=Complexity.L1,
                 risk=Risk.R0,
-                needs_research=False,
                 dependencies=[],
                 unknowns=[],
                 confidence=0.8,
@@ -1476,7 +1456,6 @@ def test_tester_receives_repair_diff_and_prior_accepted_findings_during_review_r
                 acceptance_criteria=["Notes are updated."],
                 confidence=0.9,
             ),
-            research_report=None,
             execution_plan=ExecutionPlan(
                 summary="Fix defect.",
                 steps=[PlanStep(id="1", goal="Update notes.")],
@@ -1615,13 +1594,11 @@ def test_review_repair_loop_passes_repair_diff_and_prior_accepted_findings_to_te
                 factory_eligible=True,
                 complexity=Complexity.L1,
                 risk=Risk.R0,
-                needs_research=False,
                 dependencies=[],
                 unknowns=[],
                 confidence=0.8,
             ),
             specification=spec,
-            research_report=None,
             execution_plan=plan,
             repository_profile=profile,
             workspace=workspace,
@@ -2286,69 +2263,32 @@ def test_r2_triage_ends_needs_human_and_never_reaches_pr_ready(
     assert run.attempt_records == []
 
 
-def test_needs_research_runs_the_researcher_once_and_then_plans(
+def test_full_run_makes_one_planner_call_for_the_specification_and_plan(
     source_repo: Path, data_dir: Path
 ) -> None:
-    """Research no longer escalates: the researcher runs exactly once, its
-    report is persisted, and the run continues into planning."""
-    research_requests: list[AgentRequest] = []
-    planner_requests: list[AgentRequest] = []
-
-    def recording_researcher(request: AgentRequest) -> AgentResult:
-        research_requests.append(request)
-        return FakeAgentRuntime()._default_researcher(request)
-
-    def recording_planner(request: AgentRequest) -> AgentResult:
-        planner_requests.append(request)
-        return FakeAgentRuntime()._default_planner(request)
-
-    config = _config(data_dir)
+    """ADR-035: triage, then one planner call, then the implementer."""
     store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L1, Risk.R1, needs_research=True),
-            researcher=recording_researcher,
-            planner=recording_planner,
-        ),
-    )
+    planning_states: list[WorkflowState] = []
 
-    run = controller.run(_work_item(), source_repo)
+    def planner(request: AgentRequest) -> AgentResult:
+        planning_states.append(store.list_runs()[0].state)
+        return FakeAgentRuntime().run(request)
+
+    runtime = RecordingRuntime(FakeAgentRuntime(planner=planner))
+
+    run = WorkflowController(_config(data_dir), store, runtime).run(_work_item(), source_repo)
 
     assert run.state is WorkflowState.PR_READY
-    assert run.completed_at is not None
-    assert len(research_requests) == 1
-    assert research_requests[0].specification is not None
-    assert (store.runs_dir / run.id / "research.json").exists()
-
-    research_report = store.load_artifact(run.id, ResearchReport)
-    assert research_report.findings
-    # The planner receives the research report, and is not re-run for it.
-    assert len(planner_requests) == 1
-    assert planner_requests[0].research_report == research_report
-
-
-def test_researcher_failure_fails_the_run(source_repo: Path, data_dir: Path) -> None:
-    def crashing_researcher(request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=AgentRole.RESEARCHER, success=False, failure_reason="research unavailable"
-        )
-
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        _config(data_dir),
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L1, Risk.R1, needs_research=True),
-            researcher=crashing_researcher,
-        ),
-    )
-
-    run = controller.run(_work_item(), source_repo)
-
-    assert run.state is WorkflowState.FAILED
-    assert run.failure_reason == "research unavailable"
+    roles = [request.role for request in runtime.requests]
+    assert roles[: roles.index(AgentRole.IMPLEMENTER)] == [AgentRole.TRIAGE, AgentRole.PLANNER]
+    planner_request = runtime.requests[1]
+    assert planner_request.triage_result == store.load_artifact(run.id, TriageResult)
+    assert planner_request.specification is None
+    specification = store.load_artifact(run.id, Specification)
+    assert specification.acceptance_criteria
+    later = runtime.requests[2:]
+    assert all(request.specification == specification for request in later)
+    assert planning_states == [WorkflowState.PLANNING]
 
 
 def test_ineligible_triage_ends_needs_human(source_repo: Path, data_dir: Path) -> None:
@@ -2360,7 +2300,6 @@ def test_ineligible_triage_ends_needs_human(source_repo: Path, data_dir: Path) -
                 factory_eligible=False,
                 complexity=Complexity.L1,
                 risk=Risk.R1,
-                needs_research=False,
                 dependencies=[],
                 unknowns=["scope unclear"],
                 confidence=0.3,
@@ -2380,27 +2319,27 @@ def test_ineligible_triage_ends_needs_human(source_repo: Path, data_dir: Path) -
 # -- operational agent failures ----------------------------------------------
 
 
-def test_refiner_agent_failure_produces_persisted_failed_run(
+def test_planner_agent_failure_produces_persisted_failed_run(
     source_repo: Path, data_dir: Path
 ) -> None:
-    def crashing_refiner(request: AgentRequest) -> AgentResult:
-        return AgentResult(role=AgentRole.REFINER, success=False, failure_reason="refiner crashed")
+    def crashing_planner(request: AgentRequest) -> AgentResult:
+        return AgentResult(role=AgentRole.PLANNER, success=False, failure_reason="planner crashed")
 
     config = _config(data_dir)
     store = FileRunStore(data_dir)
-    controller = WorkflowController(config, store, FakeAgentRuntime(refiner=crashing_refiner))
+    controller = WorkflowController(config, store, FakeAgentRuntime(planner=crashing_planner))
 
     run = controller.run(_work_item(), source_repo)
 
     assert run.state is WorkflowState.FAILED
-    assert run.failure_reason == "refiner crashed"
+    assert run.failure_reason == "planner crashed"
     assert run.completed_at is not None
     assert [record.role for record in run.invocation_records] == [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
+        AgentRole.PLANNER,
     ]
     assert run.invocation_records[-1].success is False
-    assert run.invocation_records[-1].failure_reason == "refiner crashed"
+    assert run.invocation_records[-1].failure_reason == "planner crashed"
     persisted = store.load_run(run.id)
     assert persisted == run
 
@@ -2408,19 +2347,19 @@ def test_refiner_agent_failure_produces_persisted_failed_run(
 def test_runtime_exception_produces_persisted_failed_invocation(
     source_repo: Path, data_dir: Path
 ) -> None:
-    def unavailable_refiner(request: AgentRequest) -> AgentResult:
+    def unavailable_planner(request: AgentRequest) -> AgentResult:
         raise RuntimeError("runtime unavailable")
 
     config = _config(data_dir)
     store = FileRunStore(data_dir)
-    controller = WorkflowController(config, store, FakeAgentRuntime(refiner=unavailable_refiner))
+    controller = WorkflowController(config, store, FakeAgentRuntime(planner=unavailable_planner))
 
     run = controller.run(_work_item(), source_repo)
 
     assert run.state is WorkflowState.FAILED
     assert [record.role for record in run.invocation_records] == [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
+        AgentRole.PLANNER,
     ]
     invocation = run.invocation_records[-1]
     assert invocation.success is False
@@ -2570,7 +2509,6 @@ def test_standard_performance_mode_is_default_and_runs_polish(
         store,
         FakeAgentRuntime(
             triage=_triage_hook(Complexity.L0, Risk.R0),
-            refiner=recording_runtime,
             planner=recording_runtime,
             tester=recording_runtime,
             reviewer=recording_runtime,
@@ -2585,10 +2523,8 @@ def test_standard_performance_mode_is_default_and_runs_polish(
     assert run.performance_model_profile is None
     assert run.performance_fallback_reason is None
 
-    # Refiner and planner used top-level models, not fast profile
-    refiner_req = next(r for r in recorded_requests if r.role is AgentRole.REFINER)
+    # The planner used the top-level model, not the fast profile
     planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
-    assert refiner_req.model == config.models.refiner.model
     assert planner_req.model == config.models.planner.model
 
     # Optional polish pass ran because standard mode does not skip polish
@@ -2605,7 +2541,7 @@ def test_standard_performance_mode_is_default_and_runs_polish(
     assert persisted.performance_fallback_reason is None
 
 
-def test_fast_performance_mode_eligible_runs_fast_refiner_planner_and_skips_polish(
+def test_fast_performance_mode_eligible_runs_fast_planner_and_skips_polish(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
@@ -2623,7 +2559,6 @@ def test_fast_performance_mode_eligible_runs_fast_refiner_planner_and_skips_poli
         store,
         FakeAgentRuntime(
             triage=_triage_hook(Complexity.L1, Risk.R1),
-            refiner=recording_runtime,
             planner=recording_runtime,
             tester=recording_runtime,
             reviewer=recording_runtime,
@@ -2638,11 +2573,9 @@ def test_fast_performance_mode_eligible_runs_fast_refiner_planner_and_skips_poli
     assert run.performance_model_profile == "economy"
     assert run.performance_fallback_reason is None
 
-    # Refiner and planner used fast profile models from config
-    refiner_req = next(r for r in recorded_requests if r.role is AgentRole.REFINER)
+    # The planner used the fast profile model from config
     planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
     fast_profile = config.model_profiles["economy"]
-    assert refiner_req.model == fast_profile.refiner.model
     assert planner_req.model == fast_profile.planner.model
 
     # Tester and reviewer preserved independent top-level models
@@ -2683,7 +2616,6 @@ def test_fast_performance_mode_fallback_triage_ineligible_complexity(
         store,
         FakeAgentRuntime(
             triage=_triage_hook(Complexity.L2, Risk.R1),
-            refiner=recording_runtime,
             planner=recording_runtime,
         ),
     )
@@ -2696,10 +2628,8 @@ def test_fast_performance_mode_fallback_triage_ineligible_complexity(
     assert run.performance_model_profile == "economy"
     assert run.performance_fallback_reason == "complexity L2 is not eligible for fast mode"
 
-    # Refiner and planner fell back to standard top-level models
-    refiner_req = next(r for r in recorded_requests if r.role is AgentRole.REFINER)
+    # The planner fell back to the standard top-level model
     planner_req = next(r for r in recorded_requests if r.role is AgentRole.PLANNER)
-    assert refiner_req.model == config.models.refiner.model
     assert planner_req.model == config.models.planner.model
 
     # Polish is not skipped after fallback to standard
@@ -2740,46 +2670,24 @@ def test_fast_performance_mode_fallback_triage_ineligible_risk(
     assert persisted.performance_fallback_reason == "risk R2 is not eligible for fast mode"
 
 
-def test_fast_performance_mode_fallback_triage_requires_research(
+def test_fast_performance_mode_ignores_an_old_needs_research_flag(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
-    research_requests: list[AgentRequest] = []
-    planner_requests: list[AgentRequest] = []
-
-    def recording_researcher(request: AgentRequest) -> AgentResult:
-        research_requests.append(request)
-        return FakeAgentRuntime()._default_researcher(request)
-
-    def recording_planner(request: AgentRequest) -> AgentResult:
-        planner_requests.append(request)
-        return FakeAgentRuntime()._default_planner(request)
-
+    runtime = RecordingRuntime(
+        FakeAgentRuntime(triage=_triage_hook(Complexity.L0, Risk.R0, needs_research=True))
+    )
     config = _config(data_dir, performance_mode="fast")
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        config,
-        store,
-        FakeAgentRuntime(
-            triage=_triage_hook(Complexity.L0, Risk.R0, needs_research=True),
-            researcher=recording_researcher,
-            planner=recording_planner,
-        ),
+
+    run = WorkflowController(config, FileRunStore(data_dir), runtime).run(
+        _work_item("WI-fast-needs-research"), source_repo
     )
 
-    run = controller.run(_work_item("WI-fast-fallback-research"), source_repo)
-
     assert run.state is WorkflowState.PR_READY
-    assert run.requested_performance_mode == "fast"
-    assert run.effective_performance_mode == "standard"
-    assert run.performance_model_profile == "economy"
-    assert run.performance_fallback_reason == "triage requires research"
-    assert len(research_requests) == 1
-    assert planner_requests[0].model == config.models.planner.model
-
-    persisted = store.load_run(run.id)
-    assert persisted.effective_performance_mode == "standard"
-    assert persisted.performance_fallback_reason == "triage requires research"
+    assert run.effective_performance_mode == "fast"
+    assert run.performance_fallback_reason is None
+    roles = [request.role for request in runtime.requests]
+    assert roles[: roles.index(AgentRole.IMPLEMENTER)] == [AgentRole.TRIAGE, AgentRole.PLANNER]
 
 
 def test_fast_performance_mode_fallback_after_planning_protected_file(
@@ -3461,6 +3369,11 @@ def test_unready_first_plan_then_ready_clarification_proceeds(
         in planner_requests[1].repair_context
     )
     assert "Retain only genuinely human-owned choices" in planner_requests[1].repair_context
+    assert "Return a complete PlanningResult JSON object" in planner_requests[1].repair_context
+    # ADR-035: the re-plan gets the specification of the first call and returns both again.
+    assert planner_requests[0].specification is None
+    assert planner_requests[1].specification is not None
+    assert store.load_artifact(run.id, Specification) == planner_requests[1].specification
 
     planner_invocations = [r for r in run.invocation_records if r.role is AgentRole.PLANNER]
     assert len(planner_invocations) == 2
@@ -3634,7 +3547,7 @@ def test_default_fake_planner_regression(
     assert len(planner_invocations) == 1
 
 
-def test_a_dashboard_risk_approval_reopens_the_run_at_refining_without_new_budget(
+def test_a_dashboard_risk_approval_reopens_the_run_at_planning_without_new_budget(
     source_repo: Path,
     data_dir: Path,
 ) -> None:
@@ -3673,7 +3586,8 @@ def test_a_dashboard_risk_approval_reopens_the_run_at_refining_without_new_budge
     assert [r.source for r in reopened.escalation.accepted_replies] == ["dashboard"]
     roles = [record.role for record in reopened.invocation_records]
     assert roles.count(AgentRole.TRIAGE) == 1
-    assert roles.count(AgentRole.REFINER) == 1
+    assert roles.count(AgentRole.PLANNER) == 1
+    assert AgentRole.REFINER not in roles
     assert [(a.attempt_number, a.budget) for a in reopened.attempt_records] == [
         (1, AttemptBudget.IMPLEMENTATION)
     ]

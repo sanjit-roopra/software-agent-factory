@@ -117,8 +117,6 @@ def compare_roles(
 #: How the run list names a role. A role not listed shows as its lower-case name.
 ROLE_LABELS: dict[str, str] = {
     "TRIAGE": "triage",
-    "REFINER": "refiner",
-    "RESEARCHER": "researcher",
     "PLANNER": "planner",
     "IMPLEMENTER": "impl",
     "TESTER": "tester",

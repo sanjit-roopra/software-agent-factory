@@ -266,8 +266,6 @@ def test_run_implementer_launches_pi_with_write_tools_in_the_workspace(
     "role",
     [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
-        AgentRole.RESEARCHER,
         AgentRole.PLANNER,
         AgentRole.TESTER,
         AgentRole.REVIEWER,
@@ -460,8 +458,6 @@ def _found_in(prompt: str, texts: Sequence[str]) -> list[str]:
     "role",
     [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
-        AgentRole.RESEARCHER,
         AgentRole.PLANNER,
         AgentRole.TESTER,
     ],

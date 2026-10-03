@@ -16,7 +16,6 @@ Assess the work item.
 - Decide whether the factory can do the work.
 - Set complexity and risk.
 - List missing information.
-- Request research only when planning needs external evidence.
 
 Return exactly one JSON object that Pydantic-validates as TriageResult. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>. Use exact enum values only: complexity must be one of L0, L1, L2, L3 and risk must be one of R0, R1, R2, R3.
 Word limits for each string or list item: dependencies=25, unknowns=25, intended_outcome=30, sensitive_boundary=30, necessity=30, credible_scenario=45, known_mitigations=25, residual_risk=30.

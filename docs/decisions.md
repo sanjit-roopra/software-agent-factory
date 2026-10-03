@@ -1,5 +1,51 @@
 # Architecture Decisions
 
+## ADR-035: One planning call replaces the refiner and the researcher
+
+Status: accepted on 2026-10-03.
+This amends ADR-009, ADR-024, ADR-027 and ADR-033.
+
+### Context
+
+A `FULL` run called the Refiner and then the Planner. These were two sequential model calls.
+When triage set `needs_research`, a Researcher call came between them.
+The Researcher had the same read-only repository tools as the Planner.
+So the Planner explored the same repository again.
+The leanness plan removes model calls that do not add evidence.
+
+### Decision
+
+- A `FULL` run goes from `TRIAGING` to `PLANNING`. No new run enters `REFINING` or `RESEARCHING`.
+- One Planner call returns a `PlanningResult`. It holds a `Specification` and an `ExecutionPlan`.
+- The controller saves `specification.json` and `execution-plan.json` as before.
+  The Implementer, Tester, Reviewer, scope checks and the dashboard see no change.
+- The Planner prompt keeps the Refiner rules: separate facts, assumptions and unknowns.
+  Acceptance criteria must be measurable. The Planner must not invent requirements.
+- The Planner receives the work item and the triage result.
+  A re-plan also receives the current specification.
+- A re-plan for unresolved decisions (ADR-026) returns both parts again.
+  A scope re-plan changes only the plan and keeps the specification.
+- A risk approval reopens the run at `PLANNING`. An approval context written earlier names `REFINING`.
+  The controller accepts that context and also reopens the run at `PLANNING`.
+- The `models.refiner` and `models.researcher` keys are removed.
+  An old configuration file can still have them in `models` or in a model profile. The factory ignores them.
+- `TriageResult.needs_research` is not used. It has the default `false`, so old triage files load.
+  Fast mode no longer falls back to standard mode for it.
+- The `ResearchReport` artifact is removed. The factory ignores an old `research.json` file.
+- The `REFINER` and `RESEARCHER` roles and the `REFINING` and `RESEARCHING` states stay, so old run records load.
+  A resume of an old run in one of these states stops the run for a human.
+
+### Consequences
+
+- A `FULL` run makes one or two fewer model calls.
+- The Tester and the Reviewer still get the acceptance criteria from the specification.
+- Old runs, triage files and configuration files load.
+- The Planner is the only role that explores the repository before the Implementer.
+- A later change can give the Planner web access.
+  That access must be read-only and allowlisted, and only the Planner can get it.
+  The Implementer has shell and write access, so it must not get web access.
+  `agent_capabilities.capability_for` is the one place that grants it.
+
 ## ADR-034: The factory sets up the target toolchain and repository skills
 
 Status: accepted on 2026-10-03.
@@ -193,7 +239,7 @@ Consequences:
 ## ADR-033: The dashboard may request a resume
 
 Status: accepted on 2026-10-01 for the data minimization part and the write path part.
-This amends ADR-016. It extends ADR-024 and ADR-026.
+This amends ADR-016. It extends ADR-024 and ADR-026. Amended by ADR-035.
 
 ### Data minimization
 
@@ -634,6 +680,8 @@ Fix them, or mark a confirmed false positive in code with `# NOSONAR(<rule>)` an
 
 ## ADR-027: Adaptive Jev-driven execution routing
 
+Amended by ADR-035.
+
 Simple tasks do not always need the full factory pipeline.
 When enabled, Jev acts as the single semantic if/else router.
 Jev is a classifier from TypeSafe.
@@ -745,6 +793,8 @@ BMAD is licensed under the MIT License, but its trademarks are excluded.
 This factory uses independently expressed concepts and copies no BMAD code, templates, or prose.
 
 ## ADR-024: Controller-owned GitHub escalation and authorized human reply loop
+
+Amended by ADR-035.
 
 When a run enters `NEEDS_HUMAN`, the factory can notify a human operator on GitHub.
 This behavior is opt-in and disabled by default.
@@ -1025,6 +1075,8 @@ no workspace is prepared and no artifact is written, there is nothing to
 corrupt or recover.
 
 ## ADR-009: Research runs and does not escalate
+
+Amended by ADR-035.
 
 Phase 1 escalated `needs_research=true` to `NEEDS_HUMAN` because no researcher
 existed. The researcher now runs exactly once per run, its `ResearchReport` is

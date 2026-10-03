@@ -52,7 +52,6 @@ from .models import (
     ProjectTask,
     RepairContext,
     RepositoryProfile,
-    ResearchReport,
     ReviewFinding,
     ReviewFindingCategory,
     ReviewFindingDraft,
@@ -101,7 +100,6 @@ class AgentRequest(ModelBase):
     work_item: WorkItem
     triage_result: TriageResult | None = None
     specification: Specification | None = None
-    research_report: ResearchReport | None = None
     execution_plan: ExecutionPlan | None = None
     diff: str | None = None
     changed_files: list[str] = Field(default_factory=list)
@@ -166,6 +164,9 @@ def validate_runtime_request(request: AgentRequest) -> None:
 class AgentResult(ModelBase):
     """An explicit success/failure outcome carrying at most one artifact.
 
+    The one exception is the standard ``PLANNER`` call. It carries both
+    ``specification`` and ``execution_plan`` from one ``PlanningResult``.
+
     ``success is False`` always requires ``failure_reason`` so the controller
     (and any persisted ``AttemptRecord``) has a human-readable explanation; it
     never has to guess why an agent failed.
@@ -176,7 +177,6 @@ class AgentResult(ModelBase):
     failure_reason: str | None = None
     triage_result: TriageResult | None = None
     specification: Specification | None = None
-    research_report: ResearchReport | None = None
     project_plan: ProjectPlan | None = None
     execution_plan: ExecutionPlan | None = None
     change_set: ChangeSet | None = None
@@ -239,8 +239,6 @@ class FakeAgentRuntime:
         self,
         *,
         triage: AgentHook | None = None,
-        refiner: AgentHook | None = None,
-        researcher: AgentHook | None = None,
         planner: AgentHook | None = None,
         implementer: AgentHook | None = None,
         tester: AgentHook | None = None,
@@ -249,10 +247,6 @@ class FakeAgentRuntime:
         self._hooks: dict[AgentRole, AgentHook] = {}
         if triage is not None:
             self._hooks[AgentRole.TRIAGE] = triage
-        if refiner is not None:
-            self._hooks[AgentRole.REFINER] = refiner
-        if researcher is not None:
-            self._hooks[AgentRole.RESEARCHER] = researcher
         if planner is not None:
             self._hooks[AgentRole.PLANNER] = planner
         if implementer is not None:
@@ -264,19 +258,25 @@ class FakeAgentRuntime:
 
     def run(self, request: AgentRequest) -> AgentResult:
         hook = self._hooks.get(request.role)
-        if hook is not None:
-            return hook(request)
-        return self._default(request)
+        if hook is None:
+            return self._default(request)
+        result = hook(request)
+        if (
+            request.role is AgentRole.PLANNER
+            and request.purpose is AgentPurpose.STANDARD
+            and result.execution_plan is not None
+            and result.specification is None
+        ):
+            # A planner hook may script only the plan. The fake adds the
+            # specification that the real planner returns with it.
+            result = result.model_copy(update={"specification": self._specification(request)})
+        return result
 
     def _default(self, request: AgentRequest) -> AgentResult:
         if request.purpose is AgentPurpose.DECOMPOSE_PROJECT:
             return self._default_project_plan(request)
         if request.role is AgentRole.TRIAGE:
             return self._default_triage(request)
-        if request.role is AgentRole.REFINER:
-            return self._default_refiner(request)
-        if request.role is AgentRole.RESEARCHER:
-            return self._default_researcher(request)
         if request.role is AgentRole.PLANNER:
             return self._default_planner(request)
         if request.role is AgentRole.IMPLEMENTER:
@@ -320,16 +320,17 @@ class FakeAgentRuntime:
             factory_eligible=True,
             complexity=Complexity.L1,
             risk=Risk.R1,
-            needs_research=False,
             dependencies=[],
             unknowns=[],
             confidence=0.8,
         )
         return AgentResult(role=AgentRole.TRIAGE, success=True, triage_result=triage_result)
 
-    def _default_refiner(self, request: AgentRequest) -> AgentResult:
+    def _specification(self, request: AgentRequest) -> Specification:
+        if request.specification is not None:
+            return request.specification
         work_item = request.work_item
-        specification = Specification(
+        return Specification(
             problem=work_item.description,
             acceptance_criteria=list(work_item.acceptance_criteria)
             or ["The implementation satisfies the work item description."],
@@ -340,25 +341,10 @@ class FakeAgentRuntime:
             risk_flags=[],
             confidence=0.8,
         )
-        return AgentResult(role=AgentRole.REFINER, success=True, specification=specification)
-
-    def _default_researcher(self, request: AgentRequest) -> AgentResult:
-        specification = request.specification
-        question = (
-            specification.problem if specification is not None else request.work_item.description
-        )
-        research_report = ResearchReport(
-            question=question,
-            findings=["No external research was required for this deterministic fake run."],
-            evidence=[],
-            implications=["Proceed with planning using the existing specification."],
-            uncertainty=[],
-        )
-        return AgentResult(role=AgentRole.RESEARCHER, success=True, research_report=research_report)
 
     def _default_planner(self, request: AgentRequest) -> AgentResult:
-        specification = request.specification
-        goal = specification.problem if specification is not None else request.work_item.description
+        specification = self._specification(request)
+        goal = specification.problem
         planned_files = request.changed_files or ["FACTORY_NOTES.md"]
         execution_plan = ExecutionPlan(
             summary=f"Implement: {request.work_item.title}",
@@ -379,7 +365,12 @@ class FakeAgentRuntime:
             risks=[],
             unresolved_decisions=[],
         )
-        return AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=execution_plan)
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            specification=specification,
+            execution_plan=execution_plan,
+        )
 
     def _default_implementer(self, request: AgentRequest) -> AgentResult:
         if request.workspace_path is None:
