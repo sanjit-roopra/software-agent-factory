@@ -110,7 +110,8 @@ CLAUDE.md -> AGENTS.md                         symbolic link
   The `skills` command (`npx skills add`) uses the same layout in its link mode, so later installs do not collide.
 - If `AGENTS.md` exists, the factory changes only a block between factory markers. It does not change other text.
   Without markers, the factory adds the block at the end.
-  If the markers are not exactly one well-formed block, the line endings are mixed, or the file is not readable UTF-8 text, the factory leaves `AGENTS.md` alone and records a note.
+  The factory leaves `AGENTS.md` alone and records a note in three cases.
+  The markers are not exactly one well-formed block, the line endings are mixed, or the file is not readable UTF-8 text.
   The factory keeps the line endings of the file.
 - The factory skips a path that the repository ignores, because Git never commits it. It records a note.
 - An add command can change only the manifest and the lockfile. Any other change stops the setup.
