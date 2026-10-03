@@ -126,10 +126,12 @@ CLAUDE.md -> AGENTS.md                         symbolic link
 
 ### Review lenses
 
-- A lens registry holds each review lens with a scope: file globs or `always`.
-- A pure function selects the lenses that match the changed files. The cheap lenses come first.
-- The guidance of the selected lenses goes into the reviewer prompt and the polish prompt.
-  A backend-only change gets no user interface lenses.
+- A lens registry (`review_lenses.py`) holds each review lens with a scope and a short checklist.
+  The scope is file patterns or `always`.
+- A pure function selects the lenses that match the changed files that the controller derived. The `always` lenses come first.
+- The checklists of the selected lenses go into the reviewer prompt.
+  A backend-only change gets no user interface lens.
+- The polish attempt keeps its repository guidance. It gets no lenses in this slice.
 - No model selects lenses.
 
 ### Changes to earlier decisions

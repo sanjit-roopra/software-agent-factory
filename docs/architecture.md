@@ -1106,6 +1106,7 @@ Receives:
 - implementation snapshot number
 - typed, controller-owned open Reviewer findings from this run
 - the exact Git diff since the previous reviewed tree during repair review
+- the checklists of the review lenses that match the changed files (`review_lenses.py`, ADR-034)
 - read-only repository access
 
 Never receives the implementer's `ChangeSet` summary.
