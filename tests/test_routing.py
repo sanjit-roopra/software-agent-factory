@@ -719,7 +719,8 @@ def test_finding2_config_requires_full_option_and_safe_fallback() -> None:
         risk=Risk.R0,
     )
     found = find_legal_full_fallback([single_opt, full_opt])
-    assert found is not None and found.id == "full_l2"
+    assert found is not None
+    assert found.id == "full_l2"
     assert find_legal_full_fallback([single_opt]) is None
 
 
