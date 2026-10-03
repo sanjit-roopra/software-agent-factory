@@ -6,10 +6,6 @@ Task guides for common workflows. Read [Get started](../get-started/index.md) fi
 : Configure the real install, verify, and build commands for your project.
   Understand deterministic gates and scope-drift checks.
 
-[Repository skills and overlays](repository-skills.md)
-: Understand reusable generated guidance. Edit your own
-  `repository-skill-overlay.yaml` file outside the target repository.
-
 [Adaptive execution routing](adaptive-routing.md)
 : Configure Jev to select fast execution routes for eligible work items.
   Understand routes, safety floors, and post-implementation ratchets.

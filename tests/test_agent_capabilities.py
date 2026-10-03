@@ -8,7 +8,6 @@ from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
-    RepositoryProfile,
     WorkItem,
 )
 
@@ -52,21 +51,6 @@ def test_correct_change_set_purpose_is_no_tools() -> None:
     )
 
     assert capability_for(request) is AgentCapability.NO_TOOLS
-
-
-def test_generate_repository_skill_purpose_is_web_research() -> None:
-    request = _request(
-        AgentRole.RESEARCHER,
-        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-        repository_profile=RepositoryProfile(
-            manifest_fingerprint="a" * 64,
-            dependency_fingerprint="b" * 64,
-        ),
-        official_documentation_origins=["https://react.dev"],
-        workspace_path="/runs/RUN-1",
-    )
-
-    assert capability_for(request) is AgentCapability.WEB_RESEARCH
 
 
 def test_implementer_role_is_implementer_write() -> None:

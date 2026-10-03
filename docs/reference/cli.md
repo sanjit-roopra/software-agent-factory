@@ -19,7 +19,6 @@ Commands:
   show        Show the persisted details of one run as JSON.
   doctor      Check this machine's prerequisites for the configured feature set.
   status      Report derived run metrics and operational health, read-only.
-  skill       Inspect, validate and refresh repository guidance.
   dashboard   Serve the local dashboard until interrupted.
   service     Manage the opt-in per-user macOS launchd service.
 ```
@@ -43,8 +42,7 @@ Each command that starts agents takes `--runtime <fake|copilot|pi>`. The default
 is `fake`, which makes no model calls. Pi is the recommended real runtime. See
 [Real pi runs](../get-started/pi.md).
 
-An unknown runtime value is rejected. `factory skill refresh` does not accept
-`pi`.
+An unknown runtime value is rejected.
 
 ## Exit codes
 
@@ -288,83 +286,6 @@ directory itself. A truncated or partially unreadable scan reports `DEGRADED`.
 For normal workflow runs, the human and JSON views include totals derived from
 persisted invocation records. Missing runtime-reported fields remain unknown,
 and premium-request cost and nano-AIU are raw Copilot units, not USD.
-
----
-
-## factory skill
-
-Inspect, validate and refresh the repository guidance for the optional
-post-green polish attempt. Guidance lives under the configured data directory.
-Repository-scoped storage uses the repository and its dependency fingerprint
-as its key. Guidance never exists inside the target repository. See
-[Repository skills and overlays](../guides/repository-skills.md).
-
-### factory skill path
-
-Print the generated-skill and overlay locations discovered for a repository.
-
-```bash
-factory skill path --repo ~/projects/example
-```
-
-| Option | Required | Default | Effect |
-| --- | --- | --- | --- |
-| `--repo <path>` | yes | none | Path to the target Git repository. |
-| `--config <path>` | no | packaged | Config YAML. |
-| `--data-dir <path>` | no | configured | Data directory override. |
-
-Read-only. It creates nothing. It does not create the overlay file.
-
-The repository key comes from the canonical local Git common directory.
-Linked worktrees of one checkout report the same directory. Moving or
-re-cloning a repository reports a different directory.
-If you want to move or copy guidance, run this command before moving the repository.
-
-### factory skill validate
-
-Validate the current generated skill and overlay for a repository.
-
-```bash
-factory skill validate --repo ~/projects/example
-```
-
-| Option | Required | Default | Effect |
-| --- | --- | --- | --- |
-| `--repo <path>` | yes | none | Path to the target Git repository. |
-| `--config <path>` | no | packaged | Config YAML. |
-| `--data-dir <path>` | no | configured | Data directory override. |
-
-Reports whether stored guidance matches the current dependency fingerprint.
-Also checks whether every cited source is inside the configured allowlists,
-and why an overlay is ignored. Read-only: it never repairs,
-reformats, rewrites or creates a file, and an invalid overlay is left exactly
-as written.
-
-### factory skill refresh
-
-Refresh generated guidance for a repository, explicitly.
-
-```bash
-factory skill refresh --repo ~/projects/example --runtime copilot
-```
-
-| Option | Required | Default | Effect |
-| --- | --- | --- | --- |
-| `--repo <path>` | yes | none | Path to the target Git repository. |
-| `--runtime <fake\|copilot>` | no | `fake` | `fake` makes no model calls. `copilot` is paid. `pi` is not supported. With `--runtime pi` the command fails and names `--runtime copilot`. |
-| `--model-profile <name>` | no | `default` | Select the Researcher configuration used for generation. |
-| `--config <path>` | no | packaged | Config YAML. |
-| `--data-dir <path>` | no | configured | Data directory override. |
-
-Touches generated guidance only. It never creates, rewrites or deletes your
-`repository-skill-overlay.yaml`, and it changes no run, workspace or
-configuration.
-
-This command is the only command that can replace an existing generated file.
-Warnings from runs point here when stored guidance no longer revalidates.
-The standalone generation invocation is persisted as `last-invocation.json` in
-the neutral generation directory. Each refresh replaces that command-specific
-record. Normal run telemetry remains in the run artifact.
 
 ---
 

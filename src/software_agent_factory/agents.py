@@ -37,7 +37,6 @@ from typing import Callable, Protocol
 from pydantic import Field, model_validator
 
 from .models import (
-    REQUIRED_SKILL_TARGET_NAMES,
     AgentPurpose,
     AgentRole,
     ChangeSet,
@@ -53,7 +52,6 @@ from .models import (
     ProjectTask,
     RepairContext,
     RepositoryProfile,
-    RepositorySkill,
     ResearchReport,
     ReviewFinding,
     ReviewFindingCategory,
@@ -61,9 +59,6 @@ from .models import (
     ReviewReport,
     ReviewSourceLocation,
     Risk,
-    SkillGuidance,
-    SkillSource,
-    SkillTarget,
     Specification,
     TestReport,
     TriageResult,
@@ -118,9 +113,8 @@ class AgentRequest(ModelBase):
     repair_diff: str | None = None
     repair_context: RepairContext | str | None = None
     repository_profile: RepositoryProfile | None = None
-    repository_skill: RepositorySkill | None = None
-    official_documentation_origins: list[str] = Field(default_factory=list)
-    practice_reference_urls: list[str] = Field(default_factory=list)
+    #: Dependency names the repository declares. They select stack review lenses.
+    dependency_names: tuple[str, ...] = ()
     workspace_path: str | None = None
     attempt_number: int | None = None
     timeout_seconds: int
@@ -136,22 +130,11 @@ class AgentRequest(ModelBase):
                 raise ValueError("project decomposition requires the PLANNER role")
             if self.project_brief is None:
                 raise ValueError("project decomposition requires project_brief")
-        elif self.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-            if self.role is not AgentRole.RESEARCHER:
-                raise ValueError("repository skill generation requires the RESEARCHER role")
-            if self.repository_profile is None:
-                raise ValueError("repository skill generation requires repository_profile")
         elif self.purpose is AgentPurpose.CORRECT_CHANGE_SET:
             if self.role is not AgentRole.IMPLEMENTER:
                 raise ValueError("ChangeSet correction requires the IMPLEMENTER role")
             if self.change_set is None:
                 raise ValueError("ChangeSet correction requires the rejected change_set")
-        if self.purpose is not AgentPurpose.GENERATE_REPOSITORY_SKILL and (
-            self.official_documentation_origins or self.practice_reference_urls
-        ):
-            raise ValueError(
-                "research URL configuration is only valid for repository skill generation"
-            )
         return self
 
 
@@ -161,20 +144,13 @@ def workspace_cwd(request: AgentRequest) -> Path:
     Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
     and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
     apply the exact same rule: the request's workspace when supplied,
-    otherwise the process's current working directory -- except
-    ``GENERATE_REPOSITORY_SKILL``, which always requires an explicit workspace
-    (the skill researcher must run in the neutral run directory the workflow
-    passes, never the operator's or repository's cwd). ``CORRECT_CHANGE_SET``
-    also needs an explicit workspace, but
+    otherwise the process's current working directory. ``CORRECT_CHANGE_SET``
+    needs an explicit workspace, but
     :func:`validate_runtime_request` enforces that before any runtime resolves
     a cwd.
     """
     if request.workspace_path:
         return Path(request.workspace_path).expanduser().resolve()
-    if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-        raise ValueError(
-            "repository skill generation requires workspace_path (the neutral run directory)"
-        )
     return Path(os.getcwd()).expanduser().resolve()
 
 
@@ -216,7 +192,6 @@ class AgentResult(ModelBase):
     triage_result: TriageResult | None = None
     specification: Specification | None = None
     research_report: ResearchReport | None = None
-    repository_skill: RepositorySkill | None = None
     project_plan: ProjectPlan | None = None
     execution_plan: ExecutionPlan | None = None
     change_set: ChangeSet | None = None
@@ -311,8 +286,6 @@ class FakeAgentRuntime:
     def _default(self, request: AgentRequest) -> AgentResult:
         if request.purpose is AgentPurpose.DECOMPOSE_PROJECT:
             return self._default_project_plan(request)
-        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-            return self._default_repository_skill(request)
         if request.purpose is AgentPurpose.CORRECT_CHANGE_SET:
             assert request.change_set is not None
             return AgentResult(
@@ -406,109 +379,6 @@ class FakeAgentRuntime:
             uncertainty=[],
         )
         return AgentResult(role=AgentRole.RESEARCHER, success=True, research_report=research_report)
-
-    def _default_repository_skill(self, request: AgentRequest) -> AgentResult:
-        profile = request.repository_profile
-        if profile is None:
-            return AgentResult(
-                role=AgentRole.RESEARCHER,
-                success=False,
-                failure_reason="repository skill generation requires a repository profile",
-            )
-        important_names = set(REQUIRED_SKILL_TARGET_NAMES)
-        source_candidates = {
-            "python": ("https://docs.python.org", "Official Python documentation"),
-            "pytest": ("https://docs.pytest.org", "Official pytest documentation"),
-            "react": ("https://react.dev", "Official React documentation"),
-            "react-dom": ("https://react.dev", "Official React documentation"),
-            "vite": ("https://vite.dev", "Official Vite documentation"),
-            "vitest": ("https://vitest.dev", "Official Vitest documentation"),
-        }
-        groundable_names = {
-            name
-            for name, (url, _) in source_candidates.items()
-            if url in request.official_documentation_origins
-        }
-        target_dependencies = sorted(
-            (
-                dependency
-                for dependency in profile.dependencies
-                if dependency.name in groundable_names
-            ),
-            key=lambda dependency: (
-                dependency.name not in important_names,
-                dependency.ecosystem,
-                dependency.name,
-                dependency.manifest_path,
-            ),
-        )[:24]
-        targets = tuple(
-            SkillTarget(
-                ecosystem=dependency.ecosystem,
-                name=dependency.name,
-                declared_version=dependency.declared_version,
-                resolved_version=dependency.resolved_version,
-                evidence=tuple(
-                    path
-                    for path in (dependency.manifest_path, dependency.resolution_path)
-                    if path is not None
-                ),
-            )
-            for dependency in target_dependencies
-        )
-        sources: list[SkillSource] = []
-        grouped: dict[str, tuple[str, list[str], list[str]]] = {}
-        for target in targets:
-            candidate = source_candidates.get(target.name)
-            if candidate is None:
-                continue
-            url, title = candidate
-            if url not in request.official_documentation_origins:
-                continue
-            _, names, scopes = grouped.setdefault(url, (title, [], []))
-            if target.name not in names:
-                names.append(target.name)
-            scope = target.resolved_version or target.declared_version
-            if scope not in scopes:
-                scopes.append(scope)
-        for url, (title, names, scopes) in grouped.items():
-            sources.append(
-                SkillSource(
-                    title=title,
-                    url=url,
-                    version_scope=", ".join(scopes)[:200],
-                    applies_to=tuple(names),
-                )
-            )
-        repository_skill = RepositorySkill(
-            dependency_fingerprint=profile.dependency_fingerprint,
-            targets=targets,
-            official_sources=tuple(sources),
-            simplify=SkillGuidance(
-                summary="Simplify the changed code while preserving behavior.",
-                guidance=(
-                    "Prefer direct control flow and existing repository abstractions.",
-                    "Remove only complexity that is unnecessary for the requested behavior.",
-                ),
-                avoid=("Do not change tests, public interfaces, dependencies, or behavior.",),
-                validation=("Use the repository's configured deterministic checks.",),
-            ),
-            polish=SkillGuidance(
-                summary="Polish the changed code for the detected dependency versions.",
-                guidance=(
-                    "Apply only practices compatible with the detected dependency declarations.",
-                    "Prefer a no-op over an unsupported version-specific assumption.",
-                ),
-                avoid=("Do not add dependencies or expand the requested scope.",),
-                validation=("Use the repository's configured deterministic checks.",),
-            ),
-            uncertainties=("The fake runtime uses deterministic official-source fixtures.",),
-        )
-        return AgentResult(
-            role=AgentRole.RESEARCHER,
-            success=True,
-            repository_skill=repository_skill,
-        )
 
     def _default_planner(self, request: AgentRequest) -> AgentResult:
         specification = request.specification

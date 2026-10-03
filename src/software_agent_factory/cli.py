@@ -11,27 +11,19 @@ factory doctor [--runtime fake|copilot|pi] [--json]
 factory status [--json]
 factory dashboard [--port 8765] [--open-browser]
 factory service install|status|uninstall
-factory skill path|validate|refresh --repo PATH [--runtime fake|copilot]
 ```
 
 ``--runtime`` defaults to ``fake`` so no command ever makes a paid model call
 by accident; ``--runtime copilot`` opts in to the real
 :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`, and
 ``--runtime pi`` opts in to the pi agent runtime (requires ``pi``, Node and a
-provider credential -- see ``factory doctor --runtime pi``). ``factory skill
-refresh`` does not support ``pi``.
+provider credential -- see ``factory doctor --runtime pi``).
 
 Pull request creation, CI observation, the backlog daemon, the dashboard and
 the launchd service are all strictly opt-in (``pull_request.enabled``,
 ``ci.enabled``, ``scheduler.enabled``, and an explicit ``factory dashboard`` /
 ``factory service install`` command). With the packaged defaults, ``factory
 run`` performs no network access at all and finishes at ``PR_READY``.
-
-``factory skill`` is the human-facing view of repository-adaptive guidance:
-``skill path`` and ``skill validate`` are read-only, and ``skill refresh`` is
-the only command that generates guidance on request. None of them ever
-writes, normalizes or deletes the human-owned overlay file, and none of them
-creates a :class:`~software_agent_factory.models.FactoryRun` or a worktree.
 
 ``--data-dir`` overrides the configured data directory so tests and demos can
 point the CLI at an isolated temporary directory without editing a config
@@ -44,8 +36,8 @@ Three conventions hold across every command here:
   requested feature set needs them) exit with :data:`CONFIG_ERROR_EXIT_CODE`
   and one explicit line, never a traceback from deep inside a workspace or
   tracker.
-- **Read-only stays read-only.** ``runs``, ``show``, ``status``, ``skill
-  path`` and ``skill validate`` derive everything from persisted artifacts
+- **Read-only stays read-only.** ``runs``, ``show`` and ``status`` derive
+  everything from persisted artifacts
   and never create or mutate a run, a workspace or configuration -- not even
   the data directory itself.
 - **Structured logs where work happens.** ``run``, ``start`` and
@@ -82,12 +74,8 @@ if TYPE_CHECKING:
         DashboardResumeRequest,
         FactoryRun,
         InvocationRecord,
-        RepositoryProfile,
-        RepositorySkill,
         ToolchainSetupPlan,
-        WorkItem,
     )
-    from .repository_skills import RepositorySkillManager
     from .store import FileRunStore
 
 app = typer.Typer(help="Local-first autonomous software engineering factory.")
@@ -95,10 +83,6 @@ service_app = typer.Typer(
     help="Manage the opt-in per-user macOS launchd service (never automatic)."
 )
 app.add_typer(service_app, name="service")
-skill_app = typer.Typer(
-    help="Inspect, validate and refresh this repository's generated skill and overlay."
-)
-app.add_typer(skill_app, name="skill")
 
 logger = logging.getLogger(__name__)
 
@@ -128,15 +112,9 @@ DEFAULT_MAX_SCANNED_RUNS = 1000
 #: Reverse-DNS style label for the installed LaunchAgent.
 DEFAULT_LABEL = "com.github.software-agent-factory"
 
-#: Neutral working directory (under the data directory) that ``factory skill
-#: refresh`` runs the skill researcher from. Repository-level guidance is
-#: produced from the normalized profile alone, so the researcher must never
-#: run inside the repository, a worktree or the operator's shell cwd.
-SKILL_GENERATION_DIRNAME = "skill-generation"
-
 #: Shared ``--runtime`` help text for every command whose runtime choice
 #: builds an :class:`~software_agent_factory.agents.AgentRuntime` (``run``,
-#: ``project``, ``start``, ``skill refresh``). One source keeps the three
+#: ``project``, ``start``). One source keeps the three
 #: runtime names here from drifting out of sync with :class:`RuntimeChoice`.
 #: Shared ``--no-risk-assessment`` option for the commands that start runs
 #: (``run``, ``project``, ``start``, ``service install``).
@@ -148,14 +126,6 @@ NO_RISK_ASSESSMENT_HELP = (
 
 RUNTIME_OPTION_HELP = (
     "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or 'pi' (paid)."
-)
-
-#: ``--runtime`` help text for ``skill refresh``, which rejects ``pi``
-#: outright (see ``skill_refresh_command``) -- so it advertises only the
-#: runtimes it actually accepts instead of :data:`RUNTIME_OPTION_HELP`.
-SKILL_REFRESH_RUNTIME_OPTION_HELP = (
-    "Agent runtime: 'fake' (default, no model calls) or 'copilot' (paid); "
-    "'pi' is not supported for skill refresh."
 )
 
 _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
@@ -1585,403 +1555,6 @@ def service_uninstall_command(
         typer.echo(f"removed LaunchAgent {label}; runs and workspaces were left on disk")
     else:
         typer.echo(f"no LaunchAgent plist found for {label}; nothing to remove")
-
-
-# -- factory skill ---------------------------------------------------------
-
-
-def _skill_manager(config: FactoryConfig, repo: Path) -> RepositorySkillManager:
-    """Resolve the skill storage for ``repo`` without creating anything."""
-    from .repository_skills import RepositorySkillError, RepositorySkillManager
-
-    try:
-        return RepositorySkillManager.for_repository(config.data_dir, repo.expanduser())
-    except RepositorySkillError as exc:
-        raise _fail(f"cannot resolve repository skill storage: {exc}") from None
-
-
-def _skill_profile(repo: Path) -> RepositoryProfile:
-    """Profile the repository as it is currently checked out (read-only).
-
-    ``profile_repository`` records unreadable files as profile warnings, so
-    the only failure it raises is an unusable repository root.
-    """
-    from .repository_profile import profile_repository
-
-    try:
-        return profile_repository(repo.expanduser())
-    except ValueError as exc:
-        raise _fail(f"cannot profile the repository at {repo}: {exc}") from None
-
-
-def _presence(path: Path) -> str:
-    return "present" if path.exists() else "absent"
-
-
-def _skill_generation_work_item() -> WorkItem:
-    """A synthetic work item, required only because :class:`AgentRequest`
-    carries one. Repository-level guidance is generated from the profile
-    alone: the skill-generation prompt is given no work item, specification,
-    plan, diff or changed files, and must not describe any single task."""
-    from .models import WorkItem
-
-    return WorkItem(
-        id="repository-skill-generation",
-        title="Generate repository-level guidance",
-        description=(
-            "Generate reusable simplify and polish guidance for this repository's "
-            "detected technologies and dependency versions. This is not a task to "
-            "implement."
-        ),
-    )
-
-
-def _save_standalone_invocation(path: Path, record: InvocationRecord) -> None:
-    """Atomically persist the latest non-run invocation for operator audit."""
-    from uuid import uuid4
-
-    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        temp.write_text(record.model_dump_json(indent=2) + "\n", encoding="utf-8")
-        temp.replace(path)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-@skill_app.command("path")
-def skill_path_command(
-    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
-    config: Path = typer.Option(
-        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
-    ),
-    data_dir: Path = typer.Option(
-        None, "--data-dir", help="Override the configured data directory."
-    ),
-) -> None:
-    """Show where this repository's generated skill and overlay live.
-
-    Read-only, and deliberately so: it creates no directory (not even the
-    data directory), no generated file and no overlay. The repository is
-    identified by its Git *common* directory, so a linked worktree reports
-    the same paths as its main checkout, and the generated path shown is the
-    one selected by the repository's *current* dependency fingerprint.
-    """
-    factory_config = _load_config(config, data_dir)
-    _require_prerequisites(require_gh=False, require_copilot=False)
-
-    manager = _skill_manager(factory_config, repo)
-    profile = _skill_profile(repo)
-    generated_path = manager.generated_path(profile.dependency_fingerprint)
-
-    typer.echo(f"repository key: {manager.repository_key}")
-    typer.echo(f"git common dir: {manager.identity.git_common_dir}")
-    typer.echo(f"dependency fingerprint: {profile.dependency_fingerprint}")
-    typer.echo(f"generated skill: {generated_path} ({_presence(generated_path)})")
-    typer.echo(f"overlay: {manager.overlay_path} ({_presence(manager.overlay_path)})")
-
-
-@skill_app.command("validate")
-def skill_validate_command(
-    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
-    config: Path = typer.Option(
-        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
-    ),
-    data_dir: Path = typer.Option(
-        None, "--data-dir", help="Override the configured data directory."
-    ),
-) -> None:
-    """Check the stored generated skill and the human overlay, read-only.
-
-    Reports each of them as ``valid``, ``missing`` or ``invalid``, and --
-    when both exist -- whether they still combine into an effective skill.
-    A missing overlay is normal and never an error; anything invalid, and a
-    generated skill that has not been produced yet, exit nonzero. Nothing is
-    created, rewritten or repaired: an unusable overlay is reported with the
-    human's bytes left exactly as written.
-    """
-    factory_config = _load_config(config, data_dir)
-    _require_prerequisites(require_gh=False, require_copilot=False)
-
-    manager = _skill_manager(factory_config, repo)
-    profile = _skill_profile(repo)
-    generated_path = manager.generated_path(profile.dependency_fingerprint)
-
-    from .repository_skills import (
-        RepositorySkillError,
-        RepositorySkillMergeError,
-        merge_repository_skill,
-        repository_skill_validation_error,
-    )
-
-    typer.echo(f"repository key: {manager.repository_key}")
-    typer.echo(f"dependency fingerprint: {profile.dependency_fingerprint}")
-
-    failed = False
-    generated: RepositorySkill | None = None
-    try:
-        generated = manager.load_generated(profile.dependency_fingerprint)
-    except RepositorySkillError as exc:
-        typer.echo(f"generated skill: invalid ({generated_path})")
-        typer.echo(f"  {exc}")
-        failed = True
-    else:
-        if generated is None:
-            typer.echo(f"generated skill: missing ({generated_path})")
-            typer.echo("  run 'factory skill refresh' to generate guidance for this profile.")
-            failed = True
-        elif problem := repository_skill_validation_error(
-            generated,
-            profile,
-            official_documentation_origins=factory_config.polish.official_documentation_origins,
-            practice_reference_urls=factory_config.polish.practice_reference_urls,
-        ):
-            typer.echo(f"generated skill: invalid ({generated_path})")
-            typer.echo(f"  {problem}")
-            generated = None
-            failed = True
-        else:
-            typer.echo(f"generated skill: valid ({generated_path})")
-
-    read = manager.read_overlay()
-    if not read.present:
-        typer.echo(f"overlay: missing ({read.path})")
-        typer.echo("  a missing overlay is normal; the factory never creates one.")
-    elif read.error is not None:
-        typer.echo(f"overlay: invalid ({read.path})")
-        for line in read.error.problems:
-            typer.echo(f"  {line}")
-        typer.echo("  the factory only reads this file; edit it by hand or remove it.")
-        failed = True
-    else:
-        typer.echo(f"overlay: valid ({read.path})")
-        overlay = read.overlay
-        if generated is not None and overlay is not None:
-            try:
-                merge_repository_skill(generated, overlay)
-            except RepositorySkillMergeError as exc:
-                typer.echo("effective skill: invalid (the overlay cannot be combined)")
-                typer.echo(f"  {exc}")
-                failed = True
-            else:
-                typer.echo("effective skill: valid (generated guidance plus the overlay)")
-
-    if failed:
-        raise typer.Exit(code=FAILURE_EXIT_CODE)
-
-
-@skill_app.command("refresh")
-def skill_refresh_command(
-    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
-    runtime: RuntimeChoice = typer.Option(
-        RuntimeChoice.FAKE,
-        "--runtime",
-        help=SKILL_REFRESH_RUNTIME_OPTION_HELP,
-    ),
-    model_profile: str = typer.Option(
-        "default",
-        "--model-profile",
-        help="Configured model profile to use (default: top-level models block).",
-    ),
-    config: Path = typer.Option(
-        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
-    ),
-    data_dir: Path = typer.Option(
-        None, "--data-dir", help="Override the configured data directory."
-    ),
-) -> None:
-    """Regenerate this repository's stored guidance on request.
-
-    The only write path in ``factory skill``, and it happens because someone
-    typed this command: it requires ``polish.enabled``, profiles the
-    repository as currently checked out, and runs the configured researcher
-    from a neutral directory under the data directory with the profile and
-    the configured source allowlists as its entire input -- no work item, no
-    plan, no diff, no changed files, no repository file access.
-
-    No run, worktree or workspace is created. The human-owned overlay is
-    never read, written or deleted here. Guidance that fails validation is
-    refused and the previously stored file is left byte-for-byte unchanged.
-    """
-    factory_config = _load_config(config, data_dir, model_profile)
-    if runtime is RuntimeChoice.PI:
-        raise _fail("not supported on pi; use --runtime copilot")
-    if not factory_config.polish.enabled:
-        raise _fail(
-            "repository skill generation is disabled: set 'polish.enabled: true' in the "
-            "factory configuration before running 'factory skill refresh'."
-        )
-    _require_prerequisites(require_gh=False, require_copilot=runtime is RuntimeChoice.COPILOT)
-    _configure_logging(factory_config)
-
-    manager = _skill_manager(factory_config, repo)
-    profile = _skill_profile(repo)
-
-    neutral_dir = factory_config.data_dir / SKILL_GENERATION_DIRNAME / manager.repository_key
-    try:
-        neutral_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise _fail(f"cannot create the skill generation directory {neutral_dir}: {exc}") from None
-
-    from .agents import (
-        AgentRequest,
-        runtime_exception_failure_reason,
-    )
-    from .models import AgentPurpose, AgentRole, InvocationRecord, utc_now
-    from .repository_skills import (
-        MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS,
-        RepositorySkillError,
-        repository_skill_correction_context,
-        repository_skill_exhausted_warning,
-        repository_skill_validation_error,
-    )
-    from .routing import ModelRouter
-    from .writing_policy import result_writing_findings
-
-    role_model = ModelRouter(factory_config).model_for_researcher()
-    agent_runtime = _build_runtime(runtime, factory_config)
-    skill: RepositorySkill | None = None
-    rejection: str | None = None
-    initial_rejection: str | None = None
-    rejected_skill: RepositorySkill | None = None
-    for attempt in range(1, MAX_REPOSITORY_SKILL_GENERATION_ATTEMPTS + 1):
-        request = AgentRequest(
-            role=AgentRole.RESEARCHER,
-            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-            model=role_model.model,
-            reasoning=role_model.reasoning,
-            context_tier=role_model.context_tier,
-            work_item=_skill_generation_work_item(),
-            repair_context=(
-                repository_skill_correction_context(rejection, rejected_skill)
-                if rejection is not None
-                else None
-            ),
-            repository_profile=profile,
-            official_documentation_origins=list(
-                factory_config.polish.official_documentation_origins
-            ),
-            practice_reference_urls=list(factory_config.polish.practice_reference_urls),
-            workspace_path=str(neutral_dir),
-            attempt_number=attempt,
-            timeout_seconds=factory_config.agent_timeout_seconds,
-        )
-
-        started_at = utc_now()
-        try:
-            result = agent_runtime.run(request)
-        except ValueError as exc:
-            completed_at = utc_now()
-            invocation = InvocationRecord(
-                invocation_number=attempt,
-                role=request.role,
-                purpose=request.purpose,
-                model=request.model,
-                reasoning=request.reasoning,
-                context_tier=request.context_tier,
-                started_at=started_at,
-                completed_at=completed_at,
-                success=False,
-                failure_reason=runtime_exception_failure_reason(exc),
-                attempt_number=attempt,
-            )
-            try:
-                _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
-            except OSError as persist_exc:
-                raise _fail(
-                    f"repository skill invocation telemetry could not be persisted: {persist_exc}",
-                    code=FAILURE_EXIT_CODE,
-                ) from None
-            rejection = f"repository skill generation could not run: {exc}"
-            if attempt == 1:
-                initial_rejection = rejection
-                continue
-            assert initial_rejection is not None
-            raise _fail(
-                repository_skill_exhausted_warning(initial_rejection, rejection),
-                code=FAILURE_EXIT_CODE,
-            ) from None
-
-        completed_at = utc_now()
-        invocation = InvocationRecord(
-            invocation_number=attempt,
-            role=request.role,
-            purpose=request.purpose,
-            model=request.model,
-            reasoning=request.reasoning,
-            context_tier=request.context_tier,
-            started_at=started_at,
-            completed_at=completed_at,
-            success=result.success,
-            failure_reason=result.failure_reason,
-            attempt_number=attempt,
-            usage=result.usage,
-            writing_findings=result_writing_findings(
-                result, request.purpose, source="repository skill RESEARCHER"
-            ),
-        )
-        try:
-            _save_standalone_invocation(neutral_dir / "last-invocation.json", invocation)
-        except OSError as exc:
-            raise _fail(
-                f"repository skill invocation telemetry could not be persisted: {exc}",
-                code=FAILURE_EXIT_CODE,
-            ) from None
-
-        skill = result.repository_skill
-        if not result.success:
-            rejection = result.failure_reason or "the researcher produced no repository guidance"
-            rejected_skill = result.repository_skill
-            if attempt == 1:
-                initial_rejection = rejection
-                continue
-            if initial_rejection is not None:
-                rejection = repository_skill_exhausted_warning(initial_rejection, rejection)
-            raise _fail(rejection, code=FAILURE_EXIT_CODE)
-        if skill is None:
-            rejection = "the researcher reported success without repository guidance"
-        elif skill.dependency_fingerprint != profile.dependency_fingerprint:
-            rejection = (
-                "the researcher returned guidance for a different dependency fingerprint: "
-                f"{skill.dependency_fingerprint} is not {profile.dependency_fingerprint}"
-            )
-            rejected_skill = skill
-        elif problem := repository_skill_validation_error(
-            skill,
-            profile,
-            official_documentation_origins=factory_config.polish.official_documentation_origins,
-            practice_reference_urls=factory_config.polish.practice_reference_urls,
-        ):
-            rejection = f"refusing to store unverified repository guidance: {problem}"
-            rejected_skill = skill
-        else:
-            break
-
-        if attempt == 1:
-            initial_rejection = rejection
-            continue
-        assert initial_rejection is not None
-        raise _fail(
-            repository_skill_exhausted_warning(initial_rejection, rejection),
-            code=FAILURE_EXIT_CODE,
-        )
-
-    assert skill is not None
-
-    # Stamped once, here, so the stored record says when this guidance was
-    # produced rather than when the model claimed it was.
-    skill = skill.model_copy(update={"generated_at": utc_now()})
-    try:
-        record = manager.refresh_generated(skill)
-    except RepositorySkillError as exc:
-        raise _fail(
-            f"the generated repository skill could not be stored: {exc}",
-            code=FAILURE_EXIT_CODE,
-        ) from None
-
-    typer.echo(f"repository key: {manager.repository_key}")
-    typer.echo(f"dependency fingerprint: {skill.dependency_fingerprint}")
-    typer.echo(f"{'created' if record.created else 'refreshed'} generated skill: {record.path}")
-    typer.echo(f"overlay: untouched ({manager.overlay_path})")
 
 
 if __name__ == "__main__":

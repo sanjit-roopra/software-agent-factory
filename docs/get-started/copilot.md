@@ -78,42 +78,20 @@ For current model prices, context and reasoning capabilities, benchmark
 evidence, and role-specific tradeoffs, see
 [Model selection, cost and benchmarks](../reference/model-selection.md).
 
-## Repository skills
+## Polish guidance
 
-There is no fixed, built-in skill catalog. The deterministic profile records
+There is no repository-provided skill plugin. The deterministic profile records
 technologies, test tools, package managers (`uv`, `pip`, `poetry`, `npm`,
 `pnpm`, `yarn`, `bun`), version files, exact dependency declarations from
 `pyproject.toml`, `requirements*.txt` and `package.json`, and two fingerprints.
 It records nothing more.
 
-Guidance for the bounded polish attempt comes from two files under the factory
-data directory. Storage is keyed by the repository and its `dependency_fingerprint`.
-Nothing is written into your repository, and the factory never loads guidance from it.
-
-- Generated skill: This describes the repository, not the task. The
-  configured Researcher (`Claude Opus 5` in the default profile) creates it from the
-  normalized profile and configured source lists. It receives no changed
-  filenames, source code, README content, task prose, or diff. Web access is
-  limited to `polish.official_documentation_origins` (authoritative for version
-  claims) and commit-pinned `polish.practice_reference_urls`
-  (generic heuristics only). Later runs reuse this guidance. A paid research call happens
-  only when the current dependency fingerprint has no generated skill yet.
-- Human overlay: This is a repository-level `repository-skill-overlay.yaml`
-  file with house rules as prose. The factory never creates, rewrites, or deletes
-  it. The file survives dependency changes.
-
-Both files reach only the Implementer, Tester, and Reviewer for that attempt.
-They never reach agents before the initial green baseline. Both files provide
-advisory prompt context. They do not grant tools, change model routing, add commands,
-alter workflow states, spend retry budget, or waive gates. The target repository
-cannot provide plugins.
-
-If the research, its validation, or the profile check fails, the factory
-records a warning and skips polish. Your verified change still ships.
-
-`factory skill path`, `factory skill validate`, and `factory skill refresh`
-manage guidance files explicitly. Read
-[Repository skills and overlays](../guides/repository-skills.md).
+No model writes or selects guidance. The bounded polish attempt gets the fixed
+`simplify` and `polish` templates of the factory and the review lenses for the
+changed files. A stack lens for React, Vue or Angular applies only when the
+repository declares one of its dependencies. The guidance is advisory prompt
+context. It does not grant tools, change model routing, add commands, alter
+workflow states, spend retry budget, or waive gates.
 
 ## What the agent is allowed to do
 
@@ -122,15 +100,6 @@ Each role gets a permission profile:
 - Read-only roles (triage, refiner, researcher, planner, tester, reviewer):
   `glob`, `grep`, `view`.
 - Implementer: `glob`, `grep`, `view`, `create`, `edit`, `bash`.
-
-The only exception is the skill-generation call of the Researcher.
-When the repository has no generated guidance for its current dependency fingerprint,
-the Researcher receives only `web_fetch`.
-Web access is restricted to `polish.official_documentation_origins` and
-`polish.practice_reference_urls`.
-The call receives no `glob`, `grep`, `view`, or `edit` access.
-It receives no repository custom instructions.
-It uses the run directory as its working directory instead of the worktree.
 
 The optional polish uses the same Implementer permission profile and worker
 routing. It introduces no separate role.

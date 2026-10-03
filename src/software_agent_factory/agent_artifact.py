@@ -30,7 +30,6 @@ from .models import (
     ModelBase,
     PerformanceRecord,
     ProjectPlan,
-    RepositorySkill,
     UsageMetrics,
 )
 from .prompts import RoleName, artifact_model_for_role, normalize_role
@@ -43,7 +42,6 @@ type ResultField = Literal[
     "change_set",
     "test_report",
     "review_report",
-    "repository_skill",
     "project_plan",
 ]
 
@@ -98,13 +96,6 @@ def artifact_spec(
         return _ArtifactSpec(
             model_class=ProjectPlan,
             result_field="project_plan",
-        )
-    if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-        if normalize_role(role) != AgentRole.RESEARCHER.value:
-            raise ValueError("repository skill generation requires the RESEARCHER role")
-        return _ArtifactSpec(
-            model_class=RepositorySkill,
-            result_field="repository_skill",
         )
     if purpose is AgentPurpose.CORRECT_CHANGE_SET:
         if normalize_role(role) != AgentRole.IMPLEMENTER.value:

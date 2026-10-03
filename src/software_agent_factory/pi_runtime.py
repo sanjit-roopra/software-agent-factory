@@ -123,8 +123,6 @@ logger = logging.getLogger(__name__)
 #: ``IMPLEMENTER_WRITE`` also gets the command filter extension
 #: (:data:`_COMMAND_FILTER_PATH`), added by
 #: :meth:`PiAgentRuntime._build_command`, because only it has ``bash``.
-#: ``AgentCapability.WEB_RESEARCH`` has no entry: pi has no web-fetch tool,
-#: so :meth:`PiAgentRuntime._build_command` raises before this lookup runs.
 _TOOL_ARGS: dict[AgentCapability, tuple[str, ...]] = {
     AgentCapability.IMPLEMENTER_WRITE: ("--tools", "read,bash,edit,write,grep,find,ls"),
     AgentCapability.READ_ONLY: ("--tools", "read,grep,find,ls"),
@@ -727,8 +725,6 @@ class PiAgentRuntime(AgentRuntime):
         explicit ``-e`` extension still loads.
         """
         capability = capability_for(request)
-        if capability is AgentCapability.WEB_RESEARCH:
-            raise ValueError("repository skill generation is not supported on pi")
         logger.debug(
             "ignoring context_tier=%s for pi request (no --context equivalent)",
             request.context_tier,

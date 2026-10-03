@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from .agent_artifact import (
     build_success_result,
@@ -54,12 +53,6 @@ from .usage_values import non_negative_float, non_negative_int
 logger = logging.getLogger(__name__)
 
 READ_ONLY_TOOLS = ("glob", "grep", "view")
-#: The skill researcher reads public documentation only: no repository
-#: filesystem access, no shell, no edits and therefore no Git.
-SKILL_RESEARCH_TOOLS = ("web_fetch",)
-#: Defence in depth on top of ``--available-tools``: even if the tool surface
-#: were widened, shell (and therefore Git) and filesystem writes stay denied.
-SKILL_RESEARCH_DENIED_PERMISSIONS = ("shell", "write")
 IMPLEMENTER_TOOLS = ("glob", "grep", "view", "create", "edit", "bash")
 
 
@@ -260,10 +253,6 @@ class CopilotAgentRuntime(AgentRuntime):
             command.extend(["--available-tools", ""])
         if usage_output_path is not None:
             command.extend(["--usage-output-file", str(usage_output_path)])
-        if request.purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-            command.append("--no-custom-instructions")
-            for url in _skill_research_urls(request):
-                command.extend(["--allow-url", url])
         for denied_permission in profile.denied_permissions:
             command.extend(["--deny-tool", denied_permission])
         command.extend(["-p", prompt])
@@ -560,11 +549,6 @@ def _permission_profile(request: AgentRequest) -> _PermissionProfile:
             available_tools=(),
             denied_permissions=("shell", "write", "url"),
         )
-    if capability is AgentCapability.WEB_RESEARCH:
-        return _PermissionProfile(
-            available_tools=SKILL_RESEARCH_TOOLS,
-            denied_permissions=SKILL_RESEARCH_DENIED_PERMISSIONS,
-        )
     if capability is AgentCapability.IMPLEMENTER_WRITE:
         return _PermissionProfile(
             available_tools=IMPLEMENTER_TOOLS,
@@ -574,46 +558,6 @@ def _permission_profile(request: AgentRequest) -> _PermissionProfile:
         available_tools=READ_ONLY_TOOLS,
         denied_permissions=("url",),
     )
-
-
-def _skill_research_urls(request: AgentRequest) -> tuple[str, ...]:
-    """Combine both configured URL lists into one deduplicated allowlist.
-
-    The result is the complete set of ``--allow-url`` grants for a skill
-    request. Non-HTTPS or credential-bearing entries are rejected here as well
-    as in configuration, so a hand-built request cannot widen the sandbox.
-    """
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for url in (
-        *request.official_documentation_origins,
-        *request.practice_reference_urls,
-    ):
-        _validate_skill_research_url(url)
-        if url in seen:
-            continue
-        seen.add(url)
-        ordered.append(url)
-
-    if not ordered:
-        raise ValueError("repository skill generation requires at least one allowed URL")
-    return tuple(ordered)
-
-
-def _validate_skill_research_url(url: str) -> None:
-    if url != url.strip() or any(character.isspace() for character in url):
-        raise ValueError(f"repository skill research URL must not contain whitespace: {url!r}")
-    try:
-        parsed = urlsplit(url)
-        hostname = parsed.hostname
-        _ = parsed.port
-    except ValueError as exc:
-        raise ValueError(f"repository skill research URL is not parseable: {url!r}") from exc
-    if parsed.scheme != "https" or not hostname:
-        raise ValueError(f"repository skill research URLs must be HTTPS URLs: {url!r}")
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError(f"repository skill research URLs must not carry credentials: {url!r}")
 
 
 def _decode_timeout_text(value: object) -> str:

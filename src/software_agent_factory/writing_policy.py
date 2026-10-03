@@ -19,7 +19,6 @@ from .models import (
     ExecutionPlan,
     ModelBase,
     ProjectPlan,
-    RepositorySkill,
     ResearchReport,
     ReviewReport,
     Specification,
@@ -138,17 +137,6 @@ _FIELD_LIMITS: dict[type[ModelBase], dict[str, int]] = {
         "tasks[].description": 100,
         "tasks[].acceptance_criteria": 25,
         "tasks[].constraints": 30,
-    },
-    RepositorySkill: {
-        "simplify.summary": 40,
-        "simplify.guidance": 25,
-        "simplify.avoid": 25,
-        "simplify.validation": 20,
-        "polish.summary": 40,
-        "polish.guidance": 25,
-        "polish.avoid": 25,
-        "polish.validation": 20,
-        "uncertainties": 35,
     },
 }
 
@@ -385,29 +373,6 @@ def _project_plan_passages(artifact: ProjectPlan, limit: dict[str, int]) -> list
     return passages
 
 
-def _skill_passages(skill: RepositorySkill, limit: dict[str, int]) -> list[WritingPassage]:
-    passages: list[WritingPassage] = []
-    for name, guidance in (("simplify", skill.simplify), ("polish", skill.polish)):
-        passages.append(
-            _passage(f"{name}.summary", guidance.summary, max_words=limit[f"{name}.summary"])
-        )
-        for kind, values in (
-            ("guidance", guidance.guidance),
-            ("avoid", guidance.avoid),
-            ("validation", guidance.validation),
-        ):
-            passages.extend(
-                _items(
-                    f"{name}.{kind}",
-                    values,
-                    text_type="procedural",
-                    max_words=limit[f"{name}.{kind}"],
-                )
-            )
-    passages.extend(_items("uncertainties", skill.uncertainties, max_words=limit["uncertainties"]))
-    return passages
-
-
 type _PassageBuilder = Callable[[Any, dict[str, int]], list[WritingPassage]]
 
 _PASSAGE_BUILDERS: dict[type[ModelBase], _PassageBuilder] = {
@@ -419,7 +384,6 @@ _PASSAGE_BUILDERS: dict[type[ModelBase], _PassageBuilder] = {
     TestReport: _test_report_passages,
     ReviewReport: _review_passages,
     ProjectPlan: _project_plan_passages,
-    RepositorySkill: _skill_passages,
 }
 
 
@@ -474,8 +438,6 @@ def validate_artifact_writing(artifact: ModelBase) -> tuple[str, ...]:
 def _result_artifact(result: AgentResult, purpose: AgentPurpose) -> ModelBase | None:
     if purpose is AgentPurpose.DECOMPOSE_PROJECT:
         return result.project_plan
-    if purpose is AgentPurpose.GENERATE_REPOSITORY_SKILL:
-        return result.repository_skill
     return {
         "TRIAGE": result.triage_result,
         "REFINER": result.specification,

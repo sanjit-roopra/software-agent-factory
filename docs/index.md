@@ -206,7 +206,7 @@ The factory then does all deterministic checks again.
 <span class="saf-small-label">Saved evidence</span>
 
 `verification.json`<br>
-`repository-skill-use.json` (with guidance)
+`attempts/NN/` (polish snapshot)
 
 <p class="saf-stage-note">The factory permits polish only when a later recovery attempt remains available.</p>
 

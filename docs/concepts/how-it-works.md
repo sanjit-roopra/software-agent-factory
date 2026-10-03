@@ -78,10 +78,10 @@ The allowed transitions are declared as data and enforced on every call:
 CREATED      → TRIAGING
 TRIAGING     → REFINING
 REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING | IMPLEMENTING
+RESEARCHING  → PLANNING
 PLANNING     → IMPLEMENTING
 IMPLEMENTING → VERIFYING
-VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING | RESEARCHING
+VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
 REVIEWING    → PR_READY | IMPLEMENTING
 PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE
@@ -107,12 +107,9 @@ reason.
 flow, and the controller finalizes it explicitly.
 
 Repository profiling happens after workspace preparation and before
-`TRIAGING`, without adding a state. The optional post-green polish re-profiles
-the worktree and reuses the stored `RepositorySkill` for the current dependency
-fingerprint. It generates guidance through a temporary `RESEARCHING` transition
-only when none exists yet. The controller applies the guidance in an
-`IMPLEMENTER` attempt through the existing `IMPLEMENTING → VERIFYING`
-transition. There is no `POLISHING` state and no fixed skill catalog.
+`TRIAGING`, without adding a state. The optional post-green polish is an
+`IMPLEMENTER` attempt with fixed guidance through the existing
+`IMPLEMENTING → VERIFYING` transition. There is no `POLISHING` state.
 
 ## Typed artifacts, not one long conversation
 
@@ -141,11 +138,10 @@ Each agent receives only the context its job needs. That keeps prompts small,
 keeps failures attributable, and means a later stage cannot be persuaded by an
 earlier stage's narrative.
 
-`RepositoryProfile` is factory-produced before triage, and again before an
-eligible bounded polish attempt. It records detected technologies, test tools,
+`RepositoryProfile` is factory-produced before triage. It records detected technologies, test tools,
 package managers, markers, warnings, and version files. It also records exact
 dependency declarations, a semantic `dependency_fingerprint`, and a
-`manifest_fingerprint`. There is no built-in skill catalog.
+`manifest_fingerprint`.
 
 ## The agents
 
@@ -153,11 +149,11 @@ dependency declarations, a semantic `dependency_fingerprint`, and a
 | --- | --- | --- |
 | Triage | Assign complexity, risk, and whether research is needed. | The work item. |
 | Specification Refiner | Turn the request into acceptance criteria. | Work item, triage. |
-| Researcher | Answer specific open questions, or generate repository-wide guidance (`RepositorySkill`) when the repository's current dependency fingerprint has none yet. | Specification. For skill generation, only the normalized repository profile and configured source lists, with no repository access, no changed filenames, and no task prose. |
+| Researcher | Answer specific open questions. | Specification. |
 | Planner | Produce an execution plan with an expected scope. | Specification, research. |
-| Implementer | Edit the worktree. | Plan and repository. Effective repository guidance (stored skill plus human overlay) is provided only during the bounded polish attempt. |
-| Tester | Judge whether the change is actually tested. | Work item, specification, execution plan, controller-derived diff, changed files, and deterministic results. Guidance matches the polish Implementer while current. |
-| Reviewer | Independent review. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results, independent TestReport, implementation snapshot number, and typed open review findings. A repair review also receives the exact diff since the previous reviewed tree. Guidance matches the polish Implementer while current. |
+| Implementer | Edit the worktree. | Plan and repository. The fixed simplify and polish guidance and the review lenses are provided only during the bounded polish attempt. |
+| Tester | Judge whether the change is actually tested. | Work item, specification, execution plan, controller-derived diff, changed files, and deterministic results. |
+| Reviewer | Independent review. | Work item, specification, execution plan, controller-derived diff and changed files, deterministic results, independent TestReport, implementation snapshot number, and typed open review findings. It also receives the review lenses for the changed files. A repair review also receives the exact diff since the previous reviewed tree. |
 | Failure Investigator | Diagnose a CI failure. | Normalized CI evidence. |
 
 The tester and reviewer never see the implementer's own summary. That is
@@ -178,8 +174,7 @@ early with `review-impasse.json`.
 Research runs, but it does not escalate. A researcher that finds nothing useful
 returns a report and the run continues.
 
-Triage, Refiner and the initial Researcher call receive no skill context.
-Skills and overlays never change tools, models, commands, states, retry
+Guidance and lenses never change tools, models, commands, states, retry
 budgets, permissions, gates, dependencies or scope.
 
 ## Repository capabilities
@@ -199,78 +194,16 @@ group tables), `requirements.txt`/`requirements-*.txt` for pip projects, and
 the package manager and are fingerprinted, but are not parsed for exact
 versions.
 
-There is no fixed skill catalog. Guidance for the polish attempt comes from two
-artifacts: a `RepositorySkill` generated by the configured Researcher, and an
-optional overlay you write yourself. Both live under the factory data
-directory, in repository-scoped storage keyed by the repository and its
-`dependency_fingerprint`, never inside your checkout or its worktree. See
-[Repository skills and overlays](../guides/repository-skills.md).
+No model writes or selects guidance. The polish attempt gets fixed guidance:
+the factory's `simplify` and `polish` templates, and the review lenses for the
+changed files. A stack lens for React, Vue or Angular applies only when the
+repository declares one of its dependencies. The polish attempt makes no
+Researcher call and no web request.
 
-Generated guidance describes the repository as a whole, not the current task,
-so it is reused. After the first successful deterministic verification the
-controller re-profiles the post-implementation worktree and loads the generated
-skill for that fingerprint. When no generated skill exists, the run enters a
-temporary `RESEARCHING` state. It asks the configured Researcher
-(`Claude Opus 5` by default) to generate one. An existing generated file is
-never overwritten. A dependency change selects a new file, and nothing expires
-on a timer.
-
-Reuse bounds research per fingerprint, not per process. Two concurrent first
-runs for the same missing fingerprint can each make an initial call and one
-bounded retry. Invalid output or provenance includes the exact bounded
-rejection reason. An infrastructure failure receives one ordinary retry. One
-result wins the atomic no-clobber publication, and both runs revalidate that
-winner. The race costs at most one extra sequence and changes nothing else. The
-repository key derives from the local Git common directory. Moving or
-re-cloning a repository starts fresh at a new key. See
-[Repository skills and overlays](../guides/repository-skills.md).
-
-That call is deliberately blind. It runs in the run directory instead of the
-worktree. Its only tool is `web_fetch`. It sees only the normalized profile and
-configured source lists. It never sees changed filenames, source code, README
-content, task prose, or the diff. It can fetch:
-
-- `polish.official_documentation_origins`: Official documentation, migration
-  guides and release notes (pytest, Python, Node.js, the Python Packaging
-  Authority, React, the Testing Library, Vite, Vitest, and TypeScript by default).
-  These are authoritative for anything version-specific, and you can extend the
-  list with other official origins.
-- `polish.practice_reference_urls`: A short list of exact, curated
-  general-practice references (by default reviewed `bdfinst/agentic-dev-team`
-  notes, pinned to an immutable commit rather than a mutable branch). They
-  inform generic quality heuristics only. They never supply version claims,
-  commands, tools or orchestration.
-
-The skill is bound to the profile's `dependency_fingerprint` and carries
-bounded targets, HTTPS source provenance, separate `simplify` and `polish`
-guidance, and uncertainties. The controller checks guidance deterministically
-on every load. It validates the fingerprint, targets, and evidence paths. It
-also validates framework provenance and checks cited URLs against configured
-lists.
-
-Your own house rules go in a repository-level `repository-skill-overlay.yaml`
-next to the generated files, outside your repository. It contains prose only,
-with `mode: extend` or `mode: replace`, plus optional `simplify` and `polish`
-blocks. It contains no targets, sources, versions or fingerprints, so it
-survives dependency changes. The factory never creates, rewrites, reformats,
-refreshes or deletes it. An invalid overlay is left exactly as you wrote it,
-reported as a warning and ignored for that run, while valid generated guidance
-still applies.
-
-If profiling, research, or validation fails, the factory records a profile
-warning. It then skips or disables polish. Stored guidance that stops
-revalidating is left on disk exactly as it is, and the warning tells you to run
-`factory skill refresh`. It does not fail the run. Polish is an optional
-improvement on an already-verified change. The safe outcome is to ship the
-verified change without it.
-
-The effective guidance is applied by one bounded existing Implementer attempt,
-simplification first and version-specific polish second, and then the full
-deterministic verification runs again. It reaches only the polish Implementer,
-Tester and Reviewer, and is never available before the initial green baseline.
-Before agents see guidance, the run stores immutable snapshots of the skill,
-valid overlay, and provenance metadata. Editing the overlay mid-run affects
-later runs only.
+One bounded existing Implementer attempt applies the guidance, simplification
+first and polish second. Then the full deterministic verification runs again.
+The guidance is never available before the initial green baseline. Polish is an
+optional improvement on an already-verified change.
 
 ## Complexity and risk are separate
 

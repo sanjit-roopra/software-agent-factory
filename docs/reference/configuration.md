@@ -95,7 +95,6 @@ profiles live under `model_profiles`. Select one on any agent-invoking command:
 factory run ... --model-profile economy
 factory project ... --model-profile economy
 factory start ... --model-profile economy
-factory skill refresh ... --model-profile economy
 factory run ... --model-profile security
 ```
 
@@ -261,105 +260,31 @@ scope, repair-regression and high-risk findings still require a human.
 ```yaml
 polish:
   enabled: true
-  official_documentation_origins:
-    - "https://docs.pytest.org"
-    - "https://docs.python.org"
-    - "https://nodejs.org"
-    - "https://packaging.python.org"
-    - "https://react.dev"
-    - "https://testing-library.com"
-    - "https://vite.dev"
-    - "https://vitest.dev"
-    - "https://www.typescriptlang.org"
-  practice_reference_urls:
-    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/a11y-review.md"
-    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/component-architecture-review.md"
-    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/js-fp-review.md"
-    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/quality-reviewer.md"
-    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/react-reactivity-review.md"
-    - "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/52cc5efd1c445e71c55b956837c003911346d7e7/plugins/dev-team/agents/refactor-opportunity-review.md"
 ```
 
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `enabled` | bool | `true` in packaged default/example, `false` when omitted | Run at most one post-green Implementer polish attempt, informed by the repository's `RepositorySkill` and any human overlay. |
-| `official_documentation_origins` | list of HTTPS origins | the nine official documentation origins shown above | Authoritative sources for version-specific claims. Non-empty, unique, at most 25 entries. Each must be an HTTPS origin with no path, credentials, whitespace, query, fragment or trailing slash. |
-| `practice_reference_urls` | list of exact HTTPS URLs | the six curated `bdfinst/agentic-dev-team` review references shown above, pinned to commit `52cc5efd` | Optional curated general-practice references. Can be empty. Unique, at most 12 entries. Each must be an exact HTTPS document URL (a real path, no trailing slash) with no credentials, whitespace, query or fragment. |
-
-Both lists are the complete fetch allowlist for the skill-generation
-Researcher. The curated practice references are pinned to an immutable commit
-(`52cc5efd1c445e71c55b956837c003911346d7e7`) rather than a mutable branch, so
-the exact reviewed text is what gets fetched. Re-pin deliberately after
-reviewing a newer revision. Official documentation, migration guides and release notes are
-authoritative. Curated practice references can only contribute generic quality
-heuristics, synthesized rather than copied. They never supply version claims,
-commands, tools or orchestration, and the controller validates them by exact
-URL rather than by origin.
+| `enabled` | bool | `true` in packaged default/example, `false` when omitted | Run at most one post-green Implementer polish attempt with the fixed simplify and polish guidance. |
 
 The class fallback for `enabled` is `false`, so legacy configurations that omit
 `polish` retain their previous one-pass behavior. The packaged default and
-`config/factory.example.yaml` explicitly enable it. Omitting only the URL lists
-keeps the defaults above.
+`config/factory.example.yaml` explicitly enable it.
+
+Older configurations can contain `official_documentation_origins` and
+`practice_reference_urls`. The factory ignores these two keys (ADR-034).
 
 Polish runs only after the first successful deterministic verification and
-scope assessment, before testing and review. When eligible, the controller
-re-profiles the post-implementation worktree to capture any dependency change
-the task made. It loads the generated `RepositorySkill` stored for that
-repository and `dependency_fingerprint` under `factory.data_dir` using the
-template `<data_dir>/repository-skills/v1/<repository-key>/...`. Guidance is
-never stored in, or loaded from, the target repository or its worktree.
+scope assessment, before testing and review. No model writes or selects the
+guidance. The polish attempt gets the bodies of the factory's `simplify` and
+`polish` templates and the review lenses for the changed files. A stack lens
+for React, Vue or Angular applies only when the repository declares one of its
+dependencies. The attempt makes no Researcher call and no web request.
 
-Only when the current fingerprint has no generated skill does the controller
-enter a temporary `RESEARCHING` state. It calls the configured Researcher
-(`Claude Opus 5` in the default profile) with purpose
-`GENERATE_REPOSITORY_SKILL`. Invalid typed output or provenance receives one
-bounded retry carrying the exact rejection reason. An infrastructure failure
-also receives one retry. The calls run in the run's own directory rather than the
-worktree, receive only the normalized `RepositoryProfile` and the two
-configured URL lists. They never receive changed filenames, source code,
-README content, task prose, or the diff. They have `web_fetch` as their only
-tool, and run without repository custom instructions. An existing
-generated file is never overwritten. A dependency change selects a new file and
-earlier files remain. There is no TTL. Two concurrent first runs for the
-same missing fingerprint can each run the bounded initial-plus-correction
-sequence. Publication is atomic and no-clobber, so one winner is kept and
-revalidated by both. This costs at most one extra sequence.
-
-The repository key derives from the canonical local Git common directory.
-Linked worktrees share one directory. A moved or re-cloned repository gets a
-new key with no guidance.
-If you want to carry its guidance across, use `factory skill path` before the move.
-
-The `RepositorySkill` is bound to the profile's `dependency_fingerprint` and
-carries bounded targets, HTTPS source provenance and separate simplify and
-polish guidance. On every load, the controller rejects an invalid skill.
-Rejection happens if the fingerprint mismatches, or a target is not in the
-profile. It also rejects missing official provenance for detected frameworks,
-unknown dependency claims, or sources outside configured lists.
-
-Your own house rules go in a repository-level `repository-skill-overlay.yaml`
-in the same storage, outside the target repository. It holds guidance prose
-only (`mode: extend|replace` plus optional `simplify` and `polish` blocks), has
-no targets, sources, versions or fingerprints, and survives dependency changes.
-The factory never creates, rewrites, normalizes, refreshes or deletes it. An
-invalid overlay is preserved, warned about, and ignored while valid generated
-guidance still applies. `factory skill path`, `factory skill validate` and
-`factory skill refresh` operate on these files explicitly. See
-[Repository skills and overlays](../guides/repository-skills.md).
-
-Nothing here can fail an already-green run. A failed re-profile, rejected
-skill, invalid overlay, or stale guidance records a warning on
-`repository-profile.json`. In those cases, the factory skips or disables
-polish. Stored guidance that fails revalidation is left on disk
-untouched and its warning points at `factory skill refresh`.
-
-When guidance is accepted, the controller applies it (simplify first, then
-version-specific polish) in one existing bounded worker attempt. That attempt
-records `AttemptTrigger.POLISH`, consumes the implementation budget, can make no
-edits, and is always fully verified again. Polish never runs during CI repair
-and runs only when one later recovery attempt remains. Each run snapshots the
-effective skill, valid overlay, and guidance provenance before agents see it.
-Mid-run edits affect later runs only.
+The controller applies the guidance (simplify first, then polish) in one
+existing bounded worker attempt. That attempt records `AttemptTrigger.POLISH`,
+consumes the implementation budget, can make no edits, and is always fully
+verified again. Polish never runs during CI repair and runs only when one later
+recovery attempt remains.
 
 ## pull_request
 

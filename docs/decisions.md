@@ -11,6 +11,15 @@ Amendment on 2026-10-03 (Bun and Yarn): Yarn and Bun lockfiles are supported. Ea
 
 Amendment on 2026-10-03 (slice E): lenses go into the reviewer prompt only. The polish attempt keeps its repository guidance.
 
+Amendment on 2026-10-03 (fixed polish guidance):
+
+- The polish attempt uses the fixed `simplify` and `polish` templates and the lenses selected for the changed files.
+- The factory no longer generates repository skills with a model. No model writes or selects guidance.
+- This supersedes the remaining skill generation parts of ADR-019 and ADR-021. The human overlay and `factory skill` are removed too.
+- Stack lenses for React, Vue and Angular are selected from the declared dependencies of the repository.
+  A stack lens applies only when the repository declares one of its dependencies and a changed file matches its scope.
+- The `polish.official_documentation_origins` and `polish.practice_reference_urls` keys are ignored.
+
 Amendment on 2026-10-03 (mutation gate):
 
 - After the verify commands pass, the factory runs `mutmut` 3 on the changed Python source modules.
@@ -1211,7 +1220,8 @@ while leaving runs and workspaces untouched.
 ## ADR-019: Repository capabilities are deterministic profiling plus on-demand skill research
 
 *Superseded in part by [ADR-034](#adr-034-the-factory-sets-up-the-target-toolchain-and-repository-skills):
-a fixed catalog of skill templates replaces skill research. The profiling rules stand.*
+a fixed catalog of skill templates replaces skill research. The profiling rules stand.
+Superseded by ADR-034 for skill generation: the factory no longer generates skills with a model.*
 
 *Supersedes the original ADR-019, which selected advisory skills from a fixed,
 versioned built-in catalog. That catalog is removed.*
@@ -1321,8 +1331,9 @@ fake run records an initial implementation attempt and one polish attempt.
 
 ## ADR-021: Repository guidance is two artifacts: generated and reusable, plus a human overlay
 
-*Superseded in part by [ADR-034](#adr-034-the-factory-sets-up-the-target-toolchain-and-repository-skills):
-the factory writes guidance and tools to the target repository through a setup pull request. The human overlay stands.*
+*Superseded by [ADR-034](#adr-034-the-factory-sets-up-the-target-toolchain-and-repository-skills):
+the factory writes guidance and tools to the target repository through a setup pull request.
+The polish attempt uses fixed guidance. Generated guidance and the human overlay are removed.*
 
 Repository guidance has two producers with different trust levels. It uses two
 separate artifacts rather than one shared file.

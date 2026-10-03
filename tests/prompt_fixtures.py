@@ -21,13 +21,11 @@ from software_agent_factory.models import (
     PlanStep,
     RepairContext,
     RepositoryProfile,
-    RepositorySkill,
     ResearchReport,
     ReviewFinding,
     ReviewFindingCategory,
     ReviewFindingOrigin,
     ReviewSourceLocation,
-    SkillGuidance,
     Specification,
     TestReport,
     TriageResult,
@@ -140,18 +138,6 @@ def review_finding(
     )
 
 
-def repository_skill(
-    guidance: str = "Prefer modern APIs.", fingerprint: str = "a" * 64
-) -> RepositorySkill:
-    return RepositorySkill(
-        dependency_fingerprint=fingerprint,
-        generated_at=FIXED_TIME,
-        simplify=SkillGuidance(summary="Simplify.", guidance=("Drop dead code.",)),
-        polish=SkillGuidance(summary="Polish.", guidance=(guidance,)),
-        uncertainties=("Fixture skill has no external sources.",),
-    )
-
-
 def repository_profile() -> RepositoryProfile:
     return RepositoryProfile(manifest_fingerprint="a" * 64, dependency_fingerprint="b" * 64)
 
@@ -163,10 +149,11 @@ def repository_profile() -> RepositoryProfile:
 # ---------------------------------------------------------------------------
 
 RESEARCH_QUESTION = "Which validator rejects blank names?"
-SKILL_GUIDANCE = "Prefer str.strip() over manual loops."
+#: A line of the fixed polish template that only the polish attempt receives.
+FIXED_POLISH_GUIDANCE = "Keep comments that explain why. Remove comments that repeat the code."
 POLISH_SUMMARY = (
     "Deterministic verification passed. Apply a final bounded polish and simplification "
-    "pass using the reusable repository guidance supplied with this request."
+    "pass using the fixed simplify and polish guidance supplied with this request."
 )
 VERIFICATION_FAILURE = "unit-tests: TEST_FAILURE"
 VERIFICATION_LOG_EXCERPT = "AssertionError: expected HTTP 400"
@@ -196,7 +183,7 @@ def _payload(base: dict[str, object], overrides: dict[str, object]) -> dict[str,
 
 
 def first_implementer_request(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
-    """The first implementation attempt: no repair, no diff, no repository skill yet."""
+    """The first implementation attempt: no repair, no diff, no polish guidance."""
     return make_request(
         AgentRole.IMPLEMENTER,
         **_payload(
@@ -235,13 +222,12 @@ def verification_repair_request(work_item_id: str = "WI-1", **overrides: object)
 
 
 def polish_request(work_item_id: str = "WI-1", **overrides: object) -> AgentRequest:
-    """The bounded polish attempt: the repository skill exists now, and the diff is green."""
+    """The bounded polish attempt: the diff is green and the fixed guidance applies."""
     return first_implementer_request(
         work_item_id,
         **_payload(
             {
                 "attempt_number": 2,
-                "repository_skill": repository_skill(SKILL_GUIDANCE),
                 "diff": DIFF,
                 "changed_files": [CHANGED_FILE],
                 "repair_context": repair_context(

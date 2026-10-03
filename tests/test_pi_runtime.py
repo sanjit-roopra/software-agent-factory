@@ -18,6 +18,7 @@ from prompt_fixtures import (
     DIFF,
     FIRST_CALL_TEXT,
     FIRST_REVIEW_TESTER_FINDING,
+    FIXED_POLISH_GUIDANCE,
     OPENING_TEXT,
     OUTPUT_REJECTION,
     POLISH_SUMMARY,
@@ -25,7 +26,6 @@ from prompt_fixtures import (
     RE_REVIEW_TESTER_FINDING,
     REPAIR_DIFF,
     REPAIRED_DIFF,
-    SKILL_GUIDANCE,
     VERIFICATION_FAILURE,
     accepted_debt_review_request,
     change_set_correction_request,
@@ -52,7 +52,6 @@ from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
     ChangeSet,
-    RepositoryProfile,
     TriageResult,
 )
 from software_agent_factory.pi_rpc import PiRpcClient
@@ -76,21 +75,6 @@ def _correction_request(**overrides: object) -> AgentRequest:
     }
     defaults.update(overrides)
     return make_request(AgentRole.IMPLEMENTER, **defaults)
-
-
-def _skill_request(**overrides: object) -> AgentRequest:
-    defaults: dict[str, object] = {
-        "purpose": AgentPurpose.GENERATE_REPOSITORY_SKILL,
-        "repository_profile": RepositoryProfile(
-            manifest_fingerprint="a" * 64,
-            dependency_fingerprint="b" * 64,
-        ),
-        "official_documentation_origins": ["https://react.dev"],
-        "practice_reference_urls": ["https://example.com/review.md"],
-        "workspace_path": "/runs/RUN-1",
-    }
-    defaults.update(overrides)
-    return make_request(AgentRole.RESEARCHER, **defaults)
 
 
 _SESSIONS_DIRECTORY = "pi-sessions"
@@ -387,23 +371,6 @@ def test_run_read_only_role_does_not_need_the_command_filter_file(tmp_path: Path
     launch = _launch(make_request(AgentRole.TRIAGE), command_filter_path=tmp_path / "gone.mjs")
 
     assert "-e" not in launch.command
-
-
-def test_run_rejects_skill_generation_before_starting_pi() -> None:
-    started: list[Sequence[str]] = []
-
-    def factory(command: Sequence[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
-        started.append(command)
-        raise AssertionError("pi must not be started for a rejected request")
-
-    runtime = _runtime(process_factory=factory)
-
-    request = _skill_request()
-
-    with pytest.raises(ValueError, match="not supported on pi"):
-        runtime.run(request)
-
-    assert started == []
 
 
 def test_run_launches_the_configured_executable_and_provider() -> None:
@@ -828,7 +795,7 @@ def test_run_implementer_repair_sends_only_the_repair_round_into_the_same_sessio
     _assert_sent_only_what_changed(rig, result, repair, FIRST_CALL_TEXT)
 
 
-def test_run_polish_round_sends_the_repository_skill_that_first_appears_there(
+def test_run_polish_round_sends_the_fixed_guidance_that_first_appears_there(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
@@ -841,8 +808,8 @@ def test_run_polish_round_sends_the_repository_skill_that_first_appears_there(
     first, second = rig.session_paths()
     first_prompt, polish_prompt = rig.prompts
     assert second == first
-    assert SKILL_GUIDANCE not in first_prompt
-    assert _missing_from(polish_prompt, [SKILL_GUIDANCE, POLISH_SUMMARY, DIFF.strip()]) == []
+    assert FIXED_POLISH_GUIDANCE not in first_prompt
+    assert _missing_from(polish_prompt, [FIXED_POLISH_GUIDANCE, POLISH_SUMMARY, DIFF.strip()]) == []
     _assert_sent_only_what_changed(rig, result, polish, FIRST_CALL_TEXT)
 
 

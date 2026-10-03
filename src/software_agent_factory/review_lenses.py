@@ -3,7 +3,8 @@
 A lens is a short checklist for one kind of change. The registry is data, and
 a pure function selects the lenses whose scope matches at least one changed
 file. No model selects lenses. The reviewer receives the selected checklists,
-so a backend-only change gets no user interface checklist.
+so a backend-only change gets no user interface checklist. A stack lens, such
+as ``react``, also needs the repository to declare one of its dependencies.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ class ReviewLens:
     name: str
     scope: tuple[str, ...]
     checklist: tuple[str, ...]
+    #: Dependency names that enable the lens. Empty means the scope alone decides.
+    dependencies: tuple[str, ...] = ()
 
     def applies_to(self, path: str) -> bool:
         if self.scope == ALWAYS:
@@ -97,6 +100,35 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
             "Effects or watchers with missing dependencies, or subscriptions that leak.",
             "List items without a stable key.",
         ),
+    ),
+    ReviewLens(
+        "react",
+        ("*.tsx", "*.jsx", "*.ts", "*.js"),
+        (
+            "Hooks called in a condition or a loop, or a dependency array that is not stable.",
+            "State set during render.",
+            "Effects that do not clean up their subscriptions.",
+        ),
+        dependencies=("react", "react-dom"),
+    ),
+    ReviewLens(
+        "vue",
+        ("*.vue", "*.ts", "*.js"),
+        (
+            "A ref read without unwrapping, or a destructured reactive object.",
+            "Watchers that do not clean up their subscriptions.",
+            "A reactive proxy that escapes to code that does not expect it.",
+        ),
+        dependencies=("vue",),
+    ),
+    ReviewLens(
+        "angular",
+        ("*.ts", "*.html"),
+        (
+            "Subscriptions that do not unsubscribe and do not use the async pipe.",
+            "OnPush components that change an input in place.",
+        ),
+        dependencies=("@angular/core",),
     ),
     ReviewLens(
         "data",
@@ -176,12 +208,22 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
 )
 
 
-def select_review_lenses(changed_files: list[str] | tuple[str, ...]) -> tuple[ReviewLens, ...]:
-    """Return the lenses that apply to at least one changed file, in registry order."""
+def select_review_lenses(
+    changed_files: list[str] | tuple[str, ...],
+    dependencies: frozenset[str] = frozenset(),
+) -> tuple[ReviewLens, ...]:
+    """Return the lenses that apply to at least one changed file, in registry order.
+
+    ``dependencies`` holds the dependency names the repository declares. A lens
+    with dependencies applies only when the repository declares one of them.
+    """
     if not changed_files:
         return ()
     return tuple(
-        lens for lens in REVIEW_LENSES if any(lens.applies_to(path) for path in changed_files)
+        lens
+        for lens in REVIEW_LENSES
+        if (not lens.dependencies or dependencies.intersection(lens.dependencies))
+        and any(lens.applies_to(path) for path in changed_files)
     )
 
 
