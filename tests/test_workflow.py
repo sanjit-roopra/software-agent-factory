@@ -47,6 +47,7 @@ from software_agent_factory.models import (
     FactoryRun,
     InvocationRecord,
     MutationReport,
+    MutationStatus,
     PlanDecisionAnswer,
     PlanStep,
     RepairContext,
@@ -5376,25 +5377,46 @@ def uv_mutmut_repo(uv_python_repo: Path) -> Path:
 def _python_editing_implementer(request: AgentRequest) -> AgentResult:
     result = FakeAgentRuntime().run(request)
     assert request.workspace_path is not None
-    (Path(request.workspace_path) / "app.py").write_text("x = 2\n", encoding="utf-8")
+    source = Path(request.workspace_path) / "src"
+    source.mkdir(exist_ok=True)
+    (source / "app.py").write_text("x = 2\n", encoding="utf-8")
     return result
+
+
+def _docs_editing_implementer(request: AgentRequest) -> AgentResult:
+    result = FakeAgentRuntime().run(request)
+    assert request.workspace_path is not None
+    (Path(request.workspace_path) / "NOTES.md").write_text("notes\n", encoding="utf-8")
+    return result
+
+
+_MUTMUT_RUN_APP = "uv run --no-sync mutmut run 'app.*'"
+
+
+def _mutation_controller(
+    data_dir: Path,
+    runner: _ScriptedCommandRunner,
+    implementer: Callable[[AgentRequest], AgentResult] = _python_editing_implementer,
+    **repository: object,
+) -> tuple[WorkflowController, FileRunStore]:
+    config = _config(data_dir)
+    config = config.model_copy(
+        update={"repository": config.repository.model_copy(update=repository)}
+    )
+    store = FileRunStore(data_dir)
+    runtime = FakeAgentRuntime(implementer=implementer)
+    return WorkflowController(config, store, runtime, verifier=runner), store
 
 
 def test_mutation_gate_adds_an_advisory_check_for_changed_python(
     uv_mutmut_repo: Path, data_dir: Path
 ) -> None:
     runner = _ScriptedCommandRunner()
-    store = FileRunStore(data_dir)
-    controller = WorkflowController(
-        _config(data_dir),
-        store,
-        FakeAgentRuntime(implementer=_python_editing_implementer),
-        verifier=runner,
-    )
+    controller, store = _mutation_controller(data_dir, runner)
 
     run = controller.run(_work_item("WI-mutation-gate"), uv_mutmut_repo)
 
-    assert "uv run --no-sync mutmut run 'app.*'" in runner.commands
+    assert _MUTMUT_RUN_APP in runner.commands
     report = store.load_artifact(run.id, MutationReport)
     assert report.modules == ("app",)
     verification = store.load_artifact(run.id, VerificationReport)
@@ -5402,18 +5424,40 @@ def test_mutation_gate_adds_an_advisory_check_for_changed_python(
     assert verification.deterministic_checks[-1].command == "mutmut run app"
 
 
-def test_mutation_gate_is_off_without_the_switch(uv_mutmut_repo: Path, data_dir: Path) -> None:
+def test_mutation_gate_error_is_recorded_and_does_not_fail_the_run(
+    uv_mutmut_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner(raises=frozenset({_MUTMUT_RUN_APP}))
+    controller, store = _mutation_controller(data_dir, runner)
+
+    run = controller.run(_work_item("WI-mutation-error"), uv_mutmut_repo)
+
+    assert store.load_artifact(run.id, MutationReport) == MutationReport(
+        status=MutationStatus.SKIPPED, modules=("app",), reason="mutation gate error: OSError"
+    )
+    assert store.load_artifact(run.id, VerificationReport).passed is True
+
+
+def test_mutation_gate_records_a_change_without_python_sources(
+    uv_mutmut_repo: Path, data_dir: Path
+) -> None:
     runner = _ScriptedCommandRunner()
-    config = _config(data_dir)
-    config = config.model_copy(
-        update={"repository": config.repository.model_copy(update={"mutation_gate": False})}
+    controller, store = _mutation_controller(data_dir, runner, _docs_editing_implementer)
+
+    run = controller.run(_work_item("WI-mutation-docs"), uv_mutmut_repo)
+
+    assert store.load_artifact(run.id, MutationReport) == MutationReport(
+        status=MutationStatus.SKIPPED, reason="no changed Python source modules"
     )
-    controller = WorkflowController(
-        config,
-        FileRunStore(data_dir),
-        FakeAgentRuntime(implementer=_python_editing_implementer),
-        verifier=runner,
-    )
+    assert not any("mutmut" in command for command in runner.commands)
+
+
+@pytest.mark.parametrize("switch", ["mutation_gate", "derive_commands"])
+def test_mutation_gate_is_off_without_the_switch_or_verify_commands(
+    uv_mutmut_repo: Path, data_dir: Path, switch: str
+) -> None:
+    runner = _ScriptedCommandRunner()
+    controller, _store = _mutation_controller(data_dir, runner, **{switch: False})
 
     controller.run(_work_item("WI-mutation-off"), uv_mutmut_repo)
 

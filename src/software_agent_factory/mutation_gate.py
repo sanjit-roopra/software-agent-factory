@@ -1,10 +1,14 @@
 """Mutation gate for Python changes (ADR-034).
 
 After the verify commands pass, the gate runs ``mutmut`` 3 on the Python
-source modules that the change touched. ``mutmut`` needs no configuration: it
-finds the package, copies it into ``mutants/`` and runs the tests against each
-mutant. Surviving mutants, and a changed module of which the tests kill no
-mutant, are evidence for the tester and the reviewer.
+source modules that the change touched. Without configuration, ``mutmut``
+mutates ``lib/`` or ``src/``, so the gate runs only for changed files in that
+directory. A flat layout needs ``source_paths`` in the ``mutmut``
+configuration; the gate then runs for any changed module. ``mutmut`` copies
+the code into ``mutants/``, runs the tests against each mutant and records each
+result in a ``.meta`` file next to the copy. The gate reads those files.
+Surviving mutants, and a changed module of which the tests kill no mutant, are
+evidence for the tester and the reviewer.
 
 The gate is advisory. It never fails verification: ``mutmut`` also makes
 equivalent mutants, such as ``<`` to ``<=`` where both return the same value,
@@ -15,72 +19,133 @@ a crash or a timeout skips the gate and records why. It always removes
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
+import stat
+import tomllib
 from collections.abc import Sequence
+from configparser import ConfigParser
+from configparser import Error as ConfigParserError
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .command_probe import CommandRunner, ProbeLimits
-from .models import CommandResult, MutationReport, MutationStatus, VerificationReport
+from .models import (
+    MAX_COMMAND_TEXT_LENGTH,
+    CommandResult,
+    MutationReport,
+    MutationStatus,
+    VerificationReport,
+)
 
 MUTANTS_DIR = "mutants"
 MAX_LISTED_SURVIVORS = 50
-_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
-_RESULT_LINE = re.compile(r"^\s*(?P<name>\S+): (?P<status>.+?)\s*$")
+MAX_META_BYTES = 16 * 1024 * 1024
+#: The directories that ``mutmut`` mutates without configuration, in its own order.
+DEFAULT_SOURCE_DIRS = ("lib", "src")
+FLAT_LAYOUT_REASON = (
+    "no lib/ or src/ directory: set source_paths in the mutmut configuration for a flat layout"
+)
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
+_MUTANT_NAME = re.compile(r"[A-Za-z0-9_.ǁ]{1,200}__mutmut_\d{1,9}")
 _TEST_DIRS = frozenset({"tests", "test", "testing"})
+#: ``mutmut`` 3 exit codes per mutant. Every other code counts as ``other``.
+_KILLED = frozenset({1, 3})
+_SURVIVED = frozenset({0})
+_NO_TESTS = frozenset({5, 33})
 
 
-def mutation_targets(changed_files: Sequence[str]) -> tuple[str, ...]:
-    """Return the dotted module names of the changed Python source files.
+@dataclass(frozen=True)
+class MutationTarget:
+    """One changed Python source file and the ``mutmut`` module name of its mutants."""
+
+    path: str
+    module: str
+
+    @property
+    def patterns(self) -> tuple[str, ...]:
+        """Return the ``mutmut run`` patterns that select only this file's mutants.
+
+        ``mutmut`` names the mutants of ``pkg/__init__.py`` ``pkg.x_…`` or
+        ``pkg.xǁ…``, so ``pkg.*`` would also select every submodule.
+        """
+        if PurePosixPath(self.path).name == "__init__.py":
+            return (f"{self.module}.x_*", f"{self.module}.xǁ*")
+        return (f"{self.module}.*",)
+
+
+def mutation_targets(changed_files: Sequence[str]) -> tuple[MutationTarget, ...]:
+    """Return the changed Python source files that ``mutmut`` can name.
 
     Test files and paths that are not safe module names are left out, so no
     repository text reaches a shell command.
     """
 
-    modules: list[str] = []
+    targets: list[MutationTarget] = []
     for path in changed_files:
         posix = PurePosixPath(path)
         if posix.suffix != ".py" or _is_test_path(posix):
             continue
+        # mutmut drops a leading "src." and turns ".__init__." into ".".
         parts = list(posix.with_suffix("").parts)
         if parts and parts[0] == "src":
             parts = parts[1:]
         if parts and parts[-1] == "__init__":
             parts = parts[:-1]
         module = ".".join(parts)
-        if module and _MODULE_NAME.match(module) and module not in modules:
-            modules.append(module)
-    return tuple(modules)
+        target = MutationTarget(path=posix.as_posix(), module=module)
+        if module and _MODULE_NAME.fullmatch(module) and target not in targets:
+            targets.append(target)
+    return tuple(targets)
 
 
 def run_mutation_gate(
     command_runner: CommandRunner,
     worktree: Path,
     exec_prefix: str,
-    modules: tuple[str, ...],
+    targets: tuple[MutationTarget, ...],
     limits: ProbeLimits,
 ) -> MutationReport:
-    """Run ``mutmut`` on ``modules`` and judge the result. Always remove ``mutants/``."""
+    """Run ``mutmut`` on ``targets`` and judge the result. Always remove ``mutants/``."""
 
-    if (worktree / MUTANTS_DIR).exists() or (worktree / MUTANTS_DIR).is_symlink():
+    modules = tuple(target.module for target in targets)
+    if os.path.lexists(worktree / MUTANTS_DIR):
         # The repository owns a mutants/ path. The gate must not delete it.
         return MutationReport(
             status=MutationStatus.SKIPPED,
             modules=modules,
             reason=f"{MUTANTS_DIR}/ already exists in the repository",
         )
-    patterns = " ".join(f"'{module}.*'" for module in modules)
+    if not _has_mutmut_configuration(worktree):
+        targets = _in_default_source_dir(worktree, targets)
+        if not targets:
+            return MutationReport(
+                status=MutationStatus.SKIPPED, modules=modules, reason=FLAT_LAYOUT_REASON
+            )
+        modules = tuple(target.module for target in targets)
+    patterns = " ".join(f"'{pattern}'" for target in targets for pattern in target.patterns)
     try:
-        run = _run(command_runner, worktree, f"{exec_prefix} mutmut run {patterns}", limits)
+        run = command_runner.run(
+            [f"{exec_prefix} mutmut run {patterns}"],
+            worktree,
+            limits.timeout_seconds,
+            env_passthrough=limits.env_passthrough,
+            capture_bytes=limits.capture_bytes,
+        )
         if not run.passed:
             return _skipped(modules, "mutmut run did not finish", run)
-        results = _run(command_runner, worktree, f"{exec_prefix} mutmut results --all true", limits)
-        if not results.passed:
-            return _skipped(modules, "mutmut results did not finish", results)
-        statuses = _parse_results(results.deterministic_checks[-1].stdout, modules)
+        exit_codes = _read_exit_codes(worktree, targets)
     finally:
         _remove_mutants(worktree)
-    return _judge(modules, statuses)
+    if exit_codes is None:
+        return MutationReport(
+            status=MutationStatus.SKIPPED,
+            modules=modules,
+            reason="mutmut left a result file that the gate cannot read",
+        )
+    return _judge(modules, exit_codes)
 
 
 def mutation_check_result(report: MutationReport, duration_seconds: float) -> CommandResult:
@@ -88,14 +153,16 @@ def mutation_check_result(report: MutationReport, duration_seconds: float) -> Co
     lines = [
         f"mutation gate: {report.status}",
         f"modules: {', '.join(report.modules)}",
-        f"killed: {report.killed}, survived: {len(report.survived)}, "
+        f"killed: {report.killed}, survived: {report.survived_count}, "
         f"no tests: {report.no_tests}, other: {report.other}",
     ]
     if report.reason:
         lines.append(report.reason)
     if report.survived:
         lines.append("surviving mutants (show one with `mutmut show <name>`):")
-        lines.extend(f"- {name}" for name in report.survived[:MAX_LISTED_SURVIVORS])
+        lines.extend(f"- {name}" for name in report.survived)
+        if report.survived_count > len(report.survived):
+            lines.append(f"- and {report.survived_count - len(report.survived)} more")
     return CommandResult(
         command=f"mutmut run {' '.join(report.modules)}",
         exit_code=0,
@@ -105,60 +172,117 @@ def mutation_check_result(report: MutationReport, duration_seconds: float) -> Co
     )
 
 
-def _run(
-    command_runner: CommandRunner, worktree: Path, command: str, limits: ProbeLimits
-) -> VerificationReport:
-    return command_runner.run(
-        [command],
-        worktree,
-        limits.timeout_seconds,
-        env_passthrough=limits.env_passthrough,
-        capture_bytes=limits.capture_bytes,
+def _has_mutmut_configuration(worktree: Path) -> bool:
+    """Return whether the repository sets ``source_paths`` for ``mutmut``."""
+    try:
+        pyproject = tomllib.loads((worktree / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        pyproject = {}
+    tool = pyproject.get("tool")
+    mutmut = tool.get("mutmut") if isinstance(tool, dict) else None
+    if isinstance(mutmut, dict) and ("source_paths" in mutmut or "paths_to_mutate" in mutmut):
+        return True
+    parser = ConfigParser()
+    try:
+        parser.read(worktree / "setup.cfg", encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ConfigParserError):
+        return False
+    return parser.has_option("mutmut", "source_paths") or parser.has_option(
+        "mutmut", "paths_to_mutate"
     )
 
 
-def _parse_results(output: str, modules: tuple[str, ...]) -> dict[str, str]:
-    statuses: dict[str, str] = {}
-    for line in output.splitlines():
-        match = _RESULT_LINE.match(line)
-        if match is None:
+def _in_default_source_dir(
+    worktree: Path, targets: tuple[MutationTarget, ...]
+) -> tuple[MutationTarget, ...]:
+    """Return the targets in the directory that ``mutmut`` mutates without configuration."""
+    for directory in DEFAULT_SOURCE_DIRS:
+        if (worktree / directory).is_dir() and not (worktree / directory).is_symlink():
+            return tuple(t for t in targets if PurePosixPath(t.path).parts[0] == directory)
+    return ()
+
+
+def _read_exit_codes(
+    worktree: Path, targets: tuple[MutationTarget, ...]
+) -> dict[str, int | None] | None:
+    """Read each target's ``.meta`` file. ``None`` when one is not a readable result."""
+    exit_codes: dict[str, int | None] = {}
+    for target in targets:
+        raw = _read_regular_bytes(worktree / MUTANTS_DIR / f"{target.path}.meta")
+        if raw is None:
+            # No .meta file: mutmut found nothing to mutate in this file.
             continue
-        name = match["name"]
-        if any(name.startswith(f"{module}.") for module in modules):
-            statuses[name] = match["status"]
-    return statuses
+        try:
+            meta = json.loads(raw)
+        except (UnicodeDecodeError, ValueError):
+            return None
+        codes = meta.get("exit_code_by_key") if isinstance(meta, dict) else None
+        if not isinstance(codes, dict):
+            return None
+        for name, code in codes.items():
+            if isinstance(code, bool) or not (code is None or isinstance(code, int)):
+                return None
+            exit_codes[str(name)] = code
+    return exit_codes
 
 
-def _judge(modules: tuple[str, ...], statuses: dict[str, str]) -> MutationReport:
-    killed = sum(1 for status in statuses.values() if status == "killed")
-    survived = tuple(sorted(name for name, status in statuses.items() if status == "survived"))
-    no_tests = sum(1 for status in statuses.values() if status == "no tests")
-    other = len(statuses) - killed - len(survived) - no_tests
-    unkilled = [
-        module
-        for module in modules
-        if _mutants_of(module, statuses)
-        and not any(statuses[name] == "killed" for name in _mutants_of(module, statuses))
-    ]
+def _read_regular_bytes(path: Path) -> bytes | None:
+    """Read a regular file without following a link. ``None`` when it is missing or odd."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        raw = handle.read(MAX_META_BYTES + 1)
+    return None if len(raw) > MAX_META_BYTES else raw
+
+
+def _judge(modules: tuple[str, ...], exit_codes: dict[str, int | None]) -> MutationReport:
+    killed = sum(1 for code in exit_codes.values() if code in _KILLED)
+    survivors = [name for name, code in exit_codes.items() if code in _SURVIVED]
+    no_tests = sum(1 for code in exit_codes.values() if code in _NO_TESTS)
+    other = len(exit_codes) - killed - len(survivors) - no_tests
+    unkilled = [module for module in modules if _no_kill(module, exit_codes)]
     status = MutationStatus.NO_KILL if unkilled else MutationStatus.PASSED
     reason: str | None = None
     if unkilled:
-        reason = f"the tests kill no mutant of: {', '.join(unkilled)}"
-    elif not statuses:
+        reason = _bounded(f"the tests kill no mutant of: {', '.join(unkilled)}")
+    elif not exit_codes:
         reason = "no mutants in the changed modules"
+    listed = sorted(name for name in survivors if _MUTANT_NAME.fullmatch(name))
     return MutationReport(
         status=status,
         modules=modules,
         killed=killed,
-        survived=survived[:MAX_LISTED_SURVIVORS],
+        survived=tuple(listed[:MAX_LISTED_SURVIVORS]),
+        survived_count=len(survivors),
         no_tests=no_tests,
         other=other,
         reason=reason,
     )
 
 
-def _mutants_of(module: str, statuses: dict[str, str]) -> list[str]:
-    return [name for name in statuses if name.startswith(f"{module}.")]
+def _no_kill(module: str, exit_codes: dict[str, int | None]) -> bool:
+    """Return whether ``module`` has mutants and the tests kill none of them."""
+    codes = [code for name, code in exit_codes.items() if _module_of(name) == module]
+    return bool(codes) and not any(code in _KILLED for code in codes)
+
+
+def _module_of(name: str) -> str:
+    """Return the module part of a mutant name, as ``mutmut`` itself finds it."""
+    parts = name.split(".")
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].startswith(("x_", "xǁ")):
+            return ".".join(parts[:index])
+    return name.rpartition(".")[0]
+
+
+def _bounded(text: str) -> str:
+    if len(text) <= MAX_COMMAND_TEXT_LENGTH:
+        return text
+    return text[: MAX_COMMAND_TEXT_LENGTH - 3] + "..."
 
 
 def _skipped(modules: tuple[str, ...], reason: str, report: VerificationReport) -> MutationReport:

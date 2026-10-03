@@ -466,6 +466,7 @@ class MutationReport(VersionedModel):
     ``no_kill`` means the tests kill no mutant of a changed module. That is
     evidence for review, not a failure: a mutant can be equivalent to the code.
     ``skipped`` means the gate could not judge, and the reason says why.
+    ``survived`` lists at most 50 mutant names. ``survived_count`` counts all.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -474,6 +475,7 @@ class MutationReport(VersionedModel):
     modules: tuple[str, ...] = ()
     killed: int = Field(default=0, ge=0)
     survived: tuple[str, ...] = Field(default=(), max_length=50)
+    survived_count: int = Field(default=0, ge=0)
     no_tests: int = Field(default=0, ge=0)
     other: int = Field(default=0, ge=0)
     reason: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)

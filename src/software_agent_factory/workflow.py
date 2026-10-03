@@ -120,6 +120,8 @@ from .models import (
     FactoryRun,
     HaltReasonCode,
     InvocationRecord,
+    MutationReport,
+    MutationStatus,
     PlanDecisionAnswers,
     PlanStep,
     RepairContext,
@@ -155,7 +157,12 @@ from .models import (
     WorkItem,
     utc_now,
 )
-from .mutation_gate import mutation_check_result, mutation_targets, run_mutation_gate
+from .mutation_gate import (
+    MutationTarget,
+    mutation_check_result,
+    mutation_targets,
+    run_mutation_gate,
+)
 from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
 from .repository_profile import (
     can_reuse_repository_profile,
@@ -3632,25 +3639,43 @@ class WorkflowController:
         """
         exec_prefix = self._mutation_exec_prefix(run)
         evidence = context.latest_evidence
-        if exec_prefix is None or evidence is None:
+        if exec_prefix is None or evidence is None or not result.report.deterministic_checks:
+            # No verify command ran, so the repository's code is not run here either.
             return result
-        modules = mutation_targets(evidence.changed_files)
-        if not modules:
-            return result
+        targets = mutation_targets(evidence.changed_files)
         started = time.monotonic()
-        report = run_mutation_gate(
-            self._command_runner,
-            context.workspace.path,
-            exec_prefix,
-            modules,
-            ProbeLimits.from_repository(self._config.repository),
-        )
+        if not targets:
+            report = MutationReport(
+                status=MutationStatus.SKIPPED, reason="no changed Python source modules"
+            )
+        else:
+            report = self._run_mutation_gate(context, exec_prefix, targets)
+        # Saved on every passed verification, so no report from an older attempt stays.
         self._store.save_artifact(run.id, report)
         check = mutation_check_result(report, time.monotonic() - started)
         verification = result.report.model_copy(
             update={"deterministic_checks": [*result.report.deterministic_checks, check]}
         )
         return dataclasses.replace(result, report=verification)
+
+    def _run_mutation_gate(
+        self, context: _RunContext, exec_prefix: str, targets: tuple[MutationTarget, ...]
+    ) -> MutationReport:
+        try:
+            return run_mutation_gate(
+                self._command_runner,
+                context.workspace.path,
+                exec_prefix,
+                targets,
+                ProbeLimits.from_repository(self._config.repository),
+            )
+        except Exception as exc:
+            # The gate is advisory. Its own failure never fails the run.
+            return MutationReport(
+                status=MutationStatus.SKIPPED,
+                modules=tuple(target.module for target in targets),
+                reason=f"mutation gate error: {type(exc).__name__}",
+            )
 
     def _mutation_exec_prefix(self, run: FactoryRun) -> str | None:
         """Return the Python package runner prefix when the gate can run, else ``None``."""
