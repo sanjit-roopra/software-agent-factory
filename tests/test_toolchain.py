@@ -389,6 +389,11 @@ def test_missing_root_yields_bindings_without_file_evidence(tmp_path: Path) -> N
         ("repository profiling degraded: <repo text>", "repository profiling degraded"),
         ("invalid manifest package.json: <repo text>", "invalid manifest"),
         ("could not read pyproject.toml: <repo text>", "could not read"),
+        ("skipped oversized manifest: package.json", "skipped oversized manifest"),
+        (
+            "ignored dependency declaration outside profile limits in pyproject.toml: x",
+            "ignored dependency declaration outside profile limits",
+        ),
     ],
 )
 def test_incomplete_profile_evidence_marks_the_inventory_incomplete(
@@ -467,10 +472,16 @@ def _profile_with_python() -> RepositoryProfile:
     )
 
 
-def test_lockfile_warning_keeps_the_inventory_complete(tmp_path: Path) -> None:
-    profile = _profile_with_python().model_copy(
-        update={"warnings": ("invalid lockfile uv.lock: <repo text>",)}
-    )
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "invalid lockfile uv.lock: <repo text>",
+        "skipped oversized manifest: web/package-lock.json",
+        "could not read pnpm-lock.yaml: <repo text>",
+    ],
+)
+def test_lockfile_warning_keeps_the_inventory_complete(tmp_path: Path, warning: str) -> None:
+    profile = _profile_with_python().model_copy(update={"warnings": (warning,)})
 
     inventory = inventory_toolchain(tmp_path, profile)
 

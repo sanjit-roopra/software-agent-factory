@@ -16,6 +16,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import re
 import stat
 import tomllib
 from collections.abc import Callable, Mapping
@@ -37,17 +38,35 @@ from .repository_profile import MAX_MANIFEST_BYTES
 
 #: Profile warnings that mean dependency or technology evidence is incomplete.
 #: A missing binding is then not proof that the repository lacks the tool.
-#: Lockfile warnings are left out: they lose versions, not dependency names.
 INCOMPLETE_PROFILE_WARNING_PREFIXES = (
     "scan limit reached",
     "dependency evidence limited",
     "repository profiling degraded",
+    "ignored dependency declaration outside profile limits",
     "could not read",
     "invalid manifest",
     "invalid config",
     "invalid requirements file",
     "skipped oversized manifest",
 )
+
+#: Lockfiles add versions, not dependency names, so a lockfile that cannot be
+#: read leaves the evidence complete. The profiler reads lockfiles with the
+#: same reader as manifests, so its warnings use the same prefixes.
+_LOCKFILE_NAMES = frozenset(
+    {
+        "uv.lock",
+        "poetry.lock",
+        "pipfile.lock",
+        "pylock.toml",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+    }
+)
+_WARNING_PATH = re.compile(r"^(?:could not read |skipped oversized manifest: )(?P<path>[^:]+)")
 
 
 @dataclass(frozen=True)
@@ -231,10 +250,11 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
         if spec.requires is None or spec.requires in profile.technologies
     ]
     # Copy only the fixed prefix. A profile warning can quote repository text.
+    evidence_warnings = [w for w in profile.warnings if not _names_a_lockfile(w)]
     incomplete = [
         prefix
         for prefix in INCOMPLETE_PROFILE_WARNING_PREFIXES
-        if any(warning.startswith(prefix) for warning in profile.warnings)
+        if any(warning.startswith(prefix) for warning in evidence_warnings)
     ]
     return ToolchainInventory(
         lanes=lanes,
@@ -242,6 +262,11 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
         complete=not incomplete and not facts.root_evidence.warnings,
         warnings=(*incomplete, *facts.root_evidence.warnings),
     )
+
+
+def _names_a_lockfile(warning: str) -> bool:
+    match = _WARNING_PATH.match(warning)
+    return match is not None and Path(match["path"]).name.lower() in _LOCKFILE_NAMES
 
 
 def degraded_toolchain_inventory(warning: str) -> ToolchainInventory:
