@@ -45,6 +45,7 @@ from .models import (
     VerificationReport,
     WorkItem,
 )
+from .review_lenses import render_review_lenses, select_review_lenses
 from .writing_policy import writing_limits_text
 
 type RoleName = AgentRole | str
@@ -62,6 +63,7 @@ _RESEARCH_REPORT_TITLE = "Research report"
 _DIFF_TITLE = "Diff"
 _VERIFICATION_TITLE = "Deterministic verification"
 _CHANGED_FILES_TITLE = "Changed files"
+_REVIEW_LENSES_TITLE = "Review lenses for the changed files"
 _REPAIR_CONTEXT_TITLE = "Repair context"
 _CURRENT_DIFF_TITLE = "Current diff"
 _OUTPUT_REJECTION_TITLE = "Previous output rejection"
@@ -653,9 +655,29 @@ def _accepted_debt_sections(request: AgentRequest) -> list[tuple[str, object]]:
     ]
 
 
+def _review_lens_sections(request: AgentRequest) -> list[tuple[str, object]]:
+    """The checklists that apply to the changed files (ADR-034). No model selects them."""
+    lenses = select_review_lenses(request.changed_files)
+    if not lenses:
+        return []
+    return [
+        (
+            _REVIEW_LENSES_TITLE,
+            {
+                "rule": (
+                    "Check the change against each checklist. Report an item only as a "
+                    "concrete defect in the current change."
+                ),
+                "lenses": render_review_lenses(lenses),
+            },
+        )
+    ]
+
+
 def _reviewer_sections(request: AgentRequest) -> list[tuple[str, object]]:
     return [
         *_evidence_sections(request),
+        *_review_lens_sections(request),
         *_given(
             ("Independent tester report", request.test_report),
             ("Implementation snapshot under review", request.attempt_number),

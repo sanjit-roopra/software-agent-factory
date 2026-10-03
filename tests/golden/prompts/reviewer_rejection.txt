@@ -56,6 +56,9 @@ diff --git a/src/app.py b/src/app.py
 Deterministic verification:
 {"confidence":1.0,"deterministic_checks":[{"command":"pytest -q","duration_seconds":1.0,"exit_code":0,"stderr":"","stdout":"[omitted: sha256=c170a0864a6f10c7f15ff52e35b6a315716aea7e6c95ad3856f9349f05cd28be]","stdout_hash":"c170a0864a6f10c7f15ff52e35b6a315716aea7e6c95ad3856f9349f05cd28be","test_counts":{"passed":1}}],"passed":true}
 
+Review lenses for the changed files:
+{"lenses":[{"check":["Inverted or missing conditions, off-by-one errors and unhandled empty input.","Return values and errors that callers ignore.","Behavior that differs from the acceptance criteria."],"lens":"correctness"},{"check":["Untrusted input that reaches a shell, a query, a path or a template.","Secrets in code, logs or error messages.","Missing authorization on a new entry point."],"lens":"security"},{"check":["New behavior without a test that fails when the behavior breaks.","Assertions that pass for wrong output, such as a check for any value.","Tests that depend on time, order, randomness or the network."],"lens":"tests"},{"check":["Missing type annotations on public functions.","Bare except, or a broad except that hides the error.","Mutable default arguments."],"lens":"python"}],"rule":"Check the change against each checklist. Report an item only as a concrete defect in the current change."}
+
 Independent tester report:
 {"confidence":0.5,"findings":["Whitespace is accepted."],"passed":false,"provenance":"AGENT","schema_version":1,"skip_reason":null,"skipped":false,"suggested_tests":[]}
 
