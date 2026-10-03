@@ -278,3 +278,24 @@ def test_yarn_and_bun_add_tools_to_the_lockfile_only(
     plan = plan_toolchain_setup(inventory, _profile(lockfile))
 
     assert plan.commands == (expected,)
+
+
+@pytest.mark.parametrize(
+    ("yarn_berry", "expected"),
+    [
+        (False, "yarn add --dev --ignore-scripts -W oxlint"),
+        (True, "yarn add --dev --mode=update-lockfile oxlint"),
+    ],
+)
+def test_yarn_1_workspace_root_gets_the_root_flag(yarn_berry: bool, expected: str) -> None:
+    inventory = ToolchainInventory(
+        lanes=(_JS,),
+        bindings=(_binding(_JS, ToolchainSlot.LINT),),
+        mutation_tool_lanes=(_JS,),
+        yarn_berry=yarn_berry,
+        yarn_workspace=True,
+    )
+
+    plan = plan_toolchain_setup(inventory, _profile("yarn.lock"))
+
+    assert plan.commands == (expected,)

@@ -250,6 +250,9 @@ SETUP_ALLOWED_PATHS = frozenset(
         "package.json",
         "package-lock.json",
         "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
         f"{SETUP_RECORD_DIR}/{SETUP_RECORD_NAME}",
     }
 )

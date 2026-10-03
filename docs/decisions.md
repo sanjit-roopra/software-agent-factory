@@ -73,7 +73,9 @@ The factory takes over this model, in five slices.
   `uv add --dev --no-sync`, `poetry add --group dev --lock`, `npm install --save-dev --package-lock-only --ignore-scripts`, `pnpm add --save-dev --lockfile-only --ignore-scripts`,
   `yarn add --dev --ignore-scripts` (Yarn 1), `yarn add --dev --mode=update-lockfile` (Yarn 2 and later) or `bun add --dev --lockfile-only --ignore-scripts`.
   These commands install nothing, except Yarn 1, which has no lockfile-only mode. The JavaScript commands run no package scripts.
-  Yarn 2 and later skips scripts in this mode. A `.yarnrc.yml` file at the root marks Yarn 2 and later.
+  Yarn 2 and later skips scripts in this mode.
+  Yarn 2 and later is found from a root `.yarnrc.yml`, a `packageManager` of `yarn@2` or later, or a `yarn.lock` with a `__metadata:` header.
+  A Yarn 1 workspace root also gets `-W`.
   Python locking can run the project's build backend to read package metadata.
   A pnpm workspace root also gets `--workspace-root`.
 - A lane is skipped when it has more than one lockfile at the root, such as `package-lock.json` and `yarn.lock`.

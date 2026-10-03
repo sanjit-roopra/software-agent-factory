@@ -344,8 +344,11 @@ class ToolchainInventory(VersionedModel):
     mutation_tool_lanes: tuple[ToolchainLane, ...] = ()
     #: Whether the root holds ``pnpm-workspace.yaml``.
     pnpm_workspace: bool = False
-    #: Whether the root holds ``.yarnrc.yml``, the mark of Yarn 2 and later.
+    #: Whether the project uses Yarn 2 or later: a root ``.yarnrc.yml``, a
+    #: ``packageManager`` of ``yarn@2`` or later, or a Yarn 2 ``yarn.lock``.
     yarn_berry: bool = False
+    #: Whether the root ``package.json`` declares ``workspaces``.
+    yarn_workspace: bool = False
     warnings: tuple[str, ...] = ()
 
     @model_validator(mode="after")
