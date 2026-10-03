@@ -127,7 +127,14 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
     ),
     ReviewLens(
         "ci",
-        (".github/workflows/*", "*.yml", "*.yaml"),
+        (
+            ".github/workflows/*",
+            ".github/actions/*",
+            ".gitlab-ci.yml",
+            ".circleci/*",
+            "azure-pipelines.yml",
+            "Jenkinsfile",
+        ),
         (
             "Third-party actions that are not pinned to a commit.",
             "Workflow permissions wider than the job needs.",
@@ -136,7 +143,17 @@ REVIEW_LENSES: tuple[ReviewLens, ...] = (
     ),
     ReviewLens(
         "containers",
-        ("Dockerfile", "Dockerfile.*", "*.dockerfile", "compose.yml", "compose.yaml"),
+        (
+            "Dockerfile",
+            "Dockerfile.*",
+            "*.dockerfile",
+            "*.Dockerfile",
+            "compose.yml",
+            "compose.yaml",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.*.yml",
+        ),
         (
             "Images that run as root or use a floating tag.",
             "Secrets copied into an image layer.",

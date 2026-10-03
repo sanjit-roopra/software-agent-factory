@@ -41,7 +41,10 @@ def test_backend_python_change_gets_no_ui_lens() -> None:
         ("pyproject.toml", "dependencies"),
         ("web/package-lock.json", "dependencies"),
         (".github/workflows/ci.yml", "ci"),
+        (".gitlab-ci.yml", "ci"),
         ("Dockerfile", "containers"),
+        ("api.Dockerfile", "containers"),
+        ("docker-compose.yml", "containers"),
         ("docs/guide.md", "docs"),
         ("README.md", "docs"),
     ],
@@ -84,5 +87,28 @@ def test_reviewer_prompt_lists_the_selected_lenses() -> None:
 
 def test_implementer_prompt_gets_no_lenses() -> None:
     prompt = build_prompt(first_implementer_request(changed_files=["src/app/service.py"]))
+
+    assert "Review lenses for the changed files" not in prompt
+
+
+@pytest.mark.parametrize("path", ["mkdocs.yml", ".pre-commit-config.yaml", "k8s/deploy.yaml"])
+def test_plain_yaml_files_get_no_ci_lens(path: str) -> None:
+    assert "ci" not in _names([path])
+
+
+@pytest.mark.parametrize(
+    ("path", "lens"),
+    [("pnpm-lock.yaml", "ci"), ("src/models.py", "data"), ("src/app.py", "docs")],
+)
+def test_lens_scope_does_not_match_other_files(path: str, lens: str) -> None:
+    assert lens not in _names([path])
+
+
+def test_tester_prompt_gets_no_lenses() -> None:
+    from prompt_fixtures import make_request
+
+    from software_agent_factory.models import AgentRole
+
+    prompt = build_prompt(make_request(AgentRole.TESTER, changed_files=["src/app/service.py"]))
 
     assert "Review lenses for the changed files" not in prompt

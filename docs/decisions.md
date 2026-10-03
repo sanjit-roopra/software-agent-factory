@@ -7,6 +7,8 @@ This supersedes ADR-019 in part and ADR-021 in part. ADR-020 stays.
 
 Amendment on 2026-10-03 (slice C1): a setup run with an unclear stack records a note and adds nothing. It does not escalate.
 
+Amendment on 2026-10-03 (slice E): lenses go into the reviewer prompt only. The polish attempt keeps its repository guidance.
+
 The factory gets lint, format and test commands only from the YAML configuration.
 It installs no tools in the target repository.
 A research call to a model generates skill guidance, and that guidance stays in the factory data directory.
@@ -129,6 +131,7 @@ CLAUDE.md -> AGENTS.md                         symbolic link
 - A lens registry (`review_lenses.py`) holds each review lens with a scope and a short checklist.
   The scope is file patterns or `always`.
 - A pure function selects the lenses that match the changed files that the controller derived. The `always` lenses come first.
+  A repair review uses the same lenses, because the controller derives the files of the whole change.
 - The checklists of the selected lenses go into the reviewer prompt.
   A backend-only change gets no user interface lens.
 - The polish attempt keeps its repository guidance. It gets no lenses in this slice.
@@ -141,7 +144,7 @@ CLAUDE.md -> AGENTS.md                         symbolic link
 - ADR-021: this decision replaces the rule that the factory never writes guidance to target repositories.
   The factory now writes guidance and tools, but only through the setup pull request.
   It still makes no hidden writes. The human overlay stays.
-- ADR-020: the polish attempt stays. Lens guidance replaces the generated skill as its input.
+- ADR-020: the polish attempt stays. It keeps its generated guidance for now. A later slice can replace that input with lens guidance.
 - This decision does not change the factory runtimes. They do not load the repository skills.
   Copilot has no skill tool in its tool list, and pi runs with `--no-skills`.
   A later decision can change this.
