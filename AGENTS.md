@@ -196,6 +196,8 @@ RepositoryProfile
   ↓
 ToolchainInventory
   ↓
+RepositoryCommandsPlan
+  ↓
 TriageResult
   ↓
 Specification
@@ -229,6 +231,12 @@ unambiguous. `poetry.lock`, `yarn.lock` and `bun.lock` identify their package
 manager and are fingerprinted only. Also record `version_files`, a semantic
 `dependency_fingerprint` and a `manifest_fingerprint` kept as file-content
 provenance.
+
+The repository commands step (ADR-034) is the exception to the no-execution
+rule above. When the YAML has no repository commands and
+`repository.derive_commands` is on, it runs the derived install and verify
+commands on the clean base commit before triage, and persists
+`repository-commands.json`.
 
 There is no fixed built-in skill catalog and no repository-provided skill
 plugin system. Repository guidance comes from two separate artifacts with

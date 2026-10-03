@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import os
 import subprocess
+from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable
@@ -35,6 +36,7 @@ from software_agent_factory.models import (
     AttemptBudget,
     AttemptTrigger,
     ChangeSet,
+    CommandResult,
     Complexity,
     ContextTier,
     DashboardResumeRequest,
@@ -47,6 +49,8 @@ from software_agent_factory.models import (
     PlanDecisionAnswer,
     PlanStep,
     RepairContext,
+    RepositoryCommandsPlan,
+    RepositoryCommandsSource,
     RepositoryDependency,
     RepositoryProfile,
     RepositorySkill,
@@ -88,6 +92,7 @@ from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
 from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, FileRunStore
+from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
@@ -769,9 +774,7 @@ def test_synthesized_artifacts_skip_blank_human_criteria(data_dir: Path, source_
     )
 
     specification = controller._synthesize_specification(item)
-    plan = controller._synthesize_execution_plan(
-        item, GitWorktreeWorkspace(data_dir, source_repo, item.id)
-    )
+    plan = controller._synthesize_execution_plan(item, ())
 
     assert specification.acceptance_criteria == ["Blank names return 400."]
     assert specification.constraints == []
@@ -5185,3 +5188,174 @@ def test_dashboard_plan_answers_reach_the_planning_prompt_after_reopen(
     assert planner_contexts[-1] is not None
     assert answer in planner_contexts[-1]
     assert reopened.attempt_records[0].triggered_by is AttemptTrigger.INITIAL
+
+
+# double-waiver: B1 — DeterministicVerifier spawns subprocesses; this records commands instead.
+class _ScriptedCommandRunner(DeterministicVerifier):
+    """Records commands and fails the ones named in ``failing``. Runs nothing."""
+
+    def __init__(
+        self,
+        failing: frozenset[str] = frozenset(),
+        raises: frozenset[str] = frozenset(),
+        error: type[Exception] = OSError,
+    ) -> None:
+        super().__init__()
+        self.failing = failing
+        self.raises = raises
+        self.error = error
+        self.commands: list[str] = []
+
+    def run(
+        self,
+        commands: Sequence[str],
+        cwd: Path,
+        timeout_seconds: int,
+        *,
+        env_passthrough: Sequence[str] = (),
+        capture_bytes: int = 32768,
+    ) -> VerificationReport:
+        results: list[CommandResult] = []
+        for command in commands:
+            self.commands.append(command)
+            if command in self.raises:
+                raise self.error("spawn failed")
+            exit_code = 1 if command in self.failing else 0
+            results.append(
+                CommandResult(
+                    command=command,
+                    exit_code=exit_code,
+                    stdout="",
+                    stderr="",
+                    duration_seconds=0.0,
+                )
+            )
+            if exit_code:
+                break
+        passed = all(result.exit_code == 0 for result in results)
+        return VerificationReport(
+            passed=passed,
+            deterministic_checks=results,
+            failures=[] if passed else ["failed"],
+            confidence=1.0 if passed else 0.0,
+        )
+
+
+@pytest.fixture
+def uv_python_repo(tmp_path: Path) -> Path:
+    """A Python repository with a root uv.lock, ruff configured and pytest declared."""
+    repo = tmp_path / "uv-source"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n\n[dependency-groups]\ndev = ["pytest", "ruff"]\n\n[tool.ruff]\n',
+        encoding="utf-8",
+    )
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit")
+    return repo
+
+
+_UV_INSTALL = "uv sync --locked"
+_RUFF_FORMAT = "CI=true uv run --no-sync ruff format --check ."
+_RUFF_LINT = "CI=true uv run --no-sync ruff check --no-fix ."
+_PYTEST = "CI=true uv run --no-sync pytest -q"
+
+
+def test_configured_commands_win_over_derived_commands(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner()
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, verify=["make check"]), store, FakeAgentRuntime(), verifier=runner
+    )
+
+    run = controller.run(_work_item("WI-config-commands"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan == RepositoryCommandsPlan(
+        source=RepositoryCommandsSource.CONFIG, verify=("make check",)
+    )
+    assert set(runner.commands) == {"make check"}
+
+
+def test_derived_commands_are_probed_then_used_for_verification(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner(failing=frozenset({_RUFF_LINT}))
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime(), verifier=runner)
+
+    run = controller.run(_work_item("WI-derived-commands"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.source is RepositoryCommandsSource.DERIVED
+    assert plan.install == (_UV_INSTALL,)
+    assert plan.verify == (_RUFF_FORMAT, _PYTEST)
+    probe = [_UV_INSTALL, _RUFF_FORMAT, _RUFF_LINT, _PYTEST]
+    assert runner.commands[: len(probe)] == probe
+    assert runner.commands[len(probe) :] == [_UV_INSTALL, _RUFF_FORMAT, _PYTEST]
+
+
+def test_turning_derivation_off_runs_no_repository_code(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner()
+    config = _config(data_dir)
+    config = config.model_copy(
+        update={"repository": config.repository.model_copy(update={"derive_commands": False})}
+    )
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(config, store, FakeAgentRuntime(), verifier=runner)
+
+    run = controller.run(_work_item("WI-derivation-off"), uv_python_repo)
+
+    assert store.load_artifact(run.id, RepositoryCommandsPlan) == RepositoryCommandsPlan(
+        source=RepositoryCommandsSource.NONE, notes=("command derivation is turned off",)
+    )
+    assert runner.commands == []
+
+
+def test_repository_without_a_language_lane_records_why(source_repo: Path, data_dir: Path) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
+
+    run = controller.run(_work_item("WI-no-commands"), source_repo)
+
+    assert store.load_artifact(run.id, RepositoryCommandsPlan) == RepositoryCommandsPlan(
+        source=RepositoryCommandsSource.NONE, notes=("no supported language lane",)
+    )
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError, WorkspaceError])
+def test_command_runner_error_degrades_and_the_run_continues(
+    uv_python_repo: Path, data_dir: Path, error: type[Exception]
+) -> None:
+    runner = _ScriptedCommandRunner(raises=frozenset({_UV_INSTALL}), error=error)
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime(), verifier=runner)
+
+    run = controller.run(_work_item("WI-derived-degraded"), uv_python_repo)
+
+    assert store.load_artifact(run.id, RepositoryCommandsPlan) == RepositoryCommandsPlan(
+        source=RepositoryCommandsSource.NONE,
+        notes=(f"command derivation degraded: {error.__name__}",),
+    )
+    assert run.attempt_records, "the run went on to implementation"
+
+
+def test_runs_without_a_commands_plan_use_the_configuration(
+    source_repo: Path, data_dir: Path
+) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir, verify=["true"]), store, FakeAgentRuntime())
+    run = controller.run(_work_item("WI-legacy-commands"), source_repo)
+    (store.run_dir(run.id) / ARTIFACT_FILENAMES[RepositoryCommandsPlan]).unlink()
+
+    assert controller._commands_for_run(run.id).verify == ["true"]

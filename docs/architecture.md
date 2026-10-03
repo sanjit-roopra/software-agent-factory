@@ -509,6 +509,36 @@ to read or parse a manifest or a root configuration file. A missing
 binding is then not proof that the tool is absent. If the inventory itself fails, the factory saves an empty,
 incomplete inventory and the run continues.
 
+### RepositoryCommandsPlan
+
+Produced once per run, after the `ToolchainInventory` and before `TRIAGING`.
+It is persisted as `repository-commands.json` (ADR-034). It records the
+install, verify and build commands that the run uses, and their source:
+
+| Source | Meaning |
+| --- | --- |
+| `config` | The YAML configuration has at least one repository command. Only the YAML commands run. |
+| `derived` | The factory derived the commands from the inventory and they passed on the base commit. |
+| `none` | No commands. The notes and the rejected commands tell why. |
+
+`toolchain_commands.py` maps each bound provider to a check-only command and
+runs it through the package runner of its lane, such as `uv run --no-sync` or
+`npx --no-install`. A `package.json` script replaces the provider command for
+its slot. A missing binding gets no command. Each verify command starts with
+`CI=true`.
+
+`command_probe.py` runs the candidates on the worktree. The worktree must be
+clean and at its base commit first. Each lane runs its install command and
+then each verify command. The probe keeps the commands that pass. It records
+the others with the exit code, but never with the output. If a lane changes
+the Git tree, the probe discards the changes and rejects that lane. The model
+validates that the source matches the commands.
+
+Run verification reads this plan. A run without the file uses the
+configuration. The routing safety floors and project integration verification
+still use only the configuration. `repository.derive_commands: false` turns
+derivation off.
+
 ### RepositorySkill
 
 Generated for the repository as a whole, not selected from a catalog, and not
@@ -1255,6 +1285,7 @@ Suggested layout:
 │       ├── work-item.json
 │       ├── repository-profile.json
 │       ├── toolchain-inventory.json
+│       ├── repository-commands.json
 │       ├── triage.json
 │       ├── specification.json
 │       ├── research.json

@@ -640,6 +640,33 @@ class GitWorktreeWorkspace:
         self._load_or_compute_base_commit()
         return self.path
 
+    def is_clean(self) -> bool:
+        """Return whether the worktree has no tracked or untracked changes.
+
+        Ignored files do not count, so installed dependencies such as
+        ``.venv`` or ``node_modules`` keep the worktree clean.
+        """
+        return not _run_git(self.path, ["status", "--porcelain"]).stdout.strip()
+
+    def is_at_clean_base(self) -> bool:
+        """Return whether the worktree is clean and its HEAD is the base commit."""
+        if self.base_commit is None:
+            self._load_or_compute_base_commit()
+        head = _run_git(self.path, ["rev-parse", "HEAD"]).stdout.strip()
+        return head == self.base_commit and self.is_clean()
+
+    def discard_changes(self) -> None:
+        """Return the worktree to its base commit, removing untracked files that are not ignored.
+
+        Resetting to the base commit, not HEAD, also undoes commits that
+        repository code made during the command probe.
+        """
+        if self.base_commit is None:
+            self._load_or_compute_base_commit()
+        assert self.base_commit is not None
+        _run_git(self.path, ["reset", "--hard", self.base_commit])
+        _run_git(self.path, ["clean", "-fd"])
+
     def collect_evidence(self) -> WorkspaceEvidence:
         """Stage changes and freeze a tree before deriving the review diff.
 

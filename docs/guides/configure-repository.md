@@ -1,9 +1,14 @@
 # Configure a repository
 
-By default, the factory runs no checks against your project. The
-`repository.commands` lists are empty in the packaged configuration.
-Verification has no deterministic commands to run. Configure these commands
-first.
+The `repository.commands` lists are empty in the packaged configuration.
+If all lists are empty, the factory derives commands from the tools that your
+project already has (ADR-034). It keeps only the commands that pass on the
+unchanged base commit. `repository-commands.json` in the run directory shows
+the result. If the factory cannot derive commands, verification runs no checks.
+
+Configure the commands yourself to control them. If any list has a command,
+the factory uses only the configured commands. Autonomous merge needs
+configured verify commands.
 
 ## Copy the example config
 

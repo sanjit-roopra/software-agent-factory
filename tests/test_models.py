@@ -39,7 +39,10 @@ from software_agent_factory.models import (
     ProjectBrief,
     ProjectPlan,
     ProjectTask,
+    RejectedCommand,
     RepairContext,
+    RepositoryCommandsPlan,
+    RepositoryCommandsSource,
     RepositoryDependency,
     RepositoryProfile,
     RepositorySkill,
@@ -1143,3 +1146,28 @@ def test_every_cost_unit_but_the_derived_one_is_a_usage_metrics_field() -> None:
 
 def test_the_total_leaves_out_only_the_reasoning_tokens() -> None:
     assert set(TOKEN_CLASS_FIELDS) - set(TOTAL_TOKEN_FIELDS) == {"reasoning_tokens"}
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"source": RepositoryCommandsSource.NONE, "verify": ("x",)}, "without a source"),
+        ({"source": RepositoryCommandsSource.DERIVED}, "derived plan"),
+        (
+            {"source": RepositoryCommandsSource.DERIVED, "verify": ("x",), "build": ("y",)},
+            "derived plan",
+        ),
+        (
+            {
+                "source": RepositoryCommandsSource.CONFIG,
+                "rejected": (RejectedCommand(command="x", reason="y"),),
+            },
+            "configured plan",
+        ),
+    ],
+)
+def test_plan_rejects_commands_that_contradict_its_source(
+    fields: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        RepositoryCommandsPlan.model_validate(fields)

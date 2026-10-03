@@ -261,6 +261,12 @@ class RepositoryProfile(VersionedModel):
     warnings: tuple[str, ...] = ()
 
 
+MAX_PACKAGE_SCRIPTS = 20
+MAX_REJECTED_COMMANDS = 40
+MAX_COMMAND_NOTES = 20
+MAX_COMMAND_TEXT_LENGTH = 500
+
+
 class ToolchainLane(StrEnum):
     """A language lane in the toolchain registry."""
 
@@ -332,6 +338,8 @@ class ToolchainInventory(VersionedModel):
     lanes: tuple[ToolchainLane, ...] = ()
     bindings: tuple[ToolchainSlotBinding, ...] = ()
     complete: bool = True
+    package_json_scripts: tuple[str, ...] = Field(default=(), max_length=MAX_PACKAGE_SCRIPTS)
+    self_targeting_providers: tuple[ToolchainProvider, ...] = ()
     warnings: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -349,6 +357,53 @@ class ToolchainInventory(VersionedModel):
             (b for b in self.bindings if b.lane is lane and b.slot is slot),
             None,
         )
+
+
+class RepositoryCommandsSource(StrEnum):
+    """Where the repository commands for a run come from (ADR-034)."""
+
+    CONFIG = "config"
+    DERIVED = "derived"
+    NONE = "none"
+
+
+class RejectedCommand(ModelBase):
+    """A derived command that the factory did not use, with the reason."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    command: str = Field(min_length=1, max_length=MAX_COMMAND_TEXT_LENGTH)
+    reason: str = Field(min_length=1, max_length=MAX_COMMAND_TEXT_LENGTH)
+
+
+class RepositoryCommandsPlan(VersionedModel):
+    """The install, verify and build commands one run uses (ADR-034).
+
+    Commands from the YAML configuration always win. Otherwise the factory
+    derives commands from the toolchain inventory and keeps only those that
+    pass on the unchanged base commit.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: RepositoryCommandsSource
+    install: tuple[str, ...] = ()
+    verify: tuple[str, ...] = ()
+    build: tuple[str, ...] = ()
+    rejected: tuple[RejectedCommand, ...] = Field(default=(), max_length=MAX_REJECTED_COMMANDS)
+    notes: tuple[str, ...] = Field(default=(), max_length=MAX_COMMAND_NOTES)
+
+    @model_validator(mode="after")
+    def _commands_match_source(self) -> Self:
+        if self.source is RepositoryCommandsSource.NONE and (
+            self.install or self.verify or self.build
+        ):
+            raise ValueError("a plan without a source has no commands")
+        if self.source is RepositoryCommandsSource.DERIVED and (not self.verify or self.build):
+            raise ValueError("a derived plan has verify commands and no build commands")
+        if self.source is RepositoryCommandsSource.CONFIG and self.rejected:
+            raise ValueError("a configured plan rejects no commands")
+        return self
 
 
 GENERIC_SKILL_TARGET = "repository"

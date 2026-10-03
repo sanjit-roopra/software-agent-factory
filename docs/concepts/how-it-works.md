@@ -357,6 +357,7 @@ Filesystem JSON. No database.
 │   ├── work-item.json
 │   ├── repository-profile.json
 │   ├── toolchain-inventory.json
+│   ├── repository-commands.json
 │   ├── triage.json
 │   ├── specification.json
 │   ├── research.json

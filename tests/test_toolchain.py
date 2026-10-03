@@ -496,3 +496,78 @@ def test_lockfile_warning_keeps_the_inventory_complete(tmp_path: Path, warning: 
 
     assert inventory.complete is True
     assert inventory.warnings == ()
+
+
+def test_only_known_package_scripts_are_recorded(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "package.json",
+        json.dumps(
+            {
+                "name": "x",
+                "scripts": {
+                    "test": "vitest run",
+                    "lint": 1,
+                    "deploy": "rm -rf /",
+                    "type-check": "tsc",
+                },
+            }
+        ),
+    )
+
+    inventory = _inventory(tmp_path)
+
+    assert inventory.package_json_scripts == ("test", "type-check")
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "self_targeting"),
+    [
+        ("pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nfiles = ["src"]\n', True),
+        ("pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nstrict = true\n', False),
+        ("mypy.ini", "[mypy]\nfiles = src\n", True),
+        ("setup.cfg", "[mypy]\nstrict = True\n", False),
+        ("tox.ini", "[mypy]\nfiles = src\n", False),
+    ],
+)
+def test_mypy_config_with_files_is_self_targeting(
+    tmp_path: Path, name: str, text: str, self_targeting: bool
+) -> None:
+    _write(tmp_path, "app.py", "x = 1\n")
+    _write(tmp_path, name, text)
+
+    inventory = _inventory(tmp_path)
+
+    assert (ToolchainProvider.MYPY in inventory.self_targeting_providers) is self_targeting
+    assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.TYPECHECK).provider is (
+        ToolchainProvider.MYPY
+    )
+
+
+@pytest.mark.parametrize("scripts", [None, [], "test"])
+def test_package_json_without_a_script_table_records_no_scripts(
+    tmp_path: Path, scripts: object
+) -> None:
+    payload: dict[str, object] = {"name": "x"}
+    if scripts is not None:
+        payload["scripts"] = scripts
+    _write(tmp_path, "package.json", json.dumps(payload))
+
+    assert _inventory(tmp_path).package_json_scripts == ()
+
+
+def test_mypy_uses_only_its_first_configuration_file(tmp_path: Path) -> None:
+    _write(tmp_path, "pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nstrict = true\n')
+    _write(tmp_path, "setup.cfg", "[mypy]\nfiles = src\n")
+
+    inventory = _inventory(tmp_path)
+
+    assert inventory.self_targeting_providers == ()
+
+
+def test_mypy_ini_without_a_mypy_section_still_wins(tmp_path: Path) -> None:
+    _write(tmp_path, "app.py", "x = 1\n")
+    _write(tmp_path, "mypy.ini", "[mypy-vendor.*]\nignore_errors = True\n")
+    _write(tmp_path, "setup.cfg", "[mypy]\nfiles = src\n")
+
+    assert _inventory(tmp_path).self_targeting_providers == ()
