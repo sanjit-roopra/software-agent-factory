@@ -48,6 +48,9 @@ DEFAULT_SOURCE_DIRS = ("lib", "src")
 FLAT_LAYOUT_REASON = (
     "no lib/ or src/ directory: set source_paths in the mutmut configuration for a flat layout"
 )
+#: ``mutmut`` 3 stops with this assertion when no mutant matches the patterns.
+NOTHING_MATCHES = "Filtered for specific mutants, but nothing matches"
+NO_MUTANTS_REASON = "no mutants in the changed modules"
 _MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 _MUTANT_NAME = re.compile(r"[A-Za-z0-9_.ǁ]{1,200}__mutmut_\d{1,9}")
 _TEST_DIRS = frozenset({"tests", "test", "testing"})
@@ -119,10 +122,17 @@ def run_mutation_gate(
             reason=f"{MUTANTS_DIR}/ already exists in the repository",
         )
     if not _has_mutmut_configuration(worktree):
-        targets = _in_default_source_dir(worktree, targets)
-        if not targets:
+        source_dir = _default_source_dir(worktree)
+        if source_dir is None:
             return MutationReport(
                 status=MutationStatus.SKIPPED, modules=modules, reason=FLAT_LAYOUT_REASON
+            )
+        targets = tuple(t for t in targets if PurePosixPath(t.path).parts[0] == source_dir)
+        if not targets:
+            return MutationReport(
+                status=MutationStatus.SKIPPED,
+                modules=modules,
+                reason=f"no changed module under {source_dir}/, which mutmut mutates",
             )
         modules = tuple(target.module for target in targets)
     patterns = " ".join(f"'{pattern}'" for target in targets for pattern in target.patterns)
@@ -134,6 +144,10 @@ def run_mutation_gate(
             env_passthrough=limits.env_passthrough,
             capture_bytes=limits.capture_bytes,
         )
+        if not run.passed and _nothing_matches(run):
+            return MutationReport(
+                status=MutationStatus.PASSED, modules=modules, reason=NO_MUTANTS_REASON
+            )
         if not run.passed:
             return _skipped(modules, "mutmut run did not finish", run)
         exit_codes = _read_exit_codes(worktree, targets)
@@ -192,14 +206,21 @@ def _has_mutmut_configuration(worktree: Path) -> bool:
     )
 
 
-def _in_default_source_dir(
-    worktree: Path, targets: tuple[MutationTarget, ...]
-) -> tuple[MutationTarget, ...]:
-    """Return the targets in the directory that ``mutmut`` mutates without configuration."""
+def _default_source_dir(worktree: Path) -> str | None:
+    """Return the directory that ``mutmut`` mutates without configuration, if any."""
     for directory in DEFAULT_SOURCE_DIRS:
         if (worktree / directory).is_dir() and not (worktree / directory).is_symlink():
-            return tuple(t for t in targets if PurePosixPath(t.path).parts[0] == directory)
-    return ()
+            return directory
+    return None
+
+
+def _nothing_matches(report: VerificationReport) -> bool:
+    """Return whether ``mutmut`` stopped because the changed files have no mutants."""
+    return any(
+        NOTHING_MATCHES in check.stderr or NOTHING_MATCHES in check.stdout
+        for check in report.deterministic_checks
+        if not check.timed_out
+    )
 
 
 def _read_exit_codes(
@@ -211,6 +232,7 @@ def _read_exit_codes(
         raw = _read_regular_bytes(worktree / MUTANTS_DIR / f"{target.path}.meta")
         if raw is None:
             # No .meta file: mutmut found nothing to mutate in this file.
+            # The other changed files can still have mutants.
             continue
         try:
             meta = json.loads(raw)
@@ -250,7 +272,7 @@ def _judge(modules: tuple[str, ...], exit_codes: dict[str, int | None]) -> Mutat
     if unkilled:
         reason = _bounded(f"the tests kill no mutant of: {', '.join(unkilled)}")
     elif not exit_codes:
-        reason = "no mutants in the changed modules"
+        reason = NO_MUTANTS_REASON
     listed = sorted(name for name in survivors if _MUTANT_NAME.fullmatch(name))
     return MutationReport(
         status=status,

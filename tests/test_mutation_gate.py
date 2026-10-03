@@ -16,6 +16,7 @@ from software_agent_factory.models import (
 from software_agent_factory.mutation_gate import (
     FLAT_LAYOUT_REASON,
     MUTANTS_DIR,
+    NOTHING_MATCHES,
     MutationTarget,
     mutation_check_result,
     mutation_targets,
@@ -41,7 +42,9 @@ class _Mutmut:
         *,
         exit_code: int = 0,
         timed_out: bool = False,
+        stderr: str = "",
     ) -> None:
+        self.stderr = stderr
         self.meta = meta or {}
         self.exit_code = exit_code
         self.timed_out = timed_out
@@ -72,7 +75,7 @@ class _Mutmut:
                     command=command,
                     exit_code=exit_code,
                     stdout="",
-                    stderr="",
+                    stderr=self.stderr,
                     duration_seconds=0.0,
                     timed_out=self.timed_out,
                 )
@@ -264,6 +267,34 @@ def test_a_flat_layout_without_configuration_is_skipped(tmp_path: Path) -> None:
 
     assert report == MutationReport(
         status=MutationStatus.SKIPPED, modules=("app",), reason=FLAT_LAYOUT_REASON
+    )
+    assert mutmut.commands == []
+
+
+def test_a_change_with_no_mutants_passes(src_repo: Path) -> None:
+    mutmut = _Mutmut(exit_code=1, stderr=f"AssertionError: {NOTHING_MATCHES}\n")
+
+    report = _gate(src_repo, mutmut)
+
+    assert report == MutationReport(
+        status=MutationStatus.PASSED,
+        modules=("calc.ops",),
+        reason="no mutants in the changed modules",
+    )
+    assert not (src_repo / MUTANTS_DIR).exists()
+
+
+def test_a_change_outside_the_source_directory_is_skipped(src_repo: Path) -> None:
+    mutmut = _Mutmut()
+
+    report = _gate(
+        src_repo, mutmut, (MutationTarget(path="scripts/tool.py", module="scripts.tool"),)
+    )
+
+    assert report == MutationReport(
+        status=MutationStatus.SKIPPED,
+        modules=("scripts.tool",),
+        reason="no changed module under src/, which mutmut mutates",
     )
     assert mutmut.commands == []
 
