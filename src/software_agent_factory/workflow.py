@@ -294,14 +294,18 @@ def is_run_finished(run: FactoryRun) -> bool:
     return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
+_PLANNING_RESULT_REQUEST = (
+    "Return a complete PlanningResult JSON object with the specification and the execution plan."
+)
+
+
 def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:
     decisions_list = "\n".join(f"- {decision}" for decision in unresolved_decisions)
     return (
         "The previous execution plan listed these unresolved decisions:\n"
         f"{decisions_list}\n\n"
         "Resolve any item that repository evidence or existing constraints answer. "
-        "Retain only genuinely human-owned choices. "
-        "Return a complete ExecutionPlan JSON object."
+        "Retain only genuinely human-owned choices. " + _PLANNING_RESULT_REQUEST
     )
 
 
@@ -322,8 +326,7 @@ def _planner_human_decision_context(
         "An authorized human resolved these previous plan decisions. "
         "Treat each answer as a hard planning constraint. Do not change scope, policy, "
         "budgets, or delivery settings.\n\n"
-        f"{json.dumps(decisions, ensure_ascii=True)}\n\n"
-        "Return a complete ExecutionPlan JSON object."
+        f"{json.dumps(decisions, ensure_ascii=True)}\n\n" + _PLANNING_RESULT_REQUEST
     )
 
 
@@ -1634,7 +1637,7 @@ class WorkflowController:
                 )
 
             # 3. SINGLE or CRITIQUE route
-            saved_calls = 5 if route_decision.effective_route is ExecutionRoute.SINGLE else 4
+            saved_calls = 4 if route_decision.effective_route is ExecutionRoute.SINGLE else 3
             run.performance.record_counter(
                 "route.saved_calls",
                 saved_calls,

@@ -675,6 +675,7 @@ def test_single_route_skips_agents_and_synthesizes_artifacts(
     assert run.state is WorkflowState.PR_READY
     assert run.initial_route is ExecutionRoute.SINGLE
     assert run.effective_route is ExecutionRoute.SINGLE
+    assert run.performance.counters["route.saved_calls"] == 4
 
     # Verify agent invocations: only implementer
     invoked_roles = [r.role for r in runtime.requests]
@@ -730,6 +731,7 @@ def test_critique_route_runs_implementer_and_reviewer_only(
     assert run.state is WorkflowState.PR_READY
     assert run.initial_route is ExecutionRoute.CRITIQUE
     assert run.effective_route is ExecutionRoute.CRITIQUE
+    assert run.performance.counters["route.saved_calls"] == 3
 
     invoked_roles = [r.role for r in runtime.requests]
     assert AgentRole.TRIAGE not in invoked_roles

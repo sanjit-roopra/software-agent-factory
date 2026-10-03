@@ -3369,6 +3369,7 @@ def test_unready_first_plan_then_ready_clarification_proceeds(
         in planner_requests[1].repair_context
     )
     assert "Retain only genuinely human-owned choices" in planner_requests[1].repair_context
+    assert "Return a complete PlanningResult JSON object" in planner_requests[1].repair_context
     # ADR-035: the re-plan gets the specification of the first call and returns both again.
     assert planner_requests[0].specification is None
     assert planner_requests[1].specification is not None
