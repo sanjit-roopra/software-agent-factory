@@ -284,7 +284,6 @@ def test_mixed_repository_gets_both_lanes(tmp_path: Path) -> None:
         ("package.json", "{", "invalid package.json: JSONDecodeError"),
         ("setup.cfg", "no section header\n", "invalid setup.cfg: MissingSectionHeaderError"),
         ("package.json", "1" * 5000, "invalid package.json: ValueError"),
-        ("package.json", "[" * 100_000 + "]" * 100_000, "invalid package.json: RecursionError"),
     ],
 )
 def test_hostile_config_records_a_warning_without_its_content(
@@ -296,6 +295,16 @@ def test_hostile_config_records_a_warning_without_its_content(
     inventory = inventory_toolchain(tmp_path, _profile_with_python())
 
     assert warning in inventory.warnings
+
+
+def test_deeply_nested_config_never_raises(tmp_path: Path) -> None:
+    # Python 3.13 raises RecursionError here; Python 3.14 parses it. Either way
+    # the inventory must come back, with at most a type-only warning.
+    _write(tmp_path, "package.json", "[" * 100_000 + "]" * 100_000)
+
+    inventory = inventory_toolchain(tmp_path, _profile_with_python())
+
+    assert inventory.warnings in ((), ("invalid package.json: RecursionError",))
 
 
 def test_non_utf8_config_records_a_warning(tmp_path: Path) -> None:
