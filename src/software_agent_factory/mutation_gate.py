@@ -51,7 +51,7 @@ FLAT_LAYOUT_REASON = (
 #: ``mutmut`` 3 stops with this assertion when no mutant matches the patterns.
 NOTHING_MATCHES = "Filtered for specific mutants, but nothing matches"
 NO_MUTANTS_REASON = "no mutants in the changed modules"
-_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
+_MODULE_NAME = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", re.ASCII)
 _MUTANT_NAME = re.compile(r"[A-Za-z0-9_.ǁ]{1,200}__mutmut_\d{1,9}")
 _TEST_DIRS = frozenset({"tests", "test", "testing"})
 #: ``mutmut`` 3 exit codes per mutant. Every other code counts as ``other``.
@@ -74,9 +74,9 @@ class MutationTarget:
         ``mutmut`` names the mutants of ``pkg/__init__.py`` ``pkg.x_…`` or
         ``pkg.xǁ…``, so ``pkg.*`` would also select every submodule.
         """
-        if PurePosixPath(self.path).name == "__init__.py":
-            return (f"{self.module}.x_*", f"{self.module}.xǁ*")
-        return (f"{self.module}.*",)
+        is_package = PurePosixPath(self.path).name == "__init__.py"
+        suffixes = ("x_*", "xǁ*") if is_package else ("*",)
+        return tuple(f"{self.module}.{suffix}" for suffix in suffixes)
 
 
 def mutation_targets(changed_files: Sequence[str]) -> tuple[MutationTarget, ...]:
@@ -234,18 +234,28 @@ def _read_exit_codes(
             # No .meta file: mutmut found nothing to mutate in this file.
             # The other changed files can still have mutants.
             continue
-        try:
-            meta = json.loads(raw)
-        except (UnicodeDecodeError, ValueError):
+        codes = _meta_exit_codes(raw)
+        if codes is None:
             return None
-        codes = meta.get("exit_code_by_key") if isinstance(meta, dict) else None
-        if not isinstance(codes, dict):
-            return None
-        for name, code in codes.items():
-            if isinstance(code, bool) or not (code is None or isinstance(code, int)):
-                return None
-            exit_codes[str(name)] = code
+        exit_codes.update(codes)
     return exit_codes
+
+
+def _meta_exit_codes(raw: bytes) -> dict[str, int | None] | None:
+    """Return ``exit_code_by_key`` from one ``.meta`` file, or ``None`` when it is malformed."""
+    try:
+        meta = json.loads(raw)
+    except ValueError:
+        return None
+    codes = meta.get("exit_code_by_key") if isinstance(meta, dict) else None
+    if not isinstance(codes, dict):
+        return None
+    if any(
+        isinstance(code, bool) or not (code is None or isinstance(code, int))
+        for code in codes.values()
+    ):
+        return None
+    return {str(name): code for name, code in codes.items()}
 
 
 def _read_regular_bytes(path: Path) -> bytes | None:

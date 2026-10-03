@@ -51,7 +51,6 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 from __future__ import annotations
 
 import copy
-import dataclasses
 import hashlib
 import json
 import logging
@@ -3656,7 +3655,13 @@ class WorkflowController:
         verification = result.report.model_copy(
             update={"deterministic_checks": [*result.report.deterministic_checks, check]}
         )
-        return dataclasses.replace(result, report=verification)
+        return RepositoryVerificationResult(
+            report=verification,
+            command_logs=result.command_logs,
+            failure_kind=result.failure_kind,
+            failed_phase=result.failed_phase,
+            failed_command=result.failed_command,
+        )
 
     def _run_mutation_gate(
         self, context: _RunContext, exec_prefix: str, targets: tuple[MutationTarget, ...]
