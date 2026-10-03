@@ -11,6 +11,24 @@ Amendment on 2026-10-03 (Bun and Yarn): Yarn and Bun lockfiles are supported. Ea
 
 Amendment on 2026-10-03 (slice E): lenses go into the reviewer prompt only. The polish attempt keeps its repository guidance.
 
+Amendment on 2026-10-03 (mutation gate):
+
+- After the verify commands pass, the factory runs `mutmut` 3 on the changed Python source modules.
+  It uses the package runner of the lane, such as `uv run --no-sync`.
+- Without configuration, `mutmut` 3 mutates `lib/` or `src/`. The gate then runs only for changed files in that directory.
+  A flat layout needs `source_paths` in `[tool.mutmut]` or in the `[mutmut]` section of `setup.cfg`. Without it, the gate skips and records why.
+- The gate reads the result of each mutant from the `.meta` files that `mutmut` writes. It does not read command output, because the factory cuts long output.
+- The gate runs only when the inventory finds `mutmut`, the lane has a package runner and at least one verify command ran.
+  `repository.mutation_gate: false` turns it off.
+- The gate adds one check to the verification report. The check lists the surviving mutants and each module of which the tests kill no mutant.
+  The tester and the reviewer read the report.
+- The gate is advisory. It never fails verification, because `mutmut` also makes equivalent mutants that no test can kill.
+  A trial on 2026-10-03 showed this: `<` to `<=` in a clamp function returns the same value. The reviewer judges each survivor.
+- The `dev-team` gate pins `mutmut<3`. The factory does not, because `mutmut` 2 fails on Python 3.13 and later.
+- A missing tool, a crash, a timeout or an error in the gate itself skips the gate and records the reason in `mutation.json`.
+  Every passed verification writes `mutation.json`, so no report from an older attempt stays.
+- The gate always removes `mutants/`. If the repository already has `mutants/`, the gate skips and deletes nothing.
+
 The factory gets lint, format and test commands only from the YAML configuration.
 It installs no tools in the target repository.
 A research call to a model generates skill guidance, and that guidance stays in the factory data directory.

@@ -145,6 +145,9 @@ repository:
   # tools and keep those that pass on the base commit (ADR-034). This runs
   # repository code before triage. Set false for an untrusted repository.
   derive_commands: true
+  # Run mutmut on changed Python modules after verification and list the
+  # surviving mutants for review (ADR-034). Advisory: it never fails a run.
+  mutation_gate: true
   # Extra environment variable names repository commands may read. The
   # verifier always provides PATH, HOME, LANG and TERM and never inherits
   # credentials (GH_TOKEN, AWS_*, ...) implicitly.
