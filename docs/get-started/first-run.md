@@ -100,6 +100,7 @@ Nothing is hidden in a database. Everything is JSON on disk.
 │                           format, lint, type check and test tools found or missing
 ├── repository-commands.json
 │                           commands this run uses, and where they come from
+├── mutation.json         mutation gate result for changed Python modules, if it ran
 ├── triage.json           complexity, risk, whether research is needed
 ├── specification.json    acceptance criteria
 ├── execution-plan.json
