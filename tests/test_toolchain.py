@@ -1,22 +1,36 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from software_agent_factory.models import (
+    DependencyEcosystem,
+    RepositoryDependency,
+    RepositoryProfile,
+    RepositoryTechnology,
     ToolchainInventory,
     ToolchainLane,
     ToolchainProvider,
     ToolchainSlot,
     ToolchainSlotBinding,
 )
-from software_agent_factory.repository_profile import profile_repository
+from software_agent_factory.repository_profile import MAX_MANIFEST_BYTES, profile_repository
 from software_agent_factory.toolchain import (
     LANE_SLOTS,
     PROVIDER_SIGNALS,
+    degraded_toolchain_inventory,
     inventory_toolchain,
+)
+
+_POSIX_NON_ROOT = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions enforced for a non-root user",
 )
 
 
@@ -27,20 +41,42 @@ def _inventory(root: Path) -> ToolchainInventory:
 def _binding(
     inventory: ToolchainInventory, lane: ToolchainLane, slot: ToolchainSlot
 ) -> ToolchainSlotBinding:
-    matches = [b for b in inventory.bindings if b.lane is lane and b.slot is slot]
-    assert len(matches) == 1, inventory.bindings
-    return matches[0]
+    binding = inventory.binding(lane, slot)
+    assert binding is not None, inventory.bindings
+    return binding
 
 
 def _write(root: Path, name: str, text: str) -> None:
     (root / name).write_text(text, encoding="utf-8")
 
 
-def test_every_slot_default_is_one_of_its_providers_and_has_signals() -> None:
-    for slots in LANE_SLOTS.values():
-        for spec in slots.values():
-            assert spec.default in spec.providers
-            assert all(provider in PROVIDER_SIGNALS for provider in spec.providers)
+@pytest.fixture
+def restore_mode() -> Iterator[list[Path]]:
+    paths: list[Path] = []
+    yield paths
+    for path in paths:
+        path.chmod(0o755)
+
+
+_REGISTRY_SLOTS = [(lane, slot) for lane, slots in LANE_SLOTS.items() for slot in slots]
+
+
+@pytest.mark.parametrize(("lane", "slot"), _REGISTRY_SLOTS)
+def test_registry_default_is_one_of_the_slot_providers(
+    lane: ToolchainLane, slot: ToolchainSlot
+) -> None:
+    spec = LANE_SLOTS[lane][slot]
+
+    assert spec.default_provider in spec.providers
+
+
+@pytest.mark.parametrize(("lane", "slot"), _REGISTRY_SLOTS)
+def test_registry_providers_all_have_detection_signals(
+    lane: ToolchainLane, slot: ToolchainSlot
+) -> None:
+    missing = [p for p in LANE_SLOTS[lane][slot].providers if p not in PROVIDER_SIGNALS]
+
+    assert missing == []
 
 
 def test_repository_without_a_known_stack_has_no_lanes(tmp_path: Path) -> None:
@@ -50,6 +86,7 @@ def test_repository_without_a_known_stack_has_no_lanes(tmp_path: Path) -> None:
 
     assert inventory.lanes == ()
     assert inventory.bindings == ()
+    assert inventory.complete is True
 
 
 def test_bare_python_repository_marks_every_slot_missing_with_defaults(tmp_path: Path) -> None:
@@ -58,7 +95,7 @@ def test_bare_python_repository_marks_every_slot_missing_with_defaults(tmp_path:
     inventory = _inventory(tmp_path)
 
     assert inventory.lanes == (ToolchainLane.PYTHON,)
-    assert all(binding.missing for binding in inventory.bindings)
+    assert all(binding.is_missing for binding in inventory.bindings)
     assert {b.slot: b.default_provider for b in inventory.bindings} == {
         ToolchainSlot.FORMAT: ToolchainProvider.RUFF,
         ToolchainSlot.LINT: ToolchainProvider.RUFF,
@@ -67,7 +104,7 @@ def test_bare_python_repository_marks_every_slot_missing_with_defaults(tmp_path:
     }
 
 
-def test_configured_python_tools_are_kept(tmp_path: Path) -> None:
+def test_configured_python_tools_are_kept_with_their_evidence(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "pyproject.toml",
@@ -88,21 +125,21 @@ strict = true
 
     inventory = _inventory(tmp_path)
 
-    lint = _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT)
-    assert lint.provider is ToolchainProvider.RUFF
-    assert lint.evidence == ("dependency:ruff", "pyproject:tool.ruff")
-    assert (
-        _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.FORMAT).provider
-        is ToolchainProvider.RUFF
-    )
-    typecheck = _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.TYPECHECK)
-    assert typecheck.provider is ToolchainProvider.MYPY
-    assert typecheck.evidence == ("pyproject:tool.mypy",)
-    assert (
-        _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.TEST).provider
-        is ToolchainProvider.PYTEST
-    )
-    assert not any(binding.missing for binding in inventory.bindings)
+    assert {b.slot: (b.provider, b.evidence) for b in inventory.bindings} == {
+        ToolchainSlot.FORMAT: (
+            ToolchainProvider.RUFF,
+            ("dependency:ruff", "pyproject.toml:tool.ruff"),
+        ),
+        ToolchainSlot.LINT: (
+            ToolchainProvider.RUFF,
+            ("dependency:ruff", "pyproject.toml:tool.ruff"),
+        ),
+        ToolchainSlot.TYPECHECK: (ToolchainProvider.MYPY, ("pyproject.toml:tool.mypy",)),
+        ToolchainSlot.TEST: (
+            ToolchainProvider.PYTEST,
+            ("dependency:pytest", "test-tool:pytest"),
+        ),
+    }
 
 
 def test_existing_black_and_flake8_are_not_replaced_by_ruff(tmp_path: Path) -> None:
@@ -116,7 +153,86 @@ def test_existing_black_and_flake8_are_not_replaced_by_ruff(tmp_path: Path) -> N
     assert format_binding.default_provider is ToolchainProvider.RUFF
     lint = _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT)
     assert lint.provider is ToolchainProvider.FLAKE8
-    assert lint.evidence == ("ini:[flake8]",)
+    assert lint.evidence == ("setup.cfg:[flake8]",)
+
+
+@pytest.mark.parametrize(
+    ("files", "lane", "slot", "expected"),
+    [
+        (
+            {"pyproject.toml": '[project]\nname = "x"\n[tool.black]\n[tool.ruff]\n'},
+            ToolchainLane.PYTHON,
+            ToolchainSlot.FORMAT,
+            ToolchainProvider.BLACK,
+        ),
+        (
+            {"pyproject.toml": '[project]\nname = "x"\n[tool.ruff]\n', ".flake8": ""},
+            ToolchainLane.PYTHON,
+            ToolchainSlot.LINT,
+            ToolchainProvider.RUFF,
+        ),
+        (
+            {"package.json": '{"name": "x", "prettier": {}}', "biome.json": "{}"},
+            ToolchainLane.JAVASCRIPT,
+            ToolchainSlot.FORMAT,
+            ToolchainProvider.BIOME,
+        ),
+        (
+            {
+                "package.json": '{"name": "x", "eslintConfig": {}}',
+                "biome.json": "{}",
+                "oxlint.json": "{}",
+            },
+            ToolchainLane.JAVASCRIPT,
+            ToolchainSlot.LINT,
+            ToolchainProvider.ESLINT,
+        ),
+        (
+            {"package.json": '{"name": "x", "devDependencies": {"vitest": "3", "jest": "29"}}'},
+            ToolchainLane.JAVASCRIPT,
+            ToolchainSlot.TEST,
+            ToolchainProvider.VITEST,
+        ),
+    ],
+)
+def test_first_provider_with_evidence_wins(
+    tmp_path: Path,
+    files: dict[str, str],
+    lane: ToolchainLane,
+    slot: ToolchainSlot,
+    expected: ToolchainProvider,
+) -> None:
+    for name, text in files.items():
+        _write(tmp_path, name, text)
+
+    inventory = _inventory(tmp_path)
+
+    assert _binding(inventory, lane, slot).provider is expected
+
+
+@pytest.mark.parametrize(
+    ("dev_dependency", "slot", "expected"),
+    [
+        ("@biomejs/biome", ToolchainSlot.FORMAT, ToolchainProvider.BIOME),
+        ("prettier", ToolchainSlot.FORMAT, ToolchainProvider.PRETTIER),
+        ("eslint", ToolchainSlot.LINT, ToolchainProvider.ESLINT),
+        ("oxlint", ToolchainSlot.LINT, ToolchainProvider.OXLINT),
+        ("jest", ToolchainSlot.TEST, ToolchainProvider.JEST),
+    ],
+)
+def test_javascript_dev_dependency_is_evidence(
+    tmp_path: Path, dev_dependency: str, slot: ToolchainSlot, expected: ToolchainProvider
+) -> None:
+    _write(
+        tmp_path,
+        "package.json",
+        json.dumps({"name": "x", "devDependencies": {dev_dependency: "1.0.0"}}),
+    )
+
+    binding = _binding(_inventory(tmp_path), ToolchainLane.JAVASCRIPT, slot)
+
+    assert binding.provider is expected
+    assert binding.evidence == (f"dependency:{dev_dependency}",)
 
 
 def test_javascript_without_typescript_has_no_typecheck_slot(tmp_path: Path) -> None:
@@ -129,17 +245,12 @@ def test_javascript_without_typescript_has_no_typecheck_slot(tmp_path: Path) -> 
     inventory = _inventory(tmp_path)
 
     assert inventory.lanes == (ToolchainLane.JAVASCRIPT,)
-    assert ToolchainSlot.TYPECHECK not in {b.slot for b in inventory.bindings}
+    assert inventory.binding(ToolchainLane.JAVASCRIPT, ToolchainSlot.TYPECHECK) is None
     format_binding = _binding(inventory, ToolchainLane.JAVASCRIPT, ToolchainSlot.FORMAT)
-    assert format_binding.provider is ToolchainProvider.PRETTIER
     assert format_binding.evidence == ("package.json:prettier",)
     lint = _binding(inventory, ToolchainLane.JAVASCRIPT, ToolchainSlot.LINT)
-    assert lint.missing
+    assert lint.is_missing
     assert lint.default_provider is ToolchainProvider.OXLINT
-    assert (
-        _binding(inventory, ToolchainLane.JAVASCRIPT, ToolchainSlot.TEST).provider
-        is ToolchainProvider.VITEST
-    )
 
 
 def test_typescript_repository_binds_eslint_and_tsc_from_config_files(tmp_path: Path) -> None:
@@ -153,10 +264,8 @@ def test_typescript_repository_binds_eslint_and_tsc_from_config_files(tmp_path: 
     lint = _binding(inventory, ToolchainLane.JAVASCRIPT, ToolchainSlot.LINT)
     assert lint.provider is ToolchainProvider.ESLINT
     assert lint.evidence == ("file:eslint.config.mjs",)
-    assert (
-        _binding(inventory, ToolchainLane.JAVASCRIPT, ToolchainSlot.TYPECHECK).provider
-        is ToolchainProvider.TSC
-    )
+    typecheck = _binding(inventory, ToolchainLane.JAVASCRIPT, ToolchainSlot.TYPECHECK)
+    assert typecheck.evidence == ("file:tsconfig.json",)
 
 
 def test_mixed_repository_gets_both_lanes(tmp_path: Path) -> None:
@@ -169,62 +278,163 @@ def test_mixed_repository_gets_both_lanes(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "text", "fragment"),
+    ("name", "text", "warning"),
     [
-        ("pyproject.toml", "[project\n", "invalid pyproject.toml"),
-        ("package.json", "{", "invalid package.json"),
-        ("setup.cfg", "no section header\n", "invalid setup.cfg"),
+        ("pyproject.toml", "[project\n", "invalid pyproject.toml: TOMLDecodeError"),
+        ("package.json", "{", "invalid package.json: JSONDecodeError"),
+        ("setup.cfg", "no section header\n", "invalid setup.cfg: MissingSectionHeaderError"),
+        ("package.json", "1" * 5000, "invalid package.json: ValueError"),
+        ("package.json", "[" * 100_000 + "]" * 100_000, "invalid package.json: RecursionError"),
     ],
 )
-def test_invalid_config_records_a_warning(
-    tmp_path: Path, name: str, text: str, fragment: str
+def test_hostile_config_records_a_warning_without_its_content(
+    tmp_path: Path, name: str, text: str, warning: str
 ) -> None:
     _write(tmp_path, "app.py", "x = 1\n")
     _write(tmp_path, name, text)
 
-    inventory = _inventory(tmp_path)
+    inventory = inventory_toolchain(tmp_path, _profile_with_python())
 
-    assert any(fragment in warning for warning in inventory.warnings), inventory.warnings
+    assert warning in inventory.warnings
 
 
-def test_oversized_config_is_skipped_with_a_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from software_agent_factory import toolchain
-
-    monkeypatch.setattr(toolchain, "MAX_CONFIG_BYTES", 4)
+def test_non_utf8_config_records_a_warning(tmp_path: Path) -> None:
     _write(tmp_path, "app.py", "x = 1\n")
-    _write(tmp_path, "setup.cfg", "[flake8]\n")
+    (tmp_path / "setup.cfg").write_bytes(b"\xff\xfe[flake8]\n")
+
+    inventory = inventory_toolchain(tmp_path, _profile_with_python())
+
+    assert "could not read setup.cfg: UnicodeDecodeError" in inventory.warnings
+
+
+def test_package_json_that_is_not_an_object_gives_no_evidence(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", "[]")
 
     inventory = _inventory(tmp_path)
+
+    assert inventory.warnings == ()
+    assert all(binding.is_missing for binding in inventory.bindings)
+
+
+def test_oversized_config_is_skipped_with_a_warning(tmp_path: Path) -> None:
+    _write(tmp_path, "app.py", "x = 1\n")
+    _write(tmp_path, "setup.cfg", "[flake8]\n" + "#" * MAX_MANIFEST_BYTES)
+
+    inventory = inventory_toolchain(tmp_path, _profile_with_python())
 
     assert "skipped oversized config: setup.cfg" in inventory.warnings
-    assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT).missing
+    assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT).is_missing
 
 
-def test_symlinked_config_is_ignored(tmp_path: Path) -> None:
+def test_symlinked_config_is_not_evidence(tmp_path: Path) -> None:
     outside = tmp_path / "outside.cfg"
     outside.write_text("[flake8]\n", encoding="utf-8")
     root = tmp_path / "repo"
     root.mkdir()
     _write(root, "app.py", "x = 1\n")
     (root / "setup.cfg").symlink_to(outside)
+    (root / ".flake8").symlink_to(outside)
 
     inventory = _inventory(root)
 
-    assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT).missing
+    assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT).is_missing
+    assert inventory.warnings == ()
 
 
-def test_missing_root_yields_bindings_without_file_evidence(tmp_path: Path) -> None:
+@_POSIX_NON_ROOT
+def test_unreadable_config_records_a_warning(tmp_path: Path, restore_mode: list[Path]) -> None:
+    _write(tmp_path, "app.py", "x = 1\n")
+    config = tmp_path / "setup.cfg"
+    config.write_text("[flake8]\n", encoding="utf-8")
+    config.chmod(0)
+    restore_mode.append(config)
+
+    inventory = inventory_toolchain(tmp_path, _profile_with_python())
+
+    assert "could not read setup.cfg: PermissionError" in inventory.warnings
+
+
+@_POSIX_NON_ROOT
+def test_unlistable_root_records_a_warning_and_keeps_bindings(
+    tmp_path: Path, restore_mode: list[Path]
+) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     _write(root, "app.py", "x = 1\n")
     profile = profile_repository(root)
+    root.chmod(0o300)
+    restore_mode.append(root)
 
-    inventory = inventory_toolchain(tmp_path / "gone", profile)
+    inventory = inventory_toolchain(root, profile)
+
+    assert inventory.warnings == ("could not list repository root: PermissionError",)
+    assert all(binding.is_missing for binding in inventory.bindings)
+
+
+def test_missing_root_yields_bindings_without_file_evidence(tmp_path: Path) -> None:
+    inventory = inventory_toolchain(tmp_path / "gone", _profile_with_python())
 
     assert inventory.lanes == (ToolchainLane.PYTHON,)
-    assert all(binding.missing for binding in inventory.bindings)
+    assert all(binding.is_missing for binding in inventory.bindings)
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "scan limit reached after 20000 files",
+        "dependency evidence limited to 200 declarations",
+        "repository profiling degraded: boom",
+    ],
+)
+def test_incomplete_profile_evidence_marks_the_inventory_incomplete(
+    tmp_path: Path, warning: str
+) -> None:
+    profile = _profile_with_python().model_copy(update={"warnings": (warning, "other")})
+
+    inventory = inventory_toolchain(tmp_path, profile)
+
+    assert inventory.complete is False
+    assert inventory.warnings == (warning,)
+
+
+def test_degraded_inventory_is_empty_and_incomplete() -> None:
+    inventory = degraded_toolchain_inventory("toolchain inventory degraded: OSError")
+
+    assert inventory.lanes == ()
+    assert inventory.complete is False
+
+
+def test_bound_provider_without_evidence_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="needs evidence"):
+        ToolchainSlotBinding(
+            lane=ToolchainLane.PYTHON,
+            slot=ToolchainSlot.LINT,
+            provider=ToolchainProvider.RUFF,
+            default_provider=ToolchainProvider.RUFF,
+        )
+
+
+def test_missing_provider_with_evidence_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="needs evidence"):
+        ToolchainSlotBinding(
+            lane=ToolchainLane.PYTHON,
+            slot=ToolchainSlot.LINT,
+            default_provider=ToolchainProvider.RUFF,
+            evidence=("dependency:ruff",),
+        )
+
+
+def test_inventory_rejects_duplicate_slots_and_unknown_lanes() -> None:
+    binding = ToolchainSlotBinding(
+        lane=ToolchainLane.PYTHON,
+        slot=ToolchainSlot.LINT,
+        default_provider=ToolchainProvider.RUFF,
+    )
+
+    with pytest.raises(ValidationError, match="only one binding"):
+        ToolchainInventory(lanes=(ToolchainLane.PYTHON,), bindings=(binding, binding))
+    with pytest.raises(ValidationError, match="inventory lane"):
+        ToolchainInventory(lanes=(), bindings=(binding,))
 
 
 def test_inventory_round_trips_as_json(tmp_path: Path) -> None:
@@ -233,3 +443,20 @@ def test_inventory_round_trips_as_json(tmp_path: Path) -> None:
     inventory = _inventory(tmp_path)
 
     assert ToolchainInventory.model_validate_json(inventory.model_dump_json()) == inventory
+
+
+def _profile_with_python() -> RepositoryProfile:
+    return RepositoryProfile(
+        manifest_fingerprint="0" * 64,
+        dependency_fingerprint="0" * 64,
+        technologies=(RepositoryTechnology.PYTHON,),
+        dependencies=(
+            RepositoryDependency(
+                ecosystem=DependencyEcosystem.PYTHON,
+                name="requests",
+                declared_version=">=2",
+                manifest_path="pyproject.toml",
+                group="runtime",
+            ),
+        ),
+    )

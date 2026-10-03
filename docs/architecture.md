@@ -459,6 +459,20 @@ instead of a version. `poetry.lock`, `yarn.lock`, `bun.lock`/`bun.lockb`,
 and are fingerprinted as `version_files`, but exact graph parsing is not
 claimed for them.
 
+Two SHA-256 fingerprints are recorded and they are not interchangeable:
+
+- `dependency_fingerprint` is semantic. It digests the detected technologies,
+  test tools, package managers and normalized dependency declarations. It is
+  the identity a generated skill is stored and reused under.
+- `manifest_fingerprint` is provenance. It digests the content of every
+  `version_files` path (`package.json`, `pyproject.toml`, requirements files
+  and lockfiles). Formatting or comment-only manifest edits change it without
+  invalidating a skill.
+
+There is no fixed built-in skill catalog and no repository-provided plugin
+system. See RepositorySkill below for how version-specific guidance is
+generated, reused and customized.
+
 ### ToolchainInventory
 
 Produced deterministically right after the first `RepositoryProfile` and
@@ -484,19 +498,15 @@ root-level configuration file, a `[tool.*]` table in `pyproject.toml`, a
 section in `setup.cfg` or `tox.ini`, or a key in `package.json`.
 An existing tool is kept. The default never replaces it.
 
-Two SHA-256 fingerprints are recorded and they are not interchangeable:
+Configuration evidence comes from the repository root only. A tool that is
+configured only in a subdirectory is not found.
+The inventory skips symbolic links and files larger than the manifest limit.
+A parse failure records the file name and the exception type, not the file content.
 
-- `dependency_fingerprint` is semantic. It digests the detected technologies,
-  test tools, package managers and normalized dependency declarations. It is
-  the identity a generated skill is stored and reused under.
-- `manifest_fingerprint` is provenance. It digests the content of every
-  `version_files` path (`package.json`, `pyproject.toml`, requirements files
-  and lockfiles). Formatting or comment-only manifest edits change it without
-  invalidating a skill.
-
-There is no fixed built-in skill catalog and no repository-provided plugin
-system. See RepositorySkill below for how version-specific guidance is
-generated, reused and customized.
+`complete` is false when the profile hit its scan limit or dependency limit,
+or when profiling degraded. A missing binding is then not proof that the tool
+is absent. If the inventory itself fails, the factory saves an empty,
+incomplete inventory and the run continues.
 
 ### RepositorySkill
 

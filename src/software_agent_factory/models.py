@@ -305,22 +305,49 @@ class ToolchainSlotBinding(ModelBase):
     slot: ToolchainSlot
     provider: ToolchainProvider | None = None
     default_provider: ToolchainProvider
-    evidence: tuple[str, ...] = Field(default=(), max_length=20)
+    evidence: tuple[str, ...] = Field(default=(), max_length=40)
+
+    @model_validator(mode="after")
+    def _provider_matches_evidence(self) -> Self:
+        if (self.provider is None) != (not self.evidence):
+            raise ValueError("a bound provider needs evidence, and a missing one has none")
+        return self
 
     @property
-    def missing(self) -> bool:
+    def is_missing(self) -> bool:
         return self.provider is None
 
 
 class ToolchainInventory(VersionedModel):
-    """Deterministic inventory of the repository toolchain (ADR-034)."""
+    """Deterministic inventory of the repository toolchain (ADR-034).
+
+    ``complete`` is false when the profile evidence was cut short or degraded.
+    A missing binding is then not proof that the repository lacks the tool.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     registry_version: Literal[1] = 1
     lanes: tuple[ToolchainLane, ...] = ()
     bindings: tuple[ToolchainSlotBinding, ...] = ()
+    complete: bool = True
     warnings: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _bindings_match_lanes(self) -> Self:
+        keys = [(binding.lane, binding.slot) for binding in self.bindings]
+        if len(keys) != len(set(keys)):
+            raise ValueError("each lane slot can have only one binding")
+        if any(binding.lane not in self.lanes for binding in self.bindings):
+            raise ValueError("every binding lane must be an inventory lane")
+        return self
+
+    def binding(self, lane: ToolchainLane, slot: ToolchainSlot) -> ToolchainSlotBinding | None:
+        """Return the binding for ``lane`` and ``slot``, if the slot applies."""
+        return next(
+            (b for b in self.bindings if b.lane is lane and b.slot is slot),
+            None,
+        )
 
 
 GENERIC_SKILL_TARGET = "repository"

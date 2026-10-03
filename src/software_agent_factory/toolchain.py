@@ -1,23 +1,27 @@
 """Deterministic toolchain registry and inventory (ADR-034).
 
 The registry is data: each lane has slots, and each slot has an ordered list of
-recognized providers plus the default provider to add when none is found. The
-inventory binds the first provider with evidence. An existing tool is kept and
-never replaced by the default.
+recognized providers, the default provider to add when none is found and an
+optional technology the slot requires. The inventory binds the first provider
+with evidence. An existing tool is kept and never replaced by the default.
 
 Evidence comes from the repository profile's dependency declarations and from
 root-level configuration files. Like the profiler, the inventory never runs a
-command, imports target code or contacts the network.
+command, imports target code or contacts the network. Configuration parsing
+failures become warnings, never exceptions.
 """
 
 from __future__ import annotations
 
 import configparser
 import json
+import os
+import stat
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .models import (
     RepositoryProfile,
@@ -29,8 +33,15 @@ from .models import (
     ToolchainSlot,
     ToolchainSlotBinding,
 )
+from .repository_profile import MAX_MANIFEST_BYTES
 
-MAX_CONFIG_BYTES = 1_048_576
+#: Profile warnings that mean dependency or technology evidence is incomplete.
+#: A missing binding is then not proof that the repository lacks the tool.
+INCOMPLETE_PROFILE_WARNING_PREFIXES = (
+    "scan limit reached",
+    "dependency evidence limited",
+    "repository profiling degraded",
+)
 
 
 @dataclass(frozen=True)
@@ -38,7 +49,8 @@ class SlotSpec:
     """The ordered providers for one slot. The first provider with evidence wins."""
 
     providers: tuple[ToolchainProvider, ...]
-    default: ToolchainProvider
+    default_provider: ToolchainProvider
+    requires: RepositoryTechnology | None = None
 
 
 @dataclass(frozen=True)
@@ -53,7 +65,7 @@ class ProviderSignals:
     test_tool: RepositoryTestTool | None = None
 
 
-def _signals(
+def _provider_signals(
     *,
     dependencies: tuple[str, ...] = (),
     files: tuple[str, ...] = (),
@@ -73,6 +85,7 @@ def _signals(
 
 
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
+_INI_FILES = ("setup.cfg", "tox.ini")
 
 LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
     ToolchainLane.PYTHON: {
@@ -96,7 +109,11 @@ LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
             (ToolchainProvider.ESLINT, ToolchainProvider.BIOME, ToolchainProvider.OXLINT),
             ToolchainProvider.OXLINT,
         ),
-        ToolchainSlot.TYPECHECK: SlotSpec((ToolchainProvider.TSC,), ToolchainProvider.TSC),
+        ToolchainSlot.TYPECHECK: SlotSpec(
+            (ToolchainProvider.TSC,),
+            ToolchainProvider.TSC,
+            requires=RepositoryTechnology.TYPESCRIPT,
+        ),
         ToolchainSlot.TEST: SlotSpec(
             (ToolchainProvider.VITEST, ToolchainProvider.JEST), ToolchainProvider.VITEST
         ),
@@ -105,29 +122,29 @@ LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
 """The lanes, their slots and the ordered providers for each slot."""
 
 PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
-    ToolchainProvider.RUFF: _signals(
+    ToolchainProvider.RUFF: _provider_signals(
         dependencies=("ruff",), files=("ruff.toml", ".ruff.toml"), pyproject_tools=("ruff",)
     ),
-    ToolchainProvider.BLACK: _signals(dependencies=("black",), pyproject_tools=("black",)),
-    ToolchainProvider.FLAKE8: _signals(
+    ToolchainProvider.BLACK: _provider_signals(dependencies=("black",), pyproject_tools=("black",)),
+    ToolchainProvider.FLAKE8: _provider_signals(
         dependencies=("flake8",), files=(".flake8",), ini_sections=("flake8",)
     ),
-    ToolchainProvider.PYLINT: _signals(
+    ToolchainProvider.PYLINT: _provider_signals(
         dependencies=("pylint",), files=(".pylintrc", "pylintrc"), pyproject_tools=("pylint",)
     ),
-    ToolchainProvider.MYPY: _signals(
+    ToolchainProvider.MYPY: _provider_signals(
         dependencies=("mypy",),
         files=("mypy.ini", ".mypy.ini"),
         pyproject_tools=("mypy",),
         ini_sections=("mypy",),
     ),
-    ToolchainProvider.PYRIGHT: _signals(
+    ToolchainProvider.PYRIGHT: _provider_signals(
         dependencies=("pyright",), files=("pyrightconfig.json",), pyproject_tools=("pyright",)
     ),
-    ToolchainProvider.PYTEST: _signals(
+    ToolchainProvider.PYTEST: _provider_signals(
         dependencies=("pytest",), test_tool=RepositoryTestTool.PYTEST
     ),
-    ToolchainProvider.PRETTIER: _signals(
+    ToolchainProvider.PRETTIER: _provider_signals(
         dependencies=("prettier",),
         files=(
             ".prettierrc",
@@ -140,10 +157,10 @@ PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
         ),
         package_json_keys=("prettier",),
     ),
-    ToolchainProvider.BIOME: _signals(
+    ToolchainProvider.BIOME: _provider_signals(
         dependencies=("@biomejs/biome",), files=("biome.json", "biome.jsonc")
     ),
-    ToolchainProvider.ESLINT: _signals(
+    ToolchainProvider.ESLINT: _provider_signals(
         dependencies=("eslint",),
         files=(
             ".eslintrc",
@@ -156,14 +173,16 @@ PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
         ),
         package_json_keys=("eslintConfig",),
     ),
-    ToolchainProvider.OXLINT: _signals(
+    ToolchainProvider.OXLINT: _provider_signals(
         dependencies=("oxlint",), files=(".oxlintrc.json", "oxlint.json")
     ),
-    ToolchainProvider.TSC: _signals(dependencies=("typescript",), files=("tsconfig.json",)),
-    ToolchainProvider.VITEST: _signals(
+    ToolchainProvider.TSC: _provider_signals(
+        dependencies=("typescript",), files=("tsconfig.json",)
+    ),
+    ToolchainProvider.VITEST: _provider_signals(
         dependencies=("vitest",), test_tool=RepositoryTestTool.VITEST
     ),
-    ToolchainProvider.JEST: _signals(
+    ToolchainProvider.JEST: _provider_signals(
         dependencies=("jest",),
         files=tuple(f"jest.config.{ext}" for ext in (*_JS_CONFIG_EXTENSIONS, "json")),
         package_json_keys=("jest",),
@@ -176,32 +195,55 @@ PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
 class _RootEvidence:
     files: frozenset[str] = frozenset()
     pyproject_tools: set[str] = field(default_factory=set)
-    ini_sections: set[str] = field(default_factory=set)
+    #: ``(file name, section)`` pairs from ``setup.cfg`` and ``tox.ini``.
+    ini_sections: set[tuple[str, str]] = field(default_factory=set)
     package_json_keys: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _RepositoryFacts:
+    dependency_names: frozenset[str]
+    test_tools: frozenset[RepositoryTestTool]
+    root_evidence: _RootEvidence
 
 
 def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> ToolchainInventory:
     """Bind each lane slot to an existing provider or mark it missing."""
 
-    lanes = _lanes(profile)
+    lanes = _detect_lanes(profile)
     root = repository_root.resolve()
-    evidence = _read_root_evidence(root) if root.is_dir() else _RootEvidence()
-    dependencies = {dependency.name.lower() for dependency in profile.dependencies}
-    bindings: list[ToolchainSlotBinding] = []
-    for lane in lanes:
-        for slot, spec in LANE_SLOTS[lane].items():
-            if slot is ToolchainSlot.TYPECHECK and not _needs_typecheck(lane, profile):
-                continue
-            bindings.append(_bind(lane, slot, spec, profile, dependencies, evidence))
+    facts = _RepositoryFacts(
+        dependency_names=frozenset(dependency.name.lower() for dependency in profile.dependencies),
+        test_tools=frozenset(profile.test_tools),
+        root_evidence=_read_root_evidence(root) if root.is_dir() else _RootEvidence(),
+    )
+    bindings = [
+        _bind(lane, slot, spec, facts)
+        for lane in lanes
+        for slot, spec in LANE_SLOTS[lane].items()
+        if spec.requires is None or spec.requires in profile.technologies
+    ]
+    incomplete = [
+        warning
+        for warning in profile.warnings
+        if warning.startswith(INCOMPLETE_PROFILE_WARNING_PREFIXES)
+    ]
     return ToolchainInventory(
         lanes=lanes,
         bindings=tuple(bindings),
-        warnings=tuple(evidence.warnings),
+        complete=not incomplete,
+        warnings=(*incomplete, *facts.root_evidence.warnings),
     )
 
 
-def _lanes(profile: RepositoryProfile) -> tuple[ToolchainLane, ...]:
+def degraded_toolchain_inventory(warning: str) -> ToolchainInventory:
+    """Return an empty, incomplete inventory when the inventory cannot be built."""
+
+    return ToolchainInventory(complete=False, warnings=(warning,))
+
+
+def _detect_lanes(profile: RepositoryProfile) -> tuple[ToolchainLane, ...]:
     technologies = set(profile.technologies)
     lanes: list[ToolchainLane] = []
     if RepositoryTechnology.PYTHON in technologies:
@@ -216,123 +258,123 @@ def _lanes(profile: RepositoryProfile) -> tuple[ToolchainLane, ...]:
     return tuple(lanes)
 
 
-def _needs_typecheck(lane: ToolchainLane, profile: RepositoryProfile) -> bool:
-    # Plain JavaScript has no type checker to add. TypeScript does.
-    return (
-        lane is not ToolchainLane.JAVASCRIPT
-        or RepositoryTechnology.TYPESCRIPT in profile.technologies
-    )
-
-
 def _bind(
     lane: ToolchainLane,
     slot: ToolchainSlot,
     spec: SlotSpec,
-    profile: RepositoryProfile,
-    dependencies: set[str],
-    evidence: _RootEvidence,
+    facts: _RepositoryFacts,
 ) -> ToolchainSlotBinding:
     for provider in spec.providers:
-        found = _provider_evidence(PROVIDER_SIGNALS[provider], profile, dependencies, evidence)
-        if found:
+        evidence = _provider_evidence(PROVIDER_SIGNALS[provider], facts)
+        if evidence:
             return ToolchainSlotBinding(
                 lane=lane,
                 slot=slot,
                 provider=provider,
-                default_provider=spec.default,
-                evidence=found,
+                default_provider=spec.default_provider,
+                evidence=evidence,
             )
-    return ToolchainSlotBinding(lane=lane, slot=slot, default_provider=spec.default)
+    return ToolchainSlotBinding(lane=lane, slot=slot, default_provider=spec.default_provider)
 
 
-def _provider_evidence(
-    signals: ProviderSignals,
-    profile: RepositoryProfile,
-    dependencies: set[str],
-    evidence: _RootEvidence,
-) -> tuple[str, ...]:
-    found = [
-        *(f"dependency:{name}" for name in sorted(signals.dependencies & dependencies)),
-        *(f"file:{name}" for name in sorted(signals.files & evidence.files)),
+def _provider_evidence(signals: ProviderSignals, facts: _RepositoryFacts) -> tuple[str, ...]:
+    root = facts.root_evidence
+    evidence = [
+        *(f"dependency:{name}" for name in sorted(signals.dependencies & facts.dependency_names)),
+        *(f"file:{name}" for name in sorted(signals.files & root.files)),
         *(
-            f"pyproject:tool.{name}"
-            for name in sorted(signals.pyproject_tools & evidence.pyproject_tools)
+            f"pyproject.toml:tool.{name}"
+            for name in sorted(signals.pyproject_tools & root.pyproject_tools)
         ),
-        *(f"ini:[{name}]" for name in sorted(signals.ini_sections & evidence.ini_sections)),
+        *(
+            f"{file_name}:[{section}]"
+            for file_name, section in sorted(root.ini_sections)
+            if section in signals.ini_sections
+        ),
         *(
             f"package.json:{key}"
-            for key in sorted(signals.package_json_keys & evidence.package_json_keys)
+            for key in sorted(signals.package_json_keys & root.package_json_keys)
         ),
     ]
-    if signals.test_tool is not None and signals.test_tool in profile.test_tools:
-        found.append(f"test-tool:{signals.test_tool}")
-    return tuple(found)
+    if signals.test_tool is not None and signals.test_tool in facts.test_tools:
+        evidence.append(f"test-tool:{signals.test_tool}")
+    return tuple(evidence)
 
 
 def _read_root_evidence(root: Path) -> _RootEvidence:
     try:
-        names = frozenset(entry.name for entry in root.iterdir() if entry.is_file())
+        names = frozenset(
+            entry.name for entry in root.iterdir() if entry.is_file(follow_symlinks=False)
+        )
     except OSError as exc:
-        return _RootEvidence(warnings=[f"could not list repository root: {exc}"])
+        return _RootEvidence(warnings=[f"could not list repository root: {type(exc).__name__}"])
     evidence = _RootEvidence(files=names)
     if "pyproject.toml" in names:
-        _read_pyproject_tools(root / "pyproject.toml", evidence)
-    for ini_name in ("setup.cfg", "tox.ini"):
+        payload = _parse_config(root / "pyproject.toml", tomllib.loads, evidence)
+        tool = payload.get("tool") if isinstance(payload, dict) else None
+        if isinstance(tool, dict):
+            evidence.pyproject_tools.update(str(name) for name in tool)
+    for ini_name in _INI_FILES:
         if ini_name in names:
-            _read_ini_sections(root / ini_name, evidence)
+            sections = _parse_config(root / ini_name, _ini_sections, evidence)
+            if sections is not None:
+                evidence.ini_sections.update((ini_name, section) for section in sections)
     if "package.json" in names:
-        _read_package_json_keys(root / "package.json", evidence)
+        payload = _parse_config(root / "package.json", json.loads, evidence)
+        if isinstance(payload, dict):
+            evidence.package_json_keys.update(str(key) for key in payload)
     return evidence
 
 
-def _read_text(path: Path, evidence: _RootEvidence) -> str | None:
+def _ini_sections(text: str) -> list[str]:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read_string(text)
+    return parser.sections()
+
+
+def _parse_config(path: Path, parse: Callable[[str], Any], evidence: _RootEvidence) -> Any | None:
+    """Parse one untrusted configuration file, or record a warning and return ``None``.
+
+    The warning names the exception type only. Parser messages can quote file
+    content, and that content is untrusted.
+    """
+
+    text = _read_bounded_text(path, evidence)
+    if text is None:
+        return None
     try:
-        if path.is_symlink():
-            return None
-        if path.stat().st_size > MAX_CONFIG_BYTES:
-            evidence.warnings.append(f"skipped oversized config: {path.name}")
-            return None
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        evidence.warnings.append(f"could not read {path.name}: {exc}")
+        return parse(text)
+    except (ValueError, RecursionError, configparser.Error) as exc:
+        # TOMLDecodeError and JSONDecodeError are ValueError subclasses. A plain
+        # ValueError also covers integers past the interpreter's digit limit.
+        evidence.warnings.append(f"invalid {path.name}: {type(exc).__name__}")
         return None
 
 
-def _read_pyproject_tools(path: Path, evidence: _RootEvidence) -> None:
-    text = _read_text(path, evidence)
-    if text is None:
-        return
+def _read_bounded_text(path: Path, evidence: _RootEvidence) -> str | None:
+    """Read a regular file without following a symbolic link and within the size limit."""
+
     try:
-        payload = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        evidence.warnings.append(f"invalid {path.name}: {exc}")
-        return
-    tool = payload.get("tool")
-    if isinstance(tool, dict):
-        evidence.pyproject_tools.update(str(name) for name in tool)
-
-
-def _read_ini_sections(path: Path, evidence: _RootEvidence) -> None:
-    text = _read_text(path, evidence)
-    if text is None:
-        return
-    parser = configparser.ConfigParser(interpolation=None)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        evidence.warnings.append(f"could not read {path.name}: {type(exc).__name__}")
+        return None
     try:
-        parser.read_string(text)
-    except configparser.Error as exc:
-        evidence.warnings.append(f"invalid {path.name}: {exc}")
-        return
-    evidence.ini_sections.update(parser.sections())
-
-
-def _read_package_json_keys(path: Path, evidence: _RootEvidence) -> None:
-    text = _read_text(path, evidence)
-    if text is None:
-        return
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            evidence.warnings.append(f"skipped non-regular config: {path.name}")
+            return None
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read(MAX_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        evidence.warnings.append(f"could not read {path.name}: {type(exc).__name__}")
+        return None
+    finally:
+        os.close(descriptor)
+    if len(raw) > MAX_MANIFEST_BYTES:
+        evidence.warnings.append(f"skipped oversized config: {path.name}")
+        return None
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        evidence.warnings.append(f"invalid {path.name}: {exc}")
-        return
-    if isinstance(payload, dict):
-        evidence.package_json_keys.update(str(key) for key in payload)
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        evidence.warnings.append(f"could not read {path.name}: UnicodeDecodeError")
+        return None
