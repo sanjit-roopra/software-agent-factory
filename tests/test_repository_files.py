@@ -263,9 +263,10 @@ def test_writing_refuses_a_symlinked_parent_directory(python_repo: Path, tmp_pat
     outside = tmp_path / "outside-claude"
     outside.mkdir()
     (python_repo / ".claude").symlink_to(outside, target_is_directory=True)
+    files = _plan(python_repo).files
 
     with pytest.raises(RepositoryFileError, match="cannot write"):
-        write_repository_files(python_repo, _plan(python_repo).files)
+        write_repository_files(python_repo, files)
 
     assert list(outside.iterdir()) == []
 
