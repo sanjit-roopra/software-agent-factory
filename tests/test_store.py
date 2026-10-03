@@ -9,27 +9,25 @@ from pathlib import Path
 from typing import get_args
 
 import pytest
+from factory_testing import REPLY_POLICY
 from pydantic import ValidationError
 
 from software_agent_factory.models import (
     ChangeSet,
     DashboardRequestStaleReason,
     DashboardResumeRequest,
+    ExecutionPlan,
+    ExpectedScope,
     FactoryRun,
     PlanDecisionAnswer,
     RepositoryProfile,
-    RepositorySkill,
-    RepositorySkillOverlay,
-    RepositorySkillUse,
     ResumeClassification,
-    SkillGuidance,
-    SkillOverlayMode,
-    SkillSelectionSource,
     Specification,
     TestReport,
     WorkflowState,
     WorkItem,
 )
+from software_agent_factory.observability import build_run_detail
 from software_agent_factory.store import (
     ATTEMPTS_DIRNAME,
     FileRunStore,
@@ -308,21 +306,24 @@ def test_repository_profile_has_a_registered_run_level_filename(tmp_path: Path) 
     assert store.list_attempts(run.id) == []
 
 
-def test_repository_skill_has_a_registered_run_level_filename(tmp_path: Path) -> None:
+def test_legacy_repository_skill_files_in_a_run_directory_are_ignored(tmp_path: Path) -> None:
+    """Runs from before ADR-034 can hold repository skill files. Nothing reads them."""
     store = FileRunStore(tmp_path / "data")
     run = _sample_run()
     store.save_run(run)
-    skill = RepositorySkill(
-        dependency_fingerprint="a" * 64,
-        simplify=SkillGuidance(summary="Simplify.", guidance=("Keep behavior.",)),
-        polish=SkillGuidance(summary="Polish.", guidance=("Use exact versions.",)),
-        uncertainties=("No external research in this fixture.",),
-    )
+    for name in (
+        "repository-skill.json",
+        "repository-skill-use.json",
+        "repository-skill-overlay.json",
+    ):
+        (store.runs_dir / run.id / name).write_text('{"schema_version": 1}', encoding="utf-8")
 
-    path = store.save_artifact(run.id, skill)
+    detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
 
-    assert path.name == "repository-skill.json"
-    assert store.load_artifact(run.id, RepositorySkill) == skill
+    assert store.load_run(run.id) == run
+    assert [loaded.id for loaded in store.list_runs()] == [run.id]
+    assert detail is not None
+    assert not [name for name in detail.artifacts if name.startswith("repository-skill")]
 
 
 def test_listing_runs_ignores_attempt_directories(tmp_path: Path) -> None:
@@ -617,54 +618,30 @@ def test_invalid_attempt_does_not_create_a_run_directory_for_a_brand_new_run(
     assert not store.runs_dir.exists()
 
 
-def _skill_use(**overrides: object) -> RepositorySkillUse:
-    payload: dict[str, object] = {
-        "repository_key": "demo-0123456789abcdef",
-        "dependency_fingerprint": "a" * 64,
-        "selected_at": datetime(2026, 9, 5, 12, 0, tzinfo=UTC),
-        "source": SkillSelectionSource.GENERATED,
-        "generated_skill_hash": "b" * 64,
-        "effective_skill_hash": "b" * 64,
-    }
-    payload.update(overrides)
-    return RepositorySkillUse.model_validate(payload)
-
-
-def test_repository_skill_audit_artifacts_have_registered_filenames(tmp_path: Path) -> None:
-    store = FileRunStore(tmp_path / "data")
-    run = _sample_run()
-    store.save_run(run)
-    use = _skill_use()
-    overlay = RepositorySkillOverlay(
-        mode=SkillOverlayMode.EXTEND,
-        simplify=SkillGuidance(summary="House style.", guidance=("Prefer stdlib.",)),
+def _plan(summary: str) -> ExecutionPlan:
+    return ExecutionPlan(
+        summary=summary,
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=1),
     )
-
-    use_path = store.save_artifact_once(run.id, use)
-    overlay_path = store.save_artifact_once(run.id, overlay)
-
-    assert use_path.name == "repository-skill-use.json"
-    assert overlay_path.name == "repository-skill-overlay.json"
-    assert store.load_artifact(run.id, RepositorySkillUse) == use
-    assert store.load_artifact(run.id, RepositorySkillOverlay) == overlay
 
 
 def test_create_once_artifacts_are_idempotent_but_immutable(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path / "data")
     run = _sample_run()
     store.save_run(run)
-    use = _skill_use()
+    plan = _plan("Initial plan.")
+    filename = "execution-plan.initial.json"
 
-    first = store.save_artifact_once(run.id, use)
-    again = store.save_artifact_once(run.id, use)
+    first = store.save_artifact_once(run.id, plan, filename=filename)
+    again = store.save_artifact_once(run.id, plan, filename=filename)
 
     assert first == again
-    assert store.load_artifact(run.id, RepositorySkillUse) == use
+    assert store.load_artifact(run.id, ExecutionPlan, filename=filename) == plan
 
     with pytest.raises(ImmutableArtifactConflictError, match="create-once"):
-        store.save_artifact_once(run.id, _skill_use(source=SkillSelectionSource.REUSED))
+        store.save_artifact_once(run.id, _plan("Changed plan."), filename=filename)
 
-    assert store.load_artifact(run.id, RepositorySkillUse) == use
+    assert store.load_artifact(run.id, ExecutionPlan, filename=filename) == plan
     assert not [path for path in (store.runs_dir / run.id).iterdir() if path.suffix == ".tmp"]
 
 

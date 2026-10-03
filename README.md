@@ -128,7 +128,6 @@ The factory does not add the `agent-ready` label.
 | `factory runs` / `show` | List and inspect persisted runs. |
 | `factory doctor` | Check prerequisites for your configuration. |
 | `factory status` | Derived run metrics and health, read-only. |
-| `factory skill` | Inspect, validate or refresh repository guidance and your overlay. |
 | `factory dashboard` | Loopback-only, token-protected viewer. It can approve a halted run or answer its plan decisions. |
 | `factory service` | Install or remove the opt-in macOS launchd agent. |
 

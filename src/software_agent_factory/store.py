@@ -47,9 +47,6 @@ from .models import (
     PlanDecisionAnswers,
     RepositoryCommandsPlan,
     RepositoryProfile,
-    RepositorySkill,
-    RepositorySkillOverlay,
-    RepositorySkillUse,
     ResearchReport,
     ReviewAcceptance,
     ReviewImpasse,
@@ -78,9 +75,6 @@ ARTIFACT_FILENAMES: dict[type[VersionedModel], str] = {
     ToolchainInventory: "toolchain-inventory.json",
     RepositoryCommandsPlan: "repository-commands.json",
     MutationReport: "mutation.json",
-    RepositorySkill: "repository-skill.json",
-    RepositorySkillOverlay: "repository-skill-overlay.json",
-    RepositorySkillUse: "repository-skill-use.json",
     TriageResult: "triage.json",
     RouteDecision: "route-decision.json",
     Specification: "specification.json",
@@ -118,7 +112,7 @@ class ImmutableArtifactConflictError(ValueError):
     """Raised when a create-once artifact snapshot would be changed.
 
     ``save_artifact_once`` exists for audit artifacts (for example
-    ``repository-skill-use.json``) whose whole value is that they record what
+    ``execution-plan.initial.json``) whose whole value is that they record what
     a run actually did. Rewriting one with different content would rewrite
     history, so it fails loudly; an identical retry (a resumed or re-executed
     step producing byte-identical content) is idempotent and succeeds.

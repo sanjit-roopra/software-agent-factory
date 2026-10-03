@@ -74,17 +74,6 @@ def test_decompose_project_purpose_requires_planner_role() -> None:
         )
 
 
-def test_generate_repository_skill_purpose_requires_researcher_role() -> None:
-    with pytest.raises(
-        ValueError, match="repository skill generation requires the RESEARCHER role"
-    ):
-        parse_agent_artifact(
-            AgentRole.TRIAGE,
-            text="{}",
-            purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-        )
-
-
 def test_correct_change_set_purpose_requires_implementer_role() -> None:
     with pytest.raises(ValueError, match="ChangeSet correction requires the IMPLEMENTER role"):
         parse_agent_artifact(

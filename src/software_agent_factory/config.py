@@ -61,12 +61,6 @@ DEFAULT_PROTECTED_FILE_PATTERNS: tuple[str, ...] = (
 #: 14 deliberately stops at two concurrent tasks).
 MAX_SUPPORTED_CONCURRENT_TASKS = 2
 
-#: Upper bounds on the skill-research allowlist. Every entry becomes an explicit
-#: ``--allow-url`` grant for the sandboxed skill researcher, so the reachable
-#: network surface must stay small enough for a human to review at a glance.
-MAX_OFFICIAL_DOCUMENTATION_ORIGINS = 25
-MAX_PRACTICE_REFERENCE_URLS = 12
-
 
 def _parse_safe_https_url(url: str) -> SplitResult | None:
     """Return the parsed URL when it is an unambiguous, credential-free HTTPS URL."""
@@ -89,15 +83,6 @@ def _parse_safe_https_url(url: str) -> SplitResult | None:
     ):
         return None
     return parsed
-
-
-def _reject_duplicate_urls(urls: list[str], *, field: str) -> None:
-    seen: set[str] = set()
-    for url in urls:
-        key = url.lower()
-        if key in seen:
-            raise ValueError(f"{field} entries must be unique")
-        seen.add(key)
 
 
 class ConfigModel(BaseModel):
@@ -278,86 +263,22 @@ class ReviewConfig(ConfigModel):
 
 
 class PolishConfig(ConfigModel):
-    """One optional post-green, research-grounded refinement pass.
-
-    The two URL lists are the entire network surface of the sandboxed skill
-    researcher: each entry becomes an explicit ``--allow-url`` grant. Origins
-    carry authoritative, version-specific documentation; practice references are
-    exact, reviewed documents pinned to an immutable commit and are
-    deliberately kept few.
-    """
+    """One optional post-green refinement pass with fixed guidance (ADR-034)."""
 
     enabled: bool = False
-    official_documentation_origins: list[str] = Field(
-        default_factory=lambda: [
-            "https://docs.pytest.org",
-            "https://docs.python.org",
-            "https://nodejs.org",
-            "https://packaging.python.org",
-            "https://react.dev",
-            "https://testing-library.com",
-            "https://vite.dev",
-            "https://vitest.dev",
-            "https://www.typescriptlang.org",
-        ]
-    )
-    practice_reference_urls: list[str] = Field(
-        default_factory=lambda: [
-            "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
-            "52cc5efd1c445e71c55b956837c003911346d7e7/"
-            "plugins/dev-team/agents/a11y-review.md",
-            "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
-            "52cc5efd1c445e71c55b956837c003911346d7e7/"
-            "plugins/dev-team/agents/component-architecture-review.md",
-            "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
-            "52cc5efd1c445e71c55b956837c003911346d7e7/"
-            "plugins/dev-team/agents/js-fp-review.md",
-            "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
-            "52cc5efd1c445e71c55b956837c003911346d7e7/"
-            "plugins/dev-team/agents/quality-reviewer.md",
-            "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
-            "52cc5efd1c445e71c55b956837c003911346d7e7/"
-            "plugins/dev-team/agents/react-reactivity-review.md",
-            "https://raw.githubusercontent.com/bdfinst/agentic-dev-team/"
-            "52cc5efd1c445e71c55b956837c003911346d7e7/"
-            "plugins/dev-team/agents/refactor-opportunity-review.md",
-        ]
-    )
 
-    @field_validator("official_documentation_origins")
+    @model_validator(mode="before")
     @classmethod
-    def _validate_official_documentation_origins(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("polish.official_documentation_origins must not be empty")
-        if len(value) > MAX_OFFICIAL_DOCUMENTATION_ORIGINS:
-            raise ValueError(
-                "polish.official_documentation_origins must contain at most "
-                f"{MAX_OFFICIAL_DOCUMENTATION_ORIGINS} entries"
-            )
-        for url in value:
-            parsed = _parse_safe_https_url(url)
-            if parsed is None or parsed.path != "" or url.endswith("/"):
-                raise ValueError(
-                    "polish.official_documentation_origins entries must be HTTPS origins "
-                    "without a trailing slash"
-                )
-        _reject_duplicate_urls(value, field="polish.official_documentation_origins")
-        return value
-
-    @field_validator("practice_reference_urls")
-    @classmethod
-    def _validate_practice_reference_urls(cls, value: list[str]) -> list[str]:
-        if len(value) > MAX_PRACTICE_REFERENCE_URLS:
-            raise ValueError(
-                "polish.practice_reference_urls must contain at most "
-                f"{MAX_PRACTICE_REFERENCE_URLS} entries"
-            )
-        for url in value:
-            parsed = _parse_safe_https_url(url)
-            if parsed is None or parsed.path in {"", "/"} or parsed.path.endswith("/"):
-                raise ValueError("polish.practice_reference_urls entries must be exact HTTPS URLs")
-        _reject_duplicate_urls(value, field="polish.practice_reference_urls")
-        return value
+    def _drop_removed_research_keys(cls, data: object) -> object:
+        # The model-generated repository skills used these two allowlists.
+        # Older configuration files can still carry them, so drop them silently.
+        if isinstance(data, dict):
+            return {
+                key: value
+                for key, value in data.items()
+                if key not in {"official_documentation_origins", "practice_reference_urls"}
+            }
+        return data
 
 
 class PullRequestConfig(ConfigModel):

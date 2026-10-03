@@ -45,20 +45,16 @@ The run moved through:
 CREATED → prepare worktree → profile repository → TRIAGING
         → REFINING → [RESEARCHING] → PLANNING
         → IMPLEMENTING → VERIFYING
-        → [RESEARCHING (repository skill)] → IMPLEMENTING (POLISH) → VERIFYING
+        → IMPLEMENTING (POLISH) → VERIFYING
         → REVIEWING → PR_READY
 ```
 
 The profile and polish reuse existing states rather than adding
 `PROFILING`/`POLISHING`. The example configuration enables one bounded polish
-pass. It uses version-aware guidance for the versions that this repository
-declares. That guidance is stored under the data directory, keyed by
-the repository and its dependency fingerprint. The factory reuses that guidance.
-The web-only research call happens only on the first run for given dependencies.
+pass. It uses the fixed simplify and polish guidance of the factory and the
+review lenses for the changed files. No model writes this guidance.
 Polish can make no edits. It still records an attempt and runs
-deterministic verification again. If research or validation fails, the
-factory records a warning on the profile and skips polish. The verified
-run continues to review. A legacy configuration that omits `polish` defaults to
+deterministic verification again. A legacy configuration that omits `polish` defaults to
 disabled.
 
 `PR_READY` is the terminal state when pull requests are disabled, as in
@@ -107,14 +103,6 @@ Nothing is hidden in a database. Everything is JSON on disk.
 ├── change-set.json       what the implementer claims it did
 ├── patch.diff            what the controller actually observed
 ├── verification.json     install / verify / build results
-├── repository-skill.json  immutable snapshot of the effective simplify and
-│                           polish guidance this run used (generated guidance
-│                           plus any valid human overlay)
-├── repository-skill-overlay.json
-│                           the overlay exactly as it was read, when valid
-├── repository-skill-use.json
-│                           provenance: repository key, dependency fingerprint,
-│                           where the guidance came from, content hashes
 ├── test-report.json      independent tester
 ├── review.json           independent reviewer
 └── attempts/
@@ -127,12 +115,6 @@ and reviewer receive the diff from the controller, not the summary from the impl
 
 The Git worktree stays on disk, under `workspaces/`. The factory preserves workspaces
 by default so you can inspect or reuse the change.
-
-Reusable guidance lives outside the run, under
-`<data_dir>/repository-skills/v1/<repository-key>/...`. It lives alongside the
-optional `repository-skill-overlay.yaml` that you can write by hand. Run
-`uv run factory skill path --repo ~/projects/example` to display the exact
-locations. Read [Repository skills and overlays](../guides/repository-skills.md).
 
 ## 5. Check the derived metrics
 

@@ -1,0 +1,49 @@
+This continues the session. Only new or changed sections follow. Earlier sections still apply unless a section below replaces them.
+
+Attempt number:
+2
+
+Repair context:
+{"failures":[],"log_excerpt":null,"summary":"Deterministic verification passed. Apply a final bounded polish and simplification pass using the fixed simplify and polish guidance supplied with this request.","trigger":"POLISH"}
+
+Current diff:
+diff --git a/src/app.py b/src/app.py
++    if not name.strip():
+
+Simplify and polish guidance:
+The factory runs verification after this attempt. You do not need to run the pr-gate checks.
+
+# Simplify
+
+Work only on the files the change touched. Keep behavior the same.
+
+1. Remove code the change no longer needs: dead branches, unused parameters, unused imports.
+2. Reuse an existing helper instead of a new copy of the same logic.
+3. Flatten deep nesting with early returns.
+4. Split a function that does more than one job.
+5. Replace a clever expression with a plain one when the plain one is as short.
+
+After each step, run the `pr-gate` checks. Undo a step that makes a check fail.
+Do not add features, abstractions or configuration.
+
+# Polish
+
+Work only on the files the change touched. Keep behavior the same.
+
+- Use names that say what a value is or what a function does. Remove abbreviations that a new reader would not know.
+- Keep comments that explain why. Remove comments that repeat the code.
+- Follow the idioms the repository already uses, such as its error handling and its test style.
+- Add types where the repository uses types.
+- Keep public interfaces stable unless the change is about them.
+
+Run the `pr-gate` checks when you finish.
+
+Review lenses for the changed files:
+{"lenses":[{"check":["Inverted or missing conditions, off-by-one errors and unhandled empty input.","Return values and errors that callers ignore.","Behavior that differs from the acceptance criteria."],"lens":"correctness"},{"check":["Untrusted input that reaches a shell, a query, a path or a template.","Secrets in code, logs or error messages.","Missing authorization on a new entry point."],"lens":"security"},{"check":["New behavior without a test that fails when the behavior breaks.","Assertions that pass for wrong output, such as a check for any value.","Tests that depend on time, order, randomness or the network."],"lens":"tests"},{"check":["Missing type annotations on public functions.","Bare except, or a broad except that hides the error.","Mutable default arguments."],"lens":"python"}],"rule":"Fix an item only when it is a concrete defect in the current change."}
+
+Output contract:
+Return exactly one JSON object that Pydantic-validates as ChangeSet. No markdown fences. No prose before or after the JSON. Top-level fields: <fields>.
+Word limits for each string or list item: summary=40.
+Avoid filler words such as robust, comprehensive, leverage, utilize, crucial, pivotal, seamless, streamline, enhance, furthermore, moreover.
+ChangeSet JSON Schema:
+<json schema>

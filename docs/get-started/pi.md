@@ -128,18 +128,12 @@ See [Configuration](../reference/configuration.md#pi) for the `pi` settings.
 
 ## Limits
 
-- `factory skill refresh --runtime pi` is not supported. Use `--runtime copilot`.
-- Pi has no web fetch tool. The factory cannot generate a repository skill on pi.
-- The optional polish step needs a generated repository skill. If none is stored
-  for the current dependency state, the factory records a warning and skips polish.
-- Run `factory skill refresh --runtime copilot` once. Later pi runs reuse the
-  stored skill.
 - A command filter blocks `git commit`, `git push`, `gh`, `curl` and `wget` for the Implementer, as Copilot does. The filter matches command patterns. It is not a security boundary, and it does not block other network access. See [The pi command filter](../reference/safety.md#the-pi-command-filter).
 - The Copilot `context_tier` setting has no pi equivalent. Pi ignores it.
 
 ## Next
 
 - [Real Copilot runs](copilot.md) covers the shared parts: repository setup, the
-  stage list, repository skills and safe practice.
+  stage list, polish guidance and safe practice.
 - [Configure a repository](../guides/configure-repository.md)
 - [Safety and trust boundaries](../reference/safety.md)

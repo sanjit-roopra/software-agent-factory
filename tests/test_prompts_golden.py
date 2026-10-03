@@ -37,7 +37,6 @@ from prompt_fixtures import (
     re_review_request,
     repair_context,
     repository_profile,
-    repository_skill,
     review_finding,
     seen_after,
     specification,
@@ -56,7 +55,6 @@ from software_agent_factory.models import (
     ModelBase,
     ProjectBrief,
     ProjectPlan,
-    RepositorySkill,
     ResearchReport,
     ReviewFindingCategory,
     ReviewReport,
@@ -133,7 +131,6 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
         AgentRole.IMPLEMENTER,
         specification=specification(),
         execution_plan=plan(),
-        repository_skill=repository_skill(),
         workspace_path="/w",
         attempt_number=1,
     ),
@@ -188,13 +185,9 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
         repository_profile=repository_profile(),
         repair_context="The first plan packed too many outcomes into one task.",
     ),
-    "generate_repository_skill": lambda: _request(
-        AgentRole.RESEARCHER,
-        purpose=AgentPurpose.GENERATE_REPOSITORY_SKILL,
-        repository_profile=repository_profile(),
-        official_documentation_origins=["https://react.dev"],
-        practice_reference_urls=["https://example.com/review.md"],
-        repair_context="Practice sources must use the general scope.",
+    "implementer_polish": lambda: polish_request(
+        changed_files=[CHANGED_FILE, "web/App.tsx"],
+        dependency_names=("react",),
     ),
 }
 
@@ -213,7 +206,7 @@ EXPECTED_MODELS: dict[str, type[ModelBase]] = {
     "reviewer_rejection": ReviewReport,
     "correct_change_set": ChangeSet,
     "decompose_project": ProjectPlan,
-    "generate_repository_skill": RepositorySkill,
+    "implementer_polish": ChangeSet,
 }
 
 
@@ -276,7 +269,7 @@ CONTINUATION_CASES: dict[str, Callable[[], tuple[AgentRequest, ...]]] = {
         first_implementer_request(),
         verification_repair_request(),
     ),
-    "continuation_polish_with_repository_skill": lambda: (
+    "continuation_polish": lambda: (
         first_implementer_request(),
         polish_request(),
     ),

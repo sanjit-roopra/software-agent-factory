@@ -115,3 +115,34 @@ def test_tester_prompt_gets_no_lenses() -> None:
     prompt = build_prompt(make_request(AgentRole.TESTER, changed_files=["src/app/service.py"]))
 
     assert "Review lenses for the changed files" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("path", "dependency", "lens"),
+    [
+        ("web/App.tsx", "react", "react"),
+        ("web/hooks.js", "react-dom", "react"),
+        ("web/Page.vue", "vue", "vue"),
+        ("web/store.ts", "vue", "vue"),
+        ("app/app.component.ts", "@angular/core", "angular"),
+        ("app/app.component.html", "@angular/core", "angular"),
+    ],
+)
+def test_stack_lens_needs_its_dependency_and_a_matching_file(
+    path: str, dependency: str, lens: str
+) -> None:
+    def names(dependencies: frozenset[str]) -> list[str]:
+        return [item.name for item in select_review_lenses([path], dependencies)]
+
+    assert lens in names(frozenset({dependency}))
+    assert lens not in names(frozenset())
+    assert lens not in names(frozenset({"unrelated"}))
+
+
+@pytest.mark.parametrize("lens", ["react", "vue", "angular"])
+def test_stack_lens_skips_files_outside_its_scope(lens: str) -> None:
+    dependencies = frozenset({"react", "vue", "@angular/core"})
+
+    names = [item.name for item in select_review_lenses(["src/app.py"], dependencies)]
+
+    assert lens not in names
