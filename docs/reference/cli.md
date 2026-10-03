@@ -384,13 +384,15 @@ Adds the missing development tools to a repository (ADR-034).
 4. It records the plan in `.factory/setup.json` in that worktree.
 
 The factory never replaces a tool that the repository already has.
-The source checkout does not change. The factory does not commit or push.
+The source checkout does not change. Without `--publish`, the factory does not commit or push.
+The factory never merges a setup pull request.
 If the setup worktree for the same HEAD is not clean, the command refuses to run.
 If the checkout holds uncommitted changes, `--dry-run` says so, because a setup run uses HEAD.
 
 | Option | Effect |
 | --- | --- |
 | `--dry-run` | Print the plan and change nothing. |
+| `--publish` | Commit the setup worktree, push its branch and open a pull request. It needs `pull_request.enabled`. |
 
 The output has one `add:` line for each command and one `note:` line for each skipped lane.
 If a command fails, the exit code is `1` and the factory keeps the worktree.

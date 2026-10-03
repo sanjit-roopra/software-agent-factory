@@ -52,6 +52,7 @@ from typing import Sequence
 from uuid import uuid4
 
 from .agents import AgentRuntime
+from .command_probe import ProbeLimits
 from .config import FactoryConfig
 from .github import GitHubClient, GitHubCommandError, resolve_github_token
 from .github_tracker import GitHubIssueProvider
@@ -67,6 +68,7 @@ from .models import (
     utc_now,
 )
 from .observability import log_run_event
+from .publishing import PullRequestPublisher
 from .resume import awaits_human, unsettled_requests
 from .resume_writes import ingest_dashboard_request
 from .scheduler import (
@@ -81,7 +83,9 @@ from .scheduler import (
     deterministic_work_item_id,
     opaque_id_from_work_item_id,
 )
+from .setup_run import SetupTrigger
 from .store import FileRunStore
+from .verification import DeterministicVerifier
 from .workflow import WorkflowController, is_run_finished
 
 logger = logging.getLogger(__name__)
@@ -260,6 +264,7 @@ class FactoryService:
     provider: TrackerProvider | None = None
     controller: WorkflowController | None = None
     github_client: GitHubClient | None = None
+    setup_trigger: SetupTrigger | None = None
 
     def __post_init__(self) -> None:
         if not self.config.scheduler.enabled:
@@ -285,6 +290,25 @@ class FactoryService:
                 repository=self.github_repo,
                 required_label=self.config.scheduler.required_label,
                 local_repository_path=self.source_repo,
+            )
+        if (
+            self.setup_trigger is None
+            and self.config.setup.enabled
+            and self.config.pull_request.enabled
+            and self.config.repository.derive_commands
+        ):
+            self.setup_trigger = SetupTrigger(
+                source_repo=self.source_repo,
+                data_dir=self.config.data_dir,
+                branch_prefix=self.config.repository.branch_prefix,
+                limits=ProbeLimits.from_repository(self.config.repository),
+                command_runner=DeterministicVerifier(),
+                publisher=PullRequestPublisher(self.config),
+            )
+            logger.info(
+                "setup check is on: the factory opens a pull request when %s misses "
+                "development tools (setup.enabled)",
+                self.source_repo,
             )
         self._executor = ThreadPoolExecutor(
             max_workers=self.config.scheduler.max_concurrent_tasks,
@@ -716,10 +740,30 @@ class FactoryService:
         """One bounded cycle: recover, reconcile escalation, tick once, wait for dispatched work."""
         self.recover()
         self.reconcile_escalation()
+        self.check_setup()
         report = self.scheduler.tick()
         self._log_tick(report)
         self.drain(drain_timeout_seconds)
         return report
+
+    def check_setup(self) -> None:
+        """Open a setup pull request when the repository misses tools (ADR-034).
+
+        A setup problem never stops the backlog: it is logged and the tick goes on.
+        """
+        if self.setup_trigger is None:
+            return
+        try:
+            state = self.setup_trigger.tick()
+        except Exception:  # noqa: BLE001 - setup is advisory and must not stop the service
+            logger.exception("setup check failed")
+            return
+        if state is not None:
+            logger.info(
+                "setup check at %s: %s",
+                state.head_commit[:12],
+                state.note or state.pull_request_url or "nothing to add",
+            )
 
     def _log_tick(self, report: TickReport) -> None:
         """Emit one structured record per tick, so a rate-limited or
@@ -759,6 +803,7 @@ class FactoryService:
                 self._completion_event.clear()
                 try:
                     self.reconcile_escalation()
+                    self.check_setup()
                     report = self.scheduler.tick()
                 except GitHubCommandError:
                     logger.exception(

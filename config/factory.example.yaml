@@ -318,6 +318,12 @@ performance:
   mode: "standard"
   fast_model_profile: "economy"
 
+# factory start opens a setup pull request when the repository misses
+# development tools (ADR-034). It needs pull_request.enabled. The factory
+# never merges a setup pull request.
+setup:
+  enabled: true
+
 pull_request:
   enabled: false
   remote: "origin"

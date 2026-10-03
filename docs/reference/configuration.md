@@ -695,6 +695,21 @@ A resume with `--no-risk-assessment` never removes an approval that a run alread
 A resume at a delivery checkpoint accepts an approved `R2` or `R3` run only when the approval fingerprint still matches the persisted work item and triage.
 Use `--no-risk-assessment` on `factory run`, `factory project`, `factory start` or `factory service install` to turn it off for one invocation.
 
+## setup
+
+```yaml
+setup:
+  enabled: true
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Let `factory start` open a setup pull request when the repository misses development tools (ADR-034). |
+
+The check needs `pull_request.enabled` and `repository.derive_commands`. It runs at each service tick, but it plans again only when the source HEAD changes.
+It opens one pull request for each new plan. The factory never merges a setup pull request.
+The data directory keeps the last decision for each repository in `setup-state/`.
+
 ## Cross-field validation
 
 The loader rejects a configuration when:

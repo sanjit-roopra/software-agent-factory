@@ -126,6 +126,7 @@ from .models import (
 )
 from .redaction import redact_secrets
 from .resume import resume_refusal_within
+from .setup_run import SETUP_WORKTREE_NAME
 from .store import ARTIFACT_FILENAMES
 
 try:
@@ -2120,7 +2121,8 @@ def _find_orphaned_workspaces(
     referenced_names: set[str],
 ) -> tuple[list[OrphanedWorkspaceFinding], int]:
     """Every directory directly under ``workspaces_dir`` whose name is not
-    in ``referenced_names``. Returns ``(findings, directories_checked)``.
+    in ``referenced_names`` and is not a setup worktree. Returns
+    ``(findings, directories_checked)``.
     Never descends into a workspace's own contents (no file listing, no
     diff, no repository content is read)."""
     if not workspaces_dir.is_dir():
@@ -2132,7 +2134,8 @@ def _find_orphaned_workspaces(
         if not entry.is_dir():
             continue
         checked += 1
-        if entry.name in referenced_names:
+        # Setup worktrees (ADR-034) belong to no run. They are kept on purpose.
+        if entry.name in referenced_names or SETUP_WORKTREE_NAME.match(entry.name):
             continue
         try:
             modified_at = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
