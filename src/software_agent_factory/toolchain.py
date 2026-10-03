@@ -123,9 +123,14 @@ SLOT_SCRIPTS: Mapping[ToolchainSlot, tuple[str, ...]] = {
 KNOWN_PACKAGE_SCRIPTS = tuple(name for names in SLOT_SCRIPTS.values() for name in names)
 
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
-_INI_FILES = ("setup.cfg", "tox.ini", "mypy.ini", ".mypy.ini")
-_MYPY_CONFIG_ORDER = ("mypy.ini", ".mypy.ini", "pyproject.toml", "setup.cfg")
-_MYPY_OWN_FILES = ("mypy.ini", ".mypy.ini")
+_PYPROJECT = "pyproject.toml"
+_PACKAGE_JSON = "package.json"
+_SETUP_CFG = "setup.cfg"
+_MYPY_INI = "mypy.ini"
+_DOT_MYPY_INI = ".mypy.ini"
+_INI_FILES = (_SETUP_CFG, "tox.ini", _MYPY_INI, _DOT_MYPY_INI)
+_MYPY_OWN_FILES = (_MYPY_INI, _DOT_MYPY_INI)
+_MYPY_CONFIG_ORDER = (*_MYPY_OWN_FILES, _PYPROJECT, _SETUP_CFG)
 
 LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
     ToolchainLane.PYTHON: {
@@ -174,7 +179,7 @@ PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
     ),
     ToolchainProvider.MYPY: _provider_signals(
         dependencies=("mypy",),
-        files=("mypy.ini", ".mypy.ini"),
+        files=_MYPY_OWN_FILES,
         pyproject_tools=("mypy",),
         ini_sections=("mypy",),
     ),
@@ -363,36 +368,51 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
     except OSError as exc:
         return _RootEvidence(warnings=[f"could not list repository root: {type(exc).__name__}"])
     evidence = _RootEvidence(files=names)
-    if "pyproject.toml" in names:
-        payload = _parse_config(root / "pyproject.toml", tomllib.loads, evidence)
-        tool = payload.get("tool") if isinstance(payload, dict) else None
-        if isinstance(tool, dict):
-            evidence.pyproject_tools.update(str(name) for name in tool)
-            mypy = tool.get("mypy")
-            if isinstance(mypy, dict):
-                evidence.mypy_files["pyproject.toml"] = "files" in mypy
+    if _PYPROJECT in names:
+        _read_pyproject(root / _PYPROJECT, evidence)
     for ini_name in _INI_FILES:
         if ini_name in names:
-            sections = _parse_config(root / ini_name, _ini_sections, evidence)
-            if sections is not None:
-                evidence.ini_sections.update((ini_name, section) for section in sections)
-                # mypy.ini and .mypy.ini win by existing. Shared files need a [mypy] section.
-                if ini_name in _MYPY_OWN_FILES or "mypy" in sections:
-                    evidence.mypy_files[ini_name] = "files" in sections.get("mypy", ())
+            _read_ini(root / ini_name, evidence)
     # mypy reads only the first configuration file it finds, in this order.
     mypy_source = next((name for name in _MYPY_CONFIG_ORDER if name in evidence.mypy_files), None)
     if mypy_source is not None and evidence.mypy_files[mypy_source]:
         evidence.self_targeting.add(ToolchainProvider.MYPY)
-    if "package.json" in names:
-        payload = _parse_config(root / "package.json", json.loads, evidence)
-        if isinstance(payload, dict):
-            evidence.package_json_keys.update(str(key) for key in payload)
-            scripts = payload.get("scripts")
-            if isinstance(scripts, dict):
-                evidence.package_json_scripts.update(
-                    name for name in KNOWN_PACKAGE_SCRIPTS if isinstance(scripts.get(name), str)
-                )
+    if _PACKAGE_JSON in names:
+        _read_package_json(root / _PACKAGE_JSON, evidence)
     return evidence
+
+
+def _read_pyproject(path: Path, evidence: _RootEvidence) -> None:
+    payload = _parse_config(path, tomllib.loads, evidence)
+    tool = payload.get("tool") if isinstance(payload, dict) else None
+    if not isinstance(tool, dict):
+        return
+    evidence.pyproject_tools.update(str(name) for name in tool)
+    mypy = tool.get("mypy")
+    if isinstance(mypy, dict):
+        evidence.mypy_files[_PYPROJECT] = "files" in mypy
+
+
+def _read_ini(path: Path, evidence: _RootEvidence) -> None:
+    sections = _parse_config(path, _ini_sections, evidence)
+    if sections is None:
+        return
+    evidence.ini_sections.update((path.name, section) for section in sections)
+    # mypy.ini and .mypy.ini win by existing. Shared files need a [mypy] section.
+    if path.name in _MYPY_OWN_FILES or "mypy" in sections:
+        evidence.mypy_files[path.name] = "files" in sections.get("mypy", ())
+
+
+def _read_package_json(path: Path, evidence: _RootEvidence) -> None:
+    payload = _parse_config(path, json.loads, evidence)
+    if not isinstance(payload, dict):
+        return
+    evidence.package_json_keys.update(str(key) for key in payload)
+    scripts = payload.get("scripts")
+    if isinstance(scripts, dict):
+        evidence.package_json_scripts.update(
+            name for name in KNOWN_PACKAGE_SCRIPTS if isinstance(scripts.get(name), str)
+        )
 
 
 def _ini_sections(text: str) -> dict[str, list[str]]:
