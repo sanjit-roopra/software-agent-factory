@@ -11,10 +11,8 @@ from datetime import UTC, datetime
 
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.models import (
-    AgentPurpose,
     AgentRole,
     AttemptTrigger,
-    ChangeSet,
     CommandResult,
     ExecutionPlan,
     ExpectedScope,
@@ -236,29 +234,6 @@ def polish_request(work_item_id: str = "WI-1", **overrides: object) -> AgentRequ
             },
             overrides,
         ),
-    )
-
-
-def change_set_correction_request(
-    base: AgentRequest, summary: str = "Fix the output shape."
-) -> AgentRequest:
-    """A prose-only ChangeSet correction for ``base``.
-
-    The controller no longer starts one. The runtimes still support the purpose.
-    """
-    return base.model_copy(
-        update={
-            "purpose": AgentPurpose.CORRECT_CHANGE_SET,
-            "change_set": ChangeSet(summary=summary),
-            "diff": None,
-            "changed_files": [CHANGED_FILE],
-            "repair_context": repair_context(
-                AttemptTrigger.IMPLEMENTER_FAILURE,
-                "The implementation is not rejected. Correct only the ChangeSet prose.",
-                ["The ChangeSet summary must describe the diff."],
-                log_excerpt=None,
-            ),
-        }
     )
 
 

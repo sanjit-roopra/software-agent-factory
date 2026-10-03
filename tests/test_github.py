@@ -58,9 +58,6 @@ from software_agent_factory.github import (
     UnreviewedContentError,
     UnsafeBranchNameError,
     UnsafeRemoteError,
-    _parse_diff_changed_files,
-    _parse_name_only_changed_files,
-    _parse_name_status_changed_files,
     _parse_raw_diff_changed_files,
     build_pr_body,
     classify_failure,
@@ -709,37 +706,6 @@ def test_commit_and_push_allows_status_like_filenames(tmp_path: Path) -> None:
     assert set(tree_ls.splitlines()) == {"README.md", "M", "A0", "R100"}
 
 
-def test_parse_diff_changed_files_unit() -> None:
-    # Empty
-    assert _parse_diff_changed_files("") == []
-
-    # Raw diff with rename and copy
-    raw = (
-        ":100644 100644 1111111 2222222 R100\0.env\0safe.txt\0"
-        ":100644 100644 3333333 4444444 C100\0src.py\0dst.py\0"
-        ":100644 100644 5555555 6666666 M\0safe.txt\0"
-    )
-    assert _parse_diff_changed_files(raw) == [".env", "safe.txt", "src.py", "dst.py"]
-
-    # Name-status with rename and copy
-    name_status = "R100\0.env\0safe.txt\0C090\0orig.py\0copy.py\0M\0other.py\0"
-    assert _parse_diff_changed_files(name_status) == [
-        ".env",
-        "safe.txt",
-        "orig.py",
-        "copy.py",
-        "other.py",
-    ]
-
-    # Newline-delimited file paths (plain / no-renames)
-    newline_paths = ".env\nsafe.txt\napp.py\n"
-    assert _parse_diff_changed_files(newline_paths) == [".env", "safe.txt", "app.py"]
-
-    # NUL-delimited plain paths
-    nul_paths = "file1.txt\0file2.txt\0"
-    assert _parse_diff_changed_files(nul_paths) == ["file1.txt", "file2.txt"]
-
-
 def test_parse_raw_diff_changed_files_unit() -> None:
     # Empty
     assert _parse_raw_diff_changed_files("") == []
@@ -775,60 +741,6 @@ def test_parse_raw_diff_changed_files_unit() -> None:
     # Truncated rename/copy record
     with pytest.raises(GitPublishError, match="truncated raw diff record for rename/copy"):
         _parse_raw_diff_changed_files(":100644 100644 1111111 2222222 R100\0src.txt")
-
-
-def test_parse_name_only_changed_files_unit() -> None:
-    # Empty
-    assert _parse_name_only_changed_files("") == []
-
-    # NUL-delimited with legal status-like filenames
-    nul_output = "M\0A0\0R100\0C100\0app.py\0"
-    assert _parse_name_only_changed_files(nul_output) == [
-        "M",
-        "A0",
-        "R100",
-        "C100",
-        "app.py",
-    ]
-
-    # Newline-delimited with legal status-like filenames
-    newline_output = "M\nA0\nR100\nC100\napp.py\n"
-    assert _parse_name_only_changed_files(newline_output) == [
-        "M",
-        "A0",
-        "R100",
-        "C100",
-        "app.py",
-    ]
-
-    # Deduplication and deterministic ordering
-    dup_output = "M\0A0\0M\0R100\0A0\0"
-    assert _parse_name_only_changed_files(dup_output) == ["M", "A0", "R100"]
-
-
-def test_parse_name_status_changed_files_unit() -> None:
-    # Empty
-    assert _parse_name_status_changed_files("") == []
-    assert _parse_name_status_changed_files("\0") == []
-
-    # Status-like filenames at path positions are not confused with status codes
-    output = "M\0R100\0A\0M\0R100\0old.py\0new.py\0C100\0.env\0safe.txt\0"
-    assert _parse_name_status_changed_files(output) == [
-        "R100",
-        "M",
-        "old.py",
-        "new.py",
-        ".env",
-        "safe.txt",
-    ]
-
-    # Truncated record
-    with pytest.raises(GitPublishError, match="truncated name-status record"):
-        _parse_name_status_changed_files("M")
-
-    # Truncated rename record
-    with pytest.raises(GitPublishError, match="truncated name-status record for rename/copy"):
-        _parse_name_status_changed_files("R100\0src.txt")
 
 
 # --------------------------------------------------------------------------

@@ -124,6 +124,7 @@ class AgentPurpose(StrEnum):
     DECOMPOSE_PROJECT = "DECOMPOSE_PROJECT"
     #: Kept so old run records load. Nothing creates it.
     GENERATE_REPOSITORY_SKILL = "GENERATE_REPOSITORY_SKILL"
+    #: Kept so old run records load. Nothing creates it.
     CORRECT_CHANGE_SET = "CORRECT_CHANGE_SET"
 
 

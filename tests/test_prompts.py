@@ -12,25 +12,20 @@ import json
 import pytest
 from prompt_fixtures import (
     ACCEPTED_FINDING_MESSAGE,
-    BRIEF_TEXT,
     DEBT_DIFF,
     DIFF,
     FIRST_CALL_TEXT,
     FIRST_REVIEW_TESTER_FINDING,
     FIXED_POLISH_GUIDANCE,
-    OPENING_TEXT,
     OUTPUT_REJECTION,
-    PLAN_SUMMARY,
     POLISH_SUMMARY,
     PRIOR_FINDING_MESSAGE,
     RE_REVIEW_TESTER_FINDING,
     REPAIRED_DIFF,
     RESEARCH_QUESTION,
-    SPECIFICATION_PROBLEM,
     VERIFICATION_FAILURE,
     VERIFICATION_LOG_EXCERPT,
     accepted_debt_review_request,
-    change_set_correction_request,
     first_implementer_request,
     first_review_request,
     make_request,
@@ -331,7 +326,7 @@ def test_tester_prompt_carries_diff_changed_files_and_deterministic_results() ->
     assert "Do not use or request an implementer self-assessment" in prompt
 
 
-def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> None:
+def test_reviewer_prompt_carries_the_tester_report() -> None:
     prompt = build_prompt(
         make_request(
             AgentRole.REVIEWER,
@@ -377,7 +372,6 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
                 ),
             ],
             repair_diff="diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n",
-            change_set=ChangeSet(summary="I did a great job and everything works."),
         )
     )
 
@@ -402,8 +396,6 @@ def test_reviewer_prompt_carries_the_tester_report_and_never_a_change_set() -> N
     assert "@@ -1 +1 @@" in prompt
     assert "Implementation snapshot under review" in prompt
     assert "\n3\n" in prompt
-    # The implementer's self-justification never reaches an independent gate.
-    assert "I did a great job" not in prompt
 
 
 def test_project_decomposition_keeps_bootstrap_separate_from_functional_contracts() -> None:
@@ -517,42 +509,6 @@ def test_every_prompt_has_the_shared_writing_rules() -> None:
         assert "Use concise technical English in the spirit of ASD-STE100" in prompt
         assert "Use at most 20 words for an instruction sentence" in prompt
         assert "Preserve facts, uncertainty, identifiers, paths, commands" in prompt
-
-
-def test_correct_change_set_prompt_requires_correcting_only_prose() -> None:
-    change_set = ChangeSet(
-        summary="Initial draft summary.",
-        changed_files=["src/app.py"],
-        tests_added=["tests/test_app.py"],
-        commands_run=["pytest"],
-    )
-    repair_context = RepairContext(
-        trigger=AttemptTrigger.VERIFICATION,
-        summary="Summary is inaccurate.",
-        failures=["Describe customer validation."],
-    )
-    prompt = build_prompt(
-        make_request(
-            AgentRole.IMPLEMENTER,
-            purpose=AgentPurpose.CORRECT_CHANGE_SET,
-            change_set=change_set,
-            repair_context=repair_context,
-            diff=DIFF,
-            execution_plan=plan(),
-        )
-    )
-
-    assert "ChangeSet" in prompt
-    assert "Correct only the prose fields in the supplied ChangeSet" in prompt
-    assert "Update the summary to describe the change accurately" in prompt
-    assert "Preserve the verified changed_files, tests_added, and commands_run" in prompt
-    assert "Supplied ChangeSet to correct:" in prompt
-    assert "Initial draft summary." in prompt
-    assert "Correction context:" in prompt
-    assert "Summary is inaccurate." in prompt
-    # Scope bounds: diff, plan, tools must not appear in prompt
-    assert DIFF.strip() not in prompt
-    assert "Execution plan:" not in prompt
 
 
 def test_embedded_typed_artifacts_render_as_compact_json() -> None:
@@ -871,33 +827,6 @@ def test_an_implementer_output_rejection_sends_the_reason_and_the_contract() -> 
     assert _found_in(prompt, FIRST_CALL_TEXT) == []
 
 
-def test_a_change_set_correction_sends_its_role_instructions_change_set_and_context() -> None:
-    first = first_implementer_request()
-    correction = change_set_correction_request(first)
-
-    prompt = _continue(correction, first)
-
-    carried_over = (*BRIEF_TEXT, *OPENING_TEXT)
-    _full_prompt_carries(correction, carried_over)
-    assert "Correct only the prose fields in the supplied ChangeSet" in prompt
-    assert "Supplied ChangeSet to correct:" in prompt
-    assert "Fix the output shape." in prompt
-    assert "Correction context:" in prompt
-    assert CHANGE_SET_SCHEMA in prompt
-    assert _found_in(prompt, carried_over) == []
-
-
-def test_the_implementer_rules_come_back_after_a_change_set_correction() -> None:
-    first = first_implementer_request()
-    correction = change_set_correction_request(first)
-    next_repair = verification_repair_request()
-
-    prompt = _continue(next_repair, first, correction)
-
-    assert "Make the required changes in the current working directory" in prompt
-    assert "Correct only the prose fields" not in prompt
-
-
 def test_the_output_contract_is_always_sent_even_when_it_did_not_change() -> None:
     first = first_review_request()
     retry = with_output_rejection(first)
@@ -1024,45 +953,6 @@ def test_a_request_with_no_stale_and_no_changed_section_has_no_stale_notice() ->
 
     assert continuation is not None
     assert "No longer applies" not in continuation.text
-
-
-def test_a_change_set_correction_does_not_say_the_first_call_sections_no_longer_apply() -> None:
-    """The correction only omits the specification and plan. They still apply."""
-    first = first_implementer_request()
-    correction = change_set_correction_request(first)
-
-    continuation = build_continuation_prompt(
-        correction, section_hashes(build_prompt_sections(first))
-    )
-
-    assert continuation is not None
-    assert "No longer applies" not in continuation.text
-
-
-def test_a_change_set_correction_keeps_the_first_call_sections_in_the_sections_seen() -> None:
-    first = first_implementer_request()
-    correction = change_set_correction_request(first)
-    seen = section_hashes(build_prompt_sections(first))
-
-    continuation = build_continuation_prompt(correction, seen)
-
-    assert continuation is not None
-    assert continuation.sections_seen == {
-        **seen,
-        **section_hashes(build_prompt_sections(correction)),
-    }
-    for title in ("Specification", "Execution plan", "Research report", "Attempt number"):
-        assert title in continuation.sections_seen
-
-
-def test_the_round_after_a_change_set_correction_does_not_send_the_specification_again() -> None:
-    first = first_implementer_request()
-    correction = change_set_correction_request(first)
-
-    prompt = _continue(verification_repair_request(), first, correction)
-
-    assert SPECIFICATION_PROBLEM not in prompt
-    assert PLAN_SUMMARY not in prompt
 
 
 # ---------------------------------------------------------------------------

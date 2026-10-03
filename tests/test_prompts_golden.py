@@ -27,7 +27,6 @@ from prompt_fixtures import (
     DIFF,
     FIXED_TIME,
     REPAIR_DIFF,
-    change_set_correction_request,
     failing_test_report,
     first_implementer_request,
     first_review_request,
@@ -165,13 +164,6 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
     "reviewer_rejection": lambda: _reviewer_round(
         repair_context="The previous output listed no disposition."
     ),
-    "correct_change_set": lambda: _request(
-        AgentRole.IMPLEMENTER,
-        purpose=AgentPurpose.CORRECT_CHANGE_SET,
-        change_set=ChangeSet(summary="Fix output shape"),
-        workspace_path="/w",
-        repair_context=repair_context(),
-    ),
     "decompose_project": lambda: _request(
         AgentRole.PLANNER,
         purpose=AgentPurpose.DECOMPOSE_PROJECT,
@@ -204,7 +196,6 @@ EXPECTED_MODELS: dict[str, type[ModelBase]] = {
     "reviewer_first": ReviewReport,
     "reviewer_rereview": ReviewReport,
     "reviewer_rejection": ReviewReport,
-    "correct_change_set": ChangeSet,
     "decompose_project": ProjectPlan,
     "implementer_polish": ChangeSet,
 }
@@ -272,10 +263,6 @@ CONTINUATION_CASES: dict[str, Callable[[], tuple[AgentRequest, ...]]] = {
     "continuation_polish": lambda: (
         first_implementer_request(),
         polish_request(),
-    ),
-    "continuation_change_set_correction": lambda: (
-        first_implementer_request(),
-        change_set_correction_request(first_implementer_request()),
     ),
     "continuation_reviewer_rereview": lambda: (first_review_request(), re_review_request()),
     "continuation_reviewer_after_rejection": lambda: (

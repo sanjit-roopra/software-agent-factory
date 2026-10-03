@@ -74,15 +74,6 @@ def test_decompose_project_purpose_requires_planner_role() -> None:
         )
 
 
-def test_correct_change_set_purpose_requires_implementer_role() -> None:
-    with pytest.raises(ValueError, match="ChangeSet correction requires the IMPLEMENTER role"):
-        parse_agent_artifact(
-            AgentRole.TRIAGE,
-            text="{}",
-            purpose=AgentPurpose.CORRECT_CHANGE_SET,
-        )
-
-
 # ---------------------------------------------------------------------------
 # _iter_json_objects: bounded-work JSON candidate scanner
 # ---------------------------------------------------------------------------

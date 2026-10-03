@@ -13,13 +13,11 @@ import pytest
 from factory_testing import FakePiClock, FakePiProcess
 from prompt_fixtures import (
     ACCEPTED_FINDING_MESSAGE,
-    BRIEF_TEXT,
     DEBT_DIFF,
     DIFF,
     FIRST_CALL_TEXT,
     FIRST_REVIEW_TESTER_FINDING,
     FIXED_POLISH_GUIDANCE,
-    OPENING_TEXT,
     OUTPUT_REJECTION,
     POLISH_SUMMARY,
     PRIOR_FINDING_MESSAGE,
@@ -28,7 +26,6 @@ from prompt_fixtures import (
     REPAIRED_DIFF,
     VERIFICATION_FAILURE,
     accepted_debt_review_request,
-    change_set_correction_request,
     first_implementer_request,
     first_review_request,
     make_request,
@@ -65,17 +62,6 @@ from software_agent_factory.pi_runtime import (
 )
 from software_agent_factory.prompts import build_prompt, build_prompt_sections, section_hashes
 from software_agent_factory.subprocess_utils import sanitize_output
-
-
-def _correction_request(**overrides: object) -> AgentRequest:
-    defaults: dict[str, object] = {
-        "purpose": AgentPurpose.CORRECT_CHANGE_SET,
-        "change_set": ChangeSet(summary="Fix output shape"),
-        "workspace_path": "/workspaces/wi-1",
-    }
-    defaults.update(overrides)
-    return make_request(AgentRole.IMPLEMENTER, **defaults)
-
 
 _SESSIONS_DIRECTORY = "pi-sessions"
 _IMPLEMENTER_SIDECAR = "implementer.meta.json"
@@ -305,16 +291,6 @@ def test_run_read_only_role_uses_its_workspace_when_the_request_has_one(tmp_path
     assert launch.cwd == tmp_path.resolve()
 
 
-def test_run_change_set_correction_launches_pi_without_tools_in_the_workspace(
-    tmp_path: Path,
-) -> None:
-    launch = _launch(_correction_request(workspace_path=str(tmp_path)))
-
-    assert "--no-tools" in launch.command
-    assert "--tools" not in launch.command
-    assert launch.cwd == tmp_path.resolve()
-
-
 def test_packaged_command_filter_file_exists() -> None:
     assert _COMMAND_FILTER_PATH.is_file()
 
@@ -324,9 +300,8 @@ def test_packaged_command_filter_file_exists() -> None:
     [
         make_request(AgentRole.TRIAGE),
         make_request(AgentRole.REVIEWER),
-        _correction_request(),
     ],
-    ids=["read-only-triage", "read-only-reviewer", "no-tools-correction"],
+    ids=["read-only-triage", "read-only-reviewer"],
 )
 def test_run_only_the_implementer_loads_the_command_filter(request_: AgentRequest) -> None:
     command = _launch(request_).command
@@ -613,28 +588,13 @@ def test_run_changed_provider_starts_a_new_session(tmp_path: Path) -> None:
     assert second != first
 
 
-def test_run_change_set_correction_resumes_the_implementer_session_without_tools(
-    tmp_path: Path,
-) -> None:
-    rig = _SessionRig(tmp_path)
-    rig.run(_implementer())
-    rig.advance(minutes=2)
-
-    rig.run(_correction_request(workspace_path="/w"))
-
-    first, second = rig.session_paths()
-    assert second == first
-    assert "--no-tools" in rig.commands[1]
-    assert "--tools" not in rig.commands[1]
-
-
-def test_run_correction_resumes_the_session_of_a_call_whose_output_did_not_parse(
+def test_run_repair_resumes_the_session_of_a_call_whose_output_did_not_parse(
     tmp_path: Path,
 ) -> None:
     rig = _SessionRig(tmp_path)
     unparsed = rig.run(_implementer(), process=_scripted_process("not a change set"))
 
-    rig.run(_correction_request(workspace_path="/w"))
+    rig.run(verification_repair_request())
 
     first, second = rig.session_paths()
     assert unparsed.success is False
@@ -908,49 +868,6 @@ def test_run_round_without_the_earlier_repair_says_it_no_longer_applies(tmp_path
     recorded = _recorded_sections(rig, "implementer")
     assert "Repair context" not in recorded
     assert recorded == _sections_of(first_implementer_request(attempt_number=3))
-
-
-def test_run_repair_after_a_change_set_correction_does_not_send_the_specification_again(
-    tmp_path: Path,
-) -> None:
-    rig = _SessionRig(tmp_path)
-    first = first_implementer_request()
-    rig.run(first)
-    rig.advance(minutes=1)
-    rig.run(change_set_correction_request(first))
-    rig.advance(minutes=1)
-    repair = verification_repair_request()
-
-    result = rig.run(repair)
-
-    first_path, _correction_path, repair_path = rig.session_paths()
-    repair_prompt = rig.prompts[2]
-    assert repair_path == first_path
-    assert _missing_from(repair_prompt, [VERIFICATION_FAILURE, DIFF.strip()]) == []
-    assert (
-        "These earlier sections no longer apply: Correction context, Supplied ChangeSet to correct."
-        in repair_prompt
-    )
-    _assert_sent_only_what_changed(rig, result, repair, FIRST_CALL_TEXT)
-
-
-def test_run_change_set_correction_sends_only_the_change_set_and_its_context(
-    tmp_path: Path,
-) -> None:
-    rig = _SessionRig(tmp_path)
-    first = first_implementer_request()
-    rig.run(first)
-    rig.advance(minutes=1)
-    correction = change_set_correction_request(first)
-
-    result = rig.run(correction)
-
-    first_path, second = rig.session_paths()
-    first_prompt, correction_prompt = rig.prompts
-    assert second == first_path
-    assert _missing_from(correction_prompt, ["Fix the output shape.", "Correction context"]) == []
-    carried_over = (*BRIEF_TEXT, *OPENING_TEXT)
-    _assert_sent_only_what_changed(rig, result, correction, carried_over)
 
 
 def test_run_continued_call_with_nothing_new_starts_a_new_session_with_the_full_prompt(
@@ -1399,14 +1316,6 @@ def test_run_implementer_without_workspace_path_raises() -> None:
     request = make_request(AgentRole.IMPLEMENTER)
 
     with pytest.raises(ValueError, match="IMPLEMENTER requests require workspace_path"):
-        runtime.run(request)
-
-
-def test_run_change_set_correction_without_workspace_path_raises_correction_wording() -> None:
-    runtime = _runtime()
-    request = _correction_request(workspace_path=None)
-
-    with pytest.raises(ValueError, match="ChangeSet correction requires workspace_path"):
         runtime.run(request)
 
 

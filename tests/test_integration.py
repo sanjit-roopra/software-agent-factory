@@ -165,14 +165,14 @@ def test_tester_and_reviewer_receive_authoritative_evidence_only(
     assert isinstance(tester.verification_report, VerificationReport)
     assert tester.verification_report.passed is True
     # No implementer self-justification is ever handed to an independent gate.
-    assert tester.change_set is None
+    assert not hasattr(tester, "change_set")
 
     reviewer = seen[AgentRole.REVIEWER]
     assert reviewer.diff == tester.diff
     assert reviewer.changed_files == ["FACTORY_NOTES.md"]
     assert isinstance(reviewer.verification_report, VerificationReport)
     assert isinstance(reviewer.test_report, TestReport)
-    assert reviewer.change_set is None
+    assert not hasattr(reviewer, "change_set")
 
 
 def test_broken_deterministic_checks_never_reach_the_tester_or_reviewer(
