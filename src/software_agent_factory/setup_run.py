@@ -25,7 +25,7 @@ from typing import Protocol
 
 from .atomic_write import write_text_atomic
 from .command_probe import CommandRunner, ProbeLimits, command_failure_reason
-from .models import SetupState, ToolchainSetupPlan
+from .models import MAX_COMMAND_TEXT_LENGTH, SetupState, ToolchainSetupPlan
 from .publishing import PublishResult
 from .repository_profile import profile_repository
 from .toolchain import inventory_toolchain
@@ -328,7 +328,7 @@ class SetupTrigger:
             if plan.is_empty:
                 return self._save(SetupState(head_commit=head))
             if previous is not None and _already_proposed(previous, plan.commands):
-                return self._save(previous.model_copy(update={"head_commit": head}))
+                return self._save(previous.model_copy(update={"head_commit": head, "note": None}))
         try:
             result = run_toolchain_setup(
                 self._source_repo,
@@ -344,7 +344,7 @@ class SetupTrigger:
         if result.plan.is_empty:
             return self._save(SetupState(head_commit=head))
         if previous is not None and _already_proposed(previous, result.plan.commands):
-            return self._save(previous.model_copy(update={"head_commit": head}))
+            return self._save(previous.model_copy(update={"head_commit": head, "note": None}))
         if not result.outcome.succeeded:
             note = f"setup command failed: {result.outcome.failed_command}"
             return self._record_failure(previous, head, note)
@@ -367,7 +367,15 @@ class SetupTrigger:
     def _record_failure(self, previous: SetupState | None, head: str, note: str) -> SetupState:
         """Record a failure for ``head`` and keep the last proposal for dedupe."""
         base = previous or SetupState(head_commit=head)
-        return self._save(base.model_copy(update={"head_commit": head, "note": note}))
+        return self._save(
+            SetupState.model_validate(
+                {
+                    **base.model_dump(),
+                    "head_commit": head,
+                    "note": note[:MAX_COMMAND_TEXT_LENGTH],
+                }
+            )
+        )
 
     def _load(self) -> SetupState | None:
         try:

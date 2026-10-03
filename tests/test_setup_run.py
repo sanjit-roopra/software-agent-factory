@@ -758,3 +758,14 @@ def test_publish_refuses_a_commit_made_inside_the_setup_worktree(
         publish_setup(result, publisher, bare_uv_repo)
 
     assert publisher.calls == []
+
+
+def test_a_long_failure_note_is_cut_and_the_state_stays_readable(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", _Runner(), _Publisher())
+
+    state = trigger._record_failure(None, "a" * 40, "x" * 2000)
+
+    assert state.note == "x" * 500
+    assert trigger._load() == state

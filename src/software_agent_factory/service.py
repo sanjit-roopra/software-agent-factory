@@ -762,7 +762,7 @@ class FactoryService:
             logger.info(
                 "setup check at %s: %s",
                 state.head_commit[:12],
-                state.pull_request_url or state.note or "nothing to add",
+                state.note or state.pull_request_url or "nothing to add",
             )
 
     def _log_tick(self, report: TickReport) -> None:
