@@ -181,6 +181,7 @@ Example:
 │       ├── repository-profile.json
 │       ├── toolchain-inventory.json
 │       ├── repository-commands.json
+│       ├── mutation.json
 │       ├── specification.json
 │       └── ...
 └── workspaces/

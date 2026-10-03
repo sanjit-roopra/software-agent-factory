@@ -46,6 +46,7 @@ from software_agent_factory.models import (
     ExpectedScope,
     FactoryRun,
     InvocationRecord,
+    MutationReport,
     PlanDecisionAnswer,
     PlanStep,
     RepairContext,
@@ -5359,3 +5360,61 @@ def test_runs_without_a_commands_plan_use_the_configuration(
     (store.run_dir(run.id) / ARTIFACT_FILENAMES[RepositoryCommandsPlan]).unlink()
 
     assert controller._commands_for_run(run.id).verify == ["true"]
+
+
+@pytest.fixture
+def uv_mutmut_repo(uv_python_repo: Path) -> Path:
+    (uv_python_repo / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n\n[dependency-groups]\ndev = ["pytest", "ruff", "mutmut"]\n\n'
+        "[tool.ruff]\n",
+        encoding="utf-8",
+    )
+    _git(uv_python_repo, "commit", "-qam", "add mutmut")
+    return uv_python_repo
+
+
+def _python_editing_implementer(request: AgentRequest) -> AgentResult:
+    result = FakeAgentRuntime().run(request)
+    assert request.workspace_path is not None
+    (Path(request.workspace_path) / "app.py").write_text("x = 2\n", encoding="utf-8")
+    return result
+
+
+def test_mutation_gate_adds_an_advisory_check_for_changed_python(
+    uv_mutmut_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner()
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir),
+        store,
+        FakeAgentRuntime(implementer=_python_editing_implementer),
+        verifier=runner,
+    )
+
+    run = controller.run(_work_item("WI-mutation-gate"), uv_mutmut_repo)
+
+    assert "uv run --no-sync mutmut run 'app.*'" in runner.commands
+    report = store.load_artifact(run.id, MutationReport)
+    assert report.modules == ("app",)
+    verification = store.load_artifact(run.id, VerificationReport)
+    assert verification.passed is True
+    assert verification.deterministic_checks[-1].command == "mutmut run app"
+
+
+def test_mutation_gate_is_off_without_the_switch(uv_mutmut_repo: Path, data_dir: Path) -> None:
+    runner = _ScriptedCommandRunner()
+    config = _config(data_dir)
+    config = config.model_copy(
+        update={"repository": config.repository.model_copy(update={"mutation_gate": False})}
+    )
+    controller = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(implementer=_python_editing_implementer),
+        verifier=runner,
+    )
+
+    controller.run(_work_item("WI-mutation-off"), uv_mutmut_repo)
+
+    assert not any("mutmut" in command for command in runner.commands)

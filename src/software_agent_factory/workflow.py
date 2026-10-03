@@ -51,6 +51,7 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import logging
@@ -59,6 +60,7 @@ import re
 import secrets
 import socket
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -145,6 +147,7 @@ from .models import (
     Specification,
     TestReport,
     ToolchainInventory,
+    ToolchainLane,
     TriageResult,
     VerificationReport,
     VersionedModel,
@@ -152,6 +155,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
+from .mutation_gate import mutation_check_result, mutation_targets, run_mutation_gate
 from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
 from .repository_profile import (
     can_reuse_repository_profile,
@@ -190,7 +194,7 @@ from .telemetry import (
     record_rework,
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
-from .toolchain_commands import candidate_commands
+from .toolchain_commands import candidate_commands, root_version_files, select_package_runner
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -3600,8 +3604,8 @@ class WorkflowController:
         return self.transition(run, WorkflowState.VERIFYING)
 
     def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
-        """Run install -> verify -> build with per-command persisted logs."""
-        return self._verifier.run(
+        """Run install, verify and build with persisted logs, then the mutation gate."""
+        result = self._verifier.run(
             self._commands_for_run(run.id),
             cwd=context.workspace.path,
             run_dir=self._store.run_dir(run.id),
@@ -3609,6 +3613,59 @@ class WorkflowController:
             env_passthrough=self._config.repository.env_passthrough,
             capture_bytes=self._config.repository.log_capture_bytes,
         )
+        if not result.report.passed:
+            return result
+        return self._apply_mutation_gate(run, context, result)
+
+    def _apply_mutation_gate(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        result: RepositoryVerificationResult,
+    ) -> RepositoryVerificationResult:
+        """Add the advisory mutation gate to a passed verification (ADR-034).
+
+        The gate runs only for changed Python modules in a lane whose mutation
+        tool and package runner are known. Its result is one more check in the
+        verification report, which the tester and the reviewer read. It never
+        fails verification, because a surviving mutant can be equivalent.
+        """
+        exec_prefix = self._mutation_exec_prefix(run)
+        evidence = context.latest_evidence
+        if exec_prefix is None or evidence is None:
+            return result
+        modules = mutation_targets(evidence.changed_files)
+        if not modules:
+            return result
+        started = time.monotonic()
+        report = run_mutation_gate(
+            self._command_runner,
+            context.workspace.path,
+            exec_prefix,
+            modules,
+            ProbeLimits.from_repository(self._config.repository),
+        )
+        self._store.save_artifact(run.id, report)
+        check = mutation_check_result(report, time.monotonic() - started)
+        verification = result.report.model_copy(
+            update={"deterministic_checks": [*result.report.deterministic_checks, check]}
+        )
+        return dataclasses.replace(result, report=verification)
+
+    def _mutation_exec_prefix(self, run: FactoryRun) -> str | None:
+        """Return the Python package runner prefix when the gate can run, else ``None``."""
+        if not self._config.repository.mutation_gate:
+            return None
+        try:
+            inventory = self._store.load_artifact(run.id, ToolchainInventory)
+            profile = self._store.load_artifact(run.id, RepositoryProfile)
+        except (OSError, ValueError):
+            # The gate is an extra check. Unreadable run artifacts skip it.
+            return None
+        if ToolchainLane.PYTHON not in inventory.mutation_tool_lanes:
+            return None
+        runner, _note = select_package_runner(ToolchainLane.PYTHON, root_version_files(profile))
+        return None if runner is None else runner.exec_prefix
 
     def _invoke_implementer(
         self,

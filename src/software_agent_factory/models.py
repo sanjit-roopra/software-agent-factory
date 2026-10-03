@@ -454,6 +454,31 @@ class SetupState(VersionedModel):
     note: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
 
 
+class MutationStatus(StrEnum):
+    PASSED = "passed"
+    NO_KILL = "no_kill"
+    SKIPPED = "skipped"
+
+
+class MutationReport(VersionedModel):
+    """The result of the mutation gate for one verification (ADR-034).
+
+    ``no_kill`` means the tests kill no mutant of a changed module. That is
+    evidence for review, not a failure: a mutant can be equivalent to the code.
+    ``skipped`` means the gate could not judge, and the reason says why.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: MutationStatus
+    modules: tuple[str, ...] = ()
+    killed: int = Field(default=0, ge=0)
+    survived: tuple[str, ...] = Field(default=(), max_length=50)
+    no_tests: int = Field(default=0, ge=0)
+    other: int = Field(default=0, ge=0)
+    reason: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
+
+
 GENERIC_SKILL_TARGET = "repository"
 """Applicability marker for guidance that is not tied to a detected dependency."""
 

@@ -159,6 +159,14 @@ class RepositoryConfig(ConfigModel):
     branch_prefix: str = Field(min_length=1)
     command_timeout_seconds: PositiveInt
     commands: RepositoryCommandsConfig = Field(default_factory=RepositoryCommandsConfig)
+    mutation_gate: bool = Field(
+        default=True,
+        description=(
+            "After the verify commands pass, run mutmut on the changed Python modules and "
+            "add the surviving mutants to the verification report for review (ADR-034). "
+            "The gate is advisory and never fails verification."
+        ),
+    )
     derive_commands: bool = Field(
         default=True,
         description=(
