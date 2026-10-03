@@ -74,7 +74,7 @@ factory run \
 | `--acceptance-criterion <str>` | no | none | Required outcome. Repeat as needed. |
 | `--constraint <str>` | no | none | Work item constraint. Repeat as needed. |
 | `--work-item-id <str>` | no | random | Stable work item id. Use the scheduler's `tracker-owner/repo#12` form so a manual run and the daemon cannot duplicate the same work. |
-| `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` avoids model calls. If `routing.enabled` is `true`, the factory still calls Jev over HTTPS. `copilot` makes paid Copilot calls. `pi` makes paid calls through pi. |
+| `--runtime <fake\|copilot\|pi>` | no | `fake` | `fake` avoids model calls. `copilot` makes paid Copilot calls. `pi` makes paid calls through pi. |
 | `--model-profile <name>` | no | `default` | Select a configured model profile, such as the packaged `economy` profile. |
 | `--no-risk-assessment` | no | off | Turn off risk assessment for this run. See `risk_assessment` in the configuration reference. |
 | `--config <path>` | no | packaged | Config YAML. |
@@ -252,7 +252,6 @@ or the scheduler.
 
 Never makes a paid model call. The only `copilot` interaction is a bounded
 `copilot --version` probe.
-`factory doctor` does not verify the Jev key or Jev network connectivity.
 
 Exits nonzero if any check errored. Warnings alone do not fail it.
 

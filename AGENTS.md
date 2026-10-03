@@ -290,17 +290,14 @@ The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `M
 It retains triage, planning, implementation, verification, optional polish attempt, Tester, and Reviewer.
 `MANUAL_TRIAGE` stops safely before implementation.
 
-When enabled, Jev acts as the single semantic router.
-Jev is a classifier from TypeSafe.
-The factory calls it over HTTPS.
-System One is the TypeSafe product that serves Jev.
-It selects one controller-offered Choice option with probabilities and confidence.
+When enabled, the controller picks the lightest legal route with a fixed rule (ADR-037).
+The order is `SINGLE`, `CRITIQUE`, `FULL`, then `MANUAL_TRIAGE`.
+Ties keep the configuration order.
+Routing makes no network call.
 
-The controller enforces deterministic safety floors before calling Jev.
+The controller enforces deterministic safety floors before it picks a route.
 The factory does not treat governance categories as an intrinsic truth.
 Governance categories are human-owned configuration in `routing.full_only_terms`.
-Jev does not invent that policy.
-Jev classifies provisional risk by selecting a configured route option.
 The configured risk policy decides which routes are legal.
 Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
 Worker model escalation is the existing cascade behavior in the factory.

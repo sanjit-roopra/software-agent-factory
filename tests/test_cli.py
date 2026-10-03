@@ -841,48 +841,6 @@ def test_run_with_pi_runtime_selects_the_real_runtime(
     assert "state: PR_READY" in result.output
 
 
-def test_run_with_pi_runtime_passes_the_routing_key_variable_name_to_be_scrubbed(
-    source_repo: Path,
-    data_dir: Path,
-    tmp_path: Path,
-    path_with,
-    pi_runtime_calls: list[PiRuntimeCall],
-) -> None:
-    """pi never needs the routing API key, so the runtime must know which
-    variable holds it in order to drop it from pi's environment."""
-    path_with("pi")
-    config_path = tmp_path / "factory.yaml"
-    config_path.write_text(
-        Path(__file__)
-        .parents[1]
-        .joinpath("src/software_agent_factory/default_config.yaml")
-        .read_text()
-        .replace('api_key_env_var: "JEV_API_KEY"', 'api_key_env_var: "MY_ROUTING_KEY"')
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            "--repo",
-            str(source_repo),
-            "--title",
-            "Test task",
-            "--description",
-            "A demonstration task",
-            "--runtime",
-            "pi",
-            "--data-dir",
-            str(data_dir),
-            "--config",
-            str(config_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert pi_runtime_calls[0][1] == {"routing_api_key_env_var": "MY_ROUTING_KEY"}
-
-
 @pytest.mark.usefixtures("pi_runtime_calls")
 @pytest.mark.parametrize("command", ["run", "project", "start"])
 def test_pi_runtime_prints_no_startup_warning(

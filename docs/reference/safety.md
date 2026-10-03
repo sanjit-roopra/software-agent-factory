@@ -60,7 +60,6 @@ Nothing in the factory contacts the network unless you turned something on.
 | `ci.enabled` | GitHub, through `gh`. |
 | `merge.enabled` | GitHub, through `gh`, with a separate repository and check allowlist. |
 | `scheduler.enabled` | GitHub Issues, through `gh`. |
-| `routing.enabled` | TypeSafe System One (`api.typesafe.ai`) over HTTPS. Makes one POST call to Jev with no retries and no redirects. |
 | Your own `repository.commands` | Whatever they contact. `uv sync` hits a package index. |
 | `setup.enabled` with `pull_request.enabled` and `repository.derive_commands` | The package index of each lane, then GitHub through `git push` and `gh`. The setup check locks dependencies in a setup worktree and opens a pull request. Python locking can run the build backend of the project. |
 | `repository.derive_commands` with empty `repository.commands` | Whatever the derived commands contact. `uv sync`, `npm ci` and the repository's own package scripts run before triage. Set it to `false` for a repository that you do not trust. |
@@ -110,8 +109,8 @@ value.
   receive GitHub credentials.
 - The `pi` child process also starts with GitHub credential variables removed.
   Only the credential variables of the configured `pi.provider` stay. For
-  `github-copilot`, that is `COPILOT_GITHUB_TOKEN`. Other provider keys and the
-  routing API key are removed.
+  `github-copilot`, that is `COPILOT_GITHUB_TOKEN`. Other provider keys and
+  every other `*_API_KEY` variable are removed.
 - Only controller code passes a token to `gh`. It uses the subprocess
   environment, never as a command-line argument where it lands in the process
   list.
@@ -295,42 +294,9 @@ widen permissions, change dependencies or widen scope.
 
 ## Adaptive routing data boundary
 
-When `routing.enabled` is true, the factory calls Jev over HTTPS.
-Jev is a classifier from TypeSafe.
-The factory calls it over HTTPS.
-System One is the TypeSafe product that serves Jev.
-The call sends a sanitized summary of the work item to `api.typesafe.ai`.
-
-The sanitizer strips these elements before sending prompt text:
-
-- Fenced code blocks and tilde blocks.
-- Unified diff blocks and diff headers.
-- Stack traces from Python, JavaScript, and Java.
-- Detected credentials and secrets.
-- Remote URLs.
-- Absolute local filesystem paths.
-- Selected prompt injection patterns.
-
-The factory sends these metadata fields to Jev:
-
-- Task title.
-- Task description.
-- Acceptance criteria.
-- Constraints.
-- Labels.
-- Repository technologies.
-- Package managers.
-- Presence of verify commands.
-- Configured option identifiers and descriptions.
-
-Sanitization reduces accidental exposure of code and secrets.
-Sanitization is not data classification or zero-retention guarantee.
-Some proprietary task text leaves the machine.
-Read the [TypeSafe Legal Terms](https://docs.typesafe.ai/legal.md) and
-the [TypeSafe Privacy Policy](https://typesafe.ai/legal/privacy-policy).
-
-The call uses one HTTPS request with no retries.
-If the call fails or times out, the controller falls back to the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
+Adaptive routing makes no network call.
+Fixed rules in the controller select the route (ADR-037).
+No work item text leaves the machine for routing.
 Read the [adaptive routing guide](../guides/adaptive-routing.md).
 
 ## Bounded everything
@@ -342,9 +308,6 @@ There is no unlimited retry loop anywhere.
 | `retries.same_model_attempts` | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | `6` | Implementation attempts per run. |
 | `polish.enabled` | `true` packaged, `false` if omitted | At most one post-green implementation attempt. |
-| `routing.timeout_seconds` | `5.0` | Total deadline for the HTTPS call to Jev. |
-| `routing.max_prompt_chars` | `4000` | Maximum prompt characters sent to Jev. |
-| `routing.max_response_bytes` | `65536` | Maximum response bytes read from Jev. |
 | `routing.single_max_changed_files` | `5` | File change limit before SINGLE and CRITIQUE ratchet to FULL_REVIEW. |
 | `review.max_rounds` | `3` | Absolute logical review rounds. Eligible low-risk findings can be accepted, otherwise the run stops for a human. |
 | `review.max_accepted_findings` | `5` | Maximum findings in one controller acceptance. |

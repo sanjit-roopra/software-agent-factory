@@ -164,9 +164,7 @@ from .resume import (
 )
 from .routing import (
     COMPLEXITY_ORDER,
-    JevRouteAdvisor,
     ModelRouter,
-    RouteAdvisor,
     derive_named_paths,
     determine_route,
 )
@@ -401,17 +399,11 @@ class WorkflowController:
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
         toolchain_inventory: Callable[[Path, RepositoryProfile], ToolchainInventory] | None = None,
         github_client: GitHubClient | None = None,
-        route_advisor: RouteAdvisor | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._runtime = runtime
         self._router = router if router is not None else ModelRouter(config)
-        self._route_advisor = (
-            route_advisor
-            if route_advisor is not None
-            else (JevRouteAdvisor(config.routing) if config.routing.enabled else None)
-        )
         self._command_runner = verifier if verifier is not None else DeterministicVerifier()
         self._verifier = (
             repository_verifier
@@ -1545,7 +1537,6 @@ class WorkflowController:
                 work_item,
                 repository_profile,
                 self._config,
-                self._route_advisor,
             )
             self._store.save_artifact(run.id, route_decision)
             run = run.model_copy(
@@ -1565,26 +1556,12 @@ class WorkflowController:
                 stage=WorkflowState.TRIAGING.value,
                 operation="routing",
             )
-            if route_decision.source == "fallback":
-                run.performance.record_counter(
-                    "route.fallback",
-                    1,
-                    stage=WorkflowState.TRIAGING.value,
-                    operation="routing",
-                )
-            if route_decision.latency_ms is not None and route_decision.latency_ms > 0:
-                run.performance.record_duration(
-                    "route.advisor_latency",
-                    route_decision.latency_ms,
-                    stage=WorkflowState.TRIAGING.value,
-                    operation="routing",
-                )
 
             # 1. Manual / Abstain route
             if route_decision.effective_route is ExecutionRoute.MANUAL_TRIAGE:
                 reason = (
                     route_decision.fallback_reason
-                    or f"route advisor recommended manual triage: {route_decision.selected_option}"
+                    or f"routing selected manual triage: {route_decision.selected_option}"
                 )
                 raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
 

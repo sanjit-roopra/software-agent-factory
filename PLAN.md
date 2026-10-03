@@ -49,7 +49,7 @@ tested here; the first real tag is what exercises them end to end.
 | 17 | Project brief decomposition + bounded project execution | done (`factory project`) |
 | 18 | Opt-in autonomous project PR/CI/merge delivery and recovery | implemented (ADR-022) |
 | 19 | Advisory controlled writing policy | implemented (ADR-023, ADR-029) |
-| 20 | Adaptive Jev-driven execution routing | implemented (ADR-027) |
+| 20 | Adaptive execution routing | implemented (ADR-027, amended by ADR-037) |
 
 Every integration is disabled by default: with the packaged configuration
 `factory run` performs no network access, makes no paid model call
@@ -86,6 +86,7 @@ before implementation. The reply does not reset budgets or change scope.
 Status: done.
 
 Provide adaptive Jev-driven execution routing.
+ADR-037 later replaced Jev with a fixed rule that picks the lightest legal route.
 Jev is a classifier from TypeSafe.
 The factory calls it over HTTPS.
 System One is the TypeSafe product that serves Jev.

@@ -135,14 +135,6 @@ repository:
 
 routing:
   enabled: false
-  api_url: "https://api.typesafe.ai/v1/systemone"
-  model: "jev-1.13.0"
-  api_key_env_var: "JEV_API_KEY"
-  timeout_seconds: 5.0
-  min_confidence: 0.7
-  min_probability: 0.5
-  max_prompt_chars: 4000
-  max_response_bytes: 65536
   single_max_changed_files: 5
   rubric_version: "1.0"
   # Editable human policy of sensitive terms that disable short routes.

@@ -137,9 +137,6 @@ def _needs_command_filter(capability: AgentCapability) -> bool:
     return capability is AgentCapability.IMPLEMENTER_WRITE
 
 
-#: Default of ``routing.api_key_env_var`` (:class:`~software_agent_factory.config.RoutingConfig`).
-_DEFAULT_ROUTING_API_KEY_ENV_VAR = "JEV_API_KEY"
-
 #: Trailing characters of pi's stderr tail put in a process-exit failure
 #: reason. The final lines hold the actual error, and
 #: :func:`~software_agent_factory.subprocess_utils.sanitize_output` keeps only
@@ -511,14 +508,12 @@ class PiAgentRuntime(AgentRuntime):
         data_dir: Path,
         *,
         process_factory: ProcessFactory = _default_process_factory,
-        routing_api_key_env_var: str = _DEFAULT_ROUTING_API_KEY_ENV_VAR,
         clock: Callable[[], datetime] | None = None,
         command_filter_path: Path = _COMMAND_FILTER_PATH,
     ) -> None:
         self._config = config
         self._process_factory = process_factory
         self._command_filter_path = command_filter_path
-        self._routing_api_key_env_var = routing_api_key_env_var
         self._sessions = PiSessionStore(
             data_dir / "pi-sessions",
             max_age_seconds=config.session_reuse_max_age_seconds,
@@ -756,8 +751,8 @@ class PiAgentRuntime(AgentRuntime):
         headless when ``~/.pi/agent/auth.json`` has no interactive login), the
         API key, OAuth token or AWS variables of another provider, the derived
         ``<PROVIDER>_API_KEY`` for a provider the map does not list. Every
-        other known credential variable, every other ``*_API_KEY`` and the
-        routing API key (pi never needs it) are removed. ``SSH_AUTH_SOCK`` is
+        other known credential variable and every other ``*_API_KEY`` are
+        removed. ``SSH_AUTH_SOCK`` is
         removed too, which removes ssh-agent access only: key files and
         credential helpers are out of scope, as they are for Copilot. It is
         not a secret value, so it is not redacted.
@@ -779,7 +774,6 @@ class PiAgentRuntime(AgentRuntime):
         credential_vars = {
             *(name for names in PI_PROVIDER_CREDENTIAL_ENV_VARS.values() for name in names),
             *own_vars,
-            self._routing_api_key_env_var,
             *other_api_keys,
         }
         for name in sorted(credential_vars):

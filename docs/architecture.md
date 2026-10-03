@@ -979,26 +979,22 @@ Model profile controls worker strength.
 Worker model escalation is the existing cascade behavior in the factory.
 We do not add a duplicate cascade route.
 
-When enabled, Jev acts as the single semantic router.
-Jev is a classifier from TypeSafe.
-The factory calls it over HTTPS.
-System One is the TypeSafe product that serves Jev.
-It selects one controller-offered Choice option with probabilities and confidence.
+When enabled, fixed rules in the controller select the route (ADR-037).
+Routing makes no network call.
 
-The controller evaluates deterministic safety floors before calling Jev.
+The controller evaluates deterministic safety floors first.
 The factory does not treat governance categories as an intrinsic truth.
 Governance categories are human-owned configuration in `routing.full_only_terms`.
-Jev does not invent that policy.
-Jev classifies provisional risk by selecting a configured route option.
 The configured risk policy decides which routes are legal.
 Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
-When only one legal option exists, the controller skips Jev.
 
-When routing is enabled, the controller makes one HTTPS request to Jev.
-Jev chooses one controller-created option identifier.
-Strict validation checks the model identifier, choice answer, option membership, probabilities, and confidence thresholds.
-When routing is disabled, unavailable, or invalid, the controller falls back to the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
-The packaged default disables routing and makes no network call.
+When only one legal option exists, the controller selects it.
+When more than one option is legal, the controller selects the lightest legal route.
+The order is `SINGLE`, `CRITIQUE`, `FULL` and then `MANUAL_TRIAGE`.
+If two options have the same route, the first option in the configuration wins.
+When no option is legal, the controller selects `MANUAL_TRIAGE`.
+When routing is disabled, the controller selects the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
+The packaged default disables routing.
 
 The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
 `FULL_REVIEW` is a controller-only post-implementation route.
