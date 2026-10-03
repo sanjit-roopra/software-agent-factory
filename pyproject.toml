@@ -98,6 +98,9 @@ software_agent_factory = [
   "pi_extensions/command_filter.mjs",
   "dashboard/static/app.js",
   "dashboard/static/style.css",
+  "repo_templates/agents_block.md",
+  "repo_templates/agents/*.md",
+  "repo_templates/skills/*/SKILL.md",
 ]
 
 [tool.pytest.ini_options]

@@ -109,9 +109,14 @@ CLAUDE.md -> AGENTS.md                         symbolic link
   Claude Code reads `.claude/skills`.
   The `skills` command (`npx skills add`) uses the same layout in its link mode, so later installs do not collide.
 - If `AGENTS.md` exists, the factory changes only a block between factory markers. It does not change other text.
-- The factory does not overwrite a skill file that a person changed.
+  Without markers, the factory adds the block at the end.
+- The factory never replaces another file that exists, such as a skill, a link or `CLAUDE.md`.
+- The block and the `pr-gate` skill name the install command and the checks of the repository,
+  including the tools that the same setup adds.
 - Windows checkouts need `core.symlinks=true`.
-- The first skills are a pull request gate, simplify and polish. They come from `dev-team` templates, with attribution.
+- The first skills are `pr-gate`, `simplify` and `polish`. The factory owns these templates.
+  The Python review agent `python-quality` is adapted from `dev-team`, with attribution.
+- A setup pull request can change these files. The path check before publication allows exactly the files that the plan lists.
 
 ### Review lenses
 

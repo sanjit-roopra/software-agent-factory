@@ -27,6 +27,12 @@ from .atomic_write import write_text_atomic
 from .command_probe import CommandRunner, ProbeLimits, command_failure_reason
 from .models import MAX_COMMAND_TEXT_LENGTH, SetupState, ToolchainSetupPlan
 from .publishing import PublishResult
+from .repository_files import (
+    RepositoryFile,
+    RepositoryFileError,
+    plan_repository_files,
+    write_repository_files,
+)
 from .repository_profile import profile_repository
 from .toolchain import inventory_toolchain
 from .toolchain_setup import plan_toolchain_setup
@@ -101,14 +107,24 @@ def run_toolchain_setup(
                 raise SetupError(f"{HEAD_MOVED}: {worktree}")
             if not workspace.is_at_clean_base():
                 raise SetupError(f"{NOT_AT_BASE}: {worktree}")
-            profile = profile_repository(worktree)
-            plan = plan_toolchain_setup(inventory_toolchain(worktree, profile), profile)
+            plan, _files = plan_setup(worktree)
             outcome = apply_toolchain_setup(plan, command_runner, worktree, limits)
     except WorkspaceLockError as exc:
         raise SetupError(f"{LOCKED}: {exc}") from exc
-    except (WorkspaceError, OSError) as exc:
+    except (WorkspaceError, RepositoryFileError, OSError) as exc:
         raise SetupError(str(exc)) from exc
     return SetupRunResult(plan, worktree, workspace.branch_name, outcome, head_commit)
+
+
+def plan_setup(root: Path) -> tuple[ToolchainSetupPlan, tuple[RepositoryFile, ...]]:
+    """Plan the add commands and the repository files for the tree at ``root``."""
+    profile = profile_repository(root)
+    inventory = inventory_toolchain(root, profile)
+    files = plan_repository_files(root, inventory, profile)
+    plan = plan_toolchain_setup(inventory, profile).model_copy(
+        update={"files": tuple(repository_file.path for repository_file in files)}
+    )
+    return plan, files
 
 
 def apply_toolchain_setup(
@@ -117,10 +133,12 @@ def apply_toolchain_setup(
     worktree: Path,
     limits: ProbeLimits,
 ) -> SetupOutcome:
-    """Run the plan's add commands in order and record the plan in the worktree.
+    """Run the plan's add commands, write the repository files and record the plan.
 
+    The files are planned again after the commands, so ``AGENTS.md`` and the
+    ``pr-gate`` skill name the checks of the tools that the setup just added.
     An empty plan runs nothing and writes nothing. A failed command stops the
-    setup, writes no record and leaves the worktree for inspection.
+    setup, writes no file and no record, and leaves the worktree for inspection.
     """
 
     if plan.is_empty:
@@ -141,6 +159,12 @@ def apply_toolchain_setup(
                 failure_reason=command_failure_reason(report, "during setup"),
             )
         applied.append(command)
+    if plan.files:
+        profile = profile_repository(worktree)
+        files = plan_repository_files(worktree, inventory_toolchain(worktree, profile), profile)
+        if tuple(repository_file.path for repository_file in files) != plan.files:
+            raise SetupError("the repository files changed while the setup ran")
+        write_repository_files(worktree, files)
     write_setup_record(worktree, plan)
     return SetupOutcome(tuple(applied))
 
@@ -196,7 +220,8 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout
 
 
-#: The only paths a setup pull request may change.
+#: The manifests and lockfiles a setup pull request may change, besides the
+#: setup record and the repository files that the plan lists.
 SETUP_ALLOWED_PATHS = frozenset(
     {
         "pyproject.toml",
@@ -209,8 +234,8 @@ SETUP_ALLOWED_PATHS = frozenset(
     }
 )
 
-SETUP_TITLE = "Add missing development tools"
-SETUP_COMMIT_SUBJECT = "chore: add missing development tools"
+SETUP_TITLE = "Set up development tools and agent skills"
+SETUP_COMMIT_SUBJECT = "chore: set up development tools and agent skills"
 SETUP_STATE_DIR = "setup-state"
 
 
@@ -243,30 +268,40 @@ def publish_setup(
     if _git(result.worktree, "rev-parse", "HEAD").strip() != result.base_commit:
         raise SetupError("the setup worktree has a commit that the factory did not make")
     unexpected = [
-        path for path in changed_paths(result.worktree) if path not in SETUP_ALLOWED_PATHS
+        path
+        for path in changed_paths(result.worktree)
+        if path not in SETUP_ALLOWED_PATHS and path not in result.plan.files
     ]
     if unexpected:
         raise SetupError(f"unexpected change in the setup worktree: {unexpected[0]}")
-    packages = ", ".join(result.plan.packages)
     body_lines = [
-        "The factory found development tools that this repository does not have (ADR-034).",
-        "",
-        "Added development dependencies:",
-        *(f"- `{package}`" for package in result.plan.packages),
+        "The factory set up development tools and agent skills for this repository (ADR-034).",
     ]
+    if result.plan.packages:
+        body_lines += [
+            "",
+            "Added development dependencies:",
+            *(f"- `{package}`" for package in result.plan.packages),
+        ]
+    if result.plan.files:
+        body_lines += [
+            "",
+            "Added agent instructions and skills:",
+            *(f"- `{path}`" for path in result.plan.files),
+        ]
     if result.plan.notes:
         body_lines += ["", "Notes:", *(f"- {note}" for note in result.plan.notes)]
     body_lines += [
         "",
-        "The factory checked the changed paths: only the manifest, the lockfile",
-        "and `.factory/setup.json` change.",
+        "The factory checked the changed paths: only the files above, the manifest,",
+        "the lockfile and `.factory/setup.json` change.",
         "The factory does not merge this pull request. Review the dependency changes, then merge.",
     ]
     return publisher.publish(
         workspace_path=result.worktree,
         branch_name=result.branch,
         base_branch=publisher.resolve_base_branch(source_repo),
-        commit_message=f"{SETUP_COMMIT_SUBJECT}\n\nAdded by factory setup: {packages}.",
+        commit_message=_commit_message(result.plan),
         title=SETUP_TITLE,
         body="\n".join(body_lines),
     )
@@ -323,11 +358,10 @@ class SetupTrigger:
         if not dirty:
             # A clean checkout is HEAD, so plan there first and skip the
             # worktree when there is nothing new to do.
-            profile = profile_repository(self._source_repo)
-            plan = plan_toolchain_setup(inventory_toolchain(self._source_repo, profile), profile)
+            plan, _files = plan_setup(self._source_repo)
             if plan.is_empty:
                 return self._save(SetupState(head_commit=head))
-            if previous is not None and _already_proposed(previous, plan.commands):
+            if previous is not None and _already_proposed(previous, plan):
                 return self._save(previous.model_copy(update={"head_commit": head, "note": None}))
         try:
             result = run_toolchain_setup(
@@ -343,7 +377,7 @@ class SetupTrigger:
             return self._record_failure(previous, head, f"setup could not run: {exc}")
         if result.plan.is_empty:
             return self._save(SetupState(head_commit=head))
-        if previous is not None and _already_proposed(previous, result.plan.commands):
+        if previous is not None and _already_proposed(previous, result.plan):
             return self._save(previous.model_copy(update={"head_commit": head, "note": None}))
         if not result.outcome.succeeded:
             note = f"setup command failed: {result.outcome.failed_command}"
@@ -360,6 +394,7 @@ class SetupTrigger:
             SetupState(
                 head_commit=head,
                 commands=result.plan.commands,
+                files=result.plan.files,
                 pull_request_url=published.pull_request_url,
             )
         )
@@ -393,9 +428,11 @@ class SetupTrigger:
         return state
 
 
-def _already_proposed(previous: SetupState | None, commands: tuple[str, ...]) -> bool:
+def _already_proposed(previous: SetupState, plan: ToolchainSetupPlan) -> bool:
     return (
-        previous is not None and bool(previous.pull_request_url) and previous.commands == commands
+        bool(previous.pull_request_url)
+        and previous.commands == plan.commands
+        and previous.files == plan.files
     )
 
 
@@ -410,3 +447,12 @@ def changed_paths(worktree: Path) -> tuple[str, ...]:
             # A rename or copy is followed by its source path, with no status.
             paths.append(next(entries, ""))
     return tuple(sorted(paths))
+
+
+def _commit_message(plan: ToolchainSetupPlan) -> str:
+    lines = [SETUP_COMMIT_SUBJECT, ""]
+    if plan.packages:
+        lines.append(f"Development dependencies: {', '.join(plan.packages)}.")
+    if plan.files:
+        lines.append(f"Agent instructions and skills: {', '.join(plan.files)}.")
+    return "\n".join(lines)

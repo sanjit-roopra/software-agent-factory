@@ -423,6 +423,8 @@ class ToolchainSetupPlan(VersionedModel):
     manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     commands: tuple[str, ...] = ()
     packages: tuple[str, ...] = ()
+    #: Repository files the setup writes: AGENTS.md, skills and their links.
+    files: tuple[str, ...] = ()
     notes: tuple[str, ...] = Field(default=(), max_length=MAX_COMMAND_NOTES)
 
     @model_validator(mode="after")
@@ -433,7 +435,7 @@ class ToolchainSetupPlan(VersionedModel):
 
     @property
     def is_empty(self) -> bool:
-        return not self.commands
+        return not self.commands and not self.files
 
 
 class SetupState(VersionedModel):
@@ -447,6 +449,7 @@ class SetupState(VersionedModel):
 
     head_commit: str = Field(min_length=1, max_length=200)
     commands: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
     pull_request_url: str | None = Field(default=None, max_length=1000)
     note: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
 

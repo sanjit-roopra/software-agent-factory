@@ -21,6 +21,7 @@ from software_agent_factory.models import (
     VerificationReport,
 )
 from software_agent_factory.publishing import PublishResult
+from software_agent_factory.repository_files import write_repository_files
 from software_agent_factory.setup_run import (
     SETUP_RECORD_DIR,
     SETUP_RECORD_NAME,
@@ -30,6 +31,7 @@ from software_agent_factory.setup_run import (
     SetupTrigger,
     apply_toolchain_setup,
     changed_paths,
+    plan_setup,
     publish_setup,
     run_toolchain_setup,
     write_setup_record,
@@ -40,6 +42,18 @@ _FINGERPRINT = "a" * 64
 _LIMITS = ProbeLimits(timeout_seconds=7, env_passthrough=("NPM_CONFIG_CACHE",), capture_bytes=99)
 _OUTPUT_THAT_MUST_NOT_LEAK = "secret output"
 _UV_ADD = "uv add --dev --no-sync ruff mypy pytest mutmut"
+_FILES = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".agents/skills/pr-gate/SKILL.md",
+    ".claude/skills/pr-gate",
+    ".agents/skills/simplify/SKILL.md",
+    ".claude/skills/simplify",
+    ".agents/skills/polish/SKILL.md",
+    ".claude/skills/polish",
+    ".claude/agents/python-quality.md",
+)
+_WRITE_LINES = "".join(f"write: {path}\n" for path in _FILES)
 _TWO_LANES = ToolchainSetupPlan(
     manifest_fingerprint=_FINGERPRINT,
     commands=("uv add --dev --no-sync ruff", "npm install --save-dev oxlint"),
@@ -221,6 +235,13 @@ def bare_uv_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _write_repository_files(repo: Path) -> None:
+    """Give ``repo`` the factory's repository files, as a merged setup would."""
+    _plan, files = plan_setup(repo)
+    write_repository_files(repo, files)
+    _commit(repo, "add agent instructions and skills")
+
+
 def _head(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD").strip()
 
@@ -299,7 +320,7 @@ def test_cli_dry_run_prints_the_plan_and_creates_no_worktree(
     )
 
     assert result.exit_code == 0, result.output
-    assert result.output == f"add: {_UV_ADD}\n"
+    assert result.output == f"add: {_UV_ADD}\n" + _WRITE_LINES
     assert _git(bare_uv_repo, "worktree", "list").count("\n") == 1
 
 
@@ -324,7 +345,8 @@ def test_cli_setup_success_reports_the_worktree_and_branch(
     assert result.exit_code == 0, result.output
     worktree = _setup_worktree(data_dir, bare_uv_repo)
     assert result.output == (
-        f"add: {_UV_ADD}\nworktree: {worktree}\nbranch: factory/SETUP-{_head(bare_uv_repo)[:12]}\n"
+        f"add: {_UV_ADD}\n{_WRITE_LINES}worktree: {worktree}\n"
+        f"branch: factory/SETUP-{_head(bare_uv_repo)[:12]}\n"
     )
     assert _read_record(worktree).commands == (_UV_ADD,)
     assert (worktree / "pyproject.toml").read_text().endswith("# added\n")
@@ -376,6 +398,7 @@ def test_cli_setup_with_nothing_to_add_prints_no_worktree(
 ) -> None:
     (bare_uv_repo / "uv.lock").unlink()
     _commit(bare_uv_repo, "drop the lockfile")
+    _write_repository_files(bare_uv_repo)
 
     result = cli.invoke(
         app, ["setup", "--repo", str(bare_uv_repo), "--data-dir", str(tmp_path / "data")]
@@ -473,10 +496,11 @@ def test_publish_setup_opens_a_review_pull_request_for_the_worktree(
     assert call["workspace_path"] == result.worktree
     assert call["branch_name"] == result.branch
     assert call["base_branch"] == "main"
-    assert call["title"] == "Add missing development tools"
+    assert call["title"] == "Set up development tools and agent skills"
     assert call["commit_message"] == (
-        "chore: add missing development tools\n\n"
-        "Added by factory setup: ruff, mypy, pytest, mutmut."
+        "chore: set up development tools and agent skills\n\n"
+        "Development dependencies: ruff, mypy, pytest, mutmut.\n"
+        f"Agent instructions and skills: {', '.join(_FILES)}."
     )
     body = str(call["body"])
     assert "- `ruff`" in body and "- `mutmut`" in body
@@ -492,6 +516,7 @@ def test_trigger_opens_a_pull_request_for_a_new_plan(bare_uv_repo: Path, tmp_pat
     assert state == SetupState(
         head_commit=_head(bare_uv_repo),
         commands=(_UV_ADD,),
+        files=_FILES,
         pull_request_url="https://github.com/o/r/pull/1",
     )
     assert [call[0] for call in runner.calls] == [_UV_ADD]
@@ -523,6 +548,7 @@ def test_trigger_keeps_the_pull_request_when_a_new_head_has_the_same_plan(
     assert state == SetupState(
         head_commit=_head(bare_uv_repo),
         commands=(_UV_ADD,),
+        files=_FILES,
         pull_request_url="https://github.com/o/r/pull/1",
     )
     assert len(publisher.calls) == 1
@@ -551,6 +577,7 @@ def test_trigger_with_nothing_to_add_creates_no_worktree(
 ) -> None:
     (bare_uv_repo / "uv.lock").unlink()
     _commit(bare_uv_repo, "drop the lockfile")
+    _write_repository_files(bare_uv_repo)
     data_dir = tmp_path / "data"
     publisher = _Publisher()
 

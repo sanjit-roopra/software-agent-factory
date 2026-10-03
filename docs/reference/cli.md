@@ -394,7 +394,8 @@ If the checkout holds uncommitted changes, `--dry-run` says so, because a setup 
 | `--dry-run` | Print the plan and change nothing. |
 | `--publish` | Commit the setup worktree, push its branch and open a pull request. It needs `pull_request.enabled`. |
 
-The output has one `add:` line for each command and one `note:` line for each skipped lane.
+The output has one `add:` line for each command, one `write:` line for each repository file and one `note:` line for each skipped lane.
+The repository files are the managed block in `AGENTS.md`, `CLAUDE.md` as a link to `AGENTS.md`, the skills in `.agents/skills/` with links in `.claude/skills/`, and a Python review agent.
 If a command fails, the exit code is `1` and the factory keeps the worktree.
 
 ## factory dashboard
