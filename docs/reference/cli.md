@@ -371,7 +371,7 @@ record. Normal run telemetry remains in the run artifact.
 ## factory setup
 
 ```bash
-factory setup --repo PATH [--dry-run] [--config FILE] [--data-dir DIR]
+factory setup --repo PATH [--dry-run] [--publish] [--config FILE] [--data-dir DIR]
 ```
 
 Adds the missing development tools to a repository (ADR-034).

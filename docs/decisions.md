@@ -86,10 +86,10 @@ The factory takes over this model, in five slices.
 - `factory setup --repo PATH` runs a setup by hand. `--publish` also commits, pushes and opens the pull request.
 - `factory start` checks the repository at each tick when `setup.enabled` and `pull_request.enabled` are on.
   It plans again only when the source HEAD changes. It plans from the checkout first, so most checks create no worktree.
-  It does not open a second pull request for the commands that it already proposed.
+  It does not open a second pull request for the commands and files that it already proposed.
   It records a failed or refused setup, or a failed publication, and does not try the same HEAD again.
   Only one process checks a repository at a time.
-  Before it publishes, it checks that only the manifest, the lockfile and `.factory/setup.json` changed.
+  Before it publishes, it checks that only the manifest, the lockfile, `.factory/setup.json` and the files that the plan lists changed.
   A setup problem is logged. It never stops the backlog.
 
 ### Repository skills in the target repository

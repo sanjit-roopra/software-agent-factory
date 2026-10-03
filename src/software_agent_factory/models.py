@@ -442,7 +442,7 @@ class SetupState(VersionedModel):
     """The last setup decision for one source repository (ADR-034).
 
     The trigger plans again only when the source HEAD changes, and it does not
-    open a second pull request for commands it already proposed.
+    open a second pull request for commands and files it already proposed.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

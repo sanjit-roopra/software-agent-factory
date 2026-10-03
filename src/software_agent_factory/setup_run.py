@@ -332,7 +332,7 @@ class SetupTrigger:
 
     The trigger plans again only when the source HEAD changes. It plans from
     the checkout first, so most ticks create no worktree. It never opens a
-    second pull request for the commands it already proposed, and a failed
+    second pull request for the commands and files it already proposed, and a failed
     setup is recorded so it does not retry on every tick.
     """
 
