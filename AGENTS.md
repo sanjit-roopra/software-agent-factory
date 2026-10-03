@@ -196,6 +196,8 @@ RepositoryProfile
   ↓
 ToolchainInventory
   ↓
+RepositoryCommandsPlan
+  ↓
 TriageResult
   ↓
 Specification

@@ -487,3 +487,25 @@ def test_lockfile_warning_keeps_the_inventory_complete(tmp_path: Path, warning: 
 
     assert inventory.complete is True
     assert inventory.warnings == ()
+
+
+def test_only_known_package_scripts_are_recorded(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "package.json",
+        json.dumps(
+            {
+                "name": "x",
+                "scripts": {
+                    "test": "vitest run",
+                    "lint": 1,
+                    "deploy": "rm -rf /",
+                    "type-check": "tsc",
+                },
+            }
+        ),
+    )
+
+    inventory = _inventory(tmp_path)
+
+    assert inventory.package_json_scripts == ("test", "type-check")

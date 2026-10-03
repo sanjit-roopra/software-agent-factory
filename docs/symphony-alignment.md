@@ -180,6 +180,7 @@ Example:
 │       ├── run.json
 │       ├── repository-profile.json
 │       ├── toolchain-inventory.json
+│       ├── repository-commands.json
 │       ├── specification.json
 │       └── ...
 └── workspaces/

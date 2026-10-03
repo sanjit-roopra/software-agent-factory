@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import os
 import subprocess
+from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable
@@ -35,6 +36,7 @@ from software_agent_factory.models import (
     AttemptBudget,
     AttemptTrigger,
     ChangeSet,
+    CommandResult,
     Complexity,
     ContextTier,
     DashboardResumeRequest,
@@ -47,6 +49,8 @@ from software_agent_factory.models import (
     PlanDecisionAnswer,
     PlanStep,
     RepairContext,
+    RepositoryCommandsPlan,
+    RepositoryCommandsSource,
     RepositoryDependency,
     RepositoryProfile,
     RepositorySkill,
@@ -88,11 +92,13 @@ from software_agent_factory.prompts import build_prompt
 from software_agent_factory.repository_skills import RepositorySkillManager
 from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.store import ARTIFACT_FILENAMES, ArtifactModel, FileRunStore
+from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
     TransitionError,
     WorkflowController,
+    _baseline_failure,
     _RunContext,
     is_run_finished,
 )
@@ -770,7 +776,7 @@ def test_synthesized_artifacts_skip_blank_human_criteria(data_dir: Path, source_
 
     specification = controller._synthesize_specification(item)
     plan = controller._synthesize_execution_plan(
-        item, GitWorktreeWorkspace(data_dir, source_repo, item.id)
+        item, GitWorktreeWorkspace(data_dir, source_repo, item.id), ()
     )
 
     assert specification.acceptance_criteria == ["Blank names return 400."]
@@ -5185,3 +5191,215 @@ def test_dashboard_plan_answers_reach_the_planning_prompt_after_reopen(
     assert planner_contexts[-1] is not None
     assert answer in planner_contexts[-1]
     assert reopened.attempt_records[0].triggered_by is AttemptTrigger.INITIAL
+
+
+class _ScriptedCommandRunner(DeterministicVerifier):
+    """Records commands and fails the ones named in ``failing``. Runs nothing."""
+
+    def __init__(
+        self,
+        failing: frozenset[str] = frozenset(),
+        writes: dict[str, str] | None = None,
+    ) -> None:
+        self.failing = failing
+        self.writes = writes or {}
+        self.commands: list[str] = []
+
+    def run(
+        self,
+        commands: Sequence[str],
+        cwd: Path,
+        timeout_seconds: int,
+        *,
+        env_passthrough: Sequence[str] = (),
+        capture_bytes: int = 32768,
+    ) -> VerificationReport:
+        results: list[CommandResult] = []
+        for command in commands:
+            self.commands.append(command)
+            if command in self.writes:
+                (cwd / self.writes[command]).write_text("generated\n", encoding="utf-8")
+            exit_code = 1 if command in self.failing else 0
+            results.append(
+                CommandResult(
+                    command=command,
+                    exit_code=exit_code,
+                    stdout="",
+                    stderr="secret output" if exit_code else "",
+                    duration_seconds=0.0,
+                )
+            )
+            if exit_code:
+                break
+        passed = all(result.exit_code == 0 for result in results)
+        return VerificationReport(
+            passed=passed,
+            deterministic_checks=results,
+            failures=[] if passed else ["failed"],
+            confidence=1.0 if passed else 0.0,
+        )
+
+
+@pytest.fixture
+def uv_python_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "uv-source"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "factory-test@example.invalid")
+    _git(repo, "config", "user.name", "Factory Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n\n[dependency-groups]\ndev = ["pytest", "ruff"]\n\n[tool.ruff]\n',
+        encoding="utf-8",
+    )
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "initial commit")
+    return repo
+
+
+_DERIVED_VERIFY = (
+    "uv run --no-sync ruff format --check .",
+    "uv run --no-sync ruff check .",
+    "uv run --no-sync pytest -q",
+)
+
+
+def test_configured_commands_win_over_derived_commands(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner()
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, verify=["make check"]), store, FakeAgentRuntime(), verifier=runner
+    )
+
+    run = controller.run(_work_item("WI-config-commands"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.source is RepositoryCommandsSource.CONFIG
+    assert plan.verify == ("make check",)
+    assert "uv sync --locked" not in runner.commands
+
+
+def test_derived_commands_that_pass_on_the_base_commit_verify_the_run(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner(failing=frozenset({"uv run --no-sync ruff check ."}))
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime(), verifier=runner)
+
+    run = controller.run(_work_item("WI-derived-commands"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.source is RepositoryCommandsSource.DERIVED
+    assert plan.install == ("uv sync --locked",)
+    assert plan.verify == (_DERIVED_VERIFY[0], _DERIVED_VERIFY[2])
+    assert [(r.command, r.reason) for r in plan.rejected] == [
+        ("uv run --no-sync ruff check .", "failed on the base commit with exit code 1")
+    ]
+    probe = ["uv sync --locked", *_DERIVED_VERIFY]
+    assert runner.commands[: len(probe)] == probe
+    assert runner.commands[len(probe) :] == ["uv sync --locked", *plan.verify]
+
+
+def test_failed_install_on_the_base_commit_derives_no_commands(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner(failing=frozenset({"uv sync --locked"}))
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime(), verifier=runner)
+
+    run = controller.run(_work_item("WI-derived-install"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.source is RepositoryCommandsSource.NONE
+    assert plan.verify == ()
+    assert {r.reason for r in plan.rejected} == {"install failed on the base commit"}
+    assert runner.commands == ["uv sync --locked"]
+
+
+def test_probe_that_changes_the_tree_is_discarded(uv_python_repo: Path, data_dir: Path) -> None:
+    runner = _ScriptedCommandRunner(writes={"uv run --no-sync pytest -q": "junk.txt"})
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime(), verifier=runner)
+
+    run = controller.run(_work_item("WI-derived-dirty"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.source is RepositoryCommandsSource.NONE
+    assert {r.reason for r in plan.rejected} == {"changed the Git tree on the base commit"}
+    assert run.workspace_path is not None
+    assert not (Path(run.workspace_path) / "junk.txt").exists()
+
+
+def test_repository_without_derivable_commands_records_why(
+    source_repo: Path, data_dir: Path
+) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime())
+
+    run = controller.run(_work_item("WI-no-commands"), source_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.source is RepositoryCommandsSource.NONE
+    assert plan.verify == ()
+
+
+def test_command_derivation_failure_degrades(
+    uv_python_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raise_workspace_error(self: object) -> bool:
+        raise WorkspaceError("git status failed")
+
+    monkeypatch.setattr(GitWorktreeWorkspace, "is_clean", raise_workspace_error)
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir), store, FakeAgentRuntime(), verifier=_ScriptedCommandRunner()
+    )
+
+    run = controller.run(_work_item("WI-derived-degraded"), uv_python_repo)
+
+    plan = store.load_artifact(run.id, RepositoryCommandsPlan)
+    assert plan.notes == ("command derivation degraded: WorkspaceError",)
+
+
+def test_runs_without_a_commands_plan_use_the_configuration(
+    source_repo: Path, data_dir: Path
+) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(_config(data_dir, verify=["true"]), store, FakeAgentRuntime())
+    run = controller.run(_work_item("WI-legacy-commands"), source_repo)
+    (store.run_dir(run.id) / "repository-commands.json").unlink()
+
+    assert controller._repository_commands(run.id).verify == ["true"]
+
+
+@pytest.mark.parametrize(
+    ("checks", "reason"),
+    [
+        ([], "failed on the base commit"),
+        (
+            [
+                CommandResult(
+                    command="pytest",
+                    exit_code=-1,
+                    stdout="",
+                    stderr="",
+                    duration_seconds=1.0,
+                    timed_out=True,
+                )
+            ],
+            "timed out on the base commit",
+        ),
+    ],
+)
+def test_baseline_failure_reason_never_quotes_output(
+    checks: list[CommandResult], reason: str
+) -> None:
+    report = VerificationReport(
+        passed=False, deterministic_checks=checks, failures=["x"], confidence=0.0
+    )
+
+    assert _baseline_failure(report) == reason

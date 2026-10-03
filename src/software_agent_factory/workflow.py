@@ -71,7 +71,12 @@ from .agents import (
     is_retryable_typed_artifact_failure,
     runtime_exception_failure_reason,
 )
-from .config import FactoryConfig, RiskAssessmentConfig, RoleModelConfig
+from .config import (
+    FactoryConfig,
+    RepositoryCommandsConfig,
+    RiskAssessmentConfig,
+    RoleModelConfig,
+)
 from .delivery import DeliveryTarget, fetch_delivery_target
 from .github import (
     SHA_PATTERN,
@@ -114,7 +119,10 @@ from .models import (
     InvocationRecord,
     PlanDecisionAnswers,
     PlanStep,
+    RejectedCommand,
     RepairContext,
+    RepositoryCommandsPlan,
+    RepositoryCommandsSource,
     RepositoryProfile,
     RepositorySkill,
     RepositorySkillUse,
@@ -182,6 +190,7 @@ from .telemetry import (
     record_rework,
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
+from .toolchain_commands import CandidateCommands, candidate_commands
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -432,6 +441,7 @@ class WorkflowController:
             if route_advisor is not None
             else (JevRouteAdvisor(config.routing) if config.routing.enabled else None)
         )
+        self._command_runner = verifier if verifier is not None else DeterministicVerifier()
         self._verifier = (
             repository_verifier if repository_verifier is not None else RepositoryVerifier(verifier)
         )
@@ -833,7 +843,8 @@ class WorkflowController:
                     warning=f"repository profiling degraded: {exc}"
                 )
             self._store.save_artifact(run.id, repository_profile)
-            self._save_toolchain_inventory(run, workspace_path, repository_profile)
+            inventory = self._save_toolchain_inventory(run, workspace_path, repository_profile)
+            self._save_repository_commands(run, workspace, repository_profile, inventory)
             return self._execute(
                 run,
                 work_item,
@@ -852,7 +863,7 @@ class WorkflowController:
         run: FactoryRun,
         workspace_path: Path,
         repository_profile: RepositoryProfile,
-    ) -> None:
+    ) -> ToolchainInventory:
         """Persist the toolchain inventory. It is advisory, so a failure only degrades it."""
         try:
             with measure_operation(
@@ -866,6 +877,112 @@ class WorkflowController:
                 f"toolchain inventory degraded: {type(exc).__name__}"
             )
         self._store.save_artifact(run.id, inventory)
+        return inventory
+
+    def _save_repository_commands(
+        self,
+        run: FactoryRun,
+        workspace: GitWorktreeWorkspace,
+        repository_profile: RepositoryProfile,
+        inventory: ToolchainInventory,
+    ) -> RepositoryCommandsPlan:
+        """Persist the commands this run uses (ADR-034).
+
+        Configured commands always win. Without them, the factory derives
+        commands from the inventory and keeps only those that pass on the
+        unchanged base commit, so a red baseline never blocks every run.
+        """
+        configured = self._config.repository.commands
+        if configured.install or configured.verify or configured.build:
+            plan = RepositoryCommandsPlan(
+                source=RepositoryCommandsSource.CONFIG,
+                install=tuple(configured.install),
+                verify=tuple(configured.verify),
+                build=tuple(configured.build),
+            )
+        else:
+            try:
+                with measure_operation(
+                    run.performance,
+                    "operation.repository_commands",
+                    operation="repository_commands",
+                ):
+                    plan = self._probe_derived_commands(
+                        workspace, candidate_commands(inventory, repository_profile)
+                    )
+            except (OSError, ValueError, WorkspaceError) as exc:
+                plan = RepositoryCommandsPlan(
+                    source=RepositoryCommandsSource.NONE,
+                    notes=(f"command derivation degraded: {type(exc).__name__}",),
+                )
+        self._store.save_artifact(run.id, plan)
+        return plan
+
+    def _probe_derived_commands(
+        self, workspace: GitWorktreeWorkspace, candidates: CandidateCommands
+    ) -> RepositoryCommandsPlan:
+        if not candidates.verify:
+            return RepositoryCommandsPlan(
+                source=RepositoryCommandsSource.NONE, notes=candidates.notes
+            )
+        install_report = self._run_baseline(workspace, candidates.install)
+        if not install_report.passed:
+            return RepositoryCommandsPlan(
+                source=RepositoryCommandsSource.NONE,
+                rejected=tuple(
+                    RejectedCommand(command=command, reason="install failed on the base commit")
+                    for command in (*candidates.install, *candidates.verify)
+                ),
+                notes=candidates.notes,
+            )
+        kept: list[str] = []
+        rejected: list[RejectedCommand] = []
+        for command in candidates.verify:
+            report = self._run_baseline(workspace, (command,))
+            if report.passed:
+                kept.append(command)
+            else:
+                rejected.append(RejectedCommand(command=command, reason=_baseline_failure(report)))
+        if not workspace.is_clean():
+            workspace.discard_changes()
+            return RepositoryCommandsPlan(
+                source=RepositoryCommandsSource.NONE,
+                rejected=tuple(
+                    RejectedCommand(
+                        command=command, reason="changed the Git tree on the base commit"
+                    )
+                    for command in candidates.verify
+                ),
+                notes=candidates.notes,
+            )
+        return RepositoryCommandsPlan(
+            source=RepositoryCommandsSource.DERIVED if kept else RepositoryCommandsSource.NONE,
+            install=candidates.install if kept else (),
+            verify=tuple(kept),
+            rejected=tuple(rejected),
+            notes=candidates.notes,
+        )
+
+    def _run_baseline(
+        self, workspace: GitWorktreeWorkspace, commands: Sequence[str]
+    ) -> VerificationReport:
+        return self._command_runner.run(
+            list(commands),
+            cwd=workspace.path,
+            timeout_seconds=self._config.repository.command_timeout_seconds,
+            env_passthrough=self._config.repository.env_passthrough,
+            capture_bytes=self._config.repository.log_capture_bytes,
+        )
+
+    def _repository_commands(self, run_id: str) -> RepositoryCommandsConfig:
+        """Return the commands a run uses. Runs without a plan use the configuration."""
+        try:
+            plan = self._store.load_artifact(run_id, RepositoryCommandsPlan)
+        except FileNotFoundError:
+            return self._config.repository.commands
+        return RepositoryCommandsConfig(
+            install=list(plan.install), verify=list(plan.verify), build=list(plan.build)
+        )
 
     def resume(self, run_id: str, source_repo: Path) -> FactoryRun:
         """Reconcile a delivery checkpoint without resetting any attempt budget.
@@ -1436,7 +1553,10 @@ class WorkflowController:
         )
 
     def _synthesize_execution_plan(
-        self, work_item: WorkItem, workspace: GitWorktreeWorkspace
+        self,
+        work_item: WorkItem,
+        workspace: GitWorktreeWorkspace,
+        verify_commands: Sequence[str],
     ) -> ExecutionPlan:
         # Synthesized plan scope cannot whitelist every repository root.
         # Derive only validated repository-relative paths explicitly named in the work item.
@@ -1459,7 +1579,7 @@ class WorkflowController:
                 estimated_files_min=1,
                 estimated_files_max=self._config.routing.single_max_changed_files,
             ),
-            test_strategy=list(self._config.repository.commands.verify),
+            test_strategy=list(verify_commands),
             risks=[],
             unresolved_decisions=[],
             provenance="SYNTHESIZED",
@@ -1524,7 +1644,11 @@ class WorkflowController:
 
             # Route decision right after profiling while in TRIAGING, before triage agent
             route_decision = determine_route(
-                work_item, repository_profile, self._config, self._route_advisor
+                work_item,
+                repository_profile,
+                self._config,
+                self._route_advisor,
+                has_verify_commands=bool(self._repository_commands(run.id).verify),
             )
             self._store.save_artifact(run.id, route_decision)
             run = run.model_copy(
@@ -1622,7 +1746,9 @@ class WorkflowController:
             self._store.save_artifact(run.id, specification)
 
             run = self.transition(run, WorkflowState.PLANNING)
-            execution_plan = self._synthesize_execution_plan(work_item, workspace)
+            execution_plan = self._synthesize_execution_plan(
+                work_item, workspace, self._repository_commands(run.id).verify
+            )
             self._store.save_artifact(run.id, execution_plan)
 
             context = _RunContext(
@@ -3524,7 +3650,7 @@ class WorkflowController:
     def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
         """Run install -> verify -> build with per-command persisted logs."""
         return self._verifier.run(
-            self._config.repository.commands,
+            self._repository_commands(run.id),
             cwd=context.workspace.path,
             run_dir=self._store.run_dir(run.id),
             timeout_seconds=self._config.repository.command_timeout_seconds,
@@ -4708,3 +4834,13 @@ def _commit_message(context: _RunContext, run_id: str) -> str:
         f"Factory run: `{run_id}`\n"
         f"Work item: `{context.work_item.id}`"
     )
+
+
+def _baseline_failure(report: VerificationReport) -> str:
+    """Describe a baseline failure without quoting command output."""
+    result = report.deterministic_checks[-1] if report.deterministic_checks else None
+    if result is None:
+        return "failed on the base commit"
+    if result.timed_out:
+        return "timed out on the base commit"
+    return f"failed on the base commit with exit code {result.exit_code}"

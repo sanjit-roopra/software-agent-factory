@@ -332,6 +332,7 @@ class ToolchainInventory(VersionedModel):
     lanes: tuple[ToolchainLane, ...] = ()
     bindings: tuple[ToolchainSlotBinding, ...] = ()
     complete: bool = True
+    package_json_scripts: tuple[str, ...] = Field(default=(), max_length=20)
     warnings: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -349,6 +350,41 @@ class ToolchainInventory(VersionedModel):
             (b for b in self.bindings if b.lane is lane and b.slot is slot),
             None,
         )
+
+
+class RepositoryCommandsSource(StrEnum):
+    """Where the repository commands for a run come from (ADR-034)."""
+
+    CONFIG = "config"
+    DERIVED = "derived"
+    NONE = "none"
+
+
+class RejectedCommand(ModelBase):
+    """A derived command that the factory did not use, with the reason."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    command: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class RepositoryCommandsPlan(VersionedModel):
+    """The install, verify and build commands one run uses (ADR-034).
+
+    Commands from the YAML configuration always win. Otherwise the factory
+    derives commands from the toolchain inventory and keeps only those that
+    pass on the unchanged base commit.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: RepositoryCommandsSource
+    install: tuple[str, ...] = ()
+    verify: tuple[str, ...] = ()
+    build: tuple[str, ...] = ()
+    rejected: tuple[RejectedCommand, ...] = Field(default=(), max_length=40)
+    notes: tuple[str, ...] = Field(default=(), max_length=20)
 
 
 GENERIC_SKILL_TARGET = "repository"

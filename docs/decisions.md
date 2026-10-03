@@ -34,8 +34,17 @@ The factory takes over this model, in five slices.
 
 ### Verify commands come from the inventory
 
-- If `repository.commands.verify` is empty, the factory makes the verify commands from the inventory.
-- If the YAML configuration has verify commands, they replace the inventory commands.
+- If all `repository.commands` lists are empty, the factory makes commands from the inventory.
+- If the YAML configuration has any repository command, the factory uses only the YAML commands.
+- The factory makes commands only for tools that the repository has. It never adds a default tool here.
+- Each lane needs exactly one supported lockfile at the repository root: `uv.lock` or `poetry.lock` for Python, `package-lock.json` or `pnpm-lock.yaml` for JavaScript.
+- A `package.json` script such as `lint` or `test` replaces the tool command for its slot.
+- Every verify command only checks. It does not change files.
+- Before the agents start, the factory runs the install command and each verify command on the unchanged base commit.
+  It keeps only the commands that pass there, so a check that already fails does not block every run.
+  If a command changes the Git tree, the factory discards the changes and uses no derived commands.
+- `repository-commands.json` records the source, the commands, the rejected commands and the reasons.
+- Autonomous merge (ADR-022) still needs explicit YAML verify commands.
 
 ### Setup run
 

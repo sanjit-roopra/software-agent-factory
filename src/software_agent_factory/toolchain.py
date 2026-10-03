@@ -109,6 +109,17 @@ def _provider_signals(
     )
 
 
+#: ``package.json`` scripts that can stand in for a slot provider. Only these
+#: names are recorded, so script names from the repository never reach an artifact.
+KNOWN_PACKAGE_SCRIPTS = (
+    "test",
+    "lint",
+    "typecheck",
+    "type-check",
+    "format:check",
+    "check:format",
+)
+
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
 _INI_FILES = ("setup.cfg", "tox.ini")
 
@@ -223,6 +234,7 @@ class _RootEvidence:
     #: ``(file name, section)`` pairs from ``setup.cfg`` and ``tox.ini``.
     ini_sections: set[tuple[str, str]] = field(default_factory=set)
     package_json_keys: set[str] = field(default_factory=set)
+    package_json_scripts: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -260,6 +272,7 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
         lanes=lanes,
         bindings=tuple(bindings),
         complete=not incomplete and not facts.root_evidence.warnings,
+        package_json_scripts=tuple(sorted(facts.root_evidence.package_json_scripts)),
         warnings=(*incomplete, *facts.root_evidence.warnings),
     )
 
@@ -355,6 +368,11 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
         payload = _parse_config(root / "package.json", json.loads, evidence)
         if isinstance(payload, dict):
             evidence.package_json_keys.update(str(key) for key in payload)
+            scripts = payload.get("scripts")
+            if isinstance(scripts, dict):
+                evidence.package_json_scripts.update(
+                    name for name in KNOWN_PACKAGE_SCRIPTS if isinstance(scripts.get(name), str)
+                )
     return evidence
 
 

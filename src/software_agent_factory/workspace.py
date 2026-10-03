@@ -640,6 +640,19 @@ class GitWorktreeWorkspace:
         self._load_or_compute_base_commit()
         return self.path
 
+    def is_clean(self) -> bool:
+        """Return whether the worktree has no tracked or untracked changes.
+
+        Ignored files do not count, so installed dependencies such as
+        ``.venv`` or ``node_modules`` keep the worktree clean.
+        """
+        return not _run_git(self.path, ["status", "--porcelain"]).stdout.strip()
+
+    def discard_changes(self) -> None:
+        """Return the worktree to its HEAD, removing untracked files that are not ignored."""
+        _run_git(self.path, ["reset", "--hard", "HEAD"])
+        _run_git(self.path, ["clean", "-fd"])
+
     def collect_evidence(self) -> WorkspaceEvidence:
         """Stage changes and freeze a tree before deriving the review diff.
 
