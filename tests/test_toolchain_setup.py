@@ -210,9 +210,9 @@ def test_incomplete_inventory_plans_nothing() -> None:
             "javascript lane skipped: more than one lockfile at the repository root",
         ),
         (
-            _JS,
-            ("yarn.lock",),
-            "javascript lane skipped: no supported lockfile at the repository root",
+            _PY,
+            ("pylock.toml",),
+            "python lane skipped: no supported lockfile at the repository root",
         ),
     ],
 )
@@ -254,3 +254,27 @@ def test_skipped_lane_does_not_stop_the_other_lane() -> None:
         packages=("ruff", "mutmut"),
         notes=("javascript lane skipped: more than one lockfile at the repository root",),
     )
+
+
+@pytest.mark.parametrize(
+    ("lockfile", "yarn_berry", "expected"),
+    [
+        ("yarn.lock", False, "yarn add --dev --ignore-scripts oxlint"),
+        ("yarn.lock", True, "yarn add --dev --mode=update-lockfile oxlint"),
+        ("bun.lock", False, "bun add --dev --lockfile-only --ignore-scripts oxlint"),
+        ("bun.lockb", False, "bun add --dev --lockfile-only --ignore-scripts oxlint"),
+    ],
+)
+def test_yarn_and_bun_add_tools_to_the_lockfile_only(
+    lockfile: str, yarn_berry: bool, expected: str
+) -> None:
+    inventory = ToolchainInventory(
+        lanes=(_JS,),
+        bindings=(_binding(_JS, ToolchainSlot.LINT),),
+        mutation_tool_lanes=(_JS,),
+        yarn_berry=yarn_berry,
+    )
+
+    plan = plan_toolchain_setup(inventory, _profile(lockfile))
+
+    assert plan.commands == (expected,)

@@ -68,7 +68,9 @@ def plan_toolchain_setup(
     packages: list[str] = []
     notes: list[str] = []
     for lane in inventory.lanes:
-        package_runner, skip_note = select_package_runner(lane, root_files)
+        package_runner, skip_note = select_package_runner(
+            lane, root_files, yarn_berry=inventory.yarn_berry
+        )
         if package_runner is None:
             notes.append(skip_note)
             continue

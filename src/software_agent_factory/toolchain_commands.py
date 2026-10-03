@@ -81,6 +81,37 @@ JAVASCRIPT_RUNNERS: tuple[PackageRunner, ...] = (
         add_dev="pnpm add --save-dev --lockfile-only --ignore-scripts",
         script_prefix="pnpm run",
     ),
+    PackageRunner(
+        lockfile="yarn.lock",
+        install="yarn install --frozen-lockfile",
+        exec_prefix="yarn run",
+        add_dev="yarn add --dev --ignore-scripts",
+        script_prefix="yarn run",
+    ),
+    PackageRunner(
+        lockfile="bun.lock",
+        install="bun install --frozen-lockfile",
+        exec_prefix="bun run",
+        add_dev="bun add --dev --lockfile-only --ignore-scripts",
+        script_prefix="bun run",
+    ),
+    PackageRunner(
+        lockfile="bun.lockb",
+        install="bun install --frozen-lockfile",
+        exec_prefix="bun run",
+        add_dev="bun add --dev --lockfile-only --ignore-scripts",
+        script_prefix="bun run",
+    ),
+)
+
+#: Yarn 2 and later (Berry) has other flags than Yarn 1. A root ``.yarnrc.yml``
+#: marks a Berry project.
+YARN_BERRY_RUNNER = PackageRunner(
+    lockfile="yarn.lock",
+    install="yarn install --immutable",
+    exec_prefix="yarn run",
+    add_dev="yarn add --dev --mode=update-lockfile",
+    script_prefix="yarn run",
 )
 
 #: Every lockfile a lane can have, supported or not. A lane with two lockfiles
@@ -154,7 +185,7 @@ def candidate_commands(
     lanes: list[LaneCommands] = []
     notes: list[str] = []
     for lane in inventory.lanes:
-        runner, skip_note = select_package_runner(lane, root_files)
+        runner, skip_note = select_package_runner(lane, root_files, yarn_berry=inventory.yarn_berry)
         if runner is None:
             notes.append(skip_note)
             continue
@@ -169,7 +200,7 @@ def candidate_commands(
 
 
 def select_package_runner(
-    lane: ToolchainLane, root_files: set[str]
+    lane: ToolchainLane, root_files: set[str], *, yarn_berry: bool = False
 ) -> tuple[PackageRunner | None, str]:
     """Return the one package runner for a lane, or a note on why there is none."""
     lockfiles = {name.lower() for name in root_files} & LANE_LOCKFILES[lane]
@@ -177,6 +208,8 @@ def select_package_runner(
     if len(lockfiles) > 1:
         return None, f"{lane} lane skipped: more than one lockfile at the repository root"
     if len(runners) == 1:
+        if yarn_berry and runners[0].lockfile == YARN_BERRY_RUNNER.lockfile:
+            return YARN_BERRY_RUNNER, ""
         return runners[0], ""
     return None, f"{lane} lane skipped: no supported lockfile at the repository root"
 

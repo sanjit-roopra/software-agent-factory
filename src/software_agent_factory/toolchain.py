@@ -306,6 +306,7 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
             lane for lane in lanes if _provider_evidence(MUTATION_SIGNALS[lane], facts)
         ),
         pnpm_workspace="pnpm-workspace.yaml" in facts.root_evidence.files,
+        yarn_berry=".yarnrc.yml" in facts.root_evidence.files,
         self_targeting_providers=tuple(sorted(facts.root_evidence.self_targeting)),
         warnings=(*incomplete, *facts.root_evidence.warnings),
     )

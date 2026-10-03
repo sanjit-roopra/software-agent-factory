@@ -624,3 +624,16 @@ def test_package_json_alone_is_not_a_pnpm_workspace(tmp_path: Path) -> None:
     _write(tmp_path, "package.json", '{"name": "x"}')
 
     assert _inventory(tmp_path).pnpm_workspace is False
+
+
+def test_yarnrc_yml_marks_a_yarn_berry_project(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+    _write(tmp_path, ".yarnrc.yml", "nodeLinker: node-modules\n")
+
+    assert _inventory(tmp_path).yarn_berry is True
+
+
+def test_a_plain_javascript_project_is_not_yarn_berry(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+
+    assert _inventory(tmp_path).yarn_berry is False
