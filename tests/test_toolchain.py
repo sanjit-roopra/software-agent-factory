@@ -563,3 +563,11 @@ def test_mypy_uses_only_its_first_configuration_file(tmp_path: Path) -> None:
     inventory = _inventory(tmp_path)
 
     assert inventory.self_targeting_providers == ()
+
+
+def test_mypy_ini_without_a_mypy_section_still_wins(tmp_path: Path) -> None:
+    _write(tmp_path, "app.py", "x = 1\n")
+    _write(tmp_path, "mypy.ini", "[mypy-vendor.*]\nignore_errors = True\n")
+    _write(tmp_path, "setup.cfg", "[mypy]\nfiles = src\n")
+
+    assert _inventory(tmp_path).self_targeting_providers == ()

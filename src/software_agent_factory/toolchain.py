@@ -125,6 +125,7 @@ KNOWN_PACKAGE_SCRIPTS = tuple(name for names in SLOT_SCRIPTS.values() for name i
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
 _INI_FILES = ("setup.cfg", "tox.ini", "mypy.ini", ".mypy.ini")
 _MYPY_CONFIG_ORDER = ("mypy.ini", ".mypy.ini", "pyproject.toml", "setup.cfg")
+_MYPY_OWN_FILES = ("mypy.ini", ".mypy.ini")
 
 LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
     ToolchainLane.PYTHON: {
@@ -375,8 +376,9 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
             sections = _parse_config(root / ini_name, _ini_sections, evidence)
             if sections is not None:
                 evidence.ini_sections.update((ini_name, section) for section in sections)
-                if "mypy" in sections:
-                    evidence.mypy_files[ini_name] = "files" in sections["mypy"]
+                # mypy.ini and .mypy.ini win by existing. Shared files need a [mypy] section.
+                if ini_name in _MYPY_OWN_FILES or "mypy" in sections:
+                    evidence.mypy_files[ini_name] = "files" in sections.get("mypy", ())
     # mypy reads only the first configuration file it finds, in this order.
     mypy_source = next((name for name in _MYPY_CONFIG_ORDER if name in evidence.mypy_files), None)
     if mypy_source is not None and evidence.mypy_files[mypy_source]:
