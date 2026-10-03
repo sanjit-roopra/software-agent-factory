@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -7,7 +8,6 @@ import stat
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -21,12 +21,12 @@ from software_agent_factory.models import (
     VerificationReport,
 )
 from software_agent_factory.publishing import PublishResult
-from software_agent_factory.service import FactoryService
 from software_agent_factory.setup_run import (
     SETUP_RECORD_DIR,
     SETUP_RECORD_NAME,
     SetupError,
     SetupOutcome,
+    SetupRunResult,
     SetupTrigger,
     apply_toolchain_setup,
     publish_setup,
@@ -482,31 +482,67 @@ def test_publish_setup_opens_a_review_pull_request_for_the_worktree(
     assert "The factory does not merge this pull request." in body
 
 
-def test_trigger_opens_one_pull_request_per_head_and_plan(
-    bare_uv_repo: Path, tmp_path: Path
-) -> None:
+def test_trigger_opens_a_pull_request_for_a_new_plan(bare_uv_repo: Path, tmp_path: Path) -> None:
     runner = _Runner()
     publisher = _Publisher()
-    trigger = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher)
-    first_head = _head(bare_uv_repo)
 
-    first = trigger.tick()
-    again = trigger.tick()
-    (bare_uv_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
-    _commit(bare_uv_repo, "unrelated change")
-    after_new_head = trigger.tick()
+    state = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher).tick()
 
-    assert first == SetupState(
-        head_commit=first_head,
+    assert state == SetupState(
+        head_commit=_head(bare_uv_repo),
         commands=(_UV_ADD,),
         pull_request_url="https://github.com/o/r/pull/1",
     )
-    assert again is None
-    assert after_new_head is not None
-    assert after_new_head.head_commit == _head(bare_uv_repo)
-    assert after_new_head.pull_request_url == "https://github.com/o/r/pull/1"
-    assert len(publisher.calls) == 1
     assert [call[0] for call in runner.calls] == [_UV_ADD]
+    assert len(publisher.calls) == 1
+
+
+def test_trigger_does_nothing_while_head_stays_the_same(bare_uv_repo: Path, tmp_path: Path) -> None:
+    runner = _Runner()
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher)
+    trigger.tick()
+
+    assert trigger.tick() is None
+    assert len(runner.calls) == 1
+    assert len(publisher.calls) == 1
+
+
+def test_trigger_keeps_the_pull_request_when_a_new_head_has_the_same_plan(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", _Runner(), publisher)
+    trigger.tick()
+    (bare_uv_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    _commit(bare_uv_repo, "unrelated change")
+
+    state = trigger.tick()
+
+    assert state == SetupState(
+        head_commit=_head(bare_uv_repo),
+        commands=(_UV_ADD,),
+        pull_request_url="https://github.com/o/r/pull/1",
+    )
+    assert len(publisher.calls) == 1
+
+
+def test_trigger_opens_a_second_pull_request_for_a_changed_plan(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    publisher = _Publisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", _Runner(), publisher)
+    trigger.tick()
+    (bare_uv_repo / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n\n[tool.ruff]\n', encoding="utf-8"
+    )
+    _commit(bare_uv_repo, "configure ruff")
+
+    state = trigger.tick()
+
+    assert state is not None
+    assert state.commands == ("uv add --dev --no-sync mypy pytest mutmut",)
+    assert state.pull_request_url == "https://github.com/o/r/pull/2"
 
 
 def test_trigger_with_nothing_to_add_creates_no_worktree(
@@ -542,19 +578,6 @@ def test_trigger_records_a_failed_setup_and_does_not_retry_it(
     assert len(runner.calls) == 1
 
 
-def test_service_logs_a_failed_setup_check_and_goes_on(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    class _Raising:
-        def tick(self) -> SetupState | None:
-            raise SetupError("boom")
-
-    with caplog.at_level("ERROR"):
-        FactoryService.check_setup(SimpleNamespace(setup_trigger=_Raising()))  # type: ignore[arg-type]
-
-    assert "setup check failed" in caplog.text
-
-
 def test_cli_publish_needs_pull_requests_enabled(bare_uv_repo: Path, tmp_path: Path) -> None:
     result = cli.invoke(
         app,
@@ -563,3 +586,127 @@ def test_cli_publish_needs_pull_requests_enabled(bare_uv_repo: Path, tmp_path: P
 
     assert result.exit_code == CONFIG_ERROR_EXIT_CODE
     assert "--publish needs pull_request.enabled" in result.output
+
+
+class _FailingPublisher(_Publisher):
+    def publish(self, **kwargs: object) -> PublishResult:  # type: ignore[override]
+        super().publish(**kwargs)  # type: ignore[arg-type]
+        raise OSError("push rejected")
+
+
+def test_trigger_records_a_failed_publication_and_does_not_retry_it(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    runner = _Runner()
+    publisher = _FailingPublisher()
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", runner, publisher)
+
+    state = trigger.tick()
+    again = trigger.tick()
+
+    assert state == SetupState(
+        head_commit=_head(bare_uv_repo), note="setup publish failed: OSError"
+    )
+    assert again is None
+    assert len(publisher.calls) == 1
+    assert len(runner.calls) == 1
+
+
+def test_trigger_records_a_refused_setup_and_does_not_retry_it(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    head = _head(bare_uv_repo)
+    holder = GitWorktreeWorkspace(data_dir, bare_uv_repo, f"SETUP-{head[:12]}")
+    trigger = _trigger(bare_uv_repo, data_dir, _Runner(), _Publisher())
+
+    with holder:
+        state = trigger.tick()
+
+    assert state is not None
+    assert state.note is not None
+    assert state.note.startswith("setup could not run: another setup run holds the lock")
+    assert trigger.tick() is None
+
+
+def test_trigger_skips_a_tick_while_another_process_checks(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    runner = _Runner()
+    trigger = _trigger(bare_uv_repo, data_dir, runner, _Publisher())
+    lock_path = trigger._state_path.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True)
+
+    with open(lock_path, "a+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        assert trigger.tick() is None
+
+    assert runner.calls == []
+
+
+def test_trigger_ignores_a_damaged_state_file(bare_uv_repo: Path, tmp_path: Path) -> None:
+    trigger = _trigger(bare_uv_repo, tmp_path / "data", _Runner(), _Publisher())
+    trigger._state_path.parent.mkdir(parents=True)
+    trigger._state_path.write_text("{not json", encoding="utf-8")
+
+    state = trigger.tick()
+
+    assert state is not None
+    assert state.pull_request_url == "https://github.com/o/r/pull/1"
+
+
+def test_trigger_with_a_dirty_checkout_plans_in_the_head_worktree(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    # The uncommitted edit would hide the missing tools from a checkout plan.
+    (bare_uv_repo / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n\n[dependency-groups]\n'
+        'dev = ["ruff", "mypy", "pytest", "mutmut"]\n',
+        encoding="utf-8",
+    )
+    runner = _Runner()
+
+    state = _trigger(bare_uv_repo, tmp_path / "data", runner, _Publisher()).tick()
+
+    assert state is not None
+    assert state.commands == (_UV_ADD,)
+    assert [call[0] for call in runner.calls] == [_UV_ADD]
+
+
+def test_publish_refuses_a_change_outside_the_manifest_and_lockfile(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    result = run_toolchain_setup(
+        bare_uv_repo,
+        tmp_path / "data",
+        "factory/",
+        _Runner(edits="build-output.txt"),
+        _LIMITS,
+        _head(bare_uv_repo),
+    )
+    publisher = _Publisher()
+
+    with pytest.raises(
+        SetupError, match="unexpected change in the setup worktree: build-output.txt"
+    ):
+        publish_setup(result, publisher, bare_uv_repo)
+
+    assert publisher.calls == []
+
+
+def test_publish_lists_plan_notes_in_the_body(bare_uv_repo: Path, tmp_path: Path) -> None:
+    result = run_toolchain_setup(
+        bare_uv_repo, tmp_path / "data", "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
+    )
+    noted = SetupRunResult(
+        plan=result.plan.model_copy(update={"notes": ("javascript lane skipped: x",)}),
+        worktree=result.worktree,
+        branch=result.branch,
+        outcome=result.outcome,
+    )
+    publisher = _Publisher()
+
+    publish_setup(noted, publisher, bare_uv_repo)
+
+    assert "Notes:\n- javascript lane skipped: x" in str(publisher.calls[0]["body"])

@@ -23,7 +23,8 @@ import pytest
 from factory_testing import build_config, git, triage_hook, work_item
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
-from software_agent_factory.config import FactoryConfig
+from software_agent_factory.command_probe import ProbeLimits
+from software_agent_factory.config import FactoryConfig, PullRequestConfig, SetupConfig
 from software_agent_factory.escalation_protocol import format_resume_command
 from software_agent_factory.github import GitHubClient, GitHubCommandError
 from software_agent_factory.models import (
@@ -40,6 +41,7 @@ from software_agent_factory.models import (
     WorkflowState,
     utc_now,
 )
+from software_agent_factory.publishing import PullRequestPublisher
 from software_agent_factory.resume_writes import ReplyIdentity, accept_resume
 from software_agent_factory.scheduler import (
     ReconciliationAction,
@@ -52,7 +54,9 @@ from software_agent_factory.service import (
     build_work_item,
     default_recovery_decision,
 )
+from software_agent_factory.setup_run import SetupTrigger
 from software_agent_factory.store import FileRunStore
+from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import WorkflowController
 
 
@@ -1498,3 +1502,87 @@ def test_a_dashboard_request_takes_the_daily_quota_before_github_reply_polling(
     assert _sources(store, approved) == ["dashboard"]
     assert 2 not in github.listed_issues
     assert store.load_run(answered.id).state is WorkflowState.NEEDS_HUMAN
+
+
+# ---------------------------------------------------------------------------
+# Setup check (ADR-034)
+# ---------------------------------------------------------------------------
+
+
+def _service_with_config(
+    data_dir: Path,
+    source_repo: Path,
+    *,
+    setup_trigger: SetupTrigger | None = None,
+    **overrides: object,
+) -> FactoryService:
+    config = build_config(
+        data_dir,
+        scheduler={
+            "enabled": True,
+            "poll_interval_seconds": 1,
+            "max_concurrent_tasks": 1,
+            "stall_timeout_seconds": 300,
+            "required_label": "agent-ready",
+        },
+        pull_request={"enabled": True},
+    )
+    if overrides:
+        config = config.model_copy(update=overrides)
+    return FactoryService(
+        config=config,
+        store=FileRunStore(data_dir),
+        runtime=FakeAgentRuntime(),
+        source_repo=source_repo,
+        github_repo="acme/repo",
+        provider=LocalProvider([]),
+        setup_trigger=setup_trigger,
+    )
+
+
+def test_setup_check_is_armed_when_setup_and_pull_requests_are_on(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    service = _service_with_config(tmp_path / "data", source_repo)
+
+    assert isinstance(service.setup_trigger, SetupTrigger)
+
+
+@pytest.mark.parametrize("switch", ["setup", "pull_request", "derive_commands"])
+def test_setup_check_stays_off_without_each_of_its_switches(
+    tmp_path: Path, source_repo: Path, switch: str
+) -> None:
+    config = _service_with_config(tmp_path / "data", source_repo).config
+    overrides: dict[str, object] = {
+        "setup": {"setup": SetupConfig(enabled=False)},
+        "pull_request": {"pull_request": PullRequestConfig(enabled=False)},
+        "derive_commands": {
+            "repository": config.repository.model_copy(update={"derive_commands": False})
+        },
+    }[switch]
+
+    service = _service_with_config(tmp_path / "data2", source_repo, **overrides)
+
+    assert service.setup_trigger is None
+
+
+def test_a_failing_setup_check_is_logged_and_the_tick_goes_on(
+    tmp_path: Path, source_repo: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    not_a_repository = tmp_path / "plain-directory"
+    not_a_repository.mkdir()
+    trigger = SetupTrigger(
+        source_repo=not_a_repository,
+        data_dir=tmp_path / "data",
+        branch_prefix="factory/",
+        limits=ProbeLimits(timeout_seconds=1, env_passthrough=(), capture_bytes=1),
+        command_runner=DeterministicVerifier(),
+        publisher=PullRequestPublisher(build_config(tmp_path / "data")),
+    )
+    service = _service_with_config(tmp_path / "data", source_repo, setup_trigger=trigger)
+
+    with caplog.at_level("ERROR", logger="software_agent_factory.service"):
+        report = service.run_once()
+
+    assert report.candidates_fetched == 0
+    assert [record.getMessage() for record in caplog.records] == ["setup check failed"]

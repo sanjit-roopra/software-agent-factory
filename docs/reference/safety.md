@@ -63,6 +63,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | `routing.enabled` | TypeSafe System One (`api.typesafe.ai`) over HTTPS. Makes one POST call to Jev with no retries and no redirects. |
 | An eligible `polish.enabled` attempt with no stored guidance for the repository's current dependency fingerprint, or `factory skill refresh --runtime copilot` | The configured Researcher fetches only `polish.official_documentation_origins` and the exact, commit-pinned `polish.practice_reference_urls` to generate a `RepositorySkill`. `web_fetch` is its only tool for that call, and it runs outside the worktree. A run that reuses stored guidance fetches nothing. |
 | Your own `repository.commands` | Whatever they contact. `uv sync` hits a package index. |
+| `setup.enabled` with `pull_request.enabled` and `repository.derive_commands` | The package index of each lane, then GitHub through `git push` and `gh`. The setup check locks dependencies in a setup worktree and opens a pull request. Python locking can run the build backend of the project. |
 | `repository.derive_commands` with empty `repository.commands` | Whatever the derived commands contact. `uv sync`, `npm ci` and the repository's own package scripts run before triage. Set it to `false` for a repository that you do not trust. |
 
 There is no external analytics, crash reporting or telemetry exporter. When

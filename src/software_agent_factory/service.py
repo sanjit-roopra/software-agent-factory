@@ -295,6 +295,7 @@ class FactoryService:
             self.setup_trigger is None
             and self.config.setup.enabled
             and self.config.pull_request.enabled
+            and self.config.repository.derive_commands
         ):
             self.setup_trigger = SetupTrigger(
                 source_repo=self.source_repo,
@@ -303,6 +304,11 @@ class FactoryService:
                 limits=ProbeLimits.from_repository(self.config.repository),
                 command_runner=DeterministicVerifier(),
                 publisher=PullRequestPublisher(self.config),
+            )
+            logger.info(
+                "setup check is on: the factory opens a pull request when %s misses "
+                "development tools (setup.enabled)",
+                self.source_repo,
             )
         self._executor = ThreadPoolExecutor(
             max_workers=self.config.scheduler.max_concurrent_tasks,

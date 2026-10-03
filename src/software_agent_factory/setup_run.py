@@ -12,7 +12,9 @@ repository might hold.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import logging
 import os
 import stat
 import subprocess
@@ -28,6 +30,8 @@ from .repository_profile import profile_repository
 from .toolchain import inventory_toolchain
 from .toolchain_setup import plan_toolchain_setup
 from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
+
+logger = logging.getLogger(__name__)
 
 SETUP_RECORD_DIR = ".factory"
 SETUP_RECORD_NAME = "setup.json"
@@ -188,6 +192,19 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+#: The only paths a setup pull request may change.
+SETUP_ALLOWED_PATHS = frozenset(
+    {
+        "pyproject.toml",
+        "uv.lock",
+        "poetry.lock",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        f"{SETUP_RECORD_DIR}/{SETUP_RECORD_NAME}",
+    }
+)
+
 SETUP_TITLE = "Add missing development tools"
 SETUP_COMMIT_SUBJECT = "chore: add missing development tools"
 SETUP_STATE_DIR = "setup-state"
@@ -219,6 +236,11 @@ def publish_setup(
     changes dependencies.
     """
 
+    unexpected = [
+        path for path in changed_paths(result.worktree) if path not in SETUP_ALLOWED_PATHS
+    ]
+    if unexpected:
+        raise SetupError(f"unexpected change in the setup worktree: {unexpected[0]}")
     packages = ", ".join(result.plan.packages)
     body_lines = [
         "The factory found development tools that this repository does not have (ADR-034).",
@@ -230,7 +252,8 @@ def publish_setup(
         body_lines += ["", "Notes:", *(f"- {note}" for note in result.plan.notes)]
     body_lines += [
         "",
-        "The manifest and the lockfile change. Nothing else changes, except `.factory/setup.json`.",
+        "The factory checked the changed paths: only the manifest, the lockfile",
+        "and `.factory/setup.json` change.",
         "The factory does not merge this pull request. Review the dependency changes, then merge.",
     ]
     return publisher.publish(
@@ -272,32 +295,58 @@ class SetupTrigger:
         self._state_path = data_dir / SETUP_STATE_DIR / f"{key}.json"
 
     def tick(self) -> SetupState | None:
-        """Run one check. Return the new state, or ``None`` when HEAD did not change."""
+        """Run one check. Return the new state, or ``None`` when there was nothing to decide.
 
-        head, _dirty = source_state(self._source_repo)
+        Only one process checks a repository at a time. Another process that
+        holds the check skips this tick.
+        """
+
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._state_path.with_suffix(".lock"), "a+") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+            return self._tick_locked()
+
+    def _tick_locked(self) -> SetupState | None:
+        head, dirty = source_state(self._source_repo)
         previous = self._load()
         if previous is not None and previous.head_commit == head:
             return None
-        profile = profile_repository(self._source_repo)
-        plan = plan_toolchain_setup(inventory_toolchain(self._source_repo, profile), profile)
-        if plan.is_empty:
-            return self._save(SetupState(head_commit=head))
-        if previous is not None and previous.commands == plan.commands:
-            return self._save(previous.model_copy(update={"head_commit": head}))
-        result = run_toolchain_setup(
-            self._source_repo,
-            self._data_dir,
-            self._branch_prefix,
-            self._command_runner,
-            self._limits,
-            head,
-        )
+        if not dirty:
+            # A clean checkout is HEAD, so plan there first and skip the
+            # worktree when there is nothing new to do.
+            profile = profile_repository(self._source_repo)
+            plan = plan_toolchain_setup(inventory_toolchain(self._source_repo, profile), profile)
+            if plan.is_empty:
+                return self._save(SetupState(head_commit=head))
+            if previous is not None and _already_proposed(previous, plan.commands):
+                return self._save(previous.model_copy(update={"head_commit": head}))
+        try:
+            result = run_toolchain_setup(
+                self._source_repo,
+                self._data_dir,
+                self._branch_prefix,
+                self._command_runner,
+                self._limits,
+                head,
+            )
+        except SetupError as exc:
+            # Record the refusal, so this HEAD is not tried again on every tick.
+            return self._save(SetupState(head_commit=head, note=f"setup could not run: {exc}"))
         if result.plan.is_empty:
             return self._save(SetupState(head_commit=head))
+        if previous is not None and _already_proposed(previous, result.plan.commands):
+            return self._save(previous.model_copy(update={"head_commit": head}))
         if not result.outcome.succeeded:
             note = f"setup command failed: {result.outcome.failed_command}"
             return self._save(SetupState(head_commit=head, note=note))
-        published = publish_setup(result, self._publisher, self._source_repo)
+        try:
+            published = publish_setup(result, self._publisher, self._source_repo)
+        except Exception as exc:  # noqa: BLE001 - record any publish failure, never retry this HEAD
+            note = f"setup publish failed: {type(exc).__name__}"
+            return self._save(SetupState(head_commit=head, note=note))
         return self._save(
             SetupState(
                 head_commit=head,
@@ -311,8 +360,25 @@ class SetupTrigger:
             return SetupState.model_validate_json(self._state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
+        except ValueError:
+            # A damaged state file only loses the dedupe memory. Start again.
+            logger.warning("ignoring an unreadable setup state file: %s", self._state_path)
+            return None
 
     def _save(self, state: SetupState) -> SetupState:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         write_text_atomic(self._state_path, state.model_dump_json(indent=2) + "\n")
         return state
+
+
+def _already_proposed(previous: SetupState | None, commands: tuple[str, ...]) -> bool:
+    return (
+        previous is not None and bool(previous.pull_request_url) and previous.commands == commands
+    )
+
+
+def changed_paths(worktree: Path) -> tuple[str, ...]:
+    """Return every path that differs from HEAD in ``worktree``, untracked files included."""
+    output = _git(worktree, "status", "--porcelain", "-z", "--untracked-files=all")
+    entries = [entry for entry in output.split("\0") if entry]
+    return tuple(sorted(entry[3:] for entry in entries))

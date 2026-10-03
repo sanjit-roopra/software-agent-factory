@@ -706,7 +706,7 @@ setup:
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | Let `factory start` open a setup pull request when the repository misses development tools (ADR-034). |
 
-The check needs `pull_request.enabled`. It runs at each service tick, but it plans again only when the source HEAD changes.
+The check needs `pull_request.enabled` and `repository.derive_commands`. It runs at each service tick, but it plans again only when the source HEAD changes.
 It opens one pull request for each new plan. The factory never merges a setup pull request.
 The data directory keeps the last decision for each repository in `setup-state/`.
 

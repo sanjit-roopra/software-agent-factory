@@ -56,10 +56,11 @@ The factory takes over this model, in five slices.
 - Autonomous merge (ADR-022) still needs explicit YAML verify commands.
 - This check runs repository code before triage. That code includes install hooks and package scripts.
   Use `repository.derive_commands: false` for a repository that you do not trust.
+  That switch also turns off the automatic setup check.
 
 ### Setup run
 
-- The factory starts a setup run when it first sees a repository and when `manifest_fingerprint` changes.
+- `factory start` checks the repository when the source HEAD changes. It starts a setup run only for a plan that it did not propose before.
 - No person answers a question. The setup run uses safe defaults.
 - A fixed table selects the tools. No model selects them.
 - For each slot without a provider, the setup run adds the default provider as a development dependency.
@@ -86,7 +87,9 @@ The factory takes over this model, in five slices.
 - `factory start` checks the repository at each tick when `setup.enabled` and `pull_request.enabled` are on.
   It plans again only when the source HEAD changes. It plans from the checkout first, so most checks create no worktree.
   It does not open a second pull request for the commands that it already proposed.
-  It records a failed setup and does not try the same HEAD again.
+  It records a failed or refused setup, or a failed publication, and does not try the same HEAD again.
+  Only one process checks a repository at a time.
+  Before it publishes, it checks that only the manifest, the lockfile and `.factory/setup.json` changed.
   A setup problem is logged. It never stops the backlog.
 
 ### Repository skills in the target repository
