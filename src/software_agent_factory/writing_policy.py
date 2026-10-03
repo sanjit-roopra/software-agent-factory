@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from ._vendor.simple_english import lint, prose_word_count
@@ -18,8 +18,8 @@ from .models import (
     ChangeSet,
     ExecutionPlan,
     ModelBase,
+    PlanningResult,
     ProjectPlan,
-    ResearchReport,
     ReviewReport,
     Specification,
     TestReport,
@@ -101,13 +101,6 @@ _FIELD_LIMITS: dict[type[ModelBase], dict[str, int]] = {
         "dependencies": 30,
         "risk_flags": 30,
     },
-    ResearchReport: {
-        "question": 80,
-        "findings": 50,
-        "evidence": 50,
-        "implications": 35,
-        "uncertainty": 35,
-    },
     ExecutionPlan: {
         "summary": 25,
         "test_strategy": 20,
@@ -136,6 +129,15 @@ _FIELD_LIMITS: dict[type[ModelBase], dict[str, int]] = {
         "tasks[].acceptance_criteria": 25,
         "tasks[].constraints": 30,
     },
+}
+#: The planner returns both artifacts in one object (ADR-035).
+_FIELD_LIMITS[PlanningResult] = {
+    f"{part}.{field}": words
+    for part, artifact_type in (
+        ("specification", Specification),
+        ("execution_plan", ExecutionPlan),
+    )
+    for field, words in _FIELD_LIMITS[artifact_type].items()
 }
 
 #: Filler words that the prose check flags. The prompt lists a few of them.
@@ -228,16 +230,6 @@ def _specification_passages(artifact: Specification, limit: dict[str, int]) -> l
             lint_prose=False,
         ),
         *_items("risk_flags", artifact.risk_flags, max_words=limit["risk_flags"]),
-    ]
-
-
-def _research_passages(artifact: ResearchReport, limit: dict[str, int]) -> list[WritingPassage]:
-    return [
-        _passage("question", artifact.question, max_words=limit["question"]),
-        *_items("findings", artifact.findings, max_words=limit["findings"]),
-        *_items("evidence", artifact.evidence, max_words=limit["evidence"]),
-        *_items("implications", artifact.implications, max_words=limit["implications"]),
-        *_items("uncertainty", artifact.uncertainty, max_words=limit["uncertainty"]),
     ]
 
 
@@ -371,12 +363,24 @@ def _project_plan_passages(artifact: ProjectPlan, limit: dict[str, int]) -> list
     return passages
 
 
+def _planning_passages(artifact: PlanningResult, limit: dict[str, int]) -> list[WritingPassage]:
+    del limit  # Each part uses the limits of its own artifact type.
+    return [
+        replace(passage, field=f"{part}.{passage.field}")
+        for part, passages in (
+            ("specification", artifact_passages(artifact.specification)),
+            ("execution_plan", artifact_passages(artifact.execution_plan)),
+        )
+        for passage in passages
+    ]
+
+
 type _PassageBuilder = Callable[[Any, dict[str, int]], list[WritingPassage]]
 
 _PASSAGE_BUILDERS: dict[type[ModelBase], _PassageBuilder] = {
     TriageResult: _triage_passages,
     Specification: _specification_passages,
-    ResearchReport: _research_passages,
+    PlanningResult: _planning_passages,
     ExecutionPlan: _plan_passages,
     ChangeSet: _change_set_passages,
     TestReport: _test_report_passages,
@@ -438,9 +442,11 @@ def _result_artifact(result: AgentResult, purpose: AgentPurpose) -> ModelBase | 
         return result.project_plan
     return {
         "TRIAGE": result.triage_result,
-        "REFINER": result.specification,
-        "RESEARCHER": result.research_report,
-        "PLANNER": result.execution_plan,
+        "PLANNER": (
+            PlanningResult(specification=result.specification, execution_plan=result.execution_plan)
+            if result.specification is not None and result.execution_plan is not None
+            else result.execution_plan
+        ),
         "IMPLEMENTER": result.change_set,
         "TESTER": result.test_report,
         "REVIEWER": result.review_report,

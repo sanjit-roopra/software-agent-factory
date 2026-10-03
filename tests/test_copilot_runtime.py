@@ -20,12 +20,11 @@ from software_agent_factory.models import (
     ContextTier,
     ExecutionPlan,
     ExpectedScope,
+    PlanningResult,
     PlanStep,
     ProjectBrief,
     ProjectPlan,
-    ResearchReport,
     ReviewReport,
-    Specification,
     TestReport,
     TriageResult,
     WorkItem,
@@ -82,8 +81,6 @@ class _FakePopen:
     "role",
     [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
-        AgentRole.RESEARCHER,
         AgentRole.PLANNER,
         AgentRole.TESTER,
         AgentRole.REVIEWER,
@@ -414,36 +411,19 @@ def test_run_falls_back_to_result_stream_when_usage_file_is_malformed(
             TriageResult,
         ),
         (
-            AgentRole.REFINER,
-            (
-                '{"problem":"Reject blank names","acceptance_criteria":["Reject blanks"],'
-                '"constraints":[],"assumptions":["API contract stays the same"],'
-                '"unknowns":[],"dependencies":[],"risk_flags":[],"confidence":0.7}'
-            ),
-            Specification,
-        ),
-        (
-            "RESEARCHER",
-            (
-                '{"message":{"content":[{"text":"'
-                '{"question":"How are names validated?","findings":["No current guard"],'
-                '"evidence":["src/api.py"],"implications":["Add request validation"],'
-                '"uncertainty":["No integration test found"]}'
-                '"}]}}'
-            ),
-            ResearchReport,
-        ),
-        (
             AgentRole.PLANNER,
             (
                 '{"type":"assistant.message.delta","delta":"```json\\n'
+                '{"specification":{"problem":"Reject blank names",'
+                '"acceptance_criteria":["Reject blanks"],"confidence":0.7},'
+                '"execution_plan":'
                 '{"summary":"Implement validation","steps":[{"id":"edit","goal":"Add guard",'
                 '"likely_files":["src/api.py"],"validation":["pytest"]}],"expected_scope":'
                 '{"modules":["src"],"estimated_files_min":1,"estimated_files_max":2},'
-                '"test_strategy":["pytest"],"risks":["regression"]}'
+                '"test_strategy":["pytest"],"risks":["regression"]}}'
                 '\\n```"}'
             ),
-            ExecutionPlan,
+            PlanningResult,
         ),
         (
             AgentRole.IMPLEMENTER,
@@ -490,14 +470,17 @@ def test_parse_copilot_artifact_handles_fenced_json_plain_text_fallback() -> Non
         AgentRole.PLANNER,
         stdout=(
             "Here is the plan:\n```json\n"
+            '{"specification":{"problem":"Reject blank names","confidence":0.7},'
+            '"execution_plan":'
             '{"summary":"Implement validation","steps":[{"id":"edit","goal":"Add guard",'
             '"likely_files":["src/api.py"],"validation":["pytest"]}],"expected_scope":'
             '{"modules":["src"],"estimated_files_min":1,"estimated_files_max":2},'
-            '"test_strategy":["pytest"],"risks":[]}\n```'
+            '"test_strategy":["pytest"],"risks":[]}}\n```'
         ),
     )
 
-    assert artifact == ExecutionPlan(
+    assert isinstance(artifact, PlanningResult)
+    assert artifact.execution_plan == ExecutionPlan(
         summary="Implement validation",
         steps=[
             PlanStep(
@@ -691,7 +674,12 @@ def test_parse_copilot_artifact_reports_root_object_validation_errors() -> None:
     with pytest.raises(ValueError) as exc_info:
         parse_copilot_artifact(
             AgentRole.PLANNER,
-            stdout=json.dumps(malformed_plan),
+            stdout=json.dumps(
+                {
+                    "specification": {"problem": "Reject blank names", "confidence": 0.7},
+                    "execution_plan": malformed_plan,
+                }
+            ),
         )
 
     message = str(exc_info.value)

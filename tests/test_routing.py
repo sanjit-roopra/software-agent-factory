@@ -71,8 +71,6 @@ def _config_dict(max_total_attempts: int = 6) -> dict[str, object]:
         },
         "models": {
             "triage": {"model": "claude-sonnet-5", "reasoning": "medium"},
-            "refiner": {"model": "claude-opus-5", "reasoning": "high"},
-            "researcher": {"model": "gpt-5.6-sol", "reasoning": "high"},
             "planner": {"model": "claude-opus-5", "reasoning": "high"},
             "workers": {
                 "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
@@ -102,9 +100,7 @@ def test_model_router_routes_fixed_roles_and_risk_gate() -> None:
 
     assert router.model_for_role(AgentRole.TRIAGE).model == "claude-sonnet-5"
     assert router.model_for_role(AgentRole.PLANNER).reasoning == "high"
-    assert router.model_for_role(AgentRole.RESEARCHER).model == "gpt-5.6-sol"
     assert router.model_for_role(AgentRole.REVIEWER).model == "gpt-5.6-sol"
-    assert router.model_for_researcher().model == "gpt-5.6-sol"
     assert router.requires_human_approval(Risk.R1) is False
     assert router.requires_human_approval(Risk.R2) is True
 
@@ -112,12 +108,10 @@ def test_model_router_routes_fixed_roles_and_risk_gate() -> None:
 def test_model_router_routes_fixed_role_from_named_profile() -> None:
     payload = _config_dict()
     fast_models = dict(payload["models"])  # type: ignore[arg-type]
-    fast_models["refiner"] = {"model": "fast-refiner", "reasoning": "low"}
     fast_models["planner"] = {"model": "fast-planner", "reasoning": "low"}
     payload["model_profiles"] = {"fast": fast_models}
     router = ModelRouter(FactoryConfig.model_validate(payload))
 
-    assert router.model_for_role(AgentRole.REFINER, model_profile="fast").model == "fast-refiner"
     assert router.model_for_role(AgentRole.PLANNER, model_profile="fast").model == "fast-planner"
 
 
@@ -1824,7 +1818,6 @@ def test_final_review_item9_authoritative_route_decision_ratchet_and_ci_repair(
         work_item=wi,
         triage_result=store.load_artifact(run.id, TriageResult),
         specification=store.load_artifact(run.id, Specification),
-        research_report=None,
         execution_plan=store.load_artifact(run.id, ExecutionPlan),
         repository_profile=store.load_artifact(run.id, RepositoryProfile),
         workspace=workspace,

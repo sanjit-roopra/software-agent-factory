@@ -27,7 +27,6 @@ from software_agent_factory.models import (
     Complexity,
     ExecutionPlan,
     RepairContext,
-    ResearchReport,
     ReviewReport,
     Risk,
     RiskRationale,
@@ -86,11 +85,11 @@ def test_default_triage_is_eligible_l1_r1_no_research() -> None:
     assert result.triage_result.needs_research is False
 
 
-def test_default_refiner_produces_specification_from_work_item() -> None:
+def test_default_planner_produces_specification_and_execution_plan() -> None:
     runtime = FakeAgentRuntime()
     work_item = _work_item(acceptance_criteria=["Reject empty strings"])
     request = AgentRequest(
-        role=AgentRole.REFINER,
+        role=AgentRole.PLANNER,
         model="claude-opus-5",
         reasoning="high",
         work_item=work_item,
@@ -103,23 +102,29 @@ def test_default_refiner_produces_specification_from_work_item() -> None:
     assert isinstance(result.specification, Specification)
     assert result.specification.problem == work_item.description
     assert result.specification.acceptance_criteria == ["Reject empty strings"]
+    assert isinstance(result.execution_plan, ExecutionPlan)
+    assert len(result.execution_plan.steps) >= 1
 
 
-def test_default_planner_produces_execution_plan() -> None:
-    runtime = FakeAgentRuntime()
+def test_planner_hook_that_scripts_only_the_plan_gets_the_given_specification() -> None:
+    given = Specification(problem="Keep this specification.", confidence=0.5)
+
+    def scripted_planner(request: AgentRequest) -> AgentResult:
+        plan = FakeAgentRuntime().run(request).execution_plan
+        return AgentResult(role=AgentRole.PLANNER, success=True, execution_plan=plan)
+
     request = AgentRequest(
         role=AgentRole.PLANNER,
         model="claude-opus-5",
         reasoning="high",
         work_item=_work_item(),
+        specification=given,
         timeout_seconds=60,
     )
 
-    result = runtime.run(request)
+    result = FakeAgentRuntime(planner=scripted_planner).run(request)
 
-    assert result.success is True
-    assert isinstance(result.execution_plan, ExecutionPlan)
-    assert len(result.execution_plan.steps) >= 1
+    assert result.specification == given
 
 
 def test_default_implementer_creates_new_file_inside_workspace_only(tmp_path: Path) -> None:
@@ -199,47 +204,6 @@ def test_default_tester_returns_independent_test_report(tmp_path: Path) -> None:
     # Deterministic evidence stays a separate artifact: the tester never
     # produces a VerificationReport.
     assert result.verification_report is None
-
-
-def test_default_researcher_returns_research_report() -> None:
-    runtime = FakeAgentRuntime()
-    request = AgentRequest(
-        role=AgentRole.RESEARCHER,
-        model="gpt-5.6-sol",
-        reasoning="high",
-        work_item=_work_item(),
-        specification=Specification(problem="How does validation work?", confidence=0.5),
-        timeout_seconds=60,
-    )
-
-    result = runtime.run(request)
-
-    assert result.success is True
-    assert isinstance(result.research_report, ResearchReport)
-    assert result.research_report.question == "How does validation work?"
-
-
-def test_researcher_hook_overrides_default() -> None:
-    def scripted_researcher(request: AgentRequest) -> AgentResult:
-        return AgentResult(
-            role=AgentRole.RESEARCHER,
-            success=False,
-            failure_reason="research unavailable",
-        )
-
-    runtime = FakeAgentRuntime(researcher=scripted_researcher)
-    request = AgentRequest(
-        role=AgentRole.RESEARCHER,
-        model="gpt-5.6-sol",
-        reasoning="high",
-        work_item=_work_item(),
-        timeout_seconds=60,
-    )
-
-    result = runtime.run(request)
-
-    assert result.success is False
-    assert result.failure_reason == "research unavailable"
 
 
 def test_reviewer_consumes_test_report_and_diff_contract() -> None:

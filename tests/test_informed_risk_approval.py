@@ -1043,7 +1043,7 @@ def test_end_to_end_delivery_and_reply_polling_maximal_context(tmp_path: Path) -
     reopened_run = store.load_run(delivered_run.id)
     assert reopened_run.escalation.status is EscalationStatus.REOPENED
     resumed_run = controller._transition_reopened(reopened_run)
-    assert resumed_run.state is WorkflowState.REFINING
+    assert resumed_run.state is WorkflowState.PLANNING  # ADR-035
     assert resumed_run.escalation.status is EscalationStatus.RESUMED
 
 
@@ -1980,7 +1980,7 @@ def test_transition_reopened_requires_matching_fingerprint(tmp_path: Path) -> No
     )
     store.save_run(run_valid)
     resumed = controller._transition_reopened(run_valid)
-    assert resumed.state is WorkflowState.REFINING
+    assert resumed.state is WorkflowState.PLANNING  # ADR-035: old contexts too
     assert resumed.escalation.status is EscalationStatus.RESUMED
 
 

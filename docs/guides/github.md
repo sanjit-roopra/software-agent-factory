@@ -247,7 +247,7 @@ The author must have an allowed association such as `OWNER`, `MEMBER`, or `COLLA
 The factory rejects bots, edits, and its own account.
 
 For `RISK_APPROVAL`, reply with the approval command shown above. It resumes
-the same run at `REFINING`.
+the same run at `PLANNING`.
 
 For `PLAN_DECISION`, the notice lists numbered questions. Reply with every
 numbered answer:
@@ -266,7 +266,7 @@ For `RISK_APPROVAL`, the notice explains the causal chain.
 It details the intended outcome and the sensitive boundary.
 It explains necessity, credible failure scenarios, mitigations, and residual risk.
 It lists the decision requested and bounded authorized actions.
-Approval authorizes moving the same run to `REFINING`.
+Approval authorizes moving the same run to `PLANNING`.
 Approval does not change task scope or retry budgets.
 Approval does not bypass quality gates or alter permissions.
 All quality gates and review checks remain in force.

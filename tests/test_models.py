@@ -43,7 +43,6 @@ from software_agent_factory.models import (
     RepositoryDependency,
     RepositoryProfile,
     RepositoryTechnology,
-    ResearchReport,
     ReviewReport,
     Risk,
     RunLease,
@@ -254,13 +253,6 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         risk_flags=["input validation"],
         confidence=0.75,
     )
-    research = ResearchReport(
-        question="How is customer validation handled today?",
-        findings=["Validation happens in the API layer."],
-        evidence=["src/api/customers.py"],
-        implications=["Add a guard before persistence."],
-        uncertainty=["No shared validator exists yet."],
-    )
     execution_plan = ExecutionPlan(
         summary="Add input validation and tests.",
         steps=[
@@ -334,7 +326,6 @@ def test_domain_models_round_trip_and_normalize_utc_datetimes() -> None:
         factory_run,
         triage,
         specification,
-        research,
         repository_profile,
         execution_plan,
         change_set,
@@ -415,7 +406,9 @@ def test_extended_workflow_states_and_roles_exist() -> None:
         WorkflowState.CI_DIAGNOSIS,
         WorkflowState.DONE,
     } <= set(WorkflowState)
-    assert AgentRole.RESEARCHER in set(AgentRole)
+    # Kept so old run records load (ADR-035).
+    assert {WorkflowState.REFINING, WorkflowState.RESEARCHING} <= set(WorkflowState)
+    assert {AgentRole.REFINER, AgentRole.RESEARCHER} <= set(AgentRole)
     # States deliberately not introduced (see the task's scope constraints).
     assert not {"REPAIRING", "PLAN_READY", "BLOCKED"} & {state.value for state in WorkflowState}
 
@@ -646,6 +639,19 @@ def test_old_triage_json_with_requirements_quality_still_loads() -> None:
     assert "requirements_quality" not in result.model_dump_json()
 
 
+def test_old_triage_json_without_needs_research_loads_and_new_triage_defaults_it() -> None:
+    old = '{"schema_version":1,"factory_eligible":true,"complexity":"L1","risk":"R1",'
+    old += '"needs_research":true,"confidence":0.9}'
+
+    assert TriageResult.model_validate_json(old).needs_research is True
+    assert (
+        TriageResult(
+            factory_eligible=True, complexity=Complexity.L1, risk=Risk.R1, confidence=0.9
+        ).needs_research
+        is False
+    )
+
+
 _SCOPE = {"modules": ["src"], "estimated_files_min": 1, "estimated_files_max": 1}
 _LOCATION = {"path": "src/a.py", "start_line": 1, "end_line": 1}
 _TASK = {
@@ -660,8 +666,6 @@ _BLANK_PROSE_CASES: list[tuple[type[ModelBase], dict[str, object]]] = [
     (Specification, {"problem": " "}),
     (Specification, {"acceptance_criteria": ["\t"]}),
     (Specification, {"risk_flags": [" "]}),
-    (ResearchReport, {"question": "\n"}),
-    (ResearchReport, {"evidence": [" "]}),
     (PlanStep, {"goal": " "}),
     (PlanStep, {"validation": [" "]}),
     (ExecutionPlan, {"summary": " "}),
@@ -702,7 +706,6 @@ _VALID_BASES: dict[type[ModelBase], dict[str, object]] = {
         "confidence": 0.9,
     },
     Specification: {"problem": "Fix it.", "confidence": 0.9},
-    ResearchReport: {"question": "Why?"},
     PlanStep: {"id": "s1", "goal": "Change it."},
     ExecutionPlan: {"summary": "Change it.", "expected_scope": _SCOPE},
     ChangeSet: {"summary": "Changed it."},

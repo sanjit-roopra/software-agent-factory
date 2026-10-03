@@ -1,8 +1,8 @@
 # Software Agent Factory
 
 > A local-first autonomous software engineering factory. It takes one work item
-> from triage to a reviewed change through specialized agents (triage, refiner,
-> researcher, planner, implementer, tester, reviewer), each with its own model.
+> from triage to a reviewed change through specialized agents (triage, planner,
+> implementer, tester, reviewer), each with its own model.
 > Orchestration, Git worktrees, tests, builds and persistence run locally;
 > models run remotely through GitHub Copilot. The core principle is that LLMs
 > provide intelligence and deterministic Python code provides authority: agents

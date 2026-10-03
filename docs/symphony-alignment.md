@@ -347,11 +347,7 @@ DETERMINISTIC REPOSITORY PROFILE
    ↓
 TRIAGE
    ↓
-REFINE
-   ↓
-RESEARCH optional
-   ↓
-PLAN
+PLAN (specification and plan)
    ↓
 IMPLEMENT
    ↓
@@ -378,13 +374,7 @@ CI
 triage
   GPT-5.6 Terra
 
-refine
-  GPT-5.5
-
-research
-  Claude Opus 5
-
-plan
+plan (specification and plan)
   Opus 5
 
 implement L0
@@ -418,11 +408,7 @@ RepositoryProfile
    ↓
 TriageResult
    ↓
-Specification
-   ↓
-ResearchReport?
-   ↓
-ExecutionPlan
+Specification and ExecutionPlan
    ↓
 ChangeSet
    ↓
@@ -487,7 +473,7 @@ These signals must be authoritative where applicable.
 The controller owns tracker and future GitHub credentials. Agent processes
 receive only credentials required for their assigned role. Approval or input requests do not wait indefinitely. They terminate the active
 invocation, preserve workspace evidence, and move the run to `NEEDS_HUMAN`.
-An authorized GitHub reply can reopen a risk approval at `REFINING`. It can
+An authorized GitHub reply can reopen a risk approval at `PLANNING`. It can
 reopen complete plan decision answers at `PLANNING`. The controller validates
 and persists the reply before it resumes work.
 

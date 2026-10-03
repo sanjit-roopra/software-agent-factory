@@ -8,7 +8,7 @@ Implements the core escalation and authorized human reply loop:
   ``@factory resume v1 run=<run-id> episode=<opaque-id>``
 - The controller validates the comment, author, timing, target, and episode,
   records a durable decision receipt, and reopens the run when the halt category
-  is supported (``RISK_APPROVAL`` -> ``REFINING`` or
+  is supported (``RISK_APPROVAL`` -> ``PLANNING`` or
   ``PLAN_DECISION`` -> ``PLANNING``).
 - Comment text never enters agent prompts and cannot alter models, commands,
   paths, URLs, retry policy, or arbitrary workflow state.
@@ -283,12 +283,11 @@ def build_risk_approval_context(
     current_episode_id = episode_id or (run.escalation.episode_id if run.escalation else "")
 
     decision_requested = (
-        f"Approve advancing run {run.id} to REFINING under risk policy {triage_result.risk.value}."
+        f"Approve advancing run {run.id} to PLANNING under risk policy {triage_result.risk.value}."
     )
     authorized_actions = [
-        "Transition workflow from NEEDS_HUMAN to REFINING.",
-        "Refine requirements into an explicit specification.",
-        "Plan implementation steps within approved scope.",
+        "Transition workflow from NEEDS_HUMAN to PLANNING.",
+        "Write an explicit specification and plan within approved scope.",
         "Execute code changes in an isolated workspace.",
         "Run deterministic verification, tests, and review.",
     ]
@@ -305,7 +304,7 @@ def build_risk_approval_context(
         "Deterministic verification must pass before review.",
         "Independent testing and review remain mandatory.",
         "Quality gates must pass before pull request creation.",
-        "Approval resumes the same run at REFINING.",
+        "Approval resumes the same run at PLANNING.",
         "Approval does not reset run history or attempt budgets.",
     ]
 
@@ -327,7 +326,7 @@ def build_risk_approval_context(
         complexity=triage_result.complexity.value,
         rationale=clean_rationale,
         decision_requested=decision_requested,
-        next_state=WorkflowState.REFINING.value,
+        next_state=WorkflowState.PLANNING.value,
         authorized_actions=authorized_actions,
         unauthorized_actions=unauthorized_actions,
         conditions_in_force=conditions_in_force,
@@ -340,7 +339,7 @@ def build_risk_approval_context(
         work_item_title=clean_title,
         risk_rationale=clean_rationale,
         decision_requested=decision_requested,
-        next_state=WorkflowState.REFINING,
+        next_state=WorkflowState.PLANNING,
         authorized_actions=authorized_actions,
         unauthorized_actions=unauthorized_actions,
         conditions_in_force=conditions_in_force,

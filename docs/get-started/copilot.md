@@ -5,8 +5,8 @@ GitHub Copilot CLI.
 
 !!! danger "This costs money"
 
-    Every stage of a run is a separate Copilot invocation: triage, refiner,
-    optional researcher, planner, implementer, tester, and reviewer.
+    Every stage of a run is a separate Copilot invocation: triage, planner,
+    implementer, tester, and reviewer.
     Each repair attempt adds one invocation. With the packaged configuration,
     the enabled post-green polish adds a second Implementer invocation.
     A single run uses several model calls. The factory provides no spend
@@ -57,8 +57,6 @@ Model choice is configuration, not code. The packaged defaults:
 | Role | Model | Reasoning | Context |
 | --- | --- | --- | --- |
 | Triage | `gpt-5.6-terra` | medium | default |
-| Refiner | `gpt-5.5` | high | default |
-| Researcher | `claude-opus-5` | high | default |
 | Planner | `claude-opus-5` | high | default |
 | Worker L0 | `mai-code-1.1-flash` | medium | default |
 | Worker L1 | `gemini-3.8-flash` | high | default |
@@ -97,7 +95,7 @@ workflow states, spend retry budget, or waive gates.
 
 Each role gets a permission profile:
 
-- Read-only roles (triage, refiner, researcher, planner, tester, reviewer):
+- Read-only roles (triage, planner, tester, reviewer):
   `glob`, `grep`, `view`.
 - Implementer: `glob`, `grep`, `view`, `create`, `edit`, `bash`.
 

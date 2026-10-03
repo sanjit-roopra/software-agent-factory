@@ -5,7 +5,7 @@ provides authority.**
 
 ## What agents may do
 
-- Understand a work item, refine requirements, research, plan.
+- Understand a work item, write a specification, plan.
 - Edit source code and write tests inside their assigned Git worktree.
 - Run commands (implementer only).
 - Review a change and diagnose a failure.
@@ -168,7 +168,7 @@ Pi runs with a tool allowlist. Only the Implementer has a `bash` tool.
 | Role | Pi tools |
 | --- | --- |
 | Implementer | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` |
-| Triage, refiner, researcher, planner, tester, reviewer | `read`, `grep`, `find`, `ls` |
+| Triage, planner, tester, reviewer | `read`, `grep`, `find`, `ls` |
 | Change-set correction | none |
 
 The factory starts pi without extensions, skills, prompt templates and context
@@ -289,7 +289,7 @@ Polish guidance is advisory prompt context only. No model writes or selects
 it. The polish attempt gets the fixed `simplify` and `polish` templates of the
 factory and the review lenses for the changed files. A stack lens applies only
 when the repository declares one of its dependencies. The polish attempt makes
-no Researcher call and no web request. Guidance cannot grant tools, alter
+no web request. Guidance cannot grant tools, alter
 models, change workflow states, waive gates, add commands, spend retry budget,
 widen permissions, change dependencies or widen scope.
 

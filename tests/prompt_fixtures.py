@@ -19,7 +19,6 @@ from software_agent_factory.models import (
     PlanStep,
     RepairContext,
     RepositoryProfile,
-    ResearchReport,
     ReviewFinding,
     ReviewFindingCategory,
     ReviewFindingOrigin,
@@ -78,7 +77,6 @@ def triage() -> TriageResult:
         factory_eligible=True,
         complexity="L2",
         risk="R1",
-        needs_research=True,
         confidence=0.4,
     )
 
@@ -146,7 +144,6 @@ def repository_profile() -> RepositoryProfile:
 # reviewer, each round on the same work item.
 # ---------------------------------------------------------------------------
 
-RESEARCH_QUESTION = "Which validator rejects blank names?"
 #: A line of the fixed polish template that only the polish attempt receives.
 FIXED_POLISH_GUIDANCE = "Keep comments that explain why. Remove comments that repeat the code."
 POLISH_SUMMARY = (
@@ -188,7 +185,6 @@ def first_implementer_request(work_item_id: str = "WI-1", **overrides: object) -
             {
                 "work_item": work_item(work_item_id),
                 "specification": specification(),
-                "research_report": ResearchReport(question=RESEARCH_QUESTION),
                 "execution_plan": plan(),
                 "workspace_path": "/w",
                 "attempt_number": 1,

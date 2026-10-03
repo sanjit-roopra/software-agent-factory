@@ -75,8 +75,6 @@ def build_config(
         },
         "models": {
             "triage": {"model": "claude-sonnet-5", "reasoning": "medium"},
-            "refiner": {"model": "claude-opus-5", "reasoning": "high"},
-            "researcher": {"model": "gpt-5.6-sol", "reasoning": "high"},
             "planner": {"model": "claude-opus-5", "reasoning": "high"},
             "workers": {
                 "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},

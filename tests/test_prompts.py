@@ -22,7 +22,6 @@ from prompt_fixtures import (
     PRIOR_FINDING_MESSAGE,
     RE_REVIEW_TESTER_FINDING,
     REPAIRED_DIFF,
-    RESEARCH_QUESTION,
     VERIFICATION_FAILURE,
     VERIFICATION_LOG_EXCERPT,
     accepted_debt_review_request,
@@ -48,17 +47,15 @@ from software_agent_factory.models import (
     AttemptTrigger,
     ChangeSet,
     CommandResult,
-    ExecutionPlan,
+    PlanningResult,
     ProjectBrief,
     RepairContext,
     RepositoryProfile,
-    ResearchReport,
     ReviewFinding,
     ReviewFindingCategory,
     ReviewFindingOrigin,
     ReviewReport,
     ReviewSourceLocation,
-    Specification,
     TestReport,
     TriageResult,
     VerificationReport,
@@ -87,9 +84,7 @@ from software_agent_factory.writing_policy import writing_limits_text
     ("role", "expected"),
     [
         (AgentRole.TRIAGE, TriageResult),
-        (AgentRole.REFINER, Specification),
-        (AgentRole.RESEARCHER, ResearchReport),
-        (AgentRole.PLANNER, ExecutionPlan),
+        (AgentRole.PLANNER, PlanningResult),
         (AgentRole.IMPLEMENTER, ChangeSet),
         (AgentRole.TESTER, TestReport),
         (AgentRole.REVIEWER, ReviewReport),
@@ -105,10 +100,10 @@ def test_tester_returns_a_test_report_not_a_verification_report() -> None:
     assert artifact_model_for_role(AgentRole.TESTER) is not VerificationReport
 
 
-def test_researcher_role_enum_is_supported_directly() -> None:
-    assert normalize_role(AgentRole.RESEARCHER) == "RESEARCHER"
-    assert artifact_model_for_role(AgentRole.RESEARCHER) is ResearchReport
-    assert artifact_model_for_role("researcher") is ResearchReport
+@pytest.mark.parametrize("role", [AgentRole.REFINER, AgentRole.RESEARCHER])
+def test_removed_roles_have_no_prompt(role: AgentRole) -> None:
+    with pytest.raises(ValueError, match="unsupported agent role"):
+        artifact_model_for_role(role)
 
 
 def test_unsupported_role_is_rejected() -> None:
@@ -164,7 +159,11 @@ def test_project_decomposition_prompt_includes_previous_rejection() -> None:
     assert "packed too many outcomes" in prompt
 
 
-@pytest.mark.parametrize("role", list(AgentRole))
+#: Roles that still have a prompt. REFINER and RESEARCHER exist only so old run records load.
+PROMPT_ROLES = [role for role in AgentRole if role not in {AgentRole.REFINER, AgentRole.RESEARCHER}]
+
+
+@pytest.mark.parametrize("role", PROMPT_ROLES)
 def test_output_contract_states_the_word_limits_of_the_role_artifact(role: AgentRole) -> None:
     sections = build_prompt_sections(make_request(role))
     contract = next(section.body for section in sections if section.title == "Output contract")
@@ -208,7 +207,7 @@ def test_a_continuation_prompt_repeats_the_word_limits_with_the_contract() -> No
     assert writing_limits_text(ChangeSet) in continuation.text
 
 
-@pytest.mark.parametrize("role", [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER])
+@pytest.mark.parametrize("role", [AgentRole.TRIAGE])
 def test_early_role_prompt_carries_the_previous_output_rejection(role: AgentRole) -> None:
     prompt = build_prompt(
         make_request(role, repair_context="response did not validate: confidence: Field required")
@@ -219,7 +218,7 @@ def test_early_role_prompt_carries_the_previous_output_rejection(role: AgentRole
     )
 
 
-@pytest.mark.parametrize("role", [AgentRole.TRIAGE, AgentRole.REFINER, AgentRole.RESEARCHER])
+@pytest.mark.parametrize("role", [AgentRole.TRIAGE, AgentRole.PLANNER])
 def test_early_role_prompt_has_no_rejection_section_on_a_first_attempt(role: AgentRole) -> None:
     assert "Previous output rejection" not in build_prompt(make_request(role))
 
@@ -229,7 +228,9 @@ def test_standard_planner_prompt_requires_smallest_implementation() -> None:
 
     assert "smallest implementation" in prompt
     assert "speculative" in prompt
-    assert "ExecutionPlan JSON Schema" in prompt
+    assert "PlanningResult JSON Schema" in prompt
+    assert "In the specification, separate facts, assumptions, and unknowns" in prompt
+    assert "Keep acceptance criteria measurable" in prompt
     assert '"PlanStep"' in prompt
     assert '"goal"' in prompt
     assert '"ExpectedScope"' in prompt
@@ -264,8 +265,6 @@ def test_scope_replan_prompt_treats_verified_diff_as_fixed() -> None:
     "role",
     [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
-        AgentRole.RESEARCHER,
         AgentRole.PLANNER,
         AgentRole.IMPLEMENTER,
         AgentRole.TESTER,
@@ -284,25 +283,24 @@ def test_every_role_prompt_includes_its_complete_json_schema(role: AgentRole) ->
 # ---------------------------------------------------------------------------
 
 
-def test_researcher_prompt_includes_the_specification_and_triage_result() -> None:
+def test_planner_prompt_includes_the_triage_result_and_a_given_specification() -> None:
     prompt = build_prompt(
         make_request(
-            AgentRole.RESEARCHER,
+            AgentRole.PLANNER,
             specification=specification(),
             triage_result=TriageResult(
                 factory_eligible=True,
                 complexity="L2",
                 risk="R1",
-                needs_research=True,
                 confidence=0.4,
             ),
         )
     )
 
-    assert "RESEARCHER agent" in prompt
-    assert "ResearchReport" in prompt
+    assert "PLANNER agent" in prompt
     assert "Names must not be blank." in prompt
     assert "Triage result" in prompt
+    assert "return it unchanged unless new context changes it" in prompt
 
 
 def test_tester_prompt_carries_diff_changed_files_and_deterministic_results() -> None:
@@ -485,14 +483,11 @@ def test_reviewer_gets_a_stack_lens_only_when_the_repository_declares_it() -> No
     assert '"lens":"react"' in with_react
 
 
-def test_triage_and_refiner_prompts_stay_minimal() -> None:
+def test_triage_prompt_stays_minimal() -> None:
     triage = build_prompt(make_request(AgentRole.TRIAGE, diff=DIFF, changed_files=["a.py"]))
     assert "TriageResult" in triage
     assert DIFF.strip() not in triage
-
-    refiner = build_prompt(make_request(AgentRole.REFINER, diff=DIFF))
-    assert "Specification" in refiner
-    assert DIFF.strip() not in refiner
+    assert "Request research" not in triage
 
 
 def test_diff_is_bounded_in_prompts() -> None:
@@ -504,7 +499,7 @@ def test_diff_is_bounded_in_prompts() -> None:
 
 
 def test_every_prompt_has_the_shared_writing_rules() -> None:
-    for role in AgentRole:
+    for role in PROMPT_ROLES:
         prompt = build_prompt(make_request(role))
         assert "Use concise technical English in the spirit of ASD-STE100" in prompt
         assert "Use at most 20 words for an instruction sentence" in prompt
@@ -514,12 +509,11 @@ def test_every_prompt_has_the_shared_writing_rules() -> None:
 def test_embedded_typed_artifacts_render_as_compact_json() -> None:
     prompt = build_prompt(
         make_request(
-            AgentRole.REFINER,
+            AgentRole.PLANNER,
             triage_result=TriageResult(
                 factory_eligible=True,
                 complexity="L1",
                 risk="R0",
-                needs_research=False,
                 confidence=0.9,
             ),
         )
@@ -728,7 +722,7 @@ def test_an_implementer_repair_sends_the_repair_context_diff_and_attempt_only() 
     assert DIFF.strip() in prompt
     assert "Attempt number:\n2" in prompt
     assert CHANGE_SET_SCHEMA in prompt
-    assert _found_in(prompt, (*FIRST_CALL_TEXT, RESEARCH_QUESTION)) == []
+    assert _found_in(prompt, FIRST_CALL_TEXT) == []
 
 
 def test_a_polish_round_sends_the_fixed_guidance_that_the_first_call_lacked() -> None:

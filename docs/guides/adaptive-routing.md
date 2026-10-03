@@ -20,26 +20,26 @@ The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `M
 | --- | --- | --- |
 | `SINGLE` | Implementer and deterministic verification | Deterministic check only |
 | `CRITIQUE` | Implementer and deterministic verification | Independent Reviewer |
-| `FULL` | Triage, Refiner, optional Researcher, Planner, Implementer, verification, optional polish | Independent Tester and Reviewer |
+| `FULL` | Triage, Planner, Implementer, verification, optional polish | Independent Tester and Reviewer |
 | `MANUAL_TRIAGE` | Safe stop before implementation | Human intervention |
 | `FULL_REVIEW` | Upgrade after implementation | Independent Tester and Reviewer |
 
 ### SINGLE
 
 `SINGLE` runs the Implementer and deterministic verification.
-It does not invoke Triage, Refiner, Researcher, Planner, Tester, Reviewer, or the polish attempt.
+It does not invoke Triage, Planner, Tester, Reviewer, or the polish attempt.
 Deterministic verification accepts the change only when every sufficiency condition passes.
 
 ### CRITIQUE
 
 `CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
-It does not invoke Triage, Refiner, Researcher, Planner, Tester, or the polish attempt.
+It does not invoke Triage, Planner, Tester, or the polish attempt.
 The Reviewer checks the implementation independently.
 
 ### FULL
 
 `FULL` runs the complete factory pipeline.
-It includes Triage, Refiner, optional Researcher, Planner, Implementer, and deterministic verification.
+It includes Triage, Planner, Implementer, and deterministic verification.
 It also includes an optional polish attempt, independent Tester, and independent Reviewer.
 Complex tasks or high-risk tasks retain this full pipeline.
 
@@ -53,7 +53,7 @@ A human operator must inspect the task.
 
 `FULL_REVIEW` is a controller-only post-implementation upgrade.
 It runs the full independent Tester and Reviewer gates.
-It does not restart triage, refinement, or planning.
+It does not restart triage or planning.
 
 For `SINGLE` and `CRITIQUE`, the controller skips the polish attempt.
 For `FULL_REVIEW` and `FULL`, the polish attempt is eligible when `polish.enabled` is `true`.

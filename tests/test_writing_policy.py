@@ -15,8 +15,9 @@ from software_agent_factory.models import (
     ChangeSet,
     ExecutionPlan,
     ExpectedScope,
+    PlanningResult,
     PlanStep,
-    ResearchReport,
+    Specification,
     TriageResult,
     WorkItem,
 )
@@ -62,10 +63,11 @@ def test_policy_detects_long_sentences_and_filler() -> None:
 
 
 def test_policy_preserves_uncertainty_modals() -> None:
-    report = ResearchReport(
-        question="Which behavior applies?",
-        findings=["The API may return an empty result."],
-        uncertainty=["The dependency might change this behavior."],
+    report = Specification(
+        problem="Which behavior applies?",
+        assumptions=["The API may return an empty result."],
+        unknowns=["The dependency might change this behavior."],
+        confidence=0.5,
     )
 
     assert validate_artifact_writing(report) == ()
@@ -96,6 +98,22 @@ def test_agent_result_writing_findings_are_returned_and_logged(
     assert "artifact=ExecutionPlan" in caplog.text
     assert result.success is True
     assert result.failure_reason is None
+
+
+def test_planner_result_findings_name_the_specification_and_plan_parts() -> None:
+    result = AgentResult(
+        role=AgentRole.PLANNER,
+        success=True,
+        specification=Specification(problem="A robust and seamless fix.", confidence=0.5),
+        execution_plan=_wordy_plan(),
+    )
+
+    findings = result_writing_findings(result, AgentPurpose.STANDARD, source="run RUN-1")
+
+    assert "specification.problem has 2 slop_word finding(s)." in findings
+    assert "execution_plan.summary has 2 slop_word finding(s)." in findings
+    assert "specification.problem=80" in writing_limits_text(PlanningResult)
+    assert "execution_plan.summary=25" in writing_limits_text(PlanningResult)
 
 
 def test_clean_or_failed_results_have_no_writing_findings(
@@ -299,7 +317,7 @@ def test_an_artifact_type_without_prose_fields_has_no_passages() -> None:
 
 
 def test_findings_stop_after_twelve_with_an_omission_note() -> None:
-    report = ResearchReport(question="Q?", findings=[" ".join(["word"] * 60)] * 15)
+    report = Specification(problem="Q?", assumptions=[" ".join(["word"] * 60)] * 15, confidence=0.5)
 
     findings = validate_artifact_writing(report)
 

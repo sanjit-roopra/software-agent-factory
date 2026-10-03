@@ -60,10 +60,6 @@ class ModelRouter:
         )
         if role is AgentRole.TRIAGE:
             return models.triage
-        if role is AgentRole.REFINER:
-            return models.refiner
-        if role is AgentRole.RESEARCHER:
-            return models.researcher
         if role is AgentRole.PLANNER:
             return models.planner
         if role is AgentRole.TESTER:
@@ -71,9 +67,6 @@ class ModelRouter:
         if role is AgentRole.REVIEWER:
             return models.reviewer
         raise ValueError(f"No fixed model is configured for role {role}")
-
-    def model_for_researcher(self) -> RoleModelConfig:
-        return self._config.models.researcher
 
     def model_for_implementer(
         self,

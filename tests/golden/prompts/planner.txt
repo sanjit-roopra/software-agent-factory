@@ -42,15 +42,5 @@ PlanningResult JSON Schema:
 Work item:
 {"acceptance_criteria":["Blank names return HTTP 400."],"complexity":null,"constraints":["Do not change the public API."],"created_at":"2026-01-01T00:00:00Z","depends_on":[],"description":"Return HTTP 400 for empty or whitespace-only names.","external_id":null,"id":"WI-1","labels":[],"priority":null,"project_id":null,"project_task_id":null,"risk":null,"schema_version":1,"source":"MANUAL","title":"Reject empty customer names"}
 
-Specification:
-{"acceptance_criteria":[],"assumptions":[],"confidence":0.9,"constraints":[],"dependencies":[],"problem":"Names must not be blank.","provenance":"AGENT","risk_flags":[],"schema_version":1,"unknowns":[]}
-
-Replan context:
-{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","summary":"Continuous integration reported a failing check.","trigger":"CI"}
-
-Changed files so far:
-["src/app.py"]
-
-Current diff:
-diff --git a/src/app.py b/src/app.py
-+    if not name.strip():
+Triage result:
+{"complexity":"L2","confidence":0.4,"dependencies":[],"factory_eligible":true,"needs_research":false,"provenance":"AGENT","risk":"R1","risk_rationale":null,"schema_version":1,"unknowns":[]}

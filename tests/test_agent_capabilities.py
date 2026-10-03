@@ -40,8 +40,6 @@ def test_implementer_role_is_implementer_write() -> None:
     "role",
     [
         AgentRole.TRIAGE,
-        AgentRole.REFINER,
-        AgentRole.RESEARCHER,
         AgentRole.PLANNER,
         AgentRole.TESTER,
         AgentRole.REVIEWER,

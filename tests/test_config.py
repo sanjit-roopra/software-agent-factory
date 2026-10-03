@@ -28,8 +28,6 @@ def test_load_config_from_explicit_path_expands_data_dir(tmp_path: Path) -> None
             max_total_attempts: 6
         models:
           triage: {model: "claude-sonnet-5", reasoning: "medium"}
-          refiner: {model: "claude-opus-5", reasoning: "high"}
-          researcher: {model: "gpt-5.6-sol", reasoning: "high"}
           planner: {model: "claude-opus-5", reasoning: "high"}
           workers:
             L0: {model: "mai-code-1.1-flash", reasoning: "medium"}
@@ -65,8 +63,7 @@ def test_load_config_uses_packaged_defaults() -> None:
 
     assert config.data_dir == Path.home() / ".software-factory"
     assert config.models.triage.model == "gpt-5.6-terra"
-    assert config.models.refiner.model == "gpt-5.5"
-    assert config.models.researcher.model == "claude-opus-5"
+    assert config.models.planner.model == "claude-opus-5"
     assert config.models.workers["L1"].model == "gemini-3.8-flash"
     assert config.models.workers["L3"].model == "claude-opus-5"
     assert config.models.reviewer.model == "gpt-5.6-sol"
@@ -82,8 +79,6 @@ def test_load_config_selects_named_model_profile() -> None:
 
     assert config.models.triage.model == "gpt-5.6-luna"
     assert config.models.planner.model == "gpt-5.6-terra"
-    assert config.models.researcher.model == "gemini-3.8-flash"
-    assert config.models.researcher.reasoning == "medium"
     assert config.models.workers["L3"].model == "gemini-3.8-flash"
     assert config.models.reviewer.model == "gpt-5.6-sol"
 
@@ -152,8 +147,6 @@ def test_config_rejects_non_positive_limits(tmp_path: Path) -> None:
             max_total_attempts: 6
         models:
           triage: {model: "claude-sonnet-5", reasoning: "medium"}
-          refiner: {model: "claude-opus-5", reasoning: "high"}
-          researcher: {model: "gpt-5.6-sol", reasoning: "high"}
           planner: {model: "claude-opus-5", reasoning: "high"}
           workers:
             L0: {model: "mai-code-1.1-flash", reasoning: "medium"}
@@ -192,8 +185,6 @@ def test_config_rejects_reviewer_family_matching_workers(tmp_path: Path) -> None
             max_total_attempts: 6
         models:
           triage: {model: "claude-sonnet-5", reasoning: "medium"}
-          refiner: {model: "claude-opus-5", reasoning: "high"}
-          researcher: {model: "gpt-5.6-sol", reasoning: "high"}
           planner: {model: "claude-opus-5", reasoning: "high"}
           workers:
             L0: {model: "mai-code-1.1-flash", reasoning: "medium"}
@@ -229,8 +220,6 @@ factory:
     max_total_attempts: 6
 models:
   triage: {model: "claude-sonnet-5", reasoning: "medium"}
-  refiner: {model: "claude-opus-5", reasoning: "high"}
-  researcher: {model: "gpt-5.6-sol", reasoning: "high"}
   planner: {model: "claude-opus-5", reasoning: "high"}
   workers:
     L0: {model: "mai-code-1.1-flash", reasoning: "medium"}
@@ -354,6 +343,30 @@ def test_polish_ignores_the_removed_research_allowlists(tmp_path: Path) -> None:
 
     assert config.polish == PolishConfig(enabled=True)
     assert "official_documentation_origins" not in config.polish.model_dump()
+
+
+def test_models_ignore_the_removed_refiner_and_researcher_keys(tmp_path: Path) -> None:
+    """ADR-035: older files may still name the two removed roles, also in a profile."""
+    old_role = {"model": "gpt-5.5", "reasoning": "high"}
+    models = load_config().models.model_dump(mode="json")
+    old_models = {**models, "refiner": old_role, "researcher": old_role}
+    config_path = _config_with(
+        tmp_path, {"models": old_models, "model_profiles": {"old": old_models}}
+    )
+
+    config = load_config(config_path, model_profile="old")
+
+    assert "refiner" not in config.models.model_dump()
+    assert "researcher" not in config.model_profiles["old"].model_dump()
+    assert config.models.planner == load_config().models.planner
+
+
+def test_models_still_reject_unknown_role_keys(tmp_path: Path) -> None:
+    models = load_config().models.model_dump(mode="json")
+    config_path = _config_with(tmp_path, {"models": {**models, "deployer": models["planner"]}})
+
+    with pytest.raises(ValidationError, match="deployer"):
+        load_config(config_path)
 
 
 def test_polish_still_rejects_unknown_keys(tmp_path: Path) -> None:

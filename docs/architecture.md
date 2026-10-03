@@ -19,11 +19,7 @@ deterministic repository profile
    ↓
 triage
    ↓
-refine
-   ↓
-research (only when triage asks for it, at most once)
-   ↓
-plan
+plan (one call writes the specification and the plan)
    ↓
 implement
    ↓
@@ -59,7 +55,7 @@ configuration a run performs no network access at all and completes at
 `PR_READY`.
 
 The optional fast mode applies only to low-risk `L0` and `L1` work. It can use
-a faster Refiner and Planner profile. It skips the optional polish pass.
+a faster Planner profile. It skips the optional polish pass.
 Deterministic verification, the independent Tester, and the independent
 Reviewer remain mandatory.
 
@@ -300,8 +296,6 @@ The implemented SDLC states are exactly:
 ```text
 CREATED
 TRIAGING
-REFINING
-RESEARCHING
 PLANNING
 IMPLEMENTING
 VERIFYING
@@ -314,6 +308,10 @@ DONE
 NEEDS_HUMAN
 FAILED
 ```
+
+The enum also keeps `REFINING` and `RESEARCHING` so that old run records load
+(ADR-035). No new run enters them. A resume of an old run in one of them stops
+the run at `NEEDS_HUMAN`.
 
 There is no `REPAIRING`, `PLAN_READY` or `BLOCKED` state. Repair is a
 bounded transition back to `IMPLEMENTING` (or back to `PLANNING` for scope
@@ -328,9 +326,7 @@ in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
 
 ```text
 CREATED      → TRIAGING
-TRIAGING     → REFINING
-REFINING     → RESEARCHING | PLANNING
-RESEARCHING  → PLANNING
+TRIAGING     → PLANNING
 PLANNING     → IMPLEMENTING | VERIFYING
 IMPLEMENTING → VERIFYING
 VERIFYING    → REVIEWING | IMPLEMENTING | PLANNING
@@ -339,7 +335,7 @@ PR_READY     → PR_CREATED
 PR_CREATED   → CI_RUNNING | DONE
 CI_RUNNING   → DONE | CI_DIAGNOSIS
 CI_DIAGNOSIS → IMPLEMENTING
-NEEDS_HUMAN  → REFINING (authorized risk approval)
+NEEDS_HUMAN  → PLANNING (authorized risk approval)
 NEEDS_HUMAN  → PLANNING (authorized plan decision answers)
 ```
 
@@ -352,8 +348,9 @@ Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
 `NEEDS_HUMAN` is normally terminal. The controller can reopen the same run for
 a persisted `RISK_APPROVAL` escalation or a `PLAN_DECISION` escalation.
 
-A risk approval reply authorizes `REFINING`. A plan decision reply authorizes
-`PLANNING`. The notice lists numbered questions and the required answer format.
+A risk approval reply and a plan decision reply both authorize `PLANNING`.
+An approval context from before ADR-035 names `REFINING`. It also reopens the
+run at `PLANNING`. The notice lists numbered questions and the required answer format.
 The controller accepts only complete, ordered answers from an authorized user.
 It stores typed answers before it reopens the run. It gives the Planner only
 the validated answer fields. It never gives the Planner the raw GitHub comment.
@@ -571,8 +568,8 @@ is eligible. The polish Implementer prompt carries:
 
 A stack lens (`react`, `vue` or `angular`) applies only when the repository
 profile declares one of its dependencies and a changed file matches its scope.
-The Reviewer gets the same lens selection. The polish attempt makes no
-Researcher call and no web request. The guidance is advisory and cannot alter
+The Reviewer gets the same lens selection. The polish attempt makes no web
+request. The guidance is advisory and cannot alter
 tools, models, workflow states, retry budgets, quality gates, commands,
 permissions, dependencies or scope.
 
@@ -584,11 +581,13 @@ Fields approximately:
 factory_eligible
 complexity
 risk
-needs_research
 dependencies
 unknowns
 confidence
 ```
+
+`needs_research` is no longer used (ADR-035). It defaults to `false`, so old
+triage files load.
 
 ### Specification
 
@@ -609,19 +608,8 @@ Unknown information must remain explicit.
 
 Do not silently invent requirements.
 
-### ResearchReport
-
-Only produced when necessary.
-
-Fields approximately:
-
-```text
-question
-findings
-evidence
-implications
-uncertainty
-```
+The Planner writes the specification and the execution plan in one
+`PlanningResult` (ADR-035). The controller saves them as two artifacts.
 
 ### ExecutionPlan
 
@@ -667,7 +655,7 @@ it enters `IMPLEMENTING`.
 This gate applies only to the initial pre-implementation plan.
 It does not reject the metadata-only scope replan after deterministic verification.
 
-The reply does not rerun triage, refinement, or research. It does not reset
+The reply does not rerun triage. It does not reset
 attempt budgets. Existing escalation reply and reopen limits bound this flow.
 In project mode, a halted child still preserves the existing project
 `NEEDS_HUMAN` behavior.
@@ -809,8 +797,6 @@ Examples:
 
 Default: `Claude Opus 5`
 
-Potentially invoke research first.
-
 ## Risk model
 
 ### R0
@@ -860,25 +846,6 @@ Permissions:
 
 Output: `TriageResult`
 
-### Specification Refiner
-Model: `GPT-5.5`
-
-Permissions:
-- repository read
-
-Output: `Specification`
-
-### Researcher
-Model: `Claude Opus 5`
-
-Invoke only when required.
-
-Permissions:
-- repository read
-- research capability
-
-Output: `ResearchReport`
-
 ### Planner
 Model: `Claude Opus 5`
 
@@ -888,7 +855,8 @@ Permissions:
 
 No source modifications.
 
-Output: `ExecutionPlan`
+Output: `PlanningResult`, which holds a `Specification` and an `ExecutionPlan`.
+The Planner replaced the Specification Refiner and the Researcher (ADR-035).
 
 If the initial plan contains unresolved decisions that evidence can answer, the Planner receives one bounded correction attempt.
 If material choices remain, the controller halts before implementation in `NEEDS_HUMAN`.
@@ -1045,7 +1013,7 @@ These artifacts record explicit `SYNTHESIZED` provenance.
 `SINGLE` runs the Implementer and deterministic verification.
 `CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.
 `FULL` runs the complete multi-agent pipeline.
-It retains triage, refinement, optional research, planning, implementation, deterministic verification, optional polish attempt, Tester, and Reviewer.
+It retains triage, planning, implementation, deterministic verification, optional polish attempt, Tester, and Reviewer.
 
 We amend the independent review rule narrowly.
 Deterministic verification can accept `SINGLE` only when every configured sufficiency condition holds.
@@ -1070,7 +1038,6 @@ Eventually policies answer questions such as:
 ```text
 may_run_task(...)
 required_checks(...)
-should_research(...)
 can_retry(...)
 should_escalate(...)
 requires_human(...)
@@ -1149,7 +1116,6 @@ Suggested layout:
 │       ├── mutation.json
 │       ├── triage.json
 │       ├── specification.json
-│       ├── research.json
 │       ├── execution-plan.json
 │       ├── change-set.json
 │       ├── patch.diff

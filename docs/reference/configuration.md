@@ -44,8 +44,6 @@ a command-line parameter or a configuration key.
 ```yaml
 models:
   triage:     { model: "gpt-5.6-terra",        reasoning: "medium", context_tier: "default" }
-  refiner:    { model: "gpt-5.5",              reasoning: "high",   context_tier: "default" }
-  researcher: { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
   planner:    { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
   workers:
     L0:       { model: "mai-code-1.1-flash",   reasoning: "medium", context_tier: "default" }
@@ -58,8 +56,6 @@ models:
 model_profiles:
   economy:
     triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
-    refiner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
-    researcher: { model: "gemini-3.8-flash",   reasoning: "medium", context_tier: "default" }
     planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
     workers:
       L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
@@ -70,8 +66,6 @@ model_profiles:
     reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
   security:
     triage:     { model: "gpt-5.6-terra",      reasoning: "medium", context_tier: "default" }
-    refiner:    { model: "gpt-5.5",            reasoning: "high",   context_tier: "default" }
-    researcher: { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
     planner:    { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
     workers:
       L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
@@ -87,6 +81,10 @@ tier is `default` or `long_context`. The runtime always passes it explicitly
 to Copilot, so a persisted interactive CLI setting cannot change a factory
 run. Model names and reasoning levels are passed through without a catalog
 whitelist, so unsupported combinations fail when Copilot executes.
+
+The Planner writes the specification and the plan in one call (ADR-035).
+An older file can have `refiner` and `researcher` keys in `models` or in a
+profile. The factory ignores them.
 
 The top-level `models` block is the `default` profile. Additional complete
 profiles live under `model_profiles`. Select one on any agent-invoking command:
@@ -133,15 +131,14 @@ The standard mode uses the selected model profile and permits the optional
 polish pass. The fast mode is an explicit low-risk optimization.
 
 The controller uses the fast mode only for `L0` or `L1` work with `R0` or
-`R1` risk. Triage must not require research. Planned and changed files must
-not include protected, sensitive, manifest, or version files.
+`R1` risk. Planned and changed files must not include protected, sensitive, manifest, or version files.
 
 If a condition fails, the controller uses the standard path. It records the
 fallback reason in the run. Both modes keep deterministic verification, the
 independent Tester, the independent Reviewer, and publishing controls.
 
 The `fast_model_profile` must name a complete entry under `model_profiles`.
-The controller uses that profile for the Refiner and Planner. It skips the
+The controller uses that profile for the Planner. It skips the
 optional polish pass only while the run remains eligible.
 
 ## repository
@@ -278,7 +275,7 @@ scope assessment, before testing and review. No model writes or selects the
 guidance. The polish attempt gets the bodies of the factory's `simplify` and
 `polish` templates and the review lenses for the changed files. A stack lens
 for React, Vue or Angular applies only when the repository declares one of its
-dependencies. The attempt makes no Researcher call and no web request.
+dependencies. The attempt makes no web request.
 
 The controller applies the guidance (simplify first, then polish) in one
 existing bounded worker attempt. That attempt records `AttemptTrigger.POLISH`,
