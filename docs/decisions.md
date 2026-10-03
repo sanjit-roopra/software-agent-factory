@@ -19,10 +19,16 @@ The factory takes over this model, in five slices.
 
 - A Python registry holds the toolchain facts.
   Each lane is a language: Python and JavaScript/TypeScript first.
-  Each lane has two slots: autofix (format and fix) and diagnostic (lint and type check).
-  Each slot has an ordered list of providers. The first provider is the default.
-- Each provider has a detection rule: a configuration section, a development dependency, or a repository-local executable.
+  Each lane has four slots: format, lint, typecheck and test.
+  The verify commands need these four jobs as separate commands.
+  Each slot has an ordered list of providers and one default provider.
+  The first provider with evidence wins. The default is the provider to add when no provider has evidence.
+  A slot can require a technology. For example, the JavaScript typecheck slot applies only to TypeScript.
+- Each provider has detection rules: a dependency declaration or a root-level configuration file, table, section or key.
+  The inventory does not probe executables, because a probe needs a shell or a process.
 - The inventory runs with the repository profile. It uses the same limits: no shell, no network and no target code.
+- If the profile evidence is cut short or degraded, the inventory is marked incomplete.
+  A later slice must not add a default tool from an incomplete inventory.
 - If a provider is already configured, the factory keeps it and installs nothing for that slot.
   For example, `black` and `flake8` fill the Python slots, and the factory does not add `ruff`.
 
