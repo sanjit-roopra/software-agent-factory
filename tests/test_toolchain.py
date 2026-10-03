@@ -312,7 +312,8 @@ def test_package_json_that_is_not_an_object_gives_no_evidence(tmp_path: Path) ->
 
     inventory = _inventory(tmp_path)
 
-    assert inventory.warnings == ()
+    assert inventory.complete is False
+    assert inventory.warnings == ("invalid manifest",)
     assert all(binding.is_missing for binding in inventory.bindings)
 
 
@@ -323,6 +324,7 @@ def test_oversized_config_is_skipped_with_a_warning(tmp_path: Path) -> None:
     inventory = inventory_toolchain(tmp_path, _profile_with_python())
 
     assert "skipped oversized config: setup.cfg" in inventory.warnings
+    assert inventory.complete is False
     assert _binding(inventory, ToolchainLane.PYTHON, ToolchainSlot.LINT).is_missing
 
 
@@ -368,6 +370,7 @@ def test_unlistable_root_records_a_warning_and_keeps_bindings(
     inventory = inventory_toolchain(root, profile)
 
     assert inventory.warnings == ("could not list repository root: PermissionError",)
+    assert inventory.complete is False
     assert all(binding.is_missing for binding in inventory.bindings)
 
 
@@ -379,22 +382,24 @@ def test_missing_root_yields_bindings_without_file_evidence(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    "warning",
+    ("warning", "copied"),
     [
-        "scan limit reached after 20000 files",
-        "dependency evidence limited to 200 declarations",
-        "repository profiling degraded: boom",
+        ("scan limit reached after 20000 files", "scan limit reached"),
+        ("dependency evidence limited to 200 declarations", "dependency evidence limited"),
+        ("repository profiling degraded: <repo text>", "repository profiling degraded"),
+        ("invalid manifest package.json: <repo text>", "invalid manifest"),
+        ("could not read pyproject.toml: <repo text>", "could not read"),
     ],
 )
 def test_incomplete_profile_evidence_marks_the_inventory_incomplete(
-    tmp_path: Path, warning: str
+    tmp_path: Path, warning: str, copied: str
 ) -> None:
     profile = _profile_with_python().model_copy(update={"warnings": (warning, "other")})
 
     inventory = inventory_toolchain(tmp_path, profile)
 
     assert inventory.complete is False
-    assert inventory.warnings == (warning,)
+    assert inventory.warnings == (copied,)
 
 
 def test_degraded_inventory_is_empty_and_incomplete() -> None:
@@ -460,3 +465,14 @@ def _profile_with_python() -> RepositoryProfile:
             ),
         ),
     )
+
+
+def test_lockfile_warning_keeps_the_inventory_complete(tmp_path: Path) -> None:
+    profile = _profile_with_python().model_copy(
+        update={"warnings": ("invalid lockfile uv.lock: <repo text>",)}
+    )
+
+    inventory = inventory_toolchain(tmp_path, profile)
+
+    assert inventory.complete is True
+    assert inventory.warnings == ()

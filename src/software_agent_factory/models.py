@@ -321,8 +321,9 @@ class ToolchainSlotBinding(ModelBase):
 class ToolchainInventory(VersionedModel):
     """Deterministic inventory of the repository toolchain (ADR-034).
 
-    ``complete`` is false when the profile evidence was cut short or degraded.
-    A missing binding is then not proof that the repository lacks the tool.
+    ``complete`` is false when the profile evidence or the root configuration
+    evidence was cut short, unreadable or degraded. A missing binding is then
+    not proof that the repository lacks the tool.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

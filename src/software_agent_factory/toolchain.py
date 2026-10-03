@@ -37,10 +37,16 @@ from .repository_profile import MAX_MANIFEST_BYTES
 
 #: Profile warnings that mean dependency or technology evidence is incomplete.
 #: A missing binding is then not proof that the repository lacks the tool.
+#: Lockfile warnings are left out: they lose versions, not dependency names.
 INCOMPLETE_PROFILE_WARNING_PREFIXES = (
     "scan limit reached",
     "dependency evidence limited",
     "repository profiling degraded",
+    "could not read",
+    "invalid manifest",
+    "invalid config",
+    "invalid requirements file",
+    "skipped oversized manifest",
 )
 
 
@@ -224,15 +230,16 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
         for slot, spec in LANE_SLOTS[lane].items()
         if spec.requires is None or spec.requires in profile.technologies
     ]
+    # Copy only the fixed prefix. A profile warning can quote repository text.
     incomplete = [
-        warning
-        for warning in profile.warnings
-        if warning.startswith(INCOMPLETE_PROFILE_WARNING_PREFIXES)
+        prefix
+        for prefix in INCOMPLETE_PROFILE_WARNING_PREFIXES
+        if any(warning.startswith(prefix) for warning in profile.warnings)
     ]
     return ToolchainInventory(
         lanes=lanes,
         bindings=tuple(bindings),
-        complete=not incomplete,
+        complete=not incomplete and not facts.root_evidence.warnings,
         warnings=(*incomplete, *facts.root_evidence.warnings),
     )
 
