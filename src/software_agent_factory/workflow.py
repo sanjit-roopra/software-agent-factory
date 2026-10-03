@@ -1513,7 +1513,6 @@ class WorkflowController:
     def _synthesize_execution_plan(
         self,
         work_item: WorkItem,
-        workspace: GitWorktreeWorkspace,
         verify_commands: Sequence[str],
     ) -> ExecutionPlan:
         # Synthesized plan scope cannot whitelist every repository root.
@@ -1704,7 +1703,7 @@ class WorkflowController:
 
             run = self.transition(run, WorkflowState.PLANNING)
             execution_plan = self._synthesize_execution_plan(
-                work_item, workspace, self._commands_for_run(run.id).verify
+                work_item, self._commands_for_run(run.id).verify
             )
             self._store.save_artifact(run.id, execution_plan)
 

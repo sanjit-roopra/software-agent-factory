@@ -774,9 +774,7 @@ def test_synthesized_artifacts_skip_blank_human_criteria(data_dir: Path, source_
     )
 
     specification = controller._synthesize_specification(item)
-    plan = controller._synthesize_execution_plan(
-        item, GitWorktreeWorkspace(data_dir, source_repo, item.id), ()
-    )
+    plan = controller._synthesize_execution_plan(item, ())
 
     assert specification.acceptance_criteria == ["Blank names return 400."]
     assert specification.constraints == []
