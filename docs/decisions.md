@@ -1,5 +1,96 @@
 # Architecture Decisions
 
+## ADR-034: The factory sets up the target toolchain and repository skills
+
+Status: accepted on 2026-10-03.
+This supersedes ADR-019 in part and ADR-021 in part. ADR-020 stays.
+
+The factory gets lint, format and test commands only from the YAML configuration.
+It installs no tools in the target repository.
+A research call to a model generates skill guidance, and that guidance stays in the factory data directory.
+So each new repository needs hand configuration, and a person who works on the repository without the factory gets no tools and no skills.
+
+The `dev-team` plugin (bdfinst/agentic-dev-team, MIT) solves this with fixed tables, not research.
+It detects the stack and makes a list of the tools that are already there.
+It then installs only the missing tools and copies skills and review lenses for the stack.
+The factory takes over this model, in five slices.
+
+### Toolchain registry and inventory
+
+- A Python registry holds the toolchain facts.
+  Each lane is a language: Python and JavaScript/TypeScript first.
+  Each lane has two slots: autofix (format and fix) and diagnostic (lint and type check).
+  Each slot has an ordered list of providers. The first provider is the default.
+- Each provider has a detection rule: a configuration section, a development dependency, or a repository-local executable.
+- The inventory runs with the repository profile. It uses the same limits: no shell, no network and no target code.
+- If a provider is already configured, the factory keeps it and installs nothing for that slot.
+  For example, `black` and `flake8` fill the Python slots, and the factory does not add `ruff`.
+
+### Verify commands come from the inventory
+
+- If `repository.commands.verify` is empty, the factory makes the verify commands from the inventory.
+- If the YAML configuration has verify commands, they replace the inventory commands.
+
+### Setup run
+
+- The factory starts a setup run when it first sees a repository and when `manifest_fingerprint` changes.
+- No person answers a question. The setup run uses safe defaults.
+- The controller writes all files from fixed templates. No model writes them.
+- The setup run adds the missing repository-level tools to the development dependencies, with minimal configuration.
+  It also adds the mutation tool for the stack: `mutmut` for Python and Stryker for JavaScript/TypeScript.
+- The setup run opens a pull request and goes through the normal gates.
+  If ADR-022 delivery is on, the factory can merge it. If not, the pull request waits for review.
+- `.factory/setup.json` records the result, so the same state does not cause a second setup run.
+- The factory never installs host-level tools, such as `semgrep`, `trivy` or `gh`.
+  It records a missing tool in the run. A lens that needs the tool is skipped.
+- If the stack is not clear, the factory does not guess. The setup run escalates one time.
+- A failed setup run does not stop delivery runs. They use the YAML commands.
+
+### Repository skills in the target repository
+
+The setup pull request also writes skills that a local agent can use without the factory:
+
+```text
+AGENTS.md                                      shared base
+CLAUDE.md -> AGENTS.md                         symbolic link
+.agents/skills/<name>/SKILL.md                 canonical skill files
+.claude/skills/<name> -> ../../.agents/skills/<name>   one link for each skill
+.claude/agents/<stack>-quality.md              Claude Code only
+```
+
+- `.agents/skills` is the shared folder for GitHub Copilot, Cursor, OpenCode and Cline.
+  Claude Code reads `.claude/skills`.
+  The `skills` command (`npx skills add`) uses the same layout in its link mode, so later installs do not collide.
+- If `AGENTS.md` exists, the factory changes only a block between factory markers. It does not change other text.
+- The factory does not overwrite a skill file that a person changed.
+- Windows checkouts need `core.symlinks=true`.
+- The first skills are a pull request gate, simplify and polish. They come from `dev-team` templates, with attribution.
+
+### Review lenses
+
+- A lens registry holds each review lens with a scope: file globs or `always`.
+- A pure function selects the lenses that match the changed files. The cheap lenses come first.
+- The guidance of the selected lenses goes into the reviewer prompt and the polish prompt.
+  A backend-only change gets no user interface lenses.
+- No model selects lenses.
+
+### Changes to earlier decisions
+
+- ADR-019: a fixed catalog replaces skill research. The profiling rules stay.
+- ADR-021: the factory can write to the target repository, but only through the setup pull request.
+  It still makes no hidden writes. The human overlay stays.
+- ADR-020: the polish attempt stays. Lens guidance replaces the generated skill as its input.
+- The factory runtimes do not load the repository skills yet. Copilot has no skill tool in its tool list, and pi runs with `--no-skills`.
+  A later decision covers this.
+
+Consequences:
+
+- A new repository needs no YAML commands when its stack is in the registry.
+- The setup pull request can be large. The factory can split it into a tools pull request and a skills pull request.
+- The registry is code. A new tool or lane needs a factory release.
+- Target repositories now contain files that the factory owns.
+  A person can change them, and the factory then leaves them alone.
+
 ## ADR-033: The dashboard may request a resume
 
 Status: accepted on 2026-10-01 for the data minimization part and the write path part.
