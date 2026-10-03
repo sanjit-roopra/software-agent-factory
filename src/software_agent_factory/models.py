@@ -454,21 +454,6 @@ class SetupState(VersionedModel):
     note: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
 
 
-class SetupState(VersionedModel):
-    """The last setup decision for one source repository (ADR-034).
-
-    The trigger plans again only when the source HEAD changes, and it does not
-    open a second pull request for commands it already proposed.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    head_commit: str = Field(min_length=1, max_length=200)
-    commands: tuple[str, ...] = ()
-    pull_request_url: str | None = Field(default=None, max_length=1000)
-    note: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
-
-
 GENERIC_SKILL_TARGET = "repository"
 """Applicability marker for guidance that is not tied to a detected dependency."""
 
