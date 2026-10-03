@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         InvocationRecord,
         RepositoryProfile,
         RepositorySkill,
+        ToolchainSetupPlan,
         WorkItem,
     )
     from .repository_skills import RepositorySkillManager
@@ -1084,9 +1085,13 @@ def setup_command(
     """
     from .command_probe import ProbeLimits
     from .publishing import PullRequestPublisher
-    from .setup_run import SetupError, publish_setup, run_toolchain_setup, source_state
-    from .toolchain import inventory_toolchain
-    from .toolchain_setup import plan_toolchain_setup
+    from .setup_run import (
+        SetupError,
+        plan_setup,
+        publish_setup,
+        run_toolchain_setup,
+        source_state,
+    )
     from .verification import DeterministicVerifier
 
     factory_config = _load_config(config, data_dir)
@@ -1096,12 +1101,14 @@ def setup_command(
     except SetupError as exc:
         raise _fail(str(exc)) from None
     if dry_run:
-        profile = _skill_profile(repo)
-        plan = plan_toolchain_setup(inventory_toolchain(repo, profile), profile)
+        try:
+            plan, _files = plan_setup(repo)
+        except (OSError, ValueError) as exc:
+            raise _fail(f"cannot plan the setup: {exc}") from None
         notes = plan.notes
         if dirty:
             notes = (*notes, "uncommitted changes in the checkout; a setup run uses HEAD")
-        _echo_setup_plan(plan.commands, notes)
+        _echo_setup_plan(plan, notes)
         return
     if publish and not factory_config.pull_request.enabled:
         raise _fail("--publish needs pull_request.enabled in the configuration")
@@ -1116,7 +1123,7 @@ def setup_command(
         )
     except SetupError as exc:
         raise _fail(f"setup could not run: {exc}", code=1) from None
-    _echo_setup_plan(result.plan.commands, result.plan.notes)
+    _echo_setup_plan(result.plan, result.plan.notes)
     if result.plan.is_empty:
         return
     if not result.outcome.succeeded:
@@ -1135,13 +1142,15 @@ def setup_command(
         typer.echo(f"pull request: {published.pull_request_url}")
 
 
-def _echo_setup_plan(commands: tuple[str, ...], notes: tuple[str, ...]) -> None:
+def _echo_setup_plan(plan: ToolchainSetupPlan, notes: tuple[str, ...]) -> None:
     for note in notes:
         typer.echo(f"note: {note}")
-    if not commands:
+    if plan.is_empty:
         typer.echo("nothing to add")
-    for command in commands:
+    for command in plan.commands:
         typer.echo(f"add: {command}")
+    for path in plan.files:
+        typer.echo(f"write: {path}")
 
 
 @app.command("dashboard")

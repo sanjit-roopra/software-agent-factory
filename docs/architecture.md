@@ -550,6 +550,12 @@ each missing slot (`PROVIDER_PACKAGES`). It also adds the mutation tool when
 the lane has none (`MUTATION_PACKAGES`, and `STRYKER_TEST_RUNNER_PLUGINS` for
 JavaScript). An incomplete inventory adds nothing.
 
+`repository_files.py` plans the repository files from templates in
+`repo_templates/`: the managed block in `AGENTS.md`, `CLAUDE.md` as a link,
+the skills in `.agents/skills/` with links in `.claude/skills/`, and the
+Python review agent. It never replaces a file that exists, except the block
+between the factory markers. It writes without following a symbolic link.
+
 `setup_run.py` applies the plan. It works in a worktree keyed by the source
 HEAD and holds the work item lock. It refuses a worktree that is not clean at
 its base. Each add command changes only the manifest and the lockfile and

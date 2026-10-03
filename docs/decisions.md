@@ -86,10 +86,10 @@ The factory takes over this model, in five slices.
 - `factory setup --repo PATH` runs a setup by hand. `--publish` also commits, pushes and opens the pull request.
 - `factory start` checks the repository at each tick when `setup.enabled` and `pull_request.enabled` are on.
   It plans again only when the source HEAD changes. It plans from the checkout first, so most checks create no worktree.
-  It does not open a second pull request for the commands that it already proposed.
+  It does not open a second pull request for the commands and files that it already proposed.
   It records a failed or refused setup, or a failed publication, and does not try the same HEAD again.
   Only one process checks a repository at a time.
-  Before it publishes, it checks that only the manifest, the lockfile and `.factory/setup.json` changed.
+  Before it publishes, it checks that only the manifest, the lockfile, `.factory/setup.json` and the files that the plan lists changed.
   A setup problem is logged. It never stops the backlog.
 
 ### Repository skills in the target repository
@@ -109,9 +109,20 @@ CLAUDE.md -> AGENTS.md                         symbolic link
   Claude Code reads `.claude/skills`.
   The `skills` command (`npx skills add`) uses the same layout in its link mode, so later installs do not collide.
 - If `AGENTS.md` exists, the factory changes only a block between factory markers. It does not change other text.
-- The factory does not overwrite a skill file that a person changed.
+  Without markers, the factory adds the block at the end.
+  The factory leaves `AGENTS.md` alone and records a note in three cases.
+  The markers are not exactly one well-formed block, the line endings are mixed, or the file is not readable UTF-8 text.
+  The factory keeps the line endings of the file.
+- The factory skips a path that the repository ignores, because Git never commits it. It records a note.
+- An add command can change only the manifest and the lockfile. Any other change stops the setup.
+  The factory plans the files again after the add commands, and that plan decides the files of the pull request.
+- The factory never replaces another file that exists, such as a skill, a link or `CLAUDE.md`.
+- The block and the `pr-gate` skill name the install command and the checks of the repository,
+  including the tools that the same setup adds.
 - Windows checkouts need `core.symlinks=true`.
-- The first skills are a pull request gate, simplify and polish. They come from `dev-team` templates, with attribution.
+- The first skills are `pr-gate`, `simplify` and `polish`. The factory owns these templates.
+  The Python review agent `python-quality` is adapted from `dev-team`, with attribution.
+- A setup pull request can change these files. The path check before publication allows exactly the files that the plan lists.
 
 ### Review lenses
 
