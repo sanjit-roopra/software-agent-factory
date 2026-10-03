@@ -46,7 +46,7 @@ class PackageRunner:
     install: str
     exec_prefix: str
     #: Adds development dependencies to the manifest and the lockfile only.
-    #: It installs nothing and runs no package scripts.
+    #: It installs nothing. Python locking can still run the build backend.
     add_dev: str
     script_prefix: str | None = None
 

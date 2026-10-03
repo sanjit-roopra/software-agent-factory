@@ -552,7 +552,8 @@ JavaScript). An incomplete inventory adds nothing.
 
 `setup_run.py` applies the plan. It works in a worktree keyed by the source
 HEAD and holds the work item lock. It refuses a worktree that is not clean at
-its base. Each add command changes only the manifest and the lockfile. A
+its base. Each add command changes only the manifest and the lockfile and
+installs nothing. Python locking can run the build backend of the project. A
 failed command stops the setup and writes no record. The record write does not
 follow a symbolic link.
 

@@ -3,15 +3,18 @@
 A setup run works in its own worktree, keyed by the source HEAD commit, under
 the per-work-item lock. It refuses a worktree that is not clean at its base,
 so a kept worktree from a failed run is never built on. The add commands
-change only the manifest and the lockfile: they install nothing and run no
-package scripts. The plan is recorded in ``.factory/setup.json`` without
-following a symbolic link that the repository might hold.
+change only the manifest and the lockfile: they install nothing, and the
+JavaScript ones run no package scripts. Python locking can still run the
+project's build backend to read package metadata. The plan is recorded in
+``.factory/setup.json`` without following a symbolic link that the
+repository might hold.
 """
 
 from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,12 +23,13 @@ from .models import ToolchainSetupPlan
 from .repository_profile import profile_repository
 from .toolchain import inventory_toolchain
 from .toolchain_setup import plan_toolchain_setup
-from .workspace import GitWorktreeWorkspace, WorkspaceError
+from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
 
 SETUP_RECORD_DIR = ".factory"
 SETUP_RECORD_NAME = "setup.json"
 SETUP_WORK_ITEM_PREFIX = "SETUP-"
 NOT_AT_BASE = "setup worktree is not clean at its base commit"
+LOCKED = "another setup run holds the lock"
 
 
 class SetupError(Exception):
@@ -69,20 +73,26 @@ def run_toolchain_setup(
 ) -> SetupRunResult:
     """Plan and apply the setup in a worktree at ``head_commit`` of ``source_repo``."""
 
-    workspace = GitWorktreeWorkspace(
-        data_dir,
-        source_repo,
-        f"{SETUP_WORK_ITEM_PREFIX}{head_commit[:12]}",
-        branch_prefix=branch_prefix,
-    )
     try:
+        workspace = GitWorktreeWorkspace(
+            data_dir,
+            source_repo,
+            f"{SETUP_WORK_ITEM_PREFIX}{head_commit[:12]}",
+            branch_prefix=branch_prefix,
+            base_ref=head_commit,
+        )
         with workspace:
-            worktree = workspace.prepare()
-            if not workspace.is_at_clean_base():
-                raise SetupError(f"{NOT_AT_BASE}: {worktree}")
+            try:
+                # With a base ref, prepare() refuses a worktree that is not
+                # clean at exactly that commit, such as one a failed run kept.
+                worktree = workspace.prepare()
+            except WorkspaceError as exc:
+                raise SetupError(f"{NOT_AT_BASE}: {exc}") from exc
             profile = profile_repository(worktree)
             plan = plan_toolchain_setup(inventory_toolchain(worktree, profile), profile)
             outcome = apply_toolchain_setup(plan, command_runner, worktree, limits)
+    except WorkspaceLockError as exc:
+        raise SetupError(f"{LOCKED}: {exc}") from exc
     except (WorkspaceError, OSError) as exc:
         raise SetupError(str(exc)) from exc
     return SetupRunResult(plan, worktree, workspace.branch_name, outcome)
@@ -132,16 +142,42 @@ def write_setup_record(worktree: Path, plan: ToolchainSetupPlan) -> Path:
     directory = worktree / SETUP_RECORD_DIR
     if directory.is_symlink():
         raise SetupError(f"refusing to write through a symbolic link: {SETUP_RECORD_DIR}")
-    directory.mkdir(exist_ok=True)
-    if not directory.is_dir() or directory.is_symlink():
-        raise SetupError(f"not a directory: {SETUP_RECORD_DIR}")
-    record = directory / SETUP_RECORD_NAME
     try:
-        descriptor = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        directory.mkdir(exist_ok=True)
+        # Open the directory once and write relative to it, so a later swap of
+        # the directory for a symbolic link cannot redirect the write.
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise SetupError(f"cannot use {SETUP_RECORD_DIR}: {exc}") from exc
+    try:
+        descriptor = os.open(
+            SETUP_RECORD_NAME,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=directory_fd,
+        )
     except OSError as exc:
         raise SetupError(f"cannot write {SETUP_RECORD_DIR}/{SETUP_RECORD_NAME}: {exc}") from exc
+    finally:
+        os.close(directory_fd)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise SetupError(f"not a regular file: {SETUP_RECORD_DIR}/{SETUP_RECORD_NAME}")
         handle.write(plan.model_dump_json(indent=2) + "\n")
-    return record
+    return directory / SETUP_RECORD_NAME
+
+
+def source_state(repo: Path) -> tuple[str, bool]:
+    """Return the HEAD commit of ``repo`` and whether its checkout has changes."""
+    try:
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        status = _git(repo, "status", "--porcelain")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SetupError(f"not a Git repository with a commit: {repo}") from exc
+    return head, bool(status.strip())
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    ).stdout

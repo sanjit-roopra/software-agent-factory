@@ -379,7 +379,8 @@ Adds the missing development tools to a repository (ADR-034).
 1. The factory detects the stack and the tools that the repository already has.
 2. It plans the missing tools: a formatter, a linter, a type checker, a test runner and the mutation tool.
 3. It runs the package manager of each lane in a factory worktree at the source HEAD, on its own branch.
-   The commands change only the manifest and the lockfile. They install nothing and run no package scripts.
+   The commands change only the manifest and the lockfile. They install nothing.
+   The JavaScript commands run no package scripts. Python locking can run the build backend of the project.
 4. It records the plan in `.factory/setup.json` in that worktree.
 
 The factory never replaces a tool that the repository already has.

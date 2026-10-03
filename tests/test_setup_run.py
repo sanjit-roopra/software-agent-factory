@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from software_agent_factory.cli import app
+from software_agent_factory.cli import CONFIG_ERROR_EXIT_CODE, app
 from software_agent_factory.command_probe import ProbeLimits
 from software_agent_factory.models import CommandResult, ToolchainSetupPlan, VerificationReport
 from software_agent_factory.setup_run import (
@@ -133,9 +133,20 @@ def test_empty_plan_runs_nothing_and_writes_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / SETUP_RECORD_DIR).exists()
 
 
-def test_outcome_needs_a_reason_with_a_failed_command() -> None:
+@pytest.mark.parametrize(
+    "fields",
+    [{"failure_reason": "failed"}, {"failed_command": "uv add --dev x"}],
+)
+def test_outcome_needs_a_failed_command_and_its_reason_together(fields: dict[str, str]) -> None:
     with pytest.raises(ValueError, match="come together"):
-        SetupOutcome(applied=(), failure_reason="failed")
+        SetupOutcome(applied=(), **fields)
+
+
+def test_record_is_not_written_when_dot_factory_is_a_file(tmp_path: Path) -> None:
+    (tmp_path / SETUP_RECORD_DIR).write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(SetupError, match="cannot use .factory"):
+        write_setup_record(tmp_path, _TWO_LANES)
 
 
 def test_record_is_not_written_through_a_symlinked_directory(tmp_path: Path) -> None:
@@ -171,6 +182,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _commit(repo: Path, message: str) -> None:
+    _git(repo, "add", "-A")
     _git(
         repo,
         "-c",
@@ -200,6 +212,10 @@ def bare_uv_repo(tmp_path: Path) -> Path:
 
 def _head(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def _setup_worktree(data_dir: Path, repo: Path) -> Path:
+    return (data_dir / "workspaces" / f"SETUP-{_head(repo)[:12]}").resolve()
 
 
 def test_setup_run_changes_only_its_worktree(bare_uv_repo: Path, tmp_path: Path) -> None:
@@ -243,7 +259,7 @@ def test_setup_run_refuses_while_another_run_holds_the_lock(
     holder = GitWorktreeWorkspace(data_dir, bare_uv_repo, f"SETUP-{head[:12]}")
     runner = _Runner()
 
-    with holder, pytest.raises(SetupError):
+    with holder, pytest.raises(SetupError, match="another setup run holds the lock"):
         run_toolchain_setup(bare_uv_repo, data_dir, "factory/", runner, _LIMITS, head)
 
     assert runner.calls == []
@@ -295,8 +311,10 @@ def test_cli_setup_success_reports_the_worktree_and_branch(
     result = cli.invoke(app, ["setup", "--repo", str(bare_uv_repo), "--data-dir", str(data_dir)])
 
     assert result.exit_code == 0, result.output
-    worktree = Path(result.output.split("worktree: ", 1)[1].splitlines()[0])
-    assert f"branch: factory/SETUP-{_head(bare_uv_repo)[:12]}" in result.output
+    worktree = _setup_worktree(data_dir, bare_uv_repo)
+    assert result.output == (
+        f"add: {_UV_ADD}\nworktree: {worktree}\nbranch: factory/SETUP-{_head(bare_uv_repo)[:12]}\n"
+    )
     assert _read_record(worktree).commands == (_UV_ADD,)
     assert (worktree / "pyproject.toml").read_text().endswith("# added\n")
     assert _git(bare_uv_repo, "status", "--porcelain") == ""
@@ -314,7 +332,8 @@ def test_cli_setup_failure_keeps_the_worktree_and_leaves_the_source_alone(
     assert (
         f"setup command failed: {_UV_ADD} (failed during setup with exit code 3)" in result.output
     )
-    worktree = Path(result.output.split("worktree kept at ", 1)[1].strip())
+    worktree = _setup_worktree(data_dir, bare_uv_repo)
+    assert f"worktree kept at {worktree}" in result.output
     assert worktree.is_dir()
     assert not (worktree / SETUP_RECORD_DIR).exists()
     assert _git(bare_uv_repo, "status", "--porcelain") == ""
@@ -323,7 +342,7 @@ def test_cli_setup_failure_keeps_the_worktree_and_leaves_the_source_alone(
 def test_cli_setup_outside_a_repository_fails_cleanly(tmp_path: Path) -> None:
     result = cli.invoke(app, ["setup", "--repo", str(tmp_path), "--data-dir", str(tmp_path)])
 
-    assert result.exit_code != 0
+    assert result.exit_code == CONFIG_ERROR_EXIT_CODE
     assert "not a Git repository with a commit" in result.output
 
 
@@ -338,4 +357,32 @@ def test_cli_setup_reports_a_refused_run(bare_uv_repo: Path, tmp_path: Path) -> 
         )
 
     assert result.exit_code == 1
-    assert result.output.startswith("setup could not run: ")
+    assert result.output.startswith("setup could not run: another setup run holds the lock")
+
+
+def test_cli_setup_with_nothing_to_add_prints_no_worktree(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    (bare_uv_repo / "uv.lock").unlink()
+    _commit(bare_uv_repo, "drop the lockfile")
+
+    result = cli.invoke(
+        app, ["setup", "--repo", str(bare_uv_repo), "--data-dir", str(tmp_path / "data")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        "note: python lane skipped: no supported lockfile at the repository root\nnothing to add\n"
+    )
+
+
+def test_setup_run_with_an_unusable_data_dir_fails_cleanly(
+    bare_uv_repo: Path, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.write_text("a file, not a directory\n", encoding="utf-8")
+
+    with pytest.raises(SetupError):
+        run_toolchain_setup(
+            bare_uv_repo, data_dir, "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
+        )

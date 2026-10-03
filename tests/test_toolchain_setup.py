@@ -229,3 +229,28 @@ def test_lane_needs_exactly_one_supported_root_lockfile(
 def test_plan_rejects_commands_without_packages() -> None:
     with pytest.raises(ValueError, match="packages exactly when"):
         ToolchainSetupPlan(manifest_fingerprint=_FINGERPRINT, commands=("uv add --dev x",))
+
+
+def test_javascript_lane_without_a_test_slot_gets_stryker_without_a_runner_plugin() -> None:
+    inventory = ToolchainInventory(lanes=(_JS,), bindings=(_binding(_JS, ToolchainSlot.LINT),))
+
+    plan = plan_toolchain_setup(inventory, _profile("package-lock.json"))
+
+    assert plan.packages == ("oxlint", "@stryker-mutator/core")
+
+
+def test_skipped_lane_does_not_stop_the_other_lane() -> None:
+    inventory = ToolchainInventory(
+        lanes=(_PY, _JS),
+        bindings=(_binding(_PY, ToolchainSlot.LINT), _binding(_JS, ToolchainSlot.LINT)),
+        mutation_tool_lanes=(_JS,),
+    )
+
+    plan = plan_toolchain_setup(inventory, _profile("uv.lock", "package-lock.json", "yarn.lock"))
+
+    assert plan == ToolchainSetupPlan(
+        manifest_fingerprint=_FINGERPRINT,
+        commands=("uv add --dev --no-sync ruff mutmut",),
+        packages=("ruff", "mutmut"),
+        notes=("javascript lane skipped: more than one lockfile at the repository root",),
+    )

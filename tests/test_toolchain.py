@@ -593,6 +593,15 @@ def test_mypy_ini_without_a_mypy_section_still_wins(tmp_path: Path) -> None:
             (ToolchainLane.JAVASCRIPT,),
         ),
         ({"app.py": "x = 1\n"}, ()),
+        ({"package.json": '{"name": "x"}'}, ()),
+        (
+            {"pyproject.toml": '[project]\nname = "x"\n[dependency-groups]\ndev = ["mutmut"]\n'},
+            (ToolchainLane.PYTHON,),
+        ),
+        (
+            {"app.py": "x = 1\n", "package.json": '{"name": "x"}', "stryker.conf.json": "{}"},
+            (ToolchainLane.JAVASCRIPT,),
+        ),
     ],
 )
 def test_mutation_tool_is_found_by_dependency_or_configuration(
@@ -609,3 +618,9 @@ def test_pnpm_workspace_root_is_recorded(tmp_path: Path) -> None:
     _write(tmp_path, "pnpm-workspace.yaml", "packages: ['apps/*']\n")
 
     assert _inventory(tmp_path).pnpm_workspace is True
+
+
+def test_package_json_alone_is_not_a_pnpm_workspace(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", '{"name": "x"}')
+
+    assert _inventory(tmp_path).pnpm_workspace is False

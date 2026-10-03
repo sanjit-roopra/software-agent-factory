@@ -66,7 +66,9 @@ The factory takes over this model, in five slices.
   It also adds the mutation tool for the stack: `mutmut` for Python, and Stryker with the runner for the test tool for JavaScript/TypeScript.
 - The package manager of the lane adds the tools, so the manifest and the lockfile change together:
   `uv add --dev --no-sync`, `poetry add --group dev --lock`, `npm install --save-dev --package-lock-only --ignore-scripts` or `pnpm add --save-dev --lockfile-only --ignore-scripts`.
-  These commands install nothing and run no package scripts. A pnpm workspace root also gets `--workspace-root`.
+  These commands install nothing. The JavaScript commands run no package scripts.
+  Python locking can run the project's build backend to read package metadata.
+  A pnpm workspace root also gets `--workspace-root`.
 - A lane is skipped when it has more than one lockfile at the root, such as `package-lock.json` and `yarn.lock`.
 - A repository that declares or configures its mutation tool keeps it. Configuration counts: `[tool.mutmut]`, `[mutmut]` or a `stryker.config.*` file.
 - The setup run works in a factory worktree at the source HEAD, on its own branch. It never changes the source checkout.

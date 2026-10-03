@@ -59,7 +59,6 @@ from __future__ import annotations
 import importlib
 import logging
 import platform
-import subprocess
 import sys
 import webbrowser
 from enum import StrEnum
@@ -1072,19 +1071,23 @@ def setup_command(
     a test runner and the mutation tool. It never replaces an existing tool.
     Without ``--dry-run``, it changes the manifest and the lockfile in a
     factory worktree at the source HEAD, on its own branch, and records the
-    plan in ``.factory/setup.json``. It installs nothing and runs no package
-    scripts. The source checkout is never changed, and nothing is committed
-    or pushed.
+    plan in ``.factory/setup.json``. It installs nothing, and the JavaScript
+    commands run no package scripts. Python locking can run the project's
+    build backend. The source checkout is never changed, and nothing is
+    committed or pushed.
     """
     from .command_probe import ProbeLimits
-    from .setup_run import SetupError, run_toolchain_setup
+    from .setup_run import SetupError, run_toolchain_setup, source_state
     from .toolchain import inventory_toolchain
     from .toolchain_setup import plan_toolchain_setup
     from .verification import DeterministicVerifier
 
     factory_config = _load_config(config, data_dir)
     repo = repo.expanduser()
-    head, dirty = _source_state(repo)
+    try:
+        head, dirty = source_state(repo)
+    except SetupError as exc:
+        raise _fail(str(exc)) from None
     if dry_run:
         profile = _skill_profile(repo)
         plan = plan_toolchain_setup(inventory_toolchain(repo, profile), profile)
@@ -1105,6 +1108,8 @@ def setup_command(
     except SetupError as exc:
         raise _fail(f"setup could not run: {exc}", code=1) from None
     _echo_setup_plan(result.plan.commands, result.plan.notes)
+    if result.plan.is_empty:
+        return
     if not result.outcome.succeeded:
         raise _fail(
             f"setup command failed: {result.outcome.failed_command} "
@@ -1113,26 +1118,6 @@ def setup_command(
         )
     typer.echo(f"worktree: {result.worktree}")
     typer.echo(f"branch: {result.branch}")
-
-
-def _source_state(repo: Path) -> tuple[str, bool]:
-    """Return the HEAD commit of ``repo`` and whether its checkout has changes."""
-    try:
-        head = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "-C", str(repo), "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        raise _fail(f"not a Git repository with a commit: {repo}") from None
-    return head, bool(status.strip())
 
 
 def _echo_setup_plan(commands: tuple[str, ...], notes: tuple[str, ...]) -> None:
