@@ -186,22 +186,36 @@ def _agents_file(root: Path, verify: str) -> tuple[RepositoryFile | None, str | 
     crlf = current.count("\r\n")
     if crlf and crlf != current.count("\n"):
         return None, MIXED_NEWLINES_NOTE
-    newline = "\r\n" if crlf else "\n"
     text = current.replace("\r\n", "\n")
-    begins = text.count(BLOCK_BEGIN)
-    ends = text.count(BLOCK_END)
-    if begins == 0 and ends == 0:
-        separator = "" if text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
-        updated = f"{text}{separator}{block}\n"
-    elif begins == 1 and ends == 1 and text.find(BLOCK_BEGIN) < text.find(BLOCK_END):
-        begin = text.find(BLOCK_BEGIN)
-        end = text.find(BLOCK_END) + len(BLOCK_END)
-        updated = text[:begin] + block + text[end:]
-    else:
+    updated = _merge_block(text, block)
+    if updated is None:
         return None, UNCLEAR_BLOCK_NOTE
     if updated == text:
         return None, None
+    newline = "\r\n" if crlf else "\n"
     return RepositoryFile(AGENTS_FILE, content=updated.replace("\n", newline), replaces=True), None
+
+
+def _merge_block(text: str, block: str) -> str | None:
+    """Put ``block`` into ``text``, or return ``None`` when the markers are unclear."""
+    begins = text.count(BLOCK_BEGIN)
+    ends = text.count(BLOCK_END)
+    if begins == 0 and ends == 0:
+        return f"{text}{_separator(text)}{block}\n"
+    begin = text.find(BLOCK_BEGIN)
+    end = text.find(BLOCK_END)
+    if begins != 1 or ends != 1 or begin > end:
+        return None
+    return text[:begin] + block + text[end + len(BLOCK_END) :]
+
+
+def _separator(text: str) -> str:
+    """Return what keeps exactly one blank line between ``text`` and an appended block."""
+    if text.endswith("\n\n"):
+        return ""
+    if text.endswith("\n"):
+        return "\n"
+    return "\n\n"
 
 
 def _ignored_paths(root: Path, paths: list[str]) -> set[str]:
