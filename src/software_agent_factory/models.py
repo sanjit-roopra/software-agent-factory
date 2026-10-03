@@ -406,6 +406,26 @@ class RepositoryCommandsPlan(VersionedModel):
         return self
 
 
+class ToolchainSetupPlan(VersionedModel):
+    """The tools a setup run adds to a repository (ADR-034).
+
+    Each command adds missing development dependencies with the lane's own
+    package manager, so the manifest and the lockfile change together. The
+    plan never replaces a tool that the repository already has.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    commands: tuple[str, ...] = ()
+    packages: tuple[str, ...] = ()
+    notes: tuple[str, ...] = Field(default=(), max_length=MAX_COMMAND_NOTES)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.commands
+
+
 GENERIC_SKILL_TARGET = "repository"
 """Applicability marker for guidance that is not tied to a detected dependency."""
 

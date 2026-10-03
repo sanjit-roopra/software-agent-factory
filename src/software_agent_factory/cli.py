@@ -1051,6 +1051,82 @@ def build_resume_request_reader(store: FileRunStore) -> ResumeRequestReader:
     return read
 
 
+@app.command("setup")
+def setup_command(
+    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the setup plan without changing anything."
+    ),
+) -> None:
+    """Add the missing development tools to a repository (ADR-034).
+
+    The factory detects the stack and the tools the repository already has,
+    and plans only the missing ones: a formatter, a linter, a type checker,
+    a test runner and the mutation tool. It never replaces an existing tool.
+    Without ``--dry-run``, it runs the package manager in a factory worktree
+    on its own branch and records the plan in ``.factory/setup.json``. The
+    source checkout is never changed, and nothing is committed or pushed.
+    """
+    from .command_probe import ProbeLimits
+    from .toolchain import inventory_toolchain
+    from .toolchain_setup import apply_toolchain_setup, plan_toolchain_setup
+    from .verification import DeterministicVerifier
+    from .workspace import GitWorktreeWorkspace
+
+    factory_config = _load_config(config, data_dir)
+    source_profile = _skill_profile(repo)
+    if dry_run:
+        plan = plan_toolchain_setup(inventory_toolchain(repo, source_profile), source_profile)
+        _echo_setup_plan(plan.commands, plan.notes)
+        return
+
+    workspace = GitWorktreeWorkspace(
+        factory_config.factory.data_dir,
+        repo.expanduser(),
+        f"SETUP-{source_profile.manifest_fingerprint[:12]}",
+        branch_prefix=factory_config.repository.branch_prefix,
+    )
+    worktree = workspace.prepare()
+    profile = _skill_profile(worktree)
+    plan = plan_toolchain_setup(inventory_toolchain(worktree, profile), profile)
+    _echo_setup_plan(plan.commands, plan.notes)
+    if plan.is_empty:
+        return
+    outcome = apply_toolchain_setup(
+        plan,
+        DeterministicVerifier(),
+        worktree,
+        ProbeLimits(
+            timeout_seconds=factory_config.repository.command_timeout_seconds,
+            env_passthrough=tuple(factory_config.repository.env_passthrough),
+            capture_bytes=factory_config.repository.log_capture_bytes,
+        ),
+    )
+    if not outcome.succeeded:
+        raise _fail(
+            f"setup command failed: {outcome.failed_command} ({outcome.failure_reason}); "
+            f"worktree kept at {worktree}",
+            code=1,
+        )
+    typer.echo(f"worktree: {worktree}")
+    typer.echo(f"branch: {workspace.branch_name}")
+
+
+def _echo_setup_plan(commands: tuple[str, ...], notes: tuple[str, ...]) -> None:
+    for note in notes:
+        typer.echo(f"note: {note}")
+    if not commands:
+        typer.echo("nothing to add")
+    for command in commands:
+        typer.echo(f"add: {command}")
+
+
 @app.command("dashboard")
 def dashboard_command(
     config: Path = typer.Option(

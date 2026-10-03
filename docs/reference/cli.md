@@ -368,6 +368,29 @@ record. Normal run telemetry remains in the run artifact.
 
 ---
 
+## factory setup
+
+```bash
+factory setup --repo PATH [--dry-run] [--config FILE] [--data-dir DIR]
+```
+
+Adds the missing development tools to a repository (ADR-034).
+
+1. The factory detects the stack and the tools that the repository already has.
+2. It plans the missing tools: a formatter, a linter, a type checker, a test runner and the mutation tool.
+3. It runs the package manager of each lane in a factory worktree on its own branch.
+4. It records the plan in `.factory/setup.json` in that worktree.
+
+The factory never replaces a tool that the repository already has.
+The source checkout does not change. The factory does not commit or push.
+
+| Option | Effect |
+| --- | --- |
+| `--dry-run` | Print the plan and change nothing. |
+
+The output has one `add:` line for each command and one `note:` line for each skipped lane.
+If a command fails, the exit code is `1` and the factory keeps the worktree.
+
 ## factory dashboard
 
 Serve the local dashboard until interrupted.

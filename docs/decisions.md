@@ -59,16 +59,21 @@ The factory takes over this model, in five slices.
 
 - The factory starts a setup run when it first sees a repository and when `manifest_fingerprint` changes.
 - No person answers a question. The setup run uses safe defaults.
-- The controller writes all files from fixed templates. No model writes them.
-- The setup run adds the missing repository-level tools to the development dependencies, with minimal configuration.
-  It also adds the mutation tool for the stack: `mutmut` for Python and Stryker for JavaScript/TypeScript.
-- The setup run opens a pull request and goes through the normal gates.
-  If ADR-022 delivery is on, the factory can merge it. If not, the pull request waits for review.
-- `.factory/setup.json` records the result, so the same state does not cause a second setup run.
+- A fixed table selects the tools. No model selects them.
+- For each slot without a provider, the setup run adds the default provider as a development dependency.
+  It also adds the mutation tool for the stack: `mutmut` for Python, and Stryker with the runner for the test tool for JavaScript/TypeScript.
+- The package manager of the lane adds the tools, so the manifest and the lockfile change together:
+  `uv add --dev`, `poetry add --group dev`, `npm install --save-dev` or `pnpm add --save-dev`.
+- The setup run works in a factory worktree on its own branch. It never changes the source checkout.
+- `.factory/setup.json` records the plan. After a setup, the inventory finds the new tools, so the same state does not cause a second setup run.
+- The setup run adds nothing from an incomplete inventory, and nothing for a lane without exactly one root lockfile.
+  It records a note instead. It does not guess.
+- The setup run opens a pull request.
+  Dependency changes are sensitive (`governance.py`), so the factory never merges a setup pull request. A person reviews it.
 - The factory never installs host-level tools, such as `semgrep`, `trivy` or `gh`.
   It records a missing tool in the run. A lens that needs the tool is skipped.
-- If the stack is not clear, the factory does not guess. The setup run escalates one time.
-- A failed setup run does not stop delivery runs. They use the YAML commands.
+- A failed setup run does not stop delivery runs. They use the YAML commands or the derived commands.
+- The first slice adds the command `factory setup --repo PATH`. The automatic start and the pull request follow in the next slice.
 
 ### Repository skills in the target repository
 
