@@ -352,7 +352,7 @@ class SetupTrigger:
             published = publish_setup(result, self._publisher, self._source_repo)
         except SetupError as exc:
             return self._record_failure(previous, head, f"setup publish refused: {exc}")
-        except Exception as exc:  # noqa: BLE001 - record any publish failure, never retry this HEAD
+        except Exception as exc:  # noqa: BLE001 - record any publish failure and never retry this HEAD
             return self._record_failure(
                 previous, head, f"setup publish failed: {type(exc).__name__}"
             )

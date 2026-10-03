@@ -479,7 +479,8 @@ def test_publish_setup_opens_a_review_pull_request_for_the_worktree(
         "Added by factory setup: ruff, mypy, pytest, mutmut."
     )
     body = str(call["body"])
-    assert "- `ruff`" in body and "- `mutmut`" in body
+    assert "- `ruff`" in body
+    assert "- `mutmut`" in body
     assert "The factory does not merge this pull request." in body
 
 
@@ -739,8 +740,10 @@ def test_a_failure_keeps_the_open_proposal_so_no_duplicate_opens(
 
     after = trigger.tick()
 
-    assert refused is not None and refused.pull_request_url == "https://github.com/o/r/pull/1"
-    assert after is not None and after.pull_request_url == "https://github.com/o/r/pull/1"
+    assert refused is not None
+    assert refused.pull_request_url == "https://github.com/o/r/pull/1"
+    assert after is not None
+    assert after.pull_request_url == "https://github.com/o/r/pull/1"
     assert len(publisher.calls) == 1
 
 
