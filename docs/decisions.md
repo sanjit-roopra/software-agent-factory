@@ -76,12 +76,15 @@ CLAUDE.md -> AGENTS.md                         symbolic link
 
 ### Changes to earlier decisions
 
-- ADR-019: a fixed catalog replaces skill research. The profiling rules stay.
-- ADR-021: the factory can write to the target repository, but only through the setup pull request.
+- ADR-019: this decision reverses the skill research part. A fixed catalog of skill templates returns.
+  The profiling rules stay.
+- ADR-021: this decision replaces the rule that the factory never writes guidance to target repositories.
+  The factory now writes guidance and tools, but only through the setup pull request.
   It still makes no hidden writes. The human overlay stays.
 - ADR-020: the polish attempt stays. Lens guidance replaces the generated skill as its input.
-- The factory runtimes do not load the repository skills yet. Copilot has no skill tool in its tool list, and pi runs with `--no-skills`.
-  A later decision covers this.
+- This decision does not change the factory runtimes. They do not load the repository skills.
+  Copilot has no skill tool in its tool list, and pi runs with `--no-skills`.
+  A later decision can change this.
 
 Consequences:
 
@@ -1120,6 +1123,9 @@ while leaving runs and workspaces untouched.
 
 ## ADR-019: Repository capabilities are deterministic profiling plus on-demand skill research
 
+*Superseded in part by [ADR-034](#adr-034-the-factory-sets-up-the-target-toolchain-and-repository-skills):
+a fixed catalog of skill templates replaces skill research. The profiling rules stand.*
+
 *Supersedes the original ADR-019, which selected advisory skills from a fixed,
 versioned built-in catalog. That catalog is removed.*
 
@@ -1227,6 +1233,9 @@ for compatibility. The packaged default and example enable it, so their normal
 fake run records an initial implementation attempt and one polish attempt.
 
 ## ADR-021: Repository guidance is two artifacts: generated and reusable, plus a human overlay
+
+*Superseded in part by [ADR-034](#adr-034-the-factory-sets-up-the-target-toolchain-and-repository-skills):
+the factory writes guidance and tools to the target repository through a setup pull request. The human overlay stands.*
 
 Repository guidance has two producers with different trust levels. It uses two
 separate artifacts rather than one shared file.
