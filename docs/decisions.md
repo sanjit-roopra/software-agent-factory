@@ -5,6 +5,8 @@
 Status: accepted on 2026-10-03.
 This supersedes ADR-019 in part and ADR-021 in part. ADR-020 stays.
 
+Amendment on 2026-10-03 (slice C1): a setup run with an unclear stack records a note and adds nothing. It does not escalate.
+
 The factory gets lint, format and test commands only from the YAML configuration.
 It installs no tools in the target repository.
 A research call to a model generates skill guidance, and that guidance stays in the factory data directory.
@@ -63,8 +65,13 @@ The factory takes over this model, in five slices.
 - For each slot without a provider, the setup run adds the default provider as a development dependency.
   It also adds the mutation tool for the stack: `mutmut` for Python, and Stryker with the runner for the test tool for JavaScript/TypeScript.
 - The package manager of the lane adds the tools, so the manifest and the lockfile change together:
-  `uv add --dev`, `poetry add --group dev`, `npm install --save-dev` or `pnpm add --save-dev`.
-- The setup run works in a factory worktree on its own branch. It never changes the source checkout.
+  `uv add --dev --no-sync`, `poetry add --group dev --lock`, `npm install --save-dev --package-lock-only --ignore-scripts` or `pnpm add --save-dev --lockfile-only --ignore-scripts`.
+  These commands install nothing and run no package scripts. A pnpm workspace root also gets `--workspace-root`.
+- A lane is skipped when it has more than one lockfile at the root, such as `package-lock.json` and `yarn.lock`.
+- A repository that declares or configures its mutation tool keeps it. Configuration counts: `[tool.mutmut]`, `[mutmut]` or a `stryker.config.*` file.
+- The setup run works in a factory worktree at the source HEAD, on its own branch. It never changes the source checkout.
+- It holds the work item lock. It refuses a worktree that is not clean at its base, so it never builds on a failed run.
+- It writes `.factory/setup.json` without following a symbolic link.
 - `.factory/setup.json` records the plan. After a setup, the inventory finds the new tools, so the same state does not cause a second setup run.
 - The setup run adds nothing from an incomplete inventory, and nothing for a lane without exactly one root lockfile.
   It records a note instead. It does not guess.
@@ -77,7 +84,8 @@ The factory takes over this model, in five slices.
 
 ### Repository skills in the target repository
 
-The setup pull request also writes skills that a local agent can use without the factory:
+The setup pull request also writes skills that a local agent can use without the factory.
+The controller writes these files from fixed templates. No model writes them.
 
 ```text
 AGENTS.md                                      shared base

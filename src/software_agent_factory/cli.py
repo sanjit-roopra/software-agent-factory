@@ -59,6 +59,7 @@ from __future__ import annotations
 import importlib
 import logging
 import platform
+import subprocess
 import sys
 import webbrowser
 from enum import StrEnum
@@ -1069,53 +1070,69 @@ def setup_command(
     The factory detects the stack and the tools the repository already has,
     and plans only the missing ones: a formatter, a linter, a type checker,
     a test runner and the mutation tool. It never replaces an existing tool.
-    Without ``--dry-run``, it runs the package manager in a factory worktree
-    on its own branch and records the plan in ``.factory/setup.json``. The
-    source checkout is never changed, and nothing is committed or pushed.
+    Without ``--dry-run``, it changes the manifest and the lockfile in a
+    factory worktree at the source HEAD, on its own branch, and records the
+    plan in ``.factory/setup.json``. It installs nothing and runs no package
+    scripts. The source checkout is never changed, and nothing is committed
+    or pushed.
     """
     from .command_probe import ProbeLimits
+    from .setup_run import SetupError, run_toolchain_setup
     from .toolchain import inventory_toolchain
-    from .toolchain_setup import apply_toolchain_setup, plan_toolchain_setup
+    from .toolchain_setup import plan_toolchain_setup
     from .verification import DeterministicVerifier
-    from .workspace import GitWorktreeWorkspace
 
     factory_config = _load_config(config, data_dir)
-    source_profile = _skill_profile(repo)
+    repo = repo.expanduser()
+    head, dirty = _source_state(repo)
     if dry_run:
-        plan = plan_toolchain_setup(inventory_toolchain(repo, source_profile), source_profile)
-        _echo_setup_plan(plan.commands, plan.notes)
+        profile = _skill_profile(repo)
+        plan = plan_toolchain_setup(inventory_toolchain(repo, profile), profile)
+        notes = plan.notes
+        if dirty:
+            notes = (*notes, "uncommitted changes in the checkout; a setup run uses HEAD")
+        _echo_setup_plan(plan.commands, notes)
         return
-
-    workspace = GitWorktreeWorkspace(
-        factory_config.factory.data_dir,
-        repo.expanduser(),
-        f"SETUP-{source_profile.manifest_fingerprint[:12]}",
-        branch_prefix=factory_config.repository.branch_prefix,
-    )
-    worktree = workspace.prepare()
-    profile = _skill_profile(worktree)
-    plan = plan_toolchain_setup(inventory_toolchain(worktree, profile), profile)
-    _echo_setup_plan(plan.commands, plan.notes)
-    if plan.is_empty:
-        return
-    outcome = apply_toolchain_setup(
-        plan,
-        DeterministicVerifier(),
-        worktree,
-        ProbeLimits(
-            timeout_seconds=factory_config.repository.command_timeout_seconds,
-            env_passthrough=tuple(factory_config.repository.env_passthrough),
-            capture_bytes=factory_config.repository.log_capture_bytes,
-        ),
-    )
-    if not outcome.succeeded:
+    try:
+        result = run_toolchain_setup(
+            repo,
+            factory_config.factory.data_dir,
+            factory_config.repository.branch_prefix,
+            DeterministicVerifier(),
+            ProbeLimits.from_repository(factory_config.repository),
+            head,
+        )
+    except SetupError as exc:
+        raise _fail(f"setup could not run: {exc}", code=1) from None
+    _echo_setup_plan(result.plan.commands, result.plan.notes)
+    if not result.outcome.succeeded:
         raise _fail(
-            f"setup command failed: {outcome.failed_command} ({outcome.failure_reason}); "
-            f"worktree kept at {worktree}",
+            f"setup command failed: {result.outcome.failed_command} "
+            f"({result.outcome.failure_reason}); worktree kept at {result.worktree}",
             code=1,
         )
-    typer.echo(f"worktree: {worktree}")
-    typer.echo(f"branch: {workspace.branch_name}")
+    typer.echo(f"worktree: {result.worktree}")
+    typer.echo(f"branch: {result.branch}")
+
+
+def _source_state(repo: Path) -> tuple[str, bool]:
+    """Return the HEAD commit of ``repo`` and whether its checkout has changes."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        raise _fail(f"not a Git repository with a commit: {repo}") from None
+    return head, bool(status.strip())
 
 
 def _echo_setup_plan(commands: tuple[str, ...], notes: tuple[str, ...]) -> None:

@@ -235,6 +235,22 @@ PROVIDER_SIGNALS: Mapping[ToolchainProvider, ProviderSignals] = {
 }
 """How each provider is detected."""
 
+#: How each lane's mutation tool is detected. Mutation is not a slot: setup
+#: adds it, but verification does not run it.
+MUTATION_SIGNALS: Mapping[ToolchainLane, ProviderSignals] = {
+    ToolchainLane.PYTHON: _provider_signals(
+        dependencies=("mutmut",), pyproject_tools=("mutmut",), ini_sections=("mutmut",)
+    ),
+    ToolchainLane.JAVASCRIPT: _provider_signals(
+        dependencies=("@stryker-mutator/core",),
+        files=tuple(
+            f"stryker.{kind}.{ext}"
+            for kind in ("conf", "config")
+            for ext in (*_JS_CONFIG_EXTENSIONS, "json")
+        ),
+    ),
+}
+
 
 @dataclass
 class _RootEvidence:
@@ -286,6 +302,10 @@ def inventory_toolchain(repository_root: Path, profile: RepositoryProfile) -> To
         bindings=tuple(bindings),
         complete=not incomplete and not facts.root_evidence.warnings,
         package_json_scripts=tuple(sorted(facts.root_evidence.package_json_scripts)),
+        mutation_tool_lanes=tuple(
+            lane for lane in lanes if _provider_evidence(MUTATION_SIGNALS[lane], facts)
+        ),
+        pnpm_workspace="pnpm-workspace.yaml" in facts.root_evidence.files,
         self_targeting_providers=tuple(sorted(facts.root_evidence.self_targeting)),
         warnings=(*incomplete, *facts.root_evidence.warnings),
     )

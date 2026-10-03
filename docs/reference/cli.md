@@ -378,11 +378,14 @@ Adds the missing development tools to a repository (ADR-034).
 
 1. The factory detects the stack and the tools that the repository already has.
 2. It plans the missing tools: a formatter, a linter, a type checker, a test runner and the mutation tool.
-3. It runs the package manager of each lane in a factory worktree on its own branch.
+3. It runs the package manager of each lane in a factory worktree at the source HEAD, on its own branch.
+   The commands change only the manifest and the lockfile. They install nothing and run no package scripts.
 4. It records the plan in `.factory/setup.json` in that worktree.
 
 The factory never replaces a tool that the repository already has.
 The source checkout does not change. The factory does not commit or push.
+If the setup worktree for the same HEAD is not clean, the command refuses to run.
+If the checkout holds uncommitted changes, `--dry-run` says so, because a setup run uses HEAD.
 
 | Option | Effect |
 | --- | --- |

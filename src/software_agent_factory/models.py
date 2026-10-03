@@ -340,6 +340,10 @@ class ToolchainInventory(VersionedModel):
     complete: bool = True
     package_json_scripts: tuple[str, ...] = Field(default=(), max_length=MAX_PACKAGE_SCRIPTS)
     self_targeting_providers: tuple[ToolchainProvider, ...] = ()
+    #: Lanes whose mutation tool is already declared or configured.
+    mutation_tool_lanes: tuple[ToolchainLane, ...] = ()
+    #: Whether the root holds ``pnpm-workspace.yaml``.
+    pnpm_workspace: bool = False
     warnings: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -420,6 +424,12 @@ class ToolchainSetupPlan(VersionedModel):
     commands: tuple[str, ...] = ()
     packages: tuple[str, ...] = ()
     notes: tuple[str, ...] = Field(default=(), max_length=MAX_COMMAND_NOTES)
+
+    @model_validator(mode="after")
+    def _packages_match_commands(self) -> Self:
+        if bool(self.commands) != bool(self.packages):
+            raise ValueError("a setup plan has packages exactly when it has commands")
+        return self
 
     @property
     def is_empty(self) -> bool:
