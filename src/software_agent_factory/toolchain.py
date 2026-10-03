@@ -124,6 +124,7 @@ KNOWN_PACKAGE_SCRIPTS = tuple(name for names in SLOT_SCRIPTS.values() for name i
 
 _JS_CONFIG_EXTENSIONS = ("js", "mjs", "cjs", "ts", "mts", "cts")
 _INI_FILES = ("setup.cfg", "tox.ini", "mypy.ini", ".mypy.ini")
+_MYPY_CONFIG_ORDER = ("mypy.ini", ".mypy.ini", "pyproject.toml", "setup.cfg")
 
 LANE_SLOTS: Mapping[ToolchainLane, Mapping[ToolchainSlot, SlotSpec]] = {
     ToolchainLane.PYTHON: {
@@ -237,6 +238,8 @@ class _RootEvidence:
     ini_sections: set[tuple[str, str]] = field(default_factory=set)
     #: Providers whose own configuration names the files to check.
     self_targeting: set[ToolchainProvider] = field(default_factory=set)
+    #: For each file with a mypy section, whether that section sets ``files``.
+    mypy_files: dict[str, bool] = field(default_factory=dict)
     package_json_keys: set[str] = field(default_factory=set)
     package_json_scripts: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
@@ -365,15 +368,19 @@ def _read_root_evidence(root: Path) -> _RootEvidence:
         if isinstance(tool, dict):
             evidence.pyproject_tools.update(str(name) for name in tool)
             mypy = tool.get("mypy")
-            if isinstance(mypy, dict) and "files" in mypy:
-                evidence.self_targeting.add(ToolchainProvider.MYPY)
+            if isinstance(mypy, dict):
+                evidence.mypy_files["pyproject.toml"] = "files" in mypy
     for ini_name in _INI_FILES:
         if ini_name in names:
             sections = _parse_config(root / ini_name, _ini_sections, evidence)
             if sections is not None:
                 evidence.ini_sections.update((ini_name, section) for section in sections)
-                if "files" in sections.get("mypy", ()):
-                    evidence.self_targeting.add(ToolchainProvider.MYPY)
+                if "mypy" in sections:
+                    evidence.mypy_files[ini_name] = "files" in sections["mypy"]
+    # mypy reads only the first configuration file it finds, in this order.
+    mypy_source = next((name for name in _MYPY_CONFIG_ORDER if name in evidence.mypy_files), None)
+    if mypy_source is not None and evidence.mypy_files[mypy_source]:
+        evidence.self_targeting.add(ToolchainProvider.MYPY)
     if "package.json" in names:
         payload = _parse_config(root / "package.json", json.loads, evidence)
         if isinstance(payload, dict):

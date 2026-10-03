@@ -929,3 +929,16 @@ def test_discard_changes_restores_tracked_and_removes_untracked_files(
     assert (workspace.path / "README.md").read_text() == "hello\n"
     assert not (workspace.path / "new.txt").exists()
     assert workspace.is_at_clean_base()
+
+
+def test_discard_changes_undoes_a_commit_made_in_the_worktree(
+    data_dir: Path, source_repo: Path
+) -> None:
+    workspace = _prepared(data_dir, source_repo)
+    (workspace.path / "README.md").write_text("changed\n", encoding="utf-8")
+    _git(workspace.path, "commit", "-am", "commit from a package script")
+
+    workspace.discard_changes()
+
+    assert workspace.is_at_clean_base()
+    assert (workspace.path / "README.md").read_text() == "hello\n"

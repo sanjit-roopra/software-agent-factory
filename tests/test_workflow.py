@@ -5197,11 +5197,15 @@ class _ScriptedCommandRunner(DeterministicVerifier):
     """Records commands and fails the ones named in ``failing``. Runs nothing."""
 
     def __init__(
-        self, failing: frozenset[str] = frozenset(), raises: frozenset[str] = frozenset()
+        self,
+        failing: frozenset[str] = frozenset(),
+        raises: frozenset[str] = frozenset(),
+        error: type[Exception] = OSError,
     ) -> None:
         super().__init__()
         self.failing = failing
         self.raises = raises
+        self.error = error
         self.commands: list[str] = []
 
     def run(
@@ -5217,7 +5221,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
         for command in commands:
             self.commands.append(command)
             if command in self.raises:
-                raise OSError("spawn failed")
+                raise self.error("spawn failed")
             exit_code = 1 if command in self.failing else 0
             results.append(
                 CommandResult(
@@ -5298,8 +5302,7 @@ def test_derived_commands_are_probed_then_used_for_verification(
     assert plan.verify == (_RUFF_FORMAT, _PYTEST)
     probe = [_UV_INSTALL, _RUFF_FORMAT, _RUFF_LINT, _PYTEST]
     assert runner.commands[: len(probe)] == probe
-    assert _RUFF_LINT not in runner.commands[len(probe) :]
-    assert runner.commands[-1] == _PYTEST
+    assert runner.commands[len(probe) :] == [_UV_INSTALL, _RUFF_FORMAT, _PYTEST]
 
 
 def test_turning_derivation_off_runs_no_repository_code(
@@ -5332,10 +5335,11 @@ def test_repository_without_a_language_lane_records_why(source_repo: Path, data_
     )
 
 
+@pytest.mark.parametrize("error", [OSError, ValueError, WorkspaceError])
 def test_command_runner_error_degrades_and_the_run_continues(
-    uv_python_repo: Path, data_dir: Path
+    uv_python_repo: Path, data_dir: Path, error: type[Exception]
 ) -> None:
-    runner = _ScriptedCommandRunner(raises=frozenset({_UV_INSTALL}))
+    runner = _ScriptedCommandRunner(raises=frozenset({_UV_INSTALL}), error=error)
     store = FileRunStore(data_dir)
     controller = WorkflowController(_config(data_dir), store, FakeAgentRuntime(), verifier=runner)
 
@@ -5343,9 +5347,9 @@ def test_command_runner_error_degrades_and_the_run_continues(
 
     assert store.load_artifact(run.id, RepositoryCommandsPlan) == RepositoryCommandsPlan(
         source=RepositoryCommandsSource.NONE,
-        notes=("command derivation degraded: OSError",),
+        notes=(f"command derivation degraded: {error.__name__}",),
     )
-    assert run.state is not WorkflowState.FAILED
+    assert run.attempt_records, "the run went on to implementation"
 
 
 def test_runs_without_a_commands_plan_use_the_configuration(

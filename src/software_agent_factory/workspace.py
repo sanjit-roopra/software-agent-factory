@@ -656,8 +656,15 @@ class GitWorktreeWorkspace:
         return head == self.base_commit and self.is_clean()
 
     def discard_changes(self) -> None:
-        """Return the worktree to its HEAD, removing untracked files that are not ignored."""
-        _run_git(self.path, ["reset", "--hard", "HEAD"])
+        """Return the worktree to its base commit, removing untracked files that are not ignored.
+
+        Resetting to the base commit, not HEAD, also undoes commits that
+        repository code made during the command probe.
+        """
+        if self.base_commit is None:
+            self._load_or_compute_base_commit()
+        assert self.base_commit is not None
+        _run_git(self.path, ["reset", "--hard", self.base_commit])
         _run_git(self.path, ["clean", "-fd"])
 
     def collect_evidence(self) -> WorkspaceEvidence:

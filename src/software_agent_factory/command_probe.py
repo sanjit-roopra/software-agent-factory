@@ -49,8 +49,6 @@ class ProbeWorkspace(Protocol):
 
     def is_at_clean_base(self) -> bool: ...
 
-    def is_clean(self) -> bool: ...
-
     def discard_changes(self) -> None: ...
 
 
@@ -108,7 +106,8 @@ def _probe_lane(
     except BaseException:
         _discard_probe_changes(workspace)
         raise
-    # The tree was clean before the probe, so any change is the probe's own.
+    # The worktree was clean at its base before the probe, so any change,
+    # including a commit that moved HEAD, is the probe's own.
     if _discard_probe_changes(workspace) and kept:
         return [], [
             RejectedCommand(command=command, reason=CHANGED_TREE) for command in lane.verify
@@ -142,7 +141,7 @@ def _run_lane(
 
 def _discard_probe_changes(workspace: ProbeWorkspace) -> bool:
     """Discard changes the probe made. Return whether there were any."""
-    if workspace.is_clean():
+    if workspace.is_at_clean_base():
         return False
     workspace.discard_changes()
     return True

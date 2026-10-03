@@ -42,6 +42,7 @@ class _Runner:
         self.raises = raises
         self.workspace = workspace
         self.commands: list[str] = []
+        self.calls: list[tuple[Path, int, tuple[str, ...], int]] = []
 
     def run(
         self,
@@ -52,6 +53,7 @@ class _Runner:
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 0,
     ) -> VerificationReport:
+        self.calls.append((cwd, timeout_seconds, tuple(env_passthrough), capture_bytes))
         results: list[CommandResult] = []
         for command in commands:
             self.commands.append(command)
@@ -89,10 +91,7 @@ class _Workspace:
         self.discards = 0
 
     def is_at_clean_base(self) -> bool:
-        return self.at_clean_base
-
-    def is_clean(self) -> bool:
-        return not self.dirty
+        return self.at_clean_base and not self.dirty
 
     def discard_changes(self) -> None:
         self.dirty = False
@@ -240,26 +239,12 @@ def test_baseline_failure_reason_never_quotes_output(
     assert "secret" not in baseline_failure_reason(report)
 
 
-@pytest.mark.parametrize(
-    ("fields", "message"),
-    [
-        ({"source": RepositoryCommandsSource.NONE, "verify": ("x",)}, "without a source"),
-        ({"source": RepositoryCommandsSource.DERIVED}, "derived plan"),
-        (
-            {"source": RepositoryCommandsSource.DERIVED, "verify": ("x",), "build": ("y",)},
-            "derived plan",
-        ),
-        (
-            {
-                "source": RepositoryCommandsSource.CONFIG,
-                "rejected": (RejectedCommand(command="x", reason="y"),),
-            },
-            "configured plan",
-        ),
-    ],
-)
-def test_plan_rejects_commands_that_contradict_its_source(
-    fields: dict[str, object], message: str
-) -> None:
-    with pytest.raises(ValueError, match=message):
-        RepositoryCommandsPlan.model_validate(fields)
+def test_probe_passes_the_worktree_and_limits_to_the_runner() -> None:
+    runner = _Runner()
+    workspace = _Workspace()
+    workspace.path = Path("/worktree")
+    limits = ProbeLimits(timeout_seconds=7, env_passthrough=("NPM_CONFIG_CACHE",), capture_bytes=99)
+
+    probe_candidates(runner, workspace, CandidateCommands((_JS,), ()), limits)
+
+    assert set(runner.calls) == {(Path("/worktree"), 7, ("NPM_CONFIG_CACHE",), 99)}

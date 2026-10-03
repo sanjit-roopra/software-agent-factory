@@ -527,6 +527,7 @@ def test_only_known_package_scripts_are_recorded(tmp_path: Path) -> None:
         ("pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nstrict = true\n', False),
         ("mypy.ini", "[mypy]\nfiles = src\n", True),
         ("setup.cfg", "[mypy]\nstrict = True\n", False),
+        ("tox.ini", "[mypy]\nfiles = src\n", False),
     ],
 )
 def test_mypy_config_with_files_is_self_targeting(
@@ -553,3 +554,12 @@ def test_package_json_without_a_script_table_records_no_scripts(
     _write(tmp_path, "package.json", json.dumps(payload))
 
     assert _inventory(tmp_path).package_json_scripts == ()
+
+
+def test_mypy_uses_only_its_first_configuration_file(tmp_path: Path) -> None:
+    _write(tmp_path, "pyproject.toml", '[project]\nname = "x"\n[tool.mypy]\nstrict = true\n')
+    _write(tmp_path, "setup.cfg", "[mypy]\nfiles = src\n")
+
+    inventory = _inventory(tmp_path)
+
+    assert inventory.self_targeting_providers == ()
