@@ -391,11 +391,11 @@ def test_setup_run_with_an_unusable_data_dir_fails_cleanly(
 ) -> None:
     data_dir = tmp_path / "data"
     data_dir.write_text("a file, not a directory\n", encoding="utf-8")
+    head = _head(bare_uv_repo)
+    runner = _Runner()
 
     with pytest.raises(SetupError):
-        run_toolchain_setup(
-            bare_uv_repo, data_dir, "factory/", _Runner(), _LIMITS, _head(bare_uv_repo)
-        )
+        run_toolchain_setup(bare_uv_repo, data_dir, "factory/", runner, _LIMITS, head)
 
 
 def test_setup_run_refuses_when_the_source_head_moved(bare_uv_repo: Path, tmp_path: Path) -> None:
