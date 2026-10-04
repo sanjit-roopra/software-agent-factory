@@ -59,6 +59,7 @@ from software_agent_factory.doctor import (
     missing_prerequisites,
     run_doctor,
 )
+from software_agent_factory.models import RuntimeName
 
 
 @dataclass
@@ -216,7 +217,9 @@ def test_check_claude_code_never_calls_anything_but_bounded_version_probe() -> N
 
 def test_run_doctor_requires_claude_when_runtime_requested() -> None:
     env, _ = make_env(available={"git": "/usr/bin/git"})  # claude missing
-    report = run_doctor(config_path=None, requested_runtime_claude_code=True, environment=env)
+    report = run_doctor(
+        config_path=None, requested_runtime=RuntimeName.CLAUDE_CODE, environment=env
+    )
     assert report.success is False
     claude_check = next(c for c in report.checks if c.name == "claude-code")
     assert claude_check.status is CheckStatus.ERROR
@@ -781,7 +784,7 @@ def test_run_doctor_offline_default_never_requires_gh_or_copilot(tmp_path: Path)
     )  # no gh, no copilot
     report = run_doctor(
         config_path=config_path,
-        requested_runtime_copilot=False,
+        requested_runtime=None,
         environment=env,
     )
     assert report.success is True
@@ -810,7 +813,7 @@ def test_run_doctor_requires_copilot_when_runtime_requested(tmp_path: Path) -> N
     env, _ = make_env(available={"git": "/usr/bin/git"})  # copilot missing
     report = run_doctor(
         config_path=None,
-        requested_runtime_copilot=True,
+        requested_runtime=RuntimeName.COPILOT,
         environment=env,
     )
     assert report.success is False
@@ -822,7 +825,7 @@ def test_run_doctor_requires_pi_when_runtime_requested() -> None:
     env, _ = make_env(available={"git": "/usr/bin/git"})  # pi missing
     report = run_doctor(
         config_path=None,
-        requested_runtime_pi=True,
+        requested_runtime=RuntimeName.PI,
         environment=env,
     )
     assert report.success is False
@@ -841,7 +844,7 @@ def test_run_doctor_forwards_accept_pi_env_credentials_to_check_pi() -> None:
     )
     report = run_doctor(
         config_path=None,
-        requested_runtime_pi=True,
+        requested_runtime=RuntimeName.PI,
         accept_pi_env_credentials=False,
         environment=env,
     )
@@ -1017,9 +1020,11 @@ def test_missing_prerequisites_uses_the_configured_pi_executable_name() -> None:
     env, _ = make_env(available={"git": "/usr/bin/git", "pi": "/usr/local/bin/pi"})
 
     assert missing_prerequisites(
-        require_pi=True, pi_executable="custom-pi-agent", environment=env
+        runtimes={RuntimeName.PI}, pi_executable="custom-pi-agent", environment=env
     ) == ["custom-pi-agent"]
-    assert missing_prerequisites(require_pi=True, pi_executable="pi", environment=env) == []
+    assert (
+        missing_prerequisites(runtimes={RuntimeName.PI}, pi_executable="pi", environment=env) == []
+    )
 
 
 def test_missing_prerequisites_reports_only_requested_tools() -> None:
@@ -1028,21 +1033,21 @@ def test_missing_prerequisites_reports_only_requested_tools() -> None:
 
     assert missing_prerequisites(environment=env) == []
     assert missing_prerequisites(require_gh=True, environment=env) == ["gh"]
-    assert missing_prerequisites(require_copilot=True, environment=env) == ["copilot"]
-    assert missing_prerequisites(require_pi=True, environment=env) == ["pi"]
-    assert missing_prerequisites(require_gh=True, require_copilot=True, environment=env) == [
+    assert missing_prerequisites(runtimes={RuntimeName.COPILOT}, environment=env) == ["copilot"]
+    assert missing_prerequisites(runtimes={RuntimeName.PI}, environment=env) == ["pi"]
+    assert missing_prerequisites(
+        runtimes={RuntimeName.COPILOT}, require_gh=True, environment=env
+    ) == [
         "gh",
         "copilot",
     ]
-    assert missing_prerequisites(require_claude_code=True, environment=env) == ["claude"]
+    assert missing_prerequisites(runtimes={RuntimeName.CLAUDE_CODE}, environment=env) == ["claude"]
     assert missing_prerequisites(
-        require_gh=True, require_copilot=True, require_pi=True, environment=env
+        runtimes={RuntimeName.COPILOT, RuntimeName.PI}, require_gh=True, environment=env
     ) == ["gh", "copilot", "pi"]
     assert missing_prerequisites(
+        runtimes={RuntimeName.COPILOT, RuntimeName.PI, RuntimeName.CLAUDE_CODE},
         require_gh=True,
-        require_copilot=True,
-        require_pi=True,
-        require_claude_code=True,
         environment=env,
     ) == ["gh", "copilot", "pi", "claude"]
 
@@ -1060,7 +1065,7 @@ def test_missing_prerequisites_is_empty_when_everything_is_present() -> None:
 
     assert (
         missing_prerequisites(
-            require_gh=True, require_copilot=True, require_pi=True, environment=env
+            runtimes={RuntimeName.COPILOT, RuntimeName.PI}, require_gh=True, environment=env
         )
         == []
     )

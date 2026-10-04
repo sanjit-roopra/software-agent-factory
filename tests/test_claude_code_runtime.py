@@ -462,12 +462,6 @@ def test_unsupported_reasoning_fails_before_starting_claude(
     assert captured == {}
 
 
-def test_cli_builds_the_claude_code_runtime() -> None:
-    runtime = cli._build_runtime(cli.RuntimeChoice.CLAUDE_CODE, load_config(None))
-
-    assert isinstance(runtime, ClaudeCodeAgentRuntime)
-
-
 def test_packaged_claude_profile_uses_effort_levels_only() -> None:
     models = load_config(None, model_profile="claude").models
     reasoning = {

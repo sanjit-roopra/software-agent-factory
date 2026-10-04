@@ -83,11 +83,11 @@ class ModelRouter:
         )
         start_index = COMPLEXITY_ORDER.index(starting_complexity)
         ordered_configs = []
-        seen_configs: set[tuple[str, str, str]] = set()
+        seen_configs: set[tuple[str, str, str, str | None]] = set()
 
         for complexity in COMPLEXITY_ORDER[start_index:]:
             config = models.workers[complexity]
-            key = (config.model, config.reasoning, str(config.context_tier))
+            key = (config.model, config.reasoning, str(config.context_tier), config.runtime)
             if key in seen_configs:
                 continue
             seen_configs.add(key)

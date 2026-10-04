@@ -82,6 +82,20 @@ to Copilot, so a persisted interactive CLI setting cannot change a factory
 run. Model names and reasoning levels are passed through without a catalog
 whitelist, so unsupported combinations fail when Copilot executes.
 
+A role or worker tier can also set `runtime`: `copilot`, `pi` or
+`claude-code` (ADR-045). A role without `runtime` uses the `--runtime`
+value, so one run can mix runtimes. `--runtime fake` ignores every
+`runtime` field. A `claude-code` role must use a reasoning level that
+`claude --effort` accepts: `low`, `medium`, `high`, `xhigh` or `max`.
+`factory doctor` and the run commands check the executable of every runtime
+that a role uses.
+
+```yaml
+models:
+  triage:   { model: "gpt-5.6-terra",   reasoning: "medium", runtime: "pi" }
+  planner:  { model: "claude-opus-5-5", reasoning: "high",   runtime: "claude-code" }
+```
+
 The Planner writes the specification and the plan in one call (ADR-035).
 An older file can have `refiner` and `researcher` keys in `models` or in a
 profile. The factory ignores them.

@@ -45,6 +45,7 @@ from software_agent_factory.models import (
     ProjectState,
     ProjectTaskExecution,
     ResumeClassification,
+    RuntimeName,
     UsageMetrics,
     WorkflowState,
 )
@@ -203,9 +204,7 @@ def test_doctor_passes_config_data_dir_and_runtime_through(
         "config_path": config_path,
         "data_dir_override": data_dir,
         "model_profile": "default",
-        "requested_runtime_copilot": True,
-        "requested_runtime_pi": False,
-        "requested_runtime_claude_code": False,
+        "requested_runtime": RuntimeName.COPILOT,
     }
 
 
@@ -235,9 +234,7 @@ def test_doctor_passes_runtime_pi_through(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["requested_runtime_copilot"] is False
-    assert captured["requested_runtime_pi"] is True
-    assert captured["requested_runtime_claude_code"] is False
+    assert captured["requested_runtime"] is RuntimeName.PI
 
 
 def test_doctor_passes_runtime_claude_code_through(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,9 +250,7 @@ def test_doctor_passes_runtime_claude_code_through(monkeypatch: pytest.MonkeyPat
     result = runner.invoke(app, ["doctor", "--runtime", "claude-code"])
 
     assert result.exit_code == 0, result.output
-    assert captured["requested_runtime_copilot"] is False
-    assert captured["requested_runtime_pi"] is False
-    assert captured["requested_runtime_claude_code"] is True
+    assert captured["requested_runtime"] is RuntimeName.CLAUDE_CODE
 
 
 def test_doctor_default_runtime_never_requests_copilot(
@@ -270,9 +265,7 @@ def test_doctor_default_runtime_never_requests_copilot(
     monkeypatch.setattr(cli, "run_doctor", fake_run_doctor)
 
     assert runner.invoke(app, ["doctor"]).exit_code == 0
-    assert captured["requested_runtime_copilot"] is False
-    assert captured["requested_runtime_pi"] is False
-    assert captured["requested_runtime_claude_code"] is False
+    assert captured["requested_runtime"] is None
 
 
 @pytest.mark.allow_real_binaries
@@ -1080,7 +1073,7 @@ def test_service_install_runtime_and_flags_are_forwarded(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["requested_runtime_copilot"] is True
+    assert captured["requested_runtime"] is RuntimeName.COPILOT
     request = captured["request"]
     assert request.runtime is ServiceRuntime.COPILOT
     assert request.model_profile == "economy"
@@ -1138,8 +1131,7 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["requested_runtime_pi"] is True
-    assert captured["requested_runtime_copilot"] is False
+    assert captured["requested_runtime"] is RuntimeName.PI
     assert captured["accept_pi_env_credentials"] is False
     request = captured["request"]
     assert request.runtime is ServiceRuntime.PI
@@ -1182,9 +1174,7 @@ def test_service_install_forwards_the_claude_code_runtime(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["requested_runtime_claude_code"] is True
-    assert captured["requested_runtime_copilot"] is False
-    assert captured["requested_runtime_pi"] is False
+    assert captured["requested_runtime"] is RuntimeName.CLAUDE_CODE
     request = captured["request"]
     assert isinstance(request, ServiceInstallRequest)
     assert request.runtime is ServiceRuntime.CLAUDE_CODE

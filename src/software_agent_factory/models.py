@@ -137,6 +137,18 @@ class ContextTier(StrEnum):
     LONG_CONTEXT = "long_context"
 
 
+class RuntimeName(StrEnum):
+    """A real agent runtime a role can name (ADR-045)."""
+
+    COPILOT = "copilot"
+    PI = "pi"
+    CLAUDE_CODE = "claude-code"
+
+
+#: The reasoning values ``claude --effort`` accepts (ADR-045).
+CLAUDE_CODE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
 class AttemptBudget(StrEnum):
     """Which bounded retry budget an attempt consumes.
 
@@ -675,6 +687,9 @@ class ModelUsage(ModelBase):
     """Runtime-reported usage for one model within an invocation."""
 
     model: str = Field(min_length=1)
+    runtime: RuntimeName | None = None
+    """The runtime that served the call. ``None`` for the fake runtime and for
+    usage persisted before ADR-045 slice 2."""
     requests: int | None = Field(default=None, ge=0)
     premium_request_cost: float | None = Field(default=None, ge=0.0)
     input_tokens: int | None = Field(default=None, ge=0)
