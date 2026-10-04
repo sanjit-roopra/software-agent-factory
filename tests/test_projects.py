@@ -35,7 +35,13 @@ from software_agent_factory.models import (
     WorkflowState,
     WorkItem,
 )
-from software_agent_factory.projects import FileProjectStore, ProjectError, ProjectRunner
+from software_agent_factory.projects import (
+    FileProjectStore,
+    ProjectError,
+    ProjectRunner,
+    ProjectTargetError,
+    _target_git,
+)
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
 
@@ -1138,3 +1144,12 @@ def test_project_task_with_unresolved_decisions_preserves_needs_human_and_reject
 
     with pytest.raises(ProjectError, match="rejection"):
         runner.resume(brief.id, factory_source_repo)
+
+
+def test_a_git_failure_that_keeps_the_worktree_on_the_target_is_a_target_error(
+    tmp_path: Path,
+) -> None:
+    not_a_repository = tmp_path / "missing"
+
+    with pytest.raises(ProjectTargetError, match="rev-parse HEAD"):
+        _target_git(not_a_repository, "rev-parse", "HEAD")

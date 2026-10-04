@@ -1284,9 +1284,9 @@ class ProjectRunner:
         assert delivery.remote is not None and delivery.base_branch is not None
         remote, base_branch = delivery.remote, delivery.base_branch
         target = self._fetch_target(integration_path, delivery)
-        head = _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
+        head = _target_git(integration_path, "rev-parse", "HEAD")
         if head != target:
-            if _run_git(integration_path, "status", "--porcelain").stdout.strip():
+            if _target_git(integration_path, "status", "--porcelain"):
                 raise ProjectTargetError(
                     "the project integration worktree has uncommitted changes; refusing to "
                     f"re-root it on {remote}/{base_branch}"
@@ -1296,7 +1296,7 @@ class ProjectRunner:
                     "the project integration branch contains commits that are not on "
                     f"{remote}/{base_branch}; refusing to deliver work from unpublished history"
                 )
-            _run_git(integration_path, "merge", "--ff-only", "--quiet", target)
+            _target_git(integration_path, "merge", "--ff-only", "--quiet", target)
         self._assert_at_target(integration_path, target, delivery)
         return target
 
@@ -1338,13 +1338,13 @@ class ProjectRunner:
         self, integration_path: Path, target: str, delivery: DeliverySettings
     ) -> str:
         """Fail closed unless the integration head is exactly the fetched target."""
-        head = _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
+        head = _target_git(integration_path, "rev-parse", "HEAD")
         if head != target:
             raise ProjectTargetError(
                 f"the project integration worktree is at {head}, not the fetched "
                 f"{delivery.remote}/{delivery.base_branch} commit {target}"
             )
-        if _run_git(integration_path, "status", "--porcelain").stdout.strip():
+        if _target_git(integration_path, "status", "--porcelain"):
             raise ProjectTargetError("project integration worktree contains unverified changes")
         return head
 
@@ -1611,6 +1611,15 @@ def _run_git(
     if check and result.returncode != 0:
         raise ProjectError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
     return result
+
+
+def _target_git(cwd: Path, *args: str) -> str:
+    """Run a Git command that keeps the worktree on the target. A failure is a
+    target error, so an unattended project can resume its running tasks (ADR-044)."""
+    try:
+        return _run_git(cwd, *args).stdout.strip()
+    except ProjectError as exc:
+        raise ProjectTargetError(str(exc)) from exc
 
 
 def _commit_exists(cwd: Path, commit_sha: str) -> bool:
