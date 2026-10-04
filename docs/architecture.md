@@ -388,6 +388,10 @@ process is transitioned to `NEEDS_HUMAN` *through the controller*, never
 auto-resumed. No paid retry is spent, the persisted budget is untouched, and the
 workspace plus artifacts stay on disk.
 
+An unattended run is the exception (ADR-043). The service resumes it under its
+own run id, in a free slot, through `WorkflowController.resume`. An interrupted
+Implementer counts as a failed attempt, so a restart never widens the budget.
+
 Potential concepts:
 
 ```text
@@ -836,6 +840,7 @@ Every human gate then lets the run continue. See ADR-039 in the decisions log.
 A pull request that skipped a gate gets the `factory:needs-look` label and a comment that lists the reasons.
 The factory never merges such a pull request. See ADR-040.
 An error after the pull request exists, such as a failed merge, also leaves it open with the label. See ADR-041.
+A restart of the factory does not stop an unattended run. The run continues under its own run id. See ADR-043.
 
 ## Initial agents
 

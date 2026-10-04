@@ -504,7 +504,8 @@ and persists the reply before it resumes work.
   reads that persisted signal rather than inspecting lock files.
 - **Recovery using tracker + filesystem.** Startup reconciliation inspects
   persisted runs and escalates abandoned ones to `NEEDS_HUMAN` through the
-  controller (ADR-011).
+  controller (ADR-011). An unattended run continues under its own run id
+  instead (ADR-043).
 
 ## Deliberately not adopted
 

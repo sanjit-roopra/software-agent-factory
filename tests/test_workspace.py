@@ -174,6 +174,33 @@ def test_prepare_recovers_from_stale_missing_worktree(source_repo: Path, data_di
     assert ws2.base_commit == base_commit
 
 
+def test_discard_removes_the_worktree_branch_and_metadata(
+    source_repo: Path, data_dir: Path
+) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-5")
+    path = ws.prepare()
+    (path / "partial.txt").write_text("half done\n")
+
+    ws.discard()
+
+    assert not path.exists()
+    assert ws.branch_name not in _git(source_repo, "branch", "--list")
+    assert ws.prepare() == path
+    assert not (path / "partial.txt").exists()
+
+
+def test_discard_raises_when_git_keeps_the_worktree(source_repo: Path, data_dir: Path) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-6")
+    path = ws.prepare()
+    (path / "partial.txt").write_text("half done\n")
+    _git(source_repo, "worktree", "lock", str(path))
+
+    with pytest.raises(WorkspaceError, match="could not remove the worktree"):
+        ws.discard()
+
+    assert (path / "partial.txt").exists()
+
+
 # -- collect_evidence() ------------------------------------------------------
 
 

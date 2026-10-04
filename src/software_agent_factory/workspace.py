@@ -748,6 +748,28 @@ class GitWorktreeWorkspace:
         """Return line count for a file in ``tree_sha``, or ``None`` when absent."""
         return self.file_line_counts(tree_sha, [relative_path]).get(relative_path)
 
+    def discard(self) -> None:
+        """Remove the worktree, its metadata file and its branch, when they exist.
+
+        The next :meth:`prepare` then starts clean on its own base. Only for work that
+        published nothing: the branch is deleted with any commit on it. The call never
+        touches the source repository's checkout. It raises :class:`WorkspaceError` when
+        Git leaves the worktree in place.
+        """
+        _ensure_strictly_within(self.path, self.workspace_root)
+        with self._prune_lock():
+            if self.path.exists():
+                _run_git(
+                    self.source_repo, ["worktree", "remove", "--force", str(self.path)], check=False
+                )
+            self._prune_worktrees_unlocked()
+            if self.path.exists() or self._find_registered_worktree() is not None:
+                # Git refused, for example for a locked worktree. Never reuse it silently.
+                raise WorkspaceError(f"could not remove the worktree {self.path}")
+            _run_git(self.source_repo, ["branch", "-D", self.branch_name], check=False)
+        self._meta_path.unlink(missing_ok=True)
+        self.base_commit = None
+
     def cleanup(self, force: bool = False) -> None:
         """Remove the worktree. Only called explicitly; never part of the
         default workflow. Refuses to act on paths outside the workspace

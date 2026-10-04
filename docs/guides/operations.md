@@ -33,6 +33,9 @@ The health section reports findings, not repairs. A stale lock, an orphaned
 worktree, or an abandoned run requires your action. The factory will not
 silently clean it up.
 
+When `factory.unattended` is `true`, a factory restart does not abandon a run.
+The factory resumes the run under its own run id and keeps its attempt budget.
+
 Two bounds worth knowing:
 
 - `--stale-after-seconds` overrides the staleness threshold, which defaults to

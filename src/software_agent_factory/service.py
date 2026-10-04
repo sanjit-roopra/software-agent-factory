@@ -19,6 +19,10 @@ run is escalated to ``NEEDS_HUMAN`` through the controller rather than
 auto-resumed, so a restart never silently spends another paid attempt, and the
 workspace plus every persisted artifact stay on disk for inspection.
 
+An unattended run is the exception (``ADR-043``): no person waits for it, so it
+continues under its own run id through ``WorkflowController.resume`` and a
+restart never widens its attempt budget.
+
 Dispatch is likewise once-only: because the factory holds no write access to
 the backlog and GitHub never withdraws an issue by itself, an item with any
 persisted ``FactoryRun`` is excluded by the scheduler. Otherwise a finished
@@ -44,6 +48,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,7 +59,15 @@ from uuid import uuid4
 from .agents import AgentRuntime
 from .command_probe import ProbeLimits
 from .config import FactoryConfig
-from .github import GitHubClient, GitHubCommandError, resolve_github_token
+from .github import (
+    GitHubClient,
+    GitHubCommandError,
+    GitHubError,
+    GitPublishError,
+    MergeNotAllowedError,
+    UnsafeRemoteError,
+    resolve_github_token,
+)
 from .github_tracker import GitHubIssueProvider
 from .models import (
     REPLY_CURSOR_CLOSED,
@@ -87,6 +100,7 @@ from .setup_run import SetupTrigger
 from .store import FileRunStore
 from .verification import DeterministicVerifier
 from .workflow import WorkflowController, is_run_finished
+from .workspace import WorkspaceError, WorkspaceLockError
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +226,8 @@ class ThreadPoolRunHandle:
             run = self._store.load_run(self.run_id)
         except (FileNotFoundError, ValueError):
             return self._started_at
-        return run.last_activity_at or run.updated_at
+        # Work that restarts an old run has no activity yet. The dispatch time counts then.
+        return max(run.last_activity_at or run.updated_at, self._started_at)
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -221,8 +236,12 @@ class ThreadPoolRunHandle:
 
 
 def default_recovery_decision(run: FactoryRun) -> ReconciliationAction:
-    """Escalate every abandoned non-terminal run to a human."""
-    return ReconciliationAction.LEAVE if is_run_finished(run) else ReconciliationAction.NEEDS_HUMAN
+    """Continue an abandoned unattended run. Escalate every other unfinished run to a human."""
+    if is_run_finished(run):
+        return ReconciliationAction.LEAVE
+    if run.unattended:
+        return ReconciliationAction.REQUEUE
+    return ReconciliationAction.NEEDS_HUMAN
 
 
 @dataclass
@@ -316,6 +335,8 @@ class FactoryService:
         )
         self._completion_event = threading.Event()
         self._handles: dict[str, ThreadPoolRunHandle] = {}
+        #: Run id to work item id of unattended runs a restart interrupted, not yet resumed.
+        self._interrupted: dict[str, str] = {}
         self._reply_poll_cursor_id: str | None = self._load_reply_poll_cursor()
         self.scheduler = Scheduler(
             self.provider,
@@ -382,8 +403,20 @@ class FactoryService:
         return run
 
     def _dispatch_reopen(self, run_id: str, work_item_id: str) -> ThreadPoolRunHandle:
+        return self._dispatch_existing_run(run_id, work_item_id, self._execute_reopen)
+
+    def _dispatch_resume(self, run_id: str, work_item_id: str) -> ThreadPoolRunHandle:
+        return self._dispatch_existing_run(run_id, work_item_id, self._execute_resume)
+
+    def _dispatch_existing_run(
+        self,
+        run_id: str,
+        work_item_id: str,
+        execute: Callable[[str, Path], FactoryRun],
+    ) -> ThreadPoolRunHandle:
+        """Drive a persisted run on the executor, sharing the scheduler's slots and stall check."""
         handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
-        future = self._executor.submit(self._execute_reopen, run_id, self.source_repo)
+        future = self._executor.submit(execute, run_id, self.source_repo)
         handle.attach(future)
         future.add_done_callback(lambda _future: self._completion_event.set())
         self._handles[run_id] = handle
@@ -408,13 +441,50 @@ class FactoryService:
         )
         return run
 
+    def _execute_resume(self, run_id: str, repository: Path) -> FactoryRun:
+        assert self.controller is not None
+        log_run_event(
+            logger,
+            f"resuming run {run_id} after a factory restart",
+            run_id=run_id,
+            state=self.store.load_run(run_id).state,
+        )
+        try:
+            run = self.controller.resume(run_id, repository)
+        except (UnsafeRemoteError, MergeNotAllowedError, ValueError) as exc:
+            # A permanent refusal, for example a changed delivery policy. A retry cannot help.
+            run = self._abandon_resume(run_id, exc)
+        except (WorkspaceLockError, GitHubError, GitPublishError) as exc:
+            # Another live process owns the workspace, or GitHub is unreachable.
+            # The run is untouched, so a later cycle tries again.
+            logger.warning("run %s was not resumed, so it stays queued: %s", run_id, exc)
+            run = self.store.load_run(run_id)
+            self._interrupted[run_id] = run.work_item_id
+            return run
+        except WorkspaceError as exc:
+            run = self._abandon_resume(run_id, exc)
+        log_run_event(logger, f"resumed run {run_id} finished", run_id=run_id, state=run.state)
+        return run
+
+    def _abandon_resume(self, run_id: str, error: Exception) -> FactoryRun:
+        """Stop a run that cannot continue safely, for a person to inspect."""
+        assert self.controller is not None
+        return self.controller.recover_abandoned_run(
+            self.store.load_run(run_id), f"could not resume after a factory restart: {error}"
+        )
+
     # -- lifecycle --------------------------------------------------------
 
     def recover(self) -> list[RecoveryRecord]:
-        """Reconcile persisted non-terminal runs before any dispatch."""
+        """Reconcile persisted non-terminal runs before any dispatch.
+
+        An unattended run is kept to resume under its own run id (ADR-043).
+        """
         assert self.controller is not None
         records = self.scheduler.recover(self.store, default_recovery_decision)
         for record in records:
+            if record.action is ReconciliationAction.REQUEUE:
+                self._interrupted[record.run_id] = record.work_item_id
             if record.action is not ReconciliationAction.NEEDS_HUMAN:
                 continue
             try:
@@ -452,10 +522,32 @@ class FactoryService:
             - len([h for h in self._handles.values() if not h.is_done()]),
             quota=self.scheduler._remaining_daily_quota(runs),
         )
+        self._dispatch_interrupted_runs(budget)
         self._dispatch_reopened_runs(runs, budget)
         self._ingest_dashboard_requests(runs, budget)
         if client is not None:
             self._poll_replies(client, runs, budget)
+
+    def _dispatch_interrupted_runs(self, budget: _CycleBudget) -> None:
+        """Resume the unattended runs a factory restart interrupted (ADR-043).
+
+        Each takes a slot and no quota, because the run already counted. A run without a free
+        slot waits for a later cycle. Queued work would look stalled to the stall check.
+        """
+        # A snapshot: the loop forgets runs, and a worker thread can put one back.
+        pending = dict(self._interrupted)
+        for run_id, work_item_id in pending.items():
+            handle = self._handles.get(run_id)
+            if handle is not None and not handle.is_done():
+                continue
+            if not budget.has_slot():
+                logger.debug("interrupted run resume skipped: at capacity")
+                return
+            logger.info("resuming interrupted unattended run %s", run_id)
+            # Forget the run first. A failed resume puts it back, from the worker thread.
+            del self._interrupted[run_id]
+            self._dispatch_resume(run_id, work_item_id)
+            budget.take_slot()
 
     def _dispatch_reopened_runs(self, runs: Sequence[FactoryRun], budget: _CycleBudget) -> None:
         """Dispatch runs a reply already reopened (``NEEDS_HUMAN`` + ``REOPENED``).

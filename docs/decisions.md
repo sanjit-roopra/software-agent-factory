@@ -1,5 +1,49 @@
 # Architecture Decisions
 
+## ADR-043: Unattended runs continue after a factory restart
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+ADR-011 sends every unfinished run to `NEEDS_HUMAN` when the factory starts again.
+An unattended run has no person who waits for it. A restart, for example a laptop reboot, stops the run until a person notices.
+The scheduler also never dispatches a work item that has a stored run. So a new run cannot take over the work.
+
+### Decision
+
+- When `factory.unattended` is `true`, the run keeps that value (ADR-039). After a restart, the service resumes the run under its own run id.
+  The service gives the run a free slot and no daily quota, because the run already counted.
+- The service resumes a run only when a slot is free. It never queues a run behind the stall check.
+- The controller `resume` method handles the delivery states as before. These are `PR_READY`, `PR_CREATED`, `CI_RUNNING` and `CI_DIAGNOSIS`.
+- For an unattended run in an earlier state, `resume` continues the run:
+  - It closes the interrupted agent call as failed.
+  - If an Implementer was running, or returned before its attempt was recorded, it records one failed attempt. So a restart never widens the attempt budget.
+  - It adds one to `FactoryRun.restart_recoveries`.
+  - It starts planning again from the stored triage result, because the output of the interrupted work is ambiguous.
+  - It keeps the workspace. The first attempt after the restart gets a note that the tree can hold partial edits.
+- A run with no stored triage result, or with a missing or changed workspace, starts again from the start under the same run id.
+  The factory first removes the old worktree and branch, so the new start is clean on the current delivery base.
+- A `SINGLE` or `CRITIQUE` run builds its specification and plan again without a Planner call.
+- A run ends as it is when a restart interrupted it more than two times.
+  It also ends as it is when a restart interrupted a CI repair, so a pull request exists.
+  It then follows ADR-040 and ADR-041: the factory publishes the work with the `factory:needs-look` label, or leaves the pull request open.
+  If there is nothing to publish, or no plan exists yet, the run stops for a person.
+- A delivery state that cannot resume, for example because the workspace is gone, leaves the open pull request as it is.
+- If another process holds the workspace lock, or GitHub is not reachable, the service leaves the run queued and tries again in a later cycle.
+- Some errors mean the run cannot continue safely. These are a changed delivery policy, a changed delivery repository,
+  a refused remote or merge target, and an unsafe workspace.
+  The service then stops the run for a person, even when the run is unattended and has an open pull request.
+  A retry cannot fix these errors, and the factory must not guess.
+- An attended run does not change. It still goes to `NEEDS_HUMAN` (ADR-011).
+
+### Consequences
+
+- An unattended run survives a factory restart without a person.
+- The attempt budget and the review limits still bound the paid work. At most two restarts add planning and triage calls.
+- The persisted run has one new field. A run written earlier loads with the value 0.
+- A run can still stop for a person when its workspace or its stored artifacts are not usable.
+
 ## ADR-042: Retry publishing from the dashboard
 
 Status: accepted on 2026-10-04.

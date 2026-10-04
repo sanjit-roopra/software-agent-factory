@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from factory_testing import build_config, git, triage_hook, work_item
+from factory_testing import CrashingRuntime, build_config, git, triage_hook, work_item
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.command_probe import ProbeLimits
 from software_agent_factory.config import FactoryConfig, PullRequestConfig, SetupConfig
 from software_agent_factory.escalation_protocol import format_resume_command
-from software_agent_factory.github import GitHubClient, GitHubCommandError
+from software_agent_factory.github import GitHubClient, GitHubCommandError, MergeNotAllowedError
 from software_agent_factory.models import (
     REPLY_CURSOR_CLOSED,
     AgentRole,
@@ -57,7 +57,8 @@ from software_agent_factory.service import (
 from software_agent_factory.setup_run import SetupTrigger
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.verification import DeterministicVerifier
-from software_agent_factory.workflow import WorkflowController
+from software_agent_factory.workflow import WorkflowController, is_run_finished
+from software_agent_factory.workspace import GitWorktreeWorkspace
 
 
 @pytest.fixture
@@ -99,13 +100,9 @@ class LocalProvider:
         return [item for item in self._items if item.opaque_id in wanted]
 
 
-def _service(
-    data_dir: Path,
-    source_repo: Path,
-    provider: LocalProvider,
-    *,
-    max_concurrent_tasks: int = 1,
-) -> FactoryService:
+def _config(
+    data_dir: Path, max_concurrent_tasks: int = 1, unattended: bool = False
+) -> FactoryConfig:
     config = build_config(
         data_dir,
         scheduler={
@@ -116,6 +113,19 @@ def _service(
             "required_label": "agent-ready",
         },
     )
+    config.factory.unattended = unattended
+    return config
+
+
+def _service(
+    data_dir: Path,
+    source_repo: Path,
+    provider: LocalProvider,
+    *,
+    max_concurrent_tasks: int = 1,
+    unattended: bool = False,
+) -> FactoryService:
+    config = _config(data_dir, max_concurrent_tasks, unattended)
     return FactoryService(
         config=config,
         store=FileRunStore(data_dir),
@@ -279,6 +289,180 @@ def test_default_recovery_decision_leaves_finished_runs_alone() -> None:
     assert default_recovery_decision(unfinished) is ReconciliationAction.NEEDS_HUMAN
 
 
+def test_default_recovery_decision_requeues_an_unfinished_unattended_run() -> None:
+    unattended = FactoryRun(
+        id="r3", work_item_id="w", state=WorkflowState.PLANNING, unattended=True
+    )
+
+    assert default_recovery_decision(unattended) is ReconciliationAction.REQUEUE
+
+
+def _interrupt(
+    data_dir: Path, source_repo: Path, item: TrackerItem, run_id: str, *, unattended: bool
+) -> FactoryRun:
+    """Leave a run that the factory process died in while its Implementer worked."""
+    controller = WorkflowController(
+        _config(data_dir, unattended=unattended),
+        FileRunStore(data_dir),
+        CrashingRuntime(AgentRole.IMPLEMENTER),
+    )
+    work_item = build_work_item(item)
+    with pytest.raises(KeyboardInterrupt):
+        controller.run(work_item, source_repo, run_id=run_id)
+    return FileRunStore(data_dir).load_run(run_id)
+
+
+def test_restart_resumes_an_unattended_run_under_its_own_run_id(
+    source_repo: Path, data_dir: Path
+) -> None:
+    item = _item(11, source_repo)
+    interrupted = _interrupt(data_dir, source_repo, item, "run-interrupted", unattended=True)
+    assert interrupted.state is WorkflowState.IMPLEMENTING
+    service = _service(data_dir, source_repo, LocalProvider([item]), unattended=True)
+
+    try:
+        records = service.recover()
+        assert [record.action for record in records] == [ReconciliationAction.REQUEUE]
+        assert service.store.load_run("run-interrupted").state is WorkflowState.IMPLEMENTING
+        service.reconcile_escalation()
+        service.drain(60)
+        report = service.scheduler.tick()
+    finally:
+        service.shutdown()
+
+    runs = service.store.list_runs()
+    assert [run.id for run in runs] == ["run-interrupted"]
+    assert runs[0].state is WorkflowState.PR_READY
+    assert runs[0].completed_at is not None
+    assert runs[0].restart_recoveries == 1
+    assert report.dispatched == ()
+
+
+def test_restart_still_escalates_an_attended_run(source_repo: Path, data_dir: Path) -> None:
+    item = _item(12, source_repo)
+    _interrupt(data_dir, source_repo, item, "run-attended", unattended=False)
+    service = _service(data_dir, source_repo, LocalProvider([item]))
+
+    try:
+        records = service.recover()
+        service.reconcile_escalation()
+        service.drain(60)
+    finally:
+        service.shutdown()
+
+    assert records[0].action is ReconciliationAction.NEEDS_HUMAN
+    run = service.store.load_run("run-attended")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.restart_recoveries == 0
+    assert run.attempt_records == []
+
+
+def test_restart_resumes_interrupted_runs_only_as_slots_free_up(
+    source_repo: Path, data_dir: Path
+) -> None:
+    items = [_item(13, source_repo), _item(14, source_repo)]
+    for number, item in enumerate(items):
+        _interrupt(data_dir, source_repo, item, f"run-{number}", unattended=True)
+    service = _service(data_dir, source_repo, LocalProvider(items), unattended=True)
+
+    def finished_runs() -> int:
+        return len([run for run in service.store.list_runs() if is_run_finished(run)])
+
+    try:
+        service.recover()
+        service.reconcile_escalation()
+        service.drain(60)
+        after_first_cycle = finished_runs()
+        service.reconcile_escalation()
+        service.drain(60)
+        after_second_cycle = finished_runs()
+    finally:
+        service.shutdown()
+
+    assert (after_first_cycle, after_second_cycle) == (1, 2)
+
+
+def test_restart_does_not_resume_a_run_whose_delivery_policy_changed(
+    source_repo: Path, data_dir: Path
+) -> None:
+    item = _item(15, source_repo)
+    interrupted = _interrupt(data_dir, source_repo, item, "run-policy", unattended=True)
+    store = FileRunStore(data_dir)
+    store.save_run(interrupted.model_copy(update={"delivery_policy_fingerprint": "stale"}))
+    service = _service(data_dir, source_repo, LocalProvider([item]), unattended=True)
+
+    try:
+        service.recover()
+        service.reconcile_escalation()
+        service.drain(60)
+    finally:
+        service.shutdown()
+
+    run = store.load_run("run-policy")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert "delivery policy changed" in (run.failure_reason or "")
+
+
+def test_restart_stops_a_run_for_a_permanent_github_refusal_without_retrying(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = _item(17, source_repo)
+    _interrupt(data_dir, source_repo, item, "run-refused", unattended=True)
+    service = _service(data_dir, source_repo, LocalProvider([item]), unattended=True)
+    attempts: list[str] = []
+
+    def refuse(run_id: str, source_repo: Path) -> FactoryRun:
+        attempts.append(run_id)
+        raise MergeNotAllowedError("the pull request head is a fork")
+
+    monkeypatch.setattr(service.controller, "resume", refuse)
+    try:
+        service.recover()
+        service.reconcile_escalation()
+        service.drain(60)
+        service.reconcile_escalation()
+        service.drain(60)
+    finally:
+        service.shutdown()
+
+    run = service.store.load_run("run-refused")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert "the pull request head is a fork" in (run.failure_reason or "")
+    assert attempts == ["run-refused"]
+
+
+def test_restart_retries_a_run_in_a_later_cycle_when_another_process_owns_its_workspace(
+    source_repo: Path, data_dir: Path
+) -> None:
+    item = _item(16, source_repo)
+    interrupted = _interrupt(data_dir, source_repo, item, "run-locked", unattended=True)
+    service = _service(data_dir, source_repo, LocalProvider([item]), unattended=True)
+    other_process = GitWorktreeWorkspace(
+        data_dir,
+        source_repo,
+        interrupted.work_item_id,
+        branch_prefix=service.config.repository.branch_prefix,
+    )
+    other_process.acquire_lock()
+
+    try:
+        service.recover()
+        service.reconcile_escalation()
+        service.drain(60)
+        while_locked = service.store.load_run("run-locked")
+        other_process.release_lock()
+        service.reconcile_escalation()
+        service.drain(60)
+    finally:
+        other_process.release_lock()
+        service.shutdown()
+
+    assert while_locked == interrupted
+    resumed = service.store.load_run("run-locked")
+    assert is_run_finished(resumed)
+    assert resumed.restart_recoveries == 1
+
+
 def test_service_refuses_to_start_when_the_scheduler_is_disabled(
     source_repo: Path, data_dir: Path
 ) -> None:
@@ -324,6 +508,26 @@ def test_run_handle_reports_activity_from_the_persisted_run(
     run = controller.run(build_work_item(_item(4, source_repo)), source_repo, run_id="run-x")
     assert run.state is WorkflowState.PR_READY
     assert handle.last_activity_at() > started
+
+
+def test_run_handle_counts_its_dispatch_time_as_activity_for_a_restarted_run(
+    source_repo: Path, data_dir: Path
+) -> None:
+    store = FileRunStore(data_dir)
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store.save_run(
+        FactoryRun(
+            id="run-old",
+            work_item_id="w",
+            state=WorkflowState.IMPLEMENTING,
+            created_at=old,
+            updated_at=old,
+            last_activity_at=old,
+        )
+    )
+    dispatched = old + timedelta(days=30)
+
+    assert ThreadPoolRunHandle("run-old", store, dispatched).last_activity_at() == dispatched
 
 
 def test_shutdown_cancels_active_work_and_releases_reservations(
