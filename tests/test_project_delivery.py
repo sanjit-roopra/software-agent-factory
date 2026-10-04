@@ -10,10 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Mapping, Sequence
 
 import pytest
-from factory_testing import build_config, git, triage_hook
+from factory_testing import (
+    ScriptedController,
+    build_config,
+    git,
+    planner_with_dependencies,
+    triage_hook,
+)
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
@@ -112,6 +118,9 @@ def _planner(request: AgentRequest) -> AgentResult:
     )
 
 
+_THREE_TASKS = planner_with_dependencies(_planner, (), (1,), ())
+
+
 def _appending_implementer(request: AgentRequest) -> AgentResult:
     """Append one line so a task's own change never hides its predecessor's."""
     log = Path(request.workspace_path or ".") / PROJECT_LOG
@@ -158,6 +167,9 @@ class LocalRemotePublisher:
     def __init__(self) -> None:
         self.published: list[str] = []
 
+    def flag_needs_look(self, **kwargs: object) -> None:
+        """The label is a GitHub call. These tests only need the run to end open."""
+
     def resolve_base_branch(self, source_repo: Path) -> str:
         return "main"
 
@@ -190,15 +202,20 @@ class LocalRemotePublisher:
 class LocalRemoteMerger:
     """Fast-forwards the local bare remote's target branch to the reviewed head."""
 
-    def __init__(self, *, merge_to_target: bool = True) -> None:
+    def __init__(
+        self, *, merge_to_target: bool = True, refused_pull_requests: Sequence[str] = ()
+    ) -> None:
         self.merges: list[dict[str, object]] = []
         self.merge_to_target = merge_to_target
+        self.refused_pull_requests = set(refused_pull_requests)
 
     def validate_repository(self, repo_path: Path) -> str:
         return "acme/repo"
 
     def merge(self, **kwargs: object) -> _MergeResult:
         self.merges.append(dict(kwargs))
+        if kwargs["pull_request_url"] in self.refused_pull_requests:
+            raise OSError("merge refused")
         repo_path = Path(str(kwargs["repo_path"]))
         head = str(kwargs["expected_head_sha"])
         base = str(kwargs["base_branch"])
@@ -324,9 +341,11 @@ def _remote_runner(
     *,
     merger: LocalRemoteMerger | None = None,
     crash_on_tasks: Sequence[int] = (),
+    runtime: FakeAgentRuntime | None = None,
+    project_delivery_base: Callable[[Path, str], DeliveryTarget] = local_delivery_base,
 ) -> tuple[ProjectRunner, RecordingController, FileRunStore]:
     store = FileRunStore(config.data_dir)
-    runtime = _runtime()
+    runtime = runtime or _runtime()
     controller = RecordingController(
         WorkflowController(
             config,
@@ -345,7 +364,7 @@ def _remote_runner(
         runtime,
         controller=controller,  # type: ignore[arg-type]
         delivery_repository_resolver=lambda _repo: "acme/repo",
-        delivery_base_resolver=local_delivery_base,
+        delivery_base_resolver=project_delivery_base,
     )
     return runner, controller, store
 
@@ -425,6 +444,154 @@ def test_remote_task_without_confirmed_merge_stops_the_project(
     assert execution.tasks[0].state is ProjectTaskState.NEEDS_HUMAN
     assert "not in the fetched" in (execution.failure_reason or "")
     assert execution.tasks[1].state is ProjectTaskState.PENDING
+
+
+_PULL_REQUEST_1 = "https://github.com/acme/repo/pull/1"
+_LEFT_OPEN_1 = (
+    f"task 1: pull request {_PULL_REQUEST_1} was left open: "
+    "could not merge the pull request: merge refused"
+)
+_SKIPPED_2 = "task 2 was skipped: it depends on task 1, which did not merge"
+
+
+def _refused_remote_runner(
+    data_dir: Path, *, unattended: bool
+) -> tuple[ProjectRunner, RecordingController]:
+    """A three-task project whose first pull request cannot merge."""
+    config = _merge_config(data_dir)
+    config.factory.unattended = unattended
+    runner, controller, _store = _remote_runner(
+        config,
+        merger=LocalRemoteMerger(refused_pull_requests=[_PULL_REQUEST_1]),
+        runtime=FakeAgentRuntime(planner=_THREE_TASKS, implementer=_appending_implementer),
+    )
+    return runner, controller
+
+
+def test_unattended_project_skips_the_dependents_of_an_unmerged_task_and_ships_the_rest(
+    source_repo: Path,
+    remote_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    runner, controller = _refused_remote_runner(factory_data_dir, unattended=True)
+
+    execution = runner.run(_brief(source_repo), source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert execution.unattended is True
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.DONE,
+        ProjectTaskState.PENDING,
+        ProjectTaskState.DONE,
+    ]
+    # Task 1 keeps its open pull request and has no merge. Task 3 merged.
+    assert execution.tasks[0].pull_request_url == _PULL_REQUEST_1
+    assert execution.tasks[0].merge_commit_sha is None
+    assert execution.tasks[2].merge_commit_sha is not None
+    assert [item[0] for item in controller.dispatched] == [
+        "delivery-project-task-1",
+        "delivery-project-task-3",
+    ]
+    assert execution.needs_look == (_LEFT_OPEN_1, _SKIPPED_2)
+    assert bare_git(remote_repo, "show", f"main:{PROJECT_LOG}").splitlines() == [
+        "delivery-project-task-3"
+    ]
+
+
+def test_unattended_remote_resume_keeps_a_left_open_task_unmerged_and_never_dispatches_it(
+    source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    runner, _controller = _refused_remote_runner(factory_data_dir, unattended=True)
+    execution = runner.run(_brief(source_repo), source_repo)
+    FileProjectStore(factory_data_dir).save_execution(
+        execution.model_copy(update={"state": ProjectState.RUNNING})
+    )
+    resuming_runner, controller = _refused_remote_runner(factory_data_dir, unattended=True)
+
+    resumed = resuming_runner.resume(execution.project_id, source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    assert controller.dispatched == []
+    assert [task.state for task in resumed.tasks] == [
+        ProjectTaskState.DONE,
+        ProjectTaskState.PENDING,
+        ProjectTaskState.DONE,
+    ]
+    assert resumed.needs_look == (_LEFT_OPEN_1, _SKIPPED_2)
+
+
+def test_attended_project_still_stops_when_a_task_does_not_merge(
+    source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    runner, controller = _refused_remote_runner(factory_data_dir, unattended=False)
+
+    execution = runner.run(_brief(source_repo), source_repo)
+
+    assert execution.state is ProjectState.NEEDS_HUMAN
+    assert execution.needs_look == ()
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.NEEDS_HUMAN,
+        ProjectTaskState.PENDING,
+        ProjectTaskState.PENDING,
+    ]
+    assert [item[0] for item in controller.dispatched] == ["delivery-project-task-1"]
+
+
+def test_unattended_target_fetch_errors_keep_a_merged_task_resumable(
+    source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = _merge_config(factory_data_dir)
+    config.factory.unattended = True
+    fetches = 0
+
+    def fetch_that_fails_after_the_first_merge(repo: Path, expected: str) -> DeliveryTarget:
+        nonlocal fetches
+        fetches += 1
+        # Fetch 1 starts the project, 2 precedes task 1 and 3 checks its merge.
+        if fetches == 3:
+            raise OSError("remote unreachable")
+        return local_delivery_base(repo, expected)
+
+    runner, controller, _store = _remote_runner(
+        config, project_delivery_base=fetch_that_fails_after_the_first_merge
+    )
+
+    execution = runner.run(_brief(source_repo), source_repo)
+
+    assert execution.state is ProjectState.FAILED
+    assert "remote unreachable" in (execution.failure_reason or "")
+    assert execution.needs_look == ()
+    # The merged task is not recorded as failed, and its dependent is not skipped.
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.RUNNING,
+        ProjectTaskState.PENDING,
+    ]
+    assert [item[0] for item in controller.dispatched] == ["delivery-project-task-1"]
+
+    def unreachable(repo: Path, expected: str) -> DeliveryTarget:
+        raise OSError("remote still unreachable")
+
+    blocked_runner, blocked_controller, _ = _remote_runner(
+        config, project_delivery_base=unreachable
+    )
+    still_failed = blocked_runner.resume(execution.project_id, source_repo)
+
+    assert still_failed.state is ProjectState.FAILED
+    assert "still unreachable" in (still_failed.failure_reason or "")
+    assert still_failed.tasks[0].state is ProjectTaskState.RUNNING
+    assert blocked_controller.dispatched == []
+
+    resuming_runner, resumed_controller, _ = _remote_runner(config)
+    resumed = resuming_runner.resume(execution.project_id, source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    assert resumed.needs_look == ()
+    assert all(task.merge_commit_sha for task in resumed.tasks)
+    # Task 1 was settled from its finished child run, so only task 2 was dispatched.
+    assert [item[0] for item in resumed_controller.dispatched] == ["delivery-project-task-2"]
 
 
 def test_remote_resume_skips_already_merged_tasks_and_delivers_the_rest(
@@ -719,6 +886,218 @@ def test_resume_dispatches_remaining_tasks_under_the_policy_the_project_started_
     child_runs = store.list_runs()
     assert {run.risk_assessment_enabled for run in child_runs} == {False}
     assert {run.state for run in child_runs} == {WorkflowState.PR_READY}
+
+
+def test_resume_dispatches_remaining_tasks_unattended_when_the_project_started_that_way(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    started = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    started.factory.unattended = True
+    crashing, _controller, store = _local_runner(started, crash_on_tasks=[2])
+    brief = _brief(factory_source_repo)
+    with pytest.raises(KeyboardInterrupt):
+        crashing.run(brief, factory_source_repo)
+    project_store = FileProjectStore(factory_data_dir)
+    assert project_store.load_execution(brief.id).unattended is True
+
+    attended = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    resumed = ProjectRunner(attended, store, _runtime()).resume(brief.id, factory_source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    assert {run.unattended for run in store.list_runs()} == {True}
+
+
+def test_unattended_project_records_a_rejected_task_and_skips_its_dependents(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    config.factory.unattended = True
+    store = FileRunStore(factory_data_dir)
+    runner = ProjectRunner(
+        config,
+        store,
+        _runtime(),
+        controller=RejectingController(store),  # type: ignore[arg-type]
+    )
+
+    execution = runner.run(_brief(factory_source_repo), factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert execution.tasks[0].state is ProjectTaskState.NEEDS_HUMAN
+    assert execution.tasks[1].state is ProjectTaskState.PENDING
+    assert execution.needs_look == (
+        "task 1: retry budget exhausted",
+        "task 2 was skipped: it depends on task 1, which did not merge",
+    )
+
+
+def test_unattended_resume_does_not_refuse_a_recorded_rejection(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    config.factory.unattended = True
+    runner, _controller, _store = _local_runner(config, crash_on_tasks=[2])
+    brief = _brief(factory_source_repo)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run(brief, factory_source_repo)
+    project_store = FileProjectStore(factory_data_dir)
+    interrupted = project_store.load_execution(brief.id)
+    records = list(interrupted.tasks)
+    records[0] = records[0].model_copy(
+        update={"state": ProjectTaskState.NEEDS_HUMAN, "failure_reason": "retry budget exhausted"}
+    )
+    project_store.save_execution(
+        interrupted.model_copy(update={"tasks": tuple(records), "state": ProjectState.NEEDS_HUMAN})
+    )
+
+    resumed_runner, resumed_controller, _ = _local_runner(config)
+    resumed = resumed_runner.resume(brief.id, factory_source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    assert resumed_controller.dispatched == []
+    # The crash left task 2 RUNNING. A skipped task goes back to PENDING.
+    assert [task.state for task in resumed.tasks] == [
+        ProjectTaskState.NEEDS_HUMAN,
+        ProjectTaskState.PENDING,
+    ]
+    assert resumed.needs_look == (
+        "task 1: retry budget exhausted",
+        "task 2 was skipped: it depends on task 1, which did not merge",
+    )
+
+
+def test_resume_keeps_an_attended_project_attended_when_the_configuration_is_unattended(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    started = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    crashing, _controller, store = _local_runner(started, crash_on_tasks=[2])
+    brief = _brief(factory_source_repo)
+    with pytest.raises(KeyboardInterrupt):
+        crashing.run(brief, factory_source_repo)
+
+    unattended = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    unattended.factory.unattended = True
+    resumed = ProjectRunner(unattended, store, _runtime()).resume(brief.id, factory_source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    assert resumed.unattended is False
+    assert {run.unattended for run in store.list_runs()} == {False}
+
+
+def _scripted_local_runner(
+    config: FactoryConfig,
+    outcomes: Mapping[int, WorkflowState | Exception | tuple[str, ...]],
+    *dependencies: tuple[int, ...],
+) -> tuple[ProjectRunner, FileRunStore]:
+    """An unattended local project whose tasks have these dependencies."""
+    config.factory.unattended = True
+    store = FileRunStore(config.data_dir)
+    runtime = FakeAgentRuntime(
+        planner=planner_with_dependencies(_planner, *dependencies),
+        implementer=_appending_implementer,
+    )
+    controller = ScriptedController(WorkflowController(config, store, runtime), store, outcomes)
+    return ProjectRunner(config, store, runtime, controller=controller), store  # type: ignore[arg-type]
+
+
+def _skipped(task: int, blocker: int) -> str:
+    return f"task {task} was skipped: it depends on task {blocker}, which did not merge"
+
+
+def test_unattended_skips_follow_a_chain_and_name_the_unmerged_dependency(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 2})
+    # Task 3 needs a merged task 1 and an unmerged task 2. Task 4 needs task 3.
+    runner, _store = _scripted_local_runner(
+        config, {2: WorkflowState.NEEDS_HUMAN}, (), (), (1, 2), (3,)
+    )
+
+    execution = runner.run(_brief(factory_source_repo), factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.DONE,
+        ProjectTaskState.NEEDS_HUMAN,
+        ProjectTaskState.PENDING,
+        ProjectTaskState.PENDING,
+    ]
+    assert execution.needs_look == (
+        "task 2: scripted rejection",
+        _skipped(3, 2),
+        _skipped(4, 3),
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        pytest.param(WorkflowState.FAILED, "scripted rejection", id="child-run-failed"),
+        pytest.param(RuntimeError("child crashed"), "child crashed", id="child-run-raised"),
+    ],
+)
+def test_unattended_failed_child_is_recorded_and_its_dependent_skipped(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+    outcome: WorkflowState | Exception,
+    reason: str,
+) -> None:
+    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    runner, _store = _scripted_local_runner(config, {1: outcome}, (), (1,))
+
+    execution = runner.run(_brief(factory_source_repo), factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert execution.failure_reason is None
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.FAILED,
+        ProjectTaskState.PENDING,
+    ]
+    assert execution.tasks[0].failure_reason == reason
+    assert execution.needs_look == (f"task 1: {reason}", _skipped(2, 1))
+
+
+def test_unattended_integration_conflict_records_the_loser_and_ships_the_winner(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 2})
+    # Tasks 1 and 2 run in one wave and both create the same file.
+    runner, _store = _scripted_local_runner(config, {}, (), (), (2,))
+
+    execution = runner.run(_brief(factory_source_repo), factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.DONE,
+        ProjectTaskState.NEEDS_HUMAN,
+        ProjectTaskState.PENDING,
+    ]
+    assert execution.needs_look[0].startswith(
+        "task 2: independent project tasks produced conflicting changes"
+    )
+    assert execution.needs_look[1:] == (_skipped(3, 2),)
+    integration = Path(str(execution.integration_workspace))
+    assert (integration / PROJECT_LOG).read_text().splitlines() == ["delivery-project-task-1"]
+
+
+def test_unattended_local_project_carries_the_reasons_of_a_merged_child(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    runner, _store = _scripted_local_runner(config, {1: ("scope drift: pyproject.toml",)}, ())
+
+    execution = runner.run(_brief(factory_source_repo), factory_source_repo)
+
+    assert execution.state is ProjectState.DONE
+    assert execution.tasks[0].state is ProjectTaskState.DONE
+    assert execution.needs_look == ("task 1: scope drift: pyproject.toml",)
 
 
 def test_resume_never_integrates_the_same_task_twice(
@@ -1121,6 +1500,52 @@ def test_cli_project_summary_reports_the_delivery_target_and_merged_tasks(
     for task in execution.tasks:
         assert task.merge_commit_sha is not None
         assert f"merged {task.merge_commit_sha}" in result.output
+
+
+def test_cli_project_summary_lists_what_needs_a_look(
+    source_repo: Path,
+    factory_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from typer.testing import CliRunner
+
+    from software_agent_factory import cli as cli_module
+
+    config = _merge_config(factory_data_dir)
+    execution = ProjectExecution(
+        project_id="delivery-project",
+        state=ProjectState.DONE,
+        unattended=True,
+        needs_look=("task 1: retry budget exhausted", "task 2 was skipped: it needs task 1"),
+    )
+
+    class ReadOnlyRunner:
+        def __init__(self, *args: object, **kwargs: object) -> None: ...
+
+        def resume(self, project_id: str, repo: Path) -> ProjectExecution:
+            return execution
+
+    monkeypatch.setattr(cli_module, "ProjectRunner", ReadOnlyRunner)
+    monkeypatch.setattr(cli_module, "_load_config", lambda *args, **kwargs: config)
+    monkeypatch.setattr(cli_module, "_require_prerequisites", lambda **kwargs: None)
+
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "project",
+            "--repo",
+            str(source_repo),
+            "--project-id",
+            execution.project_id,
+            "--resume",
+            "--data-dir",
+            str(factory_data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "needs look: task 1: retry budget exhausted" in result.output
+    assert "needs look: task 2 was skipped: it needs task 1" in result.output
 
 
 def test_resume_accepts_a_recased_authorized_repository(

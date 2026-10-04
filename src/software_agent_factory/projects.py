@@ -33,7 +33,7 @@ from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Literal, TypeVar
 from uuid import uuid4
 
 from pydantic_core import from_json
@@ -86,6 +86,9 @@ from .writing_policy import check_publication_text
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _SUCCESS_STATES = frozenset({WorkflowState.PR_READY, WorkflowState.DONE})
+#: What happened to one task of a wave. ``unmerged`` is only possible for an
+#: unattended project: the task is not on the target and the project goes on (ADR-044).
+_Settled = Literal["integrated", "unmerged", "stopped"]
 _FACTORY_GIT_NAME = "Software Agent Factory"
 _FACTORY_GIT_EMAIL = "software-agent-factory@example.invalid"
 _FACTORY_GIT_IDENTITY = (
@@ -109,6 +112,14 @@ _MAX_DECOMPOSITION_ATTEMPTS = 2
 
 class ProjectError(RuntimeError):
     """Raised when project planning or deterministic integration cannot continue."""
+
+
+class ProjectTargetError(ProjectError):
+    """Raised when the delivery target cannot be fetched or the worktree is not on it.
+
+    It is about the whole project, not one task. An unattended project ends
+    ``FAILED`` on it instead of recording one task as unmerged (ADR-044).
+    """
 
 
 #: Conservative Git remote/branch name shape, applied on top of the shared
@@ -377,6 +388,7 @@ class ProjectRunner:
                     "delivery_repository": delivery.repository,
                     "delivery_policy_fingerprint": delivery_policy_fingerprint(self._config),
                     "risk_assessment_enabled": self._config.risk_assessment.enabled,
+                    "unattended": self._config.factory.unattended,
                     "updated_at": utc_now(),
                 }
             )
@@ -483,7 +495,7 @@ class ProjectRunner:
             if execution.state is ProjectState.DONE:
                 return execution
             self._check_delivery_identity(execution, delivery)
-            if any(
+            if not execution.unattended and any(
                 record.state in {ProjectTaskState.FAILED, ProjectTaskState.NEEDS_HUMAN}
                 for record in execution.tasks
             ):
@@ -519,7 +531,7 @@ class ProjectRunner:
                 update={"state": ProjectState.RUNNING, "updated_at": utc_now()}
             )
             self._project_store.save_execution(execution)
-            self._controller = self._controller_for_persisted_risk_assessment(execution)
+            self._controller = self._controller_for_persisted_policy(execution)
             try:
                 execution = self._execute_plan(
                     brief,
@@ -546,13 +558,20 @@ class ProjectRunner:
             project_workspace.release_lock()
         return execution
 
-    def _controller_for_persisted_risk_assessment(
-        self, execution: ProjectExecution
-    ) -> WorkflowController:
-        """Give tasks not yet dispatched the risk assessment choice the project started with."""
-        if execution.risk_assessment_enabled == self._config.risk_assessment.enabled:
+    def _controller_for_persisted_policy(self, execution: ProjectExecution) -> WorkflowController:
+        """Give tasks not yet dispatched the policy the project started with.
+
+        That is the risk assessment choice and the unattended choice (ADR-044).
+        """
+        if (
+            execution.risk_assessment_enabled == self._config.risk_assessment.enabled
+            and execution.unattended == self._config.factory.unattended
+        ):
             return self._configured_controller
-        return self._configured_controller.with_risk_assessment(execution.risk_assessment_enabled)
+        return self._configured_controller.with_pinned_policy(
+            risk_assessment=execution.risk_assessment_enabled,
+            unattended=execution.unattended,
+        )
 
     def _check_delivery_identity(
         self, execution: ProjectExecution, delivery: DeliverySettings
@@ -614,6 +633,9 @@ class ProjectRunner:
         except FileNotFoundError:
             existing = execution
         now = utc_now()
+        # A target error says nothing about the running tasks. Their child runs may be
+        # merged already, so an unattended resume must settle them again, not skip them.
+        keep_running = existing.unattended and isinstance(exc, ProjectTargetError)
         tasks = tuple(
             record.model_copy(
                 update={
@@ -621,7 +643,7 @@ class ProjectRunner:
                     "failure_reason": str(exc),
                 }
             )
-            if record.state is ProjectTaskState.RUNNING
+            if record.state is ProjectTaskState.RUNNING and not keep_running
             else record
             for record in existing.tasks
         )
@@ -755,13 +777,17 @@ class ProjectRunner:
     ) -> ProjectExecution:
         pending = {task.id: task for task in plan.tasks}
         completed: set[int] = set()
+        unmerged: set[int] = set()
         if resuming:
-            execution, completed = self._reconcile_completed_tasks(
+            execution, completed, unmerged = self._reconcile_completed_tasks(
                 execution, plan, integration_path, delivery
             )
-            for task_id in completed:
+            for task_id in completed | unmerged:
                 pending.pop(task_id, None)
         while pending:
+            execution = self._skip_dependents_of_unmerged(execution, pending, unmerged)
+            if not pending:
+                break
             ready = [
                 task for task in pending.values() if set(task.dependencies).issubset(completed)
             ]
@@ -792,66 +818,24 @@ class ProjectRunner:
 
             terminal_failure = False
             for task in wave:
-                run = results.get(task.id)
-                if run is None:
-                    execution = self._finish_failure(
-                        execution,
-                        task.id,
-                        ProjectState.FAILED,
-                        errors[task.id],
-                    )
+                execution, settled = self._settle_task(
+                    execution,
+                    task,
+                    results.get(task.id),
+                    errors.get(task.id),
+                    integration_path,
+                    delivery,
+                )
+                if settled == "stopped":
                     terminal_failure = True
                     continue
-                if run.state not in _SUCCESS_STATES:
-                    state = (
-                        ProjectState.NEEDS_HUMAN
-                        if run.state is WorkflowState.NEEDS_HUMAN
-                        else ProjectState.FAILED
+                if settled == "integrated":
+                    execution = self._close_task_issue(
+                        execution, task.id, source_repo, github_repository
                     )
-                    execution = self._finish_failure(
-                        execution,
-                        task.id,
-                        state,
-                        run.failure_reason or f"task {task.id} did not complete",
-                    )
-                    terminal_failure = True
-                    continue
-
-                try:
-                    if delivery.is_remote:
-                        execution = self._integrate_remote_task(
-                            execution, task, run, integration_path, delivery
-                        )
-                    else:
-                        execution = self._integrate_local_task(
-                            execution, task, run, integration_path
-                        )
-                except (OSError, ProjectError) as exc:
-                    execution = self._finish_failure(
-                        execution,
-                        task.id,
-                        ProjectState.NEEDS_HUMAN,
-                        str(exc),
-                    )
-                    terminal_failure = True
-                    continue
-
-                if github_repository is not None:
-                    issue_url = execution.tasks[task.id - 1].issue_url
-                    if issue_url is not None:
-                        try:
-                            self._github.close_issue(
-                                source_repo,
-                                repository=github_repository,
-                                issue=issue_url,
-                            )
-                        except (GitHubCommandError, OSError) as exc:
-                            execution = self._add_warning(
-                                execution,
-                                f"task {task.id} was integrated but its issue could not "
-                                f"be closed: {exc}",
-                            )
-                completed.add(task.id)
+                    completed.add(task.id)
+                else:
+                    unmerged.add(task.id)
                 del pending[task.id]
             if terminal_failure:
                 return execution
@@ -880,6 +864,9 @@ class ProjectRunner:
                 if verification.report.failures
                 else "final project verification failed"
             )
+            if execution.unattended:
+                execution = self._add_needs_look(execution, f"final verification: {reason}")
+                return self._finish_done(execution)
             execution = execution.model_copy(
                 update={
                     "state": ProjectState.NEEDS_HUMAN,
@@ -893,14 +880,168 @@ class ProjectRunner:
 
         if final_target is not None:
             self._assert_at_target(integration_path, final_target, delivery)
-        execution = execution.model_copy(
+        return self._finish_done(execution)
+
+    def _finish_done(self, execution: ProjectExecution) -> ProjectExecution:
+        done = execution.model_copy(
             update={
                 "state": ProjectState.DONE,
                 "updated_at": utc_now(),
                 "completed_at": utc_now(),
             }
         )
+        self._project_store.save_execution(done)
+        return done
+
+    def _settle_task(
+        self,
+        execution: ProjectExecution,
+        task: ProjectTask,
+        run: FactoryRun | None,
+        error: str | None,
+        integration_path: Path,
+        delivery: DeliverySettings,
+    ) -> tuple[ProjectExecution, _Settled]:
+        """Integrate one child result, or record why the task is not on the target."""
+        if run is None:
+            return self._task_not_integrated(
+                execution,
+                task.id,
+                ProjectState.FAILED,
+                error or f"task {task.id} did not complete",
+            )
+        if run.state not in _SUCCESS_STATES:
+            state = (
+                ProjectState.NEEDS_HUMAN
+                if run.state is WorkflowState.NEEDS_HUMAN
+                else ProjectState.FAILED
+            )
+            return self._task_not_integrated(
+                execution,
+                task.id,
+                state,
+                run.failure_reason or f"task {task.id} did not complete",
+            )
+        if execution.unattended and delivery.is_remote and _left_open(run):
+            reasons = "; ".join(run.needs_look) or "it was not merged"
+            # One write, so a crash cannot keep the task DONE and lose the reason.
+            execution = self._finish_task(
+                execution,
+                task.id,
+                run.commit_sha,
+                pull_request_url=run.pull_request_url,
+                needs_look=(
+                    f"task {task.id}: pull request {run.pull_request_url} was left open: {reasons}",
+                ),
+            )
+            return execution, "unmerged"
+        return self._integrate_task(execution, task, run, integration_path, delivery)
+
+    def _integrate_task(
+        self,
+        execution: ProjectExecution,
+        task: ProjectTask,
+        run: FactoryRun,
+        integration_path: Path,
+        delivery: DeliverySettings,
+    ) -> tuple[ProjectExecution, _Settled]:
+        """Put one successful child run on the target, locally or through its pull request."""
+        try:
+            if delivery.is_remote:
+                execution = self._integrate_remote_task(
+                    execution, task, run, integration_path, delivery
+                )
+            else:
+                execution = self._integrate_local_task(execution, task, run, integration_path)
+        except (OSError, ProjectError) as exc:
+            if execution.unattended and isinstance(exc, ProjectTargetError):
+                # The child may have merged already. Its dependents must still run.
+                raise
+            return self._task_not_integrated(execution, task.id, ProjectState.NEEDS_HUMAN, str(exc))
+        if execution.unattended:
+            execution = self._add_needs_look(
+                execution, *(f"task {task.id}: {reason}" for reason in run.needs_look)
+            )
+        return execution, "integrated"
+
+    def _task_not_integrated(
+        self,
+        execution: ProjectExecution,
+        task_id: int,
+        state: ProjectState,
+        reason: str,
+    ) -> tuple[ProjectExecution, _Settled]:
+        """An attended project stops. An unattended project records the task and goes on."""
+        if not execution.unattended:
+            return self._finish_failure(execution, task_id, state, reason), "stopped"
+        records = list(execution.tasks)
+        records[task_id - 1] = records[task_id - 1].model_copy(
+            update={
+                "state": (
+                    ProjectTaskState.NEEDS_HUMAN
+                    if state is ProjectState.NEEDS_HUMAN
+                    else ProjectTaskState.FAILED
+                ),
+                "failure_reason": reason,
+            }
+        )
+        execution = execution.model_copy(update={"tasks": tuple(records), "updated_at": utc_now()})
         self._project_store.save_execution(execution)
+        return self._add_needs_look(execution, f"task {task_id}: {reason}"), "unmerged"
+
+    def _skip_dependents_of_unmerged(
+        self,
+        execution: ProjectExecution,
+        pending: dict[int, ProjectTask],
+        unmerged: set[int],
+    ) -> ProjectExecution:
+        """Drop each pending task that needs a task that is not on the target (ADR-044).
+
+        A dependency always has a lower id, so one pass in id order also skips
+        the dependents of a task skipped in the same pass.
+        """
+        for task in sorted(pending.values(), key=lambda candidate: candidate.id):
+            blockers = unmerged.intersection(task.dependencies)
+            if not blockers:
+                continue
+            execution = self._set_pending(execution, task.id)
+            execution = self._add_needs_look(
+                execution,
+                f"task {task.id} was skipped: it depends on task {min(blockers)}, "
+                "which did not merge",
+            )
+            unmerged.add(task.id)
+            del pending[task.id]
+        return execution
+
+    def _set_pending(self, execution: ProjectExecution, task_id: int) -> ProjectExecution:
+        """Return a task that a crash left RUNNING to PENDING, as any skipped task is."""
+        record = execution.tasks[task_id - 1]
+        if record.state is not ProjectTaskState.RUNNING:
+            return execution
+        records = list(execution.tasks)
+        records[task_id - 1] = record.model_copy(update={"state": ProjectTaskState.PENDING})
+        updated = execution.model_copy(update={"tasks": tuple(records), "updated_at": utc_now()})
+        self._project_store.save_execution(updated)
+        return updated
+
+    def _close_task_issue(
+        self,
+        execution: ProjectExecution,
+        task_id: int,
+        source_repo: Path,
+        github_repository: str | None,
+    ) -> ProjectExecution:
+        issue_url = execution.tasks[task_id - 1].issue_url
+        if github_repository is None or issue_url is None:
+            return execution
+        try:
+            self._github.close_issue(source_repo, repository=github_repository, issue=issue_url)
+        except (GitHubCommandError, OSError) as exc:
+            return self._add_warning(
+                execution,
+                f"task {task_id} was integrated but its issue could not be closed: {exc}",
+            )
         return execution
 
     def _run_wave(
@@ -1016,6 +1157,14 @@ class ProjectRunner:
         self._project_store.save_execution(updated)
         return updated
 
+    def _add_needs_look(self, execution: ProjectExecution, *reasons: str) -> ProjectExecution:
+        merged = _with_reasons(execution.needs_look, reasons)
+        if merged == execution.needs_look:
+            return execution
+        updated = execution.model_copy(update={"needs_look": merged, "updated_at": utc_now()})
+        self._project_store.save_execution(updated)
+        return updated
+
     def _add_warning(self, execution: ProjectExecution, warning: str) -> ProjectExecution:
         updated = execution.model_copy(
             update={
@@ -1046,6 +1195,7 @@ class ProjectRunner:
         *,
         pull_request_url: str | None = None,
         merge_commit_sha: str | None = None,
+        needs_look: tuple[str, ...] = (),
     ) -> ProjectExecution:
         records = list(execution.tasks)
         records[task_id - 1] = records[task_id - 1].model_copy(
@@ -1056,7 +1206,13 @@ class ProjectRunner:
                 "merge_commit_sha": merge_commit_sha,
             }
         )
-        updated = execution.model_copy(update={"tasks": tuple(records), "updated_at": utc_now()})
+        updated = execution.model_copy(
+            update={
+                "tasks": tuple(records),
+                "needs_look": _with_reasons(execution.needs_look, needs_look),
+                "updated_at": utc_now(),
+            }
+        )
         self._project_store.save_execution(updated)
         return updated
 
@@ -1139,19 +1295,19 @@ class ProjectRunner:
         assert delivery.remote is not None and delivery.base_branch is not None
         remote, base_branch = delivery.remote, delivery.base_branch
         target = self._fetch_target(integration_path, delivery)
-        head = _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
+        head = _target_git(integration_path, "rev-parse", "HEAD")
         if head != target:
-            if _run_git(integration_path, "status", "--porcelain").stdout.strip():
-                raise ProjectError(
+            if _target_git(integration_path, "status", "--porcelain"):
+                raise ProjectTargetError(
                     "the project integration worktree has uncommitted changes; refusing to "
                     f"re-root it on {remote}/{base_branch}"
                 )
             if not _is_ancestor(integration_path, head, target):
-                raise ProjectError(
+                raise ProjectTargetError(
                     "the project integration branch contains commits that are not on "
                     f"{remote}/{base_branch}; refusing to deliver work from unpublished history"
                 )
-            _run_git(integration_path, "merge", "--ff-only", "--quiet", target)
+            _target_git(integration_path, "merge", "--ff-only", "--quiet", target)
         self._assert_at_target(integration_path, target, delivery)
         return target
 
@@ -1178,13 +1334,13 @@ class ProjectRunner:
                 )
             )
         except (GitHubError, GitPublishError, OSError, ValueError) as exc:
-            raise ProjectError(
+            raise ProjectTargetError(
                 f"could not fetch {delivery.remote}/{delivery.base_branch}: {exc}"
             ) from exc
         if target.repository.casefold() != delivery.repository.casefold():
-            raise ProjectError("delivery repository identity changed before target fetch")
+            raise ProjectTargetError("delivery repository identity changed before target fetch")
         if delivery.host is not None and target.host.casefold() != delivery.host.casefold():
-            raise ProjectError(
+            raise ProjectTargetError(
                 f"delivery host changed from {delivery.host} to {target.host}; refusing to fetch"
             )
         return target
@@ -1193,14 +1349,14 @@ class ProjectRunner:
         self, integration_path: Path, target: str, delivery: DeliverySettings
     ) -> str:
         """Fail closed unless the integration head is exactly the fetched target."""
-        head = _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
+        head = _target_git(integration_path, "rev-parse", "HEAD")
         if head != target:
-            raise ProjectError(
+            raise ProjectTargetError(
                 f"the project integration worktree is at {head}, not the fetched "
                 f"{delivery.remote}/{delivery.base_branch} commit {target}"
             )
-        if _run_git(integration_path, "status", "--porcelain").stdout.strip():
-            raise ProjectError("project integration worktree contains unverified changes")
+        if _target_git(integration_path, "status", "--porcelain"):
+            raise ProjectTargetError("project integration worktree contains unverified changes")
         return head
 
     def _reconcile_completed_tasks(
@@ -1209,26 +1365,31 @@ class ProjectRunner:
         plan: ProjectPlan,
         integration_path: Path,
         delivery: DeliverySettings,
-    ) -> tuple[ProjectExecution, set[int]]:
-        """Confirm which recorded task outcomes are real before dispatching."""
+    ) -> tuple[ProjectExecution, set[int], set[int]]:
+        """Confirm which recorded task outcomes are real before dispatching.
+
+        Returns the tasks that are on the target and, for an unattended project,
+        the tasks that finished without reaching it (ADR-044).
+        """
         if len(execution.tasks) != len(plan.tasks):
             raise ProjectError("persisted task records do not match the immutable project plan")
         target = self._refresh_target(integration_path, delivery) if delivery.is_remote else None
         completed: set[int] = set()
+        unmerged: set[int] = set()
         for record in execution.tasks:
+            if execution.unattended and _did_not_merge(record, delivery):
+                unmerged.add(record.task_id)
+                if record.state is not ProjectTaskState.DONE and record.failure_reason:
+                    execution = self._add_needs_look(
+                        execution, f"task {record.task_id}: {record.failure_reason}"
+                    )
+                continue
             if record.state is not ProjectTaskState.DONE:
                 continue
-            if delivery.is_remote:
-                assert target is not None
-                if not record.merge_commit_sha or not _is_ancestor(
-                    integration_path, record.merge_commit_sha, target
-                ):
-                    raise ProjectError(
-                        f"task {record.task_id} is recorded as delivered but its merge commit "
-                        "is not in the fetched target history"
-                    )
+            if target is not None:
+                _require_merged_into(record, integration_path, target)
             completed.add(record.task_id)
-        return execution, completed
+        return execution, completed, unmerged
 
     def _finish_failure(
         self,
@@ -1411,6 +1572,31 @@ class ProjectRunner:
         )
 
 
+def _with_reasons(existing: tuple[str, ...], reasons: tuple[str, ...]) -> tuple[str, ...]:
+    """``existing`` followed by each reason it does not hold yet."""
+    return (*existing, *dict.fromkeys(item for item in reasons if item not in existing))
+
+
+def _left_open(run: FactoryRun) -> bool:
+    """True for an unattended child run that ended with its pull request open, not merged."""
+    return (
+        run.state is WorkflowState.DONE
+        and run.pull_request_url is not None
+        and run.merge_commit_sha is None
+    )
+
+
+def _did_not_merge(record: ProjectTaskExecution, delivery: DeliverySettings) -> bool:
+    """True for a recorded task that finished and is not on the target."""
+    if record.state in {ProjectTaskState.FAILED, ProjectTaskState.NEEDS_HUMAN}:
+        return True
+    return (
+        record.state is ProjectTaskState.DONE
+        and delivery.is_remote
+        and record.merge_commit_sha is None
+    )
+
+
 def _run_git(
     cwd: Path,
     *args: str,
@@ -1429,6 +1615,26 @@ def _run_git(
     if check and result.returncode != 0:
         raise ProjectError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
     return result
+
+
+def _require_merged_into(record: ProjectTaskExecution, integration_path: Path, target: str) -> None:
+    """Fail closed unless a delivered task's merge commit is in the fetched target history."""
+    if not record.merge_commit_sha or not _is_ancestor(
+        integration_path, record.merge_commit_sha, target
+    ):
+        raise ProjectError(
+            f"task {record.task_id} is recorded as delivered but its merge commit "
+            "is not in the fetched target history"
+        )
+
+
+def _target_git(cwd: Path, *args: str) -> str:
+    """Run a Git command that keeps the worktree on the target. A failure is a
+    target error, so an unattended project can resume its running tasks (ADR-044)."""
+    try:
+        return _run_git(cwd, *args).stdout.strip()
+    except ProjectError as exc:
+        raise ProjectTargetError(str(exc)) from exc
 
 
 def _commit_exists(cwd: Path, commit_sha: str) -> bool:

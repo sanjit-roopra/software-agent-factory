@@ -625,6 +625,8 @@ def project_command(
         typer.echo(" | ".join(details))
     if execution.failure_reason is not None:
         typer.echo(f"reason: {execution.failure_reason}")
+    for reason in execution.needs_look:
+        typer.echo(f"needs look: {reason}")
     typer.echo(f"artifacts: {project_store.project_dir(execution.project_id)}")
 
     if execution.state is not ProjectState.DONE:
@@ -1261,6 +1263,7 @@ def dashboard_command(
                     "created_at": execution_data["created_at"],
                     "updated_at": execution_data["updated_at"],
                     "completed_at": execution_data["completed_at"],
+                    "needs_look": execution_data["needs_look"],
                     "task_count": len(tasks),
                     "tasks": tasks,
                     "models": models,

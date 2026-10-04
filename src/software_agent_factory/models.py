@@ -647,11 +647,16 @@ class ProjectExecution(VersionedModel):
     delivery_host: str | None = None
     delivery_policy_fingerprint: str | None = None
     risk_assessment_enabled: bool = True
+    #: ``factory.unattended`` when the project started (ADR-044).
+    unattended: bool = False
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)
     completed_at: UtcDateTime | None = None
     failure_reason: str | None = None
     warnings: tuple[str, ...] = ()
+    #: Why an unattended project ends ``DONE`` with work that is not on the target:
+    #: a task that did not merge, a task skipped because of it, a failed final check (ADR-044).
+    needs_look: tuple[str, ...] = ()
     verification_report: VerificationReport | None = None
 
     @model_validator(mode="after")

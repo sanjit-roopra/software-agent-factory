@@ -1,5 +1,49 @@
 # Architecture Decisions
 
+## ADR-044: Unattended projects continue past a task that did not merge
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+ADR-039 to ADR-043 let one run continue without a person. A project still stopped for a person.
+In remote mode, an unattended child run leaves its pull request open when it needs a look (ADR-040).
+The project saw a finished task with no merge and stopped in `NEEDS_HUMAN`.
+It also stopped when a child run ended in `NEEDS_HUMAN` or `FAILED`, when the factory did not integrate a task, and when the final check failed.
+A project did not store the setting, so a resume used the current configuration.
+
+### Decision
+
+- A project stores `factory.unattended` in `ProjectExecution.unattended` when it starts.
+  A resume gives each task that is still waiting the stored value, as it does for risk assessment.
+- For an unattended project, a task is not on the target in three cases:
+  - The child run left its pull request open.
+  - The child run ended in `NEEDS_HUMAN` or `FAILED`.
+  - The factory did not integrate the result of the child run.
+- The project records a reason for each such task in `ProjectExecution.needs_look`.
+  A left-open task stays `DONE` with its pull request URL and no merge commit.
+  Another task gets the state `NEEDS_HUMAN` or `FAILED` and a failure reason.
+- The project skips each task that depends on a task that is not on the target. A task that depends on a skipped task is also skipped.
+  A skipped task stays `PENDING`. Its reason names the task it needs.
+- Independent tasks still run. The project does not add a task state.
+- If the final check on the composed target fails, the project records the failure in `needs_look`. The report stays in `verification_report`.
+- In local mode, the project copies each `needs_look` reason of a child run into the project list. Each reason starts with the task number.
+- The project then ends `DONE`. The CLI prints each reason as `needs look: ...`. The dashboard shows each reason on the project card.
+- An unattended resume does not refuse a project with a recorded task rejection.
+  It treats a `FAILED` or `NEEDS_HUMAN` task, and a `DONE` task without a merge commit, as finished but not integrated.
+  It skips the dependents of these tasks and never runs them again.
+- An attended project does not change. It still stops at the first task that does not merge.
+
+### Consequences
+
+- One task that needs a look no longer stops the project.
+- A project can end `DONE` with a part of its plan not run. `ProjectExecution.needs_look` is the only signal, and the CLI exit code is 0.
+- A person can merge an open pull request later. The project does not pick up that result.
+- The persisted project has two new fields. A project written earlier loads as attended with an empty list.
+- Some errors still end an unattended project in `FAILED`. These errors are not about one task.
+  Examples are a failed target fetch, an integration worktree that is not at the target, and an unexpected error.
+- With the setting off, the factory behaves as before.
+
 ## ADR-043: Unattended runs continue after a factory restart
 
 Status: accepted on 2026-10-04.
@@ -163,7 +207,7 @@ Only the risk approval gate had a setting to turn it off.
 - The run stores the setting when it starts, so resume and reopen keep the same policy.
 - An unattended run never ends in `FAILED` in place of a human stop.
 - The review acceptance keeps up to 24 of the newest accepted findings. The log names the number it drops.
-- A project does not yet pin the setting when it starts. A later change adds this.
+- A project stores the setting when it starts (ADR-044).
 - Gates after implementation, such as a used attempt budget or failed CI, are a later change.
 
 ### Consequences

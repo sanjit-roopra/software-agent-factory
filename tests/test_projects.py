@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from factory_testing import build_config, git, triage_hook
+from factory_testing import (
+    ScriptedController,
+    build_config,
+    git,
+    planner_with_dependencies,
+    triage_hook,
+)
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
@@ -29,8 +35,15 @@ from software_agent_factory.models import (
     WorkflowState,
     WorkItem,
 )
-from software_agent_factory.projects import FileProjectStore, ProjectError, ProjectRunner
+from software_agent_factory.projects import (
+    FileProjectStore,
+    ProjectError,
+    ProjectRunner,
+    ProjectTargetError,
+    _target_git,
+)
 from software_agent_factory.store import FileRunStore
+from software_agent_factory.workflow import WorkflowController
 
 pytestmark = pytest.mark.project_delivery
 
@@ -611,15 +624,15 @@ def test_parallel_wave_persists_every_child_result_before_stopping(
     assert len(store.list_runs()) == 2
 
 
-def test_final_verification_checks_fully_composed_integration_branch(
-    factory_source_repo: Path,
-    factory_data_dir: Path,
-) -> None:
+def _run_project_whose_composed_tree_fails_verification(
+    factory_source_repo: Path, factory_data_dir: Path, *, unattended: bool
+) -> ProjectExecution:
     config = build_config(
         factory_data_dir,
         scheduler={"max_concurrent_tasks": 2},
         verify=["test ! -f task-1.txt -o ! -f task-2.txt"],
     )
+    config.factory.unattended = unattended
 
     def planner(request: AgentRequest) -> AgentResult:
         if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
@@ -674,15 +687,72 @@ def test_final_verification_checks_fully_composed_integration_branch(
         FileRunStore(factory_data_dir),
         FakeAgentRuntime(planner=planner, implementer=implementer),
     )
+    return runner.run(brief, factory_source_repo)
 
-    execution = runner.run(brief, factory_source_repo)
+
+def test_final_verification_checks_fully_composed_integration_branch(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    execution = _run_project_whose_composed_tree_fails_verification(
+        factory_source_repo, factory_data_dir, unattended=False
+    )
 
     assert execution.state is ProjectState.NEEDS_HUMAN
     assert all(task.state.value == "DONE" for task in execution.tasks)
     assert execution.verification_report is not None
     assert not execution.verification_report.passed
     assert "verify:" in (execution.failure_reason or "")
+    assert execution.needs_look == ()
     assert (factory_data_dir / "projects/project-final-verification/logs").is_dir()
+
+
+def test_unattended_final_verification_failure_ends_the_project_done_with_needs_look(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    execution = _run_project_whose_composed_tree_fails_verification(
+        factory_source_repo, factory_data_dir, unattended=True
+    )
+
+    assert execution.state is ProjectState.DONE
+    assert execution.failure_reason is None
+    assert execution.verification_report is not None
+    assert not execution.verification_report.passed
+    assert len(execution.needs_look) == 1
+    assert execution.needs_look[0].startswith("final verification: verify:")
+
+
+def test_unattended_project_closes_only_the_issues_of_merged_tasks(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = build_config(factory_data_dir)
+    config.factory.unattended = True
+    store = FileRunStore(factory_data_dir)
+    runtime = FakeAgentRuntime(planner=planner_with_dependencies(_project_planner, (), (1,), ()))
+    github = _RecordingGitHubClient()
+    runner = ProjectRunner(
+        config,
+        store,
+        runtime,
+        github_client=github,  # type: ignore[arg-type]
+        controller=ScriptedController(  # type: ignore[arg-type]
+            WorkflowController(config, store, runtime), store, {1: WorkflowState.NEEDS_HUMAN}
+        ),
+    )
+    brief = ProjectBrief(
+        id="project-issues",
+        title="Close only merged issues",
+        description="Task 1 does not merge. Task 3 does.",
+        repository_path=str(factory_source_repo),
+    )
+
+    execution = runner.run(brief, factory_source_repo, github_repository="acme/repo")
+
+    assert execution.state is ProjectState.DONE
+    assert len(github.created) == 3
+    assert github.closed == [execution.tasks[2].issue_url]
 
 
 def test_project_store_rejects_duplicate_execution_and_path_traversal(
@@ -1074,3 +1144,12 @@ def test_project_task_with_unresolved_decisions_preserves_needs_human_and_reject
 
     with pytest.raises(ProjectError, match="rejection"):
         runner.resume(brief.id, factory_source_repo)
+
+
+def test_a_git_failure_that_keeps_the_worktree_on_the_target_is_a_target_error(
+    tmp_path: Path,
+) -> None:
+    not_a_repository = tmp_path / "missing"
+
+    with pytest.raises(ProjectTargetError, match="rev-parse HEAD"):
+        _target_git(not_a_repository, "rev-parse", "HEAD")
