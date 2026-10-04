@@ -43,6 +43,7 @@ from ..models import (
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     ActiveInvocationStatus,
     HaltReasonCode,
+    ReviewFindingCategory,
 )
 from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
@@ -294,7 +295,7 @@ _GUIDANCE_ARTIFACTS: dict[HaltReasonCode, str] = {
     HaltReasonCode.UNRESOLVED_DECISIONS: "execution-plan.json",
 }
 
-_GUIDANCE_CATEGORIES = frozenset({"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"})
+_GUIDANCE_CATEGORIES = frozenset(category.value for category in ReviewFindingCategory)
 
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:

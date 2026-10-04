@@ -228,6 +228,8 @@ def test_standard_planner_prompt_requires_smallest_implementation() -> None:
 
     assert "smallest implementation" in prompt
     assert "speculative" in prompt
+    assert "Choose the simplest approach that meets the acceptance criteria" in prompt
+    assert "Name that criterion in the step" in prompt
     assert "PlanningResult JSON Schema" in prompt
     assert "In the specification, separate facts, assumptions, and unknowns" in prompt
     assert "Keep acceptance criteria measurable" in prompt
@@ -322,6 +324,13 @@ def test_tester_prompt_carries_diff_changed_files_and_deterministic_results() ->
     assert "Deterministic verification" in prompt
     assert "pytest -q" in prompt
     assert "Do not use or request an implementer self-assessment" in prompt
+
+
+def test_reviewer_prompt_blocks_parts_no_acceptance_criterion_needs() -> None:
+    prompt = build_prompt(make_request(AgentRole.REVIEWER, execution_plan=plan(), diff=DIFF))
+
+    assert "SIMPLICITY means a new file, class, layer, or option" in prompt
+    assert "a sibling boundary, or a new dependency" in prompt
 
 
 def test_reviewer_prompt_carries_the_tester_report() -> None:

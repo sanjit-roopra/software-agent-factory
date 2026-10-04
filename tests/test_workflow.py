@@ -1692,9 +1692,13 @@ def test_repeated_low_risk_review_blocker_is_accepted_after_three_rounds(
     assert persisted == run.review_acceptance
 
 
+@pytest.mark.parametrize(
+    "category", [ReviewFindingCategory.CORRECTNESS, ReviewFindingCategory.SIMPLICITY]
+)
 def test_low_risk_finding_is_accepted_at_configured_review_round_limit(
     source_repo: Path,
     data_dir: Path,
+    category: ReviewFindingCategory,
 ) -> None:
     def reviewer(request: AgentRequest) -> AgentResult:
         return AgentResult(
@@ -1702,7 +1706,7 @@ def test_low_risk_finding_is_accepted_at_configured_review_round_limit(
             success=True,
             review_report=ReviewReport(
                 approved=False,
-                blocking_findings=[_review_finding("Bounded low-risk defect.")],
+                blocking_findings=[_review_finding("Bounded low-risk defect.", category=category)],
             ),
         )
 
@@ -1718,6 +1722,7 @@ def test_low_risk_finding_is_accepted_at_configured_review_round_limit(
     assert len(run.attempt_records) == 1
     assert run.review_acceptance is not None
     assert run.review_acceptance.reason is ReviewAcceptanceReason.REVIEW_ROUND_LIMIT
+    assert [finding.category for finding in run.review_acceptance.findings] == [category]
 
 
 def test_ineligible_finding_stops_at_configured_review_round_limit(
