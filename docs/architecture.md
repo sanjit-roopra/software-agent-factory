@@ -831,6 +831,9 @@ Triage then still sets the risk level for routing.
 No risk level stops a run for human approval, and triage does not write a risk rationale.
 See ADR-030 in the decisions log.
 
+Set `factory.unattended` to `true` so that no run stops for a person.
+Every human gate then lets the run continue. See ADR-039 in the decisions log.
+
 ## Initial agents
 
 ### Triage

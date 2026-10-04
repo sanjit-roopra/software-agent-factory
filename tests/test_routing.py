@@ -517,6 +517,27 @@ def test_manual_triage_route_halts_in_needs_human(
     assert not any(attempt.role is AgentRole.IMPLEMENTER for attempt in run.attempt_records)
 
 
+def test_unattended_manual_triage_route_runs_the_full_workflow(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    config = _config(data_dir)
+    config.factory.unattended = True
+    work_item = _work_item("WI-manual").model_copy(update={"complexity": Complexity.L3})
+    restricted = [opt for opt in config.routing.options if opt.id in {"full_l2", "manual_triage"}]
+    config = config.model_copy(
+        update={
+            "routing": config.routing.model_copy(update={"enabled": True, "options": restricted})
+        }
+    )
+    run = WorkflowController(config, FileRunStore(data_dir), FakeAgentRuntime()).run(
+        work_item, source_repo
+    )
+
+    assert run.state is WorkflowState.PR_READY
+    assert any(attempt.role is AgentRole.IMPLEMENTER for attempt in run.attempt_records)
+
+
 def test_single_route_skips_agents_and_synthesizes_artifacts(
     source_repo: Path,
     data_dir: Path,
