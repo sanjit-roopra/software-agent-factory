@@ -17,8 +17,10 @@ A separate simplify step for the plan or the review adds a call and more complex
 - The planner chooses the simplest approach that meets the acceptance criteria.
 - The planner adds a new file, class, layer, option or dependency only when an acceptance criterion needs it.
   The step names that criterion.
-- The reviewer reports such a part as a blocker when no acceptance criterion needs it.
+- The reviewer reports a new file, class, layer or option as a blocker when no acceptance criterion needs it.
   The finding uses the new category `SIMPLICITY` and names the simpler change.
+- `SCOPE` is work outside the work item. `SIMPLICITY` is an extra part inside it.
+- An unneeded new dependency stays a `SCOPE` finding. A person must still accept it.
 - `SIMPLICITY` is not in the default `review.blocked_categories`.
   At the review limit, a low risk run accepts an open `SIMPLICITY` finding.
 - There is no new agent call and no new workflow step.

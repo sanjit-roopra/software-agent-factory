@@ -329,8 +329,8 @@ def test_tester_prompt_carries_diff_changed_files_and_deterministic_results() ->
 def test_reviewer_prompt_blocks_parts_no_acceptance_criterion_needs() -> None:
     prompt = build_prompt(make_request(AgentRole.REVIEWER, execution_plan=plan(), diff=DIFF))
 
-    assert "that no acceptance criterion needs is\n  a SIMPLICITY blocker" in prompt
-    assert "Name the simpler change that meets the criteria" in prompt
+    assert "SIMPLICITY means a new file, class, layer, or option" in prompt
+    assert "Report a new dependency that no acceptance criterion needs as SCOPE" in prompt
 
 
 def test_reviewer_prompt_carries_the_tester_report() -> None:
