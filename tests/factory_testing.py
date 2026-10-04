@@ -118,6 +118,25 @@ def build_config(
     return FactoryConfig.model_validate(payload)
 
 
+class CrashingRuntime:
+    """Raises ``KeyboardInterrupt`` on one call of one role, as a killed factory process does."""
+
+    def __init__(self, role: AgentRole, on_call: int = 1) -> None:
+        self.role = role
+        self.on_call = on_call
+        self.roles: list[AgentRole] = []
+        self._delegate = FakeAgentRuntime()
+        self._role_calls = 0
+
+    def run(self, request: AgentRequest) -> AgentResult:
+        self.roles.append(request.role)
+        if request.role is self.role:
+            self._role_calls += 1
+            if self._role_calls == self.on_call:
+                raise KeyboardInterrupt
+        return self._delegate.run(request)
+
+
 def work_item(work_item_id: str = "WI-1") -> WorkItem:
     return WorkItem(
         id=work_item_id,

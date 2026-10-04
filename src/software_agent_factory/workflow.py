@@ -202,6 +202,9 @@ MAX_LATE_REVIEW_ADOPTION_ROUNDS = 1
 MAX_CONSECUTIVE_BLOCKING_REVIEWS_PER_PATH = 3
 MAX_CONSECUTIVE_UNRESOLVED_REVIEWS = 3
 MAX_CONSECUTIVE_REPLACEMENT_REVIEWS = 2
+#: Factory restarts one unattended run may spend before it ends as it is (ADR-043).
+MAX_RESTART_RECOVERIES = 2
+_RESTART_REASON = "interrupted by a factory restart"
 
 _DIFF_HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
@@ -648,6 +651,39 @@ class WorkflowController:
         self._store.save_run(run)
         return run
 
+    def _close_active_invocation(self, run: FactoryRun, reason: str) -> FactoryRun:
+        """Record the invocation a dead process left open as failed."""
+        active = run.active_invocation
+        if active is None:
+            return run
+        now = utc_now()
+        run = run.model_copy(
+            update={
+                "invocation_records": [
+                    *run.invocation_records,
+                    InvocationRecord(
+                        invocation_number=active.invocation_number,
+                        role=active.role,
+                        purpose=active.purpose,
+                        model=active.model,
+                        reasoning=active.reasoning,
+                        context_tier=active.context_tier,
+                        started_at=active.started_at,
+                        completed_at=now,
+                        success=False,
+                        failure_reason=reason,
+                        attempt_number=active.attempt_number,
+                        budget=active.budget,
+                    ),
+                ],
+                "active_invocation": None,
+                "updated_at": now,
+                "last_activity_at": now,
+            }
+        )
+        self._store.save_run(run)
+        return run
+
     def recover_abandoned_run(
         self, run: FactoryRun, reason: str = "run was abandoned by a previous process"
     ) -> FactoryRun:
@@ -661,33 +697,7 @@ class WorkflowController:
         """
         if is_run_finished(run):
             return run
-        if run.active_invocation is not None:
-            active = run.active_invocation
-            now = utc_now()
-            run = run.model_copy(
-                update={
-                    "invocation_records": [
-                        *run.invocation_records,
-                        InvocationRecord(
-                            invocation_number=active.invocation_number,
-                            role=active.role,
-                            purpose=active.purpose,
-                            model=active.model,
-                            reasoning=active.reasoning,
-                            context_tier=active.context_tier,
-                            started_at=active.started_at,
-                            completed_at=now,
-                            success=False,
-                            failure_reason=reason,
-                            attempt_number=active.attempt_number,
-                            budget=active.budget,
-                        ),
-                    ],
-                    "updated_at": now,
-                    "last_activity_at": now,
-                }
-            )
-            self._store.save_run(run)
+        run = self._close_active_invocation(run, reason)
         if run.state is WorkflowState.NEEDS_HUMAN:
             now = utc_now()
             run = run.model_copy(
@@ -774,81 +784,95 @@ class WorkflowController:
         self._store.save_artifact(run.id, work_item)
 
         try:
-            delivery_base: str | None = None
-            if self._config.merge.enabled:
-                assert self._merger is not None
-                try:
-                    repository = self._merger.validate_repository(source_repo)
-                    target = self._delivery_base_resolver(source_repo, repository)
-                    if target.repository != repository:
-                        raise GitHubError("delivery base resolved from a different repository")
-                    delivery_base = target.commit_sha
-                except (GitHubError, GitPublishError, OSError) as exc:
-                    return self.transition(
-                        run,
-                        WorkflowState.NEEDS_HUMAN,
-                        failure_reason=f"delivery repository is not authorized: {exc}",
-                    )
-                run = run.model_copy(
-                    update={
-                        "delivery_repository": repository,
-                        "delivery_host": target.host,
-                    }
-                )
-                self._store.save_run(run)
-            try:
-                with measure_operation(
-                    run.performance, "operation.workspace_prepare", operation="workspace_prepare"
-                ):
-                    workspace_path = (
-                        workspace.prepare(base_ref=delivery_base)
-                        if delivery_base is not None
-                        else workspace.prepare()
-                    )
-            except WorkspaceError as exc:
-                return self._end_failed(run, f"could not prepare workspace: {exc}")
-
-            run = run.model_copy(
-                update={
-                    "workspace_path": str(workspace_path),
-                    "branch_name": workspace.branch_name,
-                    "base_commit_sha": workspace.base_commit,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "lease": RunLease(
-                        host=socket.gethostname(),
-                        pid=os.getpid(),
-                        heartbeat_at=utc_now(),
-                    ),
-                }
-            )
-            self._store.save_run(run)
-            try:
-                with measure_operation(
-                    run.performance,
-                    "operation.repository_profile",
-                    operation="repository_profile",
-                ):
-                    repository_profile = self._repository_profiler(workspace_path)
-            except (OSError, ValueError) as exc:
-                repository_profile = generic_repository_profile(
-                    warning=f"repository profiling degraded: {exc}"
-                )
-            self._store.save_artifact(run.id, repository_profile)
-            inventory = self._save_toolchain_inventory(run, workspace_path, repository_profile)
-            self._resolve_repository_commands(run, workspace, repository_profile, inventory)
-            return self._execute(
-                run,
-                work_item,
-                workspace,
-                source_repo,
-                repository_profile,
-            )
+            return self._prepare_and_execute(run, work_item, workspace, source_repo)
         finally:
             # Workspaces are preserved by default (docs/architecture.md,
             # "Workspace lifecycle"): only the lock is released here, the
             # worktree itself is left in place for inspection/reuse.
             workspace.release_lock()
+
+    def _prepare_and_execute(
+        self,
+        run: FactoryRun,
+        work_item: WorkItem,
+        workspace: GitWorktreeWorkspace,
+        source_repo: Path,
+    ) -> FactoryRun:
+        """Prepare the worktree, profile the repository, then run the pipeline.
+
+        The caller holds the workspace lock. A new run and an unattended run that has no
+        stored work to continue (ADR-043) both start here.
+        """
+        delivery_base: str | None = None
+        if self._config.merge.enabled:
+            assert self._merger is not None
+            try:
+                repository = self._merger.validate_repository(source_repo)
+                target = self._delivery_base_resolver(source_repo, repository)
+                if target.repository != repository:
+                    raise GitHubError("delivery base resolved from a different repository")
+                delivery_base = target.commit_sha
+            except (GitHubError, GitPublishError, OSError) as exc:
+                return self.transition(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    failure_reason=f"delivery repository is not authorized: {exc}",
+                )
+            run = run.model_copy(
+                update={
+                    "delivery_repository": repository,
+                    "delivery_host": target.host,
+                }
+            )
+            self._store.save_run(run)
+        try:
+            with measure_operation(
+                run.performance, "operation.workspace_prepare", operation="workspace_prepare"
+            ):
+                workspace_path = (
+                    workspace.prepare(base_ref=delivery_base)
+                    if delivery_base is not None
+                    else workspace.prepare()
+                )
+        except WorkspaceError as exc:
+            return self._end_failed(run, f"could not prepare workspace: {exc}")
+
+        run = run.model_copy(
+            update={
+                "workspace_path": str(workspace_path),
+                "branch_name": workspace.branch_name,
+                "base_commit_sha": workspace.base_commit,
+                "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+                "lease": RunLease(
+                    host=socket.gethostname(),
+                    pid=os.getpid(),
+                    heartbeat_at=utc_now(),
+                ),
+            }
+        )
+        self._store.save_run(run)
+        try:
+            with measure_operation(
+                run.performance,
+                "operation.repository_profile",
+                operation="repository_profile",
+            ):
+                repository_profile = self._repository_profiler(workspace_path)
+        except (OSError, ValueError) as exc:
+            repository_profile = generic_repository_profile(
+                warning=f"repository profiling degraded: {exc}"
+            )
+        self._store.save_artifact(run.id, repository_profile)
+        inventory = self._save_toolchain_inventory(run, workspace_path, repository_profile)
+        self._resolve_repository_commands(run, workspace, repository_profile, inventory)
+        return self._execute(
+            run,
+            work_item,
+            workspace,
+            source_repo,
+            repository_profile,
+        )
 
     def _save_toolchain_inventory(
         self,
@@ -932,7 +956,8 @@ class WorkflowController:
         """Reconcile a delivery checkpoint without resetting any attempt budget.
 
         Earlier interrupted agent work is deliberately not replayed: its outcome
-        is ambiguous. A preserved terminal outcome is never reopened.
+        is ambiguous. An unattended run interrupted before a delivery checkpoint
+        continues instead (ADR-043). A preserved terminal outcome is never reopened.
         """
         run = self._store.load_run(run_id)
         if is_run_finished(run):
@@ -955,6 +980,8 @@ class WorkflowController:
                 WorkflowState.CI_RUNNING,
                 WorkflowState.CI_DIAGNOSIS,
             }:
+                if run.unattended:
+                    return self._restart_interrupted_run(run, workspace, source_repo)
                 return self.recover_abandoned_run(
                     run,
                     "interrupted before a safe delivery checkpoint; "
@@ -965,11 +992,7 @@ class WorkflowController:
                 repository = self._merger.validate_repository(source_repo)
                 if repository != run.delivery_repository:
                     raise ValueError("delivery repository changed since this run started")
-            if (
-                not workspace.path.is_dir()
-                or run.workspace_path != str(workspace.path)
-                or run.branch_name != workspace.branch_name
-            ):
+            if not self._workspace_matches(run, workspace):
                 return self.recover_abandoned_run(
                     run, "delivery workspace identity changed or the workspace is missing"
                 )
@@ -1005,6 +1028,139 @@ class WorkflowController:
                 )
         finally:
             workspace.release_lock()
+
+    @staticmethod
+    def _workspace_matches(run: FactoryRun, workspace: GitWorktreeWorkspace) -> bool:
+        return (
+            workspace.path.is_dir()
+            and run.workspace_path == str(workspace.path)
+            and run.branch_name == workspace.branch_name
+        )
+
+    def _restart_interrupted_run(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
+    ) -> FactoryRun:
+        """Continue an unattended run that a factory restart interrupted before delivery (ADR-043).
+
+        The run keeps its id, its attempt records and its stored artifacts. The attempt an
+        interrupted Implementer was making counts as a failed attempt, so a restart never
+        widens the attempt budget. The output of interrupted work is ambiguous, so work starts
+        again at planning, or from the start when the run stored no triage or lost its
+        workspace. A run that a restart interrupted more than ``MAX_RESTART_RECOVERIES`` times
+        or while it had a pull request ends as it is, like a run that used its budget.
+        """
+        try:
+            run = self._count_restart(run)
+            work_item = self._store.load_artifact(run.id, WorkItem)
+            if run.restart_recoveries > MAX_RESTART_RECOVERIES or run.pull_request_url is not None:
+                return self._end_restarted_run(run, workspace, source_repo)
+            try:
+                triage_result = self._store.load_artifact(run.id, TriageResult)
+            except FileNotFoundError:
+                triage_result = None
+            if triage_result is None or not self._workspace_matches(run, workspace):
+                run = self._restart_at(run, WorkflowState.CREATED)
+                return self._prepare_and_execute(run, work_item, workspace, source_repo)
+            workspace.prepare()
+            repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
+            run = self._restart_at(run, WorkflowState.PLANNING)
+            if triage_result.provenance == "SYNTHESIZED":
+                return self._drive_synthesized(
+                    run,
+                    work_item,
+                    triage_result,
+                    run.route_decision,
+                    workspace,
+                    source_repo,
+                    repository_profile,
+                )
+            return self._drive_from_planning(
+                run,
+                work_item,
+                triage_result,
+                None,
+                workspace,
+                source_repo,
+                repository_profile,
+                route_decision=run.route_decision,
+            )
+        except _Halt as halt:
+            return halt.run
+        except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
+            return self.recover_abandoned_run(
+                self._store.load_run(run.id), f"could not restart interrupted run: {exc}"
+            )
+
+    def _count_restart(self, run: FactoryRun) -> FactoryRun:
+        """Close the interrupted invocation and count this restart.
+
+        An interrupted Implementer counts as one failed attempt of its budget. That attempt is
+        otherwise recorded only after the Implementer returns.
+        """
+        active = run.active_invocation
+        run = self._close_active_invocation(run, _RESTART_REASON)
+        now = utc_now()
+        run = run.model_copy(
+            update={
+                "restart_recoveries": run.restart_recoveries + 1,
+                "lease": RunLease(host=socket.gethostname(), pid=os.getpid(), heartbeat_at=now),
+                "last_activity_at": now,
+                "updated_at": now,
+            }
+        )
+        self._store.save_run(run)
+        if active is not None and active.role is AgentRole.IMPLEMENTER:
+            run = self._record_attempt(
+                run,
+                active.attempt_number or 1,
+                RoleModelConfig(
+                    model=active.model,
+                    reasoning=active.reasoning,
+                    context_tier=active.context_tier,
+                ),
+                active.started_at,
+                now,
+                outcome="failed",
+                failure_reason=_RESTART_REASON,
+                budget=active.budget or AttemptBudget.IMPLEMENTATION,
+                trigger=AttemptTrigger.INITIAL,
+            )
+        return run
+
+    def _restart_at(self, run: FactoryRun, state: WorkflowState) -> FactoryRun:
+        """Controller-internal move of an interrupted unattended run back to ``state``.
+
+        The transition table has no edge back to an earlier stage from every state. The
+        interrupted stage is not timed, because its duration would include the downtime.
+        """
+        now = utc_now()
+        run = run.model_copy(
+            update={
+                "state": state,
+                "updated_at": now,
+                "state_started_at": now,
+                "last_activity_at": now,
+                "completed_at": None,
+                "failure_reason": None,
+            }
+        )
+        self._store.save_run(run)
+        logger.info("run %s -> %s (restarted after a factory restart)", run.id, state.value)
+        return run
+
+    def _end_restarted_run(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
+    ) -> FactoryRun:
+        """End a restarted run as it is (ADR-043): publish its work or keep its pull request."""
+        workspace.prepare()
+        context = self._stored_context(run, workspace, source_repo)
+        run = self._restart_at(run, WorkflowState.IMPLEMENTING)
+        run = self._publish_as_is(run, context, f"{_RESTART_REASON} too often to continue")
+        if run.state is not WorkflowState.PR_READY:
+            return run
+        if not self._config.pull_request.enabled:
+            return self.finalize_pr_ready(run)
+        return self._publish_and_observe(run, context)
 
     def _require_unchanged_delivery_policy(self, run: FactoryRun) -> None:
         if run.delivery_policy_fingerprint != delivery_policy_fingerprint(self._config):
@@ -1422,23 +1578,21 @@ class WorkflowController:
             triage_result=triage,
         )
 
-    def _restore_delivery_context(
+    def _stored_context(
         self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
     ) -> _RunContext:
+        """Rebuild the run context from stored artifacts, without checking the workspace."""
         work_item = self._store.load_artifact(run.id, WorkItem)
         if work_item.id != run.work_item_id:
             raise ValueError("persisted work item does not match run")
-        triage = self._store.load_artifact(run.id, TriageResult)
-        if not self._triage_authorizes_delivery(run, work_item, triage):
-            raise ValueError("persisted triage does not authorize delivery")
         route_decision: RouteDecision | None = None
         try:
             route_decision = self._store.load_artifact(run.id, RouteDecision)
         except FileNotFoundError:
             pass
-        context = _RunContext(
+        return _RunContext(
             work_item=work_item,
-            triage_result=triage,
+            triage_result=self._store.load_artifact(run.id, TriageResult),
             specification=self._store.load_artifact(run.id, Specification),
             execution_plan=self._store.load_artifact(run.id, ExecutionPlan),
             repository_profile=self._store.load_artifact(run.id, RepositoryProfile),
@@ -1446,6 +1600,13 @@ class WorkflowController:
             source_repo=source_repo,
             route_decision=route_decision,
         )
+
+    def _restore_delivery_context(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
+    ) -> _RunContext:
+        context = self._stored_context(run, workspace, source_repo)
+        if not self._triage_authorizes_delivery(run, context.work_item, context.triage_result):
+            raise ValueError("persisted triage does not authorize delivery")
         context.latest_evidence = workspace.collect_evidence()
         if context.latest_evidence.diff != self._store.load_patch(run.id):
             raise ValueError("workspace changes do not match the reviewed delivery checkpoint")
@@ -1719,34 +1880,58 @@ class WorkflowController:
             self._store.save_artifact(run.id, triage_result)
 
             run = self.transition(run, WorkflowState.PLANNING)
-            specification = self._synthesize_specification(work_item)
-            self._store.save_artifact(run.id, specification)
-            execution_plan = self._synthesize_execution_plan(
-                work_item, self._commands_for_run(run.id).verify
+            return self._drive_synthesized(
+                run,
+                work_item,
+                triage_result,
+                route_decision,
+                workspace,
+                source_repo,
+                repository_profile,
             )
-            self._store.save_artifact(run.id, execution_plan)
-
-            context = _RunContext(
-                work_item=work_item,
-                triage_result=triage_result,
-                specification=specification,
-                execution_plan=execution_plan,
-                repository_profile=repository_profile,
-                workspace=workspace,
-                source_repo=source_repo,
-                route_decision=route_decision,
-                original_synthesized_scope=tuple(execution_plan.expected_scope.modules),
-            )
-
-            run = self.transition(run, WorkflowState.IMPLEMENTING)
-            run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
-
-            if not self._config.pull_request.enabled:
-                return self.finalize_pr_ready(run)
-
-            return self._publish_and_observe(run, context)
         except _Halt as halt:
             return halt.run
+
+    def _drive_synthesized(
+        self,
+        run: FactoryRun,
+        work_item: WorkItem,
+        triage_result: TriageResult,
+        route_decision: RouteDecision | None,
+        workspace: GitWorktreeWorkspace,
+        source_repo: Path,
+        repository_profile: RepositoryProfile,
+    ) -> FactoryRun:
+        """Synthesize the specification and the plan, then continue from ``PLANNING``.
+
+        The ``SINGLE`` and ``CRITIQUE`` routes make no Planner call.
+        """
+        specification = self._synthesize_specification(work_item)
+        self._store.save_artifact(run.id, specification)
+        execution_plan = self._synthesize_execution_plan(
+            work_item, self._commands_for_run(run.id).verify
+        )
+        self._store.save_artifact(run.id, execution_plan)
+
+        context = _RunContext(
+            work_item=work_item,
+            triage_result=triage_result,
+            specification=specification,
+            execution_plan=execution_plan,
+            repository_profile=repository_profile,
+            workspace=workspace,
+            source_repo=source_repo,
+            route_decision=route_decision,
+            original_synthesized_scope=tuple(execution_plan.expected_scope.modules),
+        )
+
+        run = self.transition(run, WorkflowState.IMPLEMENTING)
+        run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
+
+        if not self._config.pull_request.enabled:
+            return self.finalize_pr_ready(run)
+
+        return self._publish_and_observe(run, context)
 
     def _drive_from_planning(
         self,

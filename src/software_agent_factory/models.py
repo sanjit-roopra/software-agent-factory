@@ -1621,6 +1621,8 @@ class FactoryRun(VersionedModel):
     #: a gate. A pull request with reasons gets the ``factory:needs-look``
     #: label and is never merged (ADR-040).
     needs_look: list[str] = Field(default_factory=list)
+    #: How often a factory restart interrupted this unattended run before delivery (ADR-043).
+    restart_recoveries: int = Field(default=0, ge=0)
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
     route_decision: RouteDecision | None = None
