@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from factory_testing import build_config, git, triage_hook
+from factory_testing import (
+    ScriptedController,
+    build_config,
+    git,
+    planner_with_dependencies,
+    triage_hook,
+)
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
@@ -31,6 +37,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.projects import FileProjectStore, ProjectError, ProjectRunner
 from software_agent_factory.store import FileRunStore
+from software_agent_factory.workflow import WorkflowController
 
 pytestmark = pytest.mark.project_delivery
 
@@ -708,6 +715,38 @@ def test_unattended_final_verification_failure_ends_the_project_done_with_needs_
     assert not execution.verification_report.passed
     assert len(execution.needs_look) == 1
     assert execution.needs_look[0].startswith("final verification: verify:")
+
+
+def test_unattended_project_closes_only_the_issues_of_merged_tasks(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    config = build_config(factory_data_dir)
+    config.factory.unattended = True
+    store = FileRunStore(factory_data_dir)
+    runtime = FakeAgentRuntime(planner=planner_with_dependencies(_project_planner, (), (1,), ()))
+    github = _RecordingGitHubClient()
+    runner = ProjectRunner(
+        config,
+        store,
+        runtime,
+        github_client=github,  # type: ignore[arg-type]
+        controller=ScriptedController(  # type: ignore[arg-type]
+            WorkflowController(config, store, runtime), store, {1: WorkflowState.NEEDS_HUMAN}
+        ),
+    )
+    brief = ProjectBrief(
+        id="project-issues",
+        title="Close only merged issues",
+        description="Task 1 does not merge. Task 3 does.",
+        repository_path=str(factory_source_repo),
+    )
+
+    execution = runner.run(brief, factory_source_repo, github_repository="acme/repo")
+
+    assert execution.state is ProjectState.DONE
+    assert len(github.created) == 3
+    assert github.closed == [execution.tasks[2].issue_url]
 
 
 def test_project_store_rejects_duplicate_execution_and_path_traversal(

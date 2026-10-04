@@ -47,6 +47,7 @@ from software_agent_factory.dashboard.sanitize import (
     ACTIVE_INVOCATION_STATUSES,
     ATTEMPT_FIELDS,
     INVOCATION_FIELDS,
+    MAX_NEEDS_LOOK_ITEMS,
     PROJECT_FIELDS,
     PROJECT_MODEL_FIELDS,
     PROJECT_TASK_FIELDS,
@@ -4076,3 +4077,9 @@ def test_a_project_needs_look_list_is_redacted_and_keeps_only_text() -> None:
     assert len(project["needs_look"]) == 2
     assert "ghp_abcdefgh12345678" not in json.dumps(project["needs_look"])
     assert project["needs_look"][1] == "task 2 was skipped"
+
+
+def test_a_project_needs_look_list_is_cut_at_the_cap() -> None:
+    project = sanitize_project({"project_id": "p", "needs_look": ["task 1: reason"] * 100})
+
+    assert len(project["needs_look"]) == MAX_NEEDS_LOOK_ITEMS

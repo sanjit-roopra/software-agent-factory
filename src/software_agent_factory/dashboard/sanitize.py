@@ -580,6 +580,8 @@ _ESCALATION_CHECKS: dict[str, Callable[[Any], bool]] = {
 #: The most items kept in one approval scope list. A longer list is dropped whole, because
 #: a part of what an approval allows would mislead the person who reads it.
 MAX_SCOPE_ITEMS = 24
+#: A project gives at most a few reasons per task, and a plan has at most 12 tasks.
+MAX_NEEDS_LOOK_ITEMS = 48
 
 
 def _text_list(value: Any, run_id: str | None, limit: int) -> list[str] | None:
@@ -763,7 +765,7 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
     if isinstance(needs_look, list):
         sanitized["needs_look"] = [
             bounded_reason(item, run_id=None)[0]
-            for item in needs_look
+            for item in needs_look[:MAX_NEEDS_LOOK_ITEMS]
             if isinstance(item, str) and item
         ]
     tasks = data.get("tasks")

@@ -13,19 +13,24 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any, Mapping, Sequence
+from typing import IO, Any, Callable, Mapping, Sequence
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.escalation_protocol import ReplyPolicy
 from software_agent_factory.github import GitHubClient, GitPublisher
 from software_agent_factory.models import (
+    AgentPurpose,
     AgentRole,
     Complexity,
+    FactoryRun,
+    ProjectPlan,
+    ProjectTask,
     RepairContext,
     Risk,
     RiskRationale,
     TriageResult,
+    WorkflowState,
     WorkItem,
 )
 from software_agent_factory.publishing import CIObserver, PullRequestPublisher
@@ -518,3 +523,81 @@ class FakePiClock:
 
     def deadline(self, seconds: float) -> float:
         return self.now + seconds
+
+
+def planner_with_dependencies(
+    fallback: Callable[[AgentRequest], AgentResult], *dependencies: tuple[int, ...]
+) -> Callable[[AgentRequest], AgentResult]:
+    """A planner whose project plan has one task per entry, each with those dependencies.
+
+    ``fallback`` answers every other request, for example the task execution plans.
+    """
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
+            return fallback(request)
+        assert request.project_brief is not None
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            project_plan=ProjectPlan(
+                project_id=request.project_brief.id,
+                summary="Planned outcomes.",
+                delivery_approach="Each task is one independently verifiable outcome.",
+                tasks=tuple(
+                    ProjectTask(
+                        id=number,
+                        title=f"Outcome number {number}",
+                        description=f"Implement outcome number {number}.",
+                        acceptance_criteria=(f"Outcome number {number} works.",),
+                        dependencies=task_dependencies,
+                    )
+                    for number, task_dependencies in enumerate(dependencies, start=1)
+                ),
+            ),
+        )
+
+    return planner
+
+
+class ScriptedController:
+    """Runs the real controller, except for tasks told to end another way.
+
+    A ``WorkflowState`` ends the child run there, an ``Exception`` is raised
+    from the dispatch, and a tuple of text lets the child run finish but gives
+    it those ``needs_look`` reasons.
+    """
+
+    def __init__(
+        self,
+        delegate: WorkflowController,
+        store: FileRunStore,
+        outcomes: Mapping[int, WorkflowState | Exception | tuple[str, ...]],
+    ) -> None:
+        self._delegate = delegate
+        self._store = store
+        self._outcomes = outcomes
+
+    def run(
+        self, work_item: WorkItem, source_repo: Path, *, run_id: str | None = None
+    ) -> FactoryRun:
+        outcome = self._outcomes.get(work_item.project_task_id or 0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if isinstance(outcome, WorkflowState):
+            run = FactoryRun(
+                id=run_id or "run-scripted",
+                work_item_id=work_item.id,
+                state=outcome,
+                failure_reason="scripted rejection",
+            )
+            self._store.save_run(run)
+            return run
+        run = self._delegate.run(work_item, source_repo, run_id=run_id)
+        if outcome is not None:
+            run = run.model_copy(update={"needs_look": list(outcome)})
+            self._store.save_run(run)
+        return run
+
+    def resume(self, run_id: str, source_repo: Path) -> FactoryRun:
+        return self._delegate.resume(run_id, source_repo)

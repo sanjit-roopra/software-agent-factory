@@ -114,6 +114,14 @@ class ProjectError(RuntimeError):
     """Raised when project planning or deterministic integration cannot continue."""
 
 
+class ProjectTargetError(ProjectError):
+    """Raised when the delivery target cannot be fetched or the worktree is not on it.
+
+    It is about the whole project, not one task. An unattended project ends
+    ``FAILED`` on it instead of recording one task as unmerged (ADR-044).
+    """
+
+
 #: Conservative Git remote/branch name shape, applied on top of the shared
 #: :func:`~software_agent_factory.github.is_safe_ref_name` check so the project
 #: layer can never be laxer than the merge adapter. Deliberately narrower than
@@ -912,13 +920,16 @@ class ProjectRunner:
                 run.failure_reason or f"task {task.id} did not complete",
             )
         if execution.unattended and delivery.is_remote and _left_open(run):
-            execution = self._finish_task(
-                execution, task.id, run.commit_sha, pull_request_url=run.pull_request_url
-            )
             reasons = "; ".join(run.needs_look) or "it was not merged"
-            execution = self._add_needs_look(
+            # One write, so a crash cannot keep the task DONE and lose the reason.
+            execution = self._finish_task(
                 execution,
-                f"task {task.id}: pull request {run.pull_request_url} was left open: {reasons}",
+                task.id,
+                run.commit_sha,
+                pull_request_url=run.pull_request_url,
+                needs_look=(
+                    f"task {task.id}: pull request {run.pull_request_url} was left open: {reasons}",
+                ),
             )
             return execution, "unmerged"
         try:
@@ -929,6 +940,9 @@ class ProjectRunner:
             else:
                 execution = self._integrate_local_task(execution, task, run, integration_path)
         except (OSError, ProjectError) as exc:
+            if execution.unattended and isinstance(exc, ProjectTargetError):
+                # The child may have merged already. Its dependents must still run.
+                raise
             return self._task_not_integrated(execution, task.id, ProjectState.NEEDS_HUMAN, str(exc))
         if execution.unattended:
             execution = self._add_needs_look(
@@ -973,16 +987,29 @@ class ProjectRunner:
         the dependents of a task skipped in the same pass.
         """
         for task in sorted(pending.values(), key=lambda candidate: candidate.id):
-            blocker = next((item for item in task.dependencies if item in unmerged), None)
-            if blocker is None:
+            blockers = unmerged.intersection(task.dependencies)
+            if not blockers:
                 continue
+            execution = self._set_pending(execution, task.id)
             execution = self._add_needs_look(
                 execution,
-                f"task {task.id} was skipped: it depends on task {blocker}, which did not merge",
+                f"task {task.id} was skipped: it depends on task {min(blockers)}, "
+                "which did not merge",
             )
             unmerged.add(task.id)
             del pending[task.id]
         return execution
+
+    def _set_pending(self, execution: ProjectExecution, task_id: int) -> ProjectExecution:
+        """Return a task that a crash left RUNNING to PENDING, as any skipped task is."""
+        record = execution.tasks[task_id - 1]
+        if record.state is not ProjectTaskState.RUNNING:
+            return execution
+        records = list(execution.tasks)
+        records[task_id - 1] = record.model_copy(update={"state": ProjectTaskState.PENDING})
+        updated = execution.model_copy(update={"tasks": tuple(records), "updated_at": utc_now()})
+        self._project_store.save_execution(updated)
+        return updated
 
     def _close_task_issue(
         self,
@@ -1117,12 +1144,10 @@ class ProjectRunner:
         return updated
 
     def _add_needs_look(self, execution: ProjectExecution, *reasons: str) -> ProjectExecution:
-        new = tuple(dict.fromkeys(item for item in reasons if item not in execution.needs_look))
-        if not new:
+        merged = _with_reasons(execution.needs_look, reasons)
+        if merged == execution.needs_look:
             return execution
-        updated = execution.model_copy(
-            update={"needs_look": (*execution.needs_look, *new), "updated_at": utc_now()}
-        )
+        updated = execution.model_copy(update={"needs_look": merged, "updated_at": utc_now()})
         self._project_store.save_execution(updated)
         return updated
 
@@ -1156,6 +1181,7 @@ class ProjectRunner:
         *,
         pull_request_url: str | None = None,
         merge_commit_sha: str | None = None,
+        needs_look: tuple[str, ...] = (),
     ) -> ProjectExecution:
         records = list(execution.tasks)
         records[task_id - 1] = records[task_id - 1].model_copy(
@@ -1166,7 +1192,13 @@ class ProjectRunner:
                 "merge_commit_sha": merge_commit_sha,
             }
         )
-        updated = execution.model_copy(update={"tasks": tuple(records), "updated_at": utc_now()})
+        updated = execution.model_copy(
+            update={
+                "tasks": tuple(records),
+                "needs_look": _with_reasons(execution.needs_look, needs_look),
+                "updated_at": utc_now(),
+            }
+        )
         self._project_store.save_execution(updated)
         return updated
 
@@ -1217,7 +1249,10 @@ class ProjectRunner:
         # commit object is available locally (it is for a merge-commit merge).
         if not run.reviewed_tree_sha:
             raise ProjectError(f"task {task.id} was delivered without a reviewed Git tree")
-        target = self._refresh_target(integration_path, delivery)
+        try:
+            target = self._refresh_target(integration_path, delivery)
+        except ProjectError as exc:
+            raise ProjectTargetError(str(exc)) from exc
         published_tree = _tree_of(integration_path, run.commit_sha)
         if published_tree is not None and published_tree != run.reviewed_tree_sha:
             raise ProjectError(
@@ -1531,6 +1566,11 @@ class ProjectRunner:
             "independent project tasks produced conflicting changes while integrating "
             f"{commit_sha}: {result.stderr.strip()}"
         )
+
+
+def _with_reasons(existing: tuple[str, ...], reasons: tuple[str, ...]) -> tuple[str, ...]:
+    """``existing`` followed by each reason it does not hold yet."""
+    return (*existing, *dict.fromkeys(item for item in reasons if item not in existing))
 
 
 def _left_open(run: FactoryRun) -> bool:
