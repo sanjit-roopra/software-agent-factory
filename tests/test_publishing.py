@@ -1489,3 +1489,31 @@ def test_status_like_filenames_in_reviewed_tree_are_published(tmp_path: Path) ->
     assert runner.pushed == [result.commit_sha]
     tree_ls = git(repo, "ls-tree", "--name-only", f"{result.commit_sha}^{{tree}}")
     assert set(tree_ls.splitlines()) == {"README.md", "M", "A0", "R100"}
+
+
+def test_flag_needs_look_labels_the_pull_request_and_lists_reasons(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class RecordingClient(GitHubClient):
+        def flag_pr(self, repo_path: Path, pr: str, **kwargs: object) -> None:
+            calls.append((pr, kwargs))
+
+    publisher = PullRequestPublisher(
+        build_config(tmp_path, pull_request={"enabled": True}),
+        client=RecordingClient(runner=ScriptedRunner()),
+        token="",
+    )
+
+    publisher.flag_needs_look(
+        workspace_path=tmp_path,
+        pull_request_url="https://github.com/acme/repo/pull/42",
+        reasons=["CI checks were still pending", "risk R2 requires human approval"],
+        repository="acme/repo",
+    )
+
+    pr, kwargs = calls[0]
+    assert pr == "42"
+    assert kwargs["label"] == "factory:needs-look"
+    assert kwargs["repository"] == "acme/repo"
+    comment = str(kwargs["comment"])
+    assert "- CI checks were still pending\n- risk R2 requires human approval" in comment

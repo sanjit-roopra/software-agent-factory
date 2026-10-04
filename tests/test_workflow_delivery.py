@@ -20,12 +20,14 @@ from software_agent_factory.models import (
     DashboardResumeRequest,
     EscalationStatus,
     FactoryRun,
+    RepairContext,
     ResumeClassification,
     ReviewAcceptanceReason,
     ReviewDispositionStatus,
     ReviewFindingCategory,
     ReviewFindingDisposition,
     ReviewFindingDraft,
+    ReviewImpasseKind,
     ReviewReport,
     ReviewSourceLocation,
     Risk,
@@ -54,6 +56,7 @@ class LocalPublisher:
         self.crash = crash
         self.parents: list[str] = []
         self.commits: list[str] = []
+        self.flags: list[list[str]] = []
 
     def resolve_base_branch(self, source_repo: Path) -> str:
         return "main"
@@ -77,6 +80,9 @@ class LocalPublisher:
             pull_request_url="https://github.com/acme/repo/pull/42",
             created_pull_request=kwargs["existing_pull_request_url"] is None,
         )
+
+    def flag_needs_look(self, **kwargs) -> None:
+        self.flags.append(list(kwargs["reasons"]))
 
 
 class Observer:
@@ -132,10 +138,17 @@ class RecordingRuntime:
         return self.delegate.run(request)
 
 
-def _config(tmp_path: Path, *, merge: bool = True) -> FactoryConfig:
+def _config(
+    tmp_path: Path,
+    *,
+    merge: bool = True,
+    verify: list[str] | None = None,
+    max_total_attempts: int = 6,
+) -> FactoryConfig:
     payload = build_config(
         tmp_path / "data",
-        verify=["true"],
+        verify=verify or ["true"],
+        max_total_attempts=max_total_attempts,
         pull_request={"enabled": True, "draft": False, "base_branch": "main"},
         ci={"enabled": True, "repair_attempts": 2},
     ).model_dump(mode="json")
@@ -1026,11 +1039,331 @@ def test_unattended_sensitive_scope_is_published(tmp_path: Path, source_repo: Pa
         (workflows / "ci.yml").write_text("on: push\n")
         return default_runtime.run(request)
 
-    config = _config(tmp_path, merge=False)
+    config = _config(tmp_path)
     config.factory.unattended = True
-    controller, _ = _controller(config, runtime=FakeAgentRuntime(implementer=implementer))
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, _ = _controller(
+        config,
+        runtime=FakeAgentRuntime(implementer=implementer),
+        publisher=publisher,
+        merger=merger,
+    )
 
     run = controller.run(work_item(), source_repo)
 
     assert run.state is WorkflowState.DONE, run.failure_reason
     assert run.unattended is True
+    assert any(reason.startswith("scope drift") for reason in run.needs_look)
+    assert publisher.flags == [run.needs_look]
+    assert merger.calls == []
+
+
+def _unattended(config: FactoryConfig) -> FactoryConfig:
+    config.factory.unattended = True
+    return config
+
+
+def test_unattended_clean_run_merges_without_a_label(tmp_path: Path, source_repo: Path) -> None:
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, _ = _controller(_unattended(_config(tmp_path)), publisher=publisher, merger=merger)
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.needs_look == []
+    assert publisher.flags == []
+    assert len(merger.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("reports", "reason"),
+    [
+        ([CIReport(overall="PENDING", timed_out=True)], "still pending"),
+        ([CIReport(overall="CANCELLED")], "no repairable failure"),
+        ([_failed_ci("INFRASTRUCTURE")], "not repairable"),
+        ([_failed_ci()], "CI repair budget exhausted after 2 attempt(s)"),
+    ],
+)
+def test_unattended_red_ci_leaves_the_pull_request_open(
+    tmp_path: Path, source_repo: Path, reports: list[CIReport], reason: str
+) -> None:
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, store = _controller(
+        _unattended(_config(tmp_path)),
+        publisher=publisher,
+        merger=merger,
+        observer=Observer(reports),
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert len(run.needs_look) == 1
+    assert reason in run.needs_look[0]
+    assert publisher.flags == [run.needs_look]
+    assert merger.calls == []
+    assert store.load_run(run.id).needs_look == run.needs_look
+
+
+def test_attended_red_ci_still_stops_for_a_person(tmp_path: Path, source_repo: Path) -> None:
+    publisher = LocalPublisher()
+    controller, _ = _controller(
+        _config(tmp_path), publisher=publisher, observer=Observer([_failed_ci("INFRASTRUCTURE")])
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert "not repairable" in run.failure_reason
+    assert publisher.flags == []
+
+
+def test_unattended_used_up_attempts_publish_the_work_as_it_is(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    publisher = LocalPublisher()
+    merger = Merger()
+    observer = Observer()
+    controller, _ = _controller(
+        _unattended(_config(tmp_path, verify=["false"], max_total_attempts=2)),
+        publisher=publisher,
+        merger=merger,
+        observer=observer,
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.needs_look == ["implementation attempt budget exhausted after 2 attempt(s)"]
+    assert publisher.calls == 1
+    assert run.pull_request_url is not None
+    assert (
+        run.reviewed_tree_sha == git(Path(run.workspace_path), "rev-parse", "HEAD^{tree}").strip()
+    )
+    assert observer.calls == 1
+    assert publisher.flags == [run.needs_look]
+    assert merger.calls == []
+
+
+def test_unattended_used_up_ci_repairs_keep_the_published_head(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    publisher = LocalPublisher()
+    merger = Merger()
+    config = _unattended(_config(tmp_path, verify=["test ! -e .factory-red"]))
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        repair = request.repair_context
+        if isinstance(repair, RepairContext) and repair.trigger is AttemptTrigger.CI:
+            assert request.workspace_path is not None
+            (Path(request.workspace_path) / ".factory-red").write_text("red\n")
+        return default_runtime.run(request)
+
+    controller, _ = _controller(
+        config,
+        runtime=FakeAgentRuntime(implementer=implementer),
+        publisher=publisher,
+        merger=merger,
+        observer=Observer([_failed_ci()]),
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.needs_look == ["CI repair budget exhausted after 2 attempt(s)"]
+    assert publisher.calls == 1
+    assert publisher.flags == [run.needs_look]
+    assert merger.calls == []
+
+
+def test_unattended_labelling_error_does_not_stop_the_run(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    class FailingFlagPublisher(LocalPublisher):
+        def flag_needs_look(self, **kwargs) -> None:
+            raise GitHubError("label denied")
+
+    merger = Merger()
+    controller, _ = _controller(
+        _unattended(_config(tmp_path)),
+        publisher=FailingFlagPublisher(),
+        merger=merger,
+        observer=Observer([CIReport(overall="CANCELLED")]),
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert merger.calls == []
+
+
+def _ineligible_triage(request: AgentRequest) -> AgentResult:
+    result = FakeAgentRuntime().run(request)
+    assert result.triage_result is not None
+    return result.model_copy(
+        update={
+            "triage_result": result.triage_result.model_copy(update={"factory_eligible": False})
+        }
+    )
+
+
+def _undecided_planner(request: AgentRequest) -> AgentResult:
+    result = FakeAgentRuntime().run(request)
+    assert result.execution_plan is not None
+    plan = result.execution_plan.model_copy(
+        update={"unresolved_decisions": ["Choice between SQLite and PostgreSQL."]}
+    )
+    return result.model_copy(update={"execution_plan": plan})
+
+
+def _security_reviewer(request: AgentRequest) -> AgentResult:
+    return AgentResult(
+        role=AgentRole.REVIEWER,
+        success=True,
+        review_report=ReviewReport(
+            approved=False,
+            blocking_findings=[
+                ReviewFindingDraft(
+                    category=ReviewFindingCategory.SECURITY,
+                    message="Security defect.",
+                    locations=[
+                        ReviewSourceLocation(path="FACTORY_NOTES.md", start_line=1, end_line=1)
+                    ],
+                )
+            ],
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("hooks", "reason"),
+    [
+        ({"triage": triage_hook(Complexity.L1, Risk.R2)}, "risk R2 requires human approval"),
+        ({"triage": _ineligible_triage}, "triage marked this work item ineligible"),
+        ({"planner": _undecided_planner}, "unresolved"),
+        ({"reviewer": _security_reviewer}, "accepted beyond the review policy"),
+    ],
+)
+def test_unattended_skipped_gate_labels_the_pull_request_and_blocks_merge(
+    tmp_path: Path, source_repo: Path, hooks: dict[str, Callable[..., AgentResult]], reason: str
+) -> None:
+    config = _unattended(_config(tmp_path))
+    config.review.max_rounds = 1
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, _ = _controller(
+        config, runtime=FakeAgentRuntime(**hooks), publisher=publisher, merger=merger
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert any(reason in item for item in run.needs_look), run.needs_look
+    assert publisher.flags == [run.needs_look]
+    assert merger.calls == []
+
+
+@pytest.mark.parametrize("crash_at", ["publish", "ci"])
+def test_unattended_work_published_as_it_is_resumes_to_done(
+    tmp_path: Path, source_repo: Path, crash_at: str
+) -> None:
+    publisher = LocalPublisher(crash=crash_at == "publish")
+    observer = Observer(crash=crash_at == "ci")
+    merger = Merger()
+    controller, store = _controller(
+        _unattended(_config(tmp_path, verify=["false"], max_total_attempts=2)),
+        publisher=publisher,
+        observer=observer,
+        merger=merger,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        controller.run(work_item(), source_repo, run_id="as-is")
+
+    recovered = controller.resume("as-is", source_repo)
+
+    assert recovered.state is WorkflowState.DONE, recovered.failure_reason
+    assert recovered.needs_look == ["implementation attempt budget exhausted after 2 attempt(s)"]
+    assert publisher.flags == [recovered.needs_look]
+    assert merger.calls == []
+
+
+def test_unattended_resume_without_ci_still_labels_the_pull_request(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    class CrashingFlagPublisher(LocalPublisher):
+        def flag_needs_look(self, **kwargs) -> None:
+            if not self.flags:
+                self.flags.append([])
+                raise KeyboardInterrupt
+            super().flag_needs_look(**kwargs)
+
+    config = _unattended(_config(tmp_path, verify=["false"], max_total_attempts=2))
+    config.ci.enabled = False
+    publisher = CrashingFlagPublisher()
+    controller, store = _controller(config, publisher=publisher)
+    with pytest.raises(KeyboardInterrupt):
+        controller.run(work_item(), source_repo, run_id="no-ci")
+    assert store.load_run("no-ci").state is WorkflowState.PR_CREATED
+
+    recovered = controller.resume("no-ci", source_repo)
+
+    assert recovered.state is WorkflowState.DONE, recovered.failure_reason
+    assert publisher.flags == [[], recovered.needs_look]
+
+
+def test_unattended_review_impasse_an_attended_run_would_stop_on_is_labelled(
+    tmp_path: Path, source_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    ReviewFindingDraft(
+                        category=ReviewFindingCategory.CORRECTNESS,
+                        message="Defect.",
+                        locations=[
+                            ReviewSourceLocation(path="FACTORY_NOTES.md", start_line=1, end_line=1)
+                        ],
+                    )
+                ],
+                prior_finding_dispositions=[
+                    ReviewFindingDisposition(
+                        finding_id=finding.id,
+                        status=ReviewDispositionStatus.UNRESOLVED,
+                        rationale="Still present at the cited location.",
+                    )
+                    for finding in request.prior_review_findings
+                ],
+            ),
+        )
+
+    original = WorkflowController._apply_review_report
+
+    def replacement_loop(self, *args, **kwargs):
+        run, report, impasse = original(self, *args, **kwargs)
+        if impasse is not None:
+            impasse = impasse.model_copy(update={"kind": ReviewImpasseKind.REPLACEMENT_LOOP})
+        return run, report, impasse
+
+    monkeypatch.setattr(WorkflowController, "_apply_review_report", replacement_loop)
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, _ = _controller(
+        _unattended(_config(tmp_path)),
+        runtime=FakeAgentRuntime(reviewer=reviewer),
+        publisher=publisher,
+        merger=merger,
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert "review impasse REPLACEMENT_LOOP was accepted" in run.needs_look
+    assert merger.calls == []

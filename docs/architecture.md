@@ -833,6 +833,8 @@ See ADR-030 in the decisions log.
 
 Set `factory.unattended` to `true` so that no run stops for a person.
 Every human gate then lets the run continue. See ADR-039 in the decisions log.
+A pull request that skipped a gate gets the `factory:needs-look` label and a comment that lists the reasons.
+The factory never merges such a pull request. See ADR-040.
 
 ## Initial agents
 

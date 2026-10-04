@@ -229,8 +229,16 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
             WorkflowState.FAILED,
         }
     ),
+    # Unattended only (ADR-040): a used-up attempt budget publishes the work
+    # as it is (PR_READY) or leaves the open pull request as it is (DONE).
     WorkflowState.IMPLEMENTING: frozenset(
-        {WorkflowState.VERIFYING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {
+            WorkflowState.VERIFYING,
+            WorkflowState.PR_READY,
+            WorkflowState.DONE,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.FAILED,
+        }
     ),
     WorkflowState.VERIFYING: frozenset(
         {
@@ -269,7 +277,12 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
         }
     ),
     WorkflowState.CI_DIAGNOSIS: frozenset(
-        {WorkflowState.IMPLEMENTING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {
+            WorkflowState.IMPLEMENTING,
+            WorkflowState.DONE,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.FAILED,
+        }
     ),
     WorkflowState.DONE: frozenset(),
     WorkflowState.NEEDS_HUMAN: frozenset(),
@@ -963,6 +976,8 @@ class WorkflowController:
                 if not self._config.pull_request.enabled:
                     raise ValueError("cannot resume published work with pull requests disabled")
                 if not self._config.ci.enabled:
+                    if run.needs_look:
+                        return self._leave_open(run, context)
                     return self.transition(run, WorkflowState.DONE)
                 return self._ci_loop(run, context)
             except _Halt as halt:
@@ -1368,17 +1383,28 @@ class WorkflowController:
             raise ValueError("workspace tree does not match the reviewed delivery checkpoint")
         if run.base_commit_sha != workspace.base_commit:
             raise ValueError("workspace base does not match the recorded delivery base")
-        context.latest_verification = self._store.load_artifact(run.id, VerificationReport)
-        context.latest_test_report = self._store.load_artifact(run.id, TestReport)
-        context.latest_review = self._store.load_artifact(run.id, ReviewReport)
-        if not context.latest_verification.passed or not self._review_authorizes_delivery(
-            run,
-            context.latest_review,
-            context.triage_result.risk,
-        ):
-            raise ValueError(
-                "delivery checkpoint has not passed verification and bounded review policy"
+        published_as_is = (
+            run.unattended
+            and bool(run.needs_look)
+            and (
+                not run.attempt_records
+                or run.attempt_records[-1].reviewed_tree_sha != run.reviewed_tree_sha
             )
+        )
+        if not published_as_is:
+            # A run published as it is after its attempt budget ran out has no
+            # passing review to restore (ADR-040).
+            context.latest_verification = self._store.load_artifact(run.id, VerificationReport)
+            context.latest_test_report = self._store.load_artifact(run.id, TestReport)
+            context.latest_review = self._store.load_artifact(run.id, ReviewReport)
+            if not context.latest_verification.passed or not self._review_authorizes_delivery(
+                run,
+                context.latest_review,
+                context.triage_result.risk,
+            ):
+                raise ValueError(
+                    "delivery checkpoint has not passed verification and bounded review policy"
+                )
         context.polish_attempted = any(
             attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records
         )
@@ -2361,11 +2387,10 @@ class WorkflowController:
                     f"worker model selection failed: {exc}",
                 ) from exc
             if role_model is None:
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    self._budget_exhausted_reason(budget, attempt_number - 1),
-                )
+                reason = self._budget_exhausted_reason(budget, attempt_number - 1)
+                if run.unattended:
+                    return self._publish_as_is(run, context, reason)
+                raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
 
             # Snapshot directories are keyed by the run-global attempt index so
             # a CI repair (whose per-budget attempt_number restarts at 1) can
@@ -2699,14 +2724,13 @@ class WorkflowController:
 
             review_rounds = self._review_rounds_used(run, budget)
             acceptance_reason: ReviewAcceptanceReason | None = None
-            if impasse is not None and (
-                run.unattended
-                or impasse.kind
-                in {
-                    ReviewImpasseKind.REPEATED_PATH,
-                    ReviewImpasseKind.REPEATED_FINDING,
-                }
-            ):
+            attended_accepts_impasse = impasse is not None and impasse.kind in {
+                ReviewImpasseKind.REPEATED_PATH,
+                ReviewImpasseKind.REPEATED_FINDING,
+            }
+            if impasse is not None and (run.unattended or attended_accepts_impasse):
+                if not attended_accepts_impasse:
+                    run = self._add_needs_look(run, f"review impasse {impasse.kind} was accepted")
                 acceptance_reason = ReviewAcceptanceReason.REVIEW_IMPASSE
             elif (
                 impasse is None
@@ -3625,19 +3649,23 @@ class WorkflowController:
         acceptance = run.review_acceptance
         if acceptance is None:
             return review.approved
-        if run.unattended:
-            return (
-                run.reviewed_tree_sha is not None
-                and acceptance.reviewed_tree_sha == run.reviewed_tree_sha
-                and acceptance.findings == run.review_ledger.accepted_findings
-            )
-        return (
+        if not (
             run.reviewed_tree_sha is not None
             and acceptance.reviewed_tree_sha == run.reviewed_tree_sha
-            and acceptance.risk is risk
+            and acceptance.findings == run.review_ledger.accepted_findings
+        ):
+            return False
+        return run.unattended or self._acceptance_within_policy(acceptance, review, risk)
+
+    def _acceptance_within_policy(
+        self, acceptance: ReviewAcceptance, review: ReviewReport, risk: Risk
+    ) -> bool:
+        """Whether the configured review policy allows an attended run to
+        accept these findings."""
+        return (
+            acceptance.risk is risk
             and acceptance.risk in self._config.review.accepted_risks
             and 0 < len(acceptance.findings) <= self._config.review.max_accepted_findings
-            and acceptance.findings == run.review_ledger.accepted_findings
             and not review.repair_regressions
             and not any(
                 finding.category in self._config.review.blocked_categories
@@ -3697,18 +3725,109 @@ class WorkflowController:
     def _publish_and_observe(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
         run = self._publish(run, context)
         if not self._config.ci.enabled:
+            if run.needs_look:
+                return self._leave_open(run, context)
             return self.transition(run, WorkflowState.DONE)
         return self._ci_loop(run, context)
+
+    def _skipped_gates(
+        self, run: FactoryRun, context: _RunContext, scope: ScopeAssessment
+    ) -> list[str]:
+        """The gates an unattended run let continue that would have stopped an
+        attended run (ADR-039, ADR-040)."""
+        triage = context.triage_result
+        reasons: list[str] = []
+        if not triage.factory_eligible:
+            reasons.append("triage marked this work item ineligible")
+        route = context.route_decision
+        if route is not None and route.effective_route is ExecutionRoute.MANUAL_TRIAGE:
+            reasons.append("routing selected manual triage")
+        if run.risk_assessment_enabled and self._config.risk[triage.risk].human_approval:
+            reasons.append(f"risk {triage.risk} requires human approval")
+        if context.execution_plan.unresolved_decisions:
+            reasons.append(UNRESOLVED_DECISIONS_HALT_REASON)
+        if scope.decision is not ScopeDecision.CONTINUE:
+            reasons.append("scope drift: " + _describe_scope(scope))
+        review = context.latest_review
+        acceptance = run.review_acceptance
+        if (
+            review is not None
+            and acceptance is not None
+            and (
+                not self._acceptance_within_policy(acceptance, review, triage.risk)
+                or any(
+                    finding.origin
+                    not in {ReviewFindingOrigin.INITIAL, ReviewFindingOrigin.LATE_ADOPTED}
+                    for finding in acceptance.findings
+                )
+            )
+        ):
+            reasons.append("review findings were accepted beyond the review policy")
+        return reasons
+
+    def _add_needs_look(self, run: FactoryRun, reason: str) -> FactoryRun:
+        if reason in run.needs_look:
+            return run
+        run = run.model_copy(
+            update={"needs_look": [*run.needs_look, reason], "updated_at": utc_now()}
+        )
+        self._store.save_run(run)
+        return run
+
+    def _publish_as_is(self, run: FactoryRun, context: _RunContext, reason: str) -> FactoryRun:
+        """Unattended attempt budget used up (ADR-040).
+
+        Before a pull request exists, publish the current work as it is. After
+        one exists, leave it open as it is: the failed repair is not pushed.
+        """
+        if run.pull_request_url is not None:
+            return self._leave_open(run, context, reason)
+        evidence = context.workspace.collect_evidence()
+        if not evidence.changed_files or not evidence.tree_sha:
+            raise self._halt(run, WorkflowState.NEEDS_HUMAN, f"{reason}; nothing to publish")
+        run = self._add_needs_look(run, reason)
+        run = run.model_copy(update={"reviewed_tree_sha": evidence.tree_sha})
+        self._store.save_run(run)
+        self._store.save_patch(run.id, evidence.diff)
+        context.latest_evidence = evidence
+        context.latest_test_report = None
+        context.latest_review = None
+        return self.transition(run, WorkflowState.PR_READY)
+
+    def _leave_open(
+        self, run: FactoryRun, context: _RunContext, reason: str | None = None
+    ) -> FactoryRun:
+        """End an unattended run with its pull request open, labelled and not
+        merged (ADR-040)."""
+        if reason is not None:
+            run = self._add_needs_look(run, reason)
+        assert run.pull_request_url is not None
+        try:
+            self._resolve_publisher().flag_needs_look(
+                workspace_path=context.workspace.path,
+                pull_request_url=run.pull_request_url,
+                reasons=run.needs_look,
+                repository=run.delivery_repository,
+            )
+        except (GitHubError, OSError, ValueError) as exc:
+            # The label tells people to look. Skipping the merge is what keeps
+            # the pull request safe, so a labelling error does not stop the run.
+            logger.warning("could not label pull request %s: %s", run.pull_request_url, exc)
+        return self.transition(run, WorkflowState.DONE)
 
     def _publish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
         """PR boundary: re-run the deterministic gates, then commit/push/open."""
         evidence = context.latest_evidence
         assert evidence is not None
-        if context.latest_review is None or not self._review_authorizes_delivery(
-            run,
-            context.latest_review,
-            context.triage_result.risk,
-        ):
+        if context.latest_review is None:
+            # Only an unattended run whose attempt budget ran out publishes
+            # work without a review (ADR-040).
+            authorized = run.unattended and bool(run.needs_look)
+        else:
+            authorized = self._review_authorizes_delivery(
+                run, context.latest_review, context.triage_result.risk
+            )
+        if not authorized:
             raise self._halt(
                 run,
                 WorkflowState.NEEDS_HUMAN,
@@ -3749,6 +3868,9 @@ class WorkflowController:
                 WorkflowState.NEEDS_HUMAN,
                 "scope drift requires human review before publishing: " + _describe_scope(scope),
             )
+        if run.unattended:
+            for reason in self._skipped_gates(run, context, scope):
+                run = self._add_needs_look(run, reason)
 
         publisher = self._resolve_publisher()
         branch_name = run.branch_name
@@ -3843,11 +3965,12 @@ class WorkflowController:
             run_id=run.id,
         )
         if run.reviewed_tree_sha is not None:
-            label = (
-                "Controller-accepted reviewed Git tree"
-                if run.review_acceptance is not None
-                else "Reviewer-approved Git tree"
-            )
+            if run.needs_look:
+                label = "Git tree published without a passing review"
+            elif run.review_acceptance is not None:
+                label = "Controller-accepted reviewed Git tree"
+            else:
+                label = "Reviewer-approved Git tree"
             body += f"\n{label}: `{run.reviewed_tree_sha}`\n"
         return body
 
@@ -3872,48 +3995,46 @@ class WorkflowController:
             self._store.save_artifact(run.id, report)
 
             if report.timed_out:
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    "CI checks were still pending after the configured wait budget",
-                )
+                reason = "CI checks were still pending after the configured wait budget"
+                if run.unattended:
+                    return self._leave_open(run, context, reason)
+                raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
             if report.overall == "PASS":
                 return self._merge_and_finish(run, context)
 
             run = self.transition(run, WorkflowState.CI_DIAGNOSIS)
-            failed = report.failed_checks
-            if report.overall == "CANCELLED" or not failed:
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    f"CI finished with status {report.overall} and no repairable failure",
-                )
-
-            categories = {check.failure_category or "UNKNOWN" for check in failed}
-            if not categories <= REPAIRABLE_CI_CATEGORIES:
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    "CI failure is not repairable by a code change: "
-                    + ", ".join(
-                        f"{check.name}={check.failure_category or 'UNKNOWN'}" for check in failed
-                    ),
-                )
-
-            used = self._attempts_used(run, AttemptBudget.CI_REPAIR)
-            if used >= self._config.ci.repair_attempts:
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    self._budget_exhausted_reason(AttemptBudget.CI_REPAIR, used),
-                )
+            stop_reason = self._ci_stop_reason(run, report)
+            if stop_reason is not None:
+                if run.unattended:
+                    return self._leave_open(run, context, stop_reason)
+                raise self._halt(run, WorkflowState.NEEDS_HUMAN, stop_reason)
 
             repair_context = self._ci_repair_context(report)
             run = self.transition(run, WorkflowState.IMPLEMENTING)
             run = self._drive_to_pr_ready(run, context, AttemptBudget.CI_REPAIR, repair_context)
+            if run.state is WorkflowState.DONE:
+                return run
             run = self._publish(run, context)
 
+    def _ci_stop_reason(self, run: FactoryRun, report: CIReport) -> str | None:
+        """Why a red CI result cannot be repaired, or ``None`` to repair it."""
+        failed = report.failed_checks
+        if report.overall == "CANCELLED" or not failed:
+            return f"CI finished with status {report.overall} and no repairable failure"
+        if not {check.failure_category or "UNKNOWN" for check in failed} <= (
+            REPAIRABLE_CI_CATEGORIES
+        ):
+            return "CI failure is not repairable by a code change: " + ", ".join(
+                f"{check.name}={check.failure_category or 'UNKNOWN'}" for check in failed
+            )
+        used = self._attempts_used(run, AttemptBudget.CI_REPAIR)
+        if used >= self._config.ci.repair_attempts:
+            return self._budget_exhausted_reason(AttemptBudget.CI_REPAIR, used)
+        return None
+
     def _merge_and_finish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
+        if run.needs_look:
+            return self._leave_open(run, context)
         if self._config.merge.enabled:
             assert self._merger is not None
             if (

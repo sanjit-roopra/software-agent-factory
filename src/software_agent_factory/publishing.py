@@ -28,7 +28,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from .config import FactoryConfig
 from .github import (
@@ -66,6 +66,8 @@ __all__ = [
 ]
 
 DEFAULT_BASE_BRANCH = "main"
+#: Label on an unattended pull request that skipped a gate (ADR-040).
+NEEDS_LOOK_LABEL = "factory:needs-look"
 MAX_PULL_REQUEST_CREATE_ATTEMPTS = 2
 TRANSIENT_GITHUB_ERROR_MARKERS = (
     " eof",
@@ -460,6 +462,26 @@ class PullRequestPublisher:
         _, number = parse_pull_request_url(pull_request_url)
         self._client.update_pr(
             workspace_path, str(number), body=body, title=title, repository=repository
+        )
+
+    def flag_needs_look(
+        self,
+        *,
+        workspace_path: Path,
+        pull_request_url: str,
+        reasons: Sequence[str],
+        repository: str | None,
+    ) -> None:
+        """Label an unattended pull request that skipped a gate and list why."""
+        _, number = parse_pull_request_url(pull_request_url)
+        comment = "The factory skipped these gates. Look at this pull request before merging:\n\n"
+        comment += "\n".join(f"- {reason}" for reason in reasons)
+        self._client.flag_pr(
+            workspace_path,
+            str(number),
+            label=NEEDS_LOOK_LABEL,
+            comment=comment,
+            repository=repository,
         )
 
     @staticmethod
