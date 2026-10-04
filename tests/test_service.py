@@ -26,7 +26,7 @@ from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRu
 from software_agent_factory.command_probe import ProbeLimits
 from software_agent_factory.config import FactoryConfig, PullRequestConfig, SetupConfig
 from software_agent_factory.escalation_protocol import format_resume_command
-from software_agent_factory.github import GitHubClient, GitHubCommandError
+from software_agent_factory.github import GitHubClient, GitHubCommandError, MergeNotAllowedError
 from software_agent_factory.models import (
     REPLY_CURSOR_CLOSED,
     AgentRole,
@@ -400,6 +400,34 @@ def test_restart_does_not_resume_a_run_whose_delivery_policy_changed(
     run = store.load_run("run-policy")
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert "delivery policy changed" in (run.failure_reason or "")
+
+
+def test_restart_stops_a_run_for_a_permanent_github_refusal_without_retrying(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = _item(17, source_repo)
+    _interrupt(data_dir, source_repo, item, "run-refused", unattended=True)
+    service = _service(data_dir, source_repo, LocalProvider([item]), unattended=True)
+    attempts: list[str] = []
+
+    def refuse(run_id: str, source_repo: Path) -> FactoryRun:
+        attempts.append(run_id)
+        raise MergeNotAllowedError("the pull request head is a fork")
+
+    monkeypatch.setattr(service.controller, "resume", refuse)
+    try:
+        service.recover()
+        service.reconcile_escalation()
+        service.drain(60)
+        service.reconcile_escalation()
+        service.drain(60)
+    finally:
+        service.shutdown()
+
+    run = service.store.load_run("run-refused")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert "the pull request head is a fork" in (run.failure_reason or "")
+    assert attempts == ["run-refused"]
 
 
 def test_restart_retries_a_run_in_a_later_cycle_when_another_process_owns_its_workspace(

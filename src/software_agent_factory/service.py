@@ -64,6 +64,8 @@ from .github import (
     GitHubCommandError,
     GitHubError,
     GitPublishError,
+    MergeNotAllowedError,
+    UnsafeRemoteError,
     resolve_github_token,
 )
 from .github_tracker import GitHubIssueProvider
@@ -449,6 +451,9 @@ class FactoryService:
         )
         try:
             run = self.controller.resume(run_id, repository)
+        except (UnsafeRemoteError, MergeNotAllowedError, ValueError) as exc:
+            # A permanent refusal, for example a changed delivery policy. A retry cannot help.
+            run = self._abandon_resume(run_id, exc)
         except (WorkspaceLockError, GitHubError, GitPublishError) as exc:
             # Another live process owns the workspace, or GitHub is unreachable.
             # The run is untouched, so a later cycle tries again.
@@ -456,13 +461,17 @@ class FactoryService:
             run = self.store.load_run(run_id)
             self._interrupted[run_id] = run.work_item_id
             return run
-        except (ValueError, WorkspaceError) as exc:
-            # The run cannot continue safely, for example because the delivery policy changed.
-            run = self.controller.recover_abandoned_run(
-                self.store.load_run(run_id), f"could not resume after a factory restart: {exc}"
-            )
+        except WorkspaceError as exc:
+            run = self._abandon_resume(run_id, exc)
         log_run_event(logger, f"resumed run {run_id} finished", run_id=run_id, state=run.state)
         return run
+
+    def _abandon_resume(self, run_id: str, error: Exception) -> FactoryRun:
+        """Stop a run that cannot continue safely, for a person to inspect."""
+        assert self.controller is not None
+        return self.controller.recover_abandoned_run(
+            self.store.load_run(run_id), f"could not resume after a factory restart: {error}"
+        )
 
     # -- lifecycle --------------------------------------------------------
 

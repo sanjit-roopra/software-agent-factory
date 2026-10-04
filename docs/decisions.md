@@ -30,8 +30,11 @@ The scheduler also never dispatches a work item that has a stored run. So a new 
   It then follows ADR-040 and ADR-041: the factory publishes the work with the `factory:needs-look` label, or leaves the pull request open.
   If there is nothing to publish, or no plan exists yet, the run stops for a person.
 - A delivery state that cannot resume, for example because the workspace is gone, leaves the open pull request as it is.
-- If the delivery policy changed, or the service cannot resume the run, the service stops the run for a person as before.
-  If another process holds the workspace lock, or GitHub is not reachable, the service leaves the run queued and tries again in a later cycle.
+- If another process holds the workspace lock, or GitHub is not reachable, the service leaves the run queued and tries again in a later cycle.
+- Some errors mean the run cannot continue safely. These are a changed delivery policy, a changed delivery repository,
+  a refused remote or merge target, and an unsafe workspace.
+  The service then stops the run for a person, even when the run is unattended and has an open pull request.
+  A retry cannot fix these errors, and the factory must not guess.
 - An attended run does not change. It still goes to `NEEDS_HUMAN` (ADR-011).
 
 ### Consequences
