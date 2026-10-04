@@ -2508,3 +2508,18 @@ def test_classic_protection_with_explicitly_empty_allowances_authorizes(tmp_path
 
     assert policy.sources == ("branch-protection",)
     assert policy.requires_pull_request is True
+
+
+def test_flag_pr_creates_the_label_adds_it_and_comments(tmp_path: Path) -> None:
+    runner = FakeRunner([FakeCompletedProcess(returncode=0)] * 3)
+    client = GitHubClient(runner=runner)
+
+    client.flag_pr(
+        tmp_path, "42", label="factory:needs-look", comment="why", repository="acme/repo"
+    )
+
+    assert [call[0] for call in runner.calls] == [
+        ["gh", "label", "create", "factory:needs-look", "--repo", "acme/repo", "--force"],
+        ["gh", "pr", "edit", "42", "--repo", "acme/repo", "--add-label", "factory:needs-look"],
+        ["gh", "pr", "comment", "42", "--repo", "acme/repo", "--body", "why"],
+    ]

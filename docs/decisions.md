@@ -1,5 +1,36 @@
 # Architecture Decisions
 
+## ADR-040: Unattended mode publishes and labels instead of stopping after implementation
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+ADR-039 lets the gates before the pull request continue.
+After implementation, a used attempt budget or a red CI result still stops the run for a person.
+Also, a pull request that skipped a gate can still be merged when `merge.enabled` is `true`.
+
+### Decision
+
+- When `factory.unattended` is `true`:
+  - The implementation attempt budget is used up. The factory publishes the current work as a pull request without a passing review.
+    If the work has no changes, there is nothing to publish and the run still stops.
+  - The CI repair budget is used up. The pull request stays open at the last published commit. The failed repair is not pushed.
+  - CI times out, is cancelled or fails in a way a code change cannot fix. The pull request stays open.
+- The run stores each skipped gate in `FactoryRun.needs_look`. At the pull request, the run also records each gate that ADR-039 let continue:
+  - risk approval, an ineligible triage or manual triage
+  - unresolved plan decisions or scope drift
+  - a review impasse, or review findings accepted beyond the review policy
+- A pull request with reasons gets the `factory:needs-look` label and a comment that lists the reasons. The factory never merges it. The run ends `DONE`.
+- If the factory cannot add the label, it logs a warning and the run still ends `DONE`. The factory does not merge the pull request.
+- The publish gate still stops the run. It blocks secret files, such as `.env` and `*.pem`, and too many changed files. The Git publisher checks the same rules again.
+
+### Consequences
+
+- Unattended mode is safe with `merge.enabled` set to `true`. Only a pull request that passed every gate is merged.
+- A person finds work to check with the `factory:needs-look` label.
+- With the setting off, the factory behaves as before.
+
 ## ADR-039: Unattended mode lets gates before the pull request continue
 
 Status: accepted on 2026-10-04.

@@ -2160,6 +2160,22 @@ class GitHubClient:
             args.extend(["--title", title])
         self._run(args, repo_path)
 
+    def flag_pr(
+        self,
+        repo_path: Path,
+        pr: str,
+        *,
+        label: str,
+        comment: str,
+        repository: str | None = None,
+    ) -> None:
+        """Add ``label`` (creating it when missing) and post ``comment`` on a
+        pull request. Never merges and never submits a review."""
+        repo_args = self._repo_args(repository)
+        self._run(["label", "create", label, *repo_args, "--force"], repo_path)
+        self._run(["pr", "edit", pr, *repo_args, "--add-label", label], repo_path)
+        self._run(["pr", "comment", pr, *repo_args, "--body", comment], repo_path)
+
     def create_pr(
         self,
         repo_path: Path,

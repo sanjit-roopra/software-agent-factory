@@ -1600,6 +1600,10 @@ class FactoryRun(VersionedModel):
     risk_assessment_enabled: bool = True
     #: ``factory.unattended`` when the run started (ADR-039).
     unattended: bool = False
+    #: Why an unattended run published or kept open a pull request that skipped
+    #: a gate. A pull request with reasons gets the ``factory:needs-look``
+    #: label and is never merged (ADR-040).
+    needs_look: list[str] = Field(default_factory=list)
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
     route_decision: RouteDecision | None = None
