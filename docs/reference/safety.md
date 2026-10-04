@@ -56,6 +56,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | --- | --- |
 | `--runtime copilot` | GitHub Copilot, through the `copilot` CLI. Paid. |
 | `--runtime pi` | The configured `pi.provider`, through the `pi` CLI. The default provider is GitHub Copilot. Paid. |
+| `--runtime claude-code` | Anthropic, through the `claude` CLI. It uses your Claude subscription. |
 | `pull_request.enabled` | GitHub, through `gh`. |
 | `ci.enabled` | GitHub, through `gh`. |
 | `merge.enabled` | GitHub, through `gh`, with a separate repository and check allowlist. |
@@ -72,8 +73,8 @@ data directory.
 
 ## Money
 
-`--runtime copilot` and `--runtime pi` are the only things that spend. Neither is
-the default on any command.
+`--runtime copilot`, `--runtime pi` and `--runtime claude-code` are the only
+things that spend. None of them is the default on any command.
 
 Repository guidance is researched once per repository and dependency
 fingerprint, then reused, so a normal run spends nothing on it. Reuse is not a
@@ -99,7 +100,8 @@ Copilot billing for authoritative spend.
 
 The pi runtime reports a list-price estimate in USD. Pi computes it from its own
 price list. It is not spend. The factory never adds it to the Copilot usage
-value.
+value. The Claude Code runtime reports a list-price estimate in the same way. A
+subscription does not bill each call.
 
 ## Credentials
 
@@ -111,6 +113,10 @@ value.
   Only the credential variables of the configured `pi.provider` stay. For
   `github-copilot`, that is `COPILOT_GITHUB_TOKEN`. Other provider keys and
   every other `*_API_KEY` variable are removed.
+- The `claude` child process also starts with GitHub credential variables
+  removed. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`
+  and `CLAUDE_CODE_USE_VERTEX` are removed too, so `claude` uses the logged-in
+  subscription.
 - Only controller code passes a token to `gh`. It uses the subprocess
   environment, never as a command-line argument where it lands in the process
   list.
@@ -256,6 +262,17 @@ Implementer writes files with the `write` tool instead.
 
 Use the pi runtime only on repositories where you accept these limits. The
 controller gates still run.
+
+## The Claude Code implementer
+
+The Claude Code runtime denies the same commands as the pi command filter, with
+`--disallowedTools` rules. Claude Code matches these rules on the start of a
+command. The `acceptEdits` permission mode keeps the file tools inside the
+worktree. A file read or edit outside it needs an approval, and a `claude -p`
+call has nobody to give it. `Bash` commands are not kept inside the worktree, as
+for Copilot and pi. Read-only roles get only `Read`, `Grep` and `Glob`.
+[ADR-045](../decisions.md#adr-045-claude-code-is-a-third-runtime-and-roles-can-mix-runtimes)
+records the decision.
 
 ## Quality gates
 

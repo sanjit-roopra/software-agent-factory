@@ -133,9 +133,10 @@ class AgentRequest(ModelBase):
 def workspace_cwd(request: AgentRequest) -> Path:
     """Resolve the working directory one agent runtime should run in.
 
-    Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
-    and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
-    apply the exact same rule: the request's workspace when supplied,
+    Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`,
+    :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` and
+    :class:`~software_agent_factory.claude_code_runtime.ClaudeCodeAgentRuntime`
+    so all apply the exact same rule: the request's workspace when supplied,
     otherwise the process's current working directory.
     """
     if request.workspace_path:
@@ -146,9 +147,10 @@ def workspace_cwd(request: AgentRequest) -> Path:
 def validate_runtime_request(request: AgentRequest) -> None:
     """Reject a request no ``AgentRuntime`` should ever start a process for.
 
-    Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`
-    and :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` so both
-    enforce the same runtime-neutral checks, in the same order, before
+    Shared by :class:`~software_agent_factory.copilot_runtime.CopilotAgentRuntime`,
+    :class:`~software_agent_factory.pi_runtime.PiAgentRuntime` and
+    :class:`~software_agent_factory.claude_code_runtime.ClaudeCodeAgentRuntime`
+    so all enforce the same runtime-neutral checks, in the same order, before
     either builds a command or starts a subprocess: an
     :attr:`AgentRole.IMPLEMENTER` request always needs a ``workspace_path``
     (there is no "current directory" an implementer should ever write to),

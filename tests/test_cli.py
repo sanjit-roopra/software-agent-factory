@@ -21,6 +21,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from software_agent_factory.__main__ import main as module_main
@@ -313,6 +314,51 @@ def test_run_with_pi_runtime_requires_pi(source_repo: Path, data_dir: Path, path
 
     assert result.exit_code == 2
     assert "missing required executable(s) on PATH: pi" in result.output
+
+
+def _claude_code_args(
+    command: str, source_repo: Path, data_dir: Path, config_path: Path
+) -> list[str]:
+    args = [command, "--repo", str(source_repo), "--runtime", "claude-code"]
+    args += ["--config", str(config_path)]
+    if command == "start":
+        return [*args, "--github-repo", "acme/repo", "--once"]
+    args += ["--title", "Test task", "--description", "A demonstration task"]
+    args += ["--data-dir", str(data_dir)]
+    if command == "project":
+        args += ["--acceptance-criterion", "Blank names return HTTP 400."]
+    return args
+
+
+@pytest.mark.parametrize("command", ["run", "project", "start"])
+def test_claude_code_runtime_without_claude_fails_with_a_prerequisite_error(
+    command: str, source_repo: Path, data_dir: Path, tmp_path: Path, path_without
+) -> None:
+    path_without("git", "gh")
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+
+    result = runner.invoke(app, _claude_code_args(command, source_repo, data_dir, config_path))
+
+    assert result.exit_code == 2
+    assert "missing required executable(s) on PATH: claude" in result.output
+
+
+@pytest.mark.parametrize("command", ["run", "project", "start"])
+def test_claude_code_runtime_refuses_reasoning_that_effort_does_not_accept(
+    command: str, source_repo: Path, data_dir: Path, tmp_path: Path, path_with
+) -> None:
+    path_with("claude", "gh")
+    config_path = _scheduler_config(tmp_path / "factory.yaml", data_dir, enabled=True)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["models"]["triage"]["reasoning"] = "minimal"
+    config["models"]["workers"]["L0"]["reasoning"] = "none"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    result = runner.invoke(app, _claude_code_args(command, source_repo, data_dir, config_path))
+
+    assert result.exit_code == 2
+    assert "triage=minimal, workers.L0=none" in result.output
+    assert "--model-profile claude" in result.output
 
 
 def test_run_with_pi_runtime_checks_the_configured_executable_name(

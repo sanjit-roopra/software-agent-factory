@@ -155,6 +155,12 @@ def test_explicit_pi_opt_in(tmp_path: Path) -> None:
     assert args[-2:] == ["--runtime", "pi"]
 
 
+def test_explicit_claude_code_opt_in(tmp_path: Path) -> None:
+    request = make_request(tmp_path, runtime=ServiceRuntime.CLAUDE_CODE)
+    args = build_program_arguments(request)
+    assert args[-2:] == ["--runtime", "claude-code"]
+
+
 # -- ProgramArguments / plist exactness --------------------------------------
 
 
