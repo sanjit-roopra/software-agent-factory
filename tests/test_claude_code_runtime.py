@@ -510,10 +510,9 @@ def test_effort_preflight_skips_roles_on_another_runtime() -> None:
     )
 
     payload["models"]["triage"]["runtime"] = None
+    config = FactoryConfig.model_validate(payload)
     with pytest.raises(typer.Exit):
-        cli._require_claude_code_effort(
-            cli.RuntimeChoice.CLAUDE_CODE, FactoryConfig.model_validate(payload)
-        )
+        cli._require_claude_code_effort(cli.RuntimeChoice.CLAUDE_CODE, config)
 
 
 def test_switch_values_are_removed_but_not_redacted(monkeypatch: pytest.MonkeyPatch) -> None:

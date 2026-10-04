@@ -803,12 +803,9 @@ def run_doctor(
     verification_commands: list[str] = []
     data_dir = data_dir_override
     pi_config = config.pi if config is not None else PiConfig()
-    runtimes = (
-        config.runtimes_for(requested_runtime)
-        if config is not None
-        else frozenset(() if requested_runtime is None else (requested_runtime,))
-    )
+    runtimes = frozenset([requested_runtime] if requested_runtime is not None else [])
     if config is not None:
+        runtimes = config.runtimes_for(requested_runtime)
         gh_required = requires_gh(config)
         verification_commands = [
             *config.repository.commands.install,
