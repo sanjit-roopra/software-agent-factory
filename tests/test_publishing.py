@@ -1492,16 +1492,12 @@ def test_status_like_filenames_in_reviewed_tree_are_published(tmp_path: Path) ->
 
 
 def test_flag_needs_look_labels_the_pull_request_and_lists_reasons(tmp_path: Path) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    class RecordingClient(GitHubClient):
-        def flag_pr(self, repo_path: Path, pr: str, **kwargs: object) -> None:
-            calls.append((pr, kwargs))
-
+    runner = ScriptedRunner()
     publisher = PullRequestPublisher(
         build_config(tmp_path, pull_request={"enabled": True}),
-        client=RecordingClient(runner=ScriptedRunner()),
+        client=GitHubClient(runner=runner),
         token="",
+        runner=runner,
     )
 
     publisher.flag_needs_look(
@@ -1511,9 +1507,13 @@ def test_flag_needs_look_labels_the_pull_request_and_lists_reasons(tmp_path: Pat
         repository="acme/repo",
     )
 
-    pr, kwargs = calls[0]
-    assert pr == "42"
-    assert kwargs["label"] == "factory:needs-look"
-    assert kwargs["repository"] == "acme/repo"
-    comment = str(kwargs["comment"])
-    assert "- CI checks were still pending\n- risk R2 requires human approval" in comment
+    commands = [argv[1:] for argv, _cwd, _env in runner.calls if argv[0].endswith("gh")]
+    comment = (
+        "The factory skipped these gates. Look at this pull request before merging:\n\n"
+        "- CI checks were still pending\n- risk R2 requires human approval"
+    )
+    assert commands == [
+        ["label", "create", "factory:needs-look", "--repo", "acme/repo", "--force"],
+        ["pr", "edit", "42", "--repo", "acme/repo", "--add-label", "factory:needs-look"],
+        ["pr", "comment", "42", "--repo", "acme/repo", "--body", comment],
+    ]
