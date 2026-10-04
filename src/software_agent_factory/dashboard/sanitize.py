@@ -759,6 +759,13 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("project summary must serialize to a JSON object")
     sanitized = _allowlist(data, PROJECT_FIELDS)
+    needs_look = data.get("needs_look")
+    if isinstance(needs_look, list):
+        sanitized["needs_look"] = [
+            bounded_reason(item, run_id=None)[0]
+            for item in needs_look
+            if isinstance(item, str) and item
+        ]
     tasks = data.get("tasks")
     if isinstance(tasks, list):
         sanitized["tasks"] = [

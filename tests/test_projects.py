@@ -611,15 +611,15 @@ def test_parallel_wave_persists_every_child_result_before_stopping(
     assert len(store.list_runs()) == 2
 
 
-def test_final_verification_checks_fully_composed_integration_branch(
-    factory_source_repo: Path,
-    factory_data_dir: Path,
-) -> None:
+def _run_project_whose_composed_tree_fails_verification(
+    factory_source_repo: Path, factory_data_dir: Path, *, unattended: bool
+) -> ProjectExecution:
     config = build_config(
         factory_data_dir,
         scheduler={"max_concurrent_tasks": 2},
         verify=["test ! -f task-1.txt -o ! -f task-2.txt"],
     )
+    config.factory.unattended = unattended
 
     def planner(request: AgentRequest) -> AgentResult:
         if request.purpose is not AgentPurpose.DECOMPOSE_PROJECT:
@@ -674,15 +674,40 @@ def test_final_verification_checks_fully_composed_integration_branch(
         FileRunStore(factory_data_dir),
         FakeAgentRuntime(planner=planner, implementer=implementer),
     )
+    return runner.run(brief, factory_source_repo)
 
-    execution = runner.run(brief, factory_source_repo)
+
+def test_final_verification_checks_fully_composed_integration_branch(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    execution = _run_project_whose_composed_tree_fails_verification(
+        factory_source_repo, factory_data_dir, unattended=False
+    )
 
     assert execution.state is ProjectState.NEEDS_HUMAN
     assert all(task.state.value == "DONE" for task in execution.tasks)
     assert execution.verification_report is not None
     assert not execution.verification_report.passed
     assert "verify:" in (execution.failure_reason or "")
+    assert execution.needs_look == ()
     assert (factory_data_dir / "projects/project-final-verification/logs").is_dir()
+
+
+def test_unattended_final_verification_failure_ends_the_project_done_with_needs_look(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    execution = _run_project_whose_composed_tree_fails_verification(
+        factory_source_repo, factory_data_dir, unattended=True
+    )
+
+    assert execution.state is ProjectState.DONE
+    assert execution.failure_reason is None
+    assert execution.verification_report is not None
+    assert not execution.verification_report.passed
+    assert len(execution.needs_look) == 1
+    assert execution.needs_look[0].startswith("final verification: verify:")
 
 
 def test_project_store_rejects_duplicate_execution_and_path_traversal(

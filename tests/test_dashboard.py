@@ -4066,3 +4066,13 @@ def test_a_project_task_title_or_model_that_is_not_text_is_dropped(value: Any) -
 
     assert project["tasks"][0]["title"] is None
     assert project["models"][0]["model"] is None
+
+
+def test_a_project_needs_look_list_is_redacted_and_keeps_only_text() -> None:
+    project = sanitize_project(
+        {"project_id": "p", "needs_look": [f"task 1: {GH_SECRET}", 7, "", "task 2 was skipped"]}
+    )
+
+    assert len(project["needs_look"]) == 2
+    assert "ghp_abcdefgh12345678" not in json.dumps(project["needs_look"])
+    assert project["needs_look"][1] == "task 2 was skipped"

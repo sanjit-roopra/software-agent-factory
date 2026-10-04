@@ -66,6 +66,29 @@ If issue closure fails after a task is integrated, the project records a
 warning and continues. A failure in final integration-branch verification
 produces `NEEDS_HUMAN`.
 
+## Unattended projects
+
+When `factory.unattended` is `true`, a project does not stop for a person
+because one task did not merge. The project stores the setting when it starts.
+A resume keeps the stored value, even if you change the configuration.
+
+A task is not on the target in these cases:
+
+- The child run left its pull request open.
+- The child run ended in `NEEDS_HUMAN` or `FAILED`.
+- The factory did not integrate the result of the child run.
+
+The project records a reason for each case in `needs_look`.
+It skips each task that depends on that task. Independent tasks still run.
+If the final verification fails, the project records the failure in `needs_look`.
+The project then ends `DONE`.
+
+The command prints each reason as `needs look: ...`.
+The dashboard shows the same reasons on the project card.
+A resume of an unattended project does not refuse a recorded task rejection.
+It does not run that task again.
+An attended project still stops at the first task that does not merge.
+
 It never generates an unbounded stream of follow-up work.
 
 ## Optional GitHub issues

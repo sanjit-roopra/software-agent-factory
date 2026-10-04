@@ -1032,6 +1032,9 @@
       "h3", "", displayValue(project.project_id) + " \u2014 " + displayValue(project.state)
     ));
     card.appendChild(element("p", "project-meta", projectMeta(project)));
+    for (const reason of asArray(project.needs_look)) {
+      card.appendChild(element("p", "project-meta", "Needs a look: " + displayValue(reason)));
+    }
     card.appendChild(wrapTable(tasksTable(asArray(project.tasks), project.state)));
     card.appendChild(element("h4", "", "Models used"));
     card.appendChild(element("p", "project-meta", usageSummary(project.totals)));

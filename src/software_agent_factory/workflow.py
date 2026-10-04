@@ -474,17 +474,18 @@ class WorkflowController:
         if self._github is None and (config.escalation.enabled or config.pull_request.enabled):
             self._github = GitHubClient(token=resolve_github_token())
 
-    def with_risk_assessment(self, enabled: bool) -> WorkflowController:
-        """Return a controller that starts new runs with ``risk_assessment.enabled`` set.
+    def with_pinned_policy(self, *, risk_assessment: bool, unattended: bool) -> WorkflowController:
+        """Return a controller that starts new runs with the given policy.
 
-        Project resume uses it so tasks not yet dispatched follow the project's
-        persisted choice. Existing runs always follow their own persisted value.
+        Project resume uses it so tasks not yet dispatched follow the choices the
+        project started with. Existing runs always follow their own persisted values.
         """
-        if enabled == self._config.risk_assessment.enabled:
-            return self
         clone = copy.copy(self)
         clone._config = self._config.model_copy(
-            update={"risk_assessment": RiskAssessmentConfig(enabled=enabled)}
+            update={
+                "risk_assessment": RiskAssessmentConfig(enabled=risk_assessment),
+                "factory": self._config.factory.model_copy(update={"unattended": unattended}),
+            }
         )
         return clone
 
