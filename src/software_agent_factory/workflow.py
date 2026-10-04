@@ -3782,7 +3782,19 @@ class WorkflowController:
         """
         if run.pull_request_url is not None:
             return self._leave_open(run, context, reason)
-        evidence = context.workspace.collect_evidence()
+        run = self._adopt_current_tree(run, context, context.workspace.collect_evidence(), reason)
+        context.latest_test_report = None
+        context.latest_review = None
+        return self.transition(run, WorkflowState.PR_READY)
+
+    def _adopt_current_tree(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        evidence: WorkspaceEvidence,
+        reason: str,
+    ) -> FactoryRun:
+        """Make the current worktree the tree an unattended run publishes."""
         if not evidence.changed_files or not evidence.tree_sha:
             raise self._halt(run, WorkflowState.NEEDS_HUMAN, f"{reason}; nothing to publish")
         run = self._add_needs_look(run, reason)
@@ -3790,9 +3802,14 @@ class WorkflowController:
         self._store.save_run(run)
         self._store.save_patch(run.id, evidence.diff)
         context.latest_evidence = evidence
-        context.latest_test_report = None
-        context.latest_review = None
-        return self.transition(run, WorkflowState.PR_READY)
+        return run
+
+    def _stop(self, run: FactoryRun, context: _RunContext, reason: str) -> _Halt:
+        """Stop a run. An unattended run with a pull request leaves it open
+        instead of waiting for a person (ADR-040, ADR-041)."""
+        if run.unattended and run.pull_request_url is not None:
+            return _Halt(self._leave_open(run, context, reason))
+        return self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
 
     def _leave_open(
         self, run: FactoryRun, context: _RunContext, reason: str | None = None
@@ -3840,11 +3857,17 @@ class WorkflowController:
             or not run.reviewed_tree_sha
             or current_evidence.tree_sha != run.reviewed_tree_sha
         ):
-            raise self._halt(
-                run,
-                WorkflowState.NEEDS_HUMAN,
-                "repository changed after independent review; refusing to publish unreviewed work",
+            if not run.unattended:
+                raise self._halt(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    "repository changed after independent review; "
+                    "refusing to publish unreviewed work",
+                )
+            run = self._adopt_current_tree(
+                run, context, current_evidence, "repository changed after review"
             )
+            evidence = current_evidence
         changed_files = list(evidence.changed_files)
 
         gate = assess_publish_gate(
@@ -3932,11 +3955,7 @@ class WorkflowController:
                     "published commit does not match the persisted publication receipt"
                 )
         except (GitPublishError, GitHubError, OSError) as exc:
-            raise self._halt(
-                run,
-                WorkflowState.NEEDS_HUMAN,
-                f"could not publish the pull request: {exc}",
-            ) from exc
+            raise self._stop(run, context, f"could not publish the pull request: {exc}") from exc
 
         run = run.model_copy(
             update={
@@ -3989,25 +4008,20 @@ class WorkflowController:
                     repair_attempts_used=self._attempts_used(run, AttemptBudget.CI_REPAIR),
                 )
             except (GitPublishError, GitHubError, OSError) as exc:
-                raise self._halt(
-                    run, WorkflowState.NEEDS_HUMAN, f"could not observe CI: {exc}"
-                ) from exc
+                raise self._stop(run, context, f"could not observe CI: {exc}") from exc
             self._store.save_artifact(run.id, report)
 
             if report.timed_out:
-                reason = "CI checks were still pending after the configured wait budget"
-                if run.unattended:
-                    return self._leave_open(run, context, reason)
-                raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
+                raise self._stop(
+                    run, context, "CI checks were still pending after the configured wait budget"
+                )
             if report.overall == "PASS":
                 return self._merge_and_finish(run, context)
 
             run = self.transition(run, WorkflowState.CI_DIAGNOSIS)
             stop_reason = self._ci_stop_reason(run, report)
             if stop_reason is not None:
-                if run.unattended:
-                    return self._leave_open(run, context, stop_reason)
-                raise self._halt(run, WorkflowState.NEEDS_HUMAN, stop_reason)
+                raise self._stop(run, context, stop_reason)
 
             repair_context = self._ci_repair_context(report)
             run = self.transition(run, WorkflowState.IMPLEMENTING)
@@ -4045,9 +4059,9 @@ class WorkflowController:
                 or not run.delivery_repository
                 or not run.delivery_host
             ):
-                raise self._halt(
+                raise self._stop(
                     run,
-                    WorkflowState.NEEDS_HUMAN,
+                    context,
                     "missing delivery evidence or review authorization for the current head",
                 )
             try:
@@ -4067,9 +4081,7 @@ class WorkflowController:
                 WorkspaceError,
                 subprocess.TimeoutExpired,
             ) as exc:
-                raise self._halt(
-                    run, WorkflowState.NEEDS_HUMAN, f"could not merge the pull request: {exc}"
-                ) from exc
+                raise self._stop(run, context, f"could not merge the pull request: {exc}") from exc
             run = run.model_copy(
                 update={"merge_commit_sha": result.commit_sha, "updated_at": utc_now()}
             )
