@@ -96,6 +96,7 @@ uv run factory status --data-dir ./.factory-demo
 
 Add `--runtime copilot` for real agents.
 That option costs money and is not the default.
+Add `--runtime claude-code --model-profile claude` to use a Claude subscription.
 
 Read the full walkthrough:
 [First offline run](https://sanjit-roopra.github.io/software-agent-factory/get-started/first-run/).
@@ -143,7 +144,8 @@ The system works end to end. Packaging, CI, and the release process are real.
 - Supported platform: macOS with Python 3.13+. Other platforms are not
   tested or supported.
 - External tools: `git` is always required. `gh` is required only for GitHub
-  integrations. `copilot` is required only for `--runtime copilot`.
+  integrations. `copilot` is required only for `--runtime copilot`, and
+  `claude` only for `--runtime claude-code`.
 - Implemented: phases 0 to 14, plus 15.0, 15.1, 15.2, 15.5, 15.11, 16, 17, 18, 19, and 20.
 - Deferred: staging, deployment, Docker and Kubernetes sandboxes, remote
   workers, Postgres, Temporal, and non-GitHub trackers.

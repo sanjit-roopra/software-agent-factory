@@ -43,6 +43,35 @@ models:
     context_tier: "default"
 
 model_profiles:
+  # For --runtime claude-code. Claude Code resolves the aliases to the
+  # latest model; reasoning maps to --effort (low, medium, high, xhigh, max).
+  # The reviewer family (opus) must differ from every worker family.
+  claude:
+    triage:
+      model: "haiku"
+      reasoning: "medium"
+    planner:
+      model: "opus"
+      reasoning: "high"
+    workers:
+      L0:
+        model: "haiku"
+        reasoning: "medium"
+      L1:
+        model: "sonnet"
+        reasoning: "medium"
+      L2:
+        model: "sonnet"
+        reasoning: "high"
+      L3:
+        model: "sonnet"
+        reasoning: "xhigh"
+    tester:
+      model: "sonnet"
+      reasoning: "medium"
+    reviewer:
+      model: "opus"
+      reasoning: "high"
   economy:
     triage:
       model: "gpt-5.6-luna"

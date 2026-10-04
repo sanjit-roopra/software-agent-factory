@@ -205,6 +205,7 @@ def test_doctor_passes_config_data_dir_and_runtime_through(
         "model_profile": "default",
         "requested_runtime_copilot": True,
         "requested_runtime_pi": False,
+        "requested_runtime_claude_code": False,
     }
 
 
@@ -236,6 +237,25 @@ def test_doctor_passes_runtime_pi_through(
     assert result.exit_code == 0, result.output
     assert captured["requested_runtime_copilot"] is False
     assert captured["requested_runtime_pi"] is True
+    assert captured["requested_runtime_claude_code"] is False
+
+
+def test_doctor_passes_runtime_claude_code_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_doctor(**kwargs: object) -> DoctorReport:
+        captured.update(kwargs)
+        return passing_report()
+
+    # double-waiver: B1 — run_doctor probes real executables on PATH
+    monkeypatch.setattr(cli, "run_doctor", fake_run_doctor)
+
+    result = runner.invoke(app, ["doctor", "--runtime", "claude-code"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["requested_runtime_copilot"] is False
+    assert captured["requested_runtime_pi"] is False
+    assert captured["requested_runtime_claude_code"] is True
 
 
 def test_doctor_default_runtime_never_requests_copilot(
@@ -252,6 +272,7 @@ def test_doctor_default_runtime_never_requests_copilot(
     assert runner.invoke(app, ["doctor"]).exit_code == 0
     assert captured["requested_runtime_copilot"] is False
     assert captured["requested_runtime_pi"] is False
+    assert captured["requested_runtime_claude_code"] is False
 
 
 @pytest.mark.allow_real_binaries
@@ -1124,6 +1145,69 @@ def test_service_install_pi_runtime_requests_pi_doctor_checks(
     assert request.runtime is ServiceRuntime.PI
     assert "runtime: pi" in result.output
     assert not [line for line in result.stderr.splitlines() if line.lstrip().startswith("warning:")]
+
+
+def test_service_install_forwards_the_claude_code_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    macos: None,
+    launch_agents_dir: Path,
+    source_repo: Path,
+    executable: Path,
+    scheduler_config: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_doctor(**kwargs: object) -> DoctorReport:
+        captured.update(kwargs)
+        return passing_report()
+
+    def fake_install(request: ServiceInstallRequest, **_kwargs: object) -> ServiceStatus:
+        captured["request"] = request
+        return ServiceStatus(
+            label=request.label,
+            plist_path=launch_agents_dir / f"{request.label}.plist",
+            installed=True,
+            loaded=True,
+            detail="loaded",
+        )
+
+    # double-waiver: B1 — run_doctor probes real executables on PATH
+    monkeypatch.setattr(cli, "run_doctor", fake_run_doctor)
+    # double-waiver: B1 — install_service writes a plist and runs launchctl
+    monkeypatch.setattr(cli, "install_service", fake_install)
+
+    result = runner.invoke(
+        app,
+        install_args(source_repo, scheduler_config, executable, "--runtime", "claude-code"),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["requested_runtime_claude_code"] is True
+    assert captured["requested_runtime_copilot"] is False
+    assert captured["requested_runtime_pi"] is False
+    request = captured["request"]
+    assert isinstance(request, ServiceInstallRequest)
+    assert request.runtime is ServiceRuntime.CLAUDE_CODE
+
+
+def test_service_install_refuses_claude_code_with_unsupported_effort(
+    macos: None,
+    source_repo: Path,
+    executable: Path,
+    scheduler_config: Path,
+    tmp_path: Path,
+) -> None:
+    payload = yaml.safe_load(scheduler_config.read_text(encoding="utf-8"))
+    payload["models"]["triage"]["reasoning"] = "minimal"
+    config_path = tmp_path / "bad-effort.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    result = runner.invoke(
+        app, install_args(source_repo, config_path, executable, "--runtime", "claude-code")
+    )
+
+    assert result.exit_code == 2
+    assert "triage=minimal" in result.output
 
 
 def test_service_install_carries_pi_coding_agent_dir_into_the_request(

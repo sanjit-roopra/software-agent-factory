@@ -15,7 +15,7 @@ response fails with byte-identical wording (Step 3.3).
 
 Step 3.4 maps every other pi failure mode to a failed, sanitized
 ``AgentResult``, mirroring how ``copilot_runtime.py``'s
-``_format_failure_reason`` and timeout path do it: an assistant message that
+``format_failure_reason`` and timeout path do it: an assistant message that
 ends ``error`` or ``aborted``, a non-zero exit or EOF before settling
 (``PiRpcProcessExited``), an unparsable protocol line
 (``PiRpcProtocolError``), a command pi rejected (``PiRpcCommandError``), a
@@ -759,7 +759,7 @@ class PiAgentRuntime(AgentRuntime):
 
         The second return value is the credential values to redact from any
         failure reason built from pi's stderr or protocol output (mirroring
-        ``copilot_runtime.py``'s ``_format_failure_reason``). It holds the
+        ``subprocess_utils.format_failure_reason``). It holds the
         values ``build_child_env`` removed plus *every* known credential
         value, kept or removed, so none can leak into a failure reason.
         """

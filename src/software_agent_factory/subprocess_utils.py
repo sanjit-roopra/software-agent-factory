@@ -11,13 +11,19 @@ prerequisite checks (Step 2.3 of ``plans/pi-agent-runtime.md``).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
 import subprocess
-from typing import Protocol
+from datetime import datetime
+from json import JSONDecodeError
+from typing import TYPE_CHECKING, Protocol
 
 from . import redaction
+
+if TYPE_CHECKING:
+    from .models import AgentRole
 
 #: Environment variables scrubbed from a child agent process's environment so
 #: a GitHub credential in the factory's own environment cannot leak into a
@@ -135,3 +141,73 @@ def parse_version(text: str) -> tuple[int, ...] | None:
     if match is None:
         return None
     return tuple(int(part) for part in match.group(1).split("."))
+
+
+def extract_first_event_ms(stdout: str, started_at_dt: datetime) -> float | None:
+    """Best-effort first-event latency from JSONL events that carry a ``timestamp``.
+
+    Copilot and Claude Code ``stream-json`` events both carry one.
+    """
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_seconds = _timestamp_seconds(event.get("timestamp"))
+        if event_seconds is None:
+            continue
+        delta_ms = (event_seconds - started_at_dt.timestamp()) * 1000.0
+        if delta_ms >= 0:
+            return delta_ms
+    return None
+
+
+def _timestamp_seconds(raw_ts: object) -> float | None:
+    """An ISO-8601 string, epoch seconds or epoch milliseconds, as epoch seconds."""
+    if isinstance(raw_ts, str):
+        try:
+            return datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and raw_ts > 0:
+        return float(raw_ts if raw_ts < 1e11 else raw_ts / 1000.0)
+    return None
+
+
+def _decode_timeout_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def merge_timeout_output(previous: object, final: str) -> str:
+    prefix = _decode_timeout_text(previous)
+    if not prefix or final.startswith(prefix):
+        return final
+    return f"{prefix}{final}"
+
+
+def format_failure_reason(
+    *,
+    role: AgentRole,
+    message: str,
+    stdout: str,
+    stderr: str,
+    scrubbed_values: set[str],
+    limit: int,
+) -> str:
+    sections: list[str] = [f"{role.value}: {message}."]
+    cleaned_stdout = sanitize_output(stdout, scrubbed_values)
+    cleaned_stderr = sanitize_output(stderr, scrubbed_values)
+    if cleaned_stdout:
+        sections.append(f"stdout={cleaned_stdout}")
+    if cleaned_stderr:
+        sections.append(f"stderr={cleaned_stderr}")
+    combined = " ".join(sections)
+    if len(combined) <= limit:
+        return combined
+    return f"{combined[: limit - 12].rstrip()}...[truncated]"

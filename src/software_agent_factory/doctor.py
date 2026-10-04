@@ -11,11 +11,12 @@ needs external tools on ``PATH``:
                                     scheduler.enabled)
     required if chosen   copilot   (--runtime copilot)
     required if chosen   pi, node  (--runtime pi)
+    required if chosen   claude    (--runtime claude-code)
 
 Preflight validates prerequisites for *enabled* features only, so a default
-offline run never demands ``gh``, ``copilot`` or ``pi``. This module never
-makes a paid Copilot or pi call: the only ``copilot``/``pi`` interaction it
-may perform is a bounded ``--version`` subprocess, never a real agent
+offline run never demands ``gh``, ``copilot``, ``pi`` or ``claude``. This
+module never makes a paid agent call: the only ``copilot``/``pi``/``claude``
+interaction it may perform is a bounded ``--version`` subprocess, never a real agent
 request.
 
 Every external boundary -- subprocess execution, ``PATH`` lookup, platform
@@ -340,6 +341,20 @@ def check_copilot(env: DoctorEnvironment, *, required: bool) -> CheckResult:
         executable="copilot",
         required=required,
         reason="--runtime copilot",
+    )
+
+
+def check_claude_code(env: DoctorEnvironment, *, required: bool) -> CheckResult:
+    """``claude`` is only required when ``--runtime claude-code`` is requested.
+
+    A bounded ``claude --version`` probe only -- never a model call.
+    """
+    return _version_check(
+        env,
+        name="claude-code",
+        executable="claude",
+        required=required,
+        reason="--runtime claude-code",
     )
 
 
@@ -755,6 +770,7 @@ def run_doctor(
     model_profile: str | None = None,
     requested_runtime_copilot: bool = False,
     requested_runtime_pi: bool = False,
+    requested_runtime_claude_code: bool = False,
     accept_pi_env_credentials: bool = True,
     environment: DoctorEnvironment | None = None,
 ) -> DoctorReport:
@@ -808,6 +824,7 @@ def run_doctor(
             accept_env_credentials=accept_pi_env_credentials,
         )
     )
+    checks.append(check_claude_code(env, required=requested_runtime_claude_code))
     checks.extend(check_verification_commands(env, verification_commands))
 
     if data_dir is not None:
@@ -822,6 +839,7 @@ def missing_prerequisites(
     require_copilot: bool = False,
     require_pi: bool = False,
     pi_executable: str = "pi",
+    require_claude_code: bool = False,
     environment: DoctorEnvironment | None = None,
 ) -> list[str]:
     """Names of required external executables missing from ``PATH``.
@@ -849,4 +867,6 @@ def missing_prerequisites(
         wanted.append("copilot")
     if require_pi:
         wanted.append(pi_executable)
+    if require_claude_code:
+        wanted.append("claude")
     return [executable for executable in wanted if env.which(executable) is None]

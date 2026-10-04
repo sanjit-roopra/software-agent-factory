@@ -7,7 +7,7 @@ factory project --repo PATH --title TEXT --description TEXT [--runtime fake|copi
 factory runs
 factory show RUN_ID
 factory start --repo PATH --github-repo OWNER/NAME [--once] [--runtime fake|copilot|pi]
-factory doctor [--runtime fake|copilot|pi] [--json]
+factory doctor [--runtime fake|copilot|pi|claude-code] [--json]
 factory status [--json]
 factory dashboard [--port 8765] [--open-browser]
 factory service install|status|uninstall
@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from .agents import AgentRuntime
-    from .config import FactoryConfig
+    from .config import FactoryConfig, ModelsConfig, RoleModelConfig
     from .dashboard.snapshot import (
         ResumeRequester,
         ResumeRequestReader,
@@ -125,7 +125,8 @@ NO_RISK_ASSESSMENT_HELP = (
 )
 
 RUNTIME_OPTION_HELP = (
-    "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid) or 'pi' (paid)."
+    "Agent runtime: 'fake' (default, no model calls), 'copilot' (paid), 'pi' (paid) or "
+    "'claude-code' (Claude subscription)."
 )
 
 _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
@@ -141,6 +142,7 @@ _DEFERRED_EXPORTS: dict[str, tuple[str, str]] = {
     "uninstall_service": (".service_install", "uninstall_service"),
     "FakeAgentRuntime": (".agents", "FakeAgentRuntime"),
     "PiAgentRuntime": (".pi_runtime", "PiAgentRuntime"),
+    "ClaudeCodeAgentRuntime": (".claude_code_runtime", "ClaudeCodeAgentRuntime"),
 }
 
 
@@ -164,6 +166,7 @@ class RuntimeChoice(StrEnum):
     FAKE = "fake"
     COPILOT = "copilot"
     PI = "pi"
+    CLAUDE_CODE = "claude-code"
 
 
 def _current_system() -> str:
@@ -229,6 +232,7 @@ def _require_prerequisites(
     require_copilot: bool,
     require_pi: bool = False,
     pi_executable: str = "pi",
+    require_claude_code: bool = False,
 ) -> None:
     """Refuse to start work when a required external executable is absent.
 
@@ -246,6 +250,7 @@ def _require_prerequisites(
         require_copilot=require_copilot,
         require_pi=require_pi,
         pi_executable=pi_executable,
+        require_claude_code=require_claude_code,
     )
     if not missing:
         return
@@ -253,6 +258,44 @@ def _require_prerequisites(
         f"missing required executable(s) on PATH: {', '.join(missing)}. "
         "Install them and retry; 'factory doctor' explains each requirement."
     )
+
+
+def _require_claude_code_effort(runtime: RuntimeChoice, config: FactoryConfig) -> None:
+    """Refuse a ``claude-code`` run whose models use a reasoning level ``--effort``
+    does not accept, before any work starts (ADR-045). Route options can swap
+    in another model profile, so those profiles are checked too."""
+    if runtime is not RuntimeChoice.CLAUDE_CODE:
+        return
+    from .claude_code_runtime import EFFORT_LEVELS
+
+    profiles = {"": config.models}
+    if config.routing.enabled:
+        for option in config.routing.options:
+            name = option.model_profile
+            if name is not None:
+                profiles[f"{name}."] = config.model_profiles[name]
+    invalid = [
+        f"{prefix}{role}={role_config.reasoning}"
+        for prefix, models in profiles.items()
+        for role, role_config in _role_models(models).items()
+        if role_config.reasoning not in EFFORT_LEVELS
+    ]
+    if invalid:
+        raise _fail(
+            f"--runtime claude-code accepts reasoning {', '.join(EFFORT_LEVELS)}; "
+            f"the configured models use {', '.join(invalid)}. "
+            "Use --model-profile claude or change the reasoning values."
+        )
+
+
+def _role_models(models: ModelsConfig) -> dict[str, RoleModelConfig]:
+    return {
+        "triage": models.triage,
+        "planner": models.planner,
+        "tester": models.tester,
+        "reviewer": models.reviewer,
+        **{f"workers.{tier.value}": worker for tier, worker in models.workers.items()},
+    }
 
 
 def _configure_logging(config: FactoryConfig) -> None:
@@ -277,6 +320,8 @@ def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime
     if choice is RuntimeChoice.PI:
         pi_runtime_cls = _seam("PiAgentRuntime")
         return pi_runtime_cls(config.pi, config.data_dir)  # type: ignore[no-any-return]
+    if choice is RuntimeChoice.CLAUDE_CODE:
+        return _seam("ClaudeCodeAgentRuntime")()  # type: ignore[no-any-return]
     fake_runtime_cls = _seam("FakeAgentRuntime")
     return fake_runtime_cls()  # type: ignore[no-any-return]
 
@@ -402,8 +447,10 @@ def run_command(
         require_gh=factory_config.pull_request.enabled or factory_config.ci.enabled,
         require_copilot=runtime is RuntimeChoice.COPILOT,
         require_pi=runtime is RuntimeChoice.PI,
+        require_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
         pi_executable=factory_config.pi.executable,
     )
+    _require_claude_code_effort(runtime, factory_config)
     _configure_logging(factory_config)
 
     store = FileRunStore(factory_config.data_dir)
@@ -549,8 +596,10 @@ def project_command(
         ),
         require_copilot=runtime is RuntimeChoice.COPILOT,
         require_pi=runtime is RuntimeChoice.PI,
+        require_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
         pi_executable=factory_config.pi.executable,
     )
+    _require_claude_code_effort(runtime, factory_config)
     _configure_logging(factory_config)
 
     from uuid import uuid4
@@ -685,8 +734,10 @@ def start_command(
         require_gh=True,
         require_copilot=runtime is RuntimeChoice.COPILOT,
         require_pi=runtime is RuntimeChoice.PI,
+        require_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
         pi_executable=factory_config.pi.executable,
     )
+    _require_claude_code_effort(runtime, factory_config)
     if runtime is RuntimeChoice.FAKE:
         _warn_fake_backlog_claims()
     _configure_logging(factory_config)
@@ -842,6 +893,7 @@ def doctor_command(
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
         requested_runtime_pi=runtime is RuntimeChoice.PI,
+        requested_runtime_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
     )
 
     if json_output:
@@ -1374,6 +1426,7 @@ def service_install_command(
     _require_macos()
 
     factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
+    _require_claude_code_effort(runtime, factory_config)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "refusing to install a service for a disabled scheduler: set "
@@ -1389,6 +1442,7 @@ def service_install_command(
         model_profile=model_profile,
         requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
         requested_runtime_pi=runtime is RuntimeChoice.PI,
+        requested_runtime_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
         # An env-var pi credential lives in the operator's shell and never
         # reaches the launchd service (only the plist's own
         # EnvironmentVariables does), so it must not satisfy this preflight.

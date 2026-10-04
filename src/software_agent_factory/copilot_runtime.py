@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 
@@ -35,7 +34,6 @@ from .agents import (
 )
 from .models import (
     AgentPurpose,
-    AgentRole,
     ModelBase,
     ModelUsage,
     PerformanceRecord,
@@ -46,7 +44,12 @@ from .prompts import (
     RoleName,
     build_prompt,
 )
-from .subprocess_utils import build_child_env, sanitize_output
+from .subprocess_utils import (
+    build_child_env,
+    extract_first_event_ms,
+    format_failure_reason,
+    merge_timeout_output,
+)
 from .subprocess_utils import kill_process_group as _kill_process_group
 from .usage_values import non_negative_float, non_negative_int
 
@@ -112,7 +115,7 @@ class CopilotAgentRuntime(AgentRuntime):
                 )
                 # A missing or unusable copilot executable is an agent failure the
                 # controller can record and bound, not a factory crash.
-                reason = _format_failure_reason(
+                reason = format_failure_reason(
                     role=request.role,
                     message=f"copilot could not be started ({type(exc).__name__})",
                     stdout="",
@@ -131,17 +134,17 @@ class CopilotAgentRuntime(AgentRuntime):
                 stdout, stderr = process.communicate(timeout=request.timeout_seconds)
             except subprocess.TimeoutExpired as exc:
                 stdout, stderr = _kill_process_group(process)
-                stdout = _merge_timeout_output(exc.stdout, stdout)
-                stderr = _merge_timeout_output(exc.stderr, stderr)
+                stdout = merge_timeout_output(exc.stdout, stdout)
+                stderr = merge_timeout_output(exc.stderr, stderr)
                 usage = _load_usage_metrics(usage_path, stdout=stdout)
-                first_event_ms = _extract_first_event_ms(stdout, started_at)
+                first_event_ms = extract_first_event_ms(stdout, started_at)
                 perf = PerformanceRecord(
                     prompt_chars=prompt_chars,
                     response_chars=len(stdout),
                     process_boot_ms=boot_ms,
                     first_event_ms=first_event_ms,
                 )
-                reason = _format_failure_reason(
+                reason = format_failure_reason(
                     role=request.role,
                     message=f"copilot timed out after {request.timeout_seconds}s",
                     stdout=stdout,
@@ -161,7 +164,7 @@ class CopilotAgentRuntime(AgentRuntime):
                 raise
 
             usage = _load_usage_metrics(usage_path, stdout=stdout)
-            first_event_ms = _extract_first_event_ms(stdout, started_at)
+            first_event_ms = extract_first_event_ms(stdout, started_at)
             perf = PerformanceRecord(
                 prompt_chars=prompt_chars,
                 response_chars=len(stdout),
@@ -169,7 +172,7 @@ class CopilotAgentRuntime(AgentRuntime):
                 first_event_ms=first_event_ms,
             )
             if process.returncode != 0:
-                reason = _format_failure_reason(
+                reason = format_failure_reason(
                     role=request.role,
                     message=f"copilot exited with code {process.returncode}",
                     stdout=stdout,
@@ -192,7 +195,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     stdout=stdout,
                 )
             except ValueError as exc:
-                reason = _format_failure_reason(
+                reason = format_failure_reason(
                     role=request.role,
                     message=str(exc),
                     stdout=stdout,
@@ -257,36 +260,6 @@ class CopilotAgentRuntime(AgentRuntime):
             command.extend(["--deny-tool", denied_permission])
         command.extend(["-p", prompt])
         return command
-
-
-def _extract_first_event_ms(stdout: str, started_at_dt: datetime) -> float | None:
-    """Best-effort extraction of first event latency from Copilot JSONL events."""
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        raw_ts = event.get("timestamp")
-        if isinstance(raw_ts, str):
-            try:
-                ts_str = raw_ts.replace("Z", "+00:00")
-                event_dt = datetime.fromisoformat(ts_str)
-                delta_ms = (event_dt - started_at_dt).total_seconds() * 1000.0
-                if delta_ms >= 0:
-                    return delta_ms
-            except (ValueError, TypeError):
-                continue
-        elif isinstance(raw_ts, (int, float)) and raw_ts > 0:
-            event_sec = raw_ts if raw_ts < 1e11 else raw_ts / 1000.0
-            delta_ms = (event_sec - started_at_dt.timestamp()) * 1000.0
-            if delta_ms >= 0:
-                return delta_ms
-    return None
 
 
 def _load_usage_metrics(path: Path, *, stdout: str) -> UsageMetrics | None:
@@ -555,21 +528,6 @@ def _permission_profile(request: AgentRequest) -> _PermissionProfile:
     )
 
 
-def _decode_timeout_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
-
-
-def _merge_timeout_output(previous: object, final: str) -> str:
-    prefix = _decode_timeout_text(previous)
-    if not prefix or final.startswith(prefix):
-        return final
-    return f"{prefix}{final}"
-
-
 def _assistant_response_candidates(stdout: str) -> list[str]:
     direct_candidates: list[str] = []
     fallback_candidates: list[str] = []
@@ -682,25 +640,3 @@ def _dedupe_fragments(fragments: list[str]) -> list[str]:
         deduped.append(fragment)
         previous = fragment
     return deduped
-
-
-def _format_failure_reason(
-    *,
-    role: AgentRole,
-    message: str,
-    stdout: str,
-    stderr: str,
-    scrubbed_values: set[str],
-    limit: int,
-) -> str:
-    sections: list[str] = [f"{role.value}: {message}."]
-    cleaned_stdout = sanitize_output(stdout, scrubbed_values)
-    cleaned_stderr = sanitize_output(stderr, scrubbed_values)
-    if cleaned_stdout:
-        sections.append(f"stdout={cleaned_stdout}")
-    if cleaned_stderr:
-        sections.append(f"stderr={cleaned_stderr}")
-    combined = " ".join(sections)
-    if len(combined) <= limit:
-        return combined
-    return f"{combined[: limit - 12].rstrip()}...[truncated]"

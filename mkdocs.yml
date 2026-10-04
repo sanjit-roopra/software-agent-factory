@@ -151,6 +151,7 @@ nav:
       - Roadmap and status: project/roadmap.md
       - Development: project/development.md
       - Releases: project/releases.md
+      - "Spec: Claude Code runtime": specs/claude-code-runtime.md
       - "Spec: pi agent runtime": specs/pi-agent-runtime.md
       - "Spec: pi command filter": specs/pi-command-filter.md
       - "Spec: run dashboard redesign": specs/run-dashboard-redesign.md

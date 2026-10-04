@@ -1,5 +1,49 @@
 # Architecture Decisions
 
+## ADR-045: Claude Code is a third runtime, and roles can mix runtimes
+
+Status: accepted on 2026-10-04. This amends ADR-031.
+The decision lands in three slices of `docs/specs/claude-code-runtime.md`: the runtime first, then roles per runtime, then the fallback.
+
+### Context
+
+The factory runs every call of a run on one runtime, Copilot or pi (ADR-031).
+A Claude subscription works only in the Claude Code CLI. Its terms do not allow it in pi.
+So the factory did not use a Claude subscription. One run also did not use two subscriptions.
+
+### Decision
+
+- `ClaudeCodeAgentRuntime` runs one `claude -p` process per call, with `stream-json` output.
+  It uses the logged-in subscription. It never uses `--bare`, because `--bare` reads only an API key.
+- The runtime does not load MCP servers, hooks, plugins or saved sessions of the user.
+- The child process does not get `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` or the Bedrock, Vertex and Foundry settings. So it never bills an API key.
+- The `acceptEdits` permission mode keeps file tools inside the worktree. A live call on Claude Code 2.1.289 confirmed that a read or a write outside the worktree is denied.
+  `Bash` commands are not kept inside the worktree, as for Copilot and pi.
+- Tool profiles match the Copilot profiles: read-only roles get read tools only.
+  The implementer gets `Bash`, but `git commit`, `git push`, `gh`, `curl`, `wget` and the web tools are denied, as for pi (ADR-032).
+- `reasoning` maps to `--effort`.
+- Each role and worker tier can set `runtime: copilot | pi | claude-code`.
+  A role without it uses `--runtime`. `--runtime fake` overrides all roles.
+- `RoutingAgentRuntime` implements `AgentRuntime` and sends each call to its runtime. The workflow does not know which runtime runs a call.
+- A role can set one `fallback` with a runtime, a model and a reasoning level.
+  The router uses it once when the first runtime is unavailable.
+  Unavailable means a missing executable, or a Claude Code usage limit, rate limit, overload or auth error.
+  A wrong result never triggers the fallback.
+- `ModelUsage.runtime` records the runtime that served each call.
+- The packaged `claude` model profile uses the `opus` reviewer and `haiku` and `sonnet` workers.
+  The reviewer-family rule reads the alias as the family. So this profile passes with a reviewer and workers from one vendor.
+  A reviewer from another vendor needs a role on another runtime, which the second slice adds.
+- The spec is `docs/specs/claude-code-runtime.md`.
+
+### Consequences
+
+- One run can spend a Claude subscription, a Copilot subscription and pi providers together.
+- A Claude usage limit does not stop a run when a fallback is set.
+- Claude Code reports a list-price cost, not a bill. It goes to `list_price_estimate_usd`, as for pi.
+- Claude Code calls do not continue a session. Repair rounds send the full context again, as for Copilot.
+- A configuration without `runtime` fields behaves as before.
+- Claude Code matches deny rules on the start of a command. A command such as `git -C . push` is not denied. The Copilot deny list has the same limit.
+
 ## ADR-044: Unattended projects continue past a task that did not merge
 
 Status: accepted on 2026-10-04.
@@ -799,6 +843,9 @@ Consequences:
 ## ADR-031: pi is a recommended agent runtime
 
 Status: accepted on 2026-09-30. This amends ADR-017 and ADR-022.
+
+*Amended in part by [ADR-045](#adr-045-claude-code-is-a-third-runtime-and-roles-can-mix-runtimes):
+one run can use more than one runtime.*
 
 *Amended in part by [ADR-032](#adr-032-pi-implementer-shell-commands-match-the-copilot-deny-list):
 the pi implementer no longer has an unrestricted `bash` tool. The rest of this decision still stands.*

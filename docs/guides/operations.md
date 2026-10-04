@@ -203,6 +203,12 @@ spend money. Use `--runtime copilot` to opt in deliberately.
 Use `--model-profile economy` to persist the packaged lower-cost routing
 selection in arguments for the LaunchAgent.
 
+Use `--runtime claude-code --model-profile claude` to run the agents on a
+Claude subscription. Log in once with `claude` in a terminal first. The
+runtime does not load your Claude Code settings, plugins, hooks, MCP servers
+or memory, and it saves no session. Claude Code reports a list price, not a
+bill, so the factory stores it as `list_price_estimate_usd` (ADR-045).
+
 Useful flags:
 
 - `--executable` points at a specific `factory` build.

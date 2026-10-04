@@ -44,6 +44,7 @@ from software_agent_factory.doctor import (
     CheckStatus,
     DoctorEnvironment,
     DoctorReport,
+    check_claude_code,
     check_config,
     check_copilot,
     check_data_dir,
@@ -55,6 +56,7 @@ from software_agent_factory.doctor import (
     check_platform,
     check_verification_commands,
     default_command_runner,
+    missing_prerequisites,
     run_doctor,
 )
 
@@ -192,6 +194,39 @@ def test_check_copilot_never_calls_anything_but_bounded_version_probe() -> None:
     result = check_copilot(env, required=True)
     assert result.status is CheckStatus.OK
     assert runner.calls == [("/usr/local/bin/copilot", "--version")]
+
+
+def test_check_claude_code_not_requested_and_missing_is_ok() -> None:
+    env, runner = make_env(available={})
+    assert check_claude_code(env, required=False).status is CheckStatus.OK
+    assert runner.calls == []
+
+
+def test_check_claude_code_requested_and_missing_is_error() -> None:
+    env, _ = make_env(available={})
+    assert check_claude_code(env, required=True).status is CheckStatus.ERROR
+
+
+def test_check_claude_code_never_calls_anything_but_bounded_version_probe() -> None:
+    """Doctor must never make a Claude Code agent call -- only ``--version``."""
+    env, runner = make_env(available={"claude": "/usr/local/bin/claude"})
+    assert check_claude_code(env, required=True).status is CheckStatus.OK
+    assert runner.calls == [("/usr/local/bin/claude", "--version")]
+
+
+def test_run_doctor_requires_claude_when_runtime_requested() -> None:
+    env, _ = make_env(available={"git": "/usr/bin/git"})  # claude missing
+    report = run_doctor(config_path=None, requested_runtime_claude_code=True, environment=env)
+    assert report.success is False
+    claude_check = next(c for c in report.checks if c.name == "claude-code")
+    assert claude_check.status is CheckStatus.ERROR
+
+
+def test_run_doctor_default_runtime_never_requires_claude() -> None:
+    env, _ = make_env(available={"git": "/usr/bin/git"})  # claude missing, but not requested
+    report = run_doctor(config_path=None, environment=env)
+    claude_check = next(c for c in report.checks if c.name == "claude-code")
+    assert claude_check.status is CheckStatus.OK
 
 
 # -- pi runtime prerequisite checks ------------------------------------------
@@ -966,7 +1001,6 @@ def test_run_doctor_requires_gh_when_the_scheduler_is_enabled(tmp_path: Path) ->
 
 
 def test_missing_prerequisites_always_requires_git() -> None:
-    from software_agent_factory.doctor import missing_prerequisites
 
     env, runner = make_env(available={})
     assert missing_prerequisites(environment=env) == ["git"]
@@ -979,7 +1013,6 @@ def test_missing_prerequisites_uses_the_configured_pi_executable_name() -> None:
     ``config.pi.executable`` is honored instead of a literal ``"pi"`` -- and
     a shim literally named ``"pi"`` must not satisfy a differently-named
     requirement."""
-    from software_agent_factory.doctor import missing_prerequisites
 
     env, _ = make_env(available={"git": "/usr/bin/git", "pi": "/usr/local/bin/pi"})
 
@@ -990,7 +1023,6 @@ def test_missing_prerequisites_uses_the_configured_pi_executable_name() -> None:
 
 
 def test_missing_prerequisites_reports_only_requested_tools() -> None:
-    from software_agent_factory.doctor import missing_prerequisites
 
     env, _ = make_env(available={"git": "/usr/bin/git"})
 
@@ -1002,13 +1034,20 @@ def test_missing_prerequisites_reports_only_requested_tools() -> None:
         "gh",
         "copilot",
     ]
+    assert missing_prerequisites(require_claude_code=True, environment=env) == ["claude"]
     assert missing_prerequisites(
         require_gh=True, require_copilot=True, require_pi=True, environment=env
     ) == ["gh", "copilot", "pi"]
+    assert missing_prerequisites(
+        require_gh=True,
+        require_copilot=True,
+        require_pi=True,
+        require_claude_code=True,
+        environment=env,
+    ) == ["gh", "copilot", "pi", "claude"]
 
 
 def test_missing_prerequisites_is_empty_when_everything_is_present() -> None:
-    from software_agent_factory.doctor import missing_prerequisites
 
     env, _ = make_env(
         available={

@@ -157,6 +157,7 @@ class ServiceRuntime(StrEnum):
     FAKE = "fake"
     COPILOT = "copilot"
     PI = "pi"
+    CLAUDE_CODE = "claude-code"
 
 
 @dataclass(frozen=True)
