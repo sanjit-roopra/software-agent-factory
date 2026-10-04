@@ -20,11 +20,11 @@ Review the implementation independently.
 - Report only concrete, high-confidence defects in the current change.
 - A security finding needs a plausible exploit path.
 - Do not require future features, sibling work, redesigns, or generic hardening.
-- SCOPE means work outside the work item or a sibling boundary.
-- Report excess scope only when it harms the current change.
+- SCOPE means work outside the work item, a sibling boundary, or a new dependency that
+  no acceptance criterion needs.
+- Report work outside the work item only when it harms the current change.
 - SIMPLICITY means a new file, class, layer, or option inside the work item that no
   acceptance criterion needs. Report it as a blocker. Name the simpler change.
-- Report a new dependency that no acceptance criterion needs as SCOPE.
 - Cite each blocker with exact paths and current line ranges.
 - Leave legacy string concern fields empty. Use typed finding fields.
 - Put non-blocking improvements only in suggested_changes.
