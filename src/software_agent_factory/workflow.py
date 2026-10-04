@@ -205,6 +205,15 @@ MAX_CONSECUTIVE_REPLACEMENT_REVIEWS = 2
 #: Factory restarts one unattended run may spend before it ends as it is (ADR-043).
 MAX_RESTART_RECOVERIES = 2
 _RESTART_REASON = "interrupted by a factory restart"
+_RESTART_REPAIR_CONTEXT = RepairContext(
+    trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
+    summary=(
+        "A factory restart interrupted the previous attempt. The working tree may contain "
+        "partial, unverified edits from it; inspect and reconcile them before continuing."
+    ),
+    failures=[_RESTART_REASON],
+    log_excerpt=None,
+)
 
 _DIFF_HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
@@ -993,8 +1002,11 @@ class WorkflowController:
                 if repository != run.delivery_repository:
                     raise ValueError("delivery repository changed since this run started")
             if not self._workspace_matches(run, workspace):
-                return self.recover_abandoned_run(
-                    run, "delivery workspace identity changed or the workspace is missing"
+                return self._recover_interrupted_delivery(
+                    run,
+                    workspace,
+                    source_repo,
+                    "delivery workspace identity changed or the workspace is missing",
                 )
             try:
                 context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
@@ -1023,8 +1035,11 @@ class WorkflowController:
             except _Halt as halt:
                 return halt.run
             except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
-                return self.recover_abandoned_run(
-                    self._store.load_run(run_id), f"could not reconcile delivery checkpoint: {exc}"
+                return self._recover_interrupted_delivery(
+                    self._store.load_run(run_id),
+                    workspace,
+                    source_repo,
+                    f"could not reconcile delivery checkpoint: {exc}",
                 )
         finally:
             workspace.release_lock()
@@ -1059,6 +1074,8 @@ class WorkflowController:
             except FileNotFoundError:
                 triage_result = None
             if triage_result is None or not self._workspace_matches(run, workspace):
+                # Nothing was published, so a clean worktree on the current base loses nothing.
+                workspace.discard()
                 run = self._restart_at(run, WorkflowState.CREATED)
                 return self._prepare_and_execute(run, work_item, workspace, source_repo)
             workspace.prepare()
@@ -1073,6 +1090,7 @@ class WorkflowController:
                     workspace,
                     source_repo,
                     repository_profile,
+                    repair_context=_RESTART_REPAIR_CONTEXT,
                 )
             return self._drive_from_planning(
                 run,
@@ -1083,21 +1101,42 @@ class WorkflowController:
                 source_repo,
                 repository_profile,
                 route_decision=run.route_decision,
+                repair_context=_RESTART_REPAIR_CONTEXT,
             )
         except _Halt as halt:
             return halt.run
         except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
-            return self.recover_abandoned_run(
-                self._store.load_run(run.id), f"could not restart interrupted run: {exc}"
+            return self._recover_interrupted_delivery(
+                self._store.load_run(run.id),
+                workspace,
+                source_repo,
+                f"could not restart interrupted run: {exc}",
             )
+
+    def _recover_interrupted_delivery(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path, reason: str
+    ) -> FactoryRun:
+        """Stop an interrupted run that cannot continue (ADR-043).
+
+        An unattended run with a pull request leaves it open, labelled and not merged.
+        Every other run stops for a person.
+        """
+        if run.unattended and run.pull_request_url is not None:
+            try:
+                context = self._stored_context(run, workspace, source_repo)
+            except (OSError, ValueError):
+                pass
+            else:
+                return self._leave_open(self._close_active_invocation(run, reason), context, reason)
+        return self.recover_abandoned_run(run, reason)
 
     def _count_restart(self, run: FactoryRun) -> FactoryRun:
         """Close the interrupted invocation and count this restart.
 
-        An interrupted Implementer counts as one failed attempt of its budget. That attempt is
-        otherwise recorded only after the Implementer returns.
+        The last Implementer invocation with no attempt record counts as one failed attempt
+        of its budget. The controller records an attempt only after the Implementer returns,
+        so an interruption during the call, or just after it, leaves none.
         """
-        active = run.active_invocation
         run = self._close_active_invocation(run, _RESTART_REASON)
         now = utc_now()
         run = run.model_copy(
@@ -1109,20 +1148,24 @@ class WorkflowController:
             }
         )
         self._store.save_run(run)
-        if active is not None and active.role is AgentRole.IMPLEMENTER:
+        implementer = next(
+            (r for r in reversed(run.invocation_records) if r.role is AgentRole.IMPLEMENTER), None
+        )
+        recorded = {attempt.invocation_number for attempt in run.attempt_records}
+        if implementer is not None and implementer.invocation_number not in recorded:
             run = self._record_attempt(
                 run,
-                active.attempt_number or 1,
+                implementer.attempt_number or 1,
                 RoleModelConfig(
-                    model=active.model,
-                    reasoning=active.reasoning,
-                    context_tier=active.context_tier,
+                    model=implementer.model,
+                    reasoning=implementer.reasoning,
+                    context_tier=implementer.context_tier,
                 ),
-                active.started_at,
+                implementer.started_at,
                 now,
                 outcome="failed",
                 failure_reason=_RESTART_REASON,
-                budget=active.budget or AttemptBudget.IMPLEMENTATION,
+                budget=implementer.budget or AttemptBudget.IMPLEMENTATION,
                 trigger=AttemptTrigger.INITIAL,
             )
         return run
@@ -1152,10 +1195,20 @@ class WorkflowController:
         self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
     ) -> FactoryRun:
         """End a restarted run as it is (ADR-043): publish its work or keep its pull request."""
+        reason = (
+            f"{_RESTART_REASON} while its pull request was open"
+            if run.pull_request_url is not None
+            else f"{_RESTART_REASON} too often to continue"
+        )
+        try:
+            self._store.load_artifact(run.id, Specification)
+            self._store.load_artifact(run.id, ExecutionPlan)
+        except FileNotFoundError:
+            return self._halt(run, WorkflowState.NEEDS_HUMAN, f"{reason}; nothing to publish").run
         workspace.prepare()
         context = self._stored_context(run, workspace, source_repo)
         run = self._restart_at(run, WorkflowState.IMPLEMENTING)
-        run = self._publish_as_is(run, context, f"{_RESTART_REASON} too often to continue")
+        run = self._publish_as_is(run, context, reason)
         if run.state is not WorkflowState.PR_READY:
             return run
         if not self._config.pull_request.enabled:
@@ -1901,10 +1954,13 @@ class WorkflowController:
         workspace: GitWorktreeWorkspace,
         source_repo: Path,
         repository_profile: RepositoryProfile,
+        *,
+        repair_context: RepairContext | None = None,
     ) -> FactoryRun:
         """Synthesize the specification and the plan, then continue from ``PLANNING``.
 
-        The ``SINGLE`` and ``CRITIQUE`` routes make no Planner call.
+        The ``SINGLE`` and ``CRITIQUE`` routes make no Planner call. A given ``repair_context``
+        goes to the first Implementer attempt.
         """
         specification = self._synthesize_specification(work_item)
         self._store.save_artifact(run.id, specification)
@@ -1926,7 +1982,7 @@ class WorkflowController:
         )
 
         run = self.transition(run, WorkflowState.IMPLEMENTING)
-        run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
+        run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, repair_context)
 
         if not self._config.pull_request.enabled:
             return self.finalize_pr_ready(run)
@@ -1945,11 +2001,13 @@ class WorkflowController:
         *,
         planner_context: str | None = None,
         route_decision: RouteDecision | None = None,
+        repair_context: RepairContext | None = None,
     ) -> FactoryRun:
         """Plan and continue from a controller-owned PLANNING state.
 
         One planner call writes the specification and the plan (ADR-035). A
-        given ``specification`` is the one an earlier planner call wrote.
+        given ``specification`` is the one an earlier planner call wrote. A given
+        ``repair_context`` goes to the first Implementer attempt.
         """
         if run.state is not WorkflowState.PLANNING:
             raise TransitionError(f"run {run.id} must be PLANNING before plan execution")
@@ -1994,7 +2052,7 @@ class WorkflowController:
         )
 
         run = self.transition(run, WorkflowState.IMPLEMENTING)
-        run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, None)
+        run = self._drive_to_pr_ready(run, context, AttemptBudget.IMPLEMENTATION, repair_context)
 
         if not self._config.pull_request.enabled:
             return self.finalize_pr_ready(run)

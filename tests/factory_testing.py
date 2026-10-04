@@ -124,12 +124,16 @@ class CrashingRuntime:
     def __init__(self, role: AgentRole, on_call: int = 1) -> None:
         self.role = role
         self.on_call = on_call
-        self.roles: list[AgentRole] = []
+        self.requests: list[AgentRequest] = []
         self._delegate = FakeAgentRuntime()
         self._role_calls = 0
 
+    @property
+    def roles(self) -> list[AgentRole]:
+        return [request.role for request in self.requests]
+
     def run(self, request: AgentRequest) -> AgentResult:
-        self.roles.append(request.role)
+        self.requests.append(request)
         if request.role is self.role:
             self._role_calls += 1
             if self._role_calls == self.on_call:

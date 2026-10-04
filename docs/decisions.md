@@ -18,18 +18,20 @@ The scheduler also never dispatches a work item that has a stored run. So a new 
 - The controller `resume` method handles the delivery states as before. These are `PR_READY`, `PR_CREATED`, `CI_RUNNING` and `CI_DIAGNOSIS`.
 - For an unattended run in an earlier state, `resume` continues the run:
   - It closes the interrupted agent call as failed.
-  - If an Implementer was running, it records one failed attempt. So a restart never widens the attempt budget.
+  - If an Implementer was running, or returned before its attempt was recorded, it records one failed attempt. So a restart never widens the attempt budget.
   - It adds one to `FactoryRun.restart_recoveries`.
   - It starts planning again from the stored triage result, because the output of the interrupted work is ambiguous.
-  - It keeps the workspace, so the next attempt sees the partial edits.
+  - It keeps the workspace. The first attempt after the restart gets a note that the tree can hold partial edits.
 - A run with no stored triage result, or with a missing or changed workspace, starts again from the start under the same run id.
+  The factory first removes the old worktree and branch, so the new start is clean on the current delivery base.
 - A `SINGLE` or `CRITIQUE` run builds its specification and plan again without a Planner call.
 - A run ends as it is when a restart interrupted it more than two times.
   It also ends as it is when a restart interrupted a CI repair, so a pull request exists.
   It then follows ADR-040 and ADR-041: the factory publishes the work with the `factory:needs-look` label, or leaves the pull request open.
-  If there is nothing to publish, the run stops for a person.
+  If there is nothing to publish, or no plan exists yet, the run stops for a person.
+- A delivery state that cannot resume, for example because the workspace is gone, leaves the open pull request as it is.
 - If the delivery policy changed, or the service cannot resume the run, the service stops the run for a person as before.
-  If another process holds the workspace lock, the service leaves the run alone and tries again in a later cycle.
+  If another process holds the workspace lock, or GitHub is not reachable, the service leaves the run queued and tries again in a later cycle.
 - An attended run does not change. It still goes to `NEEDS_HUMAN` (ADR-011).
 
 ### Consequences

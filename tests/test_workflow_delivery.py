@@ -155,10 +155,12 @@ def _config(
     merge: bool = True,
     verify: list[str] | None = None,
     max_total_attempts: int = 6,
+    same_model_attempts: int = 2,
 ) -> FactoryConfig:
     payload = build_config(
         tmp_path / "data",
         verify=verify or ["true"],
+        same_model_attempts=same_model_attempts,
         max_total_attempts=max_total_attempts,
         pull_request={"enabled": True, "draft": False, "base_branch": "main"},
         ci={"enabled": True, "repair_attempts": 2},
@@ -1624,7 +1626,7 @@ def test_unattended_review_impasse_an_attended_run_would_stop_on_is_labelled(
 def _interrupted_unattended(
     tmp_path: Path,
     source_repo: Path,
-    runtime: CrashingRuntime,
+    runtime: CrashingRuntime | FakeAgentRuntime,
     *,
     config: FactoryConfig | None = None,
     publisher: LocalPublisher | None = None,
@@ -1653,6 +1655,7 @@ def test_unattended_run_interrupted_while_implementing_restarts_and_counts_the_a
     runtime = CrashingRuntime(AgentRole.IMPLEMENTER)
     controller, _, interrupted = _interrupted_unattended(tmp_path, source_repo, runtime)
     assert interrupted.state is WorkflowState.IMPLEMENTING
+    assert interrupted.active_invocation is not None
     assert interrupted.attempt_records == []
 
     recovered = controller.resume(interrupted.id, source_repo)
@@ -1668,6 +1671,11 @@ def test_unattended_run_interrupted_while_implementing_restarts_and_counts_the_a
     assert recovered.attempt_records[0].failure_reason == "interrupted by a factory restart"
     assert runtime.roles.count(AgentRole.TRIAGE) == 1
     assert runtime.roles.count(AgentRole.PLANNER) == 2
+    first_attempt_after_restart = [r for r in runtime.requests if r.role is AgentRole.IMPLEMENTER][
+        1
+    ]
+    assert isinstance(first_attempt_after_restart.repair_context, RepairContext)
+    assert "partial, unverified edits" in first_attempt_after_restart.repair_context.summary
 
 
 def test_unattended_run_interrupted_before_triage_starts_again_under_its_run_id(
@@ -1676,6 +1684,8 @@ def test_unattended_run_interrupted_before_triage_starts_again_under_its_run_id(
     runtime = CrashingRuntime(AgentRole.TRIAGE)
     controller, store, interrupted = _interrupted_unattended(tmp_path, source_repo, runtime)
     assert interrupted.state is WorkflowState.TRIAGING
+    assert interrupted.active_invocation is not None
+    assert interrupted.attempt_records == []
     with pytest.raises(FileNotFoundError):
         store.load_artifact(interrupted.id, TriageResult)
 
@@ -1683,8 +1693,26 @@ def test_unattended_run_interrupted_before_triage_starts_again_under_its_run_id(
 
     assert recovered.state is WorkflowState.DONE, recovered.failure_reason
     assert recovered.restart_recoveries == 1
+    assert [(a.attempt_number, a.outcome) for a in recovered.attempt_records] == [(1, "succeeded")]
     assert store.load_artifact(recovered.id, TriageResult).complexity is Complexity.L1
     assert runtime.roles.count(AgentRole.TRIAGE) == 2
+
+
+def test_unattended_restart_from_the_start_uses_the_current_delivery_base(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    runtime = CrashingRuntime(AgentRole.TRIAGE)
+    controller, _, interrupted = _interrupted_unattended(tmp_path, source_repo, runtime)
+    (source_repo / "moved.txt").write_text("the delivery target moved\n")
+    git(source_repo, "add", "-A")
+    git(source_repo, "commit", "-m", "move the delivery target")
+    moved_head = git(source_repo, "rev-parse", "HEAD").strip()
+    assert moved_head != interrupted.base_commit_sha
+
+    recovered = controller.resume(interrupted.id, source_repo)
+
+    assert recovered.state is WorkflowState.DONE, recovered.failure_reason
+    assert recovered.base_commit_sha == moved_head
 
 
 def test_unattended_run_with_a_missing_workspace_starts_again_from_the_start(
@@ -1750,7 +1778,7 @@ def test_unattended_run_restarted_too_often_publishes_the_work_as_it_is(
 
     assert recovered.state is WorkflowState.DONE, recovered.failure_reason
     assert recovered.restart_recoveries == MAX_RESTART_RECOVERIES + 1
-    assert "interrupted by a factory restart" in recovered.needs_look[0]
+    assert "interrupted by a factory restart too often" in recovered.needs_look[0]
     assert publisher.flags == [recovered.needs_look]
     assert merger.calls == []
     assert len(runtime.roles) == agent_calls
@@ -1779,6 +1807,7 @@ def test_unattended_run_interrupted_while_repairing_ci_leaves_the_pull_request_o
     assert recovered.state is WorkflowState.DONE, recovered.failure_reason
     assert recovered.pull_request_url == interrupted.pull_request_url
     assert len(recovered.needs_look) == 1
+    assert "while its pull request was open" in recovered.needs_look[0]
     assert publisher.calls == 1
     assert publisher.flags == [recovered.needs_look]
     assert merger.calls == []
@@ -1794,6 +1823,7 @@ def test_unattended_run_restarted_too_often_with_nothing_to_publish_stops_for_a_
 ) -> None:
     runtime = CrashingRuntime(AgentRole.IMPLEMENTER)
     controller, store, interrupted = _interrupted_unattended(tmp_path, source_repo, runtime)
+    assert interrupted.active_invocation is not None
     store.save_run(interrupted.model_copy(update={"restart_recoveries": MAX_RESTART_RECOVERIES}))
 
     recovered = controller.resume(interrupted.id, source_repo)
@@ -1802,15 +1832,132 @@ def test_unattended_run_restarted_too_often_with_nothing_to_publish_stops_for_a_
     assert "nothing to publish" in (recovered.failure_reason or "")
 
 
-def test_unattended_run_restarted_too_often_before_planning_ended_stops_for_a_person(
+def test_unattended_run_restarted_too_often_with_no_stored_plan_has_nothing_to_publish(
     tmp_path: Path, source_repo: Path
 ) -> None:
     runtime = CrashingRuntime(AgentRole.PLANNER)
     controller, store, interrupted = _interrupted_unattended(tmp_path, source_repo, runtime)
     assert interrupted.state is WorkflowState.PLANNING
+    assert interrupted.active_invocation is not None
+    assert interrupted.attempt_records == []
     store.save_run(interrupted.model_copy(update={"restart_recoveries": MAX_RESTART_RECOVERIES}))
+    agent_calls = len(runtime.roles)
 
     recovered = controller.resume(interrupted.id, source_repo)
 
     assert recovered.state is WorkflowState.NEEDS_HUMAN
-    assert "could not restart interrupted run" in (recovered.failure_reason or "")
+    assert "nothing to publish" in (recovered.failure_reason or "")
+    assert len(runtime.roles) == agent_calls
+
+
+@pytest.mark.parametrize(
+    ("seed", "ends_as_it_is"), [(MAX_RESTART_RECOVERIES - 1, False), (MAX_RESTART_RECOVERIES, True)]
+)
+def test_unattended_restart_cap_ends_the_run_only_past_the_limit(
+    tmp_path: Path, source_repo: Path, seed: int, ends_as_it_is: bool
+) -> None:
+    runtime = CrashingRuntime(AgentRole.IMPLEMENTER)
+    controller, store, interrupted = _interrupted_unattended(tmp_path, source_repo, runtime)
+    assert interrupted.workspace_path is not None
+    (Path(interrupted.workspace_path) / "partial.txt").write_text("half done\n")
+    store.save_run(interrupted.model_copy(update={"restart_recoveries": seed}))
+    agent_calls = len(runtime.roles)
+
+    recovered = controller.resume(interrupted.id, source_repo)
+
+    assert recovered.restart_recoveries == seed + 1
+    assert (len(runtime.roles) == agent_calls) is ends_as_it_is
+    assert ("too often" in " ".join(recovered.needs_look)) is ends_as_it_is
+
+
+def test_unattended_restart_records_an_attempt_the_crash_left_unrecorded(
+    tmp_path: Path, source_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = WorkflowController._record_attempt
+    crashed: list[bool] = []
+
+    def crash_once(self, *args, **kwargs):
+        if not crashed:
+            crashed.append(True)
+            raise KeyboardInterrupt
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkflowController, "_record_attempt", crash_once)
+    controller, _, interrupted = _interrupted_unattended(
+        tmp_path, source_repo, CrashingRuntime(AgentRole.IMPLEMENTER, on_call=99)
+    )
+    assert interrupted.active_invocation is None
+    assert interrupted.attempt_records == []
+
+    recovered = controller.resume(interrupted.id, source_repo)
+
+    assert recovered.state is WorkflowState.DONE, recovered.failure_reason
+    assert [(a.attempt_number, a.outcome) for a in recovered.attempt_records] == [
+        (1, "failed"),
+        (2, "succeeded"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("max_attempts", "attempts", "needs_look"),
+    [
+        (2, [(1, "succeeded"), (2, "succeeded")], []),
+        (
+            1,
+            [(1, "succeeded")],
+            ["implementation attempt budget exhausted after 1 attempt(s)"],
+        ),
+    ],
+)
+def test_unattended_restart_after_a_successful_attempt_keeps_the_attempt_budget(
+    tmp_path: Path,
+    source_repo: Path,
+    max_attempts: int,
+    attempts: list[tuple[int, str]],
+    needs_look: list[str],
+) -> None:
+    runtime = CrashingRuntime(AgentRole.REVIEWER)
+    controller, _, interrupted = _interrupted_unattended(
+        tmp_path,
+        source_repo,
+        runtime,
+        config=_config(
+            tmp_path, max_total_attempts=max_attempts, same_model_attempts=min(2, max_attempts)
+        ),
+    )
+    assert interrupted.state is WorkflowState.REVIEWING
+    assert interrupted.active_invocation is not None
+    assert [(a.attempt_number, a.outcome) for a in interrupted.attempt_records] == [
+        (1, "succeeded")
+    ]
+
+    recovered = controller.resume(interrupted.id, source_repo)
+
+    assert recovered.state is WorkflowState.DONE, recovered.failure_reason
+    assert [(a.attempt_number, a.outcome) for a in recovered.attempt_records] == attempts
+    assert recovered.needs_look == needs_look
+
+
+def test_unattended_delivery_checkpoint_that_cannot_resume_leaves_the_pull_request_open(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, _, interrupted = _interrupted_unattended(
+        tmp_path,
+        source_repo,
+        FakeAgentRuntime(),
+        publisher=publisher,
+        merger=merger,
+        observer=Observer(crash=True),
+    )
+    assert interrupted.pull_request_url is not None
+    assert interrupted.workspace_path is not None
+    git(source_repo, "worktree", "remove", "--force", interrupted.workspace_path)
+
+    recovered = controller.resume(interrupted.id, source_repo)
+
+    assert recovered.state is WorkflowState.DONE, recovered.failure_reason
+    assert "workspace identity changed" in recovered.needs_look[0]
+    assert publisher.flags == [recovered.needs_look]
+    assert merger.calls == []

@@ -59,7 +59,13 @@ from uuid import uuid4
 from .agents import AgentRuntime
 from .command_probe import ProbeLimits
 from .config import FactoryConfig
-from .github import GitHubClient, GitHubCommandError, resolve_github_token
+from .github import (
+    GitHubClient,
+    GitHubCommandError,
+    GitHubError,
+    GitPublishError,
+    resolve_github_token,
+)
 from .github_tracker import GitHubIssueProvider
 from .models import (
     REPLY_CURSOR_CLOSED,
@@ -443,10 +449,13 @@ class FactoryService:
         )
         try:
             run = self.controller.resume(run_id, repository)
-        except WorkspaceLockError as exc:
-            # Another live process owns the workspace. Leave the run to it.
-            logger.warning("run %s was not resumed: %s", run_id, exc)
-            return self.store.load_run(run_id)
+        except (WorkspaceLockError, GitHubError, GitPublishError) as exc:
+            # Another live process owns the workspace, or GitHub is unreachable.
+            # The run is untouched, so a later cycle tries again.
+            logger.warning("run %s was not resumed, so it stays queued: %s", run_id, exc)
+            run = self.store.load_run(run_id)
+            self._interrupted[run_id] = run.work_item_id
+            return run
         except (ValueError, WorkspaceError) as exc:
             # The run cannot continue safely, for example because the delivery policy changed.
             run = self.controller.recover_abandoned_run(
@@ -519,15 +528,15 @@ class FactoryService:
         for run_id, work_item_id in list(self._interrupted.items()):
             handle = self._handles.get(run_id)
             if handle is not None and not handle.is_done():
-                del self._interrupted[run_id]
                 continue
             if not budget.has_slot():
                 logger.debug("interrupted run resume skipped: at capacity")
                 return
             logger.info("resuming interrupted unattended run %s", run_id)
+            # Forget the run first. A failed resume puts it back, from the worker thread.
+            del self._interrupted[run_id]
             self._dispatch_resume(run_id, work_item_id)
             budget.take_slot()
-            del self._interrupted[run_id]
 
     def _dispatch_reopened_runs(self, runs: Sequence[FactoryRun], budget: _CycleBudget) -> None:
         """Dispatch runs a reply already reopened (``NEEDS_HUMAN`` + ``REOPENED``).

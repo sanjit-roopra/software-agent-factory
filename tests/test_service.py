@@ -343,13 +343,17 @@ def test_restart_still_escalates_an_attended_run(source_repo: Path, data_dir: Pa
     service = _service(data_dir, source_repo, LocalProvider([item]))
 
     try:
-        service.recover()
+        records = service.recover()
         service.reconcile_escalation()
         service.drain(60)
     finally:
         service.shutdown()
 
-    assert service.store.load_run("run-attended").state is WorkflowState.NEEDS_HUMAN
+    assert records[0].action is ReconciliationAction.NEEDS_HUMAN
+    run = service.store.load_run("run-attended")
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.restart_recoveries == 0
+    assert run.attempt_records == []
 
 
 def test_restart_resumes_interrupted_runs_only_as_slots_free_up(
@@ -398,7 +402,7 @@ def test_restart_does_not_resume_a_run_whose_delivery_policy_changed(
     assert "delivery policy changed" in (run.failure_reason or "")
 
 
-def test_restart_leaves_a_run_alone_while_another_process_owns_its_workspace(
+def test_restart_retries_a_run_in_a_later_cycle_when_another_process_owns_its_workspace(
     source_repo: Path, data_dir: Path
 ) -> None:
     item = _item(16, source_repo)
@@ -416,11 +420,18 @@ def test_restart_leaves_a_run_alone_while_another_process_owns_its_workspace(
         service.recover()
         service.reconcile_escalation()
         service.drain(60)
+        while_locked = service.store.load_run("run-locked")
+        other_process.release_lock()
+        service.reconcile_escalation()
+        service.drain(60)
     finally:
         other_process.release_lock()
         service.shutdown()
 
-    assert service.store.load_run("run-locked") == interrupted
+    assert while_locked == interrupted
+    resumed = service.store.load_run("run-locked")
+    assert is_run_finished(resumed)
+    assert resumed.restart_recoveries == 1
 
 
 def test_service_refuses_to_start_when_the_scheduler_is_disabled(
