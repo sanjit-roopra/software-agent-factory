@@ -444,10 +444,114 @@ def test_missing_executable_fails_without_crashing(monkeypatch: pytest.MonkeyPat
         "software_agent_factory.claude_code_runtime.subprocess.Popen", raising_popen
     )
 
-    _assert_failed(
-        ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE)),
-        "claude could not be started (FileNotFoundError)",
+    result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    _assert_failed(result, "claude could not be started (FileNotFoundError)")
+    assert result.runtime_unavailable is True
+
+
+@pytest.mark.parametrize(
+    ("events", "unavailable"),
+    [
+        ([_result_event("limit", is_error=True, api_error_status=429)], True),
+        ([_result_event("login", is_error=True, api_error_status=401)], True),
+        ([_result_event("busy", is_error=True, api_error_status=529)], True),
+        ([_result_event("bad", is_error=True, api_error_status=400)], False),
+        *(
+            (
+                [
+                    {"type": "assistant", "error": error, "message": {}},
+                    _result_event("API Error", is_error=True),
+                ],
+                True,
+            )
+            for error in (
+                "rate_limit",
+                "overloaded",
+                "authentication_failed",
+                "oauth_org_not_allowed",
+                "account_on_hold",
+                "billing_error",
+            )
+        ),
+        (
+            [
+                {"type": "system", "subtype": "api_retry", "error": "rate_limit"},
+                _result_event("bad", is_error=True),
+            ],
+            False,
+        ),
+        (
+            [
+                {"type": "assistant", "error": "invalid_request", "message": {}},
+                _result_event("bad", is_error=True),
+            ],
+            False,
+        ),
+        ([_result_event("Claude AI usage limit reached", is_error=True)], False),
+    ],
+    ids=[
+        "429",
+        "401",
+        "529",
+        "400",
+        "rate-limit",
+        "overloaded",
+        "auth-failed",
+        "org-not-allowed",
+        "account-on-hold",
+        "billing",
+        "retry-event",
+        "invalid-request",
+        "text-only",
+    ],
+)
+def test_unavailability_comes_from_the_reported_error_type(
+    monkeypatch: pytest.MonkeyPatch, events: list[dict[str, object]], unavailable: bool
+) -> None:
+    _install_fake_popen(monkeypatch, _FakePopen(stdout=_stream(*events), returncode=1))
+
+    result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    assert result.success is False
+    assert result.runtime_unavailable is unavailable
+
+
+def test_a_timeout_is_not_unavailability(monkeypatch: pytest.MonkeyPatch) -> None:
+    partial = _stream({"type": "assistant", "error": "rate_limit", "message": {}})
+    timeout = subprocess.TimeoutExpired(cmd="claude", timeout=30, output=partial)
+    _install_fake_popen(monkeypatch, _FakePopen(raises=timeout))
+    _record_killpg(monkeypatch)
+
+    result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    _assert_failed(result, "claude timed out after 30s")
+    assert result.runtime_unavailable is False
+
+
+def test_an_executable_that_cannot_start_is_not_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raising_popen(*_args: object, **_kwargs: object) -> _FakePopen:
+        raise PermissionError("claude")
+
+    monkeypatch.setattr(
+        "software_agent_factory.claude_code_runtime.subprocess.Popen", raising_popen
     )
+
+    result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    _assert_failed(result, "claude could not be started (PermissionError)")
+    assert result.runtime_unavailable is False
+
+
+def test_a_bad_artifact_is_not_unavailability(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_popen(monkeypatch, _FakePopen(stdout=_stream(_result_event("not json"))))
+
+    result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    assert result.success is False
+    assert result.runtime_unavailable is False
 
 
 def test_unsupported_reasoning_fails_before_starting_claude(

@@ -65,6 +65,23 @@ ANTHROPIC_BILLING_ENV_VARS = (
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_VERTEX",
 )
+#: ``error`` values on an ``assistant`` event that mean the subscription
+#: cannot serve the call now. The router then tries the role's fallback. The
+#: categories are the ``error`` enum of the Claude Code headless and Agent SDK
+#: message types (code.claude.com/docs, checked 2026-10-04).
+UNAVAILABLE_ERRORS = frozenset(
+    {
+        "rate_limit",
+        "overloaded",
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "billing_error",
+    }
+)
+#: ``api_error_status`` values on the ``result`` event with the same meaning:
+#: unauthorized, rate or usage limit, overloaded.
+UNAVAILABLE_STATUSES = frozenset({401, 429, 529})
 #: The subset of :data:`ANTHROPIC_BILLING_ENV_VARS` that holds a secret, so its
 #: value is redacted from failure reasons. The others are switches and URLs.
 ANTHROPIC_SECRET_ENV_VARS = frozenset(
@@ -106,6 +123,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             *,
             usage: UsageMetrics | None = None,
             performance: PerformanceRecord | None = None,
+            runtime_unavailable: bool = False,
         ) -> AgentResult:
             reason = format_failure_reason(
                 role=request.role,
@@ -121,6 +139,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
                 failure_reason=reason,
                 usage=usage,
                 performance=performance,
+                runtime_unavailable=runtime_unavailable,
             )
 
         boot_start = time.perf_counter()
@@ -146,6 +165,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
                 "",
                 str(exc),
                 performance=perf,
+                runtime_unavailable=isinstance(exc, FileNotFoundError),
             )
         boot_ms = (time.perf_counter() - boot_start) * 1000.0
 
@@ -161,7 +181,8 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             _kill_process_group(process)
             raise
 
-        result_event = _final_result_event(stdout)
+        events = _parse_events(stdout)
+        result_event = _final_result_event(events)
         usage = usage_from_result_event(result_event) if result_event is not None else None
         perf = PerformanceRecord(
             prompt_chars=len(prompt),
@@ -181,6 +202,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
                 stderr,
                 usage=usage,
                 performance=perf,
+                runtime_unavailable=not timed_out and _reports_unavailable(events, result_event),
             )
 
         text = result_event.get("result")
@@ -257,16 +279,33 @@ def _process_failure_message(
     return None
 
 
-def _final_result_event(stdout: str) -> dict[str, object] | None:
-    latest: dict[str, object] | None = None
+def _reports_unavailable(
+    events: list[dict[str, object]], result_event: dict[str, object] | None
+) -> bool:
+    """True when ``claude`` reports a usage or rate limit, an overload or an auth error."""
+    if result_event is not None and result_event.get("api_error_status") in UNAVAILABLE_STATUSES:
+        return True
+    return any(
+        event.get("type") == "assistant" and event.get("error") in UNAVAILABLE_ERRORS
+        for event in events
+    )
+
+
+def _parse_events(stdout: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except JSONDecodeError:
             continue
-        if isinstance(event, dict) and event.get("type") == "result":
-            latest = event
-    return latest
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _final_result_event(events: list[dict[str, object]]) -> dict[str, object] | None:
+    results = [event for event in events if event.get("type") == "result"]
+    return results[-1] if results else None
 
 
 def usage_from_result_event(event: dict[str, object]) -> UsageMetrics | None:

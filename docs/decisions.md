@@ -44,6 +44,15 @@ So the factory did not use a Claude subscription. One run also did not use two s
 - A configuration without `runtime` fields behaves as before.
 - Claude Code matches deny rules on the start of a command. A command such as `git -C . push` is not denied. The Copilot deny list has the same limit.
 
+Amendment on 2026-10-04 (slice 3): a fallback can also set `context_tier`.
+Claude Code is unavailable when the `result` event has `api_error_status` 401, 429 or 529, or an `assistant` event has an `error` of `rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold` or `billing_error`.
+The factory does not match the error text, because the text can change between versions.
+A worker fallback model and a reviewer fallback model count in the reviewer-family rule, as for the models they back up.
+A missing executable sends a call to its fallback only when the executable goes missing during a run.
+Before a run starts, `factory doctor` and the run check still require the executable of every runtime that a role or a fallback names.
+The invocation record keeps the configured model and stores the first runtime's failure reason as `fallback_reason`.
+Its usage names the runtime and model that served the call.
+
 ## ADR-044: Unattended projects continue past a task that did not merge
 
 Status: accepted on 2026-10-04.

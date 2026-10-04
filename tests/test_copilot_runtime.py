@@ -751,6 +751,21 @@ def test_missing_executable_returns_failure_instead_of_raising(
     assert result.failure_reason.startswith("TRIAGE: copilot could not be started")
     assert "FileNotFoundError" in result.failure_reason
     assert "No such file or directory" in result.failure_reason
+    assert result.runtime_unavailable is True
+
+
+def test_an_executable_that_cannot_start_is_not_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(*args: object, **kwargs: object) -> _FakePopen:
+        raise PermissionError(13, "Permission denied: 'copilot'")
+
+    monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
+
+    result = CopilotAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    assert result.success is False
+    assert result.runtime_unavailable is False
 
 
 def test_launch_oserror_failure_reason_redacts_credentials(

@@ -2488,6 +2488,7 @@ class WorkflowController:
             reasoning=resolved.reasoning,
             context_tier=resolved.context_tier,
             runtime=resolved.runtime,
+            fallback=resolved.fallback,
             work_item=work_item,
             triage_result=triage_result,
             specification=specification,
@@ -2603,6 +2604,7 @@ class WorkflowController:
                 budget=budget,
                 usage=result.usage,
                 performance=result.performance,
+                fallback_reason=result.fallback_reason,
             )
         )
         run.active_invocation = None
@@ -3339,6 +3341,7 @@ class WorkflowController:
             reasoning=role_model.reasoning,
             context_tier=role_model.context_tier,
             runtime=role_model.runtime,
+            fallback=role_model.fallback,
             work_item=context.work_item,
             specification=context.specification,
             execution_plan=context.execution_plan,

@@ -58,6 +58,7 @@ from .models import (
     ReviewReport,
     ReviewSourceLocation,
     Risk,
+    RuntimeFallback,
     RuntimeName,
     Specification,
     TestReport,
@@ -100,6 +101,8 @@ class AgentRequest(ModelBase):
     context_tier: ContextTier = ContextTier.DEFAULT
     runtime: RuntimeName | None = None
     """The runtime that serves this call; ``None`` uses ``--runtime`` (ADR-045)."""
+    fallback: RuntimeFallback | None = None
+    """Serves this call once when ``runtime`` reports itself unavailable."""
     work_item: WorkItem
     triage_result: TriageResult | None = None
     specification: Specification | None = None
@@ -190,10 +193,18 @@ class AgentResult(ModelBase):
     review_report: ReviewReport | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
+    runtime_unavailable: bool = False
+    """The runtime could not serve the call at all, for example a missing
+    executable or a usage limit. A wrong result never sets it (ADR-045)."""
+    fallback_reason: str | None = None
+    """Set by the runtime router when a fallback served the call: the first
+    runtime's failure reason."""
 
     def model_post_init(self, __context: object) -> None:
         if not self.success and not self.failure_reason:
             raise ValueError("failure_reason is required when success is False")
+        if self.success and self.runtime_unavailable:
+            raise ValueError("runtime_unavailable requires success False")
 
 
 def is_retryable_typed_artifact_failure(

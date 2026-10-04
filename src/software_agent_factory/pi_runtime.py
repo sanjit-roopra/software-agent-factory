@@ -235,6 +235,7 @@ class _CallContext:
         *,
         usage: UsageMetrics | None = None,
         response_chars: int = 0,
+        runtime_unavailable: bool = False,
     ) -> AgentResult:
         """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
 
@@ -260,6 +261,7 @@ class _CallContext:
                 response_chars=response_chars,
                 process_boot_ms=self.boot_ms,
             ),
+            runtime_unavailable=runtime_unavailable,
         )
 
 
@@ -543,7 +545,8 @@ class PiAgentRuntime(AgentRuntime):
         except OSError as exc:
             ctx = _CallContext(request, prompt_chars, _elapsed_ms(boot_start), scrubbed_values)
             return ctx.failed(
-                f"pi could not be started ({type(exc).__name__}): {self._config.executable}"
+                f"pi could not be started ({type(exc).__name__}): {self._config.executable}",
+                runtime_unavailable=isinstance(exc, FileNotFoundError),
             )
         ctx = _CallContext(request, prompt_chars, _elapsed_ms(boot_start), scrubbed_values)
 

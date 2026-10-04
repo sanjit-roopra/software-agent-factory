@@ -1571,6 +1571,19 @@ def test_run_missing_executable_yields_failed_result() -> None:
 
     assert result.success is False
     assert result.failure_reason == "pi could not be started (FileNotFoundError): pi-missing"
+    assert result.runtime_unavailable is True
+
+
+def test_run_executable_that_cannot_start_is_not_unavailability() -> None:
+    def factory(command: list[str], cwd: Path, env: dict[str, str]) -> FakePiProcess:
+        raise PermissionError(command[0])
+
+    runtime = _runtime(process_factory=factory, executable="pi-locked")
+
+    result = runtime.run(make_request(AgentRole.TRIAGE))
+
+    assert result.failure_reason == "pi could not be started (PermissionError): pi-locked"
+    assert result.runtime_unavailable is False
 
 
 def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:

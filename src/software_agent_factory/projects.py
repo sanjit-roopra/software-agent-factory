@@ -684,6 +684,7 @@ class ProjectRunner:
                 reasoning=model.reasoning,
                 context_tier=model.context_tier,
                 runtime=model.runtime,
+                fallback=model.fallback,
                 work_item=synthetic_work_item,
                 project_brief=brief,
                 repository_profile=profile,
@@ -727,6 +728,7 @@ class ProjectRunner:
                     success=result.success,
                     failure_reason=result.failure_reason,
                     usage=result.usage,
+                    fallback_reason=result.fallback_reason,
                 )
             )
             execution.updated_at = completed_at
