@@ -128,6 +128,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     success=False,
                     failure_reason=reason,
                     performance=perf,
+                    runtime_unavailable=isinstance(exc, FileNotFoundError),
                 )
             boot_ms = (time.perf_counter() - boot_start) * 1000.0
             try:

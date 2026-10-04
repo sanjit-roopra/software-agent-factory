@@ -216,6 +216,33 @@ class ModelBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def check_claude_code_effort(runtime: RuntimeName | None, reasoning: str) -> None:
+    """Reject a ``claude-code`` reasoning value that ``--effort`` does not accept."""
+    if runtime is RuntimeName.CLAUDE_CODE and reasoning not in CLAUDE_CODE_EFFORT_LEVELS:
+        raise ValueError(
+            f"runtime claude-code accepts reasoning {', '.join(CLAUDE_CODE_EFFORT_LEVELS)}, "
+            f"not {reasoning!r}"
+        )
+
+
+class RuntimeFallback(ModelBase):
+    """The runtime and model that serve a call its first runtime cannot serve (ADR-045).
+
+    The router uses it once, when the first runtime reports itself unavailable.
+    It has no nested fallback.
+    """
+
+    runtime: RuntimeName
+    model: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+    context_tier: ContextTier = ContextTier.DEFAULT
+
+    @model_validator(mode="after")
+    def _validate_claude_code_effort(self) -> Self:
+        check_claude_code_effort(self.runtime, self.reasoning)
+        return self
+
+
 class VersionedModel(ModelBase):
     schema_version: Literal[1] = 1
 

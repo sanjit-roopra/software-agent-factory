@@ -751,6 +751,7 @@ def test_missing_executable_returns_failure_instead_of_raising(
     assert result.failure_reason.startswith("TRIAGE: copilot could not be started")
     assert "FileNotFoundError" in result.failure_reason
     assert "No such file or directory" in result.failure_reason
+    assert result.runtime_unavailable is True
 
 
 def test_launch_oserror_failure_reason_redacts_credentials(
@@ -770,6 +771,7 @@ def test_launch_oserror_failure_reason_redacts_credentials(
     assert result.success is False
     assert result.failure_reason is not None
     assert "copilot could not be started (PermissionError)" in result.failure_reason
+    assert result.runtime_unavailable is False
     assert secret not in result.failure_reason
     assert "[REDACTED]" in result.failure_reason
 

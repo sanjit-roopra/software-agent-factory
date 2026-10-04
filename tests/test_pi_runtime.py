@@ -1571,6 +1571,7 @@ def test_run_missing_executable_yields_failed_result() -> None:
 
     assert result.success is False
     assert result.failure_reason == "pi could not be started (FileNotFoundError): pi-missing"
+    assert result.runtime_unavailable is True
 
 
 def test_run_failure_reason_stays_within_shared_runtime_limit() -> None:

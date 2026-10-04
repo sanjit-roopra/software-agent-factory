@@ -96,6 +96,24 @@ models:
   planner:  { model: "claude-opus-5-5", reasoning: "high",   runtime: "claude-code" }
 ```
 
+A role or worker tier can also set one `fallback` with a `runtime`, a `model`,
+a `reasoning` level and an optional `context_tier`. The factory sends the call
+to the fallback once when the first runtime cannot serve it. That happens when
+the executable is missing, or when Claude Code reports a usage limit, a rate
+limit, an overload or an auth error. A wrong result does not use the fallback.
+The attempt number stays the same. A worker fallback model must not have the
+same family as the reviewer. `factory doctor` also checks the fallback runtime.
+
+```yaml
+models:
+  workers:
+    L3:
+      runtime: claude-code
+      model: claude-opus-5-5
+      reasoning: high
+      fallback: { runtime: pi, model: gpt-5.6-terra, reasoning: high }
+```
+
 The Planner writes the specification and the plan in one call (ADR-035).
 An older file can have `refiner` and `researcher` keys in `models` or in a
 profile. The factory ignores them.

@@ -17,14 +17,15 @@ from pydantic import (
 )
 
 from .models import (
-    CLAUDE_CODE_EFFORT_LEVELS,
     MAX_GUIDANCE_FINDINGS,
     Complexity,
     ContextTier,
     ExecutionRoute,
     ReviewFindingCategory,
     Risk,
+    RuntimeFallback,
     RuntimeName,
+    check_claude_code_effort,
 )
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
@@ -86,22 +87,21 @@ class RoleModelConfig(ConfigModel):
     context_tier: ContextTier = ContextTier.DEFAULT
     runtime: RuntimeName | None = None
     """The runtime that serves this role. ``None`` uses ``--runtime`` (ADR-045)."""
+    fallback: RuntimeFallback | None = None
+    """Serves the call when ``runtime`` is unavailable, for example at a usage limit."""
 
     @model_validator(mode="after")
     def _validate_claude_code_effort(self) -> Self:
-        if (
-            self.runtime is RuntimeName.CLAUDE_CODE
-            and self.reasoning not in CLAUDE_CODE_EFFORT_LEVELS
-        ):
-            raise ValueError(
-                f"runtime claude-code accepts reasoning {', '.join(CLAUDE_CODE_EFFORT_LEVELS)}, "
-                f"not {self.reasoning!r}"
-            )
+        check_claude_code_effort(self.runtime, self.reasoning)
         return self
 
     @property
     def model_family(self) -> str:
-        return self.model.split("-", 1)[0].lower()
+        return _model_family(self.model)
+
+
+def _model_family(model: str) -> str:
+    return model.split("-", 1)[0].lower()
 
 
 class ModelsConfig(ConfigModel):
@@ -128,7 +128,11 @@ class ModelsConfig(ConfigModel):
             raise ValueError("workers must define exactly L0, L1, L2, and L3")
 
         reviewer_family = self.reviewer.model_family
-        worker_families = {config.model_family for config in self.workers.values()}
+        worker_families = {config.model_family for config in self.workers.values()} | {
+            _model_family(config.fallback.model)
+            for config in self.workers.values()
+            if config.fallback is not None
+        }
         if reviewer_family in worker_families:
             raise ValueError("reviewer model family must differ from all worker model families")
 
@@ -776,7 +780,10 @@ class FactoryConfig(ConfigModel):
         """
         if default is None:
             return frozenset()
-        return frozenset(role.runtime or default for role in self.reachable_roles().values())
+        roles = self.reachable_roles().values()
+        return frozenset(role.runtime or default for role in roles) | {
+            role.fallback.runtime for role in roles if role.fallback is not None
+        }
 
     def requires_human_approval(self, risk: Risk) -> bool:
         """Whether ``risk`` stops a run for a human.
