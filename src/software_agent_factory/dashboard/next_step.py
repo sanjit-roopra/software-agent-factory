@@ -98,6 +98,13 @@ STALE_SENTENCES: dict[str, str] = {
 ANSWER_STALE_SENTENCES: dict[str, str] = dict(
     STALE_SENTENCES, expired="answers expired, send them again"
 )
+#: The same, for a request to publish again.
+RETRY_STALE_SENTENCES: dict[str, str] = dict(STALE_SENTENCES, expired="retry expired, retry again")
+_STALE_SENTENCES_BY_ACTION: dict[str, dict[str, str]] = {
+    ResumeClassification.RISK_APPROVAL: STALE_SENTENCES,
+    ResumeClassification.PLAN_DECISION: ANSWER_STALE_SENTENCES,
+    ResumeClassification.DELIVERY_RETRY: RETRY_STALE_SENTENCES,
+}
 
 #: Why the page offers no action, one phrase per refusal code. Two reuse the reply phrases.
 REFUSAL_CAUSES: dict[str, str] = {
@@ -116,6 +123,7 @@ class NextStepKind(StrEnum):
     REMOTE_APPROVAL_UNAVAILABLE = "remote_approval_unavailable"
     APPROVE = "approve"
     ANSWER = "answer"
+    RETRY = "retry"
     QUEUED = "queued"
 
 
@@ -284,6 +292,19 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     return _github_reply(step, escalation, reply)
 
 
+def _retry(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
+    refused = _action_refusal_cause(escalation)
+    if refused is not None:
+        return _unavailable(run, escalation, f"Retry is not available because {refused}.")
+    ids = _reply_ids(run, escalation)
+    if ids is None:
+        return _unavailable(run, escalation, "Retry is not available.")
+    _, episode_id, fingerprint = ids
+    step = _halt_step(NextStepKind.RETRY, _reason_sentence(escalation), escalation)
+    step.update(episode_id=episode_id, context_fingerprint=fingerprint)
+    return step
+
+
 def _parsed_requests(raw: Iterable[Any]) -> list[_Request]:
     """The requests that have the expected shape. Anything else is dropped."""
     requests: list[_Request] = []
@@ -326,6 +347,8 @@ def _queued_sentence(request: _Request) -> str:
     moment = request.created_at.strftime("%Y-%m-%d %H:%M UTC")
     if request.action == ResumeClassification.RISK_APPROVAL:
         return f"Approved at {moment}, queued for the factory service. {START_HINT}"
+    if request.action == ResumeClassification.DELIVERY_RETRY:
+        return f"Retry requested at {moment}, queued for the factory service. {START_HINT}"
     return f"Answers sent at {moment}, queued for the factory service"
 
 
@@ -344,18 +367,13 @@ def _queued_request(
 
 
 def _stale_sentence(request: _Request) -> str:
-    sentences = (
-        STALE_SENTENCES
-        if request.action == ResumeClassification.RISK_APPROVAL
-        else ANSWER_STALE_SENTENCES
-    )
-    return sentences[str(request.reason)]
+    return _STALE_SENTENCES_BY_ACTION[request.action][str(request.reason)]
 
 
 def _resume_step(
     run: dict[str, Any], escalation: dict[str, Any], requests: list[_Request]
 ) -> dict[str, Any]:
-    """The step for a risk approval or plan decision halt, with any dashboard request."""
+    """The step for a resumable halt, with any dashboard request."""
     classification = escalation.get("resume_classification")
     ids = _reply_ids(run, escalation)
     queued = _queued_request(requests, classification, ids[2]) if ids is not None else None
@@ -367,11 +385,12 @@ def _resume_step(
             requested_at=queued.created_at.isoformat(),
         )
         return step
-    step = (
-        _approve(run, escalation)
-        if classification == ResumeClassification.RISK_APPROVAL
-        else _answer(run, escalation)
-    )
+    if classification == ResumeClassification.RISK_APPROVAL:
+        step = _approve(run, escalation)
+    elif classification == ResumeClassification.DELIVERY_RETRY:
+        step = _retry(run, escalation)
+    else:
+        step = _answer(run, escalation)
     stale = [r for r in requests if r.status == "stale" and r.action == classification]
     if stale:
         step["stale_sentence"] = _stale_sentence(stale[-1])
@@ -393,6 +412,7 @@ def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, An
     if escalation.get("resume_classification") in (
         ResumeClassification.RISK_APPROVAL,
         ResumeClassification.PLAN_DECISION,
+        ResumeClassification.DELIVERY_RETRY,
     ):
         return _resume_step(run, escalation, _parsed_requests(requests))
     return _cannot_continue(run, _reason_sentence(escalation), escalation)

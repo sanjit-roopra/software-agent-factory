@@ -44,7 +44,7 @@ class DashboardConfig:
     accidentally stand up a dashboard with no data source. ``health_provider``
     is optional -- a dashboard with no configured health source simply
     reports ``health: null`` rather than refusing to start. ``resume_actions`` turns on
-    the approve and answer routes; without it every ``POST`` is ``405``.
+    the approve, answer and retry routes; without it every ``POST`` is ``405``.
     ``request_timeout_seconds`` is how long a connection may stay silent: a client that
     declares a body and sends none gets ``408`` after it. Pass fakes in
     tests and thin wrappers around ``observability.build_monitoring_snapshot``

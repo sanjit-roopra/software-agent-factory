@@ -1,8 +1,8 @@
 """HTTP request handling for the local dashboard.
 
 Routing, auth (cookie or header token, Host, Origin), method enforcement and security
-headers all live here. ``GET`` serves reads. The only ``POST`` routes are the approve and
-answer actions (ADR-033): they check the transport here and the run in
+headers all live here. ``GET`` serves reads. The only ``POST`` routes are the approve,
+answer and retry actions (ADR-033, ADR-042): they check the transport here and the run in
 :mod:`.actions`. Nothing in this module -- or anywhere in this package --
 imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
 ``subprocess`` or any shell helper. All data comes from the injectable
@@ -99,6 +99,7 @@ _ACTION_PREFIX = "/api/runs/"
 _ACTION_KINDS = {
     "approve": ResumeClassification.RISK_APPROVAL,
     "answer": ResumeClassification.PLAN_DECISION,
+    "retry": ResumeClassification.DELIVERY_RETRY,
 }
 #: Largest request body a write accepts. A body of exactly this size is accepted.
 MAX_BODY_BYTES = 16 * 1024
@@ -299,7 +300,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     def _action_route(self) -> tuple[ResumeActions, str, str] | None:
         """The actions, run id and action name this path names, or ``None`` when it names none.
 
-        Only a server that has actions routes the approve and answer paths.
+        Only a server that has actions routes the approve, answer and retry paths.
         """
         actions = self.server.resume_actions
         path = self._decoded_path()

@@ -1531,8 +1531,8 @@ intact.
 ## Local dashboard
 
 `AGENTS.md` bans web dashboards in V1. One narrow, explicitly requested
-exception exists (ADR-016, amended by ADR-033). It is a viewer with two named
-write actions, not a control plane.
+exception exists (ADR-016, amended by ADR-033 and ADR-042). It is a viewer with
+three named write actions, not a control plane.
 
 ```text
 factory dashboard          explicit command, disabled by default
@@ -1541,7 +1541,7 @@ factory dashboard          explicit command, disabled by default
     ↓
 token required (generated per start)
     ↓
-GET to read; two POST actions to request a resume
+GET to read; three POST actions to request a resume
 ```
 
 Implemented with the Python standard library: no web framework, no npm, no
@@ -1559,8 +1559,9 @@ failure reason and the escalation text first, then cuts it to 500 characters
 and keeps the start and the end (ADR-033). A run that does not exist, or whose id is
 not even shaped like one, is a 404.
 
-The two write actions are approve a risk approval and answer plan decisions
-(ADR-033). The dashboard never writes `run.json`. An action creates one
+The three write actions are approve a risk approval, answer plan decisions
+(ADR-033) and retry publishing when the first pull request failed to open
+(ADR-042). The dashboard never writes `run.json`. An action creates one
 request file per run, episode and context fingerprint, with a create-only
 write. The factory service ingests it, checks it again with the ADR-024 reopen
 checks, writes the receipt and reopens the run through `controller.reopen`. The
@@ -1577,9 +1578,9 @@ is as strong as the token. Any program that holds it can load the page and read
 the token, so the `Host` and `Origin` checks stop browsers only. The team
 accepts this risk: the trust boundary is anything that listens on `127.0.0.1`,
 including a forwarded port such as `ssh -L` or a container port. The
-two POST routes are `/api/runs/<id>/approve` and `/api/runs/<id>/answer`. The
-run detail page offers them: a confirm dialog for an approval, and one field
-for each plan decision.
+three POST routes are `/api/runs/<id>/approve`, `/api/runs/<id>/answer` and
+`/api/runs/<id>/retry`. The run detail page offers them: a confirm dialog for an
+approval, one field for each plan decision, and a **Retry publishing** button.
 
 ```text
 dashboard POST → request file (create-only) → service ingest → controller.reopen

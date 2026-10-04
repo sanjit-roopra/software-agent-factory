@@ -127,8 +127,10 @@ def _build_receipt(
     """The receipt for ``reply``, carrying the fingerprint of the context the human saw."""
     approval = escalation.approval_context
     plan = escalation.plan_decision_context
+    delivery = escalation.delivery_retry_context
     is_risk = escalation.resume_classification is ResumeClassification.RISK_APPROVAL
     is_plan = escalation.resume_classification is ResumeClassification.PLAN_DECISION
+    is_retry = escalation.resume_classification is ResumeClassification.DELIVERY_RETRY
     return AcceptedReplyReceipt(
         source=reply.source,
         comment_id=reply.comment_id,
@@ -139,13 +141,16 @@ def _build_receipt(
         accepted_at=now,
         command=(
             format_resume_command(fresh.id, escalation.episode_id)
-            if is_risk
+            if is_risk or is_retry
             else format_answer_command(fresh.id, escalation.episode_id)
         ),
         episode_id=escalation.episode_id,
         run_id=fresh.id,
         approval_context_fingerprint=approval.context_fingerprint if is_risk and approval else None,
         plan_decision_context_fingerprint=plan.context_fingerprint if is_plan and plan else None,
+        delivery_retry_context_fingerprint=(
+            delivery.context_fingerprint if is_retry and delivery else None
+        ),
     )
 
 

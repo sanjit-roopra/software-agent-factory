@@ -33,6 +33,7 @@ from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
     ValidationResult,
     _gate_transition,
+    build_delivery_retry_context,
     build_escalation_comment,
     build_plan_decision_context,
     build_risk_approval_context,
@@ -82,6 +83,7 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.resume import (
     compute_approval_context_fingerprint,
+    is_valid_delivery_retry_context,
     is_valid_plan_decision_answers,
     receipt_approves_risk_context,
 )
@@ -517,6 +519,73 @@ def test_classify_halt_reason_not_resumable(reason: str, expected_code: str) -> 
     assert code == expected_code
     assert summary
     assert action
+
+
+PUBLISH_FAILED = "could not publish the pull request: API down"
+
+
+def _publish_failed_run(**fields: object) -> FactoryRun:
+    values: dict[str, object] = {
+        "id": "run-1",
+        "work_item_id": "task-1",
+        "state": WorkflowState.NEEDS_HUMAN,
+        "failure_reason": PUBLISH_FAILED,
+        "reviewed_tree_sha": "a" * 40,
+    }
+    return FactoryRun.model_validate({**values, **fields})
+
+
+def test_classify_halt_reason_publish_failure_before_a_pull_request_is_retryable() -> None:
+    classification, code, summary, action = classify_halt_reason(_publish_failed_run())
+
+    assert classification is ResumeClassification.DELIVERY_RETRY
+    assert code == "DELIVERY_INTERVENTION"
+    assert summary
+    assert action
+
+
+@pytest.mark.parametrize("detail", ["token is missing the repo scope", "attempt 3 of 3 failed"])
+def test_classify_halt_reason_publish_failure_wins_over_words_in_the_error(detail: str) -> None:
+    run = _publish_failed_run(failure_reason=f"could not publish the pull request: {detail}")
+
+    classification, code, _, _ = classify_halt_reason(run)
+
+    assert (classification, code) == (ResumeClassification.DELIVERY_RETRY, "DELIVERY_INTERVENTION")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"pull_request_url": "https://github.com/acme/repo/pull/42"},
+        {"reviewed_tree_sha": None},
+    ],
+    ids=["pull-request-exists", "no-reviewed-tree"],
+)
+def test_classify_halt_reason_publish_failure_without_work_to_publish_is_not_retryable(
+    fields: dict[str, object],
+) -> None:
+    classification, code, _, _ = classify_halt_reason(_publish_failed_run(**fields))
+
+    assert (classification, code) == (
+        ResumeClassification.NOT_RESUMABLE,
+        "DELIVERY_INTERVENTION",
+    )
+
+
+def test_build_delivery_retry_context_binds_the_reviewed_work_to_the_episode() -> None:
+    run = _publish_failed_run(base_commit_sha="b" * 40, branch_name="factory/task-1")
+
+    context = build_delivery_retry_context(run, episode_id="ep-1")
+
+    assert context is not None
+    assert (context.reviewed_tree_sha, context.base_commit_sha, context.branch_name) == (
+        "a" * 40,
+        "b" * 40,
+        "factory/task-1",
+    )
+    assert is_valid_delivery_retry_context(context, "run-1", "ep-1")
+    assert not is_valid_delivery_retry_context(context, "run-1", "ep-2")
+    assert build_delivery_retry_context(_publish_failed_run(), episode_id="ep-1") is None
 
 
 def test_classify_halt_reason_unresolved_decisions_stable_prefix_wins(tmp_path: Path) -> None:

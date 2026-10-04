@@ -365,8 +365,9 @@ amended by ADR-033). It is the only exception to the ban above and is allowed
 only as:
 
 - bound to `127.0.0.1`, started by an explicit command, disabled by default
-- read-only, except two named write actions: approve a risk approval, and
-  answer plan decisions. They only create a request file. The factory service
+- read-only, except three named write actions: approve a risk approval,
+  answer plan decisions, and retry publishing a run whose first pull request
+  failed to open (ADR-042). They only create a request file. The factory service
   ingests it and is the single writer of `run.json`. No endpoint may change
   configuration or workflow state in any other way
 - token protected. The per-start token guards the HTTP route only. The factory
@@ -380,7 +381,7 @@ only as:
 
 Everything else in the list stays banned. Nothing may become a hosted service,
 a multi-user application or a control plane. If a dashboard change would need a
-framework, a package manager or a third write action, stop and update the ADR first.
+framework, a package manager or a fourth write action, stop and update the ADR first.
 
 ## Initial technologies
 Prefer:

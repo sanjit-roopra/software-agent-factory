@@ -1678,7 +1678,7 @@
     return section;
   }
 
-  // ---- Run detail: approve and answer ------------------------------------
+  // ---- Run detail: approve, answer and retry -----------------------------
 
   // Mirror MAX_PLAN_DECISION_ANSWER_CHARS in resume.py. The server checks again.
   const MIN_ANSWER_CHARS = 1;
@@ -1689,6 +1689,7 @@
   const BAD_REQUEST_STATUS = 400;
   const CONFLICT_STATUS = 409;
   const ANSWER_ACTION = "answer";
+  const RETRY_ACTION = "retry";
   const FAILURE_TEXT = "the request failed, try again";
   const RUN_CHANGED_TEXT = "the run changed, review again";
   const APPROVE_TITLE_ID = "approve-dialog-title";
@@ -1734,7 +1735,17 @@
     return Number.isInteger(value) && value > 0;
   }
 
+  // The same for a retry of publishing.
+  const RETRY_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "retry already sent",
+    expired: "retry expired, retry again"
+  };
+
   function conflictMessages(action) {
+    if (action === RETRY_ACTION) {
+      return RETRY_CONFLICT_MESSAGES;
+    }
     return action === ANSWER_ACTION ? ANSWER_CONFLICT_MESSAGES : CONFLICT_MESSAGES;
   }
 
@@ -1910,6 +1921,21 @@
     return section;
   }
 
+  // Publishing again needs no dialog: it runs the reviewed work the run already holds.
+  function retrySection(step, runId) {
+    const section = element("div", "next-step-section");
+    const button = section.appendChild(actionButton("Retry publishing", "button"));
+    button.addEventListener("click", function () {
+      void sendAction({
+        runId: runId,
+        action: RETRY_ACTION,
+        payload: contextPayload(step),
+        controls: [button]
+      });
+    });
+    return section;
+  }
+
   function answersReady(inputs) {
     return inputs.every(function (input) {
       const length = input.value.trim().length;
@@ -2011,6 +2037,9 @@
     }
     if (step.kind === "approve") {
       return approveSection(step, runId);
+    }
+    if (step.kind === "retry") {
+      return retrySection(step, runId);
     }
     return step.kind === "answer" ? answerSection(step, runId) : null;
   }

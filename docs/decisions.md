@@ -1,5 +1,40 @@
 # Architecture Decisions
 
+## ADR-042: Retry publishing from the dashboard
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+ADR-041 stops a run for a person when the factory cannot open the first pull request, for example because GitHub is down.
+The run holds reviewed work that is ready to publish. A person has no way to ask the factory to publish it again.
+ADR-033 limits the dashboard to two write actions and bans a retry.
+
+### Decision
+
+- The dashboard gets a third write action, **Retry publishing**. It is the only change to the write path of ADR-033.
+- A run is retryable when all of these are true:
+  - It stopped in `NEEDS_HUMAN` from `PR_READY`.
+  - The halt reason starts with `could not publish the pull request:`.
+  - The run has no pull request and has a reviewed tree.
+- The halt gets the resume class `DELIVERY_RETRY` and keeps the reason code `DELIVERY_INTERVENTION`.
+  The escalation record stores the reviewed tree, the base commit and the branch. A fingerprint binds them to the run and the episode.
+- The route is `POST /api/runs/<id>/retry`. It follows ADR-033: one create-only request file, and the factory service is the only writer of `run.json`.
+- The service reopens the run to `PR_READY` through `controller.reopen` and publishes again.
+  It plans nothing, runs no agent and grants no attempt budget.
+- Before the run leaves `NEEDS_HUMAN`, the controller restores the delivery context.
+  It checks the policy fingerprint, the workspace identity, the reviewed tree, the base commit and the verification and review evidence.
+  A mismatch stops the run with a halt that cannot be resumed.
+- A retry counts as a reopen. The limit `escalation.max_reopens` bounds it.
+  A retry that fails again halts the run as a new episode that can be retried while a reopen is left.
+- The GitHub reply path does not change. A `DELIVERY_RETRY` halt gets no reply instructions, and a reply to it is refused.
+
+### Consequences
+
+- A person can recover a run after a GitHub outage without a new run or a rerun of the agents.
+- The dashboard still cannot cancel, reconfigure or change any other state.
+- A retry never publishes work that differs from the reviewed tree.
+
 ## ADR-041: Unattended mode leaves the pull request open after a delivery error
 
 Status: accepted on 2026-10-04.
@@ -25,7 +60,7 @@ Also, if the worktree changes after review, the run stops before it publishes.
 ### Consequences
 
 - An unattended run with a pull request ends `DONE` for each delivery error.
-- A run without a pull request can still stop in `NEEDS_HUMAN` for an infrastructure error. A later change lets a person retry it from the dashboard.
+- A run without a pull request can still stop in `NEEDS_HUMAN` for an infrastructure error. ADR-042 lets a person retry it from the dashboard.
 - With the setting off, the factory behaves as before.
 
 ## ADR-040: Unattended mode publishes and labels instead of stopping after implementation

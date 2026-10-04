@@ -1161,6 +1161,128 @@ def test_unattended_publish_error_before_a_pull_request_stops_for_a_person(
     assert publisher.flags == []
 
 
+def _halted_on_publish_error(tmp_path: Path, source_repo: Path):
+    """A run halted because the first publish failed, and the parts to retry it."""
+    config = _unattended(_config(tmp_path))
+    publisher = LocalPublisher(error=GitHubError("API down"))
+    controller, store = _controller(config, publisher=publisher)
+    halted = controller.run(work_item(), source_repo)
+    return controller, publisher, store, config, halted
+
+
+def _accept_dashboard_retry(store: FileRunStore, config: FactoryConfig, halted: FactoryRun) -> None:
+    escalation = halted.escalation
+    assert escalation is not None
+    assert escalation.delivery_retry_context is not None
+    request = DashboardResumeRequest(
+        run_id=halted.id,
+        episode_id=escalation.episode_id,
+        context_fingerprint=escalation.delivery_retry_context.context_fingerprint,
+        action=ResumeClassification.DELIVERY_RETRY,
+    )
+    assert store.create_dashboard_request(halted.id, request)
+    assert ingest_dashboard_request(halted, store, config, utc_now()) is not None
+
+
+def test_a_publish_error_halt_can_be_retried_and_publishes_the_reviewed_work(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    controller, publisher, store, config, halted = _halted_on_publish_error(tmp_path, source_repo)
+    assert halted.state is WorkflowState.NEEDS_HUMAN
+    assert halted.escalation is not None
+    assert halted.escalation.resume_classification is ResumeClassification.DELIVERY_RETRY
+    publisher.error = None
+    _accept_dashboard_retry(store, config, halted)
+
+    retried = controller.reopen(halted.id, source_repo)
+
+    assert retried.state is WorkflowState.DONE, retried.failure_reason
+    assert retried.pull_request_url == "https://github.com/acme/repo/pull/42"
+    assert retried.attempt_records == halted.attempt_records
+    assert retried.escalation is not None
+    assert retried.escalation.status is EscalationStatus.RESUMED
+    assert retried.escalation.reopen_count == 1
+    assert publisher.calls == 2
+
+
+def test_a_retry_that_fails_to_publish_again_halts_for_another_retry(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    controller, publisher, store, config, halted = _halted_on_publish_error(tmp_path, source_repo)
+    _accept_dashboard_retry(store, config, halted)
+
+    again = controller.reopen(halted.id, source_repo)
+
+    assert again.state is WorkflowState.NEEDS_HUMAN
+    assert again.failure_reason == "could not publish the pull request: API down"
+    assert again.escalation is not None
+    assert again.escalation.resume_classification is ResumeClassification.DELIVERY_RETRY
+    assert again.escalation.episode_number == 2
+    assert again.escalation.reopen_count == 1
+    assert publisher.calls == 2
+
+
+def test_a_retry_fails_closed_when_the_workspace_changed_since_the_halt(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    controller, publisher, store, config, halted = _halted_on_publish_error(tmp_path, source_repo)
+    assert halted.workspace_path is not None
+    (Path(halted.workspace_path) / "tampered.txt").write_text("not reviewed")
+    publisher.error = None
+    _accept_dashboard_retry(store, config, halted)
+
+    failed = controller.reopen(halted.id, source_repo)
+
+    assert failed.state is WorkflowState.NEEDS_HUMAN
+    assert failed.escalation is not None
+    assert failed.escalation.resume_classification is ResumeClassification.NOT_RESUMABLE
+    assert "workspace changes do not match" in (failed.failure_reason or "")
+    assert publisher.calls == 1
+
+
+def test_a_retry_context_that_no_longer_matches_the_run_cannot_reopen_it(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    controller, _, store, config, halted = _halted_on_publish_error(tmp_path, source_repo)
+    _accept_dashboard_retry(store, config, halted)
+    reopening = store.load_run(halted.id).model_copy(update={"reviewed_tree_sha": "c" * 40})
+
+    with pytest.raises(ValueError, match="no longer matches its delivery retry context"):
+        controller._transition_reopened(reopening)
+
+
+@pytest.mark.parametrize(
+    ("state", "fields"),
+    [
+        (WorkflowState.PLANNING, {}),
+        (WorkflowState.PR_READY, {"pull_request_url": "https://github.com/acme/repo/pull/42"}),
+    ],
+    ids=["not-at-pr-ready", "pull-request-exists"],
+)
+def test_a_publish_error_halt_without_a_publish_to_retry_is_not_resumable(
+    tmp_path: Path, state: WorkflowState, fields: dict[str, str]
+) -> None:
+    controller, store = _controller(_config(tmp_path))
+    run = FactoryRun(
+        id="run-x",
+        work_item_id="task-x",
+        state=state,
+        reviewed_tree_sha="a" * 40,
+        base_commit_sha="b" * 40,
+        branch_name="factory/task-x",
+        **fields,
+    )
+    store.save_run(run)
+
+    halted = controller.transition(
+        run, WorkflowState.NEEDS_HUMAN, failure_reason="could not publish the pull request: down"
+    )
+
+    assert halted.escalation is not None
+    assert halted.escalation.resume_classification is ResumeClassification.NOT_RESUMABLE
+    assert halted.escalation.delivery_retry_context is None
+
+
 def test_unattended_changes_after_review_are_published_and_labelled(
     tmp_path: Path, source_repo: Path
 ) -> None:

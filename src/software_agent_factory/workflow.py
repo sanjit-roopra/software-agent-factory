@@ -93,6 +93,7 @@ from .governance import (
 from .models import (
     MAX_GUIDANCE_FINDINGS,
     MAX_OPEN_REVIEW_FINDINGS,
+    PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
     UNRESOLVED_DECISIONS_HALT_REASON,
     ActiveInvocation,
@@ -157,6 +158,7 @@ from .repository_profile import (
     profile_repository,
 )
 from .resume import (
+    is_valid_delivery_retry_context,
     is_valid_plan_decision_answers,
     is_valid_plan_decision_context,
     is_valid_risk_approval_context,
@@ -524,6 +526,7 @@ class WorkflowController:
 
         if new_state is WorkflowState.NEEDS_HUMAN:
             from .escalation import (
+                build_delivery_retry_context,
                 build_plan_decision_context,
                 build_risk_approval_context,
                 classify_halt_reason,
@@ -541,8 +544,17 @@ class WorkflowController:
             episode_id = generate_episode_id()
             approval_context = None
             plan_decision_context = None
+            delivery_retry_context = None
             remote_resume_enabled = False
-            if classification is ResumeClassification.RISK_APPROVAL:
+            if classification is ResumeClassification.DELIVERY_RETRY:
+                # Only a publish that failed from PR_READY can be published again.
+                if run.state is WorkflowState.PR_READY:
+                    delivery_retry_context = build_delivery_retry_context(
+                        run, episode_id=episode_id
+                    )
+                if delivery_retry_context is None:
+                    classification = ResumeClassification.NOT_RESUMABLE
+            elif classification is ResumeClassification.RISK_APPROVAL:
                 approval_context = build_risk_approval_context(
                     run=run,
                     store=self._store,
@@ -597,6 +609,7 @@ class WorkflowController:
                 accepted_replies=accepted_replies,
                 approval_context=approval_context,
                 plan_decision_context=plan_decision_context,
+                delivery_retry_context=delivery_retry_context,
                 remote_resume_enabled=remote_resume_enabled,
             )
 
@@ -924,8 +937,7 @@ class WorkflowController:
         run = self._store.load_run(run_id)
         if is_run_finished(run):
             return run
-        if run.delivery_policy_fingerprint != delivery_policy_fingerprint(self._config):
-            raise ValueError("delivery policy changed since this run started; refusing to resume")
+        self._require_unchanged_delivery_policy(run)
         workspace = GitWorktreeWorkspace(
             self._config.data_dir,
             source_repo,
@@ -962,9 +974,7 @@ class WorkflowController:
                     run, "delivery workspace identity changed or the workspace is missing"
                 )
             try:
-                workspace.prepare()
-                self._check_delivery_workspace(run, workspace.path)
-                context = self._restore_delivery_context(run, workspace, source_repo)
+                context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
                 now = utc_now()
                 run = run.model_copy(
                     update={
@@ -995,6 +1005,22 @@ class WorkflowController:
                 )
         finally:
             workspace.release_lock()
+
+    def _require_unchanged_delivery_policy(self, run: FactoryRun) -> None:
+        if run.delivery_policy_fingerprint != delivery_policy_fingerprint(self._config):
+            raise ValueError("delivery policy changed since this run started; refusing to resume")
+
+    def _reconcile_delivery_checkpoint(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
+    ) -> _RunContext:
+        """Check the delivery workspace against the run and rebuild the delivery context.
+
+        ``resume`` and ``reopen`` of a publish retry share it. It raises when the workspace or
+        the reviewed work no longer match the run.
+        """
+        workspace.prepare()
+        self._check_delivery_workspace(run, workspace.path)
+        return self._restore_delivery_context(run, workspace, source_repo)
 
     def _transition_reopened(self, run: FactoryRun) -> FactoryRun:
         """Controller-internal transition from NEEDS_HUMAN to its guarded resume state.
@@ -1066,6 +1092,25 @@ class WorkflowController:
             if not secrets.compare_digest(plan_fingerprint, context.plan_fingerprint):
                 raise ValueError(f"run {run.id} execution plan no longer matches decision context")
             target_state = WorkflowState.PLANNING
+        elif escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
+            retry = escalation.delivery_retry_context
+            if retry is None or not is_valid_delivery_retry_context(
+                retry, run.id, escalation.episode_id
+            ):
+                raise ValueError(f"run {run.id} has missing or invalid delivery retry context")
+            if receipt.delivery_retry_context_fingerprint is None or not secrets.compare_digest(
+                receipt.delivery_retry_context_fingerprint, retry.context_fingerprint
+            ):
+                raise ValueError(
+                    f"run {run.id} receipt fingerprint does not match active delivery context"
+                )
+            if (run.reviewed_tree_sha, run.base_commit_sha, run.branch_name) != (
+                retry.reviewed_tree_sha,
+                retry.base_commit_sha,
+                retry.branch_name,
+            ):
+                raise ValueError(f"run {run.id} no longer matches its delivery retry context")
+            target_state = WorkflowState.PR_READY
         else:
             raise ValueError(
                 f"run {run.id} halt category {escalation.resume_classification} cannot be reopened"
@@ -1181,8 +1226,8 @@ class WorkflowController:
         This is the single controller-owned path out of NEEDS_HUMAN. Validates
         workspace identity, reopen limits, durable resume-pending status,
         accepted reply receipt bound to current run and episode, and the supported
-        resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING) without granting
-        additional attempt budget.
+        resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING, DELIVERY_RETRY ->
+        PR_READY and publish again) without granting additional attempt budget.
         """
         run = self._store.load_run(run_id)
         if run.state is not WorkflowState.NEEDS_HUMAN:
@@ -1219,6 +1264,7 @@ class WorkflowController:
         if escalation.resume_classification not in {
             ResumeClassification.RISK_APPROVAL,
             ResumeClassification.PLAN_DECISION,
+            ResumeClassification.DELIVERY_RETRY,
         }:
             return self._fail_reopen(
                 run,
@@ -1247,6 +1293,7 @@ class WorkflowController:
 
             if run.escalation is None or run.escalation.status is not EscalationStatus.REOPENED:
                 return run
+            reopened_class = run.escalation.resume_classification
 
             if (
                 not workspace.path.is_dir()
@@ -1275,6 +1322,9 @@ class WorkflowController:
                     }
                 )
                 self._store.save_run(run)
+
+                if reopened_class is ResumeClassification.DELIVERY_RETRY:
+                    return self._reopen_delivery_retry(run, workspace, source_repo)
 
                 work_item = self._store.load_artifact(run.id, WorkItem)
                 triage_result = self._store.load_artifact(run.id, TriageResult)
@@ -1335,6 +1385,21 @@ class WorkflowController:
                 )
         finally:
             workspace.release_lock()
+
+    def _reopen_delivery_retry(
+        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
+    ) -> FactoryRun:
+        """Reopen a run to ``PR_READY`` and publish its reviewed work again.
+
+        It restores the delivery context first, so work that changed since the halt fails
+        closed before the run leaves ``NEEDS_HUMAN``. It plans nothing and spends no attempt.
+        """
+        self._require_unchanged_delivery_policy(run)
+        context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
+        run = self._transition_reopened(run)
+        if not self._config.pull_request.enabled:
+            return self.finalize_pr_ready(run)
+        return self._publish_and_observe(run, context)
 
     def _triage_authorizes_delivery(
         self, run: FactoryRun, work_item: WorkItem, triage: TriageResult
@@ -3962,7 +4027,7 @@ class WorkflowController:
                     "published commit does not match the persisted publication receipt"
                 )
         except (GitPublishError, GitHubError, OSError) as exc:
-            raise self._stop(run, context, f"could not publish the pull request: {exc}") from exc
+            raise self._stop(run, context, f"{PUBLISH_FAILED_HALT_REASON} {exc}") from exc
 
         run = run.model_copy(
             update={
