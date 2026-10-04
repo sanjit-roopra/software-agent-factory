@@ -56,7 +56,8 @@ Only the risk approval gate had a setting to turn it off.
   - A review impasse or a review limit. The run accepts the open findings, for any risk and any category.
 - The run stores the setting when it starts, so resume and reopen keep the same policy.
 - An unattended run never ends in `FAILED` in place of a human stop.
-- The run record keeps every accepted finding in the review acceptance.
+- The review acceptance keeps up to 24 of the newest accepted findings. The log names the number it drops.
+- A project does not yet pin the setting when it starts. A later change adds this.
 - Gates after implementation, such as a used attempt budget or failed CI, are a later change.
 
 ### Consequences
