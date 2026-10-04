@@ -333,6 +333,9 @@ def _role_instructions(
 - If a specification is given, return it unchanged unless new context changes it.
 - Reuse existing code and extension points.
 - Do not add speculative abstractions, dependencies, services, or infrastructure.
+- Choose the simplest approach that meets the acceptance criteria.
+- Add a new file, class, layer, option, or dependency only when an acceptance criterion
+  needs it. Name that criterion in the step.
 - Give concrete steps, likely files, validation, risks, and tests.
 - Use repository-relative path prefixes in expected_scope.modules.
 - Do not use concepts, descriptions, or glob patterns as module paths.
@@ -371,6 +374,8 @@ def _role_instructions(
 - A security finding needs a plausible exploit path.
 - Do not require future features, sibling work, redesigns, or generic hardening.
 - Report excess scope only when it harms the current change.
+- A new file, class, layer, option, or dependency that no acceptance criterion needs is
+  a SIMPLICITY blocker. Name the simpler change that meets the criteria.
 - Cite each blocker with exact paths and current line ranges.
 - Leave legacy string concern fields empty. Use typed finding fields.
 - Put non-blocking improvements only in suggested_changes."""

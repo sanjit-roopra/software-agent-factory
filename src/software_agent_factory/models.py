@@ -167,6 +167,7 @@ class ReviewFindingCategory(StrEnum):
     SCOPE = "SCOPE"
     SECURITY = "SECURITY"
     COMPATIBILITY = "COMPATIBILITY"
+    SIMPLICITY = "SIMPLICITY"
 
 
 class ReviewFindingOrigin(StrEnum):

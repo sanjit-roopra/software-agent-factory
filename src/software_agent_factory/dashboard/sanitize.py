@@ -294,7 +294,9 @@ _GUIDANCE_ARTIFACTS: dict[HaltReasonCode, str] = {
     HaltReasonCode.UNRESOLVED_DECISIONS: "execution-plan.json",
 }
 
-_GUIDANCE_CATEGORIES = frozenset({"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY"})
+_GUIDANCE_CATEGORIES = frozenset(
+    {"CORRECTNESS", "SCOPE", "SECURITY", "COMPATIBILITY", "SIMPLICITY"}
+)
 
 
 def _allowlist(data: dict[str, Any], fields: frozenset[str]) -> dict[str, Any]:

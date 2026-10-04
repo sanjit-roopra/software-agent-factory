@@ -19,6 +19,9 @@ Write an explicit specification, then plan the smallest implementation.
 - If a specification is given, return it unchanged unless new context changes it.
 - Reuse existing code and extension points.
 - Do not add speculative abstractions, dependencies, services, or infrastructure.
+- Choose the simplest approach that meets the acceptance criteria.
+- Add a new file, class, layer, option, or dependency only when an acceptance criterion
+  needs it. Name that criterion in the step.
 - Give concrete steps, likely files, validation, risks, and tests.
 - Use repository-relative path prefixes in expected_scope.modules.
 - Do not use concepts, descriptions, or glob patterns as module paths.

@@ -10,6 +10,8 @@ Review the implementation independently.
 - A security finding needs a plausible exploit path.
 - Do not require future features, sibling work, redesigns, or generic hardening.
 - Report excess scope only when it harms the current change.
+- A new file, class, layer, option, or dependency that no acceptance criterion needs is
+  a SIMPLICITY blocker. Name the simpler change that meets the criteria.
 - Cite each blocker with exact paths and current line ranges.
 - Leave legacy string concern fields empty. Use typed finding fields.
 - Put non-blocking improvements only in suggested_changes.

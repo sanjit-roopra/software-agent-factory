@@ -1,5 +1,36 @@
 # Architecture Decisions
 
+## ADR-038: The planner and the reviewer keep the change simple
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+AI agents often build more than the task needs.
+They add files, classes, layers, options and dependencies that no requirement asks for.
+Most of this starts in the plan. The implementer and the reviewer then use the plan as the limit.
+The implementer already has a simplify pass. The planner and the reviewer only had general rules.
+A separate simplify step for the plan or the review adds a call and more complexity.
+
+### Decision
+
+- The planner chooses the simplest approach that meets the acceptance criteria.
+- The planner adds a new file, class, layer, option or dependency only when an acceptance criterion needs it.
+  The step names that criterion.
+- The reviewer reports such a part as a blocker when no acceptance criterion needs it.
+  The finding uses the new category `SIMPLICITY` and names the simpler change.
+- `SIMPLICITY` is not in the default `review.blocked_categories`.
+  At the review limit, a low risk run accepts an open `SIMPLICITY` finding.
+- There is no new agent call and no new workflow step.
+- The scope drift check does not change. It still finds unplanned modules and dependency changes.
+
+### Consequences
+
+- A `SIMPLICITY` blocker goes to the normal repair loop. It does not ask a person.
+- If the repair loop cannot remove the part, a low risk run still continues.
+  The finding is recorded in the review acceptance.
+- The rule uses acceptance criteria, so it cannot block work that the task asks for.
+
 ## ADR-037: Deterministic routing replaces the Jev classifier
 
 Status: accepted on 2026-10-03.
