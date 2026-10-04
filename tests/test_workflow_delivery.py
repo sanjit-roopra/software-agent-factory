@@ -1280,8 +1280,9 @@ def test_unattended_work_published_as_it_is_resumes_to_done(
         observer=observer,
         merger=merger,
     )
+    item = work_item()
     with pytest.raises(KeyboardInterrupt):
-        controller.run(work_item(), source_repo, run_id="as-is")
+        controller.run(item, source_repo, run_id="as-is")
 
     recovered = controller.resume("as-is", source_repo)
 
@@ -1305,8 +1306,9 @@ def test_unattended_resume_without_ci_still_labels_the_pull_request(
     config.ci.enabled = False
     publisher = CrashingFlagPublisher()
     controller, store = _controller(config, publisher=publisher)
+    item = work_item()
     with pytest.raises(KeyboardInterrupt):
-        controller.run(work_item(), source_repo, run_id="no-ci")
+        controller.run(item, source_repo, run_id="no-ci")
     assert store.load_run("no-ci").state is WorkflowState.PR_CREATED
 
     recovered = controller.resume("no-ci", source_repo)
