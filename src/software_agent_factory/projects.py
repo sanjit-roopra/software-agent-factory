@@ -935,6 +935,17 @@ class ProjectRunner:
                 ),
             )
             return execution, "unmerged"
+        return self._integrate_task(execution, task, run, integration_path, delivery)
+
+    def _integrate_task(
+        self,
+        execution: ProjectExecution,
+        task: ProjectTask,
+        run: FactoryRun,
+        integration_path: Path,
+        delivery: DeliverySettings,
+    ) -> tuple[ProjectExecution, _Settled]:
+        """Put one successful child run on the target, locally or through its pull request."""
         try:
             if delivery.is_remote:
                 execution = self._integrate_remote_task(
@@ -1375,15 +1386,8 @@ class ProjectRunner:
                 continue
             if record.state is not ProjectTaskState.DONE:
                 continue
-            if delivery.is_remote:
-                assert target is not None
-                if not record.merge_commit_sha or not _is_ancestor(
-                    integration_path, record.merge_commit_sha, target
-                ):
-                    raise ProjectError(
-                        f"task {record.task_id} is recorded as delivered but its merge commit "
-                        "is not in the fetched target history"
-                    )
+            if target is not None:
+                _require_merged_into(record, integration_path, target)
             completed.add(record.task_id)
         return execution, completed, unmerged
 
@@ -1611,6 +1615,17 @@ def _run_git(
     if check and result.returncode != 0:
         raise ProjectError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
     return result
+
+
+def _require_merged_into(record: ProjectTaskExecution, integration_path: Path, target: str) -> None:
+    """Fail closed unless a delivered task's merge commit is in the fetched target history."""
+    if not record.merge_commit_sha or not _is_ancestor(
+        integration_path, record.merge_commit_sha, target
+    ):
+        raise ProjectError(
+            f"task {record.task_id} is recorded as delivered but its merge commit "
+            "is not in the fetched target history"
+        )
 
 
 def _target_git(cwd: Path, *args: str) -> str:
