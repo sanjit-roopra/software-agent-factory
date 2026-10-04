@@ -227,6 +227,36 @@ def test_collect_evidence_includes_untracked_and_modified_files(
     assert log_after == log_before
 
 
+def test_collect_evidence_leaves_out_untracked_python_bytecode(
+    source_repo: Path, data_dir: Path
+) -> None:
+    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-BYTECODE")
+    path = ws.prepare()
+    (path / "__pycache__").mkdir()
+    (path / "__pycache__" / "calc.cpython-313.pyc").write_bytes(b"\x00bytecode")
+    (path / "stray.pyc").write_bytes(b"\x00bytecode")
+    (path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    evidence = ws.collect_evidence()
+
+    assert evidence.changed_files == ["calc.py"]
+
+
+def test_prepare_adds_build_output_excludes_once(source_repo: Path, data_dir: Path) -> None:
+    exclude = source_repo / ".git" / "info" / "exclude"
+    exclude.write_text("# user pattern without newline\n*.log")
+
+    GitWorktreeWorkspace(data_dir, source_repo, "WORK-EXCLUDE-1").prepare()
+    GitWorktreeWorkspace(data_dir, source_repo, "WORK-EXCLUDE-2").prepare()
+
+    assert exclude.read_text().splitlines() == [
+        "# user pattern without newline",
+        "*.log",
+        "__pycache__/",
+        "*.py[cod]",
+    ]
+
+
 def test_collect_evidence_includes_committed_and_uncommitted_changes(
     source_repo: Path, data_dir: Path
 ) -> None:

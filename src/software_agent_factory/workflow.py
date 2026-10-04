@@ -379,6 +379,33 @@ def _typed_artifact_repair_context(
     return f"{prior_context.model_dump_json()}\n\n{correction}"
 
 
+def _fold_legacy_concerns(review: ReviewReport) -> ReviewReport:
+    """Move text from the legacy string concern fields into ``suggested_changes``.
+
+    Only typed ``blocking_findings`` with source locations can block a change.
+    A reviewer that still fills the legacy fields gives notes that the
+    controller cannot act on, so they become non-blocking suggestions instead
+    of failing the run.
+    """
+    legacy = [
+        *review.findings,
+        *review.scope_concerns,
+        *review.security_concerns,
+        *review.compatibility_concerns,
+    ]
+    if not legacy:
+        return review
+    return review.model_copy(
+        update={
+            "findings": [],
+            "scope_concerns": [],
+            "security_concerns": [],
+            "compatibility_concerns": [],
+            "suggested_changes": [*review.suggested_changes, *legacy],
+        }
+    )
+
+
 def _review_contract_repair_context(failure_reason: str) -> str:
     return (
         "Your previous ReviewReport passed JSON schema validation but violated the deterministic "
@@ -2359,14 +2386,15 @@ class WorkflowController:
                         "agent returned ReviewReport claiming skipped/provenance SKIPPED; "
                         "only controller may synthesize skipped reports",
                     )
+                review = _fold_legacy_concerns(result.review_report)
                 semantic_failure = self._review_contract_failure(
-                    result.review_report,
+                    review,
                     prior_findings,
                     evidence,
                     context.workspace,
                 )
                 if semantic_failure is None:
-                    return result.review_report
+                    return review
                 repair_context = _review_contract_repair_context(semantic_failure)
                 continue
             if not is_retryable_typed_artifact_failure(result, ReviewReport):
@@ -2392,17 +2420,6 @@ class WorkflowController:
         evidence: WorkspaceEvidence,
         workspace: GitWorktreeWorkspace,
     ) -> str | None:
-        legacy = [
-            *review.findings,
-            *review.scope_concerns,
-            *review.security_concerns,
-            *review.compatibility_concerns,
-        ]
-        if legacy:
-            return (
-                "reviewer used legacy string blocker fields; leave them empty and use "
-                "blocking_findings with typed source locations"
-            )
         if evidence.tree_sha is None:
             return "review evidence is missing its immutable Git tree"
         all_findings = [*review.blocking_findings, *review.repair_regressions]

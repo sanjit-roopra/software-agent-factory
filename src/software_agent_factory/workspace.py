@@ -73,6 +73,10 @@ _HASH_LEN = 10
 
 #: Bounded retries for the (rare) "lock file was replaced" race.
 _LOCK_ACQUIRE_RETRIES = 5
+#: Untracked build output that ``git add -A`` must never stage. Running a
+#: repository's tests writes bytecode, and a repository without a
+#: ``.gitignore`` would otherwise put it in the change set.
+_BUILD_OUTPUT_EXCLUDES = ("__pycache__/", "*.py[cod]")
 
 
 def sanitize_work_item_id(work_item_id: str) -> str:
@@ -529,6 +533,27 @@ class GitWorktreeWorkspace:
                 return entry
         return None
 
+    def _exclude_build_output(self) -> None:
+        """Add missing build-output patterns to the repository's ``info/exclude``.
+
+        Every worktree reads the exclude file of the common Git directory.
+        Patterns go there, not into a tracked ``.gitignore``, so the change
+        set stays free of them. Only untracked files are affected.
+        """
+        common_dir = _run_git(
+            self.source_repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]
+        ).stdout.strip()
+        exclude = Path(common_dir) / "info" / "exclude"
+        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        lines = set(existing.splitlines())
+        missing = [pattern for pattern in _BUILD_OUTPUT_EXCLUDES if pattern not in lines]
+        if not missing:
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        with exclude.open("a", encoding="utf-8") as handle:
+            handle.write(prefix + "".join(f"{pattern}\n" for pattern in missing))
+
     def _create_worktree(self) -> None:
         base_ref = self.base_ref or _run_git(self.source_repo, ["rev-parse", "HEAD"]).stdout.strip()
         result = _run_git(
@@ -621,6 +646,7 @@ class GitWorktreeWorkspace:
             return path
 
     def _prepare_locked(self) -> Path:
+        self._exclude_build_output()
         registered = self._find_registered_worktree()
 
         if registered is not None:
