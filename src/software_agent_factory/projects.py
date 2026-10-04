@@ -633,6 +633,9 @@ class ProjectRunner:
         except FileNotFoundError:
             existing = execution
         now = utc_now()
+        # A target error says nothing about the running tasks. Their child runs may be
+        # merged already, so an unattended resume must settle them again, not skip them.
+        keep_running = existing.unattended and isinstance(exc, ProjectTargetError)
         tasks = tuple(
             record.model_copy(
                 update={
@@ -640,7 +643,7 @@ class ProjectRunner:
                     "failure_reason": str(exc),
                 }
             )
-            if record.state is ProjectTaskState.RUNNING
+            if record.state is ProjectTaskState.RUNNING and not keep_running
             else record
             for record in existing.tasks
         )

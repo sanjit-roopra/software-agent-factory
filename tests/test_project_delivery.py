@@ -539,7 +539,7 @@ def test_attended_project_still_stops_when_a_task_does_not_merge(
     assert [item[0] for item in controller.dispatched] == ["delivery-project-task-1"]
 
 
-def test_unattended_target_fetch_failure_after_a_merge_fails_the_project(
+def test_unattended_target_fetch_failure_after_a_merge_fails_the_project_and_resumes(
     source_repo: Path,
     factory_data_dir: Path,
 ) -> None:
@@ -564,9 +564,21 @@ def test_unattended_target_fetch_failure_after_a_merge_fails_the_project(
     assert execution.state is ProjectState.FAILED
     assert "remote unreachable" in (execution.failure_reason or "")
     assert execution.needs_look == ()
-    # The merged task did not skip its dependent.
-    assert execution.tasks[1].state is ProjectTaskState.PENDING
+    # The merged task is not recorded as failed, and its dependent is not skipped.
+    assert [task.state for task in execution.tasks] == [
+        ProjectTaskState.RUNNING,
+        ProjectTaskState.PENDING,
+    ]
     assert [item[0] for item in controller.dispatched] == ["delivery-project-task-1"]
+
+    resuming_runner, resumed_controller, _ = _remote_runner(config)
+    resumed = resuming_runner.resume(execution.project_id, source_repo)
+
+    assert resumed.state is ProjectState.DONE
+    assert resumed.needs_look == ()
+    assert all(task.merge_commit_sha for task in resumed.tasks)
+    # Task 1 was settled from its finished child run, so only task 2 was dispatched.
+    assert [item[0] for item in resumed_controller.dispatched] == ["delivery-project-task-2"]
 
 
 def test_remote_resume_skips_already_merged_tasks_and_delivers_the_rest(
