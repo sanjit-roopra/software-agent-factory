@@ -99,10 +99,12 @@ models:
 A role or worker tier can also set one `fallback` with a `runtime`, a `model`,
 a `reasoning` level and an optional `context_tier`. The factory sends the call
 to the fallback once when the first runtime cannot serve it. That happens when
-the executable is missing, or when Claude Code reports a usage limit, a rate
-limit, an overload or an auth error. A wrong result does not use the fallback.
-The attempt number stays the same. A worker fallback model must not have the
-same family as the reviewer. `factory doctor` also checks the fallback runtime.
+the executable goes missing during a run. It also happens when Claude Code
+reports a usage limit, a rate limit, an overload or an auth error. A wrong result does not use
+the fallback. The attempt number stays the same. The invocation record stores
+the reason as `fallback_reason`. The reviewer and its fallback must not share a
+model family with any worker or worker fallback. `factory doctor` and the run
+check require the executable of every runtime, fallbacks included.
 
 ```yaml
 models:

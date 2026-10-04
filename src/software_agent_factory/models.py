@@ -941,6 +941,10 @@ class InvocationRecord(ModelBase):
     budget: AttemptBudget | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
+    fallback_reason: str | None = None
+    """Why the configured runtime could not serve the call, when its fallback
+    did (ADR-045). ``model`` stays the configured model; ``usage`` names the
+    runtime and model that served the call."""
 
     @model_validator(mode="before")
     @classmethod

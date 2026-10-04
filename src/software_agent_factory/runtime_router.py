@@ -58,7 +58,8 @@ class RoutingAgentRuntime:
                 "fallback": None,
             }
         )
-        return self._serve(fallback.runtime, fallback_request)
+        served = self._serve(fallback.runtime, fallback_request)
+        return served.model_copy(update={"fallback_reason": result.failure_reason})
 
     def _serve(self, name: RuntimeName, request: AgentRequest) -> AgentResult:
         runtime = self._built.get(name)

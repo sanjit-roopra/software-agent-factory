@@ -16,6 +16,7 @@ from factory_testing import (
 
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
+from software_agent_factory.config import FactoryConfig
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,
@@ -191,6 +192,38 @@ def test_fake_project_planner_defaults_to_one_task(
     assert execution.state is ProjectState.DONE
     assert len(plan.tasks) == 1
     assert "one coherent work item" in plan.delivery_approach
+
+
+def test_project_planner_request_carries_the_configured_fallback(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    payload = build_config(factory_data_dir).model_dump(mode="json")
+    fallback = {"runtime": "pi", "model": "mai-code-1.1-flash", "reasoning": "high"}
+    payload["models"]["planner"]["fallback"] = fallback
+    decompositions: list[AgentRequest] = []
+
+    def planner(request: AgentRequest) -> AgentResult:
+        if request.purpose is AgentPurpose.DECOMPOSE_PROJECT:
+            decompositions.append(request)
+        return _project_planner(request)
+
+    brief = ProjectBrief(
+        id="fallback-project",
+        title="Carry the fallback",
+        description="Pass the planner fallback to the runtime.",
+        repository_path=str(factory_source_repo),
+    )
+    runner = ProjectRunner(
+        FactoryConfig.model_validate(payload),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+    )
+
+    runner.run(brief, factory_source_repo)
+
+    assert decompositions[0].fallback is not None
+    assert decompositions[0].fallback.model_dump(mode="json", exclude={"context_tier"}) == fallback
 
 
 def test_project_normalizes_planner_project_id(

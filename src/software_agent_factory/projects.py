@@ -728,6 +728,7 @@ class ProjectRunner:
                     success=result.success,
                     failure_reason=result.failure_reason,
                     usage=result.usage,
+                    fallback_reason=result.fallback_reason,
                 )
             )
             execution.updated_at = completed_at

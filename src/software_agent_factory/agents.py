@@ -196,10 +196,15 @@ class AgentResult(ModelBase):
     runtime_unavailable: bool = False
     """The runtime could not serve the call at all, for example a missing
     executable or a usage limit. A wrong result never sets it (ADR-045)."""
+    fallback_reason: str | None = None
+    """Set by the runtime router when a fallback served the call: the first
+    runtime's failure reason."""
 
     def model_post_init(self, __context: object) -> None:
         if not self.success and not self.failure_reason:
             raise ValueError("failure_reason is required when success is False")
+        if self.success and self.runtime_unavailable:
+            raise ValueError("runtime_unavailable requires success False")
 
 
 def is_retryable_typed_artifact_failure(

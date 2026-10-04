@@ -66,7 +66,9 @@ ANTHROPIC_BILLING_ENV_VARS = (
     "CLAUDE_CODE_USE_VERTEX",
 )
 #: ``error`` values on an ``assistant`` event that mean the subscription
-#: cannot serve the call now. The router then tries the role's fallback.
+#: cannot serve the call now. The router then tries the role's fallback. The
+#: categories are the ``error`` enum of the Claude Code headless and Agent SDK
+#: message types (code.claude.com/docs, checked 2026-10-04).
 UNAVAILABLE_ERRORS = frozenset(
     {
         "rate_limit",
@@ -179,7 +181,8 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             _kill_process_group(process)
             raise
 
-        result_event = _final_result_event(stdout)
+        events = _parse_events(stdout)
+        result_event = _final_result_event(events)
         usage = usage_from_result_event(result_event) if result_event is not None else None
         perf = PerformanceRecord(
             prompt_chars=len(prompt),
@@ -199,7 +202,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
                 stderr,
                 usage=usage,
                 performance=perf,
-                runtime_unavailable=not timed_out and _reports_unavailable(stdout, result_event),
+                runtime_unavailable=not timed_out and _reports_unavailable(events, result_event),
             )
 
         text = result_event.get("result")
@@ -276,17 +279,19 @@ def _process_failure_message(
     return None
 
 
-def _reports_unavailable(stdout: str, result_event: dict[str, object] | None) -> bool:
+def _reports_unavailable(
+    events: list[dict[str, object]], result_event: dict[str, object] | None
+) -> bool:
     """True when ``claude`` reports a usage or rate limit, an overload or an auth error."""
     if result_event is not None and result_event.get("api_error_status") in UNAVAILABLE_STATUSES:
         return True
     return any(
         event.get("type") == "assistant" and event.get("error") in UNAVAILABLE_ERRORS
-        for event in _events(stdout)
+        for event in events
     )
 
 
-def _events(stdout: str) -> list[dict[str, object]]:
+def _parse_events(stdout: str) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for line in stdout.splitlines():
         try:
@@ -298,8 +303,8 @@ def _events(stdout: str) -> list[dict[str, object]]:
     return events
 
 
-def _final_result_event(stdout: str) -> dict[str, object] | None:
-    results = [event for event in _events(stdout) if event.get("type") == "result"]
+def _final_result_event(events: list[dict[str, object]]) -> dict[str, object] | None:
+    results = [event for event in events if event.get("type") == "result"]
     return results[-1] if results else None
 
 

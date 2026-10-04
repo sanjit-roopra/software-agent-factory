@@ -104,6 +104,14 @@ def _model_family(model: str) -> str:
     return model.split("-", 1)[0].lower()
 
 
+def _model_families(config: RoleModelConfig) -> set[str]:
+    """The model families that can serve ``config``: its model and its fallback."""
+    families = {config.model_family}
+    if config.fallback is not None:
+        families.add(_model_family(config.fallback.model))
+    return families
+
+
 class ModelsConfig(ConfigModel):
     triage: RoleModelConfig
     planner: RoleModelConfig
@@ -127,13 +135,10 @@ class ModelsConfig(ConfigModel):
         if set(self.workers) != set(Complexity):
             raise ValueError("workers must define exactly L0, L1, L2, and L3")
 
-        reviewer_family = self.reviewer.model_family
-        worker_families = {config.model_family for config in self.workers.values()} | {
-            _model_family(config.fallback.model)
-            for config in self.workers.values()
-            if config.fallback is not None
-        }
-        if reviewer_family in worker_families:
+        # A fallback serves the role's calls too, so its family counts on both sides.
+        if _model_families(self.reviewer) & set().union(
+            *(_model_families(config) for config in self.workers.values())
+        ):
             raise ValueError("reviewer model family must differ from all worker model families")
 
         return self

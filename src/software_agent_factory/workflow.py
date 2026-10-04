@@ -2604,6 +2604,7 @@ class WorkflowController:
                 budget=budget,
                 usage=result.usage,
                 performance=result.performance,
+                fallback_reason=result.fallback_reason,
             )
         )
         run.active_invocation = None
