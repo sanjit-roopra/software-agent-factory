@@ -1203,6 +1203,10 @@ def test_a_publish_error_halt_can_be_retried_and_publishes_the_reviewed_work(
     assert retried.escalation.status is EscalationStatus.RESUMED
     assert retried.escalation.reopen_count == 1
     assert publisher.calls == 2
+    published_tree = git(
+        Path(halted.workspace_path), "rev-parse", f"{publisher.commits[-1]}^{{tree}}"
+    )
+    assert published_tree.strip() == halted.reviewed_tree_sha
 
 
 def test_a_retry_that_fails_to_publish_again_halts_for_another_retry(
@@ -1240,14 +1244,48 @@ def test_a_retry_fails_closed_when_the_workspace_changed_since_the_halt(
     assert publisher.calls == 1
 
 
-def test_a_retry_context_that_no_longer_matches_the_run_cannot_reopen_it(
-    tmp_path: Path, source_repo: Path
+def _with_escalation(run: FactoryRun, **update: object) -> FactoryRun:
+    assert run.escalation is not None
+    return run.model_copy(update={"escalation": run.escalation.model_copy(update=update)})
+
+
+def _without_retry_context(run: FactoryRun) -> FactoryRun:
+    return _with_escalation(run, delivery_retry_context=None)
+
+
+def _with_other_receipt_fingerprint(run: FactoryRun) -> FactoryRun:
+    assert run.escalation is not None
+    receipts = [
+        receipt.model_copy(update={"delivery_retry_context_fingerprint": "d" * 64})
+        for receipt in run.escalation.accepted_replies
+    ]
+    return _with_escalation(run, accepted_replies=receipts)
+
+
+def _with_other_tree(run: FactoryRun) -> FactoryRun:
+    return run.model_copy(update={"reviewed_tree_sha": "c" * 40})
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (_without_retry_context, "missing or invalid delivery retry context"),
+        (_with_other_receipt_fingerprint, "receipt fingerprint does not match"),
+        (_with_other_tree, "no longer matches its delivery retry context"),
+    ],
+    ids=["no-context", "other-receipt", "other-tree"],
+)
+def test_a_retry_that_no_longer_matches_its_context_cannot_reopen_the_run(
+    tmp_path: Path,
+    source_repo: Path,
+    tamper: Callable[[FactoryRun], FactoryRun],
+    message: str,
 ) -> None:
     controller, _, store, config, halted = _halted_on_publish_error(tmp_path, source_repo)
     _accept_dashboard_retry(store, config, halted)
-    reopening = store.load_run(halted.id).model_copy(update={"reviewed_tree_sha": "c" * 40})
+    reopening = tamper(store.load_run(halted.id))
 
-    with pytest.raises(ValueError, match="no longer matches its delivery retry context"):
+    with pytest.raises(ValueError, match=message):
         controller._transition_reopened(reopening)
 
 

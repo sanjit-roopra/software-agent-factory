@@ -1006,6 +1006,31 @@ def test_deliver_escalation_notification_error_does_not_prevent_needs_human(tmp_
     assert "timeout" in (updated.escalation.delivery_error or "")
 
 
+def test_a_legacy_publish_halt_without_an_escalation_record_is_not_retryable(
+    tmp_path: Path,
+) -> None:
+    config = _make_config(tmp_path)
+    store = FileRunStore(tmp_path)
+    run = FactoryRun(
+        id="run-legacy-publish",
+        work_item_id="task-1",
+        state=WorkflowState.NEEDS_HUMAN,
+        failure_reason="could not publish the pull request: API down",
+        reviewed_tree_sha="a" * 40,
+    )
+    store.save_run(run)
+    store.save_artifact(
+        run.id, WorkItem(id="task-1", title="Task", description="Desc", external_id="owner/repo#1")
+    )
+    client = GitHubClient(runner=FakeRunner([FakeCompletedProcess(1, "", "fatal: offline")] * 4))
+
+    updated = deliver_escalation_notification(run, store, config, client, tmp_path)
+
+    assert updated.escalation is not None
+    assert updated.escalation.resume_classification is ResumeClassification.NOT_RESUMABLE
+    assert updated.escalation.delivery_retry_context is None
+
+
 def test_deliver_escalation_notification_caps_attempts(tmp_path: Path) -> None:
     config = _make_config(tmp_path, max_notification_attempts=2)
     store = FileRunStore(tmp_path)

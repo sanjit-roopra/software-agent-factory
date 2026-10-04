@@ -999,6 +999,9 @@ def deliver_escalation_notification(
     escalation = run.escalation
     if escalation is None:
         classification, code, summary, action = classify_halt_reason(run, store)
+        if classification is ResumeClassification.DELIVERY_RETRY:
+            # Only transition() knows the run halted from PR_READY (ADR-042).
+            classification = ResumeClassification.NOT_RESUMABLE
         episode_id = generate_episode_id()
         approval_context = None
         if classification is ResumeClassification.RISK_APPROVAL:

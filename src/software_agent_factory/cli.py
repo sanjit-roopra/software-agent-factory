@@ -1114,9 +1114,10 @@ def dashboard_command(
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and two ``POST`` routes that queue an approval or plan answers for the
-    factory service. It is protected by a token generated for this process; the
-    tokenized URL is printed to stdout once and never written to the log.
+    and three ``POST`` routes that queue an approval, plan answers or a
+    publish retry for the factory service. It is protected by a token generated
+    for this process; the tokenized URL is printed to stdout once and never
+    written to the log.
     Ctrl-C stops it and closes the socket.
     """
     factory_config = _load_config(config, data_dir)
@@ -1289,7 +1290,7 @@ def dashboard_command(
         raise _fail(f"could not bind the dashboard to {LOOPBACK_HOST}:{port}: {exc}") from None
 
     typer.echo(f"dashboard: {server.dashboard_url}")
-    typer.echo("loopback only. it can queue an approval or answers. press Ctrl-C to stop.")
+    typer.echo("loopback only. it can queue an approval, answers or a retry. press Ctrl-C to stop.")
     if open_browser:
         webbrowser.open(server.dashboard_url)
 

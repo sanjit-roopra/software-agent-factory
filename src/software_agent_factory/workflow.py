@@ -1397,8 +1397,6 @@ class WorkflowController:
         self._require_unchanged_delivery_policy(run)
         context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
         run = self._transition_reopened(run)
-        if not self._config.pull_request.enabled:
-            return self.finalize_pr_ready(run)
         return self._publish_and_observe(run, context)
 
     def _triage_authorizes_delivery(
