@@ -15,6 +15,7 @@ Also, if the worktree changes after review, the run stops before it publishes.
 
 - When `factory.unattended` is `true` and the run has a pull request, these errors leave the pull request open with the `factory:needs-look` label:
   - The factory cannot publish a CI repair. The repair is not pushed.
+  - The publish gate refuses a CI repair. The repair is not pushed.
   - The factory cannot read CI.
   - The factory cannot merge, or the merge evidence for the current head is missing.
 - The Git publisher already retries a push that fails for a short time. The workflow adds no retry of its own.

@@ -257,8 +257,15 @@ ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
             WorkflowState.FAILED,
         }
     ),
+    # Unattended only (ADR-041): a CI repair that cannot be published leaves
+    # the open pull request as it is (DONE).
     WorkflowState.PR_READY: frozenset(
-        {WorkflowState.PR_CREATED, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
+        {
+            WorkflowState.PR_CREATED,
+            WorkflowState.DONE,
+            WorkflowState.NEEDS_HUMAN,
+            WorkflowState.FAILED,
+        }
     ),
     WorkflowState.PR_CREATED: frozenset(
         {
@@ -3796,7 +3803,7 @@ class WorkflowController:
     ) -> FactoryRun:
         """Make the current worktree the tree an unattended run publishes."""
         if not evidence.changed_files or not evidence.tree_sha:
-            raise self._halt(run, WorkflowState.NEEDS_HUMAN, f"{reason}; nothing to publish")
+            raise self._stop(run, context, f"{reason}; nothing to publish")
         run = self._add_needs_look(run, reason)
         run = run.model_copy(update={"reviewed_tree_sha": evidence.tree_sha})
         self._store.save_run(run)
@@ -3845,9 +3852,9 @@ class WorkflowController:
                 run, context.latest_review, context.triage_result.risk
             )
         if not authorized:
-            raise self._halt(
+            raise self._stop(
                 run,
-                WorkflowState.NEEDS_HUMAN,
+                context,
                 "independent review or a matching bounded controller acceptance is required "
                 "for every PR",
             )
@@ -3876,9 +3883,9 @@ class WorkflowController:
             protected_file_patterns=self._config.repository.protected_file_patterns,
         )
         if not gate.allowed:
-            raise self._halt(
+            raise self._stop(
                 run,
-                WorkflowState.NEEDS_HUMAN,
+                context,
                 "refusing to publish: " + "; ".join(gate.violations),
             )
 
@@ -3900,9 +3907,9 @@ class WorkflowController:
         assert branch_name is not None
         parent_sha = run.commit_sha or run.base_commit_sha
         if not parent_sha:
-            raise self._halt(
+            raise self._stop(
                 run,
-                WorkflowState.NEEDS_HUMAN,
+                context,
                 "publication is missing its authorized parent commit",
             )
 
