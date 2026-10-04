@@ -2763,6 +2763,10 @@ def build_pr_body(
             lines.append(f"Approved: {review.approved}")
             if review.findings:
                 lines.extend(f"- {finding}" for finding in review.findings)
+            if review.suggested_changes:
+                lines.append("")
+                lines.append("Suggested changes:")
+                lines.extend(f"- {suggested}" for suggested in review.suggested_changes)
         lines.append("")
 
     if review_acceptance is not None:

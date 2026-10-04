@@ -896,7 +896,9 @@ def test_build_pr_body_includes_all_supplied_sections() -> None:
         expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
     )
     verification = VerificationReport(passed=True, confidence=1.0, test_findings=["all green"])
-    review = ReviewReport(approved=True, findings=["looks good"])
+    review = ReviewReport(
+        approved=True, findings=["looks good"], suggested_changes=["Add a docstring."]
+    )
 
     body = build_pr_body(
         work_item=work_item,
@@ -919,6 +921,7 @@ def test_build_pr_body_includes_all_supplied_sections() -> None:
     assert "all green" in body
     assert "Approved: True" in body
     assert "looks good" in body
+    assert "Suggested changes:\n- Add a docstring." in body
     assert "RUN-1" in body
 
 
