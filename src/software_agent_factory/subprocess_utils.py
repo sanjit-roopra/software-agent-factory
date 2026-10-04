@@ -149,30 +149,30 @@ def extract_first_event_ms(stdout: str, started_at_dt: datetime) -> float | None
     Copilot and Claude Code ``stream-json`` events both carry one.
     """
     for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
         try:
             event = json.loads(line)
         except JSONDecodeError:
             continue
         if not isinstance(event, dict):
             continue
-        raw_ts = event.get("timestamp")
-        if isinstance(raw_ts, str):
-            try:
-                ts_str = raw_ts.replace("Z", "+00:00")
-                event_dt = datetime.fromisoformat(ts_str)
-                delta_ms = (event_dt - started_at_dt).total_seconds() * 1000.0
-                if delta_ms >= 0:
-                    return delta_ms
-            except (ValueError, TypeError):
-                continue
-        elif isinstance(raw_ts, (int, float)) and raw_ts > 0:
-            event_sec = raw_ts if raw_ts < 1e11 else raw_ts / 1000.0
-            delta_ms = (event_sec - started_at_dt.timestamp()) * 1000.0
-            if delta_ms >= 0:
-                return delta_ms
+        event_seconds = _timestamp_seconds(event.get("timestamp"))
+        if event_seconds is None:
+            continue
+        delta_ms = (event_seconds - started_at_dt.timestamp()) * 1000.0
+        if delta_ms >= 0:
+            return delta_ms
+    return None
+
+
+def _timestamp_seconds(raw_ts: object) -> float | None:
+    """An ISO-8601 string, epoch seconds or epoch milliseconds, as epoch seconds."""
+    if isinstance(raw_ts, str):
+        try:
+            return datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and raw_ts > 0:
+        return float(raw_ts if raw_ts < 1e11 else raw_ts / 1000.0)
     return None
 
 

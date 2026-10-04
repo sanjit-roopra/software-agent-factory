@@ -95,12 +95,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
 
         cwd = workspace_cwd(request)
         prompt = build_prompt(request)
-        child_env, scrubbed_values = build_child_env()
-        for name in ANTHROPIC_BILLING_ENV_VARS:
-            value = child_env.pop(name, None)
-            if value and name in ANTHROPIC_SECRET_ENV_VARS:
-                scrubbed_values.add(value)
-        child_env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        child_env, scrubbed_values = _child_env()
         started_at = utc_now()
         command = self.build_command(request)
 
@@ -174,25 +169,14 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             process_boot_ms=boot_ms,
             first_event_ms=extract_first_event_ms(stdout, started_at),
         )
-        if timed_out:
+        failure_message = (
+            f"claude timed out after {request.timeout_seconds}s"
+            if timed_out
+            else _process_failure_message(result_event, process.returncode, scrubbed_values)
+        )
+        if failure_message is not None or result_event is None:
             return build_failure_result(
-                f"claude timed out after {request.timeout_seconds}s",
-                stdout,
-                stderr,
-                usage=usage,
-                performance=perf,
-            )
-        if result_event is None or result_event.get("is_error") is True:
-            message = (
-                f"claude reported an error ({result_event.get('subtype')}): "
-                f"{sanitize_output(str(result_event.get('result')), scrubbed_values)}"
-                if result_event is not None
-                else f"claude exited with code {process.returncode} and no result event"
-            )
-            return build_failure_result(message, stdout, stderr, usage=usage, performance=perf)
-        if process.returncode != 0:
-            return build_failure_result(
-                f"claude exited with code {process.returncode}",
+                failure_message or "claude returned no result event",
                 stdout,
                 stderr,
                 usage=usage,
@@ -246,6 +230,31 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             "--disallowedTools",
             *denied,
         ]
+
+
+def _child_env() -> tuple[dict[str, str], set[str]]:
+    """The child environment without GitHub or Anthropic billing credentials."""
+    child_env, scrubbed_values = build_child_env()
+    for name in ANTHROPIC_BILLING_ENV_VARS:
+        value = child_env.pop(name, None)
+        if value and name in ANTHROPIC_SECRET_ENV_VARS:
+            scrubbed_values.add(value)
+    child_env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+    return child_env, scrubbed_values
+
+
+def _process_failure_message(
+    result_event: dict[str, object] | None, returncode: int, scrubbed_values: set[str]
+) -> str | None:
+    """Why a finished ``claude`` process failed, or ``None`` when it succeeded."""
+    if result_event is None:
+        return f"claude exited with code {returncode} and no result event"
+    if result_event.get("is_error") is True:
+        text = sanitize_output(str(result_event.get("result")), scrubbed_values)
+        return f"claude reported an error ({result_event.get('subtype')}): {text}"
+    if returncode != 0:
+        return f"claude exited with code {returncode}"
+    return None
 
 
 def _final_result_event(stdout: str) -> dict[str, object] | None:

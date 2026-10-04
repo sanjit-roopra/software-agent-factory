@@ -428,8 +428,10 @@ def test_interrupt_kills_the_process_group_and_reraises(monkeypatch: pytest.Monk
     _install_fake_popen(monkeypatch, _FakePopen(raises=KeyboardInterrupt()))
     killed = _record_killpg(monkeypatch)
 
+    runtime, request = ClaudeCodeAgentRuntime(), _request(AgentRole.TRIAGE)
+
     with pytest.raises(KeyboardInterrupt):
-        ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+        runtime.run(request)
 
     assert killed == [(43210, signal.SIGTERM)]
 
