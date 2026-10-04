@@ -534,7 +534,9 @@ class FactoryService:
         Each takes a slot and no quota, because the run already counted. A run without a free
         slot waits for a later cycle. Queued work would look stalled to the stall check.
         """
-        for run_id, work_item_id in list(self._interrupted.items()):
+        # A snapshot: the loop forgets runs, and a worker thread can put one back.
+        pending = dict(self._interrupted)
+        for run_id, work_item_id in pending.items():
             handle = self._handles.get(run_id)
             if handle is not None and not handle.is_done():
                 continue

@@ -1641,8 +1641,9 @@ def _interrupted_unattended(
     controller, store = _controller(
         config, runtime=runtime, publisher=publisher, merger=merger, observer=observer
     )
+    item = work_item()
     with pytest.raises(KeyboardInterrupt):
-        controller.run(work_item(), source_repo, run_id="restart-me")
+        controller.run(item, source_repo, run_id="restart-me")
     restarted, _ = _controller(
         config, runtime=runtime, publisher=publisher, merger=merger, observer=observer
     )

@@ -306,8 +306,9 @@ def _interrupt(
         FileRunStore(data_dir),
         CrashingRuntime(AgentRole.IMPLEMENTER),
     )
+    work_item = build_work_item(item)
     with pytest.raises(KeyboardInterrupt):
-        controller.run(build_work_item(item), source_repo, run_id=run_id)
+        controller.run(work_item, source_repo, run_id=run_id)
     return FileRunStore(data_dir).load_run(run_id)
 
 
