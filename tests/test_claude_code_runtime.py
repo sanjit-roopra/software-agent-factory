@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import typer
 
 from software_agent_factory import cli
 from software_agent_factory.agents import AgentRequest, AgentResult
@@ -13,7 +14,7 @@ from software_agent_factory.claude_code_runtime import (
     ClaudeCodeAgentRuntime,
     usage_from_result_event,
 )
-from software_agent_factory.config import load_config
+from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.models import (
     AgentRole,
     ChangeSet,
@@ -478,3 +479,36 @@ def test_packaged_claude_profile_uses_effort_levels_only() -> None:
     assert {
         name: level for name, level in reasoning.items() if level not in CLAUDE_EFFORT_LEVELS
     } == {}
+
+
+def _claude_config(**routing: object) -> FactoryConfig:
+    payload = load_config(None, model_profile="claude").model_dump(mode="json")
+    payload["model_profiles"]["economy"]["triage"]["reasoning"] = "minimal"
+    payload["routing"].update(routing)
+    return FactoryConfig.model_validate(payload)
+
+
+def test_effort_preflight_checks_profiles_that_routing_can_select() -> None:
+    options = [
+        {"id": "cheap", "route": "SINGLE", "complexity": "L0", "risk": "R0"},
+        {"id": "full", "route": "FULL", "complexity": "L3", "risk": "R1"},
+    ]
+    options[0]["model_profile"] = "economy"
+    config = _claude_config(enabled=True, options=options)
+
+    with pytest.raises(typer.Exit):
+        cli._require_claude_code_effort(cli.RuntimeChoice.CLAUDE_CODE, config)
+
+
+def test_effort_preflight_ignores_profiles_when_routing_is_off() -> None:
+    config = _claude_config(enabled=False)
+
+    cli._require_claude_code_effort(cli.RuntimeChoice.CLAUDE_CODE, config)
+
+
+def test_switch_values_are_removed_but_not_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "true")
+    event = _result_event("is_error was true", is_error=True, subtype="error")
+    _install_fake_popen(monkeypatch, _FakePopen(stdout=_stream(event), returncode=1))
+
+    _assert_failed(ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE)), "is_error was true")

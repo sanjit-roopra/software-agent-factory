@@ -65,6 +65,11 @@ ANTHROPIC_BILLING_ENV_VARS = (
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_VERTEX",
 )
+#: The subset of :data:`ANTHROPIC_BILLING_ENV_VARS` that holds a secret, so its
+#: value is redacted from failure reasons. The others are switches and URLs.
+ANTHROPIC_SECRET_ENV_VARS = frozenset(
+    {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_FOUNDRY_API_KEY"}
+)
 
 
 class ClaudeCodeAgentRuntime(AgentRuntime):
@@ -92,7 +97,8 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
         prompt = build_prompt(request)
         child_env, scrubbed_values = build_child_env()
         for name in ANTHROPIC_BILLING_ENV_VARS:
-            if value := child_env.pop(name, None):
+            value = child_env.pop(name, None)
+            if value and name in ANTHROPIC_SECRET_ENV_VARS:
                 scrubbed_values.add(value)
         child_env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         started_at = utc_now()

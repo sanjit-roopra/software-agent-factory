@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from .agents import AgentRuntime
-    from .config import FactoryConfig
+    from .config import FactoryConfig, ModelsConfig, RoleModelConfig
     from .dashboard.snapshot import (
         ResumeRequester,
         ResumeRequestReader,
@@ -262,22 +262,22 @@ def _require_prerequisites(
 
 def _require_claude_code_effort(runtime: RuntimeChoice, config: FactoryConfig) -> None:
     """Refuse a ``claude-code`` run whose models use a reasoning level ``--effort``
-    does not accept, before any work starts (ADR-045)."""
+    does not accept, before any work starts (ADR-045). Route options can swap
+    in another model profile, so those profiles are checked too."""
     if runtime is not RuntimeChoice.CLAUDE_CODE:
         return
     from .claude_code_runtime import EFFORT_LEVELS
 
-    models = config.models
-    roles = {
-        "triage": models.triage,
-        "planner": models.planner,
-        "tester": models.tester,
-        "reviewer": models.reviewer,
-        **{f"workers.{tier.value}": worker for tier, worker in models.workers.items()},
-    }
+    profiles = {"": config.models}
+    if config.routing.enabled:
+        for option in config.routing.options:
+            name = option.model_profile
+            if name is not None:
+                profiles[f"{name}."] = config.model_profiles[name]
     invalid = [
-        f"{name}={role_config.reasoning}"
-        for name, role_config in roles.items()
+        f"{prefix}{role}={role_config.reasoning}"
+        for prefix, models in profiles.items()
+        for role, role_config in _role_models(models).items()
         if role_config.reasoning not in EFFORT_LEVELS
     ]
     if invalid:
@@ -286,6 +286,16 @@ def _require_claude_code_effort(runtime: RuntimeChoice, config: FactoryConfig) -
             f"the configured models use {', '.join(invalid)}. "
             "Use --model-profile claude or change the reasoning values."
         )
+
+
+def _role_models(models: ModelsConfig) -> dict[str, RoleModelConfig]:
+    return {
+        "triage": models.triage,
+        "planner": models.planner,
+        "tester": models.tester,
+        "reviewer": models.reviewer,
+        **{f"workers.{tier.value}": worker for tier, worker in models.workers.items()},
+    }
 
 
 def _configure_logging(config: FactoryConfig) -> None:
@@ -1416,6 +1426,7 @@ def service_install_command(
     _require_macos()
 
     factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
+    _require_claude_code_effort(runtime, factory_config)
     if not factory_config.scheduler.enabled:
         raise _fail(
             "refusing to install a service for a disabled scheduler: set "

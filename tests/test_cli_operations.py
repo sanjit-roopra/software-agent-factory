@@ -1190,6 +1190,26 @@ def test_service_install_forwards_the_claude_code_runtime(
     assert request.runtime is ServiceRuntime.CLAUDE_CODE
 
 
+def test_service_install_refuses_claude_code_with_unsupported_effort(
+    macos: None,
+    source_repo: Path,
+    executable: Path,
+    scheduler_config: Path,
+    tmp_path: Path,
+) -> None:
+    payload = yaml.safe_load(scheduler_config.read_text(encoding="utf-8"))
+    payload["models"]["triage"]["reasoning"] = "minimal"
+    config_path = tmp_path / "bad-effort.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    result = runner.invoke(
+        app, install_args(source_repo, config_path, executable, "--runtime", "claude-code")
+    )
+
+    assert result.exit_code == 2
+    assert "triage=minimal" in result.output
+
+
 def test_service_install_carries_pi_coding_agent_dir_into_the_request(
     monkeypatch: pytest.MonkeyPatch,
     macos: None,
