@@ -51,9 +51,13 @@ def source_repo(factory_source_repo: Path) -> Path:
 
 
 class LocalPublisher:
-    def __init__(self, *, crash: bool = False) -> None:
+    def __init__(
+        self, *, crash: bool = False, error: Exception | None = None, fail_from_call: int = 1
+    ) -> None:
         self.calls = 0
         self.crash = crash
+        self.error = error
+        self.fail_from_call = fail_from_call
         self.parents: list[str] = []
         self.commits: list[str] = []
         self.flags: list[list[str]] = []
@@ -66,6 +70,8 @@ class LocalPublisher:
         if self.crash:
             self.crash = False
             raise KeyboardInterrupt
+        if self.error is not None and self.calls >= self.fail_from_call:
+            raise self.error
         path = kwargs["workspace_path"]
         self.parents.append(kwargs["expected_parent_sha"])
         git(path, "add", "-A")
@@ -1106,6 +1112,85 @@ def test_unattended_red_ci_leaves_the_pull_request_open(
     assert publisher.flags == [run.needs_look]
     assert merger.calls == []
     assert store.load_run(run.id).needs_look == run.needs_look
+
+
+_API_DOWN = GitHubError("API down")
+
+
+@pytest.mark.parametrize(
+    ("fakes", "reason"),
+    [
+        ({"observer": Observer(error=_API_DOWN)}, "could not observe CI: API down"),
+        ({"merger": Merger(_API_DOWN)}, "could not merge the pull request: API down"),
+        (
+            {
+                "publisher": LocalPublisher(error=_API_DOWN, fail_from_call=2),
+                "observer": Observer([_failed_ci()]),
+            },
+            "could not publish the pull request: API down",
+        ),
+    ],
+    ids=["observe", "merge", "republish"],
+)
+def test_unattended_delivery_error_leaves_the_pull_request_open(
+    tmp_path: Path, source_repo: Path, fakes: dict, reason: str
+) -> None:
+    fakes = {"publisher": LocalPublisher(), **fakes}
+    controller, store = _controller(_unattended(_config(tmp_path)), **fakes)
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.needs_look == [reason]
+    assert fakes["publisher"].flags == [[reason]]
+    assert run.merge_commit_sha is None
+    assert store.load_run(run.id).needs_look == [reason]
+
+
+def test_unattended_publish_error_before_a_pull_request_stops_for_a_person(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    publisher = LocalPublisher(error=GitHubError("API down"))
+    controller, _ = _controller(_unattended(_config(tmp_path)), publisher=publisher)
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.failure_reason == "could not publish the pull request: API down"
+    assert run.pull_request_url is None
+    assert publisher.flags == []
+
+
+def test_unattended_changes_after_review_are_published_and_labelled(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    def approve_then_change(request: AgentRequest) -> AgentResult:
+        (Path(request.workspace_path) / "unreviewed.txt").write_text("not in reviewed diff")
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(approved=True),
+        )
+
+    publisher = LocalPublisher()
+    merger = Merger()
+    controller, store = _controller(
+        _unattended(_config(tmp_path)),
+        runtime=FakeAgentRuntime(reviewer=approve_then_change),
+        publisher=publisher,
+        merger=merger,
+    )
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.needs_look == ["repository changed after review"]
+    assert publisher.flags == [run.needs_look]
+    assert publisher.calls == 1
+    assert merger.calls == []
+    assert "unreviewed.txt" in store.load_patch(run.id)
+    workspace = Path(run.workspace_path)
+    assert run.reviewed_tree_sha == git(workspace, "rev-parse", "HEAD^{tree}").strip()
 
 
 def test_attended_red_ci_still_stops_for_a_person(tmp_path: Path, source_repo: Path) -> None:

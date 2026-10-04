@@ -1,5 +1,33 @@
 # Architecture Decisions
 
+## ADR-041: Unattended mode leaves the pull request open after a delivery error
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+ADR-040 leaves a pull request open when CI is red or times out.
+Other errors after the pull request exists still stop the run for a person.
+For example, the factory cannot push a CI repair, read CI or merge.
+Also, if the worktree changes after review, the run stops before it publishes.
+
+### Decision
+
+- When `factory.unattended` is `true` and the run has a pull request, these errors leave the pull request open with the `factory:needs-look` label:
+  - The factory cannot publish a CI repair. The repair is not pushed.
+  - The publish gate refuses a CI repair. The repair is not pushed.
+  - The factory cannot read CI.
+  - The factory cannot merge, or the merge evidence for the current head is missing.
+- The Git publisher already retries a push that fails for a short time. The workflow adds no retry of its own.
+- If the worktree changed after review, an unattended run publishes the current tree. It records `repository changed after review` in `FactoryRun.needs_look`, so the pull request is not merged.
+- If the factory cannot open the first pull request, for example because GitHub is down, the run still stops for a person. There is no pull request to leave open.
+
+### Consequences
+
+- An unattended run with a pull request ends `DONE` for each delivery error.
+- A run without a pull request can still stop in `NEEDS_HUMAN` for an infrastructure error. A later change lets a person retry it from the dashboard.
+- With the setting off, the factory behaves as before.
+
 ## ADR-040: Unattended mode publishes and labels instead of stopping after implementation
 
 Status: accepted on 2026-10-04.
