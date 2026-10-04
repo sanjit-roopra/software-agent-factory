@@ -539,7 +539,7 @@ def test_attended_project_still_stops_when_a_task_does_not_merge(
     assert [item[0] for item in controller.dispatched] == ["delivery-project-task-1"]
 
 
-def test_unattended_target_fetch_failure_after_a_merge_fails_the_project_and_resumes(
+def test_unattended_target_fetch_errors_keep_a_merged_task_resumable(
     source_repo: Path,
     factory_data_dir: Path,
 ) -> None:
@@ -570,6 +570,19 @@ def test_unattended_target_fetch_failure_after_a_merge_fails_the_project_and_res
         ProjectTaskState.PENDING,
     ]
     assert [item[0] for item in controller.dispatched] == ["delivery-project-task-1"]
+
+    def unreachable(repo: Path, expected: str) -> DeliveryTarget:
+        raise OSError("remote still unreachable")
+
+    blocked_runner, blocked_controller, _ = _remote_runner(
+        config, project_delivery_base=unreachable
+    )
+    still_failed = blocked_runner.resume(execution.project_id, source_repo)
+
+    assert still_failed.state is ProjectState.FAILED
+    assert "still unreachable" in (still_failed.failure_reason or "")
+    assert still_failed.tasks[0].state is ProjectTaskState.RUNNING
+    assert blocked_controller.dispatched == []
 
     resuming_runner, resumed_controller, _ = _remote_runner(config)
     resumed = resuming_runner.resume(execution.project_id, source_repo)

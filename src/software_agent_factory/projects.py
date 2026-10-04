@@ -1252,10 +1252,7 @@ class ProjectRunner:
         # commit object is available locally (it is for a merge-commit merge).
         if not run.reviewed_tree_sha:
             raise ProjectError(f"task {task.id} was delivered without a reviewed Git tree")
-        try:
-            target = self._refresh_target(integration_path, delivery)
-        except ProjectError as exc:
-            raise ProjectTargetError(str(exc)) from exc
+        target = self._refresh_target(integration_path, delivery)
         published_tree = _tree_of(integration_path, run.commit_sha)
         if published_tree is not None and published_tree != run.reviewed_tree_sha:
             raise ProjectError(
@@ -1290,12 +1287,12 @@ class ProjectRunner:
         head = _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
         if head != target:
             if _run_git(integration_path, "status", "--porcelain").stdout.strip():
-                raise ProjectError(
+                raise ProjectTargetError(
                     "the project integration worktree has uncommitted changes; refusing to "
                     f"re-root it on {remote}/{base_branch}"
                 )
             if not _is_ancestor(integration_path, head, target):
-                raise ProjectError(
+                raise ProjectTargetError(
                     "the project integration branch contains commits that are not on "
                     f"{remote}/{base_branch}; refusing to deliver work from unpublished history"
                 )
@@ -1326,13 +1323,13 @@ class ProjectRunner:
                 )
             )
         except (GitHubError, GitPublishError, OSError, ValueError) as exc:
-            raise ProjectError(
+            raise ProjectTargetError(
                 f"could not fetch {delivery.remote}/{delivery.base_branch}: {exc}"
             ) from exc
         if target.repository.casefold() != delivery.repository.casefold():
-            raise ProjectError("delivery repository identity changed before target fetch")
+            raise ProjectTargetError("delivery repository identity changed before target fetch")
         if delivery.host is not None and target.host.casefold() != delivery.host.casefold():
-            raise ProjectError(
+            raise ProjectTargetError(
                 f"delivery host changed from {delivery.host} to {target.host}; refusing to fetch"
             )
         return target
@@ -1343,12 +1340,12 @@ class ProjectRunner:
         """Fail closed unless the integration head is exactly the fetched target."""
         head = _run_git(integration_path, "rev-parse", "HEAD").stdout.strip()
         if head != target:
-            raise ProjectError(
+            raise ProjectTargetError(
                 f"the project integration worktree is at {head}, not the fetched "
                 f"{delivery.remote}/{delivery.base_branch} commit {target}"
             )
         if _run_git(integration_path, "status", "--porcelain").stdout.strip():
-            raise ProjectError("project integration worktree contains unverified changes")
+            raise ProjectTargetError("project integration worktree contains unverified changes")
         return head
 
     def _reconcile_completed_tasks(
