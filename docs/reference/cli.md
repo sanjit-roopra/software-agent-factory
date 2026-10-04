@@ -361,8 +361,9 @@ stopped, models, calls, duration, cost and start time. The run page starts with 
 summary and the steps of the run. The long list of run facts is under Details.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
-generated for that process. It answers `GET` for reads. Two `POST` routes are the
-only writes: approve a risk halt and answer plan decisions (ADR-033). The
+generated for that process. It answers `GET` for reads. Three `POST` routes are the
+only writes: approve a risk halt, answer plan decisions (ADR-033) and retry
+publishing (ADR-042). The
 tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
 

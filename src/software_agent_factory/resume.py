@@ -26,6 +26,7 @@ from .escalation_protocol import MAX_PLAN_DECISIONS, ReplyPolicy
 from .models import (
     AcceptedReplyReceipt,
     DashboardResumeRequest,
+    DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
@@ -252,6 +253,44 @@ def is_valid_plan_decision_context(
     return secrets.compare_digest(context.context_fingerprint, expected)
 
 
+def compute_delivery_retry_context_fingerprint(
+    *,
+    run_id: str,
+    episode_id: str,
+    reviewed_tree_sha: str,
+    base_commit_sha: str,
+    branch_name: str,
+) -> str:
+    """Bind the reviewed work a publish retry would deliver to one run and escalation episode."""
+    return _fingerprint_dict(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "reviewed_tree_sha": reviewed_tree_sha,
+            "base_commit_sha": base_commit_sha,
+            "branch_name": branch_name,
+        }
+    )
+
+
+def is_valid_delivery_retry_context(
+    context: DeliveryRetryContext | None,
+    run_id: str,
+    episode_id: str,
+) -> bool:
+    """Verify a publish retry context is bound to its run and episode."""
+    if not isinstance(context, DeliveryRetryContext):
+        return False
+    expected = compute_delivery_retry_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        reviewed_tree_sha=context.reviewed_tree_sha,
+        base_commit_sha=context.base_commit_sha,
+        branch_name=context.branch_name,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected)
+
+
 #: Escalation states in which a run still waits for a human.
 WAITING_STATUSES = frozenset(
     {
@@ -274,6 +313,10 @@ def has_valid_resume_context(run: FactoryRun) -> bool:
     if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
         return escalation.plan_decision_context is not None and is_valid_plan_decision_context(
             escalation.plan_decision_context, run.id, escalation.episode_id
+        )
+    if escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
+        return is_valid_delivery_retry_context(
+            escalation.delivery_retry_context, run.id, escalation.episode_id
         )
     return False
 
@@ -329,6 +372,9 @@ def current_context_fingerprint(escalation: EscalationRecord) -> str | None:
     if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
         plan_context = escalation.plan_decision_context
         return plan_context.context_fingerprint if plan_context is not None else None
+    if escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
+        retry_context = escalation.delivery_retry_context
+        return retry_context.context_fingerprint if retry_context is not None else None
     return None
 
 
@@ -393,7 +439,11 @@ def dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) -
         receipt.source == "dashboard"
         and receipt.episode_id == escalation.episode_id
         and fingerprint
-        in (receipt.approval_context_fingerprint, receipt.plan_decision_context_fingerprint)
+        in (
+            receipt.approval_context_fingerprint,
+            receipt.plan_decision_context_fingerprint,
+            receipt.delivery_retry_context_fingerprint,
+        )
         for receipt in escalation.accepted_replies
     )
 

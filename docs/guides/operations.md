@@ -102,7 +102,7 @@ workflow state. Run details show model use, retries, safe
 artifact names, verification summaries, and escalation status. The dashboard
 does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
-### Approve or answer a halted run
+### Approve, answer or retry a halted run
 
 A run that needs you shows a "Needs you" panel on its detail page.
 
@@ -114,10 +114,15 @@ A run that needs you shows a "Needs you" panel on its detail page.
   of 1 to 500 characters, with no path, link or secret in it. **Submit answers**
   stays disabled until every field is filled in.
 
+- For a run that failed to open its first pull request, choose **Retry
+  publishing**. The factory publishes the reviewed work again. It runs no agent
+  and grants no new attempt. Each retry counts as a reopen.
+
 The dashboard does not resume the run. It writes one request file in the run
 directory. The factory service reads it and reopens the run. The panel then
-shows "Approved at <time>, queued for the factory service" (or "Answers sent at
-<time>, queued for the factory service"). If `factory start` is not running,
+shows "Approved at <time>, queued for the factory service". An answer shows
+"Answers sent at <time>, queued for the factory service". A retry shows "Retry
+requested at <time>, queued for the factory service". If `factory start` is not running,
 start it. The request waits until it does.
 
 #### When the service refuses a request

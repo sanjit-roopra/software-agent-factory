@@ -39,6 +39,7 @@ from software_agent_factory.escalation_protocol import ReplyPolicy
 from software_agent_factory.models import (
     Complexity,
     DashboardResumeRequest,
+    DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
@@ -53,6 +54,7 @@ from software_agent_factory.models import (
 from software_agent_factory.resume import (
     MAX_PLAN_DECISION_ANSWER_CHARS,
     compute_approval_context_fingerprint,
+    compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
 from software_agent_factory.store import FileRunStore
@@ -64,6 +66,7 @@ PLAN_FINGERPRINT = "a" * 64
 DECISIONS = ["Pick a storage format.", "Pick a cache size."]
 RISK = ResumeClassification.RISK_APPROVAL
 PLAN = ResumeClassification.PLAN_DECISION
+RETRY = ResumeClassification.DELIVERY_RETRY
 ORIGIN_HEADER = "Origin"
 CONTENT_TYPE = "Content-Type"
 HOST_HEADER = "Host"
@@ -93,6 +96,7 @@ ENCODING = "utf-8"
 RESUME = "resume"
 APPROVE = "approve"
 ANSWER = "answer"
+RETRY_ACTION = "retry"
 
 
 # -- runs ---------------------------------------------------------------------------------
@@ -152,6 +156,21 @@ def _plan_context() -> PlanDecisionContext:
     )
 
 
+def _retry_context() -> DeliveryRetryContext:
+    return DeliveryRetryContext(
+        reviewed_tree_sha="a" * 40,
+        base_commit_sha="b" * 40,
+        branch_name="factory/task-1",
+        context_fingerprint=compute_delivery_retry_context_fingerprint(
+            run_id=RUN_ID,
+            episode_id=EPISODE,
+            reviewed_tree_sha="a" * 40,
+            base_commit_sha="b" * 40,
+            branch_name="factory/task-1",
+        ),
+    )
+
+
 def _run(
     kind: ResumeClassification = RISK,
     *,
@@ -165,6 +184,7 @@ def _run(
         "created_at": NOW - timedelta(hours=1),
         "approval_context": _risk_context() if kind is RISK else None,
         "plan_decision_context": _plan_context() if kind is PLAN else None,
+        "delivery_retry_context": _retry_context() if kind is RETRY else None,
     }
     escalation = EscalationRecord.model_validate({**fields, **record})
     return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
@@ -172,7 +192,11 @@ def _run(
 
 def _fingerprint(run: FactoryRun) -> str:
     assert run.escalation is not None
-    context = run.escalation.approval_context or run.escalation.plan_decision_context
+    context = (
+        run.escalation.approval_context
+        or run.escalation.plan_decision_context
+        or run.escalation.delivery_retry_context
+    )
     assert context is not None
     return context.context_fingerprint
 
@@ -257,6 +281,13 @@ class Rig:
             headers=self.headers(**header_overrides),
         )
 
+    def retry(self, body: object = None, **header_overrides: str | None) -> tuple[int, Any]:
+        return self.post(
+            _path(RETRY_ACTION),
+            self.body() if body is None else body,
+            headers=self.headers(**header_overrides),
+        )
+
     def requests(self) -> list[DashboardResumeRequest]:
         return self.store.list_dashboard_requests(RUN_ID, EPISODE)
 
@@ -331,6 +362,28 @@ def test_an_approval_is_accepted_and_stored_with_the_server_clock(make_rig: RigF
     assert stored.status == "pending"
     assert stored.created_at == NOW
     assert stored.context_fingerprint == _fingerprint(rig.run)
+
+
+def test_a_publish_retry_is_accepted_and_stored_as_a_delivery_retry(make_rig: RigFactory) -> None:
+    rig = make_rig(_run(RETRY))
+
+    status, payload = rig.retry()
+
+    assert (status, payload["status"]) == (202, "accepted")
+    (stored,) = rig.requests()
+    assert stored.action is RETRY
+    assert stored.status == "pending"
+    assert stored.answers == []
+    assert stored.context_fingerprint == _fingerprint(rig.run)
+
+
+def test_a_retry_for_a_risk_approval_halt_is_a_wrong_action(make_rig: RigFactory) -> None:
+    rig = make_rig()
+
+    with rig.assert_writes_nothing():
+        status, payload = rig.retry()
+
+    assert (status, payload[REASON]) == (409, WRONG_ACTION)
 
 
 def test_answers_are_accepted_and_stored_in_order(make_rig: RigFactory) -> None:
@@ -1047,7 +1100,7 @@ def _write_response(rig: Rig, method: str, path: str) -> tuple[int, str | None, 
     ("method", "path", "allow"),
     [
         ("POST", "/api/runs", READ_ONLY_METHODS),
-        ("POST", _path("retry"), READ_ONLY_METHODS),
+        ("POST", _path("cancel"), READ_ONLY_METHODS),
         ("POST", RUN_PATH, READ_ONLY_METHODS),
         ("POST", f"{_path(APPROVE)}/extra", READ_ONLY_METHODS),
         ("PUT", _path(APPROVE), "POST"),

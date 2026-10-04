@@ -22,8 +22,8 @@ Neither provider is invoked with anything the dashboard has not already
 validated, and neither is expected to perform writes; the dashboard only ever
 calls them from `GET`/`HEAD` handling.
 
-``ResumeRunReader`` and ``ResumeRequester`` serve the two approve and answer
-routes (ADR-033). The reader only reads. The requester makes the one write the
+``ResumeRunReader`` and ``ResumeRequester`` serve the approve, answer and retry
+routes (ADR-033, ADR-042). The reader only reads. The requester makes the one write the
 dashboard asks for, a create-only request file; it never changes a run.
 """
 

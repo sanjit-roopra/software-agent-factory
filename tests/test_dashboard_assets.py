@@ -1066,6 +1066,25 @@ def test_answers_say_answers_where_the_conflict_message_names_the_action() -> No
     assert "action: ANSWER_ACTION" in function_source(_JS, "sendAnswers")
 
 
+def test_retry_says_retry_where_the_conflict_message_names_the_action() -> None:
+    literal = object_literal_source(_JS, "RETRY_CONFLICT_MESSAGES")
+    assert "...CONFLICT_MESSAGES" in literal
+    assert _plain_strings(literal) == {
+        "existing_request": "retry already sent",
+        "expired": "retry expired, retry again",
+    }
+    assert "action === RETRY_ACTION" in function_source(_JS, "conflictMessages")
+    assert 'const RETRY_ACTION = "retry";' in _JS
+
+
+def test_retry_publishing_is_one_button_that_posts_the_context_without_a_dialog() -> None:
+    section = function_source(_JS, "retrySection")
+    assert 'actionButton("Retry publishing", "button")' in section
+    assert "action: RETRY_ACTION" in section
+    assert "payload: contextPayload(step)" in section
+    assert "dialog" not in section
+
+
 def test_the_page_maps_every_conflict_reason_the_server_sends() -> None:
     literal = object_literal_source(_JS, "CONFLICT_MESSAGES")
     keys = set(re.findall(r"(\w+): ", literal))
@@ -1309,6 +1328,7 @@ def test_an_action_is_offered_only_for_the_kinds_that_have_one() -> None:
     assert 'typeof step.context_fingerprint === "string"' in action
     assert 'step.kind === "approve"' in action
     assert 'step.kind === "answer"' in action
+    assert 'step.kind === "retry"' in action
     assert "queued" not in action
     assert "remote_approval_unavailable" not in action
 

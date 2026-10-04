@@ -40,7 +40,9 @@ def render_index_html(*, token: str) -> str:
   <aside class="sidebar">
     <header>
       <p class="brand">Software Agent Factory</p>
-      <p class="subtitle">Local dashboard &mdash; loopback only. Can approve or answer a run.</p>
+      <p class="subtitle">
+        Local dashboard &mdash; loopback only. Can approve, answer or retry a run.
+      </p>
       <button id="theme-toggle" type="button">Switch theme</button>
     </header>
     <nav aria-label="Main">

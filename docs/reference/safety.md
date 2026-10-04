@@ -352,14 +352,14 @@ findings. Repairing one is an explicit operator action.
 
 ## The dashboard
 
-The only exception to the V1 ban on web UIs. It is a viewer with two named
+The only exception to the V1 ban on web UIs. It is a viewer with three named
 write actions, not a control plane.
 
 - Started only by `factory dashboard`. It is the only command that opens a
   socket.
 - Binds `127.0.0.1` only. Not configurable.
-- Reads with `GET`. Two `POST` routes are the only writes: approve a risk
-  approval, and answer plan decisions (ADR-033).
+- Reads with `GET`. Three `POST` routes are the only writes: approve a risk
+  approval, answer plan decisions (ADR-033), and retry publishing (ADR-042).
 - Token generated per process, printed once, never logged.
 - The first request for the printed link returns the page and sets an
   `HttpOnly`, `SameSite=Strict` session cookie. The page then removes the token

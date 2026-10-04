@@ -1,7 +1,7 @@
-"""The two writes the dashboard asks for: approve a risk approval, answer plan decisions.
+"""The writes the dashboard asks for: approve, answer plan decisions, retry publishing.
 
-``POST /api/runs/<id>/approve`` and ``/answer`` end in one create-only request file that
-the factory service reads later. This module checks the body and the run, and hands the
+``POST /api/runs/<id>/approve``, ``/answer`` and ``/retry`` end in one create-only request file
+that the factory service reads later. This module checks the body and the run, and hands the
 request to the injected :class:`~software_agent_factory.dashboard.snapshot.ResumeRequester`.
 It never changes a run. It reads the run through the same rules the service uses
 (:func:`software_agent_factory.resume.request_refusal` and the answer rules), so a
@@ -57,7 +57,7 @@ CONFLICT_REASONS: dict[ResumeRefusal | RequestMismatch, ConflictReason] = {
 
 @dataclass(frozen=True, kw_only=True)
 class ResumeActions:
-    """What the approve and answer routes need. Without it they are not routed.
+    """What the approve, answer and retry routes need. Without it they are not routed.
 
     ``reply_policy`` is the configured reply window and reopen limit, never unknown.
     ``clock`` stamps ``created_at``: a request never carries a time the client chose.
@@ -152,7 +152,7 @@ def _plan_answers(escalation: EscalationRecord, texts: Sequence[str]) -> list[Pl
 def accept_action(
     actions: ResumeActions, kind: ResumeClassification, raw_run_id: str, body: object
 ) -> dict[str, object]:
-    """Check one approve or answer request and store it. Returns the ``202`` body.
+    """Check one approve, answer or retry request and store it. Returns the ``202`` body.
 
     Raises :class:`WriteRejected` for every refusal, and nothing has been written then.
     The order is the contract: the body (``400``), the run id (``400``) and the run

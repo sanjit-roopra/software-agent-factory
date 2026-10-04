@@ -397,7 +397,7 @@ class FactoryService:
             logger,
             f"reopening run {run_id}",
             run_id=run_id,
-            state=WorkflowState.PLANNING,
+            state=WorkflowState.NEEDS_HUMAN,
         )
         run = self.controller.reopen(run_id, repository)
         log_run_event(

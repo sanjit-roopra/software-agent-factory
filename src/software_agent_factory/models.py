@@ -1043,6 +1043,7 @@ class EscalationStatus(StrEnum):
 class ResumeClassification(StrEnum):
     RISK_APPROVAL = "RISK_APPROVAL"
     PLAN_DECISION = "PLAN_DECISION"
+    DELIVERY_RETRY = "DELIVERY_RETRY"
     NOT_RESUMABLE = "NOT_RESUMABLE"
 
 
@@ -1134,6 +1135,9 @@ HALT_REASON_COPY: dict[HaltReasonCode, HaltReasonCopy] = {
 #: it, so the classifiers match it as a prefix.
 UNRESOLVED_DECISIONS_HALT_REASON = "execution plan has unresolved decisions"
 
+#: The start of the halt reason of a run whose publish step failed. The error follows it.
+PUBLISH_FAILED_HALT_REASON = "could not publish the pull request:"
+
 #: The next action when no reply can resume a run that stopped on unresolved decisions.
 UNRESOLVED_DECISIONS_REPLACE_ACTION = (
     "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
@@ -1219,6 +1223,7 @@ class AcceptedReplyReceipt(ModelBase):
     run_id: str = Field(min_length=1)
     approval_context_fingerprint: str | None = None
     plan_decision_context_fingerprint: str | None = None
+    delivery_retry_context_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
@@ -1301,6 +1306,15 @@ class PlanDecisionContext(ModelBase):
         return cleaned
 
 
+class DeliveryRetryContext(ModelBase):
+    """The reviewed work a person may publish again after the pull request failed to open."""
+
+    reviewed_tree_sha: str = Field(min_length=40, max_length=64)
+    base_commit_sha: str = Field(min_length=40, max_length=64)
+    branch_name: str = Field(min_length=1)
+    context_fingerprint: str = Field(min_length=64, max_length=64)
+
+
 class PlanDecisionAnswer(ModelBase):
     """One validated answer to a numbered plan decision."""
 
@@ -1355,7 +1369,9 @@ def _check_ordered_answers(answers: list[PlanDecisionAnswer]) -> None:
 
 
 DashboardRequestAction = Literal[
-    ResumeClassification.RISK_APPROVAL, ResumeClassification.PLAN_DECISION
+    ResumeClassification.RISK_APPROVAL,
+    ResumeClassification.PLAN_DECISION,
+    ResumeClassification.DELIVERY_RETRY,
 ]
 DashboardRequestStatus = Literal["pending", "stale"]
 #: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
@@ -1436,6 +1452,7 @@ class EscalationRecord(ModelBase):
     reopen_count: int = Field(default=0, ge=0)
     approval_context: RiskApprovalContext | None = None
     plan_decision_context: PlanDecisionContext | None = None
+    delivery_retry_context: DeliveryRetryContext | None = None
     remote_resume_enabled: bool = False
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)

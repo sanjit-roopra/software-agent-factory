@@ -20,6 +20,7 @@ from software_agent_factory.models import (
     DASHBOARD_USER_LOGIN,
     Complexity,
     DashboardResumeRequest,
+    DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
     FactoryRun,
@@ -37,6 +38,7 @@ from software_agent_factory.resume import (
     build_plan_answers,
     clean_plan_answer,
     compute_approval_context_fingerprint,
+    compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
     is_valid_plan_decision_answers,
     request_mismatch,
@@ -294,6 +296,21 @@ def _plan_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> PlanDecisi
     )
 
 
+def _retry_context(run_id: str = RUN_ID, episode_id: str = EPISODE) -> DeliveryRetryContext:
+    return DeliveryRetryContext(
+        reviewed_tree_sha="a" * 40,
+        base_commit_sha="b" * 40,
+        branch_name="factory/task",
+        context_fingerprint=compute_delivery_retry_context_fingerprint(
+            run_id=run_id,
+            episode_id=episode_id,
+            reviewed_tree_sha="a" * 40,
+            base_commit_sha="b" * 40,
+            branch_name="factory/task",
+        ),
+    )
+
+
 def _run(
     kind: ResumeClassification = ResumeClassification.RISK_APPROVAL,
     *,
@@ -311,6 +328,8 @@ def _run(
         fields["approval_context"] = _risk_context()
     elif kind is ResumeClassification.PLAN_DECISION:
         fields["plan_decision_context"] = _plan_context()
+    elif kind is ResumeClassification.DELIVERY_RETRY:
+        fields["delivery_retry_context"] = _retry_context()
     escalation = EscalationRecord.model_validate({**fields, **record})
     return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
 
@@ -323,7 +342,11 @@ def _store(tmp_path: Path, run: FactoryRun) -> FileRunStore:
 
 def _fingerprint(run: FactoryRun) -> str:
     assert run.escalation is not None
-    context = run.escalation.approval_context or run.escalation.plan_decision_context
+    context = (
+        run.escalation.approval_context
+        or run.escalation.plan_decision_context
+        or run.escalation.delivery_retry_context
+    )
     assert context is not None
     return context.context_fingerprint
 
@@ -363,9 +386,10 @@ def _stored_request(store: FileRunStore, run: FactoryRun) -> DashboardResumeRequ
 
 PLAN = ResumeClassification.PLAN_DECISION
 RISK = ResumeClassification.RISK_APPROVAL
+RETRY = ResumeClassification.DELIVERY_RETRY
 
 
-@pytest.mark.parametrize("kind", [RISK, PLAN])
+@pytest.mark.parametrize("kind", [RISK, PLAN, RETRY])
 @pytest.mark.parametrize(
     "status",
     [
@@ -413,7 +437,16 @@ def test_a_context_bound_to_another_episode_is_a_changed_context() -> None:
     assert resume_refusal(run, _config(), NOW) == "context_changed"
 
 
+def test_a_retry_context_bound_to_another_episode_is_a_changed_context() -> None:
+    run = _run(RETRY, delivery_retry_context=_retry_context(episode_id="ep-other"))
+
+    assert resume_refusal(run, _config(), NOW) == "context_changed"
+
+
 def test_a_missing_context_is_a_changed_context() -> None:
+    assert resume_refusal(_run(RETRY, delivery_retry_context=None), _config(), NOW) == (
+        "context_changed"
+    )
     assert resume_refusal(_run(approval_context=None), _config(), NOW) == "context_changed"
     assert resume_refusal(_run(PLAN, plan_decision_context=None), _config(), NOW) == (
         "context_changed"
@@ -473,6 +506,42 @@ def test_a_risk_request_reopens_the_run_with_a_dashboard_receipt(tmp_path: Path)
     assert saved.escalation.accepted_replies == [receipt]
     assert saved.attempt_records == run.attempt_records
     assert _stored_request(store, run).status == "pending"
+
+
+def test_a_retry_request_reopens_the_run_with_a_dashboard_receipt(tmp_path: Path) -> None:
+    run = _run(RETRY)
+    store = _store(tmp_path, run)
+    _submit(store, run)
+
+    receipt = ingest_dashboard_request(run, store, _config(), NOW)
+
+    assert receipt is not None
+    assert receipt.source == "dashboard"
+    assert receipt.command == f"@factory resume v1 run={RUN_ID} episode={EPISODE}"
+    assert receipt.delivery_retry_context_fingerprint == _fingerprint(run)
+    assert (receipt.approval_context_fingerprint, receipt.plan_decision_context_fingerprint) == (
+        None,
+        None,
+    )
+    saved = store.load_run(RUN_ID)
+    assert saved.escalation is not None
+    assert saved.escalation.status is EscalationStatus.REOPENED
+    assert saved.escalation.reopen_count == 1
+    assert saved.escalation.accepted_replies == [receipt]
+    assert _stored_request(store, run).status == "pending"
+
+
+def test_a_retry_request_is_ingested_once(tmp_path: Path) -> None:
+    run = _run(RETRY)
+    store = _store(tmp_path, run)
+    _submit(store, run)
+    first = ingest_dashboard_request(run, store, _config(), NOW)
+
+    assert first is not None
+    again = store.load_run(RUN_ID)
+    assert ingest_dashboard_request(again, store, _config(), NOW) is None
+    assert again.escalation is not None
+    assert again.escalation.reopen_count == 1
 
 
 def test_a_plan_request_saves_the_answers_with_the_dashboard_source(tmp_path: Path) -> None:

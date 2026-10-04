@@ -21,6 +21,7 @@ from software_agent_factory.dashboard.next_step import (
     REASON_SENTENCES,
     REFUSAL_CAUSES,
     REOPEN_LIMIT_CAUSE,
+    RETRY_STALE_SENTENCES,
     STALE_SENTENCES,
     NextStepKind,
     next_step,
@@ -109,6 +110,11 @@ def _plan_run(decisions: list[str] | None = None, **kwargs: Any) -> dict[str, An
         "decisions", ["Use SQLite?", "Keep the old API?"] if decisions is None else decisions
     )
     return _run(resume_classification="PLAN_DECISION", **kwargs)
+
+
+def _retry_run(**kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("reason_code", "DELIVERY_INTERVENTION")
+    return _run(resume_classification="DELIVERY_RETRY", **kwargs)
 
 
 def _step(run: dict[str, Any]) -> dict[str, Any]:
@@ -923,6 +929,55 @@ def test_a_pending_request_for_another_context_or_action_does_not_count(
     assert step["stale_sentence"] is None
 
 
+def test_a_publish_failure_halt_gives_retry_without_scope_or_reply() -> None:
+    step = next_step(_retry_run(comment_url=COMMENT_URL))
+
+    assert step["kind"] == "retry"
+    assert step["sentence"] == REASON_SENTENCES["DELIVERY_INTERVENTION"]
+    assert step["resume_classification"] == "DELIVERY_RETRY"
+    assert (step["episode_id"], step["context_fingerprint"]) == (EPISODE_ID, FINGERPRINT)
+    assert (step["reopens_used"], step["max_reopens"]) == (0, 3)
+    assert (step["approval_scope"], step["reply_text"]) == (None, None)
+
+
+def test_a_refused_retry_says_why_it_is_unavailable() -> None:
+    step = next_step(_retry_run(dashboard_action_refusal="reopen_limit"))
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert f"Retry is not available because {REOPEN_LIMIT_CAUSE}." in step["sentence"]
+
+
+def test_a_retry_without_a_valid_context_is_unavailable() -> None:
+    step = next_step(_retry_run(context_fingerprint="short"))
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert "Retry is not available." in step["sentence"]
+
+
+def test_a_pending_retry_shows_when_it_was_queued_and_how_to_start_the_service() -> None:
+    step = next_step(_retry_run(), [_request("DELIVERY_RETRY")])
+
+    assert step["kind"] == "queued"
+    assert step["sentence"] == (
+        f"Retry requested at {QUEUED_AT}, queued for the factory service. {START_HINT}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("expired", "retry expired, retry again"),
+        ("context_changed", STALE_SENTENCES["context_changed"]),
+    ],
+)
+def test_a_stale_retry_says_retry(reason: str, sentence: str) -> None:
+    step = next_step(_retry_run(), [_request("DELIVERY_RETRY", status="stale", reason=reason)])
+
+    assert step["kind"] == "retry"
+    assert step["stale_sentence"] == sentence
+    assert RETRY_STALE_SENTENCES.keys() == STALE_SENTENCES.keys()
+
+
 def test_without_a_request_the_step_has_no_queued_fields() -> None:
     step = next_step(_risk_run())
 
@@ -1002,6 +1057,7 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "remote_approval_unavailable",
         "approve",
         "answer",
+        "retry",
         "queued",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'

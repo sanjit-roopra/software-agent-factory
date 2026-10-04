@@ -1480,7 +1480,7 @@ def _escalation_summary(
         return None
     approval = escalation.approval_context
     plan = escalation.plan_decision_context
-    context = approval or plan
+    context = approval or plan or escalation.delivery_retry_context
     last_reply = escalation.accepted_replies[-1] if escalation.accepted_replies else None
     is_resumed = escalation.status in {EscalationStatus.REOPENED, EscalationStatus.RESUMED}
     return EscalationSummary(

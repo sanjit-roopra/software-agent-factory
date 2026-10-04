@@ -49,9 +49,11 @@ from .github import (
 )
 from .models import (
     HALT_REASON_COPY,
+    PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
     UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
+    DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
     EscalationTargetType,
@@ -76,6 +78,7 @@ from .redaction import redact_secrets
 from .resume import (
     build_plan_answers,
     compute_approval_context_fingerprint,
+    compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
     contains_unsafe_content,
     has_valid_resume_context,
@@ -479,6 +482,26 @@ def build_plan_decision_context(
     )
 
 
+def build_delivery_retry_context(
+    run: FactoryRun, *, episode_id: str
+) -> DeliveryRetryContext | None:
+    """Snapshot the reviewed work a person may publish again, or ``None`` when it is unknown."""
+    if not run.reviewed_tree_sha or not run.base_commit_sha or not run.branch_name:
+        return None
+    return DeliveryRetryContext(
+        reviewed_tree_sha=run.reviewed_tree_sha,
+        base_commit_sha=run.base_commit_sha,
+        branch_name=run.branch_name,
+        context_fingerprint=compute_delivery_retry_context_fingerprint(
+            run_id=run.id,
+            episode_id=episode_id,
+            reviewed_tree_sha=run.reviewed_tree_sha,
+            base_commit_sha=run.base_commit_sha,
+            branch_name=run.branch_name,
+        ),
+    )
+
+
 #: The plan-decision next action in the GitHub notice. The notice is posted on the thread it
 #: asks people to reply on, so it says "this GitHub thread" where ``HALT_REASON_COPY`` says
 #: "the escalation thread".
@@ -531,6 +554,14 @@ def classify_halt_reason(
             unresolved_decisions_summary(unresolved_decisions_count(plan, reason)),
             _GITHUB_REPLY_ACTION,
         )
+    if (
+        reason.startswith(PUBLISH_FAILED_HALT_REASON)
+        and run.pull_request_url is None
+        and run.reviewed_tree_sha
+    ):
+        # The prefix is exact, so it comes before the word checks: an error text can hold
+        # "scope" or "attempt".
+        return _halt(ResumeClassification.DELIVERY_RETRY, HaltReasonCode.DELIVERY_INTERVENTION)
     if "scope" in reason:
         return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.SCOPE_REVIEW)
     if re.fullmatch(r"risk r[23] requires human approval", reason):
@@ -968,6 +999,9 @@ def deliver_escalation_notification(
     escalation = run.escalation
     if escalation is None:
         classification, code, summary, action = classify_halt_reason(run, store)
+        if classification is ResumeClassification.DELIVERY_RETRY:
+            # Only transition() knows the run halted from PR_READY (ADR-042).
+            classification = ResumeClassification.NOT_RESUMABLE
         episode_id = generate_episode_id()
         approval_context = None
         if classification is ResumeClassification.RISK_APPROVAL:
