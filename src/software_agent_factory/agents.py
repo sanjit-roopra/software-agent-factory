@@ -58,6 +58,7 @@ from .models import (
     ReviewReport,
     ReviewSourceLocation,
     Risk,
+    RuntimeName,
     Specification,
     TestReport,
     TriageResult,
@@ -97,6 +98,8 @@ class AgentRequest(ModelBase):
     model: str
     reasoning: str
     context_tier: ContextTier = ContextTier.DEFAULT
+    runtime: RuntimeName | None = None
+    """The runtime that serves this call; ``None`` uses ``--runtime`` (ADR-045)."""
     work_item: WorkItem
     triage_result: TriageResult | None = None
     specification: Specification | None = None

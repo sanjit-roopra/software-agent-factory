@@ -683,6 +683,7 @@ class ProjectRunner:
                 model=model.model,
                 reasoning=model.reasoning,
                 context_tier=model.context_tier,
+                runtime=model.runtime,
                 work_item=synthetic_work_item,
                 project_brief=brief,
                 repository_profile=profile,

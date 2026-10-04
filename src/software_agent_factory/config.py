@@ -17,12 +17,14 @@ from pydantic import (
 )
 
 from .models import (
+    CLAUDE_CODE_EFFORT_LEVELS,
     MAX_GUIDANCE_FINDINGS,
     Complexity,
     ContextTier,
     ExecutionRoute,
     ReviewFindingCategory,
     Risk,
+    RuntimeName,
 )
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
@@ -82,6 +84,20 @@ class RoleModelConfig(ConfigModel):
     model: str = Field(min_length=1)
     reasoning: str = Field(min_length=1)
     context_tier: ContextTier = ContextTier.DEFAULT
+    runtime: RuntimeName | None = None
+    """The runtime that serves this role. ``None`` uses ``--runtime`` (ADR-045)."""
+
+    @model_validator(mode="after")
+    def _validate_claude_code_effort(self) -> Self:
+        if (
+            self.runtime is RuntimeName.CLAUDE_CODE
+            and self.reasoning not in CLAUDE_CODE_EFFORT_LEVELS
+        ):
+            raise ValueError(
+                f"runtime claude-code accepts reasoning {', '.join(CLAUDE_CODE_EFFORT_LEVELS)}, "
+                f"not {self.reasoning!r}"
+            )
+        return self
 
     @property
     def model_family(self) -> str:
@@ -117,6 +133,16 @@ class ModelsConfig(ConfigModel):
             raise ValueError("reviewer model family must differ from all worker model families")
 
         return self
+
+    def roles(self) -> dict[str, RoleModelConfig]:
+        """Every role and worker tier, keyed by its configuration path."""
+        return {
+            "triage": self.triage,
+            "planner": self.planner,
+            "tester": self.tester,
+            "reviewer": self.reviewer,
+            **{f"workers.{tier.value}": worker for tier, worker in self.workers.items()},
+        }
 
 
 class RepositoryCommandsConfig(ConfigModel):
@@ -729,6 +755,28 @@ class FactoryConfig(ConfigModel):
                     f"{opt.model_profile!r}; available profiles: {available}"
                 )
         return self
+
+    def reachable_roles(self) -> dict[str, RoleModelConfig]:
+        """Every role a run can use: the models block, plus the workers of the
+        profiles that enabled route options swap in, keyed ``<profile>.<role>``.
+        A route profile changes only the workers (``ModelRouter``)."""
+        roles = dict(self.models.roles())
+        if self.routing.enabled:
+            for option in self.routing.options:
+                name = option.model_profile
+                if name is not None and name in self.model_profiles:
+                    for tier, config in self.model_profiles[name].workers.items():
+                        roles[f"{name}.workers.{tier.value}"] = config
+        return roles
+
+    def runtimes_for(self, default: RuntimeName | None) -> frozenset[RuntimeName]:
+        """The runtimes a run uses when roles without ``runtime`` use ``default``.
+
+        ``None`` means the fake runtime, which serves every call (ADR-045).
+        """
+        if default is None:
+            return frozenset()
+        return frozenset(role.runtime or default for role in self.reachable_roles().values())
 
     def requires_human_approval(self, risk: Risk) -> bool:
         """Whether ``risk`` stops a run for a human.

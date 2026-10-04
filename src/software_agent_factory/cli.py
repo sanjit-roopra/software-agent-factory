@@ -60,10 +60,11 @@ from typing import TYPE_CHECKING, Any
 import typer
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import timedelta
 
     from .agents import AgentRuntime
-    from .config import FactoryConfig, ModelsConfig, RoleModelConfig
+    from .config import FactoryConfig
     from .dashboard.snapshot import (
         ResumeRequester,
         ResumeRequestReader,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
         DashboardResumeRequest,
         FactoryRun,
         InvocationRecord,
+        RuntimeName,
         ToolchainSetupPlan,
     )
     from .store import FileRunStore
@@ -229,10 +231,8 @@ def _load_config(
 def _require_prerequisites(
     *,
     require_gh: bool,
-    require_copilot: bool,
-    require_pi: bool = False,
+    runtimes: frozenset[RuntimeName] = frozenset(),
     pi_executable: str = "pi",
-    require_claude_code: bool = False,
 ) -> None:
     """Refuse to start work when a required external executable is absent.
 
@@ -240,17 +240,16 @@ def _require_prerequisites(
     (:func:`~software_agent_factory.doctor.missing_prerequisites`), so the
     two can never disagree, and runs before any workspace, tracker or agent
     code -- the alternative is a traceback from a failed ``git`` exec several
-    layers down. ``pi_executable`` should be the configured
+    layers down. ``runtimes`` comes from :meth:`FactoryConfig.runtimes_for`.
+    ``pi_executable`` should be the configured
     ``factory_config.pi.executable`` whenever a loaded config is available, so
     a custom executable name is looked up instead of the literal ``"pi"``.
     """
     missing_checker = _seam("missing_prerequisites")
     missing = missing_checker(
         require_gh=require_gh,
-        require_copilot=require_copilot,
-        require_pi=require_pi,
+        runtimes=runtimes,
         pi_executable=pi_executable,
-        require_claude_code=require_claude_code,
     )
     if not missing:
         return
@@ -260,42 +259,33 @@ def _require_prerequisites(
     )
 
 
+def _default_runtime(choice: RuntimeChoice) -> RuntimeName | None:
+    """The runtime for roles without ``runtime``; ``None`` for the fake runtime."""
+    from .models import RuntimeName
+
+    return None if choice is RuntimeChoice.FAKE else RuntimeName(choice.value)
+
+
 def _require_claude_code_effort(runtime: RuntimeChoice, config: FactoryConfig) -> None:
     """Refuse a ``claude-code`` run whose models use a reasoning level ``--effort``
     does not accept, before any work starts (ADR-045). Route options can swap
-    in another model profile, so those profiles are checked too."""
+    in another model profile, so those profiles are checked too. A role that
+    names its own runtime was already checked when the configuration loaded."""
     if runtime is not RuntimeChoice.CLAUDE_CODE:
         return
-    from .claude_code_runtime import EFFORT_LEVELS
+    from .models import CLAUDE_CODE_EFFORT_LEVELS
 
-    profiles = {"": config.models}
-    if config.routing.enabled:
-        for option in config.routing.options:
-            name = option.model_profile
-            if name is not None:
-                profiles[f"{name}."] = config.model_profiles[name]
     invalid = [
-        f"{prefix}{role}={role_config.reasoning}"
-        for prefix, models in profiles.items()
-        for role, role_config in _role_models(models).items()
-        if role_config.reasoning not in EFFORT_LEVELS
+        f"{role}={role_config.reasoning}"
+        for role, role_config in config.reachable_roles().items()
+        if role_config.runtime is None and role_config.reasoning not in CLAUDE_CODE_EFFORT_LEVELS
     ]
     if invalid:
         raise _fail(
-            f"--runtime claude-code accepts reasoning {', '.join(EFFORT_LEVELS)}; "
+            f"--runtime claude-code accepts reasoning {', '.join(CLAUDE_CODE_EFFORT_LEVELS)}; "
             f"the configured models use {', '.join(invalid)}. "
             "Use --model-profile claude or change the reasoning values."
         )
-
-
-def _role_models(models: ModelsConfig) -> dict[str, RoleModelConfig]:
-    return {
-        "triage": models.triage,
-        "planner": models.planner,
-        "tester": models.tester,
-        "reviewer": models.reviewer,
-        **{f"workers.{tier.value}": worker for tier, worker in models.workers.items()},
-    }
 
 
 def _configure_logging(config: FactoryConfig) -> None:
@@ -314,16 +304,20 @@ def _configure_logging(config: FactoryConfig) -> None:
 
 
 def _build_runtime(choice: RuntimeChoice, config: FactoryConfig) -> AgentRuntime:
-    if choice is RuntimeChoice.COPILOT:
-        runtime_cls = _seam("CopilotAgentRuntime")
-        return runtime_cls()  # type: ignore[no-any-return]
-    if choice is RuntimeChoice.PI:
-        pi_runtime_cls = _seam("PiAgentRuntime")
-        return pi_runtime_cls(config.pi, config.data_dir)  # type: ignore[no-any-return]
-    if choice is RuntimeChoice.CLAUDE_CODE:
-        return _seam("ClaudeCodeAgentRuntime")()  # type: ignore[no-any-return]
-    fake_runtime_cls = _seam("FakeAgentRuntime")
-    return fake_runtime_cls()  # type: ignore[no-any-return]
+    """The fake runtime serves every call, so a dry run never makes a paid call.
+    Otherwise each role goes to its own runtime, built on first use (ADR-045)."""
+    default = _default_runtime(choice)
+    if default is None:
+        return _seam("FakeAgentRuntime")()  # type: ignore[no-any-return]
+    from .models import RuntimeName
+    from .runtime_router import RoutingAgentRuntime
+
+    factories: dict[RuntimeName, Callable[[], AgentRuntime]] = {
+        RuntimeName.COPILOT: lambda: _seam("CopilotAgentRuntime")(),
+        RuntimeName.PI: lambda: _seam("PiAgentRuntime")(config.pi, config.data_dir),
+        RuntimeName.CLAUDE_CODE: lambda: _seam("ClaudeCodeAgentRuntime")(),
+    }
+    return RoutingAgentRuntime(default, factories)
 
 
 def _warn_fake_backlog_claims() -> None:
@@ -445,9 +439,7 @@ def run_command(
     # run requires nothing but ``git``.
     _require_prerequisites(
         require_gh=factory_config.pull_request.enabled or factory_config.ci.enabled,
-        require_copilot=runtime is RuntimeChoice.COPILOT,
-        require_pi=runtime is RuntimeChoice.PI,
-        require_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
+        runtimes=factory_config.runtimes_for(_default_runtime(runtime)),
         pi_executable=factory_config.pi.executable,
     )
     _require_claude_code_effort(runtime, factory_config)
@@ -594,9 +586,7 @@ def project_command(
             or factory_config.ci.enabled
             or factory_config.merge.enabled
         ),
-        require_copilot=runtime is RuntimeChoice.COPILOT,
-        require_pi=runtime is RuntimeChoice.PI,
-        require_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
+        runtimes=factory_config.runtimes_for(_default_runtime(runtime)),
         pi_executable=factory_config.pi.executable,
     )
     _require_claude_code_effort(runtime, factory_config)
@@ -732,9 +722,7 @@ def start_command(
     # even when publishing and CI observation are both disabled.
     _require_prerequisites(
         require_gh=True,
-        require_copilot=runtime is RuntimeChoice.COPILOT,
-        require_pi=runtime is RuntimeChoice.PI,
-        require_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
+        runtimes=factory_config.runtimes_for(_default_runtime(runtime)),
         pi_executable=factory_config.pi.executable,
     )
     _require_claude_code_effort(runtime, factory_config)
@@ -891,9 +879,7 @@ def doctor_command(
         config_path=config,
         data_dir_override=data_dir,
         model_profile=model_profile,
-        requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
-        requested_runtime_pi=runtime is RuntimeChoice.PI,
-        requested_runtime_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
+        requested_runtime=_default_runtime(runtime),
     )
 
     if json_output:
@@ -1440,9 +1426,7 @@ def service_install_command(
         config_path=config,
         data_dir_override=data_dir,
         model_profile=model_profile,
-        requested_runtime_copilot=runtime is RuntimeChoice.COPILOT,
-        requested_runtime_pi=runtime is RuntimeChoice.PI,
-        requested_runtime_claude_code=runtime is RuntimeChoice.CLAUDE_CODE,
+        requested_runtime=_default_runtime(runtime),
         # An env-var pi credential lives in the operator's shell and never
         # reaches the launchd service (only the plist's own
         # EnvironmentVariables does), so it must not satisfy this preflight.

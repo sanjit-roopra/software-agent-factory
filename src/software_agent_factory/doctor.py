@@ -48,12 +48,13 @@ import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Protocol, Sequence
+from typing import Callable, Collection, Protocol, Sequence
 
 import yaml
 from pydantic import ValidationError
 
 from .config import FactoryConfig, PiConfig, load_config
+from .models import RuntimeName
 from .pi_providers import pi_provider_credential_vars
 from .subprocess_utils import parse_version
 
@@ -768,9 +769,7 @@ def run_doctor(
     config_path: Path | None = None,
     data_dir_override: Path | None = None,
     model_profile: str | None = None,
-    requested_runtime_copilot: bool = False,
-    requested_runtime_pi: bool = False,
-    requested_runtime_claude_code: bool = False,
+    requested_runtime: RuntimeName | None = None,
     accept_pi_env_credentials: bool = True,
     environment: DoctorEnvironment | None = None,
 ) -> DoctorReport:
@@ -780,10 +779,10 @@ def run_doctor(
     ``--data-dir`` options. When configuration loads successfully,
     :func:`requires_gh` decides whether ``gh`` is required, and
     ``repository.commands`` supplies the verification command executables to
-    version-check. ``requested_runtime_copilot``/``requested_runtime_pi``
-    mirror ``--runtime copilot``/``--runtime pi``; neither is ever inferred,
-    so a default ``fake`` run never demands ``copilot`` or ``pi``.
-    ``requested_runtime_pi`` is checked against ``config.pi`` when
+    version-check. ``requested_runtime`` mirrors ``--runtime`` (``None`` for
+    ``fake``). A runtime is required when a role uses it: roles without
+    ``runtime`` use ``requested_runtime``, and a ``fake`` run never demands
+    any runtime (ADR-045). pi is checked against ``config.pi`` when
     configuration loaded, or the default :class:`PiConfig` otherwise.
     ``accept_pi_env_credentials`` (default ``True``) is forwarded to
     :func:`check_pi`; ``factory service install`` passes ``False`` since a
@@ -804,7 +803,9 @@ def run_doctor(
     verification_commands: list[str] = []
     data_dir = data_dir_override
     pi_config = config.pi if config is not None else PiConfig()
+    runtimes = frozenset([requested_runtime] if requested_runtime is not None else [])
     if config is not None:
+        runtimes = config.runtimes_for(requested_runtime)
         gh_required = requires_gh(config)
         verification_commands = [
             *config.repository.commands.install,
@@ -815,16 +816,16 @@ def run_doctor(
             data_dir = config.data_dir
 
     checks.append(check_gh(env, required=gh_required))
-    checks.append(check_copilot(env, required=requested_runtime_copilot))
+    checks.append(check_copilot(env, required=RuntimeName.COPILOT in runtimes))
     checks.append(
         check_pi(
             env,
             pi_config,
-            required=requested_runtime_pi,
+            required=RuntimeName.PI in runtimes,
             accept_env_credentials=accept_pi_env_credentials,
         )
     )
-    checks.append(check_claude_code(env, required=requested_runtime_claude_code))
+    checks.append(check_claude_code(env, required=RuntimeName.CLAUDE_CODE in runtimes))
     checks.extend(check_verification_commands(env, verification_commands))
 
     if data_dir is not None:
@@ -836,10 +837,8 @@ def run_doctor(
 def missing_prerequisites(
     *,
     require_gh: bool = False,
-    require_copilot: bool = False,
-    require_pi: bool = False,
+    runtimes: Collection[RuntimeName] = (),
     pi_executable: str = "pi",
-    require_claude_code: bool = False,
     environment: DoctorEnvironment | None = None,
 ) -> list[str]:
     """Names of required external executables missing from ``PATH``.
@@ -849,8 +848,9 @@ def missing_prerequisites(
     configuration load and no filesystem write, so ``factory run`` and
     ``factory start`` can fail with one explicit prerequisite message
     instead of a traceback from deep inside the workspace or tracker code.
-    ``git`` is always required; ``gh``, ``copilot`` and ``pi`` only when the
-    caller says the requested feature set needs them. ``pi`` here is a bare
+    ``git`` is always required; ``gh`` only when the caller says the
+    requested feature set needs it, and each runtime executable only when
+    ``runtimes`` names it. ``pi`` here is a bare
     ``PATH`` lookup for ``pi_executable`` (the configured
     ``factory_config.pi.executable`` when a caller has one, else the default
     ``"pi"``) -- it does not validate the pi/Node version or provider
@@ -863,10 +863,10 @@ def missing_prerequisites(
     wanted: list[str] = ["git"]
     if require_gh:
         wanted.append("gh")
-    if require_copilot:
-        wanted.append("copilot")
-    if require_pi:
-        wanted.append(pi_executable)
-    if require_claude_code:
-        wanted.append("claude")
+    executables = {
+        RuntimeName.COPILOT: "copilot",
+        RuntimeName.PI: pi_executable,
+        RuntimeName.CLAUDE_CODE: "claude",
+    }
+    wanted.extend(executables[runtime] for runtime in RuntimeName if runtime in runtimes)
     return [executable for executable in wanted if env.which(executable) is None]

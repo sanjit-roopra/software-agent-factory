@@ -462,12 +462,6 @@ def test_unsupported_reasoning_fails_before_starting_claude(
     assert captured == {}
 
 
-def test_cli_builds_the_claude_code_runtime() -> None:
-    runtime = cli._build_runtime(cli.RuntimeChoice.CLAUDE_CODE, load_config(None))
-
-    assert isinstance(runtime, ClaudeCodeAgentRuntime)
-
-
 def test_packaged_claude_profile_uses_effort_levels_only() -> None:
     models = load_config(None, model_profile="claude").models
     reasoning = {
@@ -485,7 +479,7 @@ def test_packaged_claude_profile_uses_effort_levels_only() -> None:
 
 def _claude_config(**routing: object) -> FactoryConfig:
     payload = load_config(None, model_profile="claude").model_dump(mode="json")
-    payload["model_profiles"]["economy"]["triage"]["reasoning"] = "minimal"
+    payload["model_profiles"]["economy"]["workers"]["L0"]["reasoning"] = "minimal"
     payload["routing"].update(routing)
     return FactoryConfig.model_validate(payload)
 
@@ -506,6 +500,19 @@ def test_effort_preflight_ignores_profiles_when_routing_is_off() -> None:
     config = _claude_config(enabled=False)
 
     cli._require_claude_code_effort(cli.RuntimeChoice.CLAUDE_CODE, config)
+
+
+def test_effort_preflight_skips_roles_on_another_runtime() -> None:
+    payload = load_config(None, model_profile="claude").model_dump(mode="json")
+    payload["models"]["triage"].update(runtime="pi", reasoning="minimal")
+    cli._require_claude_code_effort(
+        cli.RuntimeChoice.CLAUDE_CODE, FactoryConfig.model_validate(payload)
+    )
+
+    payload["models"]["triage"]["runtime"] = None
+    config = FactoryConfig.model_validate(payload)
+    with pytest.raises(typer.Exit):
+        cli._require_claude_code_effort(cli.RuntimeChoice.CLAUDE_CODE, config)
 
 
 def test_switch_values_are_removed_but_not_redacted(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,7 +27,7 @@ from .agents import (
     validate_runtime_request,
     workspace_cwd,
 )
-from .models import ModelUsage, PerformanceRecord, UsageMetrics, utc_now
+from .models import CLAUDE_CODE_EFFORT_LEVELS, ModelUsage, PerformanceRecord, UsageMetrics, utc_now
 from .prompts import build_prompt
 from .subprocess_utils import (
     build_child_env,
@@ -40,7 +40,7 @@ from .subprocess_utils import kill_process_group as _kill_process_group
 from .usage_values import non_negative_float, non_negative_int
 
 #: The values ``claude --effort`` accepts; ``reasoning`` passes through 1:1.
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+EFFORT_LEVELS = CLAUDE_CODE_EFFORT_LEVELS
 READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 IMPLEMENTER_TOOLS: tuple[str, ...] = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
 READ_ONLY_DENIED: tuple[str, ...] = ("WebFetch", "WebSearch")
