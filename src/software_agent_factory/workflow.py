@@ -696,6 +696,7 @@ class WorkflowController:
             updated_at=created_at,
             state_started_at=created_at,
             risk_assessment_enabled=self._config.risk_assessment.enabled,
+            unattended=self._config.factory.unattended,
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
         )
         if not run.risk_assessment_enabled:
@@ -1324,7 +1325,7 @@ class WorkflowController:
         """
         from .escalation import has_dispatched_risk_approval
 
-        if not triage.factory_eligible and not self._config.factory.unattended:
+        if not triage.factory_eligible and not run.unattended:
             return False
         if not self._approval_required(run, triage.risk):
             return True
@@ -1560,7 +1561,7 @@ class WorkflowController:
             # 1. Manual / Abstain route
             if (
                 route_decision.effective_route is ExecutionRoute.MANUAL_TRIAGE
-                and not self._config.factory.unattended
+                and not run.unattended
             ):
                 reason = (
                     route_decision.fallback_reason
@@ -1586,7 +1587,7 @@ class WorkflowController:
                         )
                         self._store.save_artifact(run.id, triage_result)
 
-                if not triage_result.factory_eligible and not self._config.factory.unattended:
+                if not triage_result.factory_eligible and not run.unattended:
                     raise self._halt(
                         run, WorkflowState.NEEDS_HUMAN, "triage marked this work item ineligible"
                     )
@@ -1697,7 +1698,7 @@ class WorkflowController:
         specification = planning.specification
         execution_plan = planning.execution_plan
         self._store.save_artifact(run.id, specification)
-        if execution_plan.unresolved_decisions and not self._config.factory.unattended:
+        if execution_plan.unresolved_decisions and not run.unattended:
             raise self._halt(run, WorkflowState.NEEDS_HUMAN, UNRESOLVED_DECISIONS_HALT_REASON)
 
         context = _RunContext(
@@ -1835,7 +1836,7 @@ class WorkflowController:
         run never changes policy on resume or reopen.
         """
         return (
-            not self._config.factory.unattended
+            not run.unattended
             and run.risk_assessment_enabled
             and self._config.risk[risk].human_approval
         )
@@ -2497,7 +2498,7 @@ class WorkflowController:
             )
             while scope.decision is ScopeDecision.REPLAN:
                 if (
-                    self._config.factory.unattended
+                    run.unattended
                     and self._replans_used(run) >= self._config.scope_drift.max_replans
                 ):
                     break
@@ -2519,14 +2520,14 @@ class WorkflowController:
                     (finding.category, finding.message) for finding in scope.findings
                 )
                 if scope.decision is ScopeDecision.REPLAN and current_findings == previous_findings:
-                    if self._config.factory.unattended:
+                    if run.unattended:
                         break
                     raise self._halt(
                         run,
                         WorkflowState.NEEDS_HUMAN,
                         "scope metadata replan made no progress: " + _describe_scope(scope),
                     )
-            if scope.decision is ScopeDecision.NEEDS_HUMAN and not self._config.factory.unattended:
+            if scope.decision is ScopeDecision.NEEDS_HUMAN and not run.unattended:
                 raise self._halt(
                     run,
                     WorkflowState.NEEDS_HUMAN,
@@ -2699,7 +2700,7 @@ class WorkflowController:
             review_rounds = self._review_rounds_used(run, budget)
             acceptance_reason: ReviewAcceptanceReason | None = None
             if impasse is not None and (
-                self._config.factory.unattended
+                run.unattended
                 or impasse.kind
                 in {
                     ReviewImpasseKind.REPEATED_PATH,
@@ -3536,10 +3537,17 @@ class WorkflowController:
     ) -> ReviewAcceptance | None:
         findings = _deduplicate_review_findings(
             [*run.review_ledger.accepted_findings, *run.review_ledger.open_findings]
-        )[:MAX_OPEN_REVIEW_FINDINGS]
+        )
+        if len(findings) > MAX_OPEN_REVIEW_FINDINGS:
+            logger.warning(
+                "review acceptance keeps the newest %d of %d findings",
+                MAX_OPEN_REVIEW_FINDINGS,
+                len(findings),
+            )
+            findings = findings[-MAX_OPEN_REVIEW_FINDINGS:]
         if not tree_sha or not verification.passed or not findings:
             return None
-        if not self._config.factory.unattended and (
+        if not run.unattended and (
             context.triage_result.risk not in self._config.review.accepted_risks
             or len(findings) > self._config.review.max_accepted_findings
             or any(
@@ -3617,7 +3625,7 @@ class WorkflowController:
         acceptance = run.review_acceptance
         if acceptance is None:
             return review.approved
-        if self._config.factory.unattended:
+        if run.unattended:
             return (
                 run.reviewed_tree_sha is not None
                 and acceptance.reviewed_tree_sha == run.reviewed_tree_sha
@@ -3735,7 +3743,7 @@ class WorkflowController:
         scope = self._scope_policy.assess(
             context.execution_plan, changed_files, context.triage_result.risk
         )
-        if scope.decision is not ScopeDecision.CONTINUE:
+        if scope.decision is not ScopeDecision.CONTINUE and not run.unattended:
             raise self._halt(
                 run,
                 WorkflowState.NEEDS_HUMAN,

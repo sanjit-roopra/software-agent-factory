@@ -54,6 +54,7 @@ Only the risk approval gate had a setting to turn it off.
   - Sensitive scope, such as dependency, CI workflow or migration files.
   - A scope replan that makes no progress or uses its whole budget.
   - A review impasse or a review limit. The run accepts the open findings, for any risk and any category.
+- The run stores the setting when it starts, so resume and reopen keep the same policy.
 - An unattended run never ends in `FAILED` in place of a human stop.
 - The run record keeps every accepted finding in the review acceptance.
 - Gates after implementation, such as a used attempt budget or failed CI, are a later change.
@@ -62,7 +63,8 @@ Only the risk approval gate had a setting to turn it off.
 
 - Runs before the pull request no longer wait for a person.
 - Code with open review findings or sensitive changes can reach a pull request.
-  A later change labels such pull requests so that a person can look at them later.
+  A later change labels such pull requests and does not merge them.
+  Until then, use unattended mode with `merge.enabled` set to `false`.
 - With the setting off, the factory behaves as before.
 >>>>>>> 4339b48 (feat(workflow): unattended mode lets gates before the pull request continue (ADR-039))
 

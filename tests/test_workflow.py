@@ -29,6 +29,7 @@ from software_agent_factory.governance import (
     VerificationFailureKind,
 )
 from software_agent_factory.models import (
+    MAX_OPEN_REVIEW_FINDINGS,
     UNRESOLVED_DECISIONS_HALT_REASON,
     AgentPurpose,
     AgentRole,
@@ -1760,6 +1761,48 @@ def test_ineligible_finding_stops_at_configured_review_round_limit(
     assert impasse.kind is ReviewImpasseKind.REVIEW_ROUND_LIMIT
 
 
+@pytest.mark.parametrize("unattended", [False, True])
+def test_unattended_review_impasse_is_accepted(
+    source_repo: Path,
+    data_dir: Path,
+    unattended: bool,
+) -> None:
+    calls = 0
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        findings = [_review_finding(f"Defect {calls}-{index}.") for index in range(20)]
+        if not request.prior_review_findings:
+            report = ReviewReport(approved=False, blocking_findings=findings)
+        else:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(
+                    request, ReviewDispositionStatus.UNRESOLVED
+                ),
+                repair_regressions=findings,
+            )
+        return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=3)
+    config.factory.unattended = unattended
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-unattended-too-many"), source_repo)
+
+    if not unattended:
+        assert run.state is WorkflowState.NEEDS_HUMAN
+        return
+    assert run.state is WorkflowState.PR_READY
+    assert run.review_acceptance is not None
+    assert run.review_acceptance.reason is ReviewAcceptanceReason.REVIEW_IMPASSE
+    assert len(run.review_acceptance.findings) <= MAX_OPEN_REVIEW_FINDINGS
+
+
 def test_unattended_blocked_finding_on_r2_is_accepted_at_review_round_limit(
     source_repo: Path,
     data_dir: Path,
@@ -1907,9 +1950,11 @@ def test_high_risk_review_blocker_cannot_be_accepted(
     assert run.review_acceptance is None
 
 
+@pytest.mark.parametrize("unattended", [False, True])
 def test_repair_regression_cannot_be_accepted_at_attempt_limit(
     source_repo: Path,
     data_dir: Path,
+    unattended: bool,
 ) -> None:
     def reviewer(request: AgentRequest) -> AgentResult:
         if not request.prior_review_findings:
@@ -1925,12 +1970,18 @@ def test_repair_regression_cannot_be_accepted_at_attempt_limit(
             )
         return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
 
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=2)
+    config.factory.unattended = unattended
     run = WorkflowController(
-        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        config,
         FileRunStore(data_dir),
         FakeAgentRuntime(reviewer=reviewer),
     ).run(_work_item("WI-regression-impasse"), source_repo)
 
+    if unattended:
+        assert run.state is WorkflowState.PR_READY
+        assert run.review_acceptance is not None
+        return
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert run.review_acceptance is None
     assert run.review_ledger.open_findings[0].origin is (
@@ -1938,9 +1989,11 @@ def test_repair_regression_cannot_be_accepted_at_attempt_limit(
     )
 
 
+@pytest.mark.parametrize("unattended", [False, True])
 def test_finding_count_over_policy_limit_cannot_be_accepted(
     source_repo: Path,
     data_dir: Path,
+    unattended: bool,
 ) -> None:
     def reviewer(request: AgentRequest) -> AgentResult:
         return AgentResult(
@@ -1960,12 +2013,18 @@ def test_finding_count_over_policy_limit_cannot_be_accepted(
 
     config = _config(data_dir, same_model_attempts=1, max_total_attempts=1)
     config.review.max_accepted_findings = 1
+    config.factory.unattended = unattended
     run = WorkflowController(
         config,
         FileRunStore(data_dir),
         FakeAgentRuntime(reviewer=reviewer),
     ).run(_work_item("WI-too-many-accepted-findings"), source_repo)
 
+    if unattended:
+        assert run.state is WorkflowState.PR_READY
+        assert run.review_acceptance is not None
+        assert len(run.review_acceptance.findings) == 2
+        return
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert run.review_acceptance is None
     assert len(run.review_ledger.open_findings) == 2
