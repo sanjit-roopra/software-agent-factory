@@ -29,6 +29,7 @@ from software_agent_factory.governance import (
     VerificationFailureKind,
 )
 from software_agent_factory.models import (
+    MAX_OPEN_REVIEW_FINDINGS,
     UNRESOLVED_DECISIONS_HALT_REASON,
     AgentPurpose,
     AgentRole,
@@ -1760,6 +1761,81 @@ def test_ineligible_finding_stops_at_configured_review_round_limit(
     assert impasse.kind is ReviewImpasseKind.REVIEW_ROUND_LIMIT
 
 
+@pytest.mark.parametrize("unattended", [False, True])
+def test_unattended_review_impasse_is_accepted(
+    source_repo: Path,
+    data_dir: Path,
+    unattended: bool,
+) -> None:
+    calls = 0
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal calls
+        calls += 1
+        findings = [_review_finding(f"Defect {calls}-{index}.") for index in range(20)]
+        if not request.prior_review_findings:
+            report = ReviewReport(approved=False, blocking_findings=findings)
+        else:
+            report = ReviewReport(
+                approved=False,
+                prior_finding_dispositions=_resolve_prior(
+                    request, ReviewDispositionStatus.UNRESOLVED
+                ),
+                repair_regressions=findings,
+            )
+        return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=3)
+    config.factory.unattended = unattended
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        config,
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-unattended-too-many"), source_repo)
+
+    if not unattended:
+        assert run.state is WorkflowState.NEEDS_HUMAN
+        return
+    assert run.state is WorkflowState.PR_READY
+    assert run.review_acceptance is not None
+    assert run.review_acceptance.reason is ReviewAcceptanceReason.REVIEW_IMPASSE
+    assert len(run.review_acceptance.findings) <= MAX_OPEN_REVIEW_FINDINGS
+
+
+def test_unattended_blocked_finding_on_r2_is_accepted_at_review_round_limit(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def reviewer(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=False,
+                blocking_findings=[
+                    _review_finding(
+                        "Security defect.",
+                        category=ReviewFindingCategory.SECURITY,
+                    )
+                ],
+            ),
+        )
+
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=3)
+    config.review.max_rounds = 1
+    config.factory.unattended = True
+    run = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(triage=_triage_hook(Complexity.L1, Risk.R2), reviewer=reviewer),
+    ).run(_work_item("WI-unattended-round-limit"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.review_acceptance is not None
+    assert [f.category for f in run.review_acceptance.findings] == [ReviewFindingCategory.SECURITY]
+
+
 def test_approved_followup_cannot_bypass_carried_acceptance_policy(
     data_dir: Path,
 ) -> None:
@@ -1874,9 +1950,11 @@ def test_high_risk_review_blocker_cannot_be_accepted(
     assert run.review_acceptance is None
 
 
+@pytest.mark.parametrize("unattended", [False, True])
 def test_repair_regression_cannot_be_accepted_at_attempt_limit(
     source_repo: Path,
     data_dir: Path,
+    unattended: bool,
 ) -> None:
     def reviewer(request: AgentRequest) -> AgentResult:
         if not request.prior_review_findings:
@@ -1892,12 +1970,18 @@ def test_repair_regression_cannot_be_accepted_at_attempt_limit(
             )
         return AgentResult(role=AgentRole.REVIEWER, success=True, review_report=report)
 
+    config = _config(data_dir, same_model_attempts=1, max_total_attempts=2)
+    config.factory.unattended = unattended
     run = WorkflowController(
-        _config(data_dir, same_model_attempts=1, max_total_attempts=2),
+        config,
         FileRunStore(data_dir),
         FakeAgentRuntime(reviewer=reviewer),
     ).run(_work_item("WI-regression-impasse"), source_repo)
 
+    if unattended:
+        assert run.state is WorkflowState.PR_READY
+        assert run.review_acceptance is not None
+        return
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert run.review_acceptance is None
     assert run.review_ledger.open_findings[0].origin is (
@@ -1905,9 +1989,11 @@ def test_repair_regression_cannot_be_accepted_at_attempt_limit(
     )
 
 
+@pytest.mark.parametrize("unattended", [False, True])
 def test_finding_count_over_policy_limit_cannot_be_accepted(
     source_repo: Path,
     data_dir: Path,
+    unattended: bool,
 ) -> None:
     def reviewer(request: AgentRequest) -> AgentResult:
         return AgentResult(
@@ -1927,12 +2013,18 @@ def test_finding_count_over_policy_limit_cannot_be_accepted(
 
     config = _config(data_dir, same_model_attempts=1, max_total_attempts=1)
     config.review.max_accepted_findings = 1
+    config.factory.unattended = unattended
     run = WorkflowController(
         config,
         FileRunStore(data_dir),
         FakeAgentRuntime(reviewer=reviewer),
     ).run(_work_item("WI-too-many-accepted-findings"), source_repo)
 
+    if unattended:
+        assert run.state is WorkflowState.PR_READY
+        assert run.review_acceptance is not None
+        assert len(run.review_acceptance.findings) == 2
+        return
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert run.review_acceptance is None
     assert len(run.review_ledger.open_findings) == 2
@@ -2105,6 +2197,21 @@ def test_r2_triage_ends_needs_human_and_never_reaches_pr_ready(
     assert run.attempt_records == []
 
 
+def test_unattended_r2_triage_continues_to_pr_ready(source_repo: Path, data_dir: Path) -> None:
+    config = _config(data_dir)
+    config.factory.unattended = True
+    controller = WorkflowController(
+        config,
+        FileRunStore(data_dir),
+        FakeAgentRuntime(triage=_triage_hook(Complexity.L1, Risk.R2)),
+    )
+
+    run = controller.run(_work_item(), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert config.requires_human_approval(Risk.R2) is False
+
+
 def test_full_run_makes_one_planner_call_for_the_specification_and_plan(
     source_repo: Path, data_dir: Path
 ) -> None:
@@ -2156,6 +2263,57 @@ def test_ineligible_triage_ends_needs_human(source_repo: Path, data_dir: Path) -
 
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert "ineligible" in (run.failure_reason or "")
+
+
+@pytest.mark.parametrize("unattended", [False, True])
+def test_unattended_sensitive_scope_continues_instead_of_stopping(
+    source_repo: Path, data_dir: Path, unattended: bool
+) -> None:
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        workflows = Path(request.workspace_path) / ".github" / "workflows"
+        workflows.mkdir(parents=True, exist_ok=True)
+        (workflows / "ci.yml").write_text("on: push\n")
+        return default_runtime.run(request)
+
+    config = _config(data_dir)
+    config.factory.unattended = unattended
+    run = WorkflowController(
+        config, FileRunStore(data_dir), FakeAgentRuntime(implementer=implementer)
+    ).run(_work_item("WI-sensitive-scope"), source_repo)
+
+    expected = WorkflowState.PR_READY if unattended else WorkflowState.NEEDS_HUMAN
+    assert run.state is expected
+
+
+def test_unattended_ineligible_triage_continues_to_pr_ready(
+    source_repo: Path, data_dir: Path
+) -> None:
+    def ineligible_triage(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.TRIAGE,
+            success=True,
+            triage_result=TriageResult(
+                factory_eligible=False,
+                complexity=Complexity.L1,
+                risk=Risk.R1,
+                dependencies=[],
+                unknowns=["scope unclear"],
+                confidence=0.3,
+            ),
+        )
+
+    config = _config(data_dir)
+    config.factory.unattended = True
+    controller = WorkflowController(
+        config, FileRunStore(data_dir), FakeAgentRuntime(triage=ineligible_triage)
+    )
+
+    run = controller.run(_work_item(), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
 
 
 # -- operational agent failures ----------------------------------------------
@@ -2818,6 +2976,44 @@ def test_unresolved_first_and_clarification_plans_end_needs_human(
 
     implementer_invocations = [r for r in run.invocation_records if r.role is AgentRole.IMPLEMENTER]
     assert len(implementer_invocations) == 0
+
+
+def test_unattended_plan_with_unresolved_decisions_is_implemented(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    def planner_hook(request: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.PLANNER,
+            success=True,
+            execution_plan=ExecutionPlan(
+                summary="Plan with an unresolved decision",
+                steps=[
+                    PlanStep(
+                        id="step-1",
+                        goal="Implement parser",
+                        likely_files=["FACTORY_NOTES.md"],
+                        validation=["Run tests"],
+                    )
+                ],
+                expected_scope=ExpectedScope(
+                    modules=["FACTORY_NOTES.md"],
+                    estimated_files_min=1,
+                    estimated_files_max=2,
+                ),
+                test_strategy=["Run verification"],
+                unresolved_decisions=["Choice between SQLite and PostgreSQL."],
+            ),
+        )
+
+    config = _config(data_dir)
+    config.factory.unattended = True
+    run = WorkflowController(
+        config, FileRunStore(data_dir), FakeAgentRuntime(planner=planner_hook)
+    ).run(_work_item("WI-unattended-unresolved"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert any(r.role is AgentRole.IMPLEMENTER for r in run.invocation_records)
 
 
 def test_scope_replan_with_unresolved_decisions_does_not_halt_verified_change(

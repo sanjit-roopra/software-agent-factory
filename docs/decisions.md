@@ -1,5 +1,41 @@
 # Architecture Decisions
 
+## ADR-039: Unattended mode lets gates before the pull request continue
+
+Status: accepted on 2026-10-04.
+
+### Context
+
+The factory must run most of the time without a person.
+Before this change, more than 40 places in the workflow can stop a run in `NEEDS_HUMAN`.
+A stopped run waits until a person replies. With escalation off, it waits forever.
+Only the risk approval gate had a setting to turn it off.
+
+### Decision
+
+- The new setting `factory.unattended` is `false` by default.
+- When it is `true`, these gates let the run continue instead of stopping:
+  - Risk approval. No risk level needs approval.
+  - Manual triage. The run uses the full workflow.
+  - An ineligible triage result. The run uses the full workflow.
+  - Unresolved plan decisions. The implementer uses the plan as it is.
+  - Sensitive scope, such as dependency, CI workflow or migration files.
+  - A scope replan that makes no progress or uses its whole budget.
+  - A review impasse or a review limit. The run accepts the open findings, for any risk and any category.
+- The run stores the setting when it starts, so resume and reopen keep the same policy.
+- An unattended run never ends in `FAILED` in place of a human stop.
+- The review acceptance keeps up to 24 of the newest accepted findings. The log names the number it drops.
+- A project does not yet pin the setting when it starts. A later change adds this.
+- Gates after implementation, such as a used attempt budget or failed CI, are a later change.
+
+### Consequences
+
+- Runs before the pull request no longer wait for a person.
+- Code with open review findings or sensitive changes can reach a pull request.
+  A later change labels such pull requests and does not merge them.
+  Until then, use unattended mode with `merge.enabled` set to `false`.
+- With the setting off, the factory behaves as before.
+
 ## ADR-038: The planner and the reviewer keep the change simple
 
 Status: accepted on 2026-10-04.

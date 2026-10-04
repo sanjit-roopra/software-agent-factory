@@ -1014,3 +1014,23 @@ def test_publication_result_must_match_durable_receipt(tmp_path: Path, source_re
     assert "publication receipt" in run.failure_reason
     assert store.load_run(run.id).pending_commit_sha is not None
     assert merger.calls == []
+
+
+def test_unattended_sensitive_scope_is_published(tmp_path: Path, source_repo: Path) -> None:
+    default_runtime = FakeAgentRuntime()
+
+    def implementer(request: AgentRequest) -> AgentResult:
+        assert request.workspace_path is not None
+        workflows = Path(request.workspace_path) / ".github" / "workflows"
+        workflows.mkdir(parents=True, exist_ok=True)
+        (workflows / "ci.yml").write_text("on: push\n")
+        return default_runtime.run(request)
+
+    config = _config(tmp_path, merge=False)
+    config.factory.unattended = True
+    controller, _ = _controller(config, runtime=FakeAgentRuntime(implementer=implementer))
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.unattended is True

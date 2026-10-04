@@ -465,6 +465,8 @@ class RiskAssessmentConfig(ConfigModel):
 
 class FactorySettings(ConfigModel):
     data_dir: Path
+    #: Never stop a run for a person. Every human gate continues instead (ADR-039).
+    unattended: bool = False
     retries: RetryConfig
     agent_timeout_seconds: PositiveInt = DEFAULT_AGENT_TIMEOUT_SECONDS
 
@@ -729,8 +731,15 @@ class FactoryConfig(ConfigModel):
         return self
 
     def requires_human_approval(self, risk: Risk) -> bool:
-        """Whether ``risk`` stops a run for a human. Never true when assessment is off."""
-        return self.risk_assessment.enabled and self.risk[risk].human_approval
+        """Whether ``risk`` stops a run for a human.
+
+        Never true when assessment is off or the factory runs unattended.
+        """
+        return (
+            not self.factory.unattended
+            and self.risk_assessment.enabled
+            and self.risk[risk].human_approval
+        )
 
     @property
     def data_dir(self) -> Path:

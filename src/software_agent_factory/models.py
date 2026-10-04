@@ -1598,6 +1598,8 @@ class FactoryRun(VersionedModel):
     base_commit_sha: str | None = None
     pending_commit_sha: str | None = None
     risk_assessment_enabled: bool = True
+    #: ``factory.unattended`` when the run started (ADR-039).
+    unattended: bool = False
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
     route_decision: RouteDecision | None = None

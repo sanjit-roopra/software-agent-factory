@@ -512,8 +512,9 @@ def test_scope_drift_replan_updates_plan_without_rerunning_implementer(
     assert run.scope_replans == 1
 
 
+@pytest.mark.parametrize(("unattended", "max_replans"), [(False, 1), (True, 1), (True, 0)])
 def test_scope_drift_replan_still_escalates_when_revised_plan_does_not_fit(
-    source_repo: Path, data_dir: Path
+    source_repo: Path, data_dir: Path, unattended: bool, max_replans: int
 ) -> None:
     def drifting_implementer(request: AgentRequest) -> AgentResult:
         assert request.workspace_path is not None
@@ -552,7 +553,8 @@ def test_scope_drift_replan_still_escalates_when_revised_plan_does_not_fit(
             )
         return default_runtime._default_planner(request)
 
-    config = build_config(data_dir, max_replans=1)
+    config = build_config(data_dir, max_replans=max_replans)
+    config.factory.unattended = unattended
     controller = WorkflowController(
         config,
         FileRunStore(data_dir),
@@ -561,6 +563,10 @@ def test_scope_drift_replan_still_escalates_when_revised_plan_does_not_fit(
 
     run = controller.run(work_item(), source_repo)
 
+    if unattended:
+        assert run.state is WorkflowState.PR_READY
+        assert run.scope_replans == max_replans
+        return
     assert run.state is WorkflowState.NEEDS_HUMAN
     assert "scope metadata replan made no progress" in (run.failure_reason or "")
     assert len(run.attempt_records) == 1
