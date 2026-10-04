@@ -1504,6 +1504,52 @@ def test_reviewer_semantic_contract_gets_bounded_same_model_correction(
     assert reviewer_calls == 2
 
 
+def test_reviewer_legacy_string_concerns_become_suggestions_without_a_retry(
+    source_repo: Path,
+    data_dir: Path,
+) -> None:
+    reviewer_calls = 0
+
+    def reviewer(request: AgentRequest) -> AgentResult:
+        nonlocal reviewer_calls
+        reviewer_calls += 1
+        return AgentResult(
+            role=AgentRole.REVIEWER,
+            success=True,
+            review_report=ReviewReport(
+                approved=True,
+                findings=["Bytecode files are in the change."],
+                scope_concerns=["A scope note."],
+                security_concerns=["A security note."],
+                compatibility_concerns=["A compatibility note."],
+                suggested_changes=["Add a docstring."],
+            ),
+        )
+
+    store = FileRunStore(data_dir)
+    run = WorkflowController(
+        _config(data_dir, same_model_attempts=2, max_total_attempts=2),
+        store,
+        FakeAgentRuntime(reviewer=reviewer),
+    ).run(_work_item("WI-reviewer-legacy-concerns"), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert reviewer_calls == 1
+    review = store.load_artifact(run.id, ReviewReport, attempt=1)
+    assert review is not None
+    assert review.findings == []
+    assert review.scope_concerns == []
+    assert review.security_concerns == []
+    assert review.compatibility_concerns == []
+    assert review.suggested_changes == [
+        "Add a docstring.",
+        "Bytecode files are in the change.",
+        "A scope note.",
+        "A security note.",
+        "A compatibility note.",
+    ]
+
+
 def test_reviewer_ledger_persists_typed_open_findings(
     source_repo: Path,
     data_dir: Path,
