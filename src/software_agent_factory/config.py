@@ -757,15 +757,16 @@ class FactoryConfig(ConfigModel):
         return self
 
     def reachable_roles(self) -> dict[str, RoleModelConfig]:
-        """Every role a run can use: the models block, plus the profiles that
-        enabled route options swap in, keyed ``<profile>.<role>``."""
+        """Every role a run can use: the models block, plus the workers of the
+        profiles that enabled route options swap in, keyed ``<profile>.<role>``.
+        A route profile changes only the workers (``ModelRouter``)."""
         roles = dict(self.models.roles())
         if self.routing.enabled:
             for option in self.routing.options:
                 name = option.model_profile
                 if name is not None and name in self.model_profiles:
-                    for role, config in self.model_profiles[name].roles().items():
-                        roles[f"{name}.{role}"] = config
+                    for tier, config in self.model_profiles[name].workers.items():
+                        roles[f"{name}.workers.{tier.value}"] = config
         return roles
 
     def runtimes_for(self, default: RuntimeName | None) -> frozenset[RuntimeName]:

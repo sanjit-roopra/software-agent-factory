@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,10 @@ def test_each_role_runs_on_the_runtime_it_names(
     config = _with_runtimes(
         build_config(data_dir), triage=RuntimeName.PI, planner=RuntimeName.CLAUDE_CODE
     )
+    payload = config.model_dump(mode="json")
+    for worker in payload["models"]["workers"].values():
+        worker["runtime"] = RuntimeName.PI.value
+    config = FactoryConfig.model_validate(payload)
     runtime = cli._build_runtime(cli.RuntimeChoice.COPILOT, config)
 
     run = WorkflowController(config, FileRunStore(data_dir), runtime).run(work_item(), source_repo)
@@ -86,7 +91,7 @@ def test_each_role_runs_on_the_runtime_it_names(
     assert served == {
         AgentRole.TRIAGE: RuntimeName.PI,
         AgentRole.PLANNER: RuntimeName.CLAUDE_CODE,
-        AgentRole.IMPLEMENTER: RuntimeName.COPILOT,
+        AgentRole.IMPLEMENTER: RuntimeName.PI,
         AgentRole.TESTER: RuntimeName.COPILOT,
         AgentRole.REVIEWER: RuntimeName.COPILOT,
     }
@@ -129,38 +134,61 @@ def test_router_builds_only_the_runtimes_requests_name() -> None:
     assert [name for name, _ in calls] == [RuntimeName.COPILOT, RuntimeName.PI, RuntimeName.COPILOT]
 
 
-def test_router_names_the_serving_runtime_in_model_usage() -> None:
-    usage = UsageMetrics(model_usage=(ModelUsage(model="m"),))
+@pytest.mark.parametrize(
+    ("requested", "served"),
+    [(RuntimeName.PI, RuntimeName.PI), (None, RuntimeName.COPILOT)],
+)
+def test_router_names_the_serving_runtime_in_model_usage(
+    requested: RuntimeName | None, served: RuntimeName
+) -> None:
+    usage = UsageMetrics(model_usage=(ModelUsage(model="a"), ModelUsage(model="b")))
 
     def triage(request: AgentRequest) -> AgentResult:
         return FakeAgentRuntime().run(request).model_copy(update={"usage": usage})
 
     router = RoutingAgentRuntime(
-        RuntimeName.COPILOT, {RuntimeName.PI: lambda: FakeAgentRuntime(triage=triage)}
+        RuntimeName.COPILOT, {name: lambda: FakeAgentRuntime(triage=triage) for name in RuntimeName}
     )
     request = AgentRequest(
         role=AgentRole.TRIAGE,
         model="m",
         reasoning="high",
         timeout_seconds=60,
-        runtime=RuntimeName.PI,
+        runtime=requested,
         work_item=work_item(),
     )
 
     result = router.run(request)
 
     assert result.usage is not None
-    assert [u.runtime for u in result.usage.model_usage] == [RuntimeName.PI]
+    assert [u.runtime for u in result.usage.model_usage] == [served, served]
+
+
+def test_router_passes_a_result_without_usage_through() -> None:
+    router = RoutingAgentRuntime(RuntimeName.COPILOT, {RuntimeName.COPILOT: FakeAgentRuntime})
+    request = AgentRequest(
+        role=AgentRole.TRIAGE,
+        model="m",
+        reasoning="high",
+        timeout_seconds=60,
+        work_item=work_item(),
+    )
+
+    assert router.run(request) == FakeAgentRuntime().run(request)
 
 
 def test_escalation_treats_a_runtime_change_as_a_new_model(data_dir: Path) -> None:
-    payload = build_config(data_dir).model_dump(mode="json")
+    # L2 and L3 share a model; only the runtime tells them apart.
+    payload = build_config(data_dir, same_model_attempts=2).model_dump(mode="json")
     payload["models"]["workers"]["L3"]["runtime"] = RuntimeName.CLAUDE_CODE.value
     router = ModelRouter(FactoryConfig.model_validate(payload))
 
-    distinct = router._distinct_worker_models(Complexity.L2)
+    def runtime_at(attempt: int) -> RuntimeName | None:
+        selected = router.model_for_implementer(Complexity.L2, attempt)
+        assert selected is not None
+        return selected.runtime
 
-    assert [config.runtime for config in distinct] == [None, RuntimeName.CLAUDE_CODE]
+    assert [runtime_at(n) for n in (1, 2, 3)] == [None, None, RuntimeName.CLAUDE_CODE]
 
 
 def test_claude_code_role_rejects_an_unknown_effort() -> None:
@@ -173,3 +201,30 @@ def test_doctor_runtimes_cover_roles_and_the_default(data_dir: Path) -> None:
 
     assert config.runtimes_for(None) == frozenset()
     assert config.runtimes_for(RuntimeName.COPILOT) == {RuntimeName.COPILOT, RuntimeName.PI}
+
+
+def test_doctor_runtimes_skip_profile_roles_routing_never_calls(data_dir: Path) -> None:
+    payload = build_config(data_dir).model_dump(mode="json")
+    profile = json.loads(json.dumps(payload["models"]))
+    profile["triage"]["runtime"] = RuntimeName.PI.value
+    profile["workers"]["L0"]["runtime"] = RuntimeName.CLAUDE_CODE.value
+    payload["model_profiles"] = {"cheap": profile}
+    payload["routing"] = {
+        "enabled": True,
+        "options": [
+            {
+                "id": "cheap",
+                "route": "SINGLE",
+                "complexity": "L0",
+                "risk": "R0",
+                "model_profile": "cheap",
+            },
+            {"id": "full", "route": "FULL", "complexity": "L3", "risk": "R1"},
+        ],
+    }
+    config = FactoryConfig.model_validate(payload)
+
+    assert config.runtimes_for(RuntimeName.COPILOT) == {
+        RuntimeName.COPILOT,
+        RuntimeName.CLAUDE_CODE,
+    }

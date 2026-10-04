@@ -232,6 +232,27 @@ def test_run_doctor_default_runtime_never_requires_claude() -> None:
     assert claude_check.status is CheckStatus.OK
 
 
+def test_run_doctor_requires_the_runtimes_roles_name(tmp_path: Path) -> None:
+    import yaml
+
+    payload = build_config(tmp_path / "data").model_dump(mode="json")
+    for role in ("triage", "planner", "tester", "reviewer"):
+        payload["models"][role]["runtime"] = "claude-code"
+    for worker in payload["models"]["workers"].values():
+        worker["runtime"] = "claude-code"
+    config_path = tmp_path / "factory.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    env, _ = make_env(available={"git": "/usr/bin/git"})  # claude and copilot missing
+
+    report = run_doctor(
+        config_path=config_path, requested_runtime=RuntimeName.COPILOT, environment=env
+    )
+
+    status = {c.name: c.status for c in report.checks}
+    assert status["claude-code"] is CheckStatus.ERROR
+    assert status["copilot"] is CheckStatus.OK  # every role names its own runtime
+
+
 # -- pi runtime prerequisite checks ------------------------------------------
 #
 # Fixed order, first failure wins: executable -> pi version -> Node version
