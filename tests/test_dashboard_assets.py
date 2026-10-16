@@ -56,7 +56,10 @@ _TABLE_IDS = re.findall(r'<table\s+id="([^"]+)"', _INDEX_HTML)
 def test_index_html_has_a_main_nav_landmark_with_the_four_links() -> None:
     nav = re.search(r'<nav\s+aria-label="Main">(.*?)</nav>', _INDEX_HTML, flags=re.DOTALL)
     assert nav is not None
-    links = re.findall(r'<a\s+href="(#[a-z]+)"\s+data-route="([a-z]+)">([^<]+)</a>', nav.group(1))
+    links = re.findall(
+        r'<a\s+href="(#[a-z]+)"\s+data-route="([a-z]+)">([^<]+?)\s*(?:<span[^>]*></span>)?</a>',
+        nav.group(1),
+    )
     assert links == [
         ("#runs", "runs", "Runs"),
         ("#compare", "compare", "Compare"),
@@ -253,9 +256,9 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert re.search(r"main\s*\{[^}]*min-width:\s*0;", css)
     assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
     assert "overflow-x: hidden" not in css
-    # The one clip is the reason block of the run list, cut to two lines.
+    # The only clips are the reason block and the title of the run list, cut to one line.
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
-    assert [selector.strip() for selector in clipped] == [".clamp"]
+    assert [selector.strip() for selector in clipped] == [".clamp,\n#runs-table td:first-child"]
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
@@ -1559,7 +1562,6 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "Title",
         "State",
         "Why",
-        "Models",
         "Calls",
         "Duration",
         "Cost",
@@ -1571,7 +1573,6 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "titleCell(run, runId)",
         "stateCell(run)",
         "whyCell(run)",
-        "modelsCell(run)",
         "run.invocation_count",
         "durationCell(run)",
         "listCostText(run.usage)",
@@ -1587,25 +1588,67 @@ def test_the_run_list_drops_the_columns_an_operator_never_used() -> None:
         assert f">{dropped}<" not in head
 
 
-def test_a_title_links_to_its_run_and_names_the_run_id_in_a_tooltip() -> None:
+def test_a_title_links_to_its_run_and_names_the_run_id_and_models_in_a_tooltip() -> None:
     cell = function_source(_JS, "titleCell")
     assert 'href: "#run/" + encodeURIComponent(runId)' in cell
     assert "value: displayValue(run.title, runId)" in cell
-    assert "title: runId" in cell
+    assert 'displayValue(run.models?.detail, "")' in cell
+    assert 'title: models === "" ? runId : runId + "\\n" + models' in cell
 
 
-def test_a_reason_is_cut_to_two_lines_and_its_full_text_is_the_tooltip() -> None:
+def test_a_run_row_stays_on_one_line_and_cuts_title_and_reason() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert re.search(r"#runs-table td\s*\{[^}]*white-space:\s*nowrap;", css)
+    assert re.search(
+        r"\.clamp,\s*#runs-table td:first-child\s*\{[^}]*text-overflow:\s*ellipsis;", css
+    )
     assert 'className: "why-cell"' in function_source(_JS, "whyCell")
     assert "clamp: true" in function_source(_JS, "whyCell")
     assert 'title: displayValue(run.why, "")' in function_source(_JS, "whyCell")
-    assert re.search(r"\.clamp\s*\{[^}]*-webkit-line-clamp:\s*2;", dashboard_assets.STYLE_CSS)
-    assert re.search(r"\.clamp\s*\{[^}]*\bline-clamp:\s*2;", dashboard_assets.STYLE_CSS)
 
 
-def test_a_model_part_never_breaks_inside_and_only_the_separator_may_wrap() -> None:
-    assert "chunks:" in function_source(_JS, "modelsCell")
-    assert 'element("span", "chunk", chunk)' in function_source(_JS, "patchChunksCell")
-    assert re.search(r"\.chunk\s*\{[^}]*white-space:\s*nowrap;", dashboard_assets.STYLE_CSS)
+def test_the_run_list_has_no_models_cell() -> None:
+    assert "modelsCell" not in _JS
+    assert "patchChunksCell" not in _JS
+    assert ".models-cell" not in dashboard_assets.STYLE_CSS
+
+
+def test_a_run_title_is_plain_text_until_hovered() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert re.search(
+        r"#runs-table td:first-child a\s*\{[^}]*color:\s*var\(--text\);"
+        r"[^}]*text-decoration:\s*none;",
+        css,
+    )
+    assert re.search(r"#runs-table td:first-child a:hover\s*\{[^}]*underline", css)
+
+
+def test_tables_draw_bottom_borders_and_quiet_headers() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert re.search(r"th, td\s*\{\s*border:\s*0;\s*border-bottom:\s*1px solid", css)
+    assert re.search(r"thead th\s*\{[^}]*text-transform:\s*uppercase;", css)
+    assert re.search(r"thead th\s*\{[^}]*color:\s*var\(--text-muted\);", css)
+
+
+def test_a_heading_focused_by_the_script_draws_no_outline() -> None:
+    assert re.search(r'\[tabindex="-1"\]:focus\s*\{\s*outline:\s*none;', dashboard_assets.STYLE_CSS)
+
+
+def test_the_runs_link_counts_the_runs_that_need_you() -> None:
+    assert '<span id="runs-count" class="nav-count"' in _INDEX_HTML
+    badge = function_source(_JS, "renderRunsCount")
+    assert "needsYouCount > 0" in badge
+    assert "badge.hidden = !shown;" in badge
+    assert "renderRunsCount(overview.needs_you);" in function_source(_JS, "renderOverview")
+
+
+def test_the_sidebar_shows_a_live_dot_while_the_server_answers() -> None:
+    assert '<p id="live" class="live">' in _INDEX_HTML
+    text = function_source(_JS, "liveText")
+    assert "lastSuccessAt === null" in text
+    assert 'state.noticeKind === null ? "Live" : "Offline"' in text
+    assert "renderLive();" in function_source(_JS, "renderNotice")
+    assert re.search(r"\.live-on::before\s*\{[^}]*var\(--ok\)", dashboard_assets.STYLE_CSS)
 
 
 def test_a_start_time_is_relative_and_its_tooltip_is_the_absolute_time() -> None:

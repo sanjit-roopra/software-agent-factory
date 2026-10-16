@@ -5,8 +5,6 @@
   const REQUEST_TIMEOUT_MS = 10000;
   const PAGE_SIZE = 20;
   const EMPTY_VALUE = "\u2014";
-  // Joins the model parts of a run list row. Keep it in step with models_summary.
-  const MODEL_SEPARATOR = " \u00b7 ";
   const NOT_REPORTED = "not reported";
 
   // TOKEN_QUERY_PARAM in dashboard/security.py: the query field of the page link.
@@ -329,6 +327,29 @@
 
   function renderNotice() {
     setText(document.getElementById("notice"), noticeMessage());
+    renderLive();
+  }
+
+  // The sidebar dot: live while the server answers. The notice says how long ago it last did.
+  function liveText() {
+    if (lastSuccessAt === null) {
+      return "Connecting\u2026";
+    }
+    return state.noticeKind === null ? "Live" : "Offline";
+  }
+
+  function renderLive() {
+    const live = document.getElementById("live");
+    setText(live, liveText());
+    live.className = state.noticeKind === null && lastSuccessAt !== null ? "live live-on" : "live";
+  }
+
+  // The Runs link counts the runs that need the operator. None hides the count.
+  function renderRunsCount(needsYouCount) {
+    const badge = document.getElementById("runs-count");
+    const shown = isFiniteNumber(needsYouCount) && needsYouCount > 0;
+    badge.hidden = !shown;
+    setText(badge, shown ? String(needsYouCount) : "");
   }
 
   // Runs when the server answered: after a success, or after a 4xx.
@@ -526,23 +547,7 @@
     }
   }
 
-  // A chunks entry holds parts that never break inside. The separator between two
-  // parts is the only place a line may break.
-  function patchChunksCell(cell, entry) {
-    if (cell.textContent !== entry.chunks.join(MODEL_SEPARATOR) || cell.firstElementChild === null) {
-      clearChildren(cell);
-      for (const [index, chunk] of entry.chunks.entries()) {
-        if (index > 0) {
-          cell.append(MODEL_SEPARATOR);
-        }
-        cell.appendChild(element("span", "chunk", chunk));
-      }
-    }
-    cell.className = entry.className || "";
-    setTitle(cell, entry.title);
-  }
-
-  // A clamp entry shows its value in a block the style cuts to two lines. The cell stays
+  // A clamp entry shows its value in a block the style cuts to one line. The cell stays
   // a table cell, which a line clamp on the cell itself would break.
   function patchClampCell(cell, entry) {
     let block = cell.firstElementChild;
@@ -556,14 +561,10 @@
   }
 
   // An entry is a plain value, an object with a value, a class name and a
-  // tooltip, a link entry, a badge entry, a chunks entry or a clamp entry.
+  // tooltip, a link entry, a badge entry or a clamp entry.
   function patchCell(cell, entry) {
     if (isPlainObject(entry) && entry.clamp === true) {
       patchClampCell(cell, entry);
-      return;
-    }
-    if (isPlainObject(entry) && entry.chunks?.length > 0) {
-      patchChunksCell(cell, entry);
       return;
     }
     if (isPlainObject(entry) && entry.href !== undefined) {
@@ -752,6 +753,7 @@
     for (const card of COST_CARDS) {
       document.getElementById(card.id).hidden = !card.shown(overview);
     }
+    renderRunsCount(overview.needs_you);
   }
 
   // ---- Runs view ---------------------------------------------------------
@@ -773,39 +775,28 @@
     return { badge: badgeKind(run.outcome), value: label, title: displayValue(run.state, "") };
   }
 
-  // A title links to the run. Its run id is the tooltip, and the link text when
-  // the run has no title.
+  // A title links to the run. Its run id, then the models role by role, is the
+  // tooltip; the run id is the link text when the run has no title.
   function titleCell(run, runId) {
     if (typeof runId !== "string") {
       return { value: displayValue(run.title) };
     }
+    const models = displayValue(run.models?.detail, "");
     return {
       href: "#run/" + encodeURIComponent(runId),
       value: displayValue(run.title, runId),
       hidden: "",
-      title: runId
+      title: models === "" ? runId : runId + "\n" + models
     };
   }
 
-  // The reason is cut to two lines by the style. The full text is the tooltip.
+  // The reason is cut to one line by the style. The full text is the tooltip.
   function whyCell(run) {
     return {
       value: displayValue(run.why),
       clamp: true,
       className: "why-cell",
       title: displayValue(run.why, "")
-    };
-  }
-
-  // Each model part is a chunk of its own, so a line breaks between parts only.
-  function modelsCell(run) {
-    const models = run.models || {};
-    const text = displayValue(models.text, "");
-    return {
-      value: displayValue(models.text),
-      chunks: text === "" ? [] : text.split(MODEL_SEPARATOR),
-      className: "models-cell",
-      title: displayValue(models.detail, "")
     };
   }
 
@@ -853,7 +844,6 @@
         titleCell(run, runId),
         stateCell(run),
         whyCell(run),
-        modelsCell(run),
         run.invocation_count,
         durationCell(run),
         listCostText(run.usage),

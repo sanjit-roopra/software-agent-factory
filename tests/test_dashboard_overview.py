@@ -492,10 +492,19 @@ def test_a_run_list_row_bounds_a_long_reason() -> None:
     assert len(run["why"]) <= REASON_LIMIT
 
 
-def test_a_run_list_row_says_when_it_cut_a_long_reason() -> None:
+def test_a_run_list_row_sends_a_stopped_run_reason_once_as_why() -> None:
     run = run_summary_view(_raw_summary(failure_reason="x" * (REASON_LIMIT * 4)))
 
-    assert run["failure_reason_truncated"] is True
+    assert run["why"].startswith("x")
+    assert "failure_reason" not in run
+    assert "failure_reason_truncated" not in run
+
+
+def test_a_run_list_row_keeps_only_the_cost_totals_of_its_usage() -> None:
+    usage = {"input_tokens": 5, "list_price_estimate_usd": 0.5, "premium_request_cost": 2}
+    run = run_summary_view(_raw_summary(usage=usage))
+
+    assert run["usage"] == {"list_price_estimate_usd": 0.5, "premium_request_cost": 2}
 
 
 def _junk_calls_row() -> dict[str, Any]:
