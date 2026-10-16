@@ -433,7 +433,7 @@ def delivery_policy_fingerprint(config: FactoryConfig) -> str:
     ).hexdigest()
 
 
-class RunCancelledError(BaseException):
+class RunCancelledError(BaseException):  # NOSONAR(S5709) must pass `except Exception` guards
     """The service asked a run to stop because it stalled.
 
     A ``BaseException`` like ``KeyboardInterrupt``, so the broad ``except Exception``

@@ -189,9 +189,10 @@ def test_a_cancelled_run_stops_before_its_next_agent_call(
 ) -> None:
     controller = WorkflowController(build_config(data_dir), FileRunStore(data_dir), CancelAt())
     controller._runtime.controller = controller  # type: ignore[attr-defined]
+    work_item = _work_item(source_repo)
 
     with pytest.raises(RunCancelledError) as caught:
-        controller.run(_work_item(source_repo), source_repo, run_id="run-cancel")
+        controller.run(work_item, source_repo, run_id="run-cancel")
 
     assert caught.value.run_id == "run-cancel"
     controller.clear_cancel("run-cancel")
