@@ -274,7 +274,8 @@ button:disabled {
 #runs-table td:first-child a:hover { text-decoration: underline; }
 .why-cell { min-width: 10rem; }
 .clamp,
-#runs-table td:first-child {
+#runs-table td:first-child a {
+  display: block;
   max-width: min(18rem, 22vw);
   overflow: hidden;
   text-overflow: ellipsis;

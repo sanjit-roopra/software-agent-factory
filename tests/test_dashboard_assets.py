@@ -258,7 +258,7 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert "overflow-x: hidden" not in css
     # The only clips are the reason block and the title of the run list, cut to one line.
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
-    assert [selector.strip() for selector in clipped] == [".clamp,\n#runs-table td:first-child"]
+    assert [selector.strip() for selector in clipped] == [".clamp,\n#runs-table td:first-child a"]
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
@@ -1600,7 +1600,9 @@ def test_a_run_row_stays_on_one_line_and_cuts_title_and_reason() -> None:
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"#runs-table td\s*\{[^}]*white-space:\s*nowrap;", css)
     assert re.search(
-        r"\.clamp,\s*#runs-table td:first-child\s*\{[^}]*text-overflow:\s*ellipsis;", css
+        r"\.clamp,\s*#runs-table td:first-child a\s*\{[^}]*display:\s*block;"
+        r"[^}]*text-overflow:\s*ellipsis;",
+        css,
     )
     assert 'className: "why-cell"' in function_source(_JS, "whyCell")
     assert "clamp: true" in function_source(_JS, "whyCell")

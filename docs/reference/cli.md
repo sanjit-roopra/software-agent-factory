@@ -357,7 +357,8 @@ never adds the two costs together. A note shows the failed runs and the tokens o
 last 24 hours when they differ from the totals.
 
 The run list shows these columns for each run: title, state badge, the reason it
-stopped, models, calls, duration, cost and start time. The run page starts with a
+stopped, calls, duration, cost and start time. The tooltip of the title names the run
+id and the models. The run page starts with a
 summary and the steps of the run. The long list of run facts is under Details.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
