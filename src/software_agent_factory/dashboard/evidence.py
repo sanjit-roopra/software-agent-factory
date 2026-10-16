@@ -302,11 +302,14 @@ def _file_status(text: str) -> str:
 
 
 def _line_counts(text: str) -> tuple[int, int]:
+    """Counts +/- lines after the first hunk, so a removed '-- x' is not a header."""
     added = removed = 0
+    in_hunks = False
     for line in text.splitlines():
-        if line.startswith("+") and not line.startswith("+++ "):
+        in_hunks = in_hunks or line.startswith("@@")
+        if in_hunks and line.startswith("+"):
             added += 1
-        elif line.startswith("-") and not line.startswith("--- "):
+        elif in_hunks and line.startswith("-"):
             removed += 1
     return added, removed
 

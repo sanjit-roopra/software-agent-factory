@@ -167,6 +167,21 @@ def test_diff_is_split_per_file_with_counts_and_redacted() -> None:
     assert payload["files"][0]["patch"].startswith("diff --git a/src/a.py")
 
 
+def test_diff_counts_lines_that_look_like_file_headers_inside_a_hunk() -> None:
+    patch = (
+        "diff --git a/q.sql b/q.sql\n"
+        "--- a/q.sql\n"
+        "+++ b/q.sql\n"
+        "@@ -1,2 +1,2 @@\n"
+        "--- old comment\n"
+        "+++ new comment\n"
+        " select 1;\n"
+    )
+    payload = sanitize_run_diff({"attempt": 1, "attempts": [1], "patch": patch})
+
+    assert (payload["additions"], payload["deletions"]) == (1, 1)
+
+
 def test_a_missing_patch_is_empty() -> None:
     payload = sanitize_run_diff({"attempt": "x", "patch": None})
 
@@ -182,7 +197,9 @@ def test_a_missing_patch_is_empty() -> None:
 
 
 def test_files_past_the_diff_limit_keep_counts_only() -> None:
-    big = "diff --git a/big b/big\n+++ b/big\n" + "+x\n" * (DIFF_CHAR_LIMIT // 3 + 10)
+    big = "diff --git a/big b/big\n+++ b/big\n@@ -0,0 +1 @@\n" + "+x\n" * (
+        DIFF_CHAR_LIMIT // 3 + 10
+    )
     small = "diff --git a/small b/small\n+++ b/small\n+y\n"
 
     payload = sanitize_run_diff({"patch": "preamble\n" + small + big + small})

@@ -3156,8 +3156,10 @@
   };
 
   // Draws a card again only when its answer changed, so a poll keeps open items open.
-  function renderEvidence(kind, runId, payload) {
-    if (kind in state.evidence) {
+  // A diff of a picked older attempt is drawn but not kept, so the result card
+  // always shows the latest patch.
+  function renderEvidence(kind, runId, payload, keep = true) {
+    if (keep && kind in state.evidence) {
       state.evidence[kind] = payload;
       renderCompletion();
     }
@@ -3188,21 +3190,32 @@
     if (state.diffKey === key) {
       return Promise.resolve();
     }
-    state.diffKey = key;
     const query = attempt === null ? "" : "?attempt=" + attempt;
-    return refreshEvidence(request, "diff", query);
+    // The key is kept only once the diff is drawn, so a dropped or failed load
+    // is tried again on the next poll.
+    return refreshEvidence(request, "diff", query).then(function (drawn) {
+      if (drawn) {
+        state.diffKey = key;
+      }
+    });
   }
 
   // A failed load hides the card; it never marks the server unreachable.
+  // Resolves to true only when the answer was drawn.
   function refreshEvidence(request, kind, query = "") {
     return apiFetch(runDetailPath(request.runId) + "/" + kind + query).then(
-      whenLatest(request, function (payload) {
-        renderEvidence(kind, request.runId, payload);
-      }),
+      function (payload) {
+        if (!isLatest(request)) {
+          return false;
+        }
+        renderEvidence(kind, request.runId, payload, query === "");
+        return true;
+      },
       function () {
         if (isLatest(request)) {
-          renderEvidence(kind, request.runId, null);
+          renderEvidence(kind, request.runId, null, query === "");
         }
+        return false;
       }
     );
   }
