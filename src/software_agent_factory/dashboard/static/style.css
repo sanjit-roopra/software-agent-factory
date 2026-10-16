@@ -289,6 +289,7 @@ a { color: var(--accent); }
   background: var(--accent);
   opacity: 0.6;
 }
+.duration-bar[hidden] { display: none; }
 .step-offset { display: block; color: var(--text-muted); font-size: 0.75rem; }
 .timeline-total th, .timeline-total td {
   background: var(--surface-2);

@@ -134,7 +134,7 @@ from .redaction import redact_secrets
 from .resume import resume_refusal_within
 from .setup_run import SETUP_WORKTREE_NAME
 from .store import ARTIFACT_FILENAMES
-from .transcripts import read_call_transcript, tool_calls
+from .transcripts import read_call_tool_calls
 
 try:
     import fcntl
@@ -474,7 +474,7 @@ class RunInvocationSummary(ModelBase):
     fallback_reason: str | None = None
     """Raw reason the configured runtime could not serve the call (ADR-045)."""
     tool_calls: list[dict[str, str]] = Field(default_factory=list)
-    """Tools the call used, read from its stored transcript, one line each."""
+    """Tools the call used, read from the small file stored with its transcript."""
 
 
 class ActiveInvocationSummary(ModelBase):
@@ -1720,11 +1720,10 @@ def _served_runtime(invocation: InvocationRecord) -> str | None:
 def _call_tool_calls(
     store: RunStoreProtocol, run_id: str, invocation: InvocationRecord
 ) -> list[dict[str, str]]:
-    """The tool calls in the call's stored transcript; none when it has no transcript."""
+    """The tool calls stored with the call's transcript; none when it has no transcript."""
     if invocation.transcript_path is None:
         return []
-    text = read_call_transcript(store.runs_dir / run_id, invocation.invocation_number)
-    return tool_calls(text) if text else []
+    return read_call_tool_calls(store.runs_dir / run_id, invocation.invocation_number)
 
 
 def build_run_detail(

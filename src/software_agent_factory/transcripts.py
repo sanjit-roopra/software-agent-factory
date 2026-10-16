@@ -2,9 +2,10 @@
 
 A runtime hands back the raw lines its CLI printed (``AgentResult.transcript``).
 The workflow writes them to ``runs/<id>/calls/<n>.jsonl`` after
-:func:`~.redaction.redact_secrets`, cut to :data:`TRANSCRIPT_MAX_CHARS`. The
-dashboard reads the file back only to list the tools a call used, one short
-line each.
+:func:`~.redaction.redact_secrets`, cut to :data:`TRANSCRIPT_MAX_CHARS`. At the
+same time it writes the tools the call used, one short line each, to a small
+``calls/<n>.tools.json`` beside it. The dashboard reads only that small file,
+so a poll never parses a whole transcript.
 """
 
 from __future__ import annotations
@@ -32,6 +33,11 @@ def transcript_name(invocation_number: int) -> str:
     return f"{CALLS_DIRNAME}/{invocation_number:04d}.jsonl"
 
 
+def tool_calls_name(invocation_number: int) -> str:
+    """The run-relative path of the tool calls read from one call's transcript."""
+    return f"{CALLS_DIRNAME}/{invocation_number:04d}.tools.json"
+
+
 def write_call_transcript(run_dir: Path, invocation_number: int, text: str) -> str:
     """Write one call's redacted, capped transcript; return its run-relative path."""
     redacted = redact_secrets(text)
@@ -40,6 +46,8 @@ def write_call_transcript(run_dir: Path, invocation_number: int, text: str) -> s
         redacted = redacted[: cut + 1 if cut >= 0 else TRANSCRIPT_MAX_CHARS] + TRANSCRIPT_CUT_MARKER
     name = transcript_name(invocation_number)
     write_text_atomic(run_dir / name, redacted, mode=0o600)
+    tools = json.dumps(tool_calls(redacted), ensure_ascii=False)
+    write_text_atomic(run_dir / tool_calls_name(invocation_number), tools, mode=0o600)
     return name
 
 
@@ -49,6 +57,23 @@ def read_call_transcript(run_dir: Path, invocation_number: int) -> str | None:
         return (run_dir / transcript_name(invocation_number)).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+
+
+def read_call_tool_calls(run_dir: Path, invocation_number: int) -> list[dict[str, str]]:
+    """The tool calls stored for one call; none when the file is missing or unreadable."""
+    try:
+        raw = json.loads((run_dir / tool_calls_name(invocation_number)).read_text("utf-8"))
+    except (OSError, UnicodeDecodeError, JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"name": item["name"], "preview": item.get("preview", "")}
+        for item in raw[:MAX_TOOL_CALLS]
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("preview", ""), str)
+    ]
 
 
 def _one_line(value: str) -> str:

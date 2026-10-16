@@ -23,6 +23,7 @@ from software_agent_factory.observability import build_run_detail
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.transcripts import (
     TRANSCRIPT_CUT_MARKER,
+    read_call_tool_calls,
     read_call_transcript,
     tool_calls,
     write_call_transcript,
@@ -78,6 +79,26 @@ def test_write_cuts_mid_line_when_the_first_line_is_too_long(
 
 def test_read_returns_none_without_a_transcript(tmp_path: Path) -> None:
     assert read_call_transcript(tmp_path, 1) is None
+
+
+def test_write_stores_the_tool_calls_beside_the_transcript(tmp_path: Path) -> None:
+    text = _claude_tool_event("Bash", {"command": f"echo {SECRET}"}) + "\n"
+
+    write_call_transcript(tmp_path, 2, text)
+
+    assert read_call_tool_calls(tmp_path, 2) == [{"name": "Bash", "preview": "echo [REDACTED]"}]
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["not json", '{"name": "Bash"}', '[{"name": 3}, {"name": "Read", "preview": 5}, "x"]'],
+)
+def test_read_tool_calls_skips_a_bad_file(tmp_path: Path, content: str) -> None:
+    (tmp_path / "calls").mkdir()
+    (tmp_path / "calls" / "0001.tools.json").write_text(content, encoding="utf-8")
+
+    assert read_call_tool_calls(tmp_path, 1) == []
+    assert read_call_tool_calls(tmp_path, 9) == []
 
 
 def test_tool_calls_read_claude_and_copilot_events_and_skip_other_lines() -> None:
@@ -161,6 +182,22 @@ def test_sanitized_tool_calls_are_redacted_bounded_and_need_a_name() -> None:
     assert SECRET not in calls[0]["preview"]
     assert calls[1]["preview"] == ""
     assert len(calls[2]["preview"]) == 160
+
+
+def test_sanitized_tool_calls_make_absolute_paths_relative() -> None:
+    raw = [
+        {"name": "Read", "preview": "/Users/me/repo/.claude/worktrees/run-1/src/x.py"},
+        {"name": "Bash", "preview": "cat /etc/hosts ~/notes/todo.md && ls src/a"},
+        {"name": "Fetch", "preview": "https://example.com/a/b"},
+    ]
+
+    calls = sanitize_invocation(_raw_call(tool_calls=raw))["tool_calls"]
+
+    assert [call["preview"] for call in calls] == [
+        "src/x.py",
+        "cat hosts todo.md && ls src/a",
+        "https://example.com/a/b",
+    ]
 
 
 def test_sanitized_tool_calls_ignore_a_value_that_is_not_a_list() -> None:

@@ -23,6 +23,13 @@ redacted with :func:`software_agent_factory.redaction.redact_secrets`. They are 
 A value that is not text becomes ``None``. The health messages, remediation text,
 degraded reasons and error get the same redaction.
 
+A call's ``tool_calls`` are the one free-text field that comes from what an
+agent did: each is a tool name and a one-line preview, such as a shell command
+or a file path. They are redacted and cut like the fields above, and every
+absolute path in them is made relative: a path inside a run's worktree keeps
+only the part after the worktree, and any other absolute path keeps only its
+last part. Tool output is never sent.
+
 Nothing here composes a view model. :mod:`software_agent_factory.dashboard.view`
 adds the run totals and the next step to what these functions return.
 """
@@ -577,11 +584,24 @@ def sanitize_invocation(raw: Any, run_id: str | None = None) -> dict[str, Any]:
     return sanitized
 
 
+#: An absolute POSIX path that does not follow a word, a dot, a colon or a slash
+#: (so the path part of a URL and a relative path stay as they are).
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.:/~])~?/(?:[^\s/'\"`]+/)*[^\s/'\"`]+")
+_IN_WORKTREE_RE = re.compile(r"/worktrees/[^/]+/(.+)")
+
+
+def _relative_path(match: re.Match[str]) -> str:
+    """A path inside a worktree from the worktree root; any other path by its last part."""
+    path = match.group(0)
+    inside = _IN_WORKTREE_RE.search(path)
+    return inside.group(1) if inside else path.rsplit("/", 1)[-1]
+
+
 def _tool_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     text = redact_secrets(" ".join(value.split()))
-    return text[:TOOL_CALL_TEXT_LIMIT]
+    return _ABSOLUTE_PATH_RE.sub(_relative_path, text)[:TOOL_CALL_TEXT_LIMIT]
 
 
 def _sanitize_tool_calls(raw: Any) -> list[dict[str, str]]:
