@@ -493,3 +493,25 @@ button:disabled {
 .reason-full { max-height: 24rem; overflow: auto; font-family: var(--font-mono); font-size: var(--fs-sm); margin: 0.5rem 0 0; }
 .retry-note { color: var(--text-muted); }
 .next-step-section button + button { margin-left: 0.5rem; }
+.evidence-item { border-top: 1px solid var(--border); padding: 0.5rem 0; }
+.evidence-item > summary { cursor: pointer; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.evidence-label { overflow-wrap: anywhere; }
+.evidence-note { color: var(--text-muted); margin: 0.5rem 0 0; }
+.evidence-output {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  margin: 0.5rem 0 0;
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.5rem 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review-round h4 { font-size: var(--fs-sm); margin: 0.75rem 0 0.25rem; }
+.findings { margin: 0; padding-left: 1.25rem; }
+.findings li { margin: 0.25rem 0; }
+.finding .chip { margin-left: 0; margin-right: 0.35rem; }
+.finding-where { display: block; color: var(--text-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }

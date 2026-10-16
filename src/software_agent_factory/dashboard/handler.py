@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from ..models import ResumeClassification
 from . import assets
 from .actions import ResumeActions, accept_action
+from .evidence import sanitize_run_checks, sanitize_run_review
 from .responses import WriteRejected
 from .sanitize import sanitize_full_reason, sanitize_health, sanitize_run_detail
 from .security import (
@@ -36,7 +37,13 @@ from .security import (
     session_cookie,
     token_matches,
 )
-from .snapshot import MIN_SNAPSHOT_LIMIT, clamp_pagination, is_valid_run_id, to_json_safe
+from .snapshot import (
+    MIN_SNAPSHOT_LIMIT,
+    RunDetailProvider,
+    clamp_pagination,
+    is_valid_run_id,
+    to_json_safe,
+)
 from .view import compare_view, project_view, run_detail_view, run_summary_view, summary_view
 
 if TYPE_CHECKING:
@@ -87,6 +94,12 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 _INDEX_PATH = "/"
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
 _RUN_REASON_PATTERN = re.compile(r"^/api/runs/([^/]+)/reason$")
+_RUN_EVIDENCE_PATTERN = re.compile(r"^/api/runs/([^/]+)/(checks|review)$")
+#: How each evidence route reduces the provider's raw evidence (ADR-047).
+_EVIDENCE_SANITIZERS: dict[str, Callable[[Any], dict[str, Any]]] = {
+    "checks": sanitize_run_checks,
+    "review": sanitize_run_review,
+}
 #: The tab icons the page switches between (see ``assets.FAVICON_SVG``).
 _FAVICONS: dict[str, str] = {
     "/assets/favicon.svg": assets.FAVICON_SVG,
@@ -408,6 +421,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if reason_match:
             self._serve_run_reason(reason_match.group(1), send_body)
             return
+        evidence_match = _RUN_EVIDENCE_PATTERN.match(path)
+        if evidence_match:
+            self._serve_run_evidence(evidence_match.group(1), evidence_match.group(2), send_body)
+            return
         self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
 
     def _serve_index(
@@ -545,6 +562,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if reason is not None:
             self._respond_json(HTTPStatus.OK, reason, send_body)
 
+    def _serve_run_evidence(self, raw_run_id: str, kind: str, send_body: bool) -> None:
+        """A run's check output or review text, redacted and cut (ADR-047)."""
+        provider = self.server.run_evidence_provider
+        if provider is None or not is_valid_run_id(raw_run_id):
+            self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
+            return
+        evidence = self._load_run(raw_run_id, _EVIDENCE_SANITIZERS[kind], send_body, provider)
+        if evidence is not None:
+            self._respond_json(HTTPStatus.OK, evidence, send_body)
+
     def _serve_compare(self, query: dict[str, list[str]], send_body: bool) -> None:
         a_id = query.get("a", [""])[0]
         b_id = query.get("b", [""])[0]
@@ -571,30 +598,39 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self._respond_json(HTTPStatus.OK, compare_view(a_id, a_detail, b_id, b_detail), send_body)
 
     def _load_run(
-        self, run_id: str, build: Callable[[Any], dict[str, Any]], send_body: bool
+        self,
+        run_id: str,
+        build: Callable[[Any], dict[str, Any]],
+        send_body: bool,
+        provider: RunDetailProvider | None = None,
     ) -> dict[str, Any] | None:
         """One valid run id's detail through ``build``, or ``None`` after answering why not.
 
         An unknown run is ``404``. See :meth:`_read_run` for the rest.
         """
-        detail = self._read_run(run_id, build, send_body)
+        detail = self._read_run(run_id, build, send_body, provider)
         if isinstance(detail, _UnknownRun):
             self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
             return None
         return detail
 
     def _read_run(
-        self, run_id: str, build: Callable[[Any], dict[str, Any]], send_body: bool
+        self,
+        run_id: str,
+        build: Callable[[Any], dict[str, Any]],
+        send_body: bool,
+        provider: RunDetailProvider | None = None,
     ) -> dict[str, Any] | _UnknownRun | None:
         """One valid run id's detail through ``build``, ``_UnknownRun`` or ``None``.
 
         An unknown run is the caller's to answer. A provider that fails or returns data
         ``build`` cannot sanitize is ``503``, answered here, and gives ``None``. The answer
-        never holds run data. ``build`` must go through :func:`sanitize_run_detail`, so only
+        never holds run data. ``build`` must go through :func:`sanitize_run_detail` or an
+        evidence sanitizer, and ``provider`` defaults to the run detail provider, so only
         allowlisted fields ever leave this process, no matter what the provider handed back.
         """
         try:
-            detail = self.server.run_detail_provider(run_id)
+            detail = (provider or self.server.run_detail_provider)(run_id)
         except Exception as exc:  # noqa: BLE001
             # The type only: the message and traceback can quote run data.
             _log_failure_type("Run detail provider failed for run %s", exc, run_id)
