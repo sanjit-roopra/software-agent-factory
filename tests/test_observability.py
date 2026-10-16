@@ -3246,3 +3246,24 @@ def test_a_run_summary_without_an_escalation_has_no_resume_classification(
     run = _run("run-waiting", state=WorkflowState.NEEDS_HUMAN)
 
     assert _only_summary(tmp_path, run).resume_classification is None
+
+
+def test_a_run_summary_drops_the_resume_classification_the_page_would_refuse(
+    tmp_path: Path,
+) -> None:
+    escalation = EscalationRecord(
+        episode_id="ep-safe",
+        episode_number=1,
+        status=EscalationStatus.NOTIFIED,
+        resume_classification=ResumeClassification.DELIVERY_RETRY,
+        reason_code="DELIVERY_INTERVENTION",
+    )
+    run = _run("run-waiting", state=WorkflowState.NEEDS_HUMAN)
+    store = _fake_store(tmp_path)
+    store.add_run(run.model_copy(update={"escalation": escalation}))
+
+    snapshot = build_monitoring_snapshot(
+        store, now=T0 + timedelta(hours=1), reply_policy=REPLY_POLICY
+    )
+
+    assert snapshot.runs[0].resume_classification is None

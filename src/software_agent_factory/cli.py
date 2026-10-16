@@ -1190,6 +1190,7 @@ def dashboard_command(
             offset=offset,
             max_scanned_runs=max_scanned_runs,
             scan=scan_cache.get_scan(max_scanned_runs),
+            reply_policy=reply_policy,
         )
 
     def run_detail_provider(run_id: str) -> object | None:

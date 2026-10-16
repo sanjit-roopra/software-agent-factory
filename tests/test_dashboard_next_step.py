@@ -1165,3 +1165,21 @@ def test_a_stored_run_that_is_not_waiting_has_no_action(tmp_path: Path) -> None:
 
     assert step["kind"] == "remote_approval_unavailable"
     assert "because the run state changed." in step["sentence"]
+
+
+@pytest.mark.parametrize(
+    ("run", "action", "label"),
+    [
+        (_risk_run(), "waiting", "Needs approval"),
+        (_risk_run(dashboard_action_refusal="expired"), "stopped", "Stopped, needs you"),
+        (_risk_run(approval_scope=None), "stopped", "Stopped, needs you"),
+    ],
+    ids=["can-act", "refused", "no-scope"],
+)
+def test_a_waiting_run_outcome_needs_a_page_action_to_say_what_it_needs(
+    run: dict[str, Any], action: str, label: str
+) -> None:
+    detail = run_detail_view(run)
+
+    assert detail["outcome"] == {"kind": "needs_you", "label": label, "action": action}
+    assert detail["headline"]["text"].startswith(label)
