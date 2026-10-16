@@ -293,11 +293,15 @@ def test_build_run_evidence_is_empty_without_artifacts_and_none_without_a_run(
 
     assert build_run_evidence(store, "run-bare") == {
         "run_id": "run-bare",
+        "branch_name": None,
         "checks": [],
         "ci_checks": [],
         "review_rounds": [],
         "open_findings": [],
         "accepted_findings": [],
+        "specification": None,
+        "execution_plan": None,
+        "change_set": None,
     }
     assert build_run_evidence(store, "run-missing") is None
 

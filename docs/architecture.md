@@ -1567,7 +1567,14 @@ and keeps the start and the end (ADR-033). The page can ask
 for each verification and CI check with the last 80 lines of its output, at
 most 8 KB. The Review card asks `GET /api/runs/<id>/review` for each review
 round and the open and accepted findings, each text cut to 2,000 characters.
-Both redact before they cut, and each has its own allowlist (ADR-047). A run
+The Plan card asks `GET /api/runs/<id>/plan` for the goal, the plan steps, the
+expected scope and the change set, each text cut to 2,000 characters. The
+Changes card asks `GET /api/runs/<id>/diff` for the saved patch, split per file
+with its added and removed line counts. `?attempt=n` picks the patch of one
+attempt. The file text stops at 256 KB, and a file past that keeps only its
+counts. A finished run also shows a Result card with the files, the lines, the
+run time, the checks, the branch and the pull request. All of these redact
+before they cut, and each has its own allowlist (ADR-047). A run
 that does not exist, or whose id is not even shaped like one, is a 404.
 
 The three write actions are approve a risk approval, answer plan decisions

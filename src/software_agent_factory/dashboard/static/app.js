@@ -173,7 +173,8 @@
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
     baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null,
-    evidenceDrawn: { checks: null, review: null }
+    evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
+    evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, diffKey: null
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -2804,6 +2805,8 @@
 
   function renderRunDetail(detail) {
     const runId = knownRunId(detail);
+    state.runDetail = detail;
+    renderCompletion();
     const fields = [
       ...identityFields(detail),
       ...reasonFields(detail.failure_reason, detail.failure_reason_truncated, runId),
@@ -2990,10 +2993,174 @@
     return body.childElementCount > 0;
   }
 
-  const EVIDENCE_RENDERERS = { checks: renderChecks, review: renderReview };
+  // ---- Plan, changes and result (ADR-047) --------------------------------
+
+  function textBlock(container, title, text) {
+    if (typeof text !== "string" || text === "") {
+      return;
+    }
+    container.appendChild(element("h3", "", title));
+    container.appendChild(element("p", "plan-text", text));
+  }
+
+  function planStepNode(step) {
+    const item = element("li", "plan-step", displayValue(step.goal));
+    const files = asArray(step.likely_files).join(", ");
+    if (files !== "") {
+      item.appendChild(element("code", "finding-where", files));
+    }
+    return item;
+  }
+
+  // "src, tests · 2-5 files", from the plan's expected scope.
+  function scopeText(scope) {
+    if (!scope) {
+      return "";
+    }
+    const parts = [asArray(scope.modules).join(", ")];
+    if (isFiniteNumber(scope.estimated_files_min) && isFiniteNumber(scope.estimated_files_max)) {
+      parts.push(scope.estimated_files_min + "-" + scope.estimated_files_max + " files");
+    }
+    return parts.filter(Boolean).join(" · ");
+  }
+
+  function renderPlanSection(body, plan) {
+    textBlock(body, "Plan", plan.summary);
+    const steps = asArray(plan.steps);
+    if (steps.length > 0) {
+      const list = body.appendChild(element("ol", "plan-steps"));
+      steps.forEach(function (step) { list.appendChild(planStepNode(step)); });
+    }
+    textBlock(body, "Expected scope", scopeText(plan.expected_scope));
+    textList(body, "Open decisions", plan.unresolved_decisions);
+    textList(body, "Risks", plan.risks);
+  }
+
+  // The goal, the plan and what the agent says it changed.
+  function renderPlan(body, payload) {
+    const spec = payload.specification;
+    if (spec) {
+      textBlock(body, "Goal", spec.problem);
+      textList(body, "Acceptance criteria", spec.acceptance_criteria);
+    }
+    if (payload.execution_plan) {
+      renderPlanSection(body, payload.execution_plan);
+    }
+    const changes = payload.change_set;
+    if (changes) {
+      textBlock(body, "What changed", changes.summary);
+      textList(body, "Tests added", changes.tests_added);
+      textList(body, "Commands run", changes.commands_run);
+    }
+    return body.childElementCount > 0;
+  }
+
+  const DIFF_LINE_CLASSES = { "+": "diff-add", "-": "diff-del", "@": "diff-hunk" };
+
+  // Each line in its own span, so added and removed lines take their colour.
+  function fillDiffText(pre, text) {
+    for (const line of text.split("\n")) {
+      const kind = line.startsWith("+++") || line.startsWith("---") ? "" : DIFF_LINE_CLASSES[line[0]];
+      pre.appendChild(element("span", kind || "", line + "\n"));
+    }
+  }
+
+  function countsText(item) {
+    return "+" + displayNumber(item.additions) + " \u2212" + displayNumber(item.deletions);
+  }
+
+  // A file is closed until opened; its text is drawn on first open, which keeps
+  // a large diff cheap.
+  function diffFileNode(file) {
+    const item = element("details", "evidence-item diff-file");
+    const summary = item.appendChild(element("summary", ""));
+    summary.appendChild(element("span", "chip", displayValue(file.status)));
+    summary.appendChild(element("code", "evidence-label", displayValue(file.path)));
+    summary.appendChild(element("span", "diff-counts", countsText(file)));
+    const pre = item.appendChild(element("pre", "evidence-output diff-text"));
+    if (typeof file.patch !== "string") {
+      setText(pre, "This file is past the size limit, so its text is not shown.");
+      return item;
+    }
+    item.addEventListener("toggle", function () {
+      if (item.open && pre.childElementCount === 0) {
+        fillDiffText(pre, file.patch);
+      }
+    });
+    return item;
+  }
+
+  function renderAttemptPicker(payload) {
+    const select = document.getElementById("diff-attempt");
+    const attempts = asArray(payload.attempts);
+    document.getElementById("diff-attempt-label").hidden = attempts.length < 2;
+    clearChildren(select);
+    select.appendChild(new Option("Latest", ""));
+    for (const number of attempts) {
+      select.appendChild(new Option(String(number), String(number)));
+    }
+    select.value = payload.attempt === null ? "" : String(payload.attempt);
+  }
+
+  function renderDiff(body, payload) {
+    renderAttemptPicker(payload);
+    const files = asArray(payload.files);
+    if (files.length === 0) {
+      return payload.attempts?.length > 0;
+    }
+    const noun = files.length === 1 ? " file" : " files";
+    body.appendChild(element("p", "diff-summary", files.length + noun + " · " + countsText(payload)));
+    if (payload.truncated === true) {
+      body.appendChild(element("p", "evidence-note", "The diff is cut at 256 KB; later files show counts only."));
+    }
+    files.forEach(function (file) { body.appendChild(diffFileNode(file)); });
+    return true;
+  }
+
+  function verificationResult(detail) {
+    const verification = detail.verification;
+    if (!verification) {
+      return EMPTY_VALUE;
+    }
+    return verification.passed ? "passed" : "failed";
+  }
+
+  // The result card of a finished run: what changed, how long it took and where it went.
+  function renderCompletion() {
+    const detail = state.runDetail;
+    const card = document.getElementById("completion-card");
+    card.hidden = detail?.is_finished !== true;
+    if (card.hidden) {
+      return;
+    }
+    const diff = state.evidence.diff;
+    const files = diff ? asArray(diff.files).length : null;
+    syncStats(document.getElementById("completion-stats"), [
+      { label: "Files", value: displayNumber(files), note: "", help: "" },
+      { label: "Lines", value: diff ? countsText(diff) : NOT_REPORTED, note: "", help: "" },
+      { label: "Run time", value: elapsedText(detail.created_at, stoppedAtMs(detail)), note: "", help: "" },
+      { label: "Checks", value: verificationResult(detail), note: "", help: "" }
+    ]);
+    const fields = [
+      ["Branch", state.evidence.plan?.branch_name],
+      ["Pull request", detail.pull_request_url, true]
+    ];
+    syncDefinitionList(
+      document.getElementById("completion-body"),
+      fields.filter(function (field) { return !isBlankField(field); })
+    );
+  }
+
+  const EVIDENCE_RENDERERS = {
+    checks: renderChecks, review: renderReview, plan: renderPlan, diff: renderDiff
+  };
 
   // Draws a card again only when its answer changed, so a poll keeps open items open.
   function renderEvidence(kind, runId, payload) {
+    if (kind in state.evidence) {
+      state.evidence[kind] = payload;
+      renderCompletion();
+    }
     const key = runId + "\n" + JSON.stringify(payload);
     if (state.evidenceDrawn[kind] === key) {
       return;
@@ -3007,15 +3174,28 @@
 
   function refreshRunPage(request) {
     return [
-      refreshRunDetail(request),
+      refreshRunDetail(request).then(function () { return refreshDiff(request); }),
       refreshEvidence(request, "checks"),
-      refreshEvidence(request, "review")
+      refreshEvidence(request, "review"),
+      refreshEvidence(request, "plan")
     ];
   }
 
+  // The diff is large, so it loads again only when the run or the picked attempt changed.
+  function refreshDiff(request) {
+    const attempt = state.diffAttempt;
+    const key = [request.runId, attempt, state.runDetail?.updated_at].join("\n");
+    if (state.diffKey === key) {
+      return Promise.resolve();
+    }
+    state.diffKey = key;
+    const query = attempt === null ? "" : "?attempt=" + attempt;
+    return refreshEvidence(request, "diff", query);
+  }
+
   // A failed load hides the card; it never marks the server unreachable.
-  function refreshEvidence(request, kind) {
-    return apiFetch(runDetailPath(request.runId) + "/" + kind).then(
+  function refreshEvidence(request, kind, query = "") {
+    return apiFetch(runDetailPath(request.runId) + "/" + kind + query).then(
       whenLatest(request, function (payload) {
         renderEvidence(kind, request.runId, payload);
       }),
@@ -3435,7 +3615,14 @@
     }
     const route = resolveRoute();
     state.view = route.view;
-    state.runId = validRunId(route);
+    const runId = validRunId(route);
+    if (runId !== state.runId) {
+      state.diffAttempt = null;
+      state.diffKey = null;
+      state.runDetail = null;
+      state.evidence = { plan: null, diff: null };
+    }
+    state.runId = runId;
     applyRunsFilter(route.filter ?? null);
     state.compare = compareSelection(route);
     supersede(route.view);
@@ -3522,6 +3709,11 @@
   }
 
   function bindControls() {
+    document.getElementById("diff-attempt").addEventListener("change", function (event) {
+      const value = event.target.value;
+      state.diffAttempt = value === "" ? null : Number(value);
+      void refreshView();
+    });
     document.getElementById("runs-prev").addEventListener("click", function () {
       goToOffset(Math.max(0, state.offset - state.limit));
     });

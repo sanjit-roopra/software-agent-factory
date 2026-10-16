@@ -97,6 +97,7 @@ from .models import (
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
+    ChangeSet,
     CIReport,
     Complexity,
     ContextTier,
@@ -115,6 +116,7 @@ from .models import (
     ReviewImpasse,
     ReviewReport,
     Risk,
+    Specification,
     TriageResult,
     UsageMetrics,
     UtcDateTime,
@@ -1790,7 +1792,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
     secrets, so the dashboard sanitizer must redact and cut it before it reaches
     a client (ADR-047). The checks are the latest verification and CI reports.
     The review has one round per attempt that saved a review, plus the open and
-    accepted findings of the review ledger.
+    accepted findings of the review ledger. The plan part is the latest saved
+    specification, execution plan and change set, each ``None`` when absent.
     """
     try:
         run = store.load_run(run_id)
@@ -1807,12 +1810,59 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
     ledger = run.review_ledger
     return {
         "run_id": run.id,
+        "branch_name": run.branch_name,
         "checks": [] if verification is None else _dumped(verification.deterministic_checks),
         "ci_checks": [] if ci is None else _dumped(ci.checks),
         "review_rounds": rounds,
         "open_findings": _dumped(ledger.open_findings),
         "accepted_findings": _dumped(ledger.accepted_findings),
+        "specification": _dumped_optional(store, run.id, Specification),
+        "execution_plan": _dumped_optional(store, run.id, ExecutionPlan),
+        "change_set": _dumped_optional(store, run.id, ChangeSet),
     }
+
+
+class PatchStoreProtocol(RunStoreProtocol, Protocol):
+    """A run store that can also read a saved ``patch.diff`` (ADR-047)."""
+
+    def load_patch(
+        self, run_id: str, filename: str = "patch.diff", *, attempt: int | None = None
+    ) -> str: ...
+
+
+def build_run_diff(
+    store: PatchStoreProtocol, run_id: str, attempt: int | None = None
+) -> dict[str, Any] | None:
+    """One run's saved patch, raw, or ``None`` if the run is not readable.
+
+    ``attempt`` picks a per-attempt copy by its run-global index; ``None`` is the
+    latest patch. ``attempts`` lists every index with a saved patch, for the
+    page's attempt picker. A missing patch is ``patch: None``. The text can quote
+    secrets, so the dashboard sanitizer must redact and cut it (ADR-047).
+    """
+    try:
+        run = store.load_run(run_id)
+    except (OSError, ValueError):
+        return None
+    patches: dict[int | None, str] = {}
+    for number in [None, *range(1, len(run.attempt_records) + 1)]:
+        try:
+            patches[number] = store.load_patch(run.id, attempt=number)
+        except (OSError, ValueError):
+            continue
+    return {
+        "run_id": run.id,
+        "attempt": attempt,
+        "attempts": [number for number in patches if number is not None],
+        "patch": patches.get(attempt),
+    }
+
+
+def _dumped_optional(
+    store: RunStoreProtocol, run_id: str, artifact_type: type[ModelBase]
+) -> dict[str, Any] | None:
+    artifact = _load_optional_artifact(store, run_id, artifact_type)
+    return None if artifact is None else artifact.model_dump(mode="json")
 
 
 def _dumped(models: Sequence[ModelBase]) -> list[dict[str, Any]]:

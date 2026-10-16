@@ -1,6 +1,6 @@
-"""Field allowlists for a run's check output and review text (ADR-047).
+"""Field allowlists for a run's check output, review text, plan and diff (ADR-047).
 
-``GET /api/runs/<id>/checks`` and ``GET /api/runs/<id>/review`` pass the
+``GET /api/runs/<id>/checks``, ``/review``, ``/plan`` and ``/diff`` pass the
 provider's raw evidence through these functions. Each one builds its answer key
 by key, so a provider field outside the allowlist never leaves the process.
 
@@ -9,7 +9,10 @@ CI log excerpt keep their end, since a failure is near the end: the last
 :data:`OUTPUT_LINE_LIMIT` lines and at most :data:`OUTPUT_CHAR_LIMIT`
 characters, with a marker that names the cut. Review text is cut to
 :data:`REVIEW_TEXT_LIMIT` characters per field, and a list keeps its first
-:data:`MAX_EVIDENCE_ITEMS` items.
+:data:`MAX_EVIDENCE_ITEMS` items. Plan and change set text follow the review
+limits. A diff is split per file with its added and removed line counts; file
+text is kept in order until :data:`DIFF_CHAR_LIMIT` characters, and a file past
+that keeps its counts but loses its text.
 """
 
 from __future__ import annotations
@@ -30,6 +33,9 @@ _LABEL_LIMIT = 500
 #: A finding names at most 8 source locations (``ReviewFindingDraft.locations``).
 _MAX_LOCATIONS = 8
 OUTPUT_CUT_MARKER = "...[earlier output cut]...\n"
+#: The most diff text one answer carries: 256 KB per attempt (ADR-047).
+DIFF_CHAR_LIMIT = 256_000
+_DIFF_FILE_HEADER = "diff --git "
 
 _CATEGORIES = frozenset(category.value for category in ReviewFindingCategory)
 _REVIEW_TEXT_LISTS = (
@@ -189,12 +195,173 @@ def sanitize_run_review(raw: Any) -> dict[str, Any]:
     }
 
 
+_SPEC_TEXT_LISTS = ("acceptance_criteria", "constraints", "assumptions", "unknowns")
+_PLAN_TEXT_LISTS = ("test_strategy", "risks", "unresolved_decisions")
+_CHANGE_SET_LISTS = ("changed_files", "tests_added", "commands_run")
+
+
+def _text_lists(data: dict[str, Any], keys: tuple[str, ...], run_id: str | None) -> dict[str, Any]:
+    return {key: _text_items(data.get(key), run_id) for key in keys}
+
+
+def _specification(data: Any, run_id: str | None) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    return {
+        "problem": _text(data.get("problem"), run_id),
+        **_text_lists(data, _SPEC_TEXT_LISTS, run_id),
+    }
+
+
+def _plan_step(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
+    return {
+        "id": _text(data.get("id"), run_id, 80),
+        "goal": _text(data.get("goal"), run_id),
+        "likely_files": _text_items(data.get("likely_files"), run_id),
+        "validation": _text_items(data.get("validation"), run_id),
+    }
+
+
+def _expected_scope(data: Any, run_id: str | None) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    low, high = data.get("estimated_files_min"), data.get("estimated_files_max")
+    valid = type(low) is int and type(high) is int and 0 <= low <= high
+    return {
+        "modules": _text_items(data.get("modules"), run_id),
+        "estimated_files_min": low if valid else None,
+        "estimated_files_max": high if valid else None,
+    }
+
+
+def _execution_plan(data: Any, run_id: str | None) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    return {
+        "summary": _text(data.get("summary"), run_id),
+        "steps": [_plan_step(item, run_id) for item in _dicts(data.get("steps"))],
+        "expected_scope": _expected_scope(data.get("expected_scope"), run_id),
+        **_text_lists(data, _PLAN_TEXT_LISTS, run_id),
+    }
+
+
+def _change_set(data: Any, run_id: str | None) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    return {
+        "summary": _text(data.get("summary"), run_id),
+        **_text_lists(data, _CHANGE_SET_LISTS, run_id),
+    }
+
+
+def sanitize_run_plan(raw: Any) -> dict[str, Any]:
+    """The run's specification, plan and change set, text redacted and cut."""
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        raise TypeError("run evidence must serialize to a JSON object")
+    run_id = run_id_of(data)
+    return {
+        "branch_name": _text(data.get("branch_name"), run_id, _LABEL_LIMIT),
+        "specification": _specification(data.get("specification"), run_id),
+        "execution_plan": _execution_plan(data.get("execution_plan"), run_id),
+        "change_set": _change_set(data.get("change_set"), run_id),
+    }
+
+
+def _split_files(patch: str) -> list[str]:
+    """The per-file parts of a git patch; text before the first header is dropped."""
+    parts = patch.split("\n" + _DIFF_FILE_HEADER)
+    first = parts[0]
+    files = [_DIFF_FILE_HEADER + part for part in parts[1:]]
+    if first.startswith(_DIFF_FILE_HEADER):
+        files.insert(0, first)
+    return files
+
+
+def _file_path(text: str) -> str:
+    """The new path of a file part, or the old one for a deleted file."""
+    for line in text.splitlines()[:8]:
+        if line.startswith("+++ b/"):
+            return line[len("+++ b/") :]
+        if line.startswith("rename to "):
+            return line[len("rename to ") :]
+    header = text.splitlines()[0][len(_DIFF_FILE_HEADER) :]
+    return header.rsplit(" b/", 1)[-1] if " b/" in header else header
+
+
+def _file_status(text: str) -> str:
+    head = text[:400]
+    for marker, status in (
+        ("\nnew file mode", "added"),
+        ("\ndeleted file mode", "deleted"),
+        ("\nrename to ", "renamed"),
+    ):
+        if marker in head:
+            return status
+    return "modified"
+
+
+def _line_counts(text: str) -> tuple[int, int]:
+    added = removed = 0
+    for line in text.splitlines():
+        if line.startswith("+") and not line.startswith("+++ "):
+            added += 1
+        elif line.startswith("-") and not line.startswith("--- "):
+            removed += 1
+    return added, removed
+
+
+def _diff_files(patch: str) -> tuple[list[dict[str, Any]], bool]:
+    files: list[dict[str, Any]] = []
+    budget = DIFF_CHAR_LIMIT
+    parts = _split_files(patch)
+    cut = len(parts) > MAX_EVIDENCE_ITEMS
+    for text in parts[:MAX_EVIDENCE_ITEMS]:
+        added, removed = _line_counts(text)
+        fits = len(text) <= budget
+        budget -= len(text) if fits else 0
+        cut = cut or not fits
+        files.append(
+            {
+                "path": _file_path(text)[:_LABEL_LIMIT],
+                "status": _file_status(text),
+                "additions": added,
+                "deletions": removed,
+                "patch": text if fits else None,
+            }
+        )
+    return files, cut
+
+
+def sanitize_run_diff(raw: Any) -> dict[str, Any]:
+    """One saved patch of a run, redacted, split per file and capped (ADR-047)."""
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        raise TypeError("run evidence must serialize to a JSON object")
+    attempt = data.get("attempt")
+    attempts = [item for item in _items(data.get("attempts")) if is_positive_int(item)]
+    patch = data.get("patch")
+    files, cut = _diff_files(redact_secrets(patch)) if isinstance(patch, str) else ([], False)
+    return {
+        "attempt": attempt if is_positive_int(attempt) else None,
+        "attempts": attempts,
+        "has_patch": isinstance(patch, str),
+        "files": files,
+        "additions": sum(item["additions"] for item in files),
+        "deletions": sum(item["deletions"] for item in files),
+        "truncated": cut,
+    }
+
+
 __all__ = [
+    "DIFF_CHAR_LIMIT",
     "MAX_EVIDENCE_ITEMS",
     "OUTPUT_CHAR_LIMIT",
     "OUTPUT_LINE_LIMIT",
     "REVIEW_TEXT_LIMIT",
     "output_tail",
     "sanitize_run_checks",
+    "sanitize_run_diff",
+    "sanitize_run_plan",
     "sanitize_run_review",
 ]
