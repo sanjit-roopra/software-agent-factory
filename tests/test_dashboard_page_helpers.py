@@ -667,7 +667,7 @@ STATUS_CASES = [
                 "prefix": "reviewer call ",
                 "tickSince": _minutes_before(2),
             },
-            {"text": "idle 18 min"},
+            {"text": "idle 18 min", "live": True},
         ],
         {**_ACTIVE_RUN, "pull_request_url": _PR_URL},
         _NOW,
@@ -687,6 +687,18 @@ STATUS_CASES = [
         _NOW,
     ),
     _status("nothing-known", [], {"outcome": {"kind": "done"}}, _NOW),
+    _case(
+        "statusKeyOf",
+        "live-part-keys-on-its-place-not-its-text",
+        [UNDEFINED, UNDEFINED, UNDEFINED, UNDEFINED, "live"],
+        {"text": "idle 19 min", "live": True},
+    ),
+    _case(
+        "statusKeyOf",
+        "plain-part-keys-on-its-text",
+        [UNDEFINED, UNDEFINED, UNDEFINED, UNDEFINED, "Took 2 s"],
+        {"text": "Took 2 s"},
+    ),
 ]
 
 ALL_CASES = FORMATTER_CASES + LIST_AND_COMPARE_CASES + STATUS_CASES

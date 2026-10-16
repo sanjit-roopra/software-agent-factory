@@ -2298,7 +2298,8 @@
       parts.push(tickPart(role + " call ", active.started_at, nowMs));
     }
     const idle = idlePhrase(detail);
-    return idle === "" ? parts : [...parts, { text: idle }];
+    // The idle text changes each minute, so it is patched in place, not rebuilt.
+    return idle === "" ? parts : [...parts, { text: idle, live: true }];
   }
 
   // The line under the headline: chips, the pull request link and the times.
@@ -2323,18 +2324,27 @@
   }
 
   // Rebuilt only when a part changes, not on every poll, so a focused link stays.
-  // A ticking part keys on its start time, not on its text.
+  // A ticking part keys on its start time and a live part on its place, not on its text.
+  function statusKeyOf(part) {
+    const text = part.live ? "live" : part.prefix || part.text;
+    return [part.href, part.title, part.className, part.tickSince, text];
+  }
+
   function renderStatusLine(detail) {
     const line = document.getElementById("run-status-line");
     const parts = statusParts(detail, Date.now());
-    const key = JSON.stringify(parts.map(function (part) {
-      return [part.href, part.title, part.className, part.tickSince, part.prefix || part.text];
-    }));
+    const key = JSON.stringify(parts.map(statusKeyOf));
     line.hidden = parts.length === 0;
     if (line.dataset.key !== key) {
       line.dataset.key = key;
       line.replaceChildren(...parts.map(statusNode));
+      return;
     }
+    parts.forEach(function (part, index) {
+      if (part.live) {
+        setText(line.children[index], part.text);
+      }
+    });
   }
 
   // The page heading is the run title, and the run id sits under it. With no title the
