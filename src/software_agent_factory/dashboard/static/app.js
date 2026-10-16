@@ -22,6 +22,12 @@
 
   const RUN_ID_PATTERN = /^[\w-]{1,128}$/;
   const FILTER_NEEDS_YOU = "needs-you";
+  // ACTION_WAITING and ACTION_RETRY in dashboard/overview.py: a waiting run the page can act on.
+  const ACTIONABLE = new Set(["waiting", "retry"]);
+  const RUNS_COLUMN_COUNT = 9;
+  // The tab icon gets a dot while a run needs the operator. Both are served by the handler.
+  const FAVICON_PATH = "/assets/favicon.svg";
+  const FAVICON_ALERT_PATH = "/assets/favicon-alert.svg";
   const COMPARE_HASH = "#compare";
   const COMPARE_ICON = "\u21c4";
   const MERGED_ICON = "\u2713";
@@ -156,7 +162,8 @@
   // on the Compare view: both come from the route and the pickers, never from the server.
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
-    actionMessage: "", draft: null, filter: null, compare: { a: null, b: null }
+    actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
+    baseTitle: document.title, needsYouCount: 0
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -358,6 +365,26 @@
     const shown = isFiniteNumber(needsYouCount) && needsYouCount > 0;
     badge.hidden = !shown;
     setText(badge, shown ? String(needsYouCount) : "");
+    state.needsYouCount = shown ? needsYouCount : 0;
+    renderAlert();
+  }
+
+  // "(2) Runs — Factory dashboard" while two runs need the operator.
+  function alertTitle(title, count) {
+    return count > 0 ? "(" + count + ") " + title : title;
+  }
+
+  // The tab title and icon say when a run needs the operator, so a background tab shows it.
+  function renderAlert() {
+    const title = alertTitle(state.baseTitle, state.needsYouCount);
+    if (document.title !== title) {
+      document.title = title;
+    }
+    const icon = document.getElementById("favicon");
+    const href = state.needsYouCount > 0 ? FAVICON_ALERT_PATH : FAVICON_PATH;
+    if (icon && icon.getAttribute("href") !== href) {
+      icon.setAttribute("href", href);
+    }
   }
 
   // Runs when the server answered: after a success, or after a 4xx.
@@ -567,7 +594,7 @@
       clearChildren(cell);
       badge = cell.appendChild(element("span"));
     }
-    badge.className = "badge badge-" + entry.badge;
+    badge.className = "badge badge-" + entry.badge + (entry.filled ? " badge-filled" : "");
     setText(badge, entry.value);
     setTitle(badge, entry.title);
     cell.className = "";
@@ -631,7 +658,9 @@
     }
     trimChildren(row, spec.cells.length);
     for (const [index, entry] of spec.cells.entries()) {
-      patchCell(childAt(row, index, "td"), entry);
+      const cell = childAt(row, index, "td");
+      patchCell(cell, entry);
+      cell.colSpan = isPlainObject(entry) && entry.colSpan ? entry.colSpan : 1;
     }
   }
 
@@ -828,6 +857,11 @@
     return OUTCOME_KINDS.has(outcome?.kind) ? outcome.kind : "neutral";
   }
 
+  // A waiting run the page can approve, answer or retry. A stopped one has only a command.
+  function isActionable(run) {
+    return run.outcome?.kind === "needs_you" && ACTIONABLE.has(run.outcome.action);
+  }
+
   function isActiveRun(run) {
     return ACTIVE_KINDS.has(run.outcome?.kind);
   }
@@ -860,7 +894,12 @@
 
   function stateCell(run) {
     const label = displayValue(run.outcome?.label, displayValue(run.state));
-    return { badge: badgeKind(run.outcome), value: label, title: displayValue(run.state, "") };
+    return {
+      badge: badgeKind(run.outcome),
+      filled: isActionable(run),
+      value: label,
+      title: displayValue(run.state, "")
+    };
   }
 
   function plural(count, word) {
@@ -1000,6 +1039,7 @@
     const runId = runIdOf(run);
     return {
       runId: runId,
+      className: "row-" + badgeKind(run.outcome),
       cells: [
         titleCell(run, runId),
         stateCell(run),
@@ -1014,15 +1054,39 @@
     };
   }
 
-  // Runs that need the operator come first. A filter keeps only those.
+  // Runs that need the operator come first, the ones the page can act on before the
+  // stopped ones. A filter keeps only those.
   function orderRuns(runs, filter) {
-    const waiting = runs.filter(needsYou);
+    const waiting = [
+      ...runs.filter(function (run) { return needsYou(run) && isActionable(run); }),
+      ...runs.filter(function (run) { return needsYou(run) && !isActionable(run); })
+    ];
     if (filter !== null) {
       return waiting;
     }
     return [...waiting, ...runs.filter(function (run) {
       return !needsYou(run);
     })];
+  }
+
+  function groupRowSpec(label) {
+    return { className: "group-row", cells: [{ value: label, colSpan: RUNS_COLUMN_COUNT }] };
+  }
+
+  // The runs that need the operator sit under their own group row, the inbox, above the
+  // others. A filtered list, or one with no such run or only such runs, has no group rows.
+  function runListSpecs(runs, filter, nowMs) {
+    const specs = runs.map(function (run) { return runRowSpec(run, nowMs); });
+    const waiting = runs.filter(needsYou).length;
+    if (filter !== null || waiting === 0 || waiting === runs.length) {
+      return specs;
+    }
+    return [
+      groupRowSpec("Needs you (" + waiting + ")"),
+      ...specs.slice(0, waiting),
+      groupRowSpec("Other runs"),
+      ...specs.slice(waiting)
+    ];
   }
 
   function hasMoreRuns(page, shown, total, request) {
@@ -1070,10 +1134,7 @@
   function renderRuns(payload, request) {
     const runs = orderRuns(asArray(payload.runs), request.filter);
     const nowMs = Date.now();
-    syncRows(
-      document.getElementById("runs-body"),
-      runs.map(function (run) { return runRowSpec(run, nowMs); })
-    );
+    syncRows(document.getElementById("runs-body"), runListSpecs(runs, request.filter, nowMs));
     renderRunsPager(payload.page || {}, runs.length, request);
     renderRunsStatus(runs.length, request);
     renderRunsFilter(request.filter);
@@ -1808,9 +1869,9 @@
   }
 
   // The status node exists before the click, so a screen reader announces its text.
-  function copyControl(text) {
+  function copyControl(text, label = "Copy reply") {
     const row = element("div", "copy-row");
-    const button = row.appendChild(element("button", "", "Copy reply"));
+    const button = row.appendChild(element("button", "", label));
     button.type = "button";
     const status = row.appendChild(element("span", "copy-status"));
     status.setAttribute("role", "status");
@@ -1829,6 +1890,18 @@
     section.appendChild(element("h3", "", "Reply to continue"));
     section.appendChild(element("pre", "reply-text", text));
     section.appendChild(copyControl(text));
+    return section;
+  }
+
+  // The command for a step the page has no action for, with a copy button.
+  function commandSection(command) {
+    if (typeof command !== "string" || command === "") {
+      return null;
+    }
+    const section = element("div", "next-step-section");
+    section.appendChild(element("h3", "", "Run in a terminal"));
+    section.appendChild(element("pre", "reply-text", command));
+    section.appendChild(copyControl(command, "Copy command"));
     return section;
   }
 
@@ -2209,13 +2282,14 @@
   // The answer form asks each question itself, so the list is for the other kinds.
   function nextStepSections(step, runId) {
     return [
+      failureSection(step, runId),
       staleLine(step.stale_sentence),
       resumeClassificationLine(step),
       reopensLine(step),
       approvalScopeSection(step.approval_scope),
       step.kind === "answer" ? null : decisionsSection(step.decisions),
       actionSection(step, runId),
-      failureSection(step, runId),
+      commandSection(step.cli_command),
       commentLinkLine(step.comment_url),
       replySection(step.reply_text)
     ].filter(Boolean);
@@ -2236,6 +2310,24 @@
     return isPlainObject(step) && step.kind !== "none";
   }
 
+  // The callout heading says what to do. The warn border is only for a step the page can act on.
+  const STEP_HEADINGS = new Map([
+    ["approve", "Approve to continue"],
+    ["answer", "Answer to continue"],
+    ["retry", "Retry to continue"],
+    ["queued", "Queued"],
+    ["cannot_continue", "Cannot continue"],
+    ["remote_approval_unavailable", "Inspect the run"]
+  ]);
+  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry"]);
+
+  function renderNextStepFrame(panel, step) {
+    const heading = STEP_HEADINGS.get(step.kind) || "Needs you";
+    setText(document.getElementById("next-step-heading"), heading);
+    const hasAction = ACTION_STEP_KINDS.has(step.kind);
+    panel.className = "card next-step" + (hasAction ? " next-step-action" : "");
+  }
+
   // The panel is rebuilt only when the step changes, so a refresh keeps the
   // focused copy button and its "Copied" status.
   function renderNextStep(detail, runId) {
@@ -2249,6 +2341,7 @@
       delete panel.dataset.signature;
       return;
     }
+    renderNextStepFrame(panel, step);
     const signature = JSON.stringify([runId, step]);
     if (panel.dataset.signature !== signature) {
       panel.dataset.signature = signature;
@@ -2363,12 +2456,15 @@
     const kind = badgeKind(detail.outcome);
     renderRunHeading(detail, runId);
     const badge = document.getElementById("run-badge");
-    badge.className = "badge badge-" + kind;
+    // Filled only when the callout below has an action, not only a command.
+    const filled = ACTION_STEP_KINDS.has(detail.next_step?.kind) ? " badge-filled" : "";
+    badge.className = "badge badge-" + kind + filled;
     setText(badge, displayValue(detail.outcome?.label, displayValue(detail.state)));
     const headline = document.getElementById("run-headline");
     headline.className = "headline headline-" + badgeKind(detail.headline);
     setText(headline, displayValue(detail.headline?.text, ""));
-    headline.hidden = headline.textContent === "";
+    // A waiting run says why in the "Needs you" callout, so the headline would repeat it.
+    headline.hidden = headline.textContent === "" || isStepVisible(detail.next_step);
     renderStatusLine(detail);
     syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
   }
@@ -2822,7 +2918,8 @@
     if (route.view === "compare") {
       resetCompareStatus(state.compare);
     }
-    document.title = routeTitle(route);
+    state.baseTitle = routeTitle(route);
+    renderAlert();
     if (moveFocus) {
       document.getElementById(VIEWS[route.view].heading).focus();
     }

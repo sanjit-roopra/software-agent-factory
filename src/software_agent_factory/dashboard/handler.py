@@ -86,6 +86,11 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 
 _INDEX_PATH = "/"
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
+#: The tab icons the page switches between (see ``assets.FAVICON_SVG``).
+_FAVICONS: dict[str, str] = {
+    "/assets/favicon.svg": assets.FAVICON_SVG,
+    "/assets/favicon-alert.svg": assets.FAVICON_ALERT_SVG,
+}
 
 
 class _UnknownRun:
@@ -372,6 +377,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 "text/css; charset=utf-8",
                 assets.STYLE_CSS.encode("utf-8"),
                 send_body,
+            )
+            return
+        if path in _FAVICONS:
+            self._respond_bytes(
+                HTTPStatus.OK, "image/svg+xml", _FAVICONS[path].encode("utf-8"), send_body
             )
             return
         if path == "/healthz":

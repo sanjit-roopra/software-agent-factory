@@ -3216,3 +3216,33 @@ def test_a_finished_run_summary_has_no_active_role(tmp_path: Path) -> None:
     run = _run("run-done", state=WorkflowState.DONE, completed_at=T0)
 
     assert _only_summary(tmp_path, run).active_role is None
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (WorkflowState.NEEDS_HUMAN, ResumeClassification.DELIVERY_RETRY),
+        (WorkflowState.DONE, None),
+    ],
+)
+def test_a_run_summary_carries_the_resume_classification_only_while_it_waits(
+    tmp_path: Path, state: WorkflowState, expected: ResumeClassification | None
+) -> None:
+    escalation = EscalationRecord(
+        episode_id="ep-safe",
+        episode_number=1,
+        status=EscalationStatus.NOTIFIED,
+        resume_classification=ResumeClassification.DELIVERY_RETRY,
+        reason_code="DELIVERY_INTERVENTION",
+    )
+    run = _run("run-waiting", state=state).model_copy(update={"escalation": escalation})
+
+    assert _only_summary(tmp_path, run).resume_classification == expected
+
+
+def test_a_run_summary_without_an_escalation_has_no_resume_classification(
+    tmp_path: Path,
+) -> None:
+    run = _run("run-waiting", state=WorkflowState.NEEDS_HUMAN)
+
+    assert _only_summary(tmp_path, run).resume_classification is None

@@ -358,6 +358,8 @@ class RunSummary(ModelBase):
     leaves the process. ``calls`` lists each finished call's role, model and
     length in call order, so the run list can show the models and the duration.
     ``active_role`` is the role of the call in progress, when one is.
+    ``resume_classification`` is how a run that waits for a person can continue, so the
+    run list can say what it needs without loading the run detail.
     """
 
     run_id: str
@@ -394,6 +396,7 @@ class RunSummary(ModelBase):
     needs_look: list[str] = Field(default_factory=list)
     restart_recoveries: int = Field(default=0, ge=0)
     active_role: AgentRole | None = None
+    resume_classification: ResumeClassification | None = None
 
 
 class RunAttemptSummary(ModelBase):
@@ -1628,6 +1631,11 @@ def _build_run_summary(
         active_role=(
             run.active_invocation.role if run.active_invocation and not finished else None
         ),
+        resume_classification=(
+            run.escalation.resume_classification
+            if run.escalation is not None and run.state is WorkflowState.NEEDS_HUMAN
+            else None
+        ),
     )
 
 
@@ -1681,7 +1689,9 @@ def build_run_detail(
     summary = _build_run_summary(run, observed_at, stale_after, _artifact_facts(store, run.id))
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
-        **summary.model_dump(exclude={"calls", "failure_reason", "active_role"}),
+        **summary.model_dump(
+            exclude={"calls", "failure_reason", "active_role", "resume_classification"}
+        ),
         commit_sha=run.commit_sha,
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),

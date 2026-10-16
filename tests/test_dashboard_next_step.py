@@ -201,6 +201,21 @@ def test_runs_that_cannot_continue_say_so_and_show_the_failure_reason(
     assert step["reply_text"] is None
 
 
+def test_cannot_continue_gives_the_command_that_inspects_the_run() -> None:
+    step = next_step(_run(resume_classification="NOT_RESUMABLE", reason_code="SCOPE_REVIEW"))
+
+    assert step["cli_command"] == f"factory show {RUN_ID}"
+
+
+@pytest.mark.parametrize("make_run", [_risk_run, _plan_run, _retry_run])
+def test_a_step_with_a_page_action_carries_the_reason_and_no_command(make_run: Any) -> None:
+    step = next_step(make_run(failure_reason="risk is high"))
+
+    assert step["kind"] in ("approve", "answer", "retry")
+    assert step["failure_reason"] == "risk is high"
+    assert step["cli_command"] is None
+
+
 def test_failed_run_needs_nothing_from_the_operator() -> None:
     step = next_step(_run("FAILED", resume_classification=None, failure_reason="boom"))
 
@@ -240,10 +255,8 @@ def test_risk_approval_without_a_valid_approval_context_is_unavailable(scope: An
     step = _step(_run(approval_scope=scope))
 
     assert step["kind"] == "remote_approval_unavailable"
-    assert step["sentence"] == (
-        f"{REASON_SENTENCES['RISK_APPROVAL']} Approval is not available."
-        f" Inspect the run with `factory show {RUN_ID}`."
-    )
+    assert step["sentence"] == (f"{REASON_SENTENCES['RISK_APPROVAL']} Approval is not available.")
+    assert step["cli_command"] == f"factory show {RUN_ID}"
     assert step["reply_text"] is None
     assert step["approval_scope"] is None
 
@@ -253,7 +266,7 @@ def test_plan_decision_without_decisions_is_unavailable() -> None:
 
     assert step["kind"] == "remote_approval_unavailable"
     assert "Answers are not available." in step["sentence"]
-    assert f"`factory show {RUN_ID}`" in step["sentence"]
+    assert step["cli_command"] == f"factory show {RUN_ID}"
     assert step["decisions"] == []
 
 
@@ -301,7 +314,7 @@ def test_a_run_id_the_dashboard_route_would_reject_makes_the_reply_unavailable(
     step = next_step(run)
 
     assert step["kind"] == "remote_approval_unavailable"
-    assert "`factory show <run>`" in step["sentence"]
+    assert step["cli_command"] == "factory show <run>"
 
 
 @pytest.mark.parametrize(
@@ -443,7 +456,7 @@ def test_the_action_is_hidden_once_the_provider_reports_the_reopen_limit() -> No
     assert approve["reply_text"] is answer["reply_text"] is None
     assert "because the reopen limit is reached." in approve["sentence"]
     assert "because the reopen limit is reached." in answer["sentence"]
-    assert f"factory show {RUN_ID}" in approve["sentence"]
+    assert approve["cli_command"] == f"factory show {RUN_ID}"
 
 
 def test_the_reopen_count_alone_neither_shows_nor_hides_the_action() -> None:

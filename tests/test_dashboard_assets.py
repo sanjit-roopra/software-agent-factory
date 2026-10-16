@@ -199,7 +199,7 @@ def test_a_title_names_the_view_and_the_run() -> None:
     title = function_source(js, "routeTitle")
     assert "VIEWS[route.view].label + TITLE_SUFFIX" in title
     assert '"Run " + route.runId : "Unknown run"' in title
-    assert "document.title = routeTitle(route);" in function_source(js, "applyRoute")
+    assert "state.baseTitle = routeTitle(route);" in function_source(js, "applyRoute")
 
 
 def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
@@ -1535,8 +1535,9 @@ def test_a_run_state_is_a_badge_that_is_text_and_not_only_color() -> None:
     cell = function_source(_JS, "stateCell")
     assert "badge: badgeKind(run.outcome)" in cell
     assert "value: label" in cell
-    assert 'badge.className = "badge badge-" + entry.badge;' in function_source(
-        _JS, "patchBadgeCell"
+    assert (
+        'badge.className = "badge badge-" + entry.badge + (entry.filled ? " badge-filled" : "");'
+        in function_source(_JS, "patchBadgeCell")
     )
     assert (
         'const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active", "stale"]);' in _JS
@@ -2022,11 +2023,14 @@ def test_the_page_heading_is_the_title_with_the_run_id_under_it_and_never_both_w
 
 def test_the_outcome_line_and_badge_come_from_the_server_and_name_the_state_in_words() -> None:
     render = function_source(_JS, "renderRunSummary")
-    assert 'badge.className = "badge badge-" + kind;' in render
+    assert 'badge.className = "badge badge-" + kind + filled;' in render
     assert "detail.outcome?.label" in render
     assert "detail.headline?.text" in render
     assert 'headline.className = "headline headline-" + badgeKind(detail.headline);' in render
-    assert 'headline.hidden = headline.textContent === "";' in render
+    assert (
+        'headline.hidden = headline.textContent === "" || isStepVisible(detail.next_step);'
+        in render
+    )
     css = dashboard_assets.STYLE_CSS
     for kind, token in (("done", "ok"), ("failed", "error"), ("needs_you", "warn")):
         assert re.search(rf"\.headline-{kind}\s*\{{[^}}]*color:\s*var\(--{token}\);", css)
@@ -2094,3 +2098,43 @@ def test_the_details_list_hides_the_rows_that_have_nothing_to_show() -> None:
         _JS, "renderRunDetail"
     )
     assert "isBlankField" in strip_comments(_JS)
+
+
+def test_every_next_step_kind_with_a_panel_has_a_heading() -> None:
+    from software_agent_factory.dashboard.next_step import NextStepKind
+
+    start = _JS.index("const STEP_HEADINGS = new Map([")
+    headings = _JS[start : _JS.index("]);", start)]
+    for kind in NextStepKind:
+        if kind is not NextStepKind.NONE:
+            assert f'["{kind.value}", ' in headings
+
+
+def test_the_callout_has_a_warn_border_only_when_the_page_can_act() -> None:
+    frame = function_source(_JS, "renderNextStepFrame")
+
+    assert 'const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry"]);' in _JS
+    assert '(hasAction ? " next-step-action" : "")' in frame
+    assert ".next-step-action { border: 2px solid var(--warn); }" in dashboard_assets.STYLE_CSS
+    assert ".next-step {" not in dashboard_assets.STYLE_CSS
+
+
+def test_the_callout_shows_the_reason_first_and_a_copyable_command() -> None:
+    sections = function_source(_JS, "nextStepSections")
+
+    assert sections.index("failureSection(step, runId)") < sections.index("staleLine(")
+    assert "commandSection(step.cli_command)" in sections
+    assert 'copyControl(command, "Copy command")' in function_source(_JS, "commandSection")
+
+
+def test_the_needs_you_count_reaches_the_tab_title_and_icon() -> None:
+    assert "renderAlert();" in function_source(_JS, "renderRunsCount")
+    alert = function_source(_JS, "renderAlert")
+    assert "alertTitle(state.baseTitle, state.needsYouCount)" in alert
+    assert "FAVICON_ALERT_PATH : FAVICON_PATH" in alert
+
+
+def test_the_run_page_badge_is_filled_only_when_the_callout_has_an_action() -> None:
+    render = function_source(_JS, "renderRunSummary")
+
+    assert 'ACTION_STEP_KINDS.has(detail.next_step?.kind) ? " badge-filled" : ""' in render

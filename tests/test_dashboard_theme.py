@@ -296,3 +296,10 @@ def test_apply_theme_sets_the_theme_attribute() -> None:
 def test_a_system_theme_change_refreshes_the_toggle_label() -> None:
     bindings = function_source(dashboard_assets.APP_JS, "bindControls")
     assert 'matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle)' in bindings
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_text_on_the_filled_needs_you_badge_reaches_4_5_to_1(css: str, theme: str) -> None:
+    assert "background: var(--warn); color: var(--accent-contrast)" in css
+    tokens = _tokens(css, theme)
+    assert _contrast(tokens[ON_ACCENT_TOKEN], tokens["--warn"]) >= 4.5
