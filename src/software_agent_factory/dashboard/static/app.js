@@ -59,6 +59,9 @@
     },
     health: { section: "view-health", heading: "health-heading", nav: "health", label: "Health" }
   };
+  // While the operator types, a refresh skips only this region of the view. Other views
+  // skip the whole section.
+  const DIRTY_REGIONS = { run: "next-step" };
 
   // What a screen reader hears before each cell of a call row. The visible header
   // row is hidden from assistive technology, so the row carries its own labels.
@@ -169,7 +172,7 @@
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
-    baseTitle: document.title, needsYouCount: 0
+    baseTitle: document.title, needsYouCount: 0, fullReason: null
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -177,6 +180,8 @@
   }));
   let lastSuccessAt = null;
   let lastProjectsSignature = null;
+  // The views that have drawn data once. A failed load shows Retry only before that.
+  const loadedViews = new Set();
 
   // ---- Theme -------------------------------------------------------------
 
@@ -724,51 +729,153 @@
     }
   }
 
-  // ---- Totals and health -------------------------------------------------
-
-  function fieldLines(key, value) {
-    if (Array.isArray(value)) {
-      return [key + ": " + value.length + " item(s)"];
-    }
-    if (value !== null && typeof value === "object") {
-      return Object.keys(value).map(function (nestedKey) {
-        return key + "." + nestedKey + ": " + displayValue(value[nestedKey]);
-      });
-    }
-    return [key + ": " + displayValue(value)];
-  }
-
-  function keyValueLines(data) {
-    return Object.keys(data).flatMap(function (key) {
-      return fieldLines(key, data[key]);
-    });
-  }
-
-  function renderKeyValueList(container, data, emptyMessage) {
-    if (!data || typeof data !== "object") {
-      container.textContent = emptyMessage;
-      return;
-    }
-    syncList(container, keyValueLines(data));
-  }
+  // ---- Health ------------------------------------------------------------
 
   function checkLine(check) {
     return displayValue(check.name) + " [" + displayValue(check.status) + "]: " +
       displayValue(check.message);
   }
 
+  function staleRunItem(run) {
+    const runId = typeof run.run_id === "string" ? run.run_id : "";
+    const idle = isFiniteNumber(run.idle_seconds) ? ", idle " + idleText(run.idle_seconds) : "";
+    return {
+      text: displayValue(run.run_id) + " \u00b7 " + displayValue(run.state) + idle,
+      href: RUN_ID_PATTERN.test(runId) ? "#run/" + encodeURIComponent(runId) : null
+    };
+  }
+
+  function modifiedItem(name, modifiedAt, nowMs) {
+    return {
+      text: displayValue(name) + " \u00b7 changed " + relativeTimeText(modifiedAt, nowMs),
+      href: null
+    };
+  }
+
+  // One card per check the health report runs, with the count and the items it found.
+  const HEALTH_CHECKS = [
+    {
+      key: "stale_runs",
+      title: "Stale runs",
+      empty: "No run has gone quiet.",
+      item: staleRunItem
+    },
+    {
+      key: "stale_locks",
+      title: "Stale locks",
+      empty: "No lock was left behind.",
+      item: function (lock, nowMs) {
+        return modifiedItem(lock.lock_name, lock.modified_at, nowMs);
+      }
+    },
+    {
+      key: "orphaned_workspaces",
+      title: "Orphaned workspaces",
+      empty: "No workspace is left without a run.",
+      item: function (workspace, nowMs) {
+        return modifiedItem(workspace.workspace_name, workspace.modified_at, nowMs);
+      }
+    }
+  ];
+
+  // What the Health view shows: a Healthy or Degraded line, its reasons, when the report
+  // was made, and one card per check. Pure, so the page tests can call it.
+  function healthView(health, nowMs) {
+    const degraded = health.degraded === true;
+    const reasons = asArray(health.degraded_reasons).map(function (reason) {
+      return displayValue(reason);
+    });
+    return {
+      headline: { text: degraded ? "Degraded" : "Healthy", kind: degraded ? "failed" : "done" },
+      reasons: reasons,
+      checked: typeof health.generated_at === "string"
+        ? "Checked " + relativeTimeText(health.generated_at, nowMs)
+        : "",
+      cards: HEALTH_CHECKS.map(function (check) {
+        const items = asArray(health[check.key]).filter(isPlainObject).map(function (item) {
+          return check.item(item, nowMs);
+        });
+        return { title: check.title, count: items.length, empty: check.empty, items: items };
+      })
+    };
+  }
+
+  function healthItemNode(item) {
+    const node = element("li");
+    if (item.href) {
+      const link = node.appendChild(element("a", "", item.text));
+      link.href = item.href;
+    } else {
+      node.textContent = item.text;
+    }
+    return node;
+  }
+
+  function healthCardNode(card) {
+    const node = element("section", "card health-card" + (card.count > 0 ? " health-card-warn" : ""));
+    const heading = node.appendChild(element("h2", "", card.title + " "));
+    heading.appendChild(element("span", "health-count", String(card.count)));
+    if (card.count === 0) {
+      node.appendChild(element("p", "health-note", card.empty));
+      return node;
+    }
+    const list = node.appendChild(element("ul", "health-items"));
+    for (const item of card.items) {
+      list.appendChild(healthItemNode(item));
+    }
+    return node;
+  }
+
+  function buildHealth(container, view) {
+    clearChildren(container);
+    const head = container.appendChild(element("div", "card health-head"));
+    const badge = head.appendChild(element("span", "badge badge-" + view.headline.kind));
+    badge.textContent = view.headline.text;
+    if (view.checked) {
+      head.appendChild(element("span", "health-note", " " + view.checked));
+    }
+    if (view.reasons.length > 0) {
+      const list = head.appendChild(element("ul", "health-reasons"));
+      for (const reason of view.reasons) {
+        list.appendChild(element("li", "", reason));
+      }
+    }
+    const grid = container.appendChild(element("div", "health-grid"));
+    for (const card of view.cards) {
+      grid.appendChild(healthCardNode(card));
+    }
+  }
+
+  // The one line the view shows instead of cards, or null when there are cards to show.
+  function healthText(health) {
+    if (!isPlainObject(health)) {
+      return "No health provider configured.";
+    }
+    return typeof health.error === "string" ? "The health check is unavailable." : null;
+  }
+
+  // The view is rebuilt only when its text changes, so a refresh keeps a focused link.
   function renderHealth(summary) {
+    loadedViews.add("health");
     const container = document.getElementById("health-body");
     const health = summary.health;
-    if (!health) {
-      container.textContent = "No health provider configured.";
+    const text = healthText(health);
+    if (text !== null) {
+      delete container.dataset.signature;
+      setText(container, text);
       return;
     }
     if (Array.isArray(health.checks)) {
+      delete container.dataset.signature;
       syncList(container, health.checks.map(checkLine));
       return;
     }
-    renderKeyValueList(container, health, "No health data available.");
+    const view = healthView(health, Date.now());
+    const signature = JSON.stringify(view);
+    if (container.dataset.signature !== signature) {
+      container.dataset.signature = signature;
+      buildHealth(container, view);
+    }
   }
 
   // ---- Overview row ------------------------------------------------------
@@ -1182,6 +1289,9 @@
     document.getElementById("runs-next").disabled = !hasMoreRuns(page, shown, total, request);
   }
 
+  const NO_RUNS_TEXT =
+    "No runs yet. Start one with factory run, or let factory start pick up your backlog.";
+
   function emptyRunsText(request) {
     if (request.filter === FILTER_ACTIVE) {
       return "No runs are active.";
@@ -1189,7 +1299,7 @@
     if (request.filter !== null) {
       return "No runs need you.";
     }
-    return request.offset === 0 ? "No runs yet." : "No runs on this page.";
+    return request.offset === 0 ? NO_RUNS_TEXT : "No runs on this page.";
   }
 
   function renderRunsStatus(shown, request) {
@@ -1208,6 +1318,7 @@
   }
 
   function renderRuns(payload, request) {
+    loadedViews.add("runs");
     const runs = orderRuns(asArray(payload.runs), request.filter);
     const nowMs = Date.now();
     syncRows(document.getElementById("runs-body"), runListSpecs(runs, request.filter, nowMs));
@@ -1220,7 +1331,10 @@
     const query =
       "limit=" + encodeURIComponent(request.limit) +
       "&offset=" + encodeURIComponent(request.offset);
-    return apiFetch("/api/runs?" + query).then(whenLatest(request, renderRuns));
+    return apiFetch("/api/runs?" + query).then(
+      whenLatest(request, renderRuns),
+      failBeforeLoad(request, "runs-status", "The runs could not load.")
+    );
   }
 
   function refreshTotals(request) {
@@ -1228,7 +1342,32 @@
   }
 
   function refreshHealth(request) {
-    return apiFetch("/api/summary").then(whenLatest(request, renderHealth));
+    return apiFetch("/api/summary").then(
+      whenLatest(request, renderHealth),
+      failBeforeLoad(request, "health-body", "The health report could not load.")
+    );
+  }
+
+  // A status line with the text and a Retry button that refreshes the open view now.
+  function showLoadFailure(container, text) {
+    clearChildren(container);
+    container.appendChild(element("span", "", text + " "));
+    const retry = container.appendChild(actionButton("Retry", "button"));
+    retry.addEventListener("click", function () {
+      void refreshView();
+    });
+    container.hidden = false;
+  }
+
+  // A failed load says so, with Retry, only while the view has never drawn data: a
+  // loaded view keeps its data, and the notice says the connection is lost.
+  function failBeforeLoad(request, containerId, text) {
+    return function (error) {
+      if (isLatest(request) && !loadedViews.has(request.view)) {
+        showLoadFailure(document.getElementById(containerId), text);
+      }
+      throw error;
+    };
   }
 
   // ---- Projects view -----------------------------------------------------
@@ -1350,6 +1489,7 @@
   // The projects payload is nested and rebuilt wholesale, so an unchanged
   // payload skips the rebuild and leaves the DOM as the operator left it.
   function renderProjectsOnChange(payload) {
+    loadedViews.add("projects");
     const signature = JSON.stringify(payload);
     if (signature !== lastProjectsSignature) {
       renderProjects(payload);
@@ -1358,7 +1498,10 @@
   }
 
   function refreshProjects(request) {
-    return apiFetch("/api/projects").then(whenLatest(request, renderProjectsOnChange));
+    return apiFetch("/api/projects").then(
+      whenLatest(request, renderProjectsOnChange),
+      failBeforeLoad(request, "projects-body", "The projects could not load.")
+    );
   }
 
   // ---- Run detail view ---------------------------------------------------
@@ -1899,14 +2042,23 @@
     }), true);
   }
 
+  // A cut reason offers its full text in place of the note; the loaded text replaces it.
   function failureSection(step, runId) {
-    const fields = reasonFields(step.failure_reason, step.failure_reason_truncated, runId);
+    const full = fullReasonFor(runId);
+    const cut = step.failure_reason_truncated === true && full === null;
+    const reason = full ?? step.failure_reason;
+    const fields = reasonFields(reason, false, runId);
     if (fields.length === 0) {
       return null;
     }
     const section = element("div", "next-step-section");
-    for (const field of fields) {
-      section.appendChild(element("p", "reason-text", field[0] + ": " + field[1]));
+    const className = full === null ? "reason-text" : "reason-text reason-full";
+    section.appendChild(element("p", className, fields[0][0] + ": " + fields[0][1]));
+    if (cut && runId !== null) {
+      const more = section.appendChild(actionButton(SHOW_REASON_LABEL, "button"));
+      more.addEventListener("click", function () {
+        showFullReason(more);
+      });
     }
     return section;
   }
@@ -2224,20 +2376,46 @@
     return section;
   }
 
-  // Publishing again needs no dialog: it runs the reviewed work the run already holds.
+  // Publishing again takes two clicks: the first arms the button and says what happens,
+  // the second sends it. Cancel disarms it. The pull request link shows in the run header.
   function retrySection(step, runId) {
     const section = element("div", "next-step-section");
-    const button = section.appendChild(actionButton("Retry publishing", "button"));
+    const note = section.appendChild(element("p", "retry-note", RETRY_NOTE));
+    note.hidden = true;
+    const button = section.appendChild(actionButton(RETRY_LABEL, "button"));
+    const cancel = section.appendChild(actionButton("Cancel", "button"));
+    cancel.hidden = true;
+    function arm(armed) {
+      button.dataset.armed = String(armed);
+      button.textContent = armed ? RETRY_CONFIRM_LABEL : RETRY_LABEL;
+      note.hidden = !armed;
+      cancel.hidden = !armed;
+    }
     button.addEventListener("click", function () {
+      if (button.dataset.armed !== "true") {
+        arm(true);
+        return;
+      }
       void sendAction({
         runId: runId,
         action: RETRY_ACTION,
         payload: contextPayload(step),
-        controls: [button]
+        controls: [button, cancel]
       });
+    });
+    cancel.addEventListener("click", function () {
+      arm(false);
+      button.focus();
     });
     return section;
   }
+
+  const RETRY_LABEL = "Retry publishing";
+  const RETRY_CONFIRM_LABEL = "Confirm retry publishing";
+  const RETRY_NOTE =
+    "The factory pushes the reviewed work again and opens or updates its pull request.";
+
+  const SHOW_REASON_LABEL = "Show full failure reason";
 
   function answersReady(inputs) {
     return inputs.every(function (input) {
@@ -2406,11 +2584,20 @@
 
   // The panel is rebuilt only when the step changes, so a refresh keeps the
   // focused copy button and its "Copied" status.
+  // While the operator types in the panel, a changed step leaves the panel as it is and
+  // a line says the run changed; the rest of the run view keeps refreshing.
   function renderNextStep(detail, runId) {
     const panel = document.getElementById("next-step");
     const body = document.getElementById("next-step-body");
     const step = detail.next_step;
     const visible = isStepVisible(step);
+    const signature = visible ? JSON.stringify([runId, step, fullReasonFor(runId) !== null]) : "";
+    const changed = (panel.dataset.signature ?? "") !== signature;
+    const frozen = changed && isDirty(panel);
+    document.getElementById("next-step-changed").hidden = !frozen;
+    if (frozen) {
+      return;
+    }
     panel.hidden = !visible;
     if (!visible) {
       clearChildren(body);
@@ -2418,8 +2605,7 @@
       return;
     }
     renderNextStepFrame(panel, step);
-    const signature = JSON.stringify([runId, step]);
-    if (panel.dataset.signature !== signature) {
+    if (changed) {
       panel.dataset.signature = signature;
       buildNextStep(body, step, runId);
     }
@@ -2542,7 +2728,56 @@
     // A waiting run says why in the "Needs you" callout, so the headline would repeat it.
     headline.hidden = headline.textContent === "" || isStepVisible(detail.next_step);
     renderStatusLine(detail);
+    renderPullRequestLink(detail.pull_request_url);
+    renderFullReason(detail, runId);
     syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
+  }
+
+  function renderPullRequestLink(url) {
+    const link = document.getElementById("run-pr-link");
+    link.hidden = !isHttpsUrl(url);
+    if (!link.hidden && link.getAttribute("href") !== url) {
+      link.href = url;
+    }
+  }
+
+  function fullReasonFor(runId) {
+    return state.fullReason?.runId === runId ? state.fullReason.text : null;
+  }
+
+  // A cut run reason offers "Show full failure reason" under the badge. A "Needs you"
+  // callout shows the reason itself, so then the button sits there instead.
+  function renderFullReason(detail, runId) {
+    const full = fullReasonFor(runId);
+    const inCallout = isStepVisible(detail.next_step) &&
+      typeof detail.next_step.failure_reason === "string";
+    const cut = detail.failure_reason_truncated === true && runId !== null && !inCallout;
+    document.getElementById("run-reason-more").hidden = !cut || full !== null;
+    const text = document.getElementById("run-reason-full");
+    text.hidden = full === null || inCallout;
+    setText(text, full ?? "");
+  }
+
+  function reasonPath(runId) {
+    return runDetailPath(runId) + "/reason";
+  }
+
+  // Loads the whole reason once for the open run, then draws the run again with it.
+  function showFullReason(button) {
+    const runId = state.runId;
+    button.disabled = true;
+    apiFetch(reasonPath(runId))
+      .then(function (body) {
+        if (state.runId === runId && typeof body.failure_reason === "string") {
+          state.fullReason = { runId: runId, text: body.failure_reason };
+          void refreshView();
+        }
+      }, function () {
+        setActionMessage("The full failure reason could not load.");
+      })
+      .finally(function () {
+        button.disabled = false;
+      });
   }
 
   // The details list leaves out a row that has nothing to show.
@@ -2587,7 +2822,10 @@
     return apiFetch(runDetailPath(request.runId))
       .then(whenLatest(request, renderRunDetail), function (error) {
         if (isLatest(request) && document.getElementById("run-detail-content").hidden) {
-          setRunDetailStatus("Run detail is currently unavailable.");
+          setRunDetailStatus("");
+          showLoadFailure(
+            document.getElementById("run-detail-status"), "Run detail is currently unavailable."
+          );
         }
         throw error;
       });
@@ -2958,7 +3196,7 @@
     renderNotice();
     const view = state.view;
     const refresher = REFRESHERS[view];
-    if (!refresher || isDirty(document.getElementById(VIEWS[view].section))) {
+    if (!refresher || isDirty(document.getElementById(DIRTY_REGIONS[view] ?? VIEWS[view].section))) {
       return Promise.resolve();
     }
     const request = beginRequest(view);
@@ -3086,6 +3324,10 @@
       if (row && !event.target.closest("a")) {
         navigateToRun(row.dataset.runId);
       }
+    });
+    const reasonButton = document.getElementById("run-reason-show");
+    reasonButton.addEventListener("click", function () {
+      showFullReason(reasonButton);
     });
     document.getElementById("compare-a").addEventListener("change", onComparePick);
     document.getElementById("compare-b").addEventListener("change", onComparePick);

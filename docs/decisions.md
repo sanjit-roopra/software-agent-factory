@@ -1,5 +1,27 @@
 # Architecture Decisions
 
+## ADR-046: The dashboard can show a run's full failure reason
+
+Status: accepted on 2026-10-16. This amends ADR-033.
+
+### Context
+
+ADR-033 cuts every failure reason on the dashboard to 500 characters and names `factory show <run>` for the rest.
+A runtime failure can be up to 4,000 characters long, and the useful part is often in the middle.
+The operator then had to leave the page and use the terminal to read it.
+
+### Decision
+
+- A new read route, `GET /api/runs/<id>/reason`, returns the run's failure reason and nothing else.
+- The same sanitizer redacts the reason first, as ADR-033 says. It then cuts the reason only past 20,000 characters.
+- The run detail still sends the 500-character reason. When that reason was cut, the page shows a **Show full failure reason** button that calls the new route.
+- Attempt and call reasons stay cut at 500 characters and still name `factory show`.
+
+### Consequences
+
+- The operator reads the whole reason on the page, behind the same token and loopback rules.
+- A secret pattern that redaction misses can now show in more text. The risk is the same kind ADR-033 already accepts.
+
 ## ADR-045: Claude Code is a third runtime, and roles can mix runtimes
 
 Status: accepted on 2026-10-04. This amends ADR-031.

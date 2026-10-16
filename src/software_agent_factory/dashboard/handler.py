@@ -25,7 +25,7 @@ from ..models import ResumeClassification
 from . import assets
 from .actions import ResumeActions, accept_action
 from .responses import WriteRejected
-from .sanitize import sanitize_health, sanitize_run_detail
+from .sanitize import sanitize_full_reason, sanitize_health, sanitize_run_detail
 from .security import (
     TOKEN_QUERY_PARAM,
     header_token_matches,
@@ -86,6 +86,7 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 
 _INDEX_PATH = "/"
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
+_RUN_REASON_PATTERN = re.compile(r"^/api/runs/([^/]+)/reason$")
 #: The tab icons the page switches between (see ``assets.FAVICON_SVG``).
 _FAVICONS: dict[str, str] = {
     "/assets/favicon.svg": assets.FAVICON_SVG,
@@ -403,6 +404,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if detail_match:
             self._serve_run_detail(detail_match.group(1), send_body)
             return
+        reason_match = _RUN_REASON_PATTERN.match(path)
+        if reason_match:
+            self._serve_run_reason(reason_match.group(1), send_body)
+            return
         self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
 
     def _serve_index(
@@ -531,6 +536,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         )
         if sanitized is not None:
             self._respond_json(HTTPStatus.OK, sanitized, send_body)
+
+    def _serve_run_reason(self, raw_run_id: str, send_body: bool) -> None:
+        if not is_valid_run_id(raw_run_id):
+            self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
+            return
+        reason = self._load_run(raw_run_id, sanitize_full_reason, send_body)
+        if reason is not None:
+            self._respond_json(HTTPStatus.OK, reason, send_body)
 
     def _serve_compare(self, query: dict[str, list[str]], send_body: bool) -> None:
         a_id = query.get("a", [""])[0]
