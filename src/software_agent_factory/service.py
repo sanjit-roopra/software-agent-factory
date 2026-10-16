@@ -71,6 +71,7 @@ from .github import (
 from .github_tracker import GitHubIssueProvider
 from .models import (
     REPLY_CURSOR_CLOSED,
+    STALLED_HALT_REASON,
     DashboardResumeRequest,
     EscalationStatus,
     FactoryRun,
@@ -89,6 +90,7 @@ from .scheduler import (
     ReconciliationAction,
     RecoveryRecord,
     Scheduler,
+    StallDecision,
     TickReport,
     TrackerItem,
     TrackerProvider,
@@ -99,7 +101,7 @@ from .scheduler import (
 from .setup_run import SetupTrigger
 from .store import FileRunStore
 from .verification import DeterministicVerifier
-from .workflow import WorkflowController, is_run_finished
+from .workflow import RunCancelledError, WorkflowController, is_run_finished
 from .workspace import WorkspaceError, WorkspaceLockError
 
 logger = logging.getLogger(__name__)
@@ -227,7 +229,9 @@ class ThreadPoolRunHandle:
         except (FileNotFoundError, ValueError):
             return self._started_at
         # Work that restarts an old run has no activity yet. The dispatch time counts then.
-        return max(run.last_activity_at or run.updated_at, self._started_at)
+        # A lease heartbeat written during an agent call counts as activity too.
+        heartbeat = run.lease.heartbeat_at if run.lease is not None else self._started_at
+        return max(run.last_activity_at or run.updated_at, heartbeat, self._started_at)
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -337,6 +341,8 @@ class FactoryService:
         self._handles: dict[str, ThreadPoolRunHandle] = {}
         #: Run id to work item id of unattended runs a restart interrupted, not yet resumed.
         self._interrupted: dict[str, str] = {}
+        #: Scheduler opaque id to the run id of the work it dispatched, for the stall callback.
+        self._run_ids: dict[str, str] = {}
         self._reply_poll_cursor_id: str | None = self._load_reply_poll_cursor()
         self.scheduler = Scheduler(
             self.provider,
@@ -346,6 +352,7 @@ class FactoryService:
             store=self.store,
             max_runs_per_day=self.config.scheduler.max_runs_per_day,
             exclude_any_persisted_run=True,
+            on_stall=self._on_stall,
         )
 
     @property
@@ -379,11 +386,56 @@ class FactoryService:
         run_id = f"run-{uuid4().hex}"
         handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
         repository = Path(item.repository_path or self.source_repo)
-        future = self._executor.submit(self._execute, work_item, repository, run_id)
+        future = self._executor.submit(
+            self._supervise, run_id, self._execute, work_item, repository, run_id
+        )
         handle.attach(future)
         future.add_done_callback(lambda _future: self._completion_event.set())
         self._handles[run_id] = handle
+        self._run_ids[item.opaque_id] = run_id
         return handle
+
+    def _on_stall(self, item: TrackerItem, attempts: int) -> StallDecision:
+        """Stop the stalled run's agent; its own thread then settles the run (X2).
+
+        The persisted run, not the scheduler's memory, carries the outcome, so the
+        decision returned here only keeps the item out of this process's dispatch.
+        """
+        assert self.controller is not None
+        run_id = self._run_ids.get(item.opaque_id)
+        if run_id is not None:
+            logger.warning("run %s stalled (stall %s); stopping its agent", run_id, attempts)
+            self.controller.cancel_run(run_id)
+        return StallDecision.ESCALATE
+
+    def _supervise(
+        self, run_id: str, execute: Callable[..., FactoryRun], *args: object
+    ) -> FactoryRun:
+        """Run ``execute`` on a worker thread and settle the run when a stall stopped it."""
+        assert self.controller is not None
+        try:
+            return execute(*args)
+        except RunCancelledError:
+            return self._settle_stalled_run(run_id)
+        finally:
+            self.controller.clear_cancel(run_id)
+
+    def _settle_stalled_run(self, run_id: str) -> FactoryRun:
+        """Queue a stalled unattended run to continue (ADR-043); halt any other run as STALLED.
+
+        A continued run counts as a restart, so ``MAX_RESTART_RECOVERIES`` bounds the loop.
+        """
+        assert self.controller is not None
+        run = self.store.load_run(run_id)
+        if is_run_finished(run):
+            return run
+        if run.unattended:
+            log_run_event(logger, f"run {run_id} stalled; queued to continue", run_id=run_id)
+            self._interrupted[run_id] = run.work_item_id
+            return run
+        return self.controller.recover_abandoned_run(
+            run, f"{STALLED_HALT_REASON}; the factory stopped its agent"
+        )
 
     def _execute(self, work_item: WorkItem, repository: Path, run_id: str) -> FactoryRun:
         assert self.controller is not None
@@ -416,11 +468,12 @@ class FactoryService:
     ) -> ThreadPoolRunHandle:
         """Drive a persisted run on the executor, sharing the scheduler's slots and stall check."""
         handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
-        future = self._executor.submit(execute, run_id, self.source_repo)
+        future = self._executor.submit(self._supervise, run_id, execute, run_id, self.source_repo)
         handle.attach(future)
         future.add_done_callback(lambda _future: self._completion_event.set())
         self._handles[run_id] = handle
         opaque_id = opaque_id_from_work_item_id(work_item_id) or work_item_id
+        self._run_ids[opaque_id] = run_id
         self.scheduler.register_active_handle(opaque_id, handle)
         return handle
 

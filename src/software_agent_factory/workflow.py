@@ -52,6 +52,7 @@ import re
 import secrets
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -171,6 +172,7 @@ from .routing import (
     determine_route,
 )
 from .store import FileRunStore
+from .subprocess_utils import kill_thread_children
 from .telemetry import (
     count_operation,
     measure_operation,
@@ -431,6 +433,22 @@ def delivery_policy_fingerprint(config: FactoryConfig) -> str:
     ).hexdigest()
 
 
+class RunCancelledError(BaseException):
+    """The service asked a run to stop because it stalled.
+
+    A ``BaseException`` like ``KeyboardInterrupt``, so the broad ``except Exception``
+    guards on the way up do not swallow it. ``finally`` blocks still release locks.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(run_id)
+        self.run_id = run_id
+
+
+#: How often a run in an agent call writes a lease heartbeat, in seconds.
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
 class _Halt(Exception):
     """Internal control-flow signal: the run has already reached a terminal
     state and been persisted; unwind to the caller of ``run()``."""
@@ -496,10 +514,75 @@ class WorkflowController:
             lambda repo, expected: fetch_delivery_target(config, repo, expected)
         )
         self._github = github_client
+        #: Seconds between lease heartbeats during an agent call. Tests shorten it.
+        self.heartbeat_interval_seconds = HEARTBEAT_INTERVAL_SECONDS
+        #: Run ids the service asked to stop, and the thread each run's agent call runs on.
+        #: Shared by ``with_pinned_policy`` clones on purpose.
+        self._cancel_requests: set[str] = set()
+        self._agent_threads: dict[str, int] = {}
         if self._github is None and self._publisher is not None:
             self._github = getattr(self._publisher, "_client", None)
         if self._github is None and (config.escalation.enabled or config.pull_request.enabled):
             self._github = GitHubClient(token=resolve_github_token())
+
+    def cancel_run(self, run_id: str) -> None:
+        """Stop a stalled run: kill its live agent and stop it before its next agent call.
+
+        The run's own thread raises :class:`RunCancelledError` at the next check.
+        """
+        self._cancel_requests.add(run_id)
+        thread_id = self._agent_threads.get(run_id)
+        if thread_id is not None:
+            kill_thread_children(thread_id)
+
+    def clear_cancel(self, run_id: str) -> None:
+        """Forget a stop request once the run's thread has returned."""
+        self._cancel_requests.discard(run_id)
+
+    def _raise_if_cancelled(self, run: FactoryRun) -> None:
+        if run.id in self._cancel_requests:
+            raise RunCancelledError(run.id)
+
+    def _call_runtime(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
+        """Run the agent while a side thread writes the lease heartbeat (dashboard X1).
+
+        The heartbeat stops once the call outlives its own timeout, so a runtime that
+        ignores its timeout still looks stalled to the service.
+        """
+        stop = threading.Event()
+        beat = threading.Thread(
+            target=self._heartbeat,
+            args=(run, stop, request.timeout_seconds),
+            name=f"heartbeat-{run.id}",
+            daemon=True,
+        )
+        self._agent_threads[run.id] = threading.get_ident()
+        beat.start()
+        try:
+            return self._runtime.run(request)
+        finally:
+            stop.set()
+            beat.join()
+            self._agent_threads.pop(run.id, None)
+
+    def _heartbeat(self, run: FactoryRun, stop: threading.Event, timeout_seconds: int) -> None:
+        """Persist a heartbeat on ``run`` until ``stop`` is set or the call's timeout passes.
+
+        The calling thread waits in the agent call, so nothing else changes ``run`` meanwhile.
+        """
+        started = time.monotonic()
+        while not stop.wait(self.heartbeat_interval_seconds):
+            if time.monotonic() - started > timeout_seconds:
+                return
+            now = utc_now()
+            if run.lease is not None:
+                run.lease = run.lease.model_copy(update={"heartbeat_at": now})
+            else:
+                run.last_activity_at = now
+            try:
+                self._store.save_run(run)
+            except OSError as exc:
+                logger.warning("could not write the heartbeat of run %s: %s", run.id, exc)
 
     def with_pinned_policy(self, *, risk_assessment: bool, unattended: bool) -> WorkflowController:
         """Return a controller that starts new runs with the given policy.
@@ -2550,10 +2633,12 @@ class WorkflowController:
         )
         run.updated_at = started_at
         run.last_activity_at = started_at
+        self._raise_if_cancelled(run)
         self._store.save_run(run)
         try:
-            result = self._runtime.run(request)
+            result = self._call_runtime(run, request)
         except (OSError, RuntimeError, ValueError) as exc:
+            self._raise_if_cancelled(run)
             completed_at = utc_now()
             invocation_duration_ms = (completed_at - started_at).total_seconds() * 1000.0
             run.performance.record_duration(
@@ -2591,6 +2676,7 @@ class WorkflowController:
                 success=False,
                 failure_reason=failure_reason,
             )
+        self._raise_if_cancelled(run)
         completed_at = utc_now()
         invocation_duration_ms = (completed_at - started_at).total_seconds() * 1000.0
         run.performance.record_duration(

@@ -72,6 +72,7 @@ REASON_SENTENCES: dict[HaltReasonCode, str] = {
         "The run stopped because it could not safely recover its workspace."
     ),
     HaltReasonCode.MANUAL_INSPECTION: "The run stopped at a point where a person must decide.",
+    HaltReasonCode.STALLED: "The run stopped because it made no progress for too long.",
 }
 FALLBACK_SENTENCE = "The run stopped and needs a person to look at it."
 CANNOT_CONTINUE = "This run cannot continue."

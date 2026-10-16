@@ -12,6 +12,7 @@ from software_agent_factory.dashboard.sanitize import sanitize_run_detail
 from software_agent_factory.escalation import classify_halt_reason
 from software_agent_factory.models import (
     HALT_REASON_COPY,
+    STALLED_HALT_REASON,
     UNRESOLVED_DECISIONS_HALT_REASON,
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     EscalationRecord,
@@ -44,6 +45,7 @@ WIRE_VALUES = {
     "DELIVERY_INTERVENTION",
     "RECOVERY_INTERVENTION",
     "MANUAL_INSPECTION",
+    "STALLED",
 }
 
 #: One failure reason for each code a failure reason alone selects, and the code it selects.
@@ -57,6 +59,7 @@ CLASSIFIED_REASONS = [
     ("could not publish the pull request", HaltReasonCode.DELIVERY_INTERVENTION),
     ("workspace was abandoned", HaltReasonCode.RECOVERY_INTERVENTION),
     ("something else", HaltReasonCode.MANUAL_INSPECTION),
+    (f"{STALLED_HALT_REASON}; the factory stopped its agent", HaltReasonCode.STALLED),
 ]
 COPIED_REASONS = [
     case for case in CLASSIFIED_REASONS if case[1] is not HaltReasonCode.UNRESOLVED_DECISIONS

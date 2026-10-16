@@ -222,7 +222,10 @@ restart cannot grant a run a fresh budget.
 
 `lease` records the host/pid currently executing the run, and
 `last_activity_at` is refreshed on every transition so the scheduler can detect
-a stalled run without inspecting lock files.
+a stalled run without inspecting lock files. During an agent call the controller
+also writes `lease.heartbeat_at` every 30 seconds, so a long call does not look
+stalled. A stalled run is stopped for real and halts as `STALLED`, or continues
+if it is unattended (ADR-048).
 
 Delivery records `base_commit_sha`, `reviewed_tree_sha` and
 `reviewed_commit_sha`. Before pushing, the controller persists

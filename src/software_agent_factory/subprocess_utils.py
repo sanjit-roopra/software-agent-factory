@@ -16,6 +16,8 @@ import os
 import re
 import signal
 import subprocess
+import threading
+import weakref
 from datetime import datetime
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Protocol
@@ -77,6 +79,35 @@ def kill_process_group(
         except ProcessLookupError:
             pass
         return process.communicate()
+
+
+#: Live agent processes per worker thread, so a stalled run's agent can be stopped from
+#: another thread. Weak references: a finished process drops out by itself.
+_THREAD_CHILDREN: dict[int, weakref.WeakSet[subprocess.Popen[str]]] = {}
+_THREAD_CHILDREN_LOCK = threading.Lock()
+
+
+def track_child(process: subprocess.Popen[str]) -> subprocess.Popen[str]:
+    """Remember ``process`` as a child of the calling thread and return it."""
+    with _THREAD_CHILDREN_LOCK:
+        _THREAD_CHILDREN.setdefault(threading.get_ident(), weakref.WeakSet()).add(process)
+    return process
+
+
+def kill_thread_children(thread_id: int) -> int:
+    """Stop the live process groups the given thread started. Returns how many it signalled."""
+    with _THREAD_CHILDREN_LOCK:
+        children = list(_THREAD_CHILDREN.get(thread_id, ()))
+    killed = 0
+    for process in children:
+        if process.poll() is not None:
+            continue
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            continue
+        killed += 1
+    return killed
 
 
 def build_child_env() -> tuple[dict[str, str], set[str]]:

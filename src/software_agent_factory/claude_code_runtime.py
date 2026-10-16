@@ -35,6 +35,7 @@ from .subprocess_utils import (
     format_failure_reason,
     merge_timeout_output,
     sanitize_output,
+    track_child,
 )
 from .subprocess_utils import kill_process_group as _kill_process_group
 from .usage_values import non_negative_float, non_negative_int
@@ -144,15 +145,17 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
 
         boot_start = time.perf_counter()
         try:
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                env=child_env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
+            process = track_child(
+                subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=child_env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
             )
         except OSError as exc:
             perf = PerformanceRecord(
