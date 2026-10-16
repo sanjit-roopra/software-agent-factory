@@ -386,7 +386,7 @@ def test_a_cut_run_reason_offers_the_full_text_from_the_reason_route() -> None:
     assert 'setText(text, full ?? "")' in render
     assert "void refreshView();" in show
     assert "showFullReason(reasonButton);" in function_source(js, "bindControls")
-    assert "fullReasonFor(runId) !== null" in function_source(js, "renderNextStep")
+    assert "fullReasonFor(runId, detail) !== null" in function_source(js, "renderNextStep")
     assert '<button id="run-reason-show" type="button">' in _INDEX_HTML
     assert '<pre id="run-reason-full" class="reason-text reason-full" hidden></pre>' in _INDEX_HTML
 
@@ -1010,7 +1010,7 @@ def test_no_needs_you_panel_is_shown_for_a_run_that_needs_nothing() -> None:
 
 def test_the_needs_you_panel_is_rebuilt_only_when_the_step_changes() -> None:
     source = function_source(dashboard_assets.APP_JS, "renderNextStep")
-    assert "JSON.stringify([runId, step, fullReasonFor(runId) !== null])" in source
+    assert "JSON.stringify([runId, step, loaded])" in source
     assert '(panel.dataset.signature ?? "") !== signature' in source
 
 

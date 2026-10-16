@@ -934,3 +934,36 @@ def test_a_stale_run_with_a_bad_id_gets_no_link() -> None:
     view = _health_view({"stale_runs": [{"run_id": "../etc", "state": "PLANNING"}]})
 
     assert view["cards"][0]["items"] == [{"text": "../etc · PLANNING", "href": None}]
+
+
+_CUT = "Tests failed in"
+_CACHED = {"runId": RUN_1, "cut": _CUT, "text": "Tests failed in test_api.py"}
+
+
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        ({"failure_reason": _CUT, "failure_reason_truncated": True}, _CACHED["text"]),
+        ({"failure_reason": "Push failed", "failure_reason_truncated": True}, None),
+        ({"failure_reason": None, "failure_reason_truncated": False}, None),
+        ({"failure_reason": _CUT, "failure_reason_truncated": False}, None),
+    ],
+    ids=["same-cut", "new-reason", "cleared", "no-longer-cut"],
+)
+def test_a_loaded_full_reason_shows_only_while_the_same_cut_reason_stays(
+    detail: dict[str, object], expected: object
+) -> None:
+    [result] = run_functions(
+        dashboard_assets.APP_JS, [JsCall("matchingFullReason", (_CACHED, RUN_1, detail))]
+    )
+
+    assert result.value == expected
+
+
+def test_a_loaded_full_reason_belongs_to_its_own_run() -> None:
+    detail = {"failure_reason": _CUT, "failure_reason_truncated": True}
+    [result] = run_functions(
+        dashboard_assets.APP_JS, [JsCall("matchingFullReason", (_CACHED, "run-2", detail))]
+    )
+
+    assert result.value is None

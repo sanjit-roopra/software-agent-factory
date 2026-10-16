@@ -172,7 +172,7 @@
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
-    baseTitle: document.title, needsYouCount: 0, fullReason: null
+    baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -2591,7 +2591,8 @@
     const body = document.getElementById("next-step-body");
     const step = detail.next_step;
     const visible = isStepVisible(step);
-    const signature = visible ? JSON.stringify([runId, step, fullReasonFor(runId) !== null]) : "";
+    const loaded = fullReasonFor(runId, detail) !== null;
+    const signature = visible ? JSON.stringify([runId, step, loaded]) : "";
     const changed = (panel.dataset.signature ?? "") !== signature;
     const frozen = changed && isDirty(panel);
     document.getElementById("next-step-changed").hidden = !frozen;
@@ -2741,14 +2742,26 @@
     }
   }
 
-  function fullReasonFor(runId) {
+  // The loaded text fits only while the run still shows the same cut reason.
+  function matchingFullReason(cached, runId, detail) {
+    const fits = cached?.runId === runId && detail.failure_reason_truncated === true &&
+      detail.failure_reason === cached.cut;
+    return fits ? cached.text : null;
+  }
+
+  // With the run detail, a reason that changed or cleared drops the loaded text.
+  function fullReasonFor(runId, detail) {
+    if (detail !== undefined && matchingFullReason(state.fullReason, runId, detail) === null) {
+      state.fullReason = null;
+    }
     return state.fullReason?.runId === runId ? state.fullReason.text : null;
   }
 
   // A cut run reason offers "Show full failure reason" under the badge. A "Needs you"
   // callout shows the reason itself, so then the button sits there instead.
   function renderFullReason(detail, runId) {
-    const full = fullReasonFor(runId);
+    const full = fullReasonFor(runId, detail);
+    state.shownReason = detail.failure_reason;
     const inCallout = isStepVisible(detail.next_step) &&
       typeof detail.next_step.failure_reason === "string";
     const cut = detail.failure_reason_truncated === true && runId !== null && !inCallout;
@@ -2765,11 +2778,12 @@
   // Loads the whole reason once for the open run, then draws the run again with it.
   function showFullReason(button) {
     const runId = state.runId;
+    const cut = state.shownReason;
     button.disabled = true;
     apiFetch(reasonPath(runId))
       .then(function (body) {
         if (state.runId === runId && typeof body.failure_reason === "string") {
-          state.fullReason = { runId: runId, text: body.failure_reason };
+          state.fullReason = { runId: runId, cut: cut, text: body.failure_reason };
           void refreshView();
         }
       }, function () {
