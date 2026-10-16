@@ -1799,7 +1799,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     ci = _load_optional_artifact(store, run.id, CIReport)
     rounds: list[dict[str, Any]] = []
-    for number in sorted({attempt.attempt_number for attempt in run.attempt_records}):
+    # attempts/NN is keyed by the run-global index, not the per-budget attempt_number.
+    for number in range(1, len(run.attempt_records) + 1):
         review = _load_optional_artifact(store, run.id, ReviewReport, attempt=number)
         if review is not None:
             rounds.append({"attempt_number": number, **review.model_dump(mode="json")})

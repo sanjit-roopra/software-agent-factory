@@ -243,7 +243,8 @@ def test_build_run_evidence_reads_checks_ci_rounds_and_ledger(tmp_path: Path) ->
         state=WorkflowState.NEEDS_HUMAN,
         created_at=T0,
         updated_at=T0,
-        attempt_records=[_attempt(1), _attempt(2), _attempt(3)],
+        # A CI repair restarts attempt_number at 1; snapshots use the run-global index.
+        attempt_records=[_attempt(1), _attempt(2), _attempt(1)],
         review_ledger=ReviewLedger(open_findings=[_finding()]),
     )
     store.save_run(run)

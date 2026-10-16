@@ -2849,11 +2849,12 @@
 
   // A check is a disclosure: its label and status, then its output tail. A failed
   // check opens by default, since its output is what the operator came for.
-  function evidenceItem(label, status, passed, output) {
+  // tone: "done" (passed), "failed" (open by default) or "" (neutral, e.g. pending CI).
+  function evidenceItem(label, status, tone, output) {
     const item = element("details", "evidence-item");
-    item.open = !passed;
+    item.open = tone === "failed";
     const summary = item.appendChild(element("summary", ""));
-    summary.appendChild(element("span", "badge " + (passed ? "badge-done" : "badge-failed"), status));
+    summary.appendChild(element("span", tone ? "badge badge-" + tone : "badge", status));
     summary.appendChild(element("code", "evidence-label", label));
     item.appendChild(element("pre", "evidence-output", output || "No output."));
     return item;
@@ -2861,14 +2862,17 @@
 
   function checkNode(check) {
     return evidenceItem(
-      displayValue(check.command), checkStatusText(check), check.passed === true, check.output
+      displayValue(check.command),
+      checkStatusText(check),
+      check.passed === true ? "done" : "failed",
+      check.output
     );
   }
 
   function ciCheckNode(check) {
-    const passed = check.status !== "FAIL";
+    const tone = { PASS: "done", FAIL: "failed" }[check.status] || "";
     const status = [check.status, check.failure_category].filter(Boolean).join(" · ");
-    const item = evidenceItem(displayValue(check.name), status || EMPTY_VALUE, passed, check.output);
+    const item = evidenceItem(displayValue(check.name), status || EMPTY_VALUE, tone, check.output);
     if (typeof check.description === "string" && check.description !== "") {
       item.insertBefore(element("p", "evidence-note", check.description), item.lastChild);
     }
