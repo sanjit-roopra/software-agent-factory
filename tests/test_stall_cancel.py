@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -22,11 +23,16 @@ from software_agent_factory.models import (
     HaltReasonCode,
     RunLease,
     WorkflowState,
+    utc_now,
 )
 from software_agent_factory.scheduler import StallDecision
 from software_agent_factory.service import FactoryService, ThreadPoolRunHandle
 from software_agent_factory.store import FileRunStore
-from software_agent_factory.subprocess_utils import kill_thread_children, track_child
+from software_agent_factory.subprocess_utils import (
+    kill_thread_children,
+    release_thread,
+    track_child,
+)
 from software_agent_factory.workflow import RunCancelledError, WorkflowController
 
 
@@ -297,6 +303,7 @@ def test_cancel_run_kills_the_agent_process_of_the_run_thread(data_dir: Path) ->
 
     assert process.wait(timeout=10) != 0
     assert kill_thread_children(threading.get_ident()) == 0
+    release_thread(threading.get_ident())
 
 
 def test_kill_thread_children_skips_a_thread_with_no_children() -> None:
@@ -312,3 +319,66 @@ def _work_item(source_repo: Path) -> Any:
     from software_agent_factory.service import build_work_item
 
     return build_work_item(_item(31, source_repo))
+
+
+def test_a_child_started_after_a_kill_is_stopped_at_once() -> None:
+    def start_after_kill() -> None:
+        kill_thread_children(threading.get_ident())
+        started.append(
+            track_child(
+                subprocess.Popen(["sleep", "30"], text=True, start_new_session=True)  # noqa: S607
+            )
+        )
+        release_thread(threading.get_ident())
+        started.append(
+            track_child(
+                subprocess.Popen(["sleep", "0"], text=True, start_new_session=True)  # noqa: S607
+            )
+        )
+
+    started: list[subprocess.Popen[str]] = []
+    worker = threading.Thread(target=start_after_kill)
+    worker.start()
+    worker.join()
+
+    assert started[0].wait(timeout=10) != 0
+    assert started[1].wait(timeout=10) == 0
+
+
+def test_a_cancel_before_the_agent_call_skips_the_runtime(
+    source_repo: Path, data_dir: Path
+) -> None:
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="m",
+        reasoning="high",
+        work_item=_work_item(source_repo),
+        timeout_seconds=30,
+    )
+    controller = WorkflowController(build_config(data_dir), FileRunStore(data_dir), _NoRuntime())
+    run = FactoryRun(id="run-early", work_item_id="w", state=WorkflowState.IMPLEMENTING)
+    controller.cancel_run("run-early")
+
+    with pytest.raises(RunCancelledError):
+        controller._call_runtime(run, request)
+
+    assert "run-early" not in controller._agent_threads
+
+
+def test_a_stall_after_the_run_finished_leaves_no_stop_request(
+    source_repo: Path, data_dir: Path
+) -> None:
+    service, _ = _stalling_service(data_dir, source_repo, unattended=False)
+    item = _item(7, source_repo)
+    handle = ThreadPoolRunHandle("run-old", service.store, utc_now())
+    done: Future[FactoryRun] = Future()
+    done.set_result(FactoryRun(id="run-old", work_item_id="w", state=WorkflowState.DONE))
+    handle.attach(done)
+    service._handles["run-old"] = handle
+    service._run_ids[item.opaque_id] = "run-old"
+    try:
+        assert service._on_stall(item, 1) is StallDecision.ESCALATE
+    finally:
+        service.shutdown()
+    assert service.controller is not None
+    assert "run-old" not in service.controller._cancel_requests

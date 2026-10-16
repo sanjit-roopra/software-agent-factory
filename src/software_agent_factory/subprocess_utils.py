@@ -85,29 +85,47 @@ def kill_process_group(
 #: another thread. Weak references: a finished process drops out by itself.
 _THREAD_CHILDREN: dict[int, weakref.WeakSet[subprocess.Popen[str]]] = {}
 _THREAD_CHILDREN_LOCK = threading.Lock()
+#: Threads whose children were killed. A process such a thread starts later is killed at
+#: once, so a stop that lands before the agent process exists still stops it.
+_KILLED_THREADS: set[int] = set()
 
 
 def track_child(process: subprocess.Popen[str]) -> subprocess.Popen[str]:
     """Remember ``process`` as a child of the calling thread and return it."""
+    thread_id = threading.get_ident()
     with _THREAD_CHILDREN_LOCK:
-        _THREAD_CHILDREN.setdefault(threading.get_ident(), weakref.WeakSet()).add(process)
+        _THREAD_CHILDREN.setdefault(thread_id, weakref.WeakSet()).add(process)
+        killed = thread_id in _KILLED_THREADS
+    if killed:
+        _terminate_group(process)
     return process
 
 
 def kill_thread_children(thread_id: int) -> int:
-    """Stop the live process groups the given thread started. Returns how many it signalled."""
+    """Stop the live process groups the given thread started. Returns how many it signalled.
+
+    Later children of the thread are stopped too, until :func:`release_thread` runs.
+    """
     with _THREAD_CHILDREN_LOCK:
+        _KILLED_THREADS.add(thread_id)
         children = list(_THREAD_CHILDREN.get(thread_id, ()))
-    killed = 0
-    for process in children:
-        if process.poll() is not None:
-            continue
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            continue
-        killed += 1
-    return killed
+    return sum(1 for process in children if _terminate_group(process))
+
+
+def release_thread(thread_id: int) -> None:
+    """Let the given thread start processes again after :func:`kill_thread_children`."""
+    with _THREAD_CHILDREN_LOCK:
+        _KILLED_THREADS.discard(thread_id)
+
+
+def _terminate_group(process: subprocess.Popen[str]) -> bool:
+    if process.poll() is not None:
+        return False
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
 
 
 def build_child_env() -> tuple[dict[str, str], set[str]]:

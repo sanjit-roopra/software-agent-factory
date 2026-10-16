@@ -384,16 +384,28 @@ class FactoryService:
     def _dispatch(self, item: TrackerItem) -> ThreadPoolRunHandle:
         work_item = build_work_item(item)
         run_id = f"run-{uuid4().hex}"
-        handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
         repository = Path(item.repository_path or self.source_repo)
-        future = self._executor.submit(
-            self._supervise, run_id, self._execute, work_item, repository, run_id
-        )
-        handle.attach(future)
-        future.add_done_callback(lambda _future: self._completion_event.set())
+        return self._submit(run_id, item.opaque_id, self._execute, work_item, repository, run_id)
+
+    def _submit(
+        self, run_id: str, opaque_id: str, execute: Callable[..., FactoryRun], *args: object
+    ) -> ThreadPoolRunHandle:
+        """Start ``execute`` on the executor and track it for the stall callback."""
+        assert self.controller is not None
+        # A stop request left from an earlier dispatch of this run id must not stop this one.
+        self.controller.clear_cancel(run_id)
+        handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
         self._handles[run_id] = handle
-        self._run_ids[item.opaque_id] = run_id
+        self._run_ids[opaque_id] = run_id
+        future = self._executor.submit(self._supervise, run_id, execute, *args)
+        handle.attach(future)
+        future.add_done_callback(lambda _future: self._on_done(opaque_id, run_id))
         return handle
+
+    def _on_done(self, opaque_id: str, run_id: str) -> None:
+        if self._run_ids.get(opaque_id) == run_id:
+            self._run_ids.pop(opaque_id, None)
+        self._completion_event.set()
 
     def _on_stall(self, item: TrackerItem, attempts: int) -> StallDecision:
         """Stop the stalled run's agent; its own thread then settles the run (X2).
@@ -403,7 +415,8 @@ class FactoryService:
         """
         assert self.controller is not None
         run_id = self._run_ids.get(item.opaque_id)
-        if run_id is not None:
+        handle = self._handles.get(run_id) if run_id is not None else None
+        if run_id is not None and handle is not None and not handle.is_done():
             logger.warning("run %s stalled (stall %s); stopping its agent", run_id, attempts)
             self.controller.cancel_run(run_id)
         return StallDecision.ESCALATE
@@ -467,13 +480,8 @@ class FactoryService:
         execute: Callable[[str, Path], FactoryRun],
     ) -> ThreadPoolRunHandle:
         """Drive a persisted run on the executor, sharing the scheduler's slots and stall check."""
-        handle = ThreadPoolRunHandle(run_id, self.store, utc_now())
-        future = self._executor.submit(self._supervise, run_id, execute, run_id, self.source_repo)
-        handle.attach(future)
-        future.add_done_callback(lambda _future: self._completion_event.set())
-        self._handles[run_id] = handle
         opaque_id = opaque_id_from_work_item_id(work_item_id) or work_item_id
-        self._run_ids[opaque_id] = run_id
+        handle = self._submit(run_id, opaque_id, execute, run_id, self.source_repo)
         self.scheduler.register_active_handle(opaque_id, handle)
         return handle
 

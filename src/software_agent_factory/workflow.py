@@ -172,7 +172,7 @@ from .routing import (
     determine_route,
 )
 from .store import FileRunStore
-from .subprocess_utils import kill_thread_children
+from .subprocess_utils import kill_thread_children, release_thread
 from .telemetry import (
     count_operation,
     measure_operation,
@@ -556,14 +556,21 @@ class WorkflowController:
             name=f"heartbeat-{run.id}",
             daemon=True,
         )
-        self._agent_threads[run.id] = threading.get_ident()
-        beat.start()
+        thread_id = threading.get_ident()
+        # Publish the thread before the cancel check: a stop that lands after the check
+        # finds the thread, and any agent process it starts later is killed at once.
+        self._agent_threads[run.id] = thread_id
         try:
-            return self._runtime.run(request)
+            self._raise_if_cancelled(run)
+            beat.start()
+            try:
+                return self._runtime.run(request)
+            finally:
+                stop.set()
+                beat.join()
         finally:
-            stop.set()
-            beat.join()
             self._agent_threads.pop(run.id, None)
+            release_thread(thread_id)
 
     def _heartbeat(self, run: FactoryRun, stop: threading.Event, timeout_seconds: int) -> None:
         """Persist a heartbeat on ``run`` until ``stop`` is set or the call's timeout passes.
