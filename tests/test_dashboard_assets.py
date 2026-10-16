@@ -127,11 +127,14 @@ def test_route_parser_pins_every_route_shape() -> None:
     parser = function_source(js, "parseRoute")
     # A run needs exactly one id part; compare takes up to two ids, run A then run B.
     assert 'name === "run" && parts.length === 2' in parser
-    assert 'return { view: "run", runId: parts[1] };' in parser
+    assert 'return { view: "run", runId: parts[1], tab: routeTab(query) };' in parser
     assert 'name === "compare" && parts.length <= 3' in parser
     assert 'return { view: "compare", a: parts[1], b: parts[2] };' in parser
     assert "parts.length === 1 && SIMPLE_VIEWS.has(name)" in parser
-    assert "return { view: name, filter: routeFilter(query) };" in parser
+    assert (
+        "return { view: name, filter: routeFilter(query), search: routeSearch(query), "
+        "offset: routeOffset(query) };"
+    ) in parser
     assert parser.endswith("return null; }")
     assert 'const SIMPLE_VIEWS = new Set(["runs", "projects", "health"]);' in js
 
@@ -341,7 +344,7 @@ def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
         "isDirty(document.getElementById(DIRTY_REGIONS[view] ?? VIEWS[view].section))"
         in refresh_view
     )
-    assert 'const DIRTY_REGIONS = { run: "next-step" };' in js
+    assert 'const DIRTY_REGIONS = { run: "next-step", runs: "runs-body" };' in js
 
 
 def test_typing_in_the_needs_you_panel_freezes_only_the_panel() -> None:
@@ -580,10 +583,12 @@ def test_the_runs_pager_reads_the_requested_page_and_never_the_live_state() -> N
     assert "renderRunsPager(payload.page || {}, runs.length, request)" in function_source(
         js, "renderRuns"
     )
-    refresh = function_source(js, "refreshRuns")
-    assert "encodeURIComponent(request.limit)" in refresh
-    assert "encodeURIComponent(request.offset)" in refresh
-    for name in ("renderRunsPager", "hasMoreRuns", "renderRunsStatus", "refreshRuns"):
+    assert "const query = runsQuery(request);" in function_source(js, "refreshRuns")
+    query = function_source(js, "runsQuery")
+    assert "encodeURIComponent(request.limit)" in query
+    assert "encodeURIComponent(request.offset)" in query
+    assert "searchParams(request.search, 0)" in query
+    for name in ("renderRunsPager", "hasMoreRuns", "renderRunsStatus", "refreshRuns", "runsQuery"):
         assert "state." not in function_source(js, name)
 
 
@@ -1567,11 +1572,13 @@ def test_a_filter_reads_one_page_of_the_most_runs_the_server_returns() -> None:
 
     assert f"const MAX_RUNS_LIMIT = {MAX_PAGE_LIMIT};" in _JS
     assert function_source(_JS, "applyRunsFilter") == (
-        "function applyRunsFilter(filter) { state.filter = filter; "
+        "function applyRunsFilter(filter, offset) { state.filter = filter; "
         "state.limit = filter === null ? PAGE_SIZE : MAX_RUNS_LIMIT; "
-        "if (filter !== null) { state.offset = 0; } }"
+        "state.offset = filter === null ? offset : 0; }"
     )
-    assert "applyRunsFilter(route.filter ?? null);" in function_source(_JS, "applyRoute")
+    assert "applyRunsFilter(route.filter ?? null, route.offset ?? 0);" in function_source(
+        _JS, "applyRoute"
+    )
     assert "filter: state.filter" in function_source(_JS, "beginRequest")
 
 
@@ -1615,7 +1622,7 @@ def test_the_badge_kinds_match_the_server_outcome_kinds() -> None:
 
 def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
     head = _RUNS_HTML.split("<thead>")[1].split("</thead>")[0]
-    assert re.findall(r'<th scope="col">(?:<span[^>]*>)?([^<]+)', head) == [
+    assert re.findall(r'<th [^>]*scope="col"[^>]*>\s*(?:<(?:span|button)[^>]*>)?([^<]+)', head) == [
         "Title",
         "State",
         "Why",
@@ -1739,6 +1746,7 @@ def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> Non
         "function renderRunsFilter(filter) { "
         'document.getElementById("runs-filter").hidden = filter === null; '
         'document.getElementById("runs-toolbar").hidden = filter !== null; '
+        'document.getElementById("runs-search-bar").hidden = filter !== null; '
         'document.getElementById("runs-filter-name").textContent = '
         'filter === FILTER_ACTIVE ? "active runs" : "runs that need you"; }'
     )
@@ -1922,10 +1930,10 @@ def test_the_pickers_always_load_and_the_comparison_loads_once_both_runs_are_cho
     )
 
 
-def test_a_pick_updates_the_address_without_a_route_change_and_refreshes() -> None:
+def test_a_pick_adds_a_history_entry_without_a_route_change_and_refreshes() -> None:
     pick = function_source(_JS, "onComparePick")
     assert "state.compare = readCompareSelection();" in pick
-    assert 'globalThis.history.replaceState(null, "", compareHash(state.compare));' in pick
+    assert 'globalThis.history.pushState(null, "", compareHash(state.compare));' in pick
     assert "location.hash" not in pick
     assert pick.endswith("void refreshView(); }")
     bindings = function_source(_JS, "bindControls")
@@ -2139,10 +2147,12 @@ def test_the_failure_link_values_match_the_server() -> None:
     assert links == [FLAG_REJECTED, FLAG_LAST_CALL]
 
 
-def test_the_long_key_value_block_sits_in_a_details_element_that_starts_closed() -> None:
+def test_the_long_key_value_block_sits_open_in_the_raw_tab() -> None:
     details = re.search(r'<details\s+id="run-details"([^>]*)>', _RUN_DETAIL_HTML)
     assert details is not None
-    assert "open" not in details.group(1).split()
+    assert "open" in details.group(1).split()
+    raw_panel = _RUN_DETAIL_HTML.split('id="run-panel-raw"')[1]
+    assert raw_panel.index('id="run-details"') < raw_panel.index("</details>")
     body = _RUN_DETAIL_HTML.split('id="run-details"')[1].split("</details>")[0]
     for element_id in ("run-detail-body", "run-totals", "attempts-body"):
         assert f'id="{element_id}"' in body

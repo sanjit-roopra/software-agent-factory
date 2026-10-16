@@ -21,7 +21,7 @@ from io import BufferedIOBase
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from ..models import ResumeClassification
+from ..models import ResumeClassification, RunListFilter
 from . import assets
 from .actions import ResumeActions, accept_action, accept_stop
 from .evidence import (
@@ -47,6 +47,7 @@ from .snapshot import (
     RunDetailProvider,
     clamp_pagination,
     is_valid_run_id,
+    parse_run_filter,
     to_json_safe,
 )
 from .view import compare_view, project_view, run_detail_view, run_summary_view, summary_view
@@ -71,10 +72,11 @@ def _log_failure_type(message: str, exc: BaseException, *args: object) -> None:
 _audit_logger = logging.getLogger("software_agent_factory.dashboard.audit")
 
 #: Hard ceiling on the number of query-string fields ``parse_qs`` will
-#: accept. The dashboard only ever reads ``token``, ``limit``, ``offset`` and the
-#: compare ids ``a`` and ``b``, so anything beyond a handful of fields is either a
-#: mistake or an attempt to force excessive parsing work; either way it is rejected
-#: with a clean 400 rather than left to raise an uncaught ``ValueError`` mid-request.
+#: accept. The dashboard only ever reads ``token``, ``limit``, ``offset``, the run list
+#: filters ``q``, ``state``, ``project`` and ``sort``, and the compare ids ``a`` and ``b``,
+#: so anything beyond a handful of fields is either a mistake or an attempt to force
+#: excessive parsing work; either way it is rejected with a clean 400 rather than left to
+#: raise an uncaught ``ValueError`` mid-request.
 _MAX_QUERY_FIELDS = 16
 
 
@@ -492,9 +494,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid pagination"}, send_body)
             return
         limit, offset = bounds
+        run_filter = parse_run_filter(query)
+        if run_filter is None:
+            self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "invalid filter"}, send_body)
+            return
 
         try:
-            snapshot = self.server.snapshot_provider(limit=limit, offset=offset)
+            if run_filter == RunListFilter():
+                snapshot = self.server.snapshot_provider(limit=limit, offset=offset)
+            else:
+                snapshot = self.server.snapshot_provider(
+                    limit=limit, offset=offset, filters=run_filter
+                )
         except Exception:  # noqa: BLE001
             _logger.exception("Snapshot provider failed for /api/runs")
             self._respond_json(

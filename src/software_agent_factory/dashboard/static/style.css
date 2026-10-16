@@ -571,3 +571,70 @@ button:disabled {
 #plan-body h3, #completion-card h3 { font-size: var(--fs-sm); margin: 0.75rem 0 0.25rem; }
 #plan-body h4 { font-size: var(--fs-sm); margin: 0.75rem 0 0.25rem; }
 #completion-body { margin: 0.75rem 0 0; }
+/* Run list search: one row of fields above the pager. */
+.runs-search { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
+.runs-search input,
+.runs-search select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  padding: 0.35rem 0.6rem;
+  min-width: 0;
+}
+.runs-search input { flex: 1 1 16rem; }
+.runs-search select { flex: 0 1 12rem; }
+.sort-button {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  letter-spacing: inherit;
+  padding: 0;
+  text-transform: inherit;
+}
+.sort-button:hover { background: none; color: var(--text); }
+tr[aria-current="true"] > td { background: var(--surface-2); }
+tr[aria-current="true"] > td:first-child { box-shadow: inset 3px 0 0 var(--focus); }
+/* Run page tabs. A panel with nothing shown says so. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 1rem;
+}
+.tabs [role="tab"] {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+  padding: 0.5rem 0.75rem;
+}
+.tabs [role="tab"]:hover { background: none; color: var(--text); }
+.tabs [role="tab"][aria-selected="true"] {
+  box-shadow: inset 0 -2px 0 var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+.tab-empty { display: none; color: var(--text-muted); }
+.tab-panel:not(:has(> :not([hidden]):not(.tab-empty))) > .tab-empty { display: block; }
+.keys-dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  max-width: min(28rem, 90vw);
+  padding: 1.25rem;
+}
+.keys-dialog h2 { margin: 0 0 0.75rem; }
+.keys-note { color: var(--text-muted); }
+kbd {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 0.05rem 0.35rem;
+}

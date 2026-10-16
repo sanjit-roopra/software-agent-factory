@@ -118,6 +118,7 @@ from .models import (
     ReviewImpasse,
     ReviewReport,
     Risk,
+    RunListFilter,
     Specification,
     TriageResult,
     UsageMetrics,
@@ -772,6 +773,7 @@ def build_monitoring_snapshot(
     max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
     scan: RunScanResult | None = None,
     reply_policy: ReplyPolicy | None = None,
+    run_filter: RunListFilter | None = None,
 ) -> MonitoringSnapshot:
     """Derive a paginated, read-only monitoring snapshot from ``store``.
 
@@ -803,6 +805,9 @@ def build_monitoring_snapshot(
 
     With ``reply_policy``, a waiting run's ``resume_classification`` is kept only when the
     dashboard would take a request for it now (see :func:`.resume.resume_refusal_within`).
+
+    ``run_filter`` narrows and orders the page and its ``page.total`` only. The counts and
+    metrics still cover every scanned run.
     """
     if limit <= 0:
         raise ValueError("limit must be > 0")
@@ -822,8 +827,9 @@ def build_monitoring_snapshot(
     attempts_by_role, attempts_by_model = _compute_attempt_tallies(scan.readable_runs)
     metrics = _compute_aggregate_metrics(scan.readable_runs)
 
-    total_readable = len(scan.readable_runs)
-    page_runs = scan.readable_runs[offset : offset + limit]
+    listed = _listed_runs(store, scan, run_filter)
+    total_readable = len(listed)
+    page_runs = listed[offset : offset + limit]
     summaries = [
         _build_run_summary(
             run,
@@ -943,6 +949,7 @@ class _ArtifactFacts:
     source_external_id: str | None
     complexity: Complexity | None
     risk: Risk | None
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1605,7 +1612,42 @@ def _artifact_facts(store: RunStoreProtocol, run_id: str) -> _ArtifactFacts:
         source_external_id=_safe_external_id(work_item),
         complexity=complexity,
         risk=risk,
+        project_id=work_item.project_id if work_item is not None else None,
     )
+
+
+def _listed_runs(
+    store: RunStoreProtocol, scan: RunScanResult, run_filter: RunListFilter | None
+) -> list[FactoryRun]:
+    """The scanned runs ``run_filter`` keeps, in its order. Newest first by default."""
+    if run_filter is None:
+        return scan.readable_runs
+    kept = [
+        run
+        for run in scan.readable_runs
+        if _run_matches(store, run, run_filter, scan.artifact_facts)
+    ]
+    return kept[::-1] if run_filter.oldest_first else kept
+
+
+def _run_matches(
+    store: RunStoreProtocol,
+    run: FactoryRun,
+    run_filter: RunListFilter,
+    memo: dict[str, _ArtifactFacts],
+) -> bool:
+    if run_filter.state is not None and _classify_run(run) != run_filter.state:
+        return False
+    if run_filter.text is None and run_filter.project_id is None:
+        return True
+    facts = _memoized_artifact_facts(store, run.id, memo)
+    if run_filter.project_id is not None and facts.project_id != run_filter.project_id:
+        return False
+    if run_filter.text is None:
+        return True
+    needle = run_filter.text.casefold()
+    fields = (run.id, run.work_item_id, facts.source_external_id, facts.title)
+    return any(needle in field.casefold() for field in fields if field)
 
 
 def _memoized_artifact_facts(

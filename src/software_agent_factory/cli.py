@@ -1233,6 +1233,7 @@ def dashboard_command(
     from .dashboard import LOOPBACK_HOST, DashboardConfig
     from .dashboard.actions import ResumeActions
     from .escalation_protocol import ReplyPolicy
+    from .models import RunListFilter
     from .observability import (
         RunScanCache,
         build_active_invocation_summary,
@@ -1251,7 +1252,9 @@ def dashboard_command(
     reply_policy = ReplyPolicy.from_config(factory_config.escalation)
     scan_cache = RunScanCache(store)
 
-    def snapshot_provider(*, limit: int, offset: int) -> object:
+    def snapshot_provider(
+        *, limit: int, offset: int, filters: RunListFilter | None = None
+    ) -> object:
         return build_monitoring_snapshot(
             store,
             stale_after=stale_after,
@@ -1260,6 +1263,7 @@ def dashboard_command(
             max_scanned_runs=max_scanned_runs,
             scan=scan_cache.get_scan(max_scanned_runs),
             reply_policy=reply_policy,
+            run_filter=filters,
         )
 
     def run_detail_provider(run_id: str) -> object | None:
