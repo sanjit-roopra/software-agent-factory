@@ -95,9 +95,10 @@ def test_a_stop_request_is_created_once_and_deleted(data_dir: Path) -> None:
 
 def test_a_stop_request_for_a_missing_run_creates_nothing(data_dir: Path) -> None:
     store = FileRunStore(data_dir)
+    request = RunStopRequest(run_id="run-gone", source="cli")
 
     with pytest.raises(FileNotFoundError):
-        store.create_stop_request(RunStopRequest(run_id="run-gone", source="cli"))
+        store.create_stop_request(request)
 
     assert not (data_dir / "runs" / "run-gone").exists()
 

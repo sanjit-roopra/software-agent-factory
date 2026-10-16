@@ -42,6 +42,9 @@ from .responses import ConflictReason, WriteRejected
 from .snapshot import ResumeRequester, ResumeRunReader, StopRequester, is_valid_run_id
 from .validators import is_episode_id
 
+#: The error text for a run the dashboard cannot find or act on.
+_NOT_FOUND = "not found"
+
 #: The reasons :func:`~software_agent_factory.resume.request_refusal` gives, as the codes the
 #: page gets. A request that names the wrong episode, context or action is a stale one.
 #: ``state_changed`` and ``context_changed`` are the service's words for a run that stopped
@@ -169,7 +172,7 @@ def accept_action(
         raise _bad_request("the run id is not valid")
     run = actions.run_reader(raw_run_id)
     if run is None:
-        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     escalation = run.escalation
     if escalation is None:
         raise _conflict("not_waiting")
@@ -192,7 +195,7 @@ def accept_action(
     )
     result = actions.requester(raw_run_id, request)
     if result == "run_missing":
-        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     if result == "exists":
         raise _conflict("existing_request")
     return {"status": "accepted", "requested_at": now.isoformat()}
@@ -209,11 +212,11 @@ def accept_stop(actions: ResumeActions, raw_run_id: str, body: object) -> dict[s
     if not is_valid_run_id(raw_run_id):
         raise _bad_request("the run id is not valid")
     if actions.stopper is None:
-        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     now = actions.clock()
     result = actions.stopper(raw_run_id, now)
     if result == "run_missing":
-        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     if result == "finished":
         raise _conflict("not_active")
     if result == "exists":
