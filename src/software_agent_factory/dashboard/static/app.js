@@ -908,7 +908,7 @@
   function pullRequestCell(run) {
     const url = run.pull_request_url;
     if (!isHttpsUrl(url)) {
-      return EMPTY_VALUE;
+      return { value: EMPTY_VALUE };
     }
     const number = PULL_NUMBER_PATTERN.exec(url)?.[1];
     const merged = typeof run.merge_commit_sha === "string" && run.merge_commit_sha !== "";
@@ -2308,7 +2308,7 @@
       return { text: chip.text, title: chip.title, className: "chip" };
     });
     const pr = pullRequestCell(detail);
-    if (isPlainObject(pr)) {
+    if (pr.href !== undefined) {
       parts.push({ text: pr.value + pr.hidden, href: pr.href, title: pr.title });
     }
     return [...parts, ...timeParts(detail, nowMs)];
