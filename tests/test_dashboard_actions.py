@@ -28,6 +28,7 @@ from software_agent_factory.cli import (
     build_resume_request_reader,
     build_resume_requester,
     build_resume_run_reader,
+    build_stop_requester,
 )
 from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
 from software_agent_factory.dashboard.actions import ResumeActions
@@ -327,6 +328,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                     requester=requester or build_resume_requester(store),
                     reply_policy=reply_policy,
                     clock=lambda: NOW,
+                    stopper=build_stop_requester(store),
                 )
                 if actions
                 else None,
@@ -1100,7 +1102,7 @@ def _write_response(rig: Rig, method: str, path: str) -> tuple[int, str | None, 
     ("method", "path", "allow"),
     [
         ("POST", "/api/runs", READ_ONLY_METHODS),
-        ("POST", _path("cancel"), READ_ONLY_METHODS),
+        ("POST", _path("steer"), READ_ONLY_METHODS),
         ("POST", RUN_PATH, READ_ONLY_METHODS),
         ("POST", f"{_path(APPROVE)}/extra", READ_ONLY_METHODS),
         ("PUT", _path(APPROVE), "POST"),
@@ -1398,3 +1400,67 @@ def test_the_dashboard_package_imports_no_subprocess() -> None:
     ]
 
     assert importing == []
+
+
+# -- stop (ADR-047) -----------------------------------------------------------------------
+
+STOP_ACTION = "cancel"
+
+
+def test_a_stop_of_a_working_run_is_stored_once(make_rig: RigFactory) -> None:
+    rig = make_rig(
+        FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.IMPLEMENTING)
+    )
+
+    status, payload = rig.post(_path(STOP_ACTION), {})
+    again, conflict = rig.post(_path(STOP_ACTION), {})
+
+    assert (status, payload) == (202, {"status": "accepted", "requested_at": NOW.isoformat()})
+    stored = rig.store.load_stop_request(RUN_ID)
+    assert stored is not None
+    assert (stored.source, stored.created_at) == ("dashboard", NOW)
+    assert (again, conflict) == (409, {"error": "conflict", REASON: "existing_request"})
+
+
+def test_a_stop_of_a_halted_run_is_refused(make_rig: RigFactory) -> None:
+    rig = make_rig()
+
+    with rig.assert_writes_nothing():
+        status, payload = rig.post(_path(STOP_ACTION), {})
+
+    assert (status, payload) == (409, {"error": "conflict", REASON: "not_active"})
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "expected"),
+    [
+        (_path(STOP_ACTION), {"now": True}, 400),
+        (_path(STOP_ACTION), [], 400),
+        (_path(STOP_ACTION, "bad%21id"), {}, 400),
+        (_path(STOP_ACTION, MISSING_RUN), {}, 404),
+    ],
+)
+def test_a_bad_stop_is_refused_and_writes_nothing(
+    make_rig: RigFactory, path: str, body: object, expected: int
+) -> None:
+    rig = make_rig(
+        FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.IMPLEMENTING)
+    )
+
+    with rig.assert_writes_nothing():
+        status, _ = rig.post(path, body)
+
+    assert status == expected
+
+
+def test_a_stop_needs_the_token(make_rig: RigFactory) -> None:
+    rig = make_rig(
+        FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.IMPLEMENTING)
+    )
+
+    with rig.assert_writes_nothing():
+        status, _ = rig.post(
+            _path(STOP_ACTION), {}, headers=rig.headers(**{TOKEN_HEADER: WRONG_TOKEN})
+        )
+
+    assert status == 401

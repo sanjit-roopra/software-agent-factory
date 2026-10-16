@@ -1489,6 +1489,23 @@ class DashboardResumeRequest(VersionedModel):
         )
 
 
+#: The start of the halt reason of a run a person stopped with Stop or ``factory cancel``.
+STOPPED_HALT_REASON = "stopped on request"
+
+
+class RunStopRequest(VersionedModel):
+    """A person's request to stop a run (ADR-047).
+
+    The dashboard or ``factory cancel`` creates it once, and never changes it. The
+    controller that drives the run reads it, kills the live agent call, halts the run in
+    ``NEEDS_HUMAN`` and deletes the request.
+    """
+
+    run_id: str = Field(min_length=1)
+    source: Literal["dashboard", "cli"]
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+
+
 class EscalationRecord(ModelBase):
     episode_id: str = Field(min_length=1)
     episode_number: int = Field(default=1, ge=1)

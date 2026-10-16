@@ -1,5 +1,39 @@
 # Architecture Decisions
 
+## ADR-049: A stop request is a file that the run's own driver reads
+
+Status: accepted on 2026-10-17. This builds on ADR-047 and ADR-048.
+
+### Context
+
+ADR-047 lets a person stop a run from the dashboard or with `factory cancel`.
+It says the dashboard writes a create-only request file and the factory reads it.
+A run can be driven by the service, by `factory run` or by `factory project`.
+Only the process that drives the run can kill its agent process group.
+
+### Decision
+
+- The stop request is one file, `stop-request.json`, in the run directory.
+  It holds the run id, the source (`dashboard` or `cli`) and the time.
+  The dashboard and `factory cancel` create it only for a run that is not finished.
+- The workflow controller reads it, so every driver honours it:
+  - During an agent call, the heartbeat thread looks for the file every 2 seconds.
+    When it finds one, it kills the process group of the agent call (ADR-048).
+  - Before and after each agent call, the controller checks the file.
+    When it finds one, it records the open call as failed and halts the run in `NEEDS_HUMAN`.
+- The halt reason starts with `stopped on request`. It maps to `MANUAL_INSPECTION`.
+  The halt sends no escalation notice: the person who stopped the run already knows.
+- The workspace, the branch and its commits stay as they are.
+- Any move to a final state deletes the file, so a request the run never reached cannot stop a later resume.
+
+### Consequences
+
+- A stop works the same way for a service run and for a run in the terminal.
+- A run that is not driven by any process stops only when something drives it again.
+- A run in a long step without an agent call, such as a check or a CI wait, stops only at its next agent call.
+- A stop request that lands just as the run halts for another reason can stay on disk.
+  The next resume of that run then stops at its first agent call.
+
 ## ADR-048: A stalled run is stopped for real and halts as STALLED
 
 Status: accepted on 2026-10-17. This builds on ADR-043 and ADR-044.

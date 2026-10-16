@@ -183,8 +183,18 @@ and focus moves to it. These messages come from the page.
 Answers you typed stay in the form when a request fails. If the run moved to a
 new episode or context, the form starts empty.
 
-The dashboard cannot retry, cancel or reconfigure anything. Authority stays with
-the workflow controller and the factory service.
+### Stop a working run
+
+A working run shows **Stop run** next to its badge. The first click arms it and
+says what happens. **Confirm stop** sends the request, and **Keep running** puts
+the button back. `factory cancel <run>` does the same from the terminal.
+
+The process that drives the run stops the agent within a few seconds. A run
+outside an agent call, such as one in a check, stops before its next agent call.
+The run halts in Needs you with its workspace and commits kept.
+
+The dashboard cannot reconfigure anything, and it can retry only publishing.
+Authority stays with the workflow controller and the factory service.
 
 It is built from the Python standard library. No framework, no npm, no bundler,
 no build step.

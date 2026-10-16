@@ -52,6 +52,7 @@ from .models import (
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
     STALLED_HALT_REASON,
+    STOPPED_HALT_REASON,
     UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     DeliveryRetryContext,
@@ -549,6 +550,8 @@ def classify_halt_reason(
     reason = (run.failure_reason or "").lower()
     if reason.startswith(STALLED_HALT_REASON):
         return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.STALLED)
+    if reason.startswith(STOPPED_HALT_REASON):
+        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.MANUAL_INSPECTION)
     if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
         plan = _load_optional(store, run.id, ExecutionPlan)
         return (

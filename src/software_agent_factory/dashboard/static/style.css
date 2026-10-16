@@ -429,6 +429,8 @@ button:disabled {
 }
 .live-on::before { background: var(--ok); }
 .run-summary-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.run-stop { display: inline-flex; gap: 0.5rem; margin-left: auto; }
+.run-stop[hidden] { display: none; }
 .headline {
   margin: 0.75rem 0 1rem;
   font-size: 1.05rem;

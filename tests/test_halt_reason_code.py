@@ -13,6 +13,7 @@ from software_agent_factory.escalation import classify_halt_reason
 from software_agent_factory.models import (
     HALT_REASON_COPY,
     STALLED_HALT_REASON,
+    STOPPED_HALT_REASON,
     UNRESOLVED_DECISIONS_HALT_REASON,
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     EscalationRecord,
@@ -60,6 +61,10 @@ CLASSIFIED_REASONS = [
     ("workspace was abandoned", HaltReasonCode.RECOVERY_INTERVENTION),
     ("something else", HaltReasonCode.MANUAL_INSPECTION),
     (f"{STALLED_HALT_REASON}; the factory stopped its agent", HaltReasonCode.STALLED),
+    (
+        f"{STOPPED_HALT_REASON} from the cli at 2026-10-17T09:00:00+00:00",
+        HaltReasonCode.MANUAL_INSPECTION,
+    ),
 ]
 COPIED_REASONS = [
     case for case in CLASSIFIED_REASONS if case[1] is not HaltReasonCode.UNRESOLVED_DECISIONS

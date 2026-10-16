@@ -20,6 +20,7 @@ ConflictReason = Literal[
     "reopen_limit",
     "expired",
     "existing_request",
+    "not_active",
 ]
 
 

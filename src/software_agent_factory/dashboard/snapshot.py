@@ -32,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Iterable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -137,6 +138,20 @@ class ResumeRequester(Protocol):
     """
 
     def __call__(self, run_id: str, request: DashboardResumeRequest) -> ResumeRequestResult: ...
+
+
+#: What a stop request comes to: stored, one already waiting, the run is gone, or the run
+#: has already finished and has nothing to stop.
+StopRequestResult = Literal["created", "exists", "run_missing", "finished"]
+
+
+class StopRequester(Protocol):
+    """Provider that stores one stop request for a run, create-only (ADR-047).
+
+    It never changes a run: the controller that drives the run reads the request.
+    """
+
+    def __call__(self, run_id: str, created_at: datetime) -> StopRequestResult: ...
 
 
 #: The real ``build_monitoring_snapshot`` (``observability.py``) rejects
