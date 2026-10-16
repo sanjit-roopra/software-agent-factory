@@ -17,7 +17,9 @@ from software_agent_factory.dashboard.overview import (
     headline,
     reason_line,
     run_outcome,
+    run_stage,
     snapshot_overview,
+    stage_label,
 )
 from software_agent_factory.dashboard.view import (
     run_detail_view,
@@ -82,6 +84,7 @@ KIND_DONE = "done"
 KIND_FAILED = "failed"
 KIND_NEEDS_YOU = "needs_you"
 KIND_ACTIVE = "active"
+KIND_STALE = "stale"
 LABEL_ACTIVE = "Active"
 LABEL_FAILED = "Failed"
 LABEL_PR_READY = "PR ready"
@@ -137,13 +140,13 @@ def test_a_pr_ready_run_that_is_not_finished_is_active(extra: dict[str, Any]) ->
 def test_an_unfinished_pr_ready_run_that_is_stale_says_so_in_its_label() -> None:
     outcome = run_outcome(_run(STATE_PR_READY, is_finished=False, is_stale=True))
 
-    assert outcome == {"kind": KIND_ACTIVE, LABEL_KEY: STALE_LABEL}
+    assert outcome == {"kind": KIND_STALE, LABEL_KEY: STALE_LABEL}
 
 
 def test_an_active_run_that_is_stale_says_so_in_its_label() -> None:
     outcome = run_outcome(_run(STATE_IMPLEMENTING, is_stale=True))
 
-    assert outcome == {"kind": KIND_ACTIVE, LABEL_KEY: STALE_LABEL}
+    assert outcome == {"kind": KIND_STALE, LABEL_KEY: STALE_LABEL}
 
 
 def test_an_unknown_state_counts_as_active() -> None:
@@ -190,7 +193,7 @@ def test_a_waiting_run_headline_without_a_reason_says_needs_you() -> None:
 
 
 @pytest.mark.parametrize(
-    (STATE_KEY, "text"), [(STATE_DONE, "Done"), ("VERIFYING", "In progress: VERIFYING")]
+    (STATE_KEY, "text"), [(STATE_DONE, "Done"), ("VERIFYING", "In progress: Verifying")]
 )
 def test_other_headlines_say_the_state_in_words(state: str, text: str) -> None:
     assert headline(_run(state))["text"] == text
@@ -203,7 +206,7 @@ def test_a_finished_pr_ready_headline_says_pr_ready() -> None:
 def test_an_unfinished_pr_ready_headline_says_it_is_in_progress() -> None:
     headline_of_run = headline(_run(STATE_PR_READY, is_finished=False))
 
-    assert headline_of_run == {"kind": KIND_ACTIVE, "text": f"In progress: {STATE_PR_READY}"}
+    assert headline_of_run == {"kind": KIND_ACTIVE, "text": "In progress: PR ready"}
 
 
 def _links(calls: list[dict[str, Any]]) -> list[str | None]:
@@ -761,3 +764,51 @@ def test_a_real_finalized_pr_ready_run_counts_as_succeeded(tmp_path: Path) -> No
     overview = snapshot_overview(_finalized_pr_ready(tmp_path))
 
     assert overview[SUCCEEDED_COUNT] == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "label"),
+    [
+        (STATE_IMPLEMENTING, "Implementing"),
+        ("CI_RUNNING", "CI running"),
+        (STATE_PR_READY, "PR ready"),
+        ("CI_DIAGNOSIS", "CI diagnosis"),
+        ("", None),
+        (None, None),
+        (3, None),
+    ],
+)
+def test_a_stage_label_says_the_state_in_words(state: object, label: str | None) -> None:
+    assert stage_label(state) == label
+
+
+def test_an_active_run_stage_names_the_role_of_the_call_in_progress() -> None:
+    assert run_stage(_run(STATE_IMPLEMENTING), "IMPLEMENTER") == "Implementing \u00b7 implementer"
+    assert run_stage(_run(STATE_IMPLEMENTING), None) == "Implementing"
+    assert run_stage(_run(STATE_IMPLEMENTING, is_stale=True), "") == "Implementing"
+
+
+def test_a_finished_run_has_no_stage() -> None:
+    assert run_stage(_run(STATE_DONE), "reviewer") is None
+    assert run_stage(_run(FAILED), "reviewer") is None
+    assert run_stage({RUN_ID_KEY: RUN_ID}, "reviewer") is None
+
+
+@pytest.mark.parametrize("state", [STATE_DONE, STATE_PR_READY])
+def test_a_done_run_with_needs_look_reasons_says_so(state: str) -> None:
+    run = {**_run(state, is_finished=True), "needs_look": ["review skipped"]}
+
+    assert run_outcome(run) == {"kind": "done", LABEL_KEY: "Done, needs look"}
+
+
+def test_a_run_list_row_carries_the_stage_and_drops_the_active_role() -> None:
+    row = run_summary_view({**_run(STATE_IMPLEMENTING), "active_role": "implementer"})
+
+    assert row["stage"] == "Implementing \u00b7 implementer"
+    assert "active_role" not in row
+
+
+def test_a_run_detail_headline_names_the_active_call_role() -> None:
+    detail = run_detail_view({**_run("REVIEWING"), "active_invocation": {"role": "REVIEWER"}})
+
+    assert detail["headline"]["text"] == "In progress: Reviewing \u00b7 reviewer"

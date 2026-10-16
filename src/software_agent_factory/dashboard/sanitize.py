@@ -67,6 +67,7 @@ from .validators import (
 _GITHUB_EXTERNAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$")
 _GITHUB_LOGIN_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 _SHORT_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{7,64}$")
 _SAFE_ARTIFACT_NAMES = frozenset(ARTIFACT_FILENAMES.values())
 
 #: The one spelling of the title field: it is allowlisted and redacted by this name.
@@ -106,6 +107,16 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "risk_assessment_enabled",
         "waiting_for_human",
         "performance",
+        "state_started_at",
+        "completed_at",
+        "pull_request_url",
+        "merge_commit_sha",
+        "initial_route",
+        "effective_route",
+        "unattended",
+        "needs_look",
+        "restart_recoveries",
+        "active_role",
     }
 )
 
@@ -114,10 +125,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
 #: attempt is independently minimized too).
 RUN_DETAIL_FIELDS: frozenset[str] = (RUN_SUMMARY_FIELDS - {_CALLS_FIELD}) | frozenset(
     {
-        "completed_at",
         "commit_sha",
-        "pull_request_url",
-        "merge_commit_sha",
         "guidance",
         "verification",
         "artifacts",
@@ -326,14 +334,43 @@ def _redact_names(data: dict[str, Any]) -> dict[str, Any]:
     return _redact_keys(data, _NAME_KEYS)
 
 
+#: Run fields kept only when their check passes; a value that fails is dropped.
+_RUN_FIELD_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "source_external_id": lambda value: (
+        isinstance(value, str) and _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(value) is not None
+    ),
+    "waiting_for_human": lambda value: isinstance(value, bool),
+    "risk_assessment_enabled": lambda value: isinstance(value, bool),
+    "unattended": lambda value: isinstance(value, bool),
+    "restart_recoveries": is_count,
+    "pull_request_url": is_safe_https_url,
+    "merge_commit_sha": lambda value: (
+        isinstance(value, str) and _COMMIT_SHA_PATTERN.fullmatch(value) is not None
+    ),
+    "initial_route": lambda value: _short_token(value) is not None,
+    "effective_route": lambda value: _short_token(value) is not None,
+    "active_role": lambda value: _short_token(value) is not None,
+}
+
+
+def _bounded_reasons(value: Any) -> list[str]:
+    """Each needs-look reason redacted and cut, at most :data:`MAX_NEEDS_LOOK_ITEMS` of them."""
+    if not isinstance(value, list):
+        return []
+    return [
+        bounded_reason(item, run_id=None)[0]
+        for item in value[:MAX_NEEDS_LOOK_ITEMS]
+        if isinstance(item, str) and item
+    ]
+
+
 def _sanitize_summary_fields(sanitized: dict[str, Any]) -> None:
     _redact_names(sanitized)
-    external_id = sanitized.get("source_external_id")
-    if not isinstance(external_id, str) or not _GITHUB_EXTERNAL_ID_PATTERN.fullmatch(external_id):
-        sanitized.pop("source_external_id", None)
-    for flag in ("waiting_for_human", "risk_assessment_enabled"):
-        if not isinstance(sanitized.get(flag), bool):
-            sanitized.pop(flag, None)
+    for field, check in _RUN_FIELD_CHECKS.items():
+        if field in sanitized and not check(sanitized[field]):
+            sanitized.pop(field)
+    if "needs_look" in sanitized:
+        sanitized["needs_look"] = _bounded_reasons(sanitized["needs_look"])
 
 
 def sanitize_performance(raw: Any) -> dict[str, Any]:
@@ -761,13 +798,8 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("project summary must serialize to a JSON object")
     sanitized = _allowlist(data, PROJECT_FIELDS)
-    needs_look = data.get("needs_look")
-    if isinstance(needs_look, list):
-        sanitized["needs_look"] = [
-            bounded_reason(item, run_id=None)[0]
-            for item in needs_look[:MAX_NEEDS_LOOK_ITEMS]
-            if isinstance(item, str) and item
-        ]
+    if isinstance(data.get("needs_look"), list):
+        sanitized["needs_look"] = _bounded_reasons(data["needs_look"])
     tasks = data.get("tasks")
     if isinstance(tasks, list):
         sanitized["tasks"] = [

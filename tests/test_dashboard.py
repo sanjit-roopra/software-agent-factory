@@ -1752,6 +1752,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             "next_step",
             "outcome",
             "headline",
+            "stage",
         }
         assert "logs" not in payload
         assert "diff" not in payload
@@ -2917,7 +2918,7 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
 
 #: What the run list view adds to a sanitized run summary: the outcome, the reason line,
 #: the models of the calls and their total length.
-RUN_SUMMARY_VIEW_FIELDS = {"outcome", "why", "models", "duration_ms"}
+RUN_SUMMARY_VIEW_FIELDS = {"outcome", "stage", "why", "models", "duration_ms"}
 CALL_FIELD_ORDER = [
     "invocation_number",
     "role",
@@ -4084,3 +4085,43 @@ def test_a_project_needs_look_list_is_cut_at_the_cap() -> None:
     project = sanitize_project({"project_id": "p", "needs_look": ["task 1: reason"] * 100})
 
     assert len(project["needs_look"]) == MAX_NEEDS_LOOK_ITEMS
+
+
+def test_a_run_summary_keeps_valid_status_fields_and_drops_bad_ones() -> None:
+    good = sanitize_run_summary(
+        {
+            "run_id": "run-1",
+            "pull_request_url": "https://github.com/o/r/pull/7",
+            "merge_commit_sha": "abc1234",
+            "unattended": True,
+            "restart_recoveries": 2,
+            "initial_route": "FULL",
+            "effective_route": "SINGLE",
+            "active_role": "reviewer",
+            "needs_look": ["review skipped", 3, ""],
+            "state_started_at": "2026-10-01T10:00:00Z",
+            "completed_at": "2026-10-01T11:00:00Z",
+        }
+    )
+    bad = sanitize_run_summary(
+        {
+            "run_id": "run-1",
+            "pull_request_url": "javascript:alert(1)",
+            "merge_commit_sha": "not a sha",
+            "unattended": "yes",
+            "restart_recoveries": -1,
+            "initial_route": "a b",
+            "active_role": None,
+            "needs_look": "text",
+        }
+    )
+
+    assert good["pull_request_url"] == "https://github.com/o/r/pull/7"
+    assert good["merge_commit_sha"] == "abc1234"
+    assert (good["unattended"], good["restart_recoveries"]) == (True, 2)
+    assert (good["initial_route"], good["effective_route"]) == ("FULL", "SINGLE")
+    assert good["active_role"] == "reviewer"
+    assert good["needs_look"] == ["review skipped"]
+    assert good["completed_at"] == "2026-10-01T11:00:00Z"
+    assert set(bad) == {"run_id", "needs_look", "failure_reason", "failure_reason_truncated"}
+    assert bad["needs_look"] == []

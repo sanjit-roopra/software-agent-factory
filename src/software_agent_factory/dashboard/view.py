@@ -12,7 +12,14 @@ from typing import Any
 from ..models import WorkflowState
 from .aggregate import compare_roles, models_of, models_summary, run_totals
 from .next_step import next_step
-from .overview import flag_failing_call, headline, reason_line, run_outcome, snapshot_overview
+from .overview import (
+    flag_failing_call,
+    headline,
+    reason_line,
+    run_outcome,
+    run_stage,
+    snapshot_overview,
+)
 from .sanitize import (
     is_active_status,
     sanitize_project,
@@ -45,15 +52,18 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
 
     ``requests_for`` supplies the dashboard requests of the run's current episode. Only a
     waiting run asks for them. The finished call a failed run most likely failed on carries
-    ``failure_link`` (see :func:`.overview.flag_failing_call`).
+    ``failure_link`` (see :func:`.overview.flag_failing_call`). The headline of an active run
+    names the role of its active call.
     """
     detail = sanitize_run_detail(raw)
     if "invocations" in detail:
         detail["totals"] = run_totals(detail["invocations"])
         flag_failing_call(detail, detail["invocations"])
     detail["next_step"] = next_step(detail, _queued_requests(detail, requests_for))
+    active = detail.get("active_invocation")
+    role = active.get("role") if isinstance(active, dict) else None
     detail["outcome"] = run_outcome(detail)
-    detail["headline"] = headline(detail)
+    detail["headline"] = headline(detail, role)
     return detail
 
 
@@ -68,16 +78,19 @@ LIST_USAGE_FIELDS: tuple[str, ...] = ("list_price_estimate_usd", "premium_reques
 
 
 def run_summary_view(raw: Any) -> dict[str, Any]:
-    """A sanitized run list row with what the list shows: outcome, reason, models and length.
+    """A sanitized run list row with what the list shows: outcome, stage, reason, models, length.
 
     ``calls`` is replaced by ``models`` (``text`` and a role by role ``detail``, both for the
     title tooltip) and ``duration_ms``. ``why`` is the redacted, bounded failure reason of a
     stopped run; the row then drops ``failure_reason`` so the reason is sent once. ``usage``
-    keeps only the cost totals the list shows (:data:`LIST_USAGE_FIELDS`).
+    keeps only the cost totals the list shows (:data:`LIST_USAGE_FIELDS`). ``stage`` (see
+    :func:`.overview.run_stage`) replaces ``active_role``. ``duration_ms`` is the agent time;
+    the page shows the wall-clock time from ``created_at`` and ``completed_at``.
     """
     run = sanitize_run_summary(raw)
     calls = run.pop("calls", [])
     run["outcome"] = run_outcome(run)
+    run["stage"] = run_stage(run, run.pop("active_role", None))
     run["why"] = reason_line(run)
     if run["why"] is not None:
         run.pop("failure_reason", None)

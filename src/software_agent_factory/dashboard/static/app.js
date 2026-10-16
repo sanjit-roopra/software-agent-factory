@@ -24,6 +24,12 @@
   const FILTER_NEEDS_YOU = "needs-you";
   const COMPARE_HASH = "#compare";
   const COMPARE_ICON = "\u21c4";
+  const MERGED_ICON = "\u2713";
+  // ExecutionRoute.FULL in models.py: the route most runs take, so it gets no chip.
+  const DEFAULT_ROUTE = "FULL";
+  const PULL_NUMBER_PATTERN = /\/pull\/(\d+)\/?$/;
+  // A run idle for less than this shows no idle time.
+  const IDLE_SHOWN_SECONDS = 60;
   // MAX_PAGE_LIMIT in dashboard/snapshot.py: the most runs one request returns.
   const MAX_RUNS_LIMIT = 100;
   const NOT_FOUND_STATUS = 404;
@@ -55,6 +61,8 @@
   const COPY_FAILED_TEXT = "Copy failed, select the text and copy it.";
   const COPIED_VISIBLE_MS = 2000;
   const MS_PER_SECOND = 1000;
+  // How often a running timer on the page moves on between polls.
+  const TICK_INTERVAL_MS = MS_PER_SECOND;
   const SECONDS_PER_MINUTE = 60;
   const MINUTES_PER_HOUR = 60;
   const HOURS_PER_DAY = 24;
@@ -517,8 +525,38 @@
     link.firstElementChild.setAttribute("aria-hidden", entry.icon === true ? "true" : "false");
     setText(link.lastElementChild, entry.hidden);
     setTitle(link, entry.title);
+    setExternal(link, entry.external === true);
+    syncChips(cell, asArray(entry.chips));
     cell.className = "";
     setTitle(cell, undefined);
+  }
+
+  // A link out of the dashboard opens in a new tab and sends no referrer.
+  function setExternal(link, external) {
+    if (external) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    } else {
+      link.removeAttribute("target");
+      link.removeAttribute("rel");
+    }
+  }
+
+  // Chips sit after the link, one span each, with the chip title as the tooltip.
+  function syncChips(cell, chips) {
+    let box = cell.children[1];
+    if (chips.length === 0) {
+      box?.remove();
+      return;
+    }
+    box = box || cell.appendChild(element("span", "chips"));
+    trimChildren(box, chips.length);
+    for (const [index, chip] of chips.entries()) {
+      const node = childAt(box, index, "span");
+      node.className = "chip";
+      setText(node, chip.text);
+      setTitle(node, chip.title);
+    }
   }
 
   // A badge entry holds the badge kind and the text of the badge. The text is
@@ -563,6 +601,7 @@
   // An entry is a plain value, an object with a value, a class name and a
   // tooltip, a link entry, a badge entry or a clamp entry.
   function patchCell(cell, entry) {
+    syncTick(cell, isPlainObject(entry) ? entry.tickSince : undefined, "");
     if (isPlainObject(entry) && entry.clamp === true) {
       patchClampCell(cell, entry);
       return;
@@ -593,6 +632,24 @@
     trimChildren(row, spec.cells.length);
     for (const [index, entry] of spec.cells.entries()) {
       patchCell(childAt(row, index, "td"), entry);
+    }
+  }
+
+  // A node with a start time counts up from it every tick (see tickTimers).
+  function syncTick(node, since, prefix) {
+    if (typeof since === "string") {
+      node.dataset.tickSince = since;
+      node.dataset.tickPrefix = prefix;
+    } else {
+      delete node.dataset.tickSince;
+      delete node.dataset.tickPrefix;
+    }
+  }
+
+  function tickTimers() {
+    const nowMs = Date.now();
+    for (const node of document.querySelectorAll("[data-tick-since]")) {
+      setText(node, node.dataset.tickPrefix + elapsedText(node.dataset.tickSince, nowMs));
     }
   }
 
@@ -764,10 +821,41 @@
 
   // The badge names the outcome in words, so it does not rely on its color. The kind
   // comes from the server; a kind the page does not know gets no color class.
-  const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active"]);
+  const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active", "stale"]);
+  const ACTIVE_KINDS = new Set(["active", "stale"]);
 
   function badgeKind(outcome) {
     return OUTCOME_KINDS.has(outcome?.kind) ? outcome.kind : "neutral";
+  }
+
+  function isActiveRun(run) {
+    return ACTIVE_KINDS.has(run.outcome?.kind);
+  }
+
+  // Whole minutes as "18 min" or "2 h 5 min".
+  function idleText(seconds) {
+    const minutes = Math.floor(seconds / SECONDS_PER_MINUTE);
+    if (minutes < MINUTES_PER_HOUR) {
+      return minutes + " min";
+    }
+    return Math.floor(minutes / MINUTES_PER_HOUR) + " h " + (minutes % MINUTES_PER_HOUR) + " min";
+  }
+
+  // "idle 18 min" for an active run with no signal for a minute or more, else "".
+  function idlePhrase(run) {
+    const idle = run.idle_seconds;
+    if (!isActiveRun(run) || !isFiniteNumber(idle) || idle < IDLE_SHOWN_SECONDS) {
+      return "";
+    }
+    return "idle " + idleText(idle);
+  }
+
+  // What an active run is doing: its stage, the role at work and the idle time.
+  function stateNote(run) {
+    if (!isActiveRun(run)) {
+      return "";
+    }
+    return [displayValue(run.stage, ""), idlePhrase(run)].filter(Boolean).join(" \u00b7 ");
   }
 
   function stateCell(run) {
@@ -775,8 +863,33 @@
     return { badge: badgeKind(run.outcome), value: label, title: displayValue(run.state, "") };
   }
 
+  function plural(count, word) {
+    return count + " " + word + (count === 1 ? "" : "s");
+  }
+
+  // A route other than the default full one, unattended, restarts and needs look,
+  // each as a short chip.
+  function runChips(run) {
+    const chips = [];
+    const route = preferDefined(run.effective_route, run.initial_route);
+    if (typeof route === "string" && route !== "" && route !== DEFAULT_ROUTE) {
+      chips.push({ text: route.toLowerCase().replaceAll("_", " "), title: "Route" });
+    }
+    if (run.unattended === true) {
+      chips.push({ text: "unattended", title: "Started with factory.unattended" });
+    }
+    if (isFiniteNumber(run.restart_recoveries) && run.restart_recoveries > 0) {
+      chips.push({ text: plural(run.restart_recoveries, "restart"), title: "Factory restarts" });
+    }
+    const reasons = asArray(run.needs_look);
+    if (reasons.length > 0) {
+      chips.push({ text: "needs look", title: reasons.join("\n") });
+    }
+    return chips;
+  }
+
   // A title links to the run. Its run id, then the models role by role, is the
-  // tooltip; the run id is the link text when the run has no title.
+  // tooltip; the run id is the link text when the run has no title. Chips follow it.
   function titleCell(run, runId) {
     if (typeof runId !== "string") {
       return { value: displayValue(run.title) };
@@ -786,12 +899,35 @@
       href: "#run/" + encodeURIComponent(runId),
       value: displayValue(run.title, runId),
       hidden: "",
-      title: models === "" ? runId : runId + "\n" + models
+      title: models === "" ? runId : runId + "\n" + models,
+      chips: runChips(run)
+    };
+  }
+
+  // The pull request as "#7", with a check mark once it merged. It opens on GitHub.
+  function pullRequestCell(run) {
+    const url = run.pull_request_url;
+    if (!isHttpsUrl(url)) {
+      return EMPTY_VALUE;
+    }
+    const number = PULL_NUMBER_PATTERN.exec(url)?.[1];
+    const merged = typeof run.merge_commit_sha === "string" && run.merge_commit_sha !== "";
+    return {
+      href: url,
+      external: true,
+      value: (number ? "#" + number : "PR") + (merged ? " " + MERGED_ICON : ""),
+      hidden: merged ? " merged" : "",
+      title: merged ? "Pull request, merged" : "Pull request"
     };
   }
 
   // The reason is cut to one line by the style. The full text is the tooltip.
+  // An active run has no reason, so the cell says what it is doing instead.
   function whyCell(run) {
+    const note = displayValue(run.why, "") === "" ? stateNote(run) : "";
+    if (note !== "") {
+      return { value: note, clamp: true, className: "why-cell muted", title: note };
+    }
     return {
       value: displayValue(run.why),
       clamp: true,
@@ -800,8 +936,32 @@
     };
   }
 
-  function durationCell(run) {
-    return isFiniteNumber(run.duration_ms) ? durationText(run.duration_ms) : EMPTY_VALUE;
+  // How long from the start until "nowMs", "0 s" under a second, or the dash.
+  function elapsedText(iso, nowMs) {
+    const time = typeof iso === "string" ? Date.parse(iso) : Number.NaN;
+    if (Number.isNaN(time) || !isFiniteNumber(nowMs)) {
+      return EMPTY_VALUE;
+    }
+    const ms = Math.max(0, nowMs - time);
+    return ms < MS_PER_SECOND ? "0 s" : durationText(ms);
+  }
+
+  // When a stopped run stopped: its completion time, else its last update.
+  function stoppedAtMs(run) {
+    const end = typeof run.completed_at === "string" ? run.completed_at : run.updated_at;
+    return typeof end === "string" ? Date.parse(end) : Number.NaN;
+  }
+
+  // Wall-clock time from the start: it counts up while the run is active. The agent
+  // time, the length of its calls, is the tooltip.
+  function durationCell(run, nowMs) {
+    const agent = isFiniteNumber(run.duration_ms)
+      ? "Agent time: " + durationText(run.duration_ms)
+      : "";
+    if (isActiveRun(run)) {
+      return { value: elapsedText(run.created_at, nowMs), tickSince: run.created_at, title: agent };
+    }
+    return { value: elapsedText(run.created_at, stoppedAtMs(run)), title: agent };
   }
 
   // Each cost unit the run reported, in its own unit and never added to another.
@@ -844,8 +1004,9 @@
         titleCell(run, runId),
         stateCell(run),
         whyCell(run),
+        pullRequestCell(run),
         run.invocation_count,
-        durationCell(run),
+        durationCell(run, nowMs),
         listCostText(run.usage),
         startedCell(run, nowMs),
         compareCell(runId)
@@ -2105,13 +2266,75 @@
   // The key numbers under the title: what the run took and cost. Only a cost unit the
   // calls reported gets a card, and one card says so when none did.
   function keyNumberCards(totals) {
-    const [calls, , duration] = headlineCards(totals);
+    const [calls, , callTime] = headlineCards(totals);
+    // The wall-clock time is in the status line; this card is the time spent in calls.
+    const duration = { ...callTime, label: "Agent time" };
     const tokens = figureCard("Tokens", totals.total_tokens, totals.calls, displayNumber);
     const costs = costCards(totals).filter(function (card) {
       return card.value !== NOT_REPORTED;
     });
     const cost = { label: "Cost", value: NOT_REPORTED, note: "", help: "" };
     return [duration, calls, tokens, ...(costs.length === 0 ? [cost] : costs)];
+  }
+
+  function tickPart(prefix, since, nowMs) {
+    return { text: prefix + elapsedText(since, nowMs), prefix: prefix, tickSince: since };
+  }
+
+  // The running timers of an active run: since its start, in its stage and in its
+  // active call, then the idle time. A stopped run says how long it took.
+  function timeParts(detail, nowMs) {
+    if (!isActiveRun(detail)) {
+      const took = elapsedText(detail.created_at, stoppedAtMs(detail));
+      return took === EMPTY_VALUE ? [] : [{ text: "Took " + took }];
+    }
+    const parts = [tickPart("Running ", detail.created_at, nowMs)];
+    if (typeof detail.state_started_at === "string") {
+      parts.push(tickPart("in stage ", detail.state_started_at, nowMs));
+    }
+    const active = detail.active_invocation;
+    if (isPlainObject(active) && typeof active.started_at === "string") {
+      const role = displayValue(active.role, "active").toLowerCase();
+      parts.push(tickPart(role + " call ", active.started_at, nowMs));
+    }
+    const idle = idlePhrase(detail);
+    return idle === "" ? parts : [...parts, { text: idle }];
+  }
+
+  // The line under the headline: chips, the pull request link and the times.
+  function statusParts(detail, nowMs) {
+    const parts = runChips(detail).map(function (chip) {
+      return { text: chip.text, title: chip.title, className: "chip" };
+    });
+    const pr = pullRequestCell(detail);
+    if (isPlainObject(pr)) {
+      parts.push({ text: pr.value + pr.hidden, href: pr.href, title: pr.title });
+    }
+    return [...parts, ...timeParts(detail, nowMs)];
+  }
+
+  function statusNode(part) {
+    const node = part.href === undefined ? element("span") : createLink(part.href);
+    node.className = part.className || "";
+    setText(node, part.text);
+    setTitle(node, part.title);
+    syncTick(node, part.tickSince, part.prefix);
+    return node;
+  }
+
+  // Rebuilt only when a part changes, not on every poll, so a focused link stays.
+  // A ticking part keys on its start time, not on its text.
+  function renderStatusLine(detail) {
+    const line = document.getElementById("run-status-line");
+    const parts = statusParts(detail, Date.now());
+    const key = JSON.stringify(parts.map(function (part) {
+      return [part.href, part.title, part.className, part.tickSince, part.prefix || part.text];
+    }));
+    line.hidden = parts.length === 0;
+    if (line.dataset.key !== key) {
+      line.dataset.key = key;
+      line.replaceChildren(...parts.map(statusNode));
+    }
   }
 
   // The page heading is the run title, and the run id sits under it. With no title the
@@ -2136,6 +2359,7 @@
     headline.className = "headline headline-" + badgeKind(detail.headline);
     setText(headline, displayValue(detail.headline?.text, ""));
     headline.hidden = headline.textContent === "";
+    renderStatusLine(detail);
     syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
   }
 
@@ -2706,6 +2930,7 @@
     seedBackHistory();
     applyRoute(false);
     globalThis.setInterval(pollView, POLL_INTERVAL_MS);
+    globalThis.setInterval(tickTimers, TICK_INTERVAL_MS);
     document.addEventListener("visibilitychange", pollView);
   }
 

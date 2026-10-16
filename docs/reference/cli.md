@@ -357,9 +357,19 @@ never adds the two costs together. A note shows the failed runs and the tokens o
 last 24 hours when they differ from the totals.
 
 The run list shows these columns for each run: title, state badge, the reason it
-stopped, calls, duration, cost and start time. The tooltip of the title names the run
-id and the models. The run page starts with a
-summary and the steps of the run. The long list of run facts is under Details.
+stopped, pull request, calls, duration, cost and start time. The tooltip of the title
+names the run id and the models. Small tags after the title show a route other than
+`FULL`, an unattended run, factory restarts and a pull request that needs a look. A
+run that is still working shows its stage, the role at work and the idle time where a
+stopped run shows its reason. A run with no new signal for too long gets its own
+"Active, stale" badge. The pull request cell shows the number, with a check mark once
+it merged. Duration is the time from the start to the end of the run, and it counts up
+every second while the run works. The time spent in agent calls is its tooltip.
+
+The run page starts with a summary and the steps of the run. Under the outcome line it
+shows the same tags and the pull request link. A working run then shows four times:
+since its start, in its stage, in its active call, and with no new signal. A finished
+run shows how long it took. The long list of run facts is under Details.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Three `POST` routes are the

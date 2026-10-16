@@ -98,6 +98,7 @@ _FAILED_RUN = {
     DURATION_MS: 63_000,
     "usage": {LIST_USD: 0.039188},
     "created_at": "2026-10-02T11:48:00Z",
+    "updated_at": "2026-10-02T11:49:03Z",
 }
 _NOW = datetime(2026, 10, 2, 12, 0, tzinfo=UTC).timestamp() * 1000
 
@@ -265,7 +266,7 @@ FORMATTER_CASES = [
     _key_numbers(
         "duration-calls-tokens-and-the-reported-cost",
         [
-            {LABEL: "Duration", VALUE: DURATION_TEXT, "note": "", "help": ""},
+            {LABEL: "Agent time", VALUE: DURATION_TEXT, "note": "", "help": ""},
             {LABEL: "Calls", VALUE: "6", "note": "", "help": ""},
             {LABEL: "Tokens", VALUE: "40,990", "note": "", "help": ""},
             {
@@ -280,7 +281,7 @@ FORMATTER_CASES = [
     _key_numbers(
         "one-card-says-no-cost-was-reported",
         [
-            {LABEL: "Duration", VALUE: NOT_REPORTED, "note": "", "help": ""},
+            {LABEL: "Agent time", VALUE: NOT_REPORTED, "note": "", "help": ""},
             {LABEL: "Calls", VALUE: "0", "note": "", "help": ""},
             {LABEL: "Tokens", VALUE: NOT_REPORTED, "note": "", "help": ""},
             {LABEL: "Cost", VALUE: NOT_REPORTED, "note": "", "help": ""},
@@ -321,11 +322,13 @@ FORMATTER_CASES = [
                     VALUE: BUG_TITLE,
                     HIDDEN: "",
                     TITLE: RUN_1 + "\n" + DETAIL,
+                    "chips": [],
                 },
                 {"badge": KIND_FAILED, VALUE: LABEL_FAILED, TITLE: STATE_FAILED},
                 {VALUE: REASON, "clamp": True, CLASS_NAME: "why-cell", TITLE: REASON},
+                DASH,
                 6,
-                DURATION_TEXT,
+                {VALUE: DURATION_TEXT, TITLE: "Agent time: " + DURATION_TEXT},
                 LIST_PRICE_TEXT,
                 {VALUE: "12 min ago", TITLE: "2026-10-02 11:48 UTC"},
                 {
@@ -348,8 +351,9 @@ FORMATTER_CASES = [
                 {VALUE: DASH},
                 {"badge": NEUTRAL, VALUE: DASH, TITLE: ""},
                 {VALUE: DASH, "clamp": True, CLASS_NAME: "why-cell", TITLE: ""},
-                UNDEFINED,
                 DASH,
+                UNDEFINED,
+                {VALUE: DASH, TITLE: ""},
                 DASH,
                 {VALUE: DASH, TITLE: ""},
                 {VALUE: "", CLASS_NAME: ""},
@@ -360,7 +364,7 @@ FORMATTER_CASES = [
     ),
     _title_cell(
         "no-title-links-by-the-run-id-and-encodes-it",
-        {"href": "#run/r%201", VALUE: "r 1", HIDDEN: "", TITLE: "r 1"},
+        {"href": "#run/r%201", VALUE: "r 1", HIDDEN: "", TITLE: "r 1", "chips": []},
         {RUN_ID: "r 1"},
         "r 1",
     ),
@@ -528,7 +532,164 @@ LIST_AND_COMPARE_CASES = [
     _selection("no-ids", _pair(None, None), {}),
 ]
 
-ALL_CASES = FORMATTER_CASES + LIST_AND_COMPARE_CASES
+_ACTIVE = {"kind": "active", LABEL: "Active"}
+_PR_URL = "https://github.com/o/r/pull/7"
+_ACTIVE_RUN = {
+    "outcome": _ACTIVE,
+    "stage": "Reviewing \u00b7 reviewer",
+    "idle_seconds": 1100,
+    "created_at": _minutes_before(42),
+    "state_started_at": _minutes_before(5),
+    "active_invocation": {"role": "REVIEWER", "started_at": _minutes_before(2)},
+    DURATION_MS: 63_000,
+}
+_state = partial(_case, "stateCell")
+_why = partial(_case, "whyCell")
+_chips = partial(_case, "runChips")
+_pull = partial(_case, "pullRequestCell")
+_elapsed = partial(_case, "elapsedText")
+_wall = partial(_case, "durationCell")
+_idle = partial(_case, "idleText")
+_status = partial(_case, "statusParts")
+
+STATUS_CASES = [
+    _why(
+        "active-run-shows-stage-and-idle",
+        {
+            VALUE: "Reviewing \u00b7 reviewer \u00b7 idle 18 min",
+            "clamp": True,
+            CLASS_NAME: "why-cell muted",
+            TITLE: "Reviewing \u00b7 reviewer \u00b7 idle 18 min",
+        },
+        _ACTIVE_RUN,
+    ),
+    _why(
+        "stale-run-without-stage-or-idle-shows-the-dash",
+        {VALUE: DASH, "clamp": True, CLASS_NAME: "why-cell", TITLE: ""},
+        {"outcome": {"kind": "stale", LABEL: "Active, stale"}, "idle_seconds": 30},
+    ),
+    _state(
+        "stale-run-is-its-own-kind",
+        {"badge": "stale", VALUE: "Active, stale", TITLE: ""},
+        {"outcome": {"kind": "stale", LABEL: "Active, stale"}},
+    ),
+    _chips("none", [], {}),
+    _chips("full-route-has-no-chip", [], {"initial_route": "SINGLE", "effective_route": "FULL"}),
+    _chips(
+        "all",
+        [
+            {"text": "critique", TITLE: "Route"},
+            {"text": "unattended", TITLE: "Started with factory.unattended"},
+            {"text": "2 restarts", TITLE: "Factory restarts"},
+            {"text": "needs look", TITLE: "a\nb"},
+        ],
+        {
+            "initial_route": "FULL",
+            "effective_route": "CRITIQUE",
+            "unattended": True,
+            "restart_recoveries": 2,
+            "needs_look": ["a", "b"],
+        },
+    ),
+    _chips(
+        "one-restart-and-two-word-route",
+        [
+            {"text": "manual triage", TITLE: "Route"},
+            {"text": "1 restart", TITLE: "Factory restarts"},
+        ],
+        {"initial_route": "MANUAL_TRIAGE", "restart_recoveries": 1},
+    ),
+    _pull("none", DASH, {}),
+    _pull("not-https", DASH, {"pull_request_url": "javascript:alert(1)"}),
+    _pull(
+        "open",
+        {"href": _PR_URL, "external": True, VALUE: "#7", HIDDEN: "", TITLE: "Pull request"},
+        {"pull_request_url": _PR_URL},
+    ),
+    _pull(
+        "merged",
+        {
+            "href": _PR_URL,
+            "external": True,
+            VALUE: "#7 \u2713",
+            HIDDEN: " merged",
+            TITLE: "Pull request, merged",
+        },
+        {"pull_request_url": _PR_URL, "merge_commit_sha": "abc1234"},
+    ),
+    _pull(
+        "no-number",
+        {
+            "href": "https://x.test/p",
+            "external": True,
+            VALUE: "PR",
+            HIDDEN: "",
+            TITLE: "Pull request",
+        },
+        {"pull_request_url": "https://x.test/p"},
+    ),
+    _elapsed(
+        "under-a-second",
+        "0 s",
+        STARTED_AT,
+        datetime(2026, 10, 1, 10, tzinfo=UTC).timestamp() * 1000,
+    ),
+    _elapsed("not-a-time", DASH, "soon", _NOW),
+    _elapsed("no-now", DASH, STARTED_AT, NAN),
+    _elapsed("future-start-is-zero", "0 s", _minutes_before(-5), _NOW),
+    _elapsed("minutes", "42 min 0 s", _minutes_before(42), _NOW),
+    _wall(
+        "active-ticks-from-the-start",
+        {VALUE: "42 min 0 s", "tickSince": _minutes_before(42), TITLE: "Agent time: 1 min 3 s"},
+        _ACTIVE_RUN,
+        _NOW,
+    ),
+    _wall(
+        "stopped-uses-completed-at",
+        {VALUE: "2 min 0 s", TITLE: ""},
+        {
+            "created_at": STARTED_AT,
+            "completed_at": "2026-10-01T10:02:00Z",
+            "updated_at": "2026-10-01T11:00:00Z",
+        },
+        _NOW,
+    ),
+    _idle("minutes", "18 min", 1100),
+    _idle("hours", "2 h 5 min", 7500),
+    _status(
+        "active-run",
+        [
+            {"text": "#7", "href": _PR_URL, TITLE: "Pull request"},
+            {"text": "Running 42 min 0 s", "prefix": "Running ", "tickSince": _minutes_before(42)},
+            {"text": "in stage 5 min 0 s", "prefix": "in stage ", "tickSince": _minutes_before(5)},
+            {
+                "text": "reviewer call 2 min 0 s",
+                "prefix": "reviewer call ",
+                "tickSince": _minutes_before(2),
+            },
+            {"text": "idle 18 min"},
+        ],
+        {**_ACTIVE_RUN, "pull_request_url": _PR_URL},
+        _NOW,
+    ),
+    _status(
+        "stopped-run",
+        [
+            {"text": "unattended", TITLE: "Started with factory.unattended", CLASS_NAME: "chip"},
+            {"text": "Took 2 min 0 s"},
+        ],
+        {
+            "outcome": {"kind": "done", LABEL: "Done"},
+            "unattended": True,
+            "created_at": STARTED_AT,
+            "completed_at": "2026-10-01T10:02:00Z",
+        },
+        _NOW,
+    ),
+    _status("nothing-known", [], {"outcome": {"kind": "done"}}, _NOW),
+]
+
+ALL_CASES = FORMATTER_CASES + LIST_AND_COMPARE_CASES + STATUS_CASES
 
 
 class AddressCase(NamedTuple):
@@ -581,6 +742,11 @@ def test_a_run_detail_formatter_returns(case: Case, results: Callable[[str], JsR
 
 @pytest.mark.parametrize("case", LIST_AND_COMPARE_CASES, ids=lambda case: case.case_id)
 def test_a_list_or_compare_helper_returns(case: Case, results: Callable[[str], JsResult]) -> None:
+    assert results(case.case_id).value == case.expected
+
+
+@pytest.mark.parametrize("case", STATUS_CASES, ids=lambda case: case.case_id)
+def test_a_run_status_helper_returns(case: Case, results: Callable[[str], JsResult]) -> None:
     assert results(case.case_id).value == case.expected
 
 

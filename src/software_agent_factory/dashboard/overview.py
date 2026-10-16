@@ -21,6 +21,8 @@ OUTCOME_DONE = "done"
 OUTCOME_FAILED = "failed"
 OUTCOME_NEEDS_YOU = "needs_you"
 OUTCOME_ACTIVE = "active"
+#: An active run with no new signal for longer than the stale limit.
+OUTCOME_STALE = "stale"
 
 #: How a call that did not fail itself relates to a failed run (see :func:`flag_failing_call`).
 FLAG_REJECTED = "rejected"
@@ -31,9 +33,12 @@ _OUTCOME_LABELS: dict[str, str] = {
     OUTCOME_FAILED: "Failed",
     OUTCOME_NEEDS_YOU: "Needs you",
     OUTCOME_ACTIVE: "Active",
+    OUTCOME_STALE: "Active, stale",
 }
 _PR_READY_LABEL = "PR ready"
-_STALE_LABEL = "Active, stale"
+_NEEDS_LOOK_LABEL = "Done, needs look"
+#: State words the stage label keeps in capitals.
+_ACRONYMS = frozenset({"CI", "PR"})
 
 
 def _outcome(kind: str, label: str | None = None) -> dict[str, str]:
@@ -44,12 +49,18 @@ def _state(run: Mapping[str, Any]) -> Any:
     return run.get("state")
 
 
+def _done_outcome(run: Mapping[str, Any], label: str | None = None) -> dict[str, str]:
+    """A done outcome. It says ``needs look`` when the pull request skipped a gate."""
+    return _outcome(OUTCOME_DONE, _NEEDS_LOOK_LABEL if run.get("needs_look") else label)
+
+
 def run_outcome(run: Mapping[str, Any]) -> dict[str, str]:
-    """The outcome of a run as a ``kind`` and a ``label``: done, failed, needs you or active.
+    """The outcome of a run as a ``kind`` and a ``label``: done, failed, needs you, active or stale.
 
     The label always names the outcome in words, so a badge never relies on its color.
     ``PR_READY`` is done only once the run is finished (``is_finished``). Until then it is
     active, as :func:`software_agent_factory.observability.build_monitoring_snapshot` counts it.
+    A done run with ``needs_look`` reasons says ``Done, needs look``.
     """
     state = _state(run)
     if state == WorkflowState.FAILED:
@@ -57,10 +68,32 @@ def run_outcome(run: Mapping[str, Any]) -> dict[str, str]:
     if state == WorkflowState.NEEDS_HUMAN:
         return _outcome(OUTCOME_NEEDS_YOU)
     if state == WorkflowState.PR_READY and run.get("is_finished") is True:
-        return _outcome(OUTCOME_DONE, _PR_READY_LABEL)
+        return _done_outcome(run, _PR_READY_LABEL)
     if state == WorkflowState.DONE:
-        return _outcome(OUTCOME_DONE)
-    return _outcome(OUTCOME_ACTIVE, _STALE_LABEL if run.get("is_stale") is True else None)
+        return _done_outcome(run)
+    return _outcome(OUTCOME_STALE if run.get("is_stale") is True else OUTCOME_ACTIVE)
+
+
+def stage_label(state: Any) -> str | None:
+    """A workflow state in words, ``CI_RUNNING`` as ``CI running``, or ``None`` for no state."""
+    if not isinstance(state, str) or not state:
+        return None
+    text = " ".join(word if word in _ACRONYMS else word.lower() for word in state.split("_"))
+    return text[0].upper() + text[1:]
+
+
+def run_stage(run: Mapping[str, Any], active_role: Any) -> str | None:
+    """What an unfinished run is doing: its stage and the role of the call in progress.
+
+    ``Reviewing · reviewer``: the role is in lower case. ``None`` once the run is done,
+    failed or waits for a person.
+    """
+    if run_outcome(run)["kind"] not in (OUTCOME_ACTIVE, OUTCOME_STALE):
+        return None
+    stage = stage_label(_state(run))
+    if stage is None or not isinstance(active_role, str) or not active_role:
+        return stage
+    return f"{stage} \u00b7 {active_role.lower()}"
 
 
 def reason_line(run: Mapping[str, Any]) -> str | None:
@@ -70,19 +103,20 @@ def reason_line(run: Mapping[str, Any]) -> str | None:
     return reason if stopped and isinstance(reason, str) and reason else None
 
 
-def headline(run: Mapping[str, Any]) -> dict[str, str]:
+def headline(run: Mapping[str, Any], active_role: Any = None) -> dict[str, str]:
     """The one outcome line of the run page, as a ``kind`` and ``text``.
 
     A failed run says ``Failed: <reason>``. A run that waits for a person says ``Needs you``
-    and the reason it stopped, when it has one. The other runs say their state in words.
+    and the reason it stopped, when it has one. An active run says its stage and the role of
+    the call in progress (:func:`run_stage`). The other runs say their outcome in words.
     """
     outcome = run_outcome(run)
     kind, label = outcome["kind"], outcome["label"]
     reason = reason_line(run)
     if kind in (OUTCOME_FAILED, OUTCOME_NEEDS_YOU):
         return {"kind": kind, "text": f"{label}: {reason}" if reason else label}
-    if kind == OUTCOME_ACTIVE and isinstance(state := _state(run), str):
-        return {"kind": kind, "text": f"In progress: {state}"}
+    if (stage := run_stage(run, active_role)) is not None:
+        return {"kind": kind, "text": f"In progress: {stage}"}
     return {"kind": kind, "text": label}
 
 
