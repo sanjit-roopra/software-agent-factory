@@ -2570,7 +2570,11 @@
   }
 
   // A poll tick waits while the open view still has a request in flight.
+  // A hidden tab does not poll; it refreshes once when it becomes visible again.
   function pollView() {
+    if (document.hidden) {
+      return;
+    }
     if (requests[state.view].inFlight === 0) {
       void refreshView();
     }
@@ -2712,6 +2716,7 @@
     seedBackHistory();
     applyRoute(false);
     globalThis.setInterval(pollView, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", pollView);
   }
 
   start();

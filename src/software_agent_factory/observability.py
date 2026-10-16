@@ -946,7 +946,9 @@ class RunScanResult:
         return reasons
 
 
-DEFAULT_SCAN_CACHE_TTL: float = 2.0
+# Longer than the dashboard poll (POLL_INTERVAL_MS, 5 s in dashboard/static/app.js), so
+# back-to-back polls reuse one scan instead of rescanning every tick.
+DEFAULT_SCAN_CACHE_TTL: float = 6.0
 
 
 class RunScanCache:
@@ -955,8 +957,10 @@ class RunScanCache:
     Designed for read-only observability and dashboard refresh cycles so
     /api/summary, its health data, and nearby /api/runs reads share a single
     validated run scan rather than deserializing the same run set multiple
-    times. Uses monotonic time expiry and defensive copies to prevent mutation
-    contamination. Never used as workflow authority.
+    times. Uses monotonic time expiry. Each caller gets its own run list and
+    reason map, but the ``FactoryRun`` objects are shared and must be treated
+    as read-only: a deep copy of every run on every hit cost almost as much as
+    a fresh scan. Never used as workflow authority.
     """
 
     def __init__(
@@ -1002,8 +1006,8 @@ class RunScanCache:
     def get_scan(self, max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS) -> RunScanResult:
         """Return a validated scan, reusing the cached scan if within TTL.
 
-        Returns a defensive copy of the scan result and its runs so callers
-        cannot mutate the cached state.
+        Returns a shallow copy: the run list and reason map are new, the runs
+        themselves are the cached, read-only objects.
         """
         if max_scanned_runs <= 0:
             raise ValueError("max_scanned_runs must be > 0")
@@ -1028,7 +1032,7 @@ class RunScanCache:
     @staticmethod
     def _copy_scan(scan: RunScanResult) -> RunScanResult:
         return RunScanResult(
-            readable_runs=[run.model_copy(deep=True) for run in scan.readable_runs],
+            readable_runs=list(scan.readable_runs),
             total_directories=scan.total_directories,
             scanned_runs=scan.scanned_runs,
             scan_truncated=scan.scan_truncated,

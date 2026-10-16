@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 from collections import Counter
 from dataclasses import dataclass, field
@@ -2832,18 +2833,17 @@ def test_run_scan_cache_no_stale_mutation_behavior(tmp_path: Path) -> None:
     current_time = 100.0
     cache = RunScanCache(store, ttl=2.0, clock=lambda: current_time)
 
-    # 1. Mutating returned run objects does not taint cache
+    # 1. Mutating the returned list and reason map does not taint the cache
     scan1 = cache.get_scan()
     assert scan1.readable_runs[0].state == WorkflowState.DONE
-    # Mutate the returned in-memory object and list
-    scan1.readable_runs[0].state = WorkflowState.FAILED
+    first_run = scan1.readable_runs[0]
     scan1.readable_runs.clear()
     scan1.unreadable_reasons["corrupt"] = 99
 
-    # Re-reading within TTL returns uncorrupted cached data
+    # Re-reading within TTL returns the cached data without copying each run
     scan2 = cache.get_scan()
     assert len(scan2.readable_runs) == 1
-    assert scan2.readable_runs[0].state == WorkflowState.DONE
+    assert scan2.readable_runs[0] is first_run
     assert "corrupt" not in scan2.unreadable_reasons
 
     # 2. Mutating disk store does not produce permanently stale data
@@ -3163,3 +3163,12 @@ def test_run_detail_keeps_its_failure_reason_and_leaves_the_call_list_to_its_inv
     assert detail is not None
     assert detail.failure_reason == "boom"
     assert "calls" not in RunDetail.model_fields
+
+
+def test_default_scan_cache_ttl_outlasts_the_dashboard_poll() -> None:
+    # A TTL shorter than the poll makes every dashboard tick a cold rescan.
+    from software_agent_factory.dashboard.assets import APP_JS
+
+    match = re.search(r"POLL_INTERVAL_MS = (\d+);", APP_JS)
+    assert match is not None
+    assert DEFAULT_SCAN_CACHE_TTL * 1000 > int(match.group(1))
