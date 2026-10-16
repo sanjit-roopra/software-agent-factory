@@ -1528,6 +1528,8 @@ class WorkflowController:
             updates["lease"] = run.lease.model_copy(update={"heartbeat_at": now})
 
         run = run.model_copy(update=updates)
+        # A stop request filed as the run halted must not stop the resume a person asked for.
+        self._store.delete_stop_request(run.id)
         self._store.save_run(run)
         logger.info("run %s -> %s (reopened from escalation)", run.id, target_state.value)
         return run

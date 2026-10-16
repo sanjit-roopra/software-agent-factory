@@ -25,6 +25,7 @@ Only the process that drives the run can kill its agent process group.
   The halt sends no escalation notice: the person who stopped the run already knows.
 - The workspace, the branch and its commits stay as they are.
 - Any move to a final state deletes the file, so a request the run never reached cannot stop a later resume.
+- A reopen out of `NEEDS_HUMAN` also deletes the file.
 
 ### Consequences
 
@@ -32,7 +33,7 @@ Only the process that drives the run can kill its agent process group.
 - A run that is not driven by any process stops only when something drives it again.
 - A run in a long step without an agent call, such as a check or a CI wait, stops only at its next agent call.
 - A stop request that lands just as the run halts for another reason can stay on disk.
-  The next resume of that run then stops at its first agent call.
+  The reopen that a person asks for deletes it, so it never stops that resume.
 
 ## ADR-048: A stalled run is stopped for real and halts as STALLED
 
