@@ -24,6 +24,8 @@ from ..redaction import bounded_reason, redact_secrets
 from .snapshot import to_json_safe
 from .validators import is_number, is_positive_int, is_safe_https_url, run_id_of
 
+_NOT_AN_OBJECT = "run evidence must serialize to a JSON object"
+
 OUTPUT_LINE_LIMIT = 80
 OUTPUT_CHAR_LIMIT = 8_000
 REVIEW_TEXT_LIMIT = 2_000
@@ -123,7 +125,7 @@ def sanitize_run_checks(raw: Any) -> dict[str, Any]:
     """The verification and CI checks of a run, each with its redacted output tail."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
-        raise TypeError("run evidence must serialize to a JSON object")
+        raise TypeError(_NOT_AN_OBJECT)
     run_id = run_id_of(data)
     return {
         "checks": [_sanitize_check(item, run_id) for item in _dicts(data.get("checks"))],
@@ -186,7 +188,7 @@ def sanitize_run_review(raw: Any) -> dict[str, Any]:
     """The review rounds of a run and its open and accepted findings, text redacted and cut."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
-        raise TypeError("run evidence must serialize to a JSON object")
+        raise TypeError(_NOT_AN_OBJECT)
     run_id = run_id_of(data)
     return {
         "rounds": [_round(item, run_id) for item in _dicts(data.get("review_rounds"))],
@@ -258,7 +260,7 @@ def sanitize_run_plan(raw: Any) -> dict[str, Any]:
     """The run's specification, plan and change set, text redacted and cut."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
-        raise TypeError("run evidence must serialize to a JSON object")
+        raise TypeError(_NOT_AN_OBJECT)
     run_id = run_id_of(data)
     return {
         "branch_name": _text(data.get("branch_name"), run_id, _LABEL_LIMIT),
@@ -340,7 +342,7 @@ def sanitize_run_diff(raw: Any) -> dict[str, Any]:
     """One saved patch of a run, redacted, split per file and capped (ADR-047)."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
-        raise TypeError("run evidence must serialize to a JSON object")
+        raise TypeError(_NOT_AN_OBJECT)
     attempt = data.get("attempt")
     attempts = [item for item in _items(data.get("attempts")) if is_positive_int(item)]
     patch = data.get("patch")

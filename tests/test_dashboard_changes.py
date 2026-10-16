@@ -269,7 +269,8 @@ def test_build_run_diff_reads_latest_and_attempt_patches(tmp_path: Path) -> None
     picked = build_run_diff(store, "run-d", 1)
 
     assert latest == {"run_id": "run-d", "attempt": None, "attempts": [1, 2], "patch": "second"}
-    assert picked is not None and picked["patch"] == "first"
+    assert picked is not None
+    assert picked["patch"] == "first"
     assert build_run_diff(store, "run-d", 9) == {
         "run_id": "run-d",
         "attempt": 9,

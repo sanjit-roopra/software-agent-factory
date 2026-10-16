@@ -102,7 +102,7 @@ _RUN_REASON_PATTERN = re.compile(r"^/api/runs/([^/]+)/reason$")
 _RUN_EVIDENCE_PATTERN = re.compile(r"^/api/runs/([^/]+)/(checks|review|plan)$")
 _RUN_DIFF_PATTERN = re.compile(r"^/api/runs/([^/]+)/diff$")
 #: An attempt index in ``?attempt=``: 1 to 999, no sign or leading zero.
-_ATTEMPT_PATTERN = re.compile(r"^[1-9][0-9]{0,2}$")
+_ATTEMPT_PATTERN = re.compile(r"^[1-9]\d{0,2}$", re.ASCII)
 #: How each evidence route reduces the provider's raw evidence (ADR-047).
 _EVIDENCE_SANITIZERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "checks": sanitize_run_checks,
