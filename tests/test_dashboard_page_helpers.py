@@ -60,8 +60,6 @@ HIDDEN = "hidden"
 STATUS = "status"
 SUCCESS = "SUCCESS"
 FAILURE_LINK = "failure_link"
-OVERVIEW_LIST_PRICE = "list_price_usd"
-OVERVIEW_PREMIUM = "premium_requests"
 SCAN_TRUNCATED = "scan_truncated"
 SCAN_NOTE = "The figures cover only the newest runs the dashboard scanned."
 INFINITY_ID = "infinity"
@@ -120,7 +118,15 @@ _money = partial(_case, "moneyText")
 _relative = partial(_case, "relativeTimeText")
 _absolute = partial(_case, "absoluteTimeText")
 _list_cost = partial(_case, "listCostText")
-_note = partial(_case, "last24HoursNote")
+_success_note = partial(_case, "successNote")
+_week_note = partial(_case, "weekNote")
+_week_cost = partial(_case, "weekCost")
+_week_money = partial(_case, "weekMoney")
+_percent = partial(_case, "percentText")
+_compact = partial(_case, "compactNumber")
+_spark = partial(_case, "sparklinePoints")
+_role = partial(_case, "roleText")
+_tokens_cell = partial(_case, "tokensCell")
 _blank = partial(_case, "isBlankField")
 _badge = partial(_case, "badgeKind")
 _model = partial(_case, "modelText")
@@ -130,10 +136,15 @@ _key_numbers = partial(_case, "keyNumberCards")
 _total_cells = partial(_case, "totalCells")
 _call_outcome = partial(_case, "callOutcome")
 _reopens = partial(_case, "reopensLine")
-_has_list_price = partial(_case, "hasListPrice")
-_has_premium = partial(_case, "hasPremiumRequests")
-_has_no_cost = partial(_case, "hasNoCost")
 _scan_note = partial(_case, "scanTruncatedNote")
+_SUCCESS_OVERVIEW = {"succeeded": 3, "failed": 1, "success_rate": 0.75}
+_WEEK_USAGE = {
+    "week_cost_unit": "usage_value_usd",
+    "week_usage_value_usd": 0.5,
+    "week_list_price_usd": 1.25,
+    "week_premium_requests": 3,
+    "week_tokens": 451_234_567,
+}
 
 # A number that is not finite is not a reported number. Every formatter below keeps it out
 # through ``isFiniteNumber``, so NaN, Infinity and a missing value read as "not reported".
@@ -236,21 +247,63 @@ FORMATTER_CASES = [
     _absolute("offset-is-converted", "2026-10-02 10:22 UTC", "2026-10-02T12:22:00+02:00"),
     _absolute("fallback", DASH, None),
     _absolute("custom-fallback", "", "nope", ""),
-    _list_cost("nothing", DASH, {}),
-    _list_cost("no-usage", DASH, None),
-    _list_cost("list-price", LIST_PRICE_TEXT, {LIST_USD: 0.039188}),
-    _list_cost("premium", "2 premium req.", {PREMIUM_REQUEST_COST: 2}),
+    _list_cost("nothing", {VALUE: DASH, TITLE: ""}, {}),
+    _list_cost("no-usage", {VALUE: DASH, TITLE: ""}, None),
+    _list_cost("list-price", {VALUE: LIST_PRICE_TEXT + " list", TITLE: ""}, {LIST_USD: 0.039188}),
+    _list_cost("premium-only", {VALUE: "2 premium req.", TITLE: ""}, {PREMIUM_REQUEST_COST: 2}),
     _list_cost(
-        "both-units-stay-apart",
-        "$0.039 \u00b7 2 premium req.",
+        "premium-requests-are-the-tooltip",
+        {VALUE: "$0.039 list", TITLE: "2 premium req."},
         {LIST_USD: 0.039188, PREMIUM_REQUEST_COST: 2},
     ),
-    _list_cost("reported-zero", "$0 \u00b7 0 premium req.", {LIST_USD: 0, PREMIUM_REQUEST_COST: 0}),
-    _list_cost("not-numbers", DASH, {LIST_USD: "1", PREMIUM_REQUEST_COST: NAN}),
-    _note("same-as-total", "", 3, 3),
-    _note("less-than-total", "1 in the last 24 hours", 1, 3),
-    _note("none", "", None, 3),
-    _note("zero-of-some", "0 in the last 24 hours", 0, 3),
+    _list_cost(
+        "usage-value-comes-first-and-the-list-price-is-not-added",
+        {VALUE: "$0.500 usage", TITLE: ""},
+        {USAGE_USD: 0.5, LIST_USD: 0.039188},
+    ),
+    _list_cost(
+        "reported-zero",
+        {VALUE: "$0 list", TITLE: "0 premium req."},
+        {LIST_USD: 0, PREMIUM_REQUEST_COST: 0},
+    ),
+    _list_cost("not-numbers", {VALUE: DASH, TITLE: ""}, {LIST_USD: "1", PREMIUM_REQUEST_COST: NAN}),
+    _success_note("done-and-failed", "3 done \u00b7 1 failed", _SUCCESS_OVERVIEW),
+    _success_note("no-finished-runs", "", {"succeeded": 0, "failed": 0, "success_rate": None}),
+    _week_cost("usage-value", 0.5, _WEEK_USAGE),
+    _week_cost("list-price", 1.25, {**_WEEK_USAGE, "week_cost_unit": LIST_USD}),
+    _week_cost("nothing", None, {"week_cost_unit": None, "week_list_price_usd": None}),
+    _week_note(
+        "every-unit-apart",
+        "AI usage value \u00b7 $1.25 list price \u00b7 3 premium req. \u00b7 451.2M tokens",
+        _WEEK_USAGE,
+    ),
+    _week_note(
+        "list-price-unit",
+        "list-price estimate",
+        {"week_cost_unit": LIST_USD, "week_list_price_usd": 1.25},
+    ),
+    _week_note("nothing", "", {}),
+    _week_note("no-calls", "No calls in the last 7 days", {"week_calls": 0}),
+    _week_money("money", "$1.25", 1.25),
+    _week_money("missing-is-a-dash", DASH, None),
+    _percent("rounds", "67%", 2 / 3),
+    _percent("zero", "0%", 0),
+    _percent("missing", NOT_REPORTED, None),
+    _compact("millions", "451.2M", 451_234_567),
+    _compact("small", "950", 950),
+    _compact("missing", NOT_REPORTED, None),
+    _spark("scaled-to-the-top-day", "0.0,19.0 35.0,10.0 70.0,1.0", [0, 1, 2]),
+    _spark("all-zero", "0.0,19.0 70.0,19.0", [0, 0]),
+    _spark("one-day-draws-nothing", "", [3]),
+    _spark("not-a-list", "", None),
+    _role("upper-case", "Implementer", "IMPLEMENTER"),
+    _role("underscore", "Ci repair", "CI_REPAIR"),
+    _role("already-readable", "impl", "impl"),
+    _role("missing", DASH, None),
+    _tokens_cell(
+        "compact-with-the-full-count", {VALUE: "40K", TITLE: "40,000 tokens"}, {"tokens": 40000}
+    ),
+    _tokens_cell("not-reported", {VALUE: DASH, TITLE: ""}, {"tokens": None}),
     _blank("undefined", True, ["x", UNDEFINED]),
     _blank("null", True, ["x", None]),
     _blank(EMPTY, True, ["x", ""]),
@@ -330,7 +383,8 @@ FORMATTER_CASES = [
                 {VALUE: DASH},
                 6,
                 {VALUE: DURATION_TEXT, TITLE: "Agent time: " + DURATION_TEXT},
-                LIST_PRICE_TEXT,
+                {VALUE: DASH, TITLE: ""},
+                {VALUE: LIST_PRICE_TEXT + " list", TITLE: ""},
                 {VALUE: "12 min ago", TITLE: "2026-10-02 11:48 UTC"},
                 {
                     VALUE: "\u21c4",
@@ -356,7 +410,8 @@ FORMATTER_CASES = [
                 {VALUE: DASH},
                 UNDEFINED,
                 {VALUE: DASH, TITLE: ""},
-                DASH,
+                {VALUE: DASH, TITLE: ""},
+                {VALUE: DASH, TITLE: ""},
                 {VALUE: DASH, TITLE: ""},
                 {VALUE: "", CLASS_NAME: ""},
             ],
@@ -412,26 +467,6 @@ FORMATTER_CASES = [
     _reopens("max-missing", None, {REOPENS_USED: 1}),
     _reopens("used-null", None, {REOPENS_USED: None, MAX_REOPENS: 3}),
     _reopens("max-text", None, {REOPENS_USED: 1, MAX_REOPENS: "3"}),
-    _has_list_price("finite", True, {OVERVIEW_LIST_PRICE: 0.5}),
-    _has_list_price("zero-is-reported", True, {OVERVIEW_LIST_PRICE: 0}),
-    _has_list_price("null", False, {OVERVIEW_LIST_PRICE: None}),
-    _has_list_price("nan", False, {OVERVIEW_LIST_PRICE: NAN}),
-    _has_list_price(INFINITY_ID, False, {OVERVIEW_LIST_PRICE: INF}),
-    _has_list_price("text", False, {OVERVIEW_LIST_PRICE: "0.5"}),
-    _has_list_price(MISSING_ID, False, {}),
-    _has_premium("finite", True, {OVERVIEW_PREMIUM: 2}),
-    _has_premium("zero-is-reported", True, {OVERVIEW_PREMIUM: 0}),
-    _has_premium("null", False, {OVERVIEW_PREMIUM: None}),
-    _has_premium("nan", False, {OVERVIEW_PREMIUM: NAN}),
-    _has_premium(INFINITY_ID, False, {OVERVIEW_PREMIUM: INF}),
-    _has_premium("text", False, {OVERVIEW_PREMIUM: "2"}),
-    _has_premium(MISSING_ID, False, {}),
-    _has_no_cost("nothing-reported", True, {}),
-    _has_no_cost("nothing-finite", True, {OVERVIEW_LIST_PRICE: NAN, OVERVIEW_PREMIUM: "2"}),
-    _has_no_cost("list-price-only", False, {OVERVIEW_LIST_PRICE: 0.5}),
-    _has_no_cost("premium-requests-only", False, {OVERVIEW_PREMIUM: 2}),
-    _has_no_cost("a-reported-zero-is-a-cost", False, {OVERVIEW_LIST_PRICE: 0}),
-    _has_no_cost("both-units", False, {OVERVIEW_LIST_PRICE: 0.5, OVERVIEW_PREMIUM: 2}),
     _scan_note("cut", SCAN_NOTE, {SCAN_TRUNCATED: True}),
     _scan_note("complete", "", {SCAN_TRUNCATED: False}),
     _scan_note("text-is-not-true", "", {SCAN_TRUNCATED: "true"}),
@@ -486,6 +521,16 @@ LIST_AND_COMPARE_CASES = [
     _order("needs-you-first-in-list-order", [_RUNS[1], _RUNS[3], _RUNS[0], _RUNS[2]], _RUNS, None),
     _order("filter-keeps-only-needs-you", [_RUNS[1], _RUNS[3]], _RUNS, FILTER_NEEDS_YOU),
     _order("filter-with-none-waiting", [], [_RUNS[0], _RUNS[2]], FILTER_NEEDS_YOU),
+    _order(
+        "active-filter-keeps-only-active-runs",
+        [{**_RUNS[0], "outcome": {"kind": "active"}}, {**_RUNS[2], "outcome": {"kind": "stale"}}],
+        [
+            {**_RUNS[0], "outcome": {"kind": "active"}},
+            {**_RUNS[1], "outcome": {"kind": "needs_you"}},
+            {**_RUNS[2], "outcome": {"kind": "stale"}},
+        ],
+        "active",
+    ),
     _order(
         "only-true-needs-you",
         [_run("y", waiting=True), _run("x", waiting="true"), _run("z", waiting=1)],
@@ -831,6 +876,6 @@ def test_the_runs_that_need_you_sit_under_their_own_group_row(
     assert isinstance(specs, list)
     assert [spec["className"] for spec in specs] == expected
     groups = [spec["cells"][0] for spec in specs if spec["className"] == "group-row"]
-    assert all(cell["colSpan"] == 9 for cell in groups)
+    assert all(cell["colSpan"] == 10 for cell in groups)
     if groups:
         assert [cell["value"] for cell in groups] == ["Needs you (2)", "Other runs"]

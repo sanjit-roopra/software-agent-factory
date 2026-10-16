@@ -17,6 +17,18 @@ from .snapshot import MAX_PAGE_LIMIT
 #: in a header on a write. The cookie is ``HttpOnly``, so the script cannot read it.
 TOKEN_META_NAME = "factory-dashboard-token"
 
+#: The one note on cost units, shown as a tooltip beside every cost heading.
+COST_NOTE = (
+    "Cost is in USD: the AI usage value Copilot reported (1 AI credit = $0.01), else the "
+    "list-price estimate. Neither is what a provider billed; your invoice may be lower or "
+    "zero. Premium requests are a separate count. Units are never added together."
+)
+#: The info mark that carries :data:`COST_NOTE`. Screen readers read the note as its label.
+COST_INFO = (
+    f'<span class="info" role="img" tabindex="0" title="{COST_NOTE}" '
+    f'aria-label="About cost: {COST_NOTE}"></span>'
+)
+
 
 def render_index_html(*, token: str) -> str:
     """Render the single static page. ``token`` is a server-generated value,
@@ -63,56 +75,40 @@ def render_index_html(*, token: str) -> str:
       <div class="card">
         <h2 id="key-figures-heading">Overview</h2>
         <ul id="key-figures" class="stats key-figures" aria-labelledby="key-figures-heading">
-          <li class="stat">
-            <p class="stat-label">Runs</p>
-            <p id="figure-runs" class="stat-value">&mdash;</p>
+          <li class="stat stat-link">
+            <a id="figure-needs-you-link" href="#runs?filter=needs-you">
+              <span class="stat-label">Needs you</span>
+              <span id="figure-needs-you" class="stat-value">&mdash;</span>
+              <span class="stat-note">Show runs that need you</span>
+            </a>
+          </li>
+          <li class="stat stat-link">
+            <a id="figure-active-link" href="#runs?filter=active">
+              <span class="stat-label">Active</span>
+              <span id="figure-active" class="stat-value">&mdash;</span>
+              <span class="stat-note">Show active runs</span>
+            </a>
           </li>
           <li class="stat">
-            <p class="stat-label">Succeeded</p>
-            <p id="figure-succeeded" class="stat-value">&mdash;</p>
+            <p class="stat-label">Success rate</p>
+            <p id="figure-success" class="stat-value">&mdash;</p>
+            <p id="figure-success-note" class="stat-note" hidden></p>
           </li>
           <li class="stat">
-            <p class="stat-label">Failed</p>
-            <p id="figure-failed" class="stat-value">&mdash;</p>
-            <p id="figure-failed-note" class="stat-note" hidden></p>
-          </li>
-          <li class="stat">
-            <p class="stat-label">Active</p>
-            <p id="figure-active" class="stat-value">&mdash;</p>
-          </li>
-          <li class="stat">
-            <p class="stat-label">Needs you</p>
-            <p id="figure-needs-you" class="stat-value">&mdash;</p>
-            <a id="figure-needs-you-link" href="#runs?filter=needs-you">Show runs that need you</a>
-          </li>
-          <li class="stat">
-            <p class="stat-label">Tokens</p>
-            <p id="figure-tokens" class="stat-value">&mdash;</p>
-            <p id="figure-tokens-note" class="stat-note" hidden></p>
-          </li>
-          <li id="stat-list-price" class="stat" hidden>
-            <p class="stat-label">List-price estimate</p>
-            <p id="figure-list-price" class="stat-value">&mdash;</p>
-          </li>
-          <li id="stat-premium" class="stat" hidden>
-            <p class="stat-label">Premium requests</p>
-            <p id="figure-premium" class="stat-value">&mdash;</p>
-          </li>
-          <li id="stat-cost-none" class="stat" hidden>
-            <p class="stat-label">Cost</p>
-            <p class="stat-value">not reported</p>
+            <p class="stat-label">Cost, last 7 days {COST_INFO}</p>
+            <p id="figure-week-cost" class="stat-value">&mdash;</p>
+            <p id="figure-week-note" class="stat-note" hidden></p>
+            <svg id="figure-week-trend" class="sparkline" viewBox="0 0 70 20"
+              preserveAspectRatio="none" aria-hidden="true" focusable="false"></svg>
           </li>
         </ul>
-        <p class="field-hint">
-          List-price estimate is in USD from list prices, not what a provider billed.
-          Premium requests are the count the calls reported. The two are never added.
-        </p>
         <p id="overview-note" class="stat-note" hidden></p>
       </div>
       <div class="card">
         <h2 id="run-list-heading">Run list</h2>
         <p id="runs-filter" hidden>
-          Showing only runs that need you, from the newest {MAX_PAGE_LIMIT} runs.
+          Showing only <span id="runs-filter-name">runs that need you</span>,
+          from the newest {MAX_PAGE_LIMIT} runs.
           <a href="#runs">Show all runs</a>
         </p>
         <div id="runs-toolbar">
@@ -131,7 +127,8 @@ def render_index_html(*, token: str) -> str:
                 <th scope="col">PR</th>
                 <th scope="col">Calls</th>
                 <th scope="col">Duration</th>
-                <th scope="col">Cost</th>
+                <th scope="col">Tokens</th>
+                <th scope="col">Cost {COST_INFO}</th>
                 <th scope="col">Started</th>
                 <th scope="col"><span class="visually-hidden">Compare</span></th>
               </tr>
@@ -139,10 +136,6 @@ def render_index_html(*, token: str) -> str:
             <tbody id="runs-body"></tbody>
           </table>
         </div>
-        <p class="field-hint">
-          Cost is the list-price estimate in USD, not what a provider billed.
-          A run that reported premium requests shows them too.
-        </p>
       </div>
     </section>
 
@@ -180,7 +173,7 @@ def render_index_html(*, token: str) -> str:
                   <th scope="col">Outcome</th>
                   <th scope="col">Duration</th>
                   <th scope="col">Tokens</th>
-                  <th scope="col">Cost</th>
+                  <th scope="col">Cost {COST_INFO}</th>
                 </tr>
               </thead>
               <tbody id="timeline-body"></tbody>
@@ -189,9 +182,6 @@ def render_index_html(*, token: str) -> str:
               </tfoot>
             </table>
           </div>
-          <p class="field-hint">
-            Cost is the list-price estimate in USD, not what a provider billed.
-          </p>
         </div>
         <details id="run-details" class="card details-card">
           <summary>Details</summary>

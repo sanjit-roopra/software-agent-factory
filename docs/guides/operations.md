@@ -105,6 +105,16 @@ workflow state. Run details show model use, retries, safe
 artifact names, verification summaries, and escalation status. The dashboard
 does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
+The Runs page starts with four tiles: **Needs you**, **Active**, **Success
+rate**, and **Cost, last 7 days**. Select **Needs you** or **Active** to show
+only those runs. The cost tile has a line with the cost of each day.
+
+Each run row shows its tokens and one cost in USD. The cost is the AI usage
+value when Copilot reported it. If not, it is the list-price estimate. The word
+after the amount says which one it is: `usage` or `list`. Premium requests are
+a separate count in the tooltip. The page never adds two units together. The
+`i` mark beside each cost heading explains the units.
+
 ### Approve, answer or retry a halted run
 
 A run that needs you shows a panel on its detail page. The panel says why the

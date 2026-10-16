@@ -22,9 +22,15 @@
 
   const RUN_ID_PATTERN = /^[\w-]{1,128}$/;
   const FILTER_NEEDS_YOU = "needs-you";
+  const FILTER_ACTIVE = "active";
   // ACTION_WAITING and ACTION_RETRY in dashboard/overview.py: a waiting run the page can act on.
   const ACTIONABLE = new Set(["waiting", "retry"]);
-  const RUNS_COLUMN_COUNT = 9;
+  const RUNS_COLUMN_COUNT = 10;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  // The sparkline draws in the viewBox of #figure-week-trend in dashboard/assets.py.
+  const SPARK_WIDTH = 70;
+  const SPARK_HEIGHT = 20;
+  const PERCENT = 100;
   // The tab icon gets a dot while a run needs the operator. Both are served by the handler.
   const FAVICON_PATH = "/assets/favicon.svg";
   const FAVICON_ALERT_PATH = "/assets/favicon-alert.svg";
@@ -449,6 +455,12 @@
     return preferDefined(entry.run_id, entry.id);
   }
 
+  // An AgentRole in models.py is upper case, "IMPLEMENTER"; the page shows "Implementer".
+  function roleText(role) {
+    const text = displayValue(role);
+    return /^[A-Z_]+$/.test(text) ? text.charAt(0) + text.slice(1).toLowerCase().replaceAll("_", " ") : text;
+  }
+
   function displayValue(value, fallback = EMPTY_VALUE) {
     return value === undefined || value === null || value === "" ? fallback : String(value);
   }
@@ -764,66 +776,109 @@
   // The server derives every figure in "overview" of /api/summary, so the page only
   // formats them. A figure the server could not report shows as "not reported".
   const OVERVIEW_FIGURES = [
-    { id: "figure-runs", read: function (overview) { return overview.runs; } },
-    { id: "figure-succeeded", read: function (overview) { return overview.succeeded; } },
-    { id: "figure-failed", read: function (overview) { return overview.failed; } },
-    { id: "figure-active", read: function (overview) { return overview.active; } },
     { id: "figure-needs-you", read: function (overview) { return overview.needs_you; } },
-    { id: "figure-tokens", read: function (overview) { return overview.tokens; } },
+    { id: "figure-active", read: function (overview) { return overview.active; } },
     {
-      id: "figure-list-price",
-      read: function (overview) { return overview.list_price_usd; },
-      format: moneyText
+      id: "figure-success",
+      read: function (overview) { return overview.success_rate; },
+      format: percentText
     },
-    { id: "figure-premium", read: function (overview) { return overview.premium_requests; } }
+    { id: "figure-week-cost", read: weekCost, format: weekMoney }
   ];
   // A note shows only while it has text.
   const OVERVIEW_NOTES = [
-    {
-      id: "figure-failed-note",
-      read: function (overview) {
-        return last24HoursNote(overview.failed_last_24h, overview.failed);
-      }
-    },
-    {
-      id: "figure-tokens-note",
-      read: function (overview) {
-        return last24HoursNote(overview.tokens_last_24h, overview.tokens);
-      }
-    },
+    { id: "figure-success-note", read: successNote },
+    { id: "figure-week-note", read: weekNote },
     { id: "overview-note", read: scanTruncatedNote }
   ];
-  // A cost shows only when it was reported. When neither unit was, one card says so.
-  const COST_CARDS = [
-    { id: "stat-list-price", shown: hasListPrice },
-    { id: "stat-premium", shown: hasPremiumRequests },
-    { id: "stat-cost-none", shown: hasNoCost }
-  ];
+  // WEEK_COST_UNITS in dashboard/overview.py: the unit the week's cost is in, and its tag.
+  const WEEK_UNIT_TAGS = new Map([
+    ["usage_value_usd", "AI usage value"],
+    ["list_price_estimate_usd", "list-price estimate"]
+  ]);
 
-  function hasListPrice(overview) {
-    return isFiniteNumber(overview.list_price_usd);
+  // The week's cost in its one unit: the AI usage value when reported, else the list price.
+  function weekCost(overview) {
+    return overview.week_cost_unit === "usage_value_usd"
+      ? overview.week_usage_value_usd
+      : overview.week_list_price_usd;
   }
 
-  function hasPremiumRequests(overview) {
-    return isFiniteNumber(overview.premium_requests);
+  // A week with no reported cost shows a dash, not "not reported" in the large type.
+  function weekMoney(value) {
+    return isFiniteNumber(value) ? moneyText(value) : EMPTY_VALUE;
   }
 
-  function hasNoCost(overview) {
-    return !hasListPrice(overview) && !hasPremiumRequests(overview);
+  function successNote(overview) {
+    if (!isFiniteNumber(overview.success_rate)) {
+      return "";
+    }
+    return displayNumber(overview.succeeded) + " done \u00b7 " +
+      displayNumber(overview.failed) + " failed";
+  }
+
+  // The unit of the week's cost, then the units kept apart from it, each in its own unit.
+  function weekNote(overview) {
+    if (overview.week_calls === 0) {
+      return "No calls in the last 7 days";
+    }
+    const parts = [WEEK_UNIT_TAGS.get(overview.week_cost_unit)];
+    const listPrice = overview.week_list_price_usd;
+    if (overview.week_cost_unit === "usage_value_usd" && isFiniteNumber(listPrice)) {
+      parts.push(moneyText(listPrice) + " list price");
+    }
+    if (isFiniteNumber(overview.week_premium_requests)) {
+      parts.push(compactNumber(overview.week_premium_requests) + " premium req.");
+    }
+    if (isFiniteNumber(overview.week_tokens)) {
+      parts.push(compactNumber(overview.week_tokens) + " tokens");
+    }
+    return parts.filter(Boolean).join(" \u00b7 ");
+  }
+
+  // "75%" for a share of 0.75.
+  function percentText(share) {
+    return isFiniteNumber(share) ? Math.round(share * PERCENT) + "%" : NOT_REPORTED;
+  }
+
+  // "451M" for 451,234,567: short numbers for the tiles and the run list.
+  function compactNumber(value) {
+    if (!isFiniteNumber(value)) {
+      return NOT_REPORTED;
+    }
+    return value.toLocaleString("en-US", { notation: "compact", maximumFractionDigits: 1 });
+  }
+
+  // One point a day, oldest on the left, scaled to the busiest day. Fewer than two days
+  // draw nothing.
+  function sparklinePoints(values) {
+    const days = asArray(values).filter(isFiniteNumber);
+    if (days.length < 2) {
+      return "";
+    }
+    const top = Math.max(...days) || 1;
+    const step = SPARK_WIDTH / (days.length - 1);
+    return days.map(function (value, index) {
+      const y = SPARK_HEIGHT - (value / top) * (SPARK_HEIGHT - 2) - 1;
+      return (index * step).toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+  }
+
+  function renderSparkline(svg, values) {
+    const points = sparklinePoints(values);
+    let line = svg.firstElementChild;
+    if (points === "") {
+      line?.remove();
+      return;
+    }
+    line = line || svg.appendChild(document.createElementNS(SVG_NS, "polyline"));
+    line.setAttribute("points", points);
   }
 
   // The note says so when the figures leave out older runs. It is empty otherwise.
   function scanTruncatedNote(overview) {
     return overview.scan_truncated === true
       ? "The figures cover only the newest runs the dashboard scanned."
-      : "";
-  }
-
-  // The note adds nothing when the last 24 hours hold every run, so it shows only
-  // when the figure above it is a different number.
-  function last24HoursNote(value, total) {
-    return isFiniteNumber(value) && value !== total
-      ? displayNumber(value) + " in the last 24 hours"
       : "";
   }
 
@@ -836,9 +891,7 @@
     for (const note of OVERVIEW_NOTES) {
       patchOptional(document.getElementById(note.id), note.read(overview));
     }
-    for (const card of COST_CARDS) {
-      document.getElementById(card.id).hidden = !card.shown(overview);
-    }
+    renderSparkline(document.getElementById("figure-week-trend"), overview.week_cost_by_day);
     renderRunsCount(overview.needs_you);
   }
 
@@ -1003,16 +1056,30 @@
     return { value: elapsedText(run.created_at, stoppedAtMs(run)), title: agent };
   }
 
-  // Each cost unit the run reported, in its own unit and never added to another.
+  // One USD figure with its unit, the AI usage value when reported, else the list-price
+  // estimate. Premium requests are their own count: the tooltip, or the value when no USD
+  // figure was reported. No unit is added to another.
   function listCostText(usage) {
-    const parts = [];
-    if (isFiniteNumber(usage?.list_price_estimate_usd)) {
-      parts.push(moneyText(usage.list_price_estimate_usd));
+    const premium = isFiniteNumber(usage?.premium_request_cost)
+      ? displayNumber(usage.premium_request_cost) + " premium req."
+      : "";
+    let money = "";
+    if (isFiniteNumber(usage?.usage_value_usd)) {
+      money = moneyText(usage.usage_value_usd) + " usage";
+    } else if (isFiniteNumber(usage?.list_price_estimate_usd)) {
+      money = moneyText(usage.list_price_estimate_usd) + " list";
     }
-    if (isFiniteNumber(usage?.premium_request_cost)) {
-      parts.push(displayNumber(usage.premium_request_cost) + " premium req.");
+    if (money === "") {
+      return { value: premium || EMPTY_VALUE, title: "" };
     }
-    return parts.length === 0 ? EMPTY_VALUE : parts.join(" \u00b7 ");
+    return { value: money, title: premium };
+  }
+
+  function tokensCell(run) {
+    return {
+      value: isFiniteNumber(run.tokens) ? compactNumber(run.tokens) : EMPTY_VALUE,
+      title: isFiniteNumber(run.tokens) ? displayNumber(run.tokens) + " tokens" : ""
+    };
   }
 
   function startedCell(run, nowMs) {
@@ -1047,6 +1114,7 @@
         pullRequestCell(run),
         run.invocation_count,
         durationCell(run, nowMs),
+        tokensCell(run),
         listCostText(run.usage),
         startedCell(run, nowMs),
         compareCell(runId)
@@ -1055,8 +1123,11 @@
   }
 
   // Runs that need the operator come first, the ones the page can act on before the
-  // stopped ones. A filter keeps only those.
+  // stopped ones. The needs-you filter keeps only those, the active filter only active runs.
   function orderRuns(runs, filter) {
+    if (filter === FILTER_ACTIVE) {
+      return runs.filter(isActiveRun);
+    }
     const waiting = [
       ...runs.filter(function (run) { return needsYou(run) && isActionable(run); }),
       ...runs.filter(function (run) { return needsYou(run) && !isActionable(run); })
@@ -1112,6 +1183,9 @@
   }
 
   function emptyRunsText(request) {
+    if (request.filter === FILTER_ACTIVE) {
+      return "No runs are active.";
+    }
     if (request.filter !== null) {
       return "No runs need you.";
     }
@@ -1129,6 +1203,8 @@
   function renderRunsFilter(filter) {
     document.getElementById("runs-filter").hidden = filter === null;
     document.getElementById("runs-toolbar").hidden = filter !== null;
+    document.getElementById("runs-filter-name").textContent =
+      filter === FILTER_ACTIVE ? "active runs" : "runs that need you";
   }
 
   function renderRuns(payload, request) {
@@ -1209,7 +1285,7 @@
     const usage = model.usage || {};
     const row = document.createElement("tr");
     appendCell(row, model.scope);
-    appendCell(row, model.role);
+    appendCell(row, roleText(model.role));
     appendCell(row, model.model);
     appendCell(row, model.purpose);
     appendCell(row, model.status);
@@ -1415,7 +1491,7 @@
     return {
       cells: [
         attempt.attempt_number,
-        attempt.role,
+        roleText(attempt.role),
         attempt.model,
         attempt.budget,
         attempt.triggered_by,
@@ -1634,7 +1710,7 @@
     const usage = call.usage || {};
     return [
       displayValue(call.invocation_number),
-      displayValue(call.role),
+      roleText(call.role),
       modelText(call),
       callOutcome(call).text,
       durationText(call.duration_ms),
@@ -2651,7 +2727,7 @@
 
   function compareRow(role) {
     const row = element("tr");
-    const head = row.appendChild(element("th", "", displayValue(role.role)));
+    const head = row.appendChild(element("th", "", roleText(role.role)));
     head.scope = "row";
     appendRunCells(row, role.a);
     appendRunCells(row, role.b);
@@ -2731,10 +2807,10 @@
 
   // ---- Routing -----------------------------------------------------------
 
-  // The one filter a hash can ask for, or null for any other query.
+  // The filter a hash asks for, needs-you or active, or null for any other query.
   function routeFilter(query) {
     const filter = new URLSearchParams(query).get("filter");
-    return filter === FILTER_NEEDS_YOU ? filter : null;
+    return filter === FILTER_NEEDS_YOU || filter === FILTER_ACTIVE ? filter : null;
   }
 
   // Returns null for an empty or unknown hash. The run id is only checked

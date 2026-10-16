@@ -795,7 +795,7 @@ def test_a_call_row_wires_the_default_columns_from_the_call_fields() -> None:
     cells = function_source(dashboard_assets.APP_JS, "callCells")
     for wired in (
         "displayValue(call.invocation_number)",
-        "displayValue(call.role)",
+        "roleText(call.role)",
         "modelText(call)",
         "callOutcome(call).text",
         "durationText(call.duration_ms)",
@@ -1390,43 +1390,23 @@ def test_the_sidebar_no_longer_claims_the_dashboard_is_read_only() -> None:
 
 _RUNS_HTML = _INDEX_HTML.split('<section id="view-runs"')[1].split("</section>")[0]
 _COMPARE_HTML = _INDEX_HTML.split('<section id="view-compare"')[1].split("</section>")[0]
-_FIGURE_IDS = (
-    "figure-runs",
-    "figure-succeeded",
-    "figure-failed",
-    "figure-active",
-    "figure-needs-you",
-    "figure-tokens",
-    "figure-list-price",
-    "figure-premium",
-)
-#: What the overview row shows and what ``snapshot_overview`` calls it.
+#: What the overview tiles show and what ``snapshot_overview`` calls it.
 _FIGURE_FIELDS = {
-    "figure-runs": "runs",
-    "figure-succeeded": "succeeded",
-    "figure-failed": "failed",
-    "figure-active": "active",
     "figure-needs-you": "needs_you",
-    "figure-tokens": "tokens",
-    "figure-list-price": "list_price_usd",
-    "figure-premium": "premium_requests",
+    "figure-active": "active",
+    "figure-success": "success_rate",
 }
 
 
-def test_the_runs_view_holds_one_overview_figure_for_each_summary_number() -> None:
-    for figure_id in _FIGURE_IDS:
-        assert re.search(rf'<p\s+id="{figure_id}"\s+class="stat-value">', _RUNS_HTML)
-    labels = re.findall(r'<p class="stat-label">([^<]+)</p>', _RUNS_HTML)
-    assert labels == [
-        "Runs",
-        "Succeeded",
-        "Failed",
-        "Active",
+def test_the_runs_view_holds_four_overview_tiles() -> None:
+    for figure_id in (*_FIGURE_FIELDS, "figure-week-cost"):
+        assert re.search(rf'id="{figure_id}"\s+class="stat-value"', _RUNS_HTML)
+    labels = re.findall(r'<(?:p|span) class="stat-label">([^<]+)', _RUNS_HTML)
+    assert [label.strip() for label in labels] == [
         "Needs you",
-        "Tokens",
-        "List-price estimate",
-        "Premium requests",
-        "Cost",
+        "Active",
+        "Success rate",
+        "Cost, last 7 days",
     ]
 
 
@@ -1445,6 +1425,7 @@ def test_each_overview_figure_reads_its_overview_field() -> None:
             rf'id: "{figure_id}",\s*read: function \(overview\) {{ return overview\.{field}; }}',
             figures,
         )
+    assert '{ id: "figure-week-cost", read: weekCost, format: weekMoney }' in figures
 
 
 def test_every_overview_field_the_page_reads_is_one_the_server_sends() -> None:
@@ -1454,12 +1435,13 @@ def test_every_overview_field_the_page_reads_is_one_the_server_sends() -> None:
     assert read <= set(snapshot_overview({}))
 
 
-def test_the_overview_shows_whole_numbers_and_money_for_the_list_price() -> None:
+def test_the_overview_formats_counts_a_percent_and_money() -> None:
     render = function_source(_JS, "renderOverview")
     assert "const format = figure.format || displayNumber;" in render
     assert "setText(document.getElementById(figure.id), format(figure.read(overview)))" in render
-    assert "format: moneyText" in _constant_source("OVERVIEW_FIGURES")
+    assert "format: percentText" in _constant_source("OVERVIEW_FIGURES")
     assert 'value.toLocaleString("en-US")' in function_source(_JS, "displayNumber")
+    assert 'notation: "compact"' in function_source(_JS, "compactNumber")
 
 
 def test_an_unknown_token_figure_shows_not_reported_and_not_zero() -> None:
@@ -1474,39 +1456,42 @@ def test_the_summary_feeds_the_overview() -> None:
     )
 
 
-def test_a_cost_card_shows_only_when_its_cost_was_reported() -> None:
-    cards = _constant_source("COST_CARDS")
-    assert 'id: "stat-list-price", shown: hasListPrice' in cards
-    assert 'id: "stat-premium", shown: hasPremiumRequests' in cards
-    assert 'id: "stat-cost-none", shown: hasNoCost' in cards
-    for card_id in ("stat-list-price", "stat-premium", "stat-cost-none"):
-        assert re.search(rf'<li\s+id="{card_id}"\s+class="stat"\s+hidden>', _RUNS_HTML)
-    assert "document.getElementById(card.id).hidden = !card.shown(overview);" in function_source(
-        _JS, "renderOverview"
+def test_the_week_tile_draws_a_sparkline_of_the_daily_cost() -> None:
+    assert re.search(r'<svg\s+id="figure-week-trend"\s+class="sparkline"', _RUNS_HTML)
+    assert (
+        'renderSparkline(document.getElementById("figure-week-trend"), overview.week_cost_by_day);'
+        in function_source(_JS, "renderOverview")
     )
+    assert 'createElementNS(SVG_NS, "polyline")' in function_source(_JS, "renderSparkline")
 
 
-def test_the_two_cost_units_are_never_added_in_the_overview_row() -> None:
-    assert "list_price_usd" in _constant_source("OVERVIEW_FIGURES")
-    assert "premium_requests" in _constant_source("OVERVIEW_FIGURES")
-    assert "list_price_usd +" not in strip_comments(_JS)
-    assert "+ overview.premium_requests" not in strip_comments(_JS)
+def test_the_cost_units_are_never_added_in_the_overview() -> None:
+    code = strip_comments(_JS)
+    for unit in ("week_usage_value_usd", "week_list_price_usd", "week_premium_requests"):
+        assert f"overview.{unit} +" not in code
+        assert f"+ overview.{unit}" not in code
 
 
-def test_the_needs_you_figure_is_a_real_link_to_the_filtered_list() -> None:
-    assert re.search(
-        r'<a\s+id="figure-needs-you-link"\s+href="#runs\?filter=needs-you">'
-        r"Show runs that need you</a>",
-        _RUNS_HTML,
-    )
+def test_one_cost_note_replaces_the_footnotes() -> None:
+    assert "field-hint" not in _RUNS_HTML
+    assert "field-hint" not in _RUN_DETAIL_HTML
+    assert _INDEX_HTML.count(dashboard_assets.COST_INFO) == 3
+    assert "never added" in dashboard_assets.COST_NOTE
+
+
+def test_the_needs_you_and_active_tiles_are_whole_tile_links_to_their_filter() -> None:
+    for name in ("needs-you", "active"):
+        link = rf'<a id="figure-{name}-link" href="#runs\?filter={name}">'
+        assert re.search(r'<li class="stat stat-link">\s*' + link, _RUNS_HTML)
     assert 'const FILTER_NEEDS_YOU = "needs-you";' in _JS
+    assert 'const FILTER_ACTIVE = "active";' in _JS
 
 
-def test_the_route_filter_accepts_only_needs_you() -> None:
+def test_the_route_filter_accepts_only_needs_you_and_active() -> None:
     assert function_source(_JS, "routeFilter") == (
         "function routeFilter(query) { "
         'const filter = new URLSearchParams(query).get("filter"); '
-        "return filter === FILTER_NEEDS_YOU ? filter : null; }"
+        "return filter === FILTER_NEEDS_YOU || filter === FILTER_ACTIVE ? filter : null; }"
     )
     assert 'hash.replace(/^#/, "").split("?")' in function_source(_JS, "parseRoute")
 
@@ -1571,7 +1556,8 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "PR",
         "Calls",
         "Duration",
-        "Cost",
+        "Tokens",
+        "Cost ",
         "Started",
         "Compare",
     ]
@@ -1583,6 +1569,7 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "pullRequestCell(run)",
         "run.invocation_count",
         "durationCell(run, nowMs)",
+        "tokensCell(run)",
         "listCostText(run.usage)",
         "startedCell(run, nowMs)",
         "compareCell(runId)",
@@ -1670,9 +1657,10 @@ def test_a_start_time_is_relative_and_its_tooltip_is_the_absolute_time() -> None
 
 def test_a_run_list_cost_keeps_each_unit_apart() -> None:
     cost = function_source(_JS, "listCostText")
+    assert 'moneyText(usage.usage_value_usd) + " usage"' in cost
     assert "moneyText(usage.list_price_estimate_usd)" in cost
     assert '" premium req."' in cost
-    assert 'parts.join(" \\u00b7 ")' in cost
+    assert "return { value: money, title: premium };" in cost
 
 
 def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> None:
@@ -1684,7 +1672,9 @@ def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> Non
     assert function_source(_JS, "renderRunsFilter") == (
         "function renderRunsFilter(filter) { "
         'document.getElementById("runs-filter").hidden = filter === null; '
-        'document.getElementById("runs-toolbar").hidden = filter !== null; }'
+        'document.getElementById("runs-toolbar").hidden = filter !== null; '
+        'document.getElementById("runs-filter-name").textContent = '
+        'filter === FILTER_ACTIVE ? "active runs" : "runs that need you"; }'
     )
     assert "renderRunsFilter(request.filter);" in function_source(_JS, "renderRuns")
     assert '"No runs need you."' in function_source(_JS, "emptyRunsText")

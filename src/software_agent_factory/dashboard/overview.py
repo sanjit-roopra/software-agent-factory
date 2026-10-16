@@ -14,6 +14,7 @@ from typing import Any
 
 from ..models import TOTAL_TOKEN_FIELDS, ResumeClassification, WorkflowState
 from .aggregate import STATUS_FAILED
+from .sanitize import sanitize_usage
 from .validators import is_count, is_number
 
 #: The ``kind`` of a run outcome. The page picks a color and a class from it.
@@ -197,12 +198,54 @@ def _reported(value: Any) -> int | float | None:
     return value if is_number(value) else None
 
 
+#: The USD cost units the week's cost can show, first choice first. They are never added.
+WEEK_COST_UNITS: tuple[str, ...] = ("usage_value_usd", "list_price_estimate_usd")
+
+
+def _sum_reported(days: Sequence[Mapping[str, Any]], field: str) -> int | float | None:
+    values = [value for day in days if is_number(value := day.get(field))]
+    return sum(values) if values else None
+
+
+def _week_figures(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Calls, cost, tokens and premium requests over the last seven days, and the cost by day.
+
+    The week's cost is in one unit: the AI usage value when a call reported it, else the
+    list-price estimate. ``week_cost_by_day`` is that unit for each day, oldest first, with
+    ``0`` for a day that reported none. Each unit has its own total; none is added to another.
+    """
+    raw_days = snapshot.get("daily_usage")
+    raw_days = (
+        [day for day in raw_days if isinstance(day, Mapping)] if isinstance(raw_days, list) else []
+    )
+    days = [sanitize_usage(day) for day in raw_days]
+    unit = next((u for u in WEEK_COST_UNITS if _sum_reported(days, u) is not None), None)
+    tokens = [total for day in days if (total := _total_tokens(day)) is not None]
+    calls = [count for day in raw_days if is_count(count := day.get("invocation_count"))]
+    return {
+        "week_calls": sum(calls) if calls else None,
+        "week_cost_unit": unit,
+        "week_usage_value_usd": _sum_reported(days, "usage_value_usd"),
+        "week_list_price_usd": _sum_reported(days, "list_price_estimate_usd"),
+        "week_cost_by_day": [_reported(day.get(unit)) or 0 for day in days] if unit else [],
+        "week_tokens": sum(tokens) if tokens else None,
+        "week_premium_requests": _sum_reported(days, "premium_request_cost"),
+    }
+
+
+def _success_rate(succeeded: int, failed: int) -> float | None:
+    finished = succeeded + failed
+    return succeeded / finished if finished else None
+
+
 def snapshot_overview(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """The one-row summary of the run store: run counts, tokens and cost.
 
     A cost unit is ``None`` when no call reported it. The two units stay apart: the list-price
     estimate in US dollars and the premium request cost are never added together. The counts
     cover the scanned runs, and ``scan_truncated`` says when that is not every run.
+    ``success_rate`` is the share of finished runs that succeeded; the ``week_`` figures
+    come from :func:`_week_figures`.
     """
     counts = snapshot.get("counts")
     counts = counts if isinstance(counts, Mapping) else {}
@@ -217,5 +260,7 @@ def snapshot_overview(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "tokens_last_24h": _reported(snapshot.get("tokens_last_24h")),
         "list_price_usd": _reported(usage.get("list_price_estimate_usd")),
         "premium_requests": _reported(usage.get("premium_request_cost")),
+        "success_rate": _success_rate(shown["succeeded"], shown["failed"]),
+        **_week_figures(snapshot),
         "scan_truncated": snapshot.get("scan_truncated") is True,
     }

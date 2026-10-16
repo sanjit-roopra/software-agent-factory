@@ -847,3 +847,71 @@ def test_a_run_detail_headline_names_the_active_call_role() -> None:
     detail = run_detail_view({**_run("REVIEWING"), "active_invocation": {"role": "REVIEWER"}})
 
     assert detail["headline"]["text"] == "In progress: Reviewing \u00b7 reviewer"
+
+
+_NANO_AIU_PER_DOLLAR = 100_000_000_000
+
+
+def test_the_week_cost_is_the_usage_value_and_keeps_the_list_price_apart() -> None:
+    days = [
+        {"invocation_count": 0},
+        {"invocation_count": 1, "total_nano_aiu": 2 * _NANO_AIU_PER_DOLLAR, "input_tokens": 5},
+        {"invocation_count": 2, "list_price_estimate_usd": 1.5, "premium_request_cost": 3},
+    ]
+
+    overview = snapshot_overview({"daily_usage": days})
+
+    assert overview["week_calls"] == 3
+    assert overview["week_cost_unit"] == "usage_value_usd"
+    assert overview["week_usage_value_usd"] == pytest.approx(2.0)
+    assert overview["week_list_price_usd"] == 1.5
+    assert overview["week_cost_by_day"] == [0, pytest.approx(2.0), 0]
+    assert overview["week_tokens"] == 5
+    assert overview["week_premium_requests"] == 3
+
+
+def test_the_week_cost_falls_back_to_the_list_price() -> None:
+    overview = snapshot_overview({"daily_usage": [{"list_price_estimate_usd": 0.25}, {}]})
+
+    assert overview["week_cost_unit"] == "list_price_estimate_usd"
+    assert overview["week_cost_by_day"] == [0.25, 0]
+    assert overview["week_usage_value_usd"] is None
+
+
+@pytest.mark.parametrize(
+    "days", [None, "x", [], [{}, {}]], ids=["missing", "text", "empty", "none"]
+)
+def test_a_week_with_no_cost_reports_none_and_not_zero(days: object) -> None:
+    overview = snapshot_overview({"daily_usage": days})
+
+    assert overview["week_calls"] is None
+    assert overview["week_cost_unit"] is None
+    assert overview["week_cost_by_day"] == []
+    assert overview["week_tokens"] is None
+    assert overview["week_premium_requests"] is None
+
+
+@pytest.mark.parametrize(
+    ("succeeded", "failed", "expected"),
+    [(3, 1, 0.75), (0, 2, 0.0), (0, 0, None)],
+    ids=["mixed", "all-failed", "nothing-finished"],
+)
+def test_the_success_rate_is_the_share_of_finished_runs_that_succeeded(
+    succeeded: int, failed: int, expected: float | None
+) -> None:
+    counts = {"succeeded": succeeded, "failed": failed}
+
+    assert snapshot_overview({"counts": counts})["success_rate"] == expected
+
+
+def test_a_run_list_row_carries_its_total_tokens_and_the_usage_value() -> None:
+    row = run_summary_view(
+        {
+            "run_id": RUN_ID,
+            "state": "DONE",
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_nano_aiu": 50_000_000_000},
+        }
+    )
+
+    assert row["tokens"] == 15
+    assert row["usage"] == {"usage_value_usd": 0.5}

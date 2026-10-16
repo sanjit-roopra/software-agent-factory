@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from ..models import WorkflowState
-from .aggregate import compare_roles, models_of, models_summary, run_totals
+from .aggregate import call_total_tokens, compare_roles, models_of, models_summary, run_totals
 from .next_step import NextStepKind, next_step
 from .overview import (
     flag_failing_call,
@@ -83,7 +83,11 @@ def _duration_ms(calls: list[dict[str, Any]]) -> int | None:
 
 
 #: The usage totals a run list row shows in its Cost cell.
-LIST_USAGE_FIELDS: tuple[str, ...] = ("list_price_estimate_usd", "premium_request_cost")
+LIST_USAGE_FIELDS: tuple[str, ...] = (
+    "usage_value_usd",
+    "list_price_estimate_usd",
+    "premium_request_cost",
+)
 
 
 def run_summary_view(raw: Any) -> dict[str, Any]:
@@ -92,7 +96,8 @@ def run_summary_view(raw: Any) -> dict[str, Any]:
     ``calls`` is replaced by ``models`` (``text`` and a role by role ``detail``, both for the
     title tooltip) and ``duration_ms``. ``why`` is the redacted, bounded failure reason of a
     stopped run; the row then drops ``failure_reason`` so the reason is sent once. ``usage``
-    keeps only the cost totals the list shows (:data:`LIST_USAGE_FIELDS`). ``stage`` (see
+    keeps only the cost totals the list shows (:data:`LIST_USAGE_FIELDS`); ``tokens`` is the
+    run's total tokens, ``None`` when no call reported any. ``stage`` (see
     :func:`.overview.run_stage`) replaces ``active_role``. ``duration_ms`` is the agent time;
     the page shows the wall-clock time from ``created_at`` and ``completed_at``.
     """
@@ -105,6 +110,7 @@ def run_summary_view(raw: Any) -> dict[str, Any]:
         run.pop("failure_reason", None)
         run.pop("failure_reason_truncated", None)
     if isinstance(usage := run.get("usage"), dict):
+        run["tokens"] = call_total_tokens(usage)
         run["usage"] = {key: usage[key] for key in LIST_USAGE_FIELDS if key in usage}
     run["models"] = models_summary(calls)
     run["duration_ms"] = _duration_ms(calls)
