@@ -1922,7 +1922,7 @@
     return chips;
   }
 
-  function syncChips(container, chips) {
+  function syncStepChips(container, chips) {
     trimChildren(container, chips.length);
     for (const [index, chip] of chips.entries()) {
       const node = childAt(container, index, "span");
@@ -1975,8 +1975,8 @@
   }
 
   function patchStepExtras(row, call, scale) {
-    syncChips(row.children[ROLE_CELL].lastElementChild, stepTags(call));
-    syncChips(row.children[MODEL_CELL].lastElementChild, runtimeChips(call));
+    syncStepChips(row.children[ROLE_CELL].lastElementChild, stepTags(call));
+    syncStepChips(row.children[MODEL_CELL].lastElementChild, runtimeChips(call));
     patchDurationBar(row.children[DURATION_CELL].lastElementChild, call, scale);
     row.dataset.outcome = callOutcome(call).className;
   }

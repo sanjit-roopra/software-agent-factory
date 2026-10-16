@@ -97,3 +97,8 @@ def test_steps_draw_a_line_with_one_outcome_dot_per_call() -> None:
 
 def test_a_hidden_duration_bar_is_not_drawn() -> None:
     assert ".duration-bar[hidden] { display: none; }" in dashboard_assets.STYLE_CSS
+
+
+def test_step_chips_do_not_replace_the_link_cell_chips() -> None:
+    assert len(re.findall(r"function syncChips\(", _JS)) == 1
+    assert "function syncStepChips(container, chips)" in _JS
