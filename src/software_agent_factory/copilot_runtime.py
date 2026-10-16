@@ -162,6 +162,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     failure_reason=reason,
                     usage=usage,
                     performance=perf,
+                    transcript=stdout or None,
                 )
             except BaseException:
                 _kill_process_group(process)
@@ -190,6 +191,7 @@ class CopilotAgentRuntime(AgentRuntime):
                     failure_reason=reason,
                     usage=usage,
                     performance=perf,
+                    transcript=stdout or None,
                 )
 
             try:
@@ -213,15 +215,17 @@ class CopilotAgentRuntime(AgentRuntime):
                     failure_reason=reason,
                     usage=usage,
                     performance=perf,
+                    transcript=stdout or None,
                 )
 
-            return build_success_result(
+            success = build_success_result(
                 request.role,
                 purpose=request.purpose,
                 artifact=artifact,
                 usage=usage,
                 performance=perf,
             )
+            return success.model_copy(update={"transcript": stdout})
 
     def _build_command(
         self,

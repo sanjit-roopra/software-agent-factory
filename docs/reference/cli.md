@@ -396,6 +396,13 @@ shows the same tags and the pull request link. A working run then shows four tim
 since its start, in its stage, in its active call, and with no new signal. A finished
 run shows how long it took. The long list of run facts is under Details.
 
+The steps read as a timeline. A dot in the outcome color marks each call. Each call shows
+when it started, counted from the first call, and a bar for its length next to the
+longest call. A tag marks a call with an unusual purpose or a long context. A chip names
+the runtime that served the call. A "fell back" chip means the first runtime was not able
+to serve it. Its tooltip gives the reason. Open a call to see the tools it used, one line
+each, read from its stored transcript.
+
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Four `POST` routes are the
 only writes: approve a risk halt, answer plan decisions (ADR-033), retry

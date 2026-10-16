@@ -44,6 +44,7 @@ from ..models import (
     ActiveInvocationStatus,
     HaltReasonCode,
     ReviewFindingCategory,
+    RuntimeName,
 )
 from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
@@ -205,11 +206,20 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
         "failure_reason",
         "failure_reason_truncated",
         "performance",
+        "runtime",
+        "fallback_reason",
+        "tool_calls",
     }
 )
 
 #: The active call has the same shape as a finished call, without telemetry.
 ACTIVE_INVOCATION_FIELDS: frozenset[str] = INVOCATION_FIELDS - {"performance"}
+
+_RUNTIME_NAMES: frozenset[str] = frozenset(runtime.value for runtime in RuntimeName)
+
+#: Most tool calls one call sends, and the longest name or preview kept.
+MAX_CALL_TOOL_CALLS = 40
+TOOL_CALL_TEXT_LIMIT = 160
 
 #: What the provider may say about the active call. Any other value shows as
 #: ``running``.
@@ -551,6 +561,7 @@ def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         "usage": usage,
         "total_tokens": call_total_tokens(usage),
         **_reason_fields(data.get("failure_reason"), run_id),
+        **_served_fields(data, run_id),
     }
     return _redact_names(call)
 
@@ -564,6 +575,40 @@ def sanitize_invocation(raw: Any, run_id: str | None = None) -> dict[str, Any]:
     if "performance" in data:
         sanitized["performance"] = sanitize_performance(data["performance"])
     return sanitized
+
+
+def _tool_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = redact_secrets(" ".join(value.split()))
+    return text[:TOOL_CALL_TEXT_LIMIT]
+
+
+def _sanitize_tool_calls(raw: Any) -> list[dict[str, str]]:
+    """Each tool call as a redacted, bounded name and one-line preview."""
+    if not isinstance(raw, list):
+        return []
+    calls = (item for item in raw[:MAX_CALL_TOOL_CALLS] if isinstance(item, dict))
+    return [
+        {"name": _tool_text(item.get("name")), "preview": _tool_text(item.get("preview"))}
+        for item in calls
+        if _tool_text(item.get("name"))
+    ]
+
+
+def _served_fields(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
+    """Which runtime served a finished call, why a fallback did, and its tool calls."""
+    runtime = data.get("runtime")
+    fallback = data.get("fallback_reason")
+    return {
+        "runtime": runtime if runtime in _RUNTIME_NAMES else None,
+        "fallback_reason": (
+            bounded_reason(fallback, run_id=run_id)[0]
+            if isinstance(fallback, str) and fallback
+            else None
+        ),
+        "tool_calls": _sanitize_tool_calls(data.get("tool_calls")),
+    }
 
 
 def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str, Any]:

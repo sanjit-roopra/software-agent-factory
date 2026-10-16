@@ -1,5 +1,37 @@
 # Architecture Decisions
 
+## ADR-050: Keep each agent call's event stream beside its run
+
+Status: accepted on 2026-10-17. This builds on ADR-045 and ADR-047.
+
+### Context
+
+The dashboard showed only the metadata of each call: role, model, outcome, time and
+usage. The runtimes print an event stream that names the tools the agent used.
+The factory read it once for the result and then threw it away. A person had no way
+to see what a call did.
+
+### Decision
+
+- A runtime returns the raw lines its command printed as `AgentResult.transcript`.
+  Claude Code and Copilot do this now. pi keeps its own session files and does not.
+- The workflow writes the lines to `runs/<id>/calls/<n>.jsonl`, with `<n>` the call
+  number in four digits. The text goes through `redact_secrets` first and is cut at
+  2,000,000 characters, at a line end, with a marker line. The file is private (mode 600).
+- The call record keeps the run-relative path as `transcript_path`.
+- A failed write logs a warning and leaves `transcript_path` empty. It never fails the call.
+- The run detail reads the file back only to list up to 40 tool calls: the tool name and
+  one short line of its input. The dashboard sanitizer redacts and cuts both again.
+- The run detail also names the runtime that served each call, from its usage, and
+  sends the fallback reason (ADR-045) redacted and cut.
+
+### Consequences
+
+- A run directory grows by the size of its transcripts. The cap bounds one call.
+- The full transcript stays on disk for a person to read. The dashboard does not serve it.
+- Claude Code still runs with `--no-session-persistence`, so its own session files are
+  not kept. The factory transcript replaces them for review.
+
 ## ADR-049: A stop request is a file that the run's own driver reads
 
 Status: accepted on 2026-10-17. This builds on ADR-047 and ADR-048.

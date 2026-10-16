@@ -2945,6 +2945,9 @@ CALL_FIELD_ORDER = [
     "total_tokens",
     "failure_reason",
     "failure_reason_truncated",
+    "runtime",
+    "fallback_reason",
+    "tool_calls",
 ]
 USAGE_KEYS = (*TOKEN_CLASS_FIELDS, *COST_UNIT_FIELDS)
 

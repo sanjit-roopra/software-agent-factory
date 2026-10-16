@@ -199,6 +199,9 @@ class AgentResult(ModelBase):
     fallback_reason: str | None = None
     """Set by the runtime router when a fallback served the call: the first
     runtime's failure reason."""
+    transcript: str | None = Field(default=None, repr=False)
+    """The raw event lines the runtime CLI printed for this call. The workflow
+    redacts, cuts and stores them beside the run (``transcripts``)."""
 
     def model_post_init(self, __context: object) -> None:
         if not self.success and not self.failure_reason:

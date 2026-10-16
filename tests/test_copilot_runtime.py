@@ -355,6 +355,8 @@ def test_run_returns_usage_from_temporary_usage_output_file(
     assert result.usage.total_premium_request_cost == 1.0
     assert result.usage.model_usage[0].input_tokens == 100
     assert captured_usage_path and not captured_usage_path[0].exists()
+    assert result.transcript is not None
+    assert result.transcript.startswith('{"summary":"Applied fix"')
 
 
 def test_run_falls_back_to_result_stream_when_usage_file_is_malformed(
