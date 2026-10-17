@@ -49,6 +49,7 @@ from .subprocess_utils import (
     extract_first_event_ms,
     format_failure_reason,
     merge_timeout_output,
+    track_child,
 )
 from .subprocess_utils import kill_process_group as _kill_process_group
 from .usage_values import non_negative_float, non_negative_int
@@ -96,15 +97,17 @@ class CopilotAgentRuntime(AgentRuntime):
             )
             boot_start = time.perf_counter()
             try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=cwd,
-                    env=child_env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=True,
+                process = track_child(
+                    subprocess.Popen(
+                        command,
+                        cwd=cwd,
+                        env=child_env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        start_new_session=True,
+                    )
                 )
             except OSError as exc:
                 boot_ms = (time.perf_counter() - boot_start) * 1000.0

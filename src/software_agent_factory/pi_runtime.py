@@ -108,6 +108,7 @@ from .subprocess_utils import (
     kill_process_group,
     redact_with_scrubbed_values,
     sanitize_output,
+    track_child,
 )
 from .usage_values import non_negative_float, non_negative_int
 
@@ -171,19 +172,21 @@ _NO_SESSION_ARG = ("--no-session",)
 def _default_process_factory(
     command: Sequence[str], cwd: Path, env: dict[str, str]
 ) -> subprocess.Popen[str]:
-    return subprocess.Popen(
-        list(command),
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        # ``PiRpcClient`` reads the raw fds, so ``communicate()`` (called when
-        # pi is killed) may find a UTF-8 character cut in half; strict
-        # decoding would raise there and lose the usage read so far.
-        errors="replace",
-        start_new_session=True,
+    return track_child(
+        subprocess.Popen(
+            list(command),
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            # ``PiRpcClient`` reads the raw fds, so ``communicate()`` (called when
+            # pi is killed) may find a UTF-8 character cut in half; strict
+            # decoding would raise there and lose the usage read so far.
+            errors="replace",
+            start_new_session=True,
+        )
     )
 
 

@@ -1,5 +1,35 @@
 # Architecture Decisions
 
+## ADR-048: A stalled run is stopped for real and halts as STALLED
+
+Status: accepted on 2026-10-17. This builds on ADR-043 and ADR-044.
+
+### Context
+
+The scheduler found a stalled run, but its cancel did nothing.
+The agent process kept running, and the run stayed in its old state with no halt.
+Only the scheduler memory knew about the stall, so a restart lost it.
+The run also wrote no activity during an agent call.
+With the stall timeout and the agent timeout both at 900 seconds, a long but healthy call looked stalled.
+
+### Decision
+
+- While an agent call runs, the controller writes the lease heartbeat every 30 seconds.
+  The heartbeat stops when the call runs past its own timeout, so a call that never ends still looks stalled.
+- On a stall, the service asks the controller to cancel the run.
+  The controller kills the process group of the live agent call, and the run stops before its next agent call.
+- The service then settles the run on its own thread:
+  - An unattended run is queued to continue under its own run id, like a run that a restart interrupted (ADR-043).
+    `MAX_RESTART_RECOVERIES` bounds how often that can happen.
+  - Any other run halts in `NEEDS_HUMAN` with the new halt code `STALLED`, so it shows in Needs you.
+
+### Consequences
+
+- A stalled run no longer holds a slot and an agent process for nothing.
+- The halt is in `run.json`, so it survives a restart and the dashboard shows it.
+- A stall outside an agent call, such as a slow check, stops the run only at its next agent call.
+- `STALLED` is a new stored value, so old readers see a code they do not know.
+
 ## ADR-047: The dashboard shows what the agent did, and can stop or steer a run
 
 Status: accepted on 2026-10-16. This amends ADR-016 and ADR-033.

@@ -1117,6 +1117,7 @@ class HaltReasonCode(StrEnum):
     DELIVERY_INTERVENTION = "DELIVERY_INTERVENTION"
     RECOVERY_INTERVENTION = "RECOVERY_INTERVENTION"
     MANUAL_INSPECTION = "MANUAL_INSPECTION"
+    STALLED = "STALLED"
 
     @classmethod
     def parse(cls, value: object) -> HaltReasonCode | None:
@@ -1181,7 +1182,14 @@ HALT_REASON_COPY: dict[HaltReasonCode, HaltReasonCopy] = {
         "The controller stopped at a manual decision boundary.",
         "Inspect the typed run artifacts and decide whether to retry or replace the run.",
     ),
+    HaltReasonCode.STALLED: HaltReasonCopy(
+        "The run made no progress within the stall timeout, so the factory stopped its agent.",
+        "Inspect the last invocation and the workspace, then start a replacement run.",
+    ),
 }
+
+#: The start of the halt reason of a run the service stopped because it made no progress.
+STALLED_HALT_REASON = "stalled: no progress within the stall timeout"
 
 #: The halt reason of a run that stopped on unresolved plan decisions. A count can follow
 #: it, so the classifiers match it as a prefix.

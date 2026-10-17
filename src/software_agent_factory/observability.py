@@ -89,6 +89,7 @@ from .escalation_protocol import (
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
+    STALLED_HALT_REASON,
     TOKEN_CLASS_FIELDS,
     TOTAL_TOKEN_FIELDS,
     UNRESOLVED_DECISIONS_HALT_REASON,
@@ -1942,6 +1943,8 @@ def _unresolved_decisions_guidance(
 
 def _halt_reason_code(reason: str) -> HaltReasonCode:
     """The code a lowercased failure reason selects. The run view keys on the reason text alone."""
+    if reason.startswith(STALLED_HALT_REASON):
+        return HaltReasonCode.STALLED
     if "risk" in reason or "approval" in reason:
         return HaltReasonCode.RISK_APPROVAL
     if "scope" in reason:
