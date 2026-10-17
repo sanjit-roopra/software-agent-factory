@@ -1,4 +1,4 @@
-"""The writes the dashboard asks for: approve, answer plan decisions, retry publishing.
+"""The writes the dashboard asks for: approve, answer plan decisions, retry publishing, stop.
 
 ``POST /api/runs/<id>/approve``, ``/answer`` and ``/retry`` end in one create-only request file
 that the factory service reads later. This module checks the body and the run, and hands the
@@ -7,6 +7,8 @@ It never changes a run. It reads the run through the same rules the service uses
 (:func:`software_agent_factory.resume.request_refusal` and the answer rules), so a
 request that passes here is one the service would accept now. It imports only the read
 functions of ``resume``: the write functions stay with the service, and a test checks it.
+
+``POST /api/runs/<id>/cancel`` hands a stop request to the injected ``StopRequester``.
 
 Transport checks (route, ``Host``, ``Origin``, token, content type, length, JSON) live in
 ``handler.py``. Everything here starts with a decoded JSON body.
@@ -37,8 +39,11 @@ from ..resume import (
     request_refusal,
 )
 from .responses import ConflictReason, WriteRejected
-from .snapshot import ResumeRequester, ResumeRunReader, is_valid_run_id
+from .snapshot import ResumeRequester, ResumeRunReader, StopRequester, is_valid_run_id
 from .validators import is_episode_id
+
+#: The error text for a run the dashboard cannot find or act on.
+_NOT_FOUND = "not found"
 
 #: The reasons :func:`~software_agent_factory.resume.request_refusal` gives, as the codes the
 #: page gets. A request that names the wrong episode, context or action is a stale one.
@@ -67,6 +72,8 @@ class ResumeActions:
     requester: ResumeRequester
     reply_policy: ReplyPolicy
     clock: Callable[[], datetime] = utc_now
+    #: Stores a stop request (ADR-047). Without it the stop route is not routed.
+    stopper: StopRequester | None = None
 
 
 def _bad_request(error: str, *, decision: int | None = None) -> WriteRejected:
@@ -165,7 +172,7 @@ def accept_action(
         raise _bad_request("the run id is not valid")
     run = actions.run_reader(raw_run_id)
     if run is None:
-        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     escalation = run.escalation
     if escalation is None:
         raise _conflict("not_waiting")
@@ -188,7 +195,30 @@ def accept_action(
     )
     result = actions.requester(raw_run_id, request)
     if result == "run_missing":
-        raise WriteRejected(HTTPStatus.NOT_FOUND, "not found")
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
+    if result == "exists":
+        raise _conflict("existing_request")
+    return {"status": "accepted", "requested_at": now.isoformat()}
+
+
+def accept_stop(actions: ResumeActions, raw_run_id: str, body: object) -> dict[str, object]:
+    """Check one stop request and store it. Returns the ``202`` body.
+
+    The body is an empty JSON object. A run that has finished is a ``409 not_active``, and a
+    stop that is already waiting is a ``409 existing_request``.
+    """
+    if not isinstance(body, dict) or body:
+        raise _bad_request("the body must be an empty JSON object")
+    if not is_valid_run_id(raw_run_id):
+        raise _bad_request("the run id is not valid")
+    if actions.stopper is None:
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
+    now = actions.clock()
+    result = actions.stopper(raw_run_id, now)
+    if result == "run_missing":
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
+    if result == "finished":
+        raise _conflict("not_active")
     if result == "exists":
         raise _conflict("existing_request")
     return {"status": "accepted", "requested_at": now.isoformat()}

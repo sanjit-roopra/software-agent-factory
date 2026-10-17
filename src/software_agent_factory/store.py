@@ -51,6 +51,7 @@ from .models import (
     ReviewImpasse,
     ReviewReport,
     RouteDecision,
+    RunStopRequest,
     Specification,
     TestReport,
     ToolchainInventory,
@@ -65,6 +66,8 @@ logger = logging.getLogger(__name__)
 ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 
 _DASHBOARD_REQUEST_PREFIX = "dashboard-approval-"
+#: The one stop request a run can have (ADR-047).
+_STOP_REQUEST_NAME = "stop-request.json"
 #: A request file name carries this many leading hex characters of its context fingerprint.
 _FINGERPRINT_PREFIX_CHARS = 16
 
@@ -342,6 +345,34 @@ class FileRunStore:
             request.episode_id, request.context_fingerprint
         )
         return self._write_text_create_only(destination, self._model_text(request))
+
+    def create_stop_request(self, request: RunStopRequest) -> bool:
+        """Create the stop request of a run. ``False`` when one is already waiting.
+
+        A missing run raises ``FileNotFoundError`` and is never created.
+        """
+        run_dir = self._run_dir_readonly(request.run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run {request.run_id} does not exist")
+        return self._write_text_create_only(run_dir / _STOP_REQUEST_NAME, self._model_text(request))
+
+    def load_stop_request(self, run_id: str) -> RunStopRequest | None:
+        """The waiting stop request of a run, or ``None``. Read-only.
+
+        A file that does not load is logged and read as no request.
+        """
+        path = self._run_dir_readonly(run_id) / _STOP_REQUEST_NAME
+        try:
+            return RunStopRequest.model_validate_json(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            logger.warning("skipped the stop request of run %s: %s", run_id, type(exc).__name__)
+            return None
+
+    def delete_stop_request(self, run_id: str) -> None:
+        """Forget the stop request of a run, if any. Only the controller calls this."""
+        (self._run_dir_readonly(run_id) / _STOP_REQUEST_NAME).unlink(missing_ok=True)
 
     def load_dashboard_request(
         self, run_id: str, episode_id: str, context_fingerprint: str

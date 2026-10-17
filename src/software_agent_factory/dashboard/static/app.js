@@ -2147,6 +2147,7 @@
   const CONFLICT_STATUS = 409;
   const ANSWER_ACTION = "answer";
   const RETRY_ACTION = "retry";
+  const STOP_ACTION = "cancel";
   const FAILURE_TEXT = "the request failed, try again";
   const RUN_CHANGED_TEXT = "the run changed, review again";
   const APPROVE_TITLE_ID = "approve-dialog-title";
@@ -2170,7 +2171,8 @@
     expired: "approval expired, approve again",
     stale_episode: RUN_CHANGED_TEXT,
     stale_fingerprint: RUN_CHANGED_TEXT,
-    not_waiting: RUN_CHANGED_TEXT
+    not_waiting: RUN_CHANGED_TEXT,
+    not_active: "this run has already finished"
   };
   // The same for answers: only the two reasons that name the action differ.
   const ANSWER_CONFLICT_MESSAGES = {
@@ -2199,7 +2201,16 @@
     expired: "retry expired, retry again"
   };
 
+  // The same for a stop (ADR-047).
+  const STOP_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "stop already requested"
+  };
+
   function conflictMessages(action) {
+    if (action === STOP_ACTION) {
+      return STOP_CONFLICT_MESSAGES;
+    }
     if (action === RETRY_ACTION) {
       return RETRY_CONFLICT_MESSAGES;
     }
@@ -2277,6 +2288,7 @@
       return;
     }
     state.draft = null;
+    submission.onAccepted?.();
     document.activeElement?.blur();
     submission.dialog?.close(CLOSED_ACCEPTED);
     void refreshView().then(focusQueuedSentence);
@@ -2418,6 +2430,77 @@
     "The factory pushes the reviewed work again and opens or updates its pull request.";
 
   const SHOW_REASON_LABEL = "Show full failure reason";
+
+  // ---- Run detail: stop (ADR-047) -----------------------------------------
+
+  const STOP_LABEL = "Stop run";
+  const STOP_CONFIRM_LABEL = "Confirm stop";
+  const STOP_SENT_LABEL = "Stop requested";
+
+  function stopControls() {
+    return {
+      box: document.getElementById("run-stop"),
+      button: document.getElementById("run-stop-button"),
+      cancel: document.getElementById("run-stop-cancel"),
+      note: document.getElementById("run-stop-note")
+    };
+  }
+
+  // Stopping takes two clicks, like publishing again: the first arms the button and says
+  // what happens, the second sends it. Keep running disarms it.
+  function armStop(armed) {
+    const { button, cancel, note } = stopControls();
+    button.dataset.armed = String(armed);
+    button.textContent = armed ? STOP_CONFIRM_LABEL : STOP_LABEL;
+    note.hidden = !armed;
+    cancel.hidden = !armed;
+  }
+
+  function resetStop() {
+    const { button, cancel } = stopControls();
+    armStop(false);
+    setDisabled([button, cancel], false);
+  }
+
+  // Shown only on a run that is still working. Another run, or a run that stopped,
+  // starts again from an unarmed button.
+  function renderStopControl(detail, runId) {
+    const { box } = stopControls();
+    const show = runId !== null && isActiveRun(detail);
+    const key = show ? runId : "";
+    if (box.dataset.runId !== key) {
+      box.dataset.runId = key;
+      resetStop();
+    }
+    box.hidden = !show;
+  }
+
+  function onStopClick() {
+    const { box, button, cancel } = stopControls();
+    if (button.dataset.armed !== "true") {
+      armStop(true);
+      return;
+    }
+    void sendAction({
+      runId: box.dataset.runId,
+      action: STOP_ACTION,
+      payload: {},
+      controls: [button, cancel],
+      onAccepted: function () {
+        armStop(false);
+        button.textContent = STOP_SENT_LABEL;
+      }
+    });
+  }
+
+  function bindStopControl() {
+    const { button, cancel } = stopControls();
+    button.addEventListener("click", onStopClick);
+    cancel.addEventListener("click", function () {
+      armStop(false);
+      button.focus();
+    });
+  }
 
   function answersReady(inputs) {
     return inputs.every(function (input) {
@@ -2732,6 +2815,7 @@
     headline.hidden = headline.textContent === "" || isStepVisible(detail.next_step);
     renderStatusLine(detail);
     renderPullRequestLink(detail.pull_request_url);
+    renderStopControl(detail, runId);
     renderFullReason(detail, runId);
     syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
   }
@@ -3745,6 +3829,7 @@
         navigateToRun(row.dataset.runId);
       }
     });
+    bindStopControl();
     const reasonButton = document.getElementById("run-reason-show");
     reasonButton.addEventListener("click", function () {
       showFullReason(reasonButton);

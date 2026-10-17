@@ -54,7 +54,7 @@ def render_index_html(*, token: str) -> str:
     <header>
       <p class="brand">Software Agent Factory</p>
       <p class="subtitle">
-        Local dashboard &mdash; loopback only. Can approve, answer or retry a run.
+        Local dashboard &mdash; loopback only. Can approve, answer, retry or stop a run.
       </p>
       <button id="theme-toggle" type="button">Switch theme</button>
     </header>
@@ -149,7 +149,14 @@ def render_index_html(*, token: str) -> str:
           <div class="run-summary-head">
             <span id="run-badge" class="badge">&mdash;</span>
             <a id="run-pr-link" target="_blank" rel="noopener noreferrer" hidden>Pull request</a>
+            <span id="run-stop" class="run-stop" hidden>
+              <button id="run-stop-button" type="button">Stop run</button>
+              <button id="run-stop-cancel" type="button" hidden>Keep running</button>
+            </span>
           </div>
+          <p id="run-stop-note" class="retry-note" hidden>
+            The factory kills the agent call, keeps the commits and halts the run for you.
+          </p>
           <p id="run-headline" class="headline" hidden></p>
           <p id="run-status-line" class="status-line" hidden></p>
           <p id="run-reason-more" hidden>

@@ -1119,6 +1119,7 @@ def test_each_conflict_reason_has_the_message_the_plan_names() -> None:
         "reopen_limit": "reopen limit reached",
         "wrong_action": "this run needs a different action, reload the page",
         "expired": "approval expired, approve again",
+        "not_active": "this run has already finished",
     }
     run_changed = {"stale_episode", "stale_fingerprint", "not_waiting"}
     assert set(re.findall(r"(\w+): RUN_CHANGED_TEXT", literal)) == run_changed
@@ -2193,3 +2194,21 @@ def test_the_run_page_badge_is_filled_only_when_the_callout_has_an_action() -> N
     render = function_source(_JS, "renderRunSummary")
 
     assert 'ACTION_STEP_KINDS.has(detail.next_step?.kind) ? " badge-filled" : ""' in render
+
+
+def test_stop_needs_a_second_click_and_shows_only_on_a_working_run() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert 'id="run-stop-button"' in html
+    assert 'id="run-stop-note"' in html
+    assert 'const STOP_ACTION = "cancel";' in _JS
+    click = function_source(_JS, "onStopClick")
+    assert 'if (button.dataset.armed !== "true") { armStop(true); return; }' in click
+    assert "action: STOP_ACTION" in click
+    assert "payload: {}" in click
+    assert "controls: [button, cancel]" in click
+    render = function_source(_JS, "renderStopControl")
+    assert "isActiveRun(detail)" in render
+    assert "action === STOP_ACTION" in function_source(_JS, "conflictMessages")
+    literal = object_literal_source(_JS, "STOP_CONFLICT_MESSAGES")
+    assert "...CONFLICT_MESSAGES" in literal
+    assert _plain_strings(literal) == {"existing_request": "stop already requested"}

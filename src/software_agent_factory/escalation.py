@@ -52,6 +52,7 @@ from .models import (
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
     STALLED_HALT_REASON,
+    STOPPED_HALT_REASON,
     UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     DeliveryRetryContext,
@@ -526,6 +527,13 @@ def _load_optional(store: FileRunStore | None, run_id: str, artifact_type: type[
         return None
 
 
+#: Halt reasons the controller writes with a fixed prefix, and the code each maps to.
+_PREFIX_HALTS = (
+    (STALLED_HALT_REASON, HaltReasonCode.STALLED),
+    (STOPPED_HALT_REASON, HaltReasonCode.MANUAL_INSPECTION),
+)
+
+
 def classify_halt_reason(
     run: FactoryRun,
     store: FileRunStore | None = None,
@@ -547,8 +555,9 @@ def classify_halt_reason(
         return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.REVIEW_IMPASSE)
 
     reason = (run.failure_reason or "").lower()
-    if reason.startswith(STALLED_HALT_REASON):
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.STALLED)
+    prefix_code = next((code for prefix, code in _PREFIX_HALTS if reason.startswith(prefix)), None)
+    if prefix_code is not None:
+        return _halt(ResumeClassification.NOT_RESUMABLE, prefix_code)
     if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
         plan = _load_optional(store, run.id, ExecutionPlan)
         return (

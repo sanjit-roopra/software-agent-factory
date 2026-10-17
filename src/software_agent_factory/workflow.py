@@ -96,6 +96,7 @@ from .models import (
     MAX_OPEN_REVIEW_FINDINGS,
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
+    STOPPED_HALT_REASON,
     UNRESOLVED_DECISIONS_HALT_REASON,
     ActiveInvocation,
     AgentPurpose,
@@ -136,6 +137,7 @@ from .models import (
     Risk,
     RouteDecision,
     RunLease,
+    RunStopRequest,
     Specification,
     TestReport,
     ToolchainInventory,
@@ -447,6 +449,8 @@ class RunCancelledError(BaseException):  # NOSONAR(S5709) must pass `except Exce
 
 #: How often a run in an agent call writes a lease heartbeat, in seconds.
 HEARTBEAT_INTERVAL_SECONDS = 30.0
+#: How often a run in an agent call looks for a stop request, in seconds.
+STOP_POLL_INTERVAL_SECONDS = 2.0
 
 
 class _Halt(Exception):
@@ -540,8 +544,26 @@ class WorkflowController:
         self._cancel_requests.discard(run_id)
 
     def _raise_if_cancelled(self, run: FactoryRun) -> None:
+        """Halt on a person's stop request (ADR-047), or raise for a stall (ADR-048)."""
+        request = self._store.load_stop_request(run.id)
+        if request is not None:
+            raise self._halt_on_stop_request(run, request)
         if run.id in self._cancel_requests:
             raise RunCancelledError(run.id)
+
+    def _halt_on_stop_request(self, run: FactoryRun, request: RunStopRequest) -> _Halt:
+        """Halt ``run`` for a person, keeping its workspace and commits.
+
+        No escalation notice: the person who asked for the stop already knows.
+        """
+        reason = (
+            f"{STOPPED_HALT_REASON} from the {request.source} at "
+            f"{request.created_at.isoformat(timespec='seconds')}"
+        )
+        logger.warning("run %s %s", run.id, reason)
+        run = self._close_active_invocation(run, reason)
+        # The terminal transition deletes the request.
+        return _Halt(self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason))
 
     def _call_runtime(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
         """Run the agent while a side thread writes the lease heartbeat (dashboard X1).
@@ -552,7 +574,7 @@ class WorkflowController:
         stop = threading.Event()
         beat = threading.Thread(
             target=self._heartbeat,
-            args=(run, stop, request.timeout_seconds),
+            args=(run, stop, request.timeout_seconds, threading.get_ident()),
             name=f"heartbeat-{run.id}",
             daemon=True,
         )
@@ -572,24 +594,42 @@ class WorkflowController:
             self._agent_threads.pop(run.id, None)
             release_thread(thread_id)
 
-    def _heartbeat(self, run: FactoryRun, stop: threading.Event, timeout_seconds: int) -> None:
+    def _heartbeat(
+        self,
+        run: FactoryRun,
+        stop: threading.Event,
+        timeout_seconds: int,
+        agent_thread: int | None = None,
+    ) -> None:
         """Persist a heartbeat on ``run`` until ``stop`` is set or the call's timeout passes.
 
-        The calling thread waits in the agent call, so nothing else changes ``run`` meanwhile.
+        Between beats it looks for a stop request, and kills the agent processes of
+        ``agent_thread`` when it finds one. The agent call then fails, and the controller
+        halts the run at its next check. The calling thread waits in the agent call, so
+        nothing else changes ``run`` meanwhile.
         """
-        started = time.monotonic()
-        while not stop.wait(self.heartbeat_interval_seconds):
-            if time.monotonic() - started > timeout_seconds:
+        started = last_beat = time.monotonic()
+        poll = min(self.heartbeat_interval_seconds, STOP_POLL_INTERVAL_SECONDS)
+        while not stop.wait(poll):
+            now_monotonic = time.monotonic()
+            if now_monotonic - started > timeout_seconds:
                 return
-            now = utc_now()
-            if run.lease is not None:
-                run.lease = run.lease.model_copy(update={"heartbeat_at": now})
-            else:
-                run.last_activity_at = now
-            try:
-                self._store.save_run(run)
-            except OSError as exc:
-                logger.warning("could not write the heartbeat of run %s: %s", run.id, exc)
+            if agent_thread is not None and self._store.load_stop_request(run.id) is not None:
+                kill_thread_children(agent_thread)
+            if now_monotonic - last_beat >= self.heartbeat_interval_seconds:
+                last_beat = now_monotonic
+                self._write_heartbeat(run)
+
+    def _write_heartbeat(self, run: FactoryRun) -> None:
+        now = utc_now()
+        if run.lease is not None:
+            run.lease = run.lease.model_copy(update={"heartbeat_at": now})
+        else:
+            run.last_activity_at = now
+        try:
+            self._store.save_run(run)
+        except OSError as exc:
+            logger.warning("could not write the heartbeat of run %s: %s", run.id, exc)
 
     def with_pinned_policy(self, *, risk_assessment: bool, unattended: bool) -> WorkflowController:
         """Return a controller that starts new runs with the given policy.
@@ -645,6 +685,8 @@ class WorkflowController:
             "last_activity_at": now,
         }
         if new_state in TERMINAL_STATES:
+            # A stop request the run did not reach must not stop a later resume of it.
+            self._store.delete_stop_request(run.id)
             updates["completed_at"] = now
             updates["lease"] = None
             updates["active_invocation"] = None
@@ -1486,6 +1528,8 @@ class WorkflowController:
             updates["lease"] = run.lease.model_copy(update={"heartbeat_at": now})
 
         run = run.model_copy(update=updates)
+        # A stop request filed as the run halted must not stop the resume a person asked for.
+        self._store.delete_stop_request(run.id)
         self._store.save_run(run)
         logger.info("run %s -> %s (reopened from escalation)", run.id, target_state.value)
         return run

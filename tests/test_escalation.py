@@ -76,6 +76,7 @@ from software_agent_factory.models import (
     Risk,
     RiskApprovalContext,
     RiskRationale,
+    RunStopRequest,
     TriageResult,
     WorkflowState,
     WorkItem,
@@ -2296,9 +2297,12 @@ def test_workflow_controller_reopen_risk_approval(
         }
     )
     store.save_run(run)
+    # A stop request filed as the run halted must not stop the resume (ADR-049).
+    assert store.create_stop_request(RunStopRequest(run_id=run.id, source="dashboard"))
 
     reopened = controller.reopen(run.id, source_repo)
 
+    assert store.load_stop_request(run.id) is None
     # Reopened run must be the SAME run!
     assert reopened.id == run.id
     assert reopened.work_item_id == run.work_item_id

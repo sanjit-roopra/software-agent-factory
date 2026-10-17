@@ -227,6 +227,31 @@ Prints the work item text, so redact before sharing.
 
 ---
 
+## factory cancel
+
+Ask the factory to stop a run that is not finished (ADR-047, ADR-049).
+
+```bash
+factory cancel run-9bb36bbbdf114f53bd9599a103122976
+```
+
+| Argument | Required | Effect |
+| --- | --- | --- |
+| `run_id` | yes | The run id to stop. |
+
+Options: `--config`, `--data-dir`.
+
+The command writes one stop request in the run directory and returns.
+The process that drives the run reads it. During an agent call it stops the agent
+within a few seconds. Otherwise it stops the run before its next agent call.
+The run then halts in `NEEDS_HUMAN` with `MANUAL_INSPECTION`. Its workspace and
+commits stay on disk.
+
+A finished run, or a run that does not exist, exits with code 1.
+A second request while one waits changes nothing.
+
+---
+
 ## factory doctor
 
 Check this machine's prerequisites for the configured feature set.
@@ -372,9 +397,9 @@ since its start, in its stage, in its active call, and with no new signal. A fin
 run shows how long it took. The long list of run facts is under Details.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
-generated for that process. It answers `GET` for reads. Three `POST` routes are the
-only writes: approve a risk halt, answer plan decisions (ADR-033) and retry
-publishing (ADR-042). The
+generated for that process. It answers `GET` for reads. Four `POST` routes are the
+only writes: approve a risk halt, answer plan decisions (ADR-033), retry
+publishing (ADR-042) and stop a working run (ADR-047). The
 tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
 

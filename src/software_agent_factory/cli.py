@@ -55,13 +55,13 @@ import sys
 import webbrowser
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import typer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import timedelta
+    from datetime import datetime, timedelta
 
     from .agents import AgentRuntime
     from .config import FactoryConfig
@@ -70,6 +70,8 @@ if TYPE_CHECKING:
         ResumeRequestReader,
         ResumeRequestResult,
         ResumeRunReader,
+        StopRequester,
+        StopRequestResult,
     )
     from .models import (
         DashboardResumeRequest,
@@ -837,6 +839,38 @@ def show_command(
     typer.echo(run.model_dump_json(indent=2))
 
 
+_STOP_MESSAGES: dict[str, str] = {
+    "created": "stop requested for {run_id}. the factory stops the agent within seconds, "
+    "keeps the commits and halts the run for you.",
+    "exists": "a stop is already waiting for {run_id}.",
+    "finished": "run {run_id} has already finished; there is nothing to stop.",
+    "run_missing": "no such run: {run_id}",
+}
+
+
+@app.command("cancel")
+def cancel_command(
+    run_id: str = typer.Argument(..., help="The run id to stop."),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Ask the factory to stop a run. It keeps the commits and halts the run for you."""
+    from .models import utc_now
+    from .store import FileRunStore
+
+    factory_config = _load_config(config, data_dir)
+    store = FileRunStore(factory_config.data_dir)
+    result = request_run_stop(store, run_id, "cli", utc_now())
+    message = _STOP_MESSAGES[result].format(run_id=run_id)
+    if result in ("finished", "run_missing"):
+        raise _fail(message, code=FAILURE_EXIT_CODE)
+    typer.echo(message)
+
+
 @app.command("doctor")
 def doctor_command(
     config: Path = typer.Option(
@@ -1006,6 +1040,39 @@ def build_resume_requester(store: FileRunStore) -> ResumeRequester:
     return create
 
 
+def request_run_stop(
+    store: FileRunStore, run_id: str, source: Literal["dashboard", "cli"], created_at: datetime
+) -> StopRequestResult:
+    """Store a stop request for a run that has not finished (ADR-047). Create-only.
+
+    The controller that drives the run reads it, kills the agent call and halts the run.
+    """
+    from .models import RunStopRequest
+    from .workflow import is_run_finished
+
+    try:
+        run = store.load_run(run_id)
+    except (FileNotFoundError, ValueError):
+        return "run_missing"
+    if is_run_finished(run):
+        return "finished"
+    request = RunStopRequest(run_id=run_id, source=source, created_at=created_at)
+    try:
+        created = store.create_stop_request(request)
+    except FileNotFoundError:
+        return "run_missing"
+    return "created" if created else "exists"
+
+
+def build_stop_requester(store: FileRunStore) -> StopRequester:
+    """The requester of the dashboard's stop route."""
+
+    def stop(run_id: str, created_at: datetime) -> StopRequestResult:
+        return request_run_stop(store, run_id, "dashboard", created_at)
+
+    return stop
+
+
 def build_resume_request_reader(store: FileRunStore) -> ResumeRequestReader:
     """The request reader of the run detail. Read only, and it leaves the answers out.
 
@@ -1154,8 +1221,8 @@ def dashboard_command(
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and three ``POST`` routes that queue an approval, plan answers or a
-    publish retry for the factory service. It is protected by a token generated
+    and four ``POST`` routes that queue an approval, plan answers, a
+    publish retry or a stop for the factory. It is protected by a token generated
     for this process; the tokenized URL is printed to stdout once and never
     written to the log.
     Ctrl-C stops it and closes the socket.
@@ -1327,6 +1394,7 @@ def dashboard_command(
                     run_reader=build_resume_run_reader(store),
                     requester=build_resume_requester(store),
                     reply_policy=reply_policy,
+                    stopper=build_stop_requester(store),
                 ),
                 host=LOOPBACK_HOST,
                 port=port,
@@ -1336,7 +1404,9 @@ def dashboard_command(
         raise _fail(f"could not bind the dashboard to {LOOPBACK_HOST}:{port}: {exc}") from None
 
     typer.echo(f"dashboard: {server.dashboard_url}")
-    typer.echo("loopback only. it can queue an approval, answers or a retry. press Ctrl-C to stop.")
+    typer.echo(
+        "loopback only. it can queue an approval, answers, a retry or a stop. press Ctrl-C to quit."
+    )
     if open_browser:
         webbrowser.open(server.dashboard_url)
 

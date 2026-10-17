@@ -2,8 +2,8 @@
 
 Routing, auth (cookie or header token, Host, Origin), method enforcement and security
 headers all live here. ``GET`` serves reads. The only ``POST`` routes are the approve,
-answer and retry actions (ADR-033, ADR-042): they check the transport here and the run in
-:mod:`.actions`. Nothing in this module -- or anywhere in this package --
+answer, retry and stop actions (ADR-033, ADR-042, ADR-047): they check the transport here
+and the run in :mod:`.actions`. Nothing in this module -- or anywhere in this package --
 imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
 ``subprocess`` or any shell helper. All data comes from the injectable
 providers in :mod:`software_agent_factory.dashboard.snapshot`.
@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..models import ResumeClassification
 from . import assets
-from .actions import ResumeActions, accept_action
+from .actions import ResumeActions, accept_action, accept_stop
 from .evidence import (
     sanitize_run_checks,
     sanitize_run_diff,
@@ -129,6 +129,8 @@ _ACTION_KINDS = {
     "answer": ResumeClassification.PLAN_DECISION,
     "retry": ResumeClassification.DELIVERY_RETRY,
 }
+#: The stop route (ADR-047). It is routed only when the server can store a stop request.
+_STOP_ACTION = "cancel"
 #: Largest request body a write accepts. A body of exactly this size is accepted.
 MAX_BODY_BYTES = 16 * 1024
 #: A refused write whose body is still unread is read and dropped after the answer when it is
@@ -328,7 +330,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     def _action_route(self) -> tuple[ResumeActions, str, str] | None:
         """The actions, run id and action name this path names, or ``None`` when it names none.
 
-        Only a server that has actions routes the approve, answer and retry paths.
+        Only a server that has actions routes the approve, answer, retry and stop paths.
         """
         actions = self.server.resume_actions
         path = self._decoded_path()
@@ -336,7 +338,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return None
         # Split at the last "/" without a regex, so a hostile path cannot make matching slow.
         run_id, _, action = path[len(_ACTION_PREFIX) :].rpartition("/")
-        if not run_id or action not in _ACTION_KINDS:
+        stop = action == _STOP_ACTION and actions.stopper is not None
+        if not run_id or (action not in _ACTION_KINDS and not stop):
             return None
         return actions, run_id, action
 
@@ -704,11 +707,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     # -- writes -----------------------------------------------------------------
 
     def _serve_action(self, actions: ResumeActions, raw_run_id: str, action_name: str) -> None:
-        """Run one approve or answer request and write its one audit event."""
+        """Run one approve, answer, retry or stop request and write its one audit event."""
         body = _WriteBody(self.headers.get("Content-Length"))
-        status, payload, result = self._action_outcome(
-            actions, raw_run_id, _ACTION_KINDS[action_name], body
-        )
+        status, payload, result = self._action_outcome(actions, raw_run_id, action_name, body)
         to_drop = body.remaining_to_drain()
         if to_drop is None:
             self.close_connection = True
@@ -737,13 +738,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self,
         actions: ResumeActions,
         raw_run_id: str,
-        kind: ResumeClassification,
+        action_name: str,
         body: _WriteBody,
     ) -> tuple[HTTPStatus, dict[str, object], str]:
         """The status, JSON body and audit result of one write. Never raises."""
         try:
             self._check_write_headers()
-            payload = accept_action(actions, kind, raw_run_id, self._read_json_body(body))
+            decoded = self._read_json_body(body)
+            if action_name == _STOP_ACTION:
+                payload = accept_stop(actions, raw_run_id, decoded)
+            else:
+                payload = accept_action(actions, _ACTION_KINDS[action_name], raw_run_id, decoded)
         except WriteRejected as rejected:
             return rejected.status, rejected.payload, rejected.result
         except Exception as exc:  # noqa: BLE001 - never leak internals to the client
