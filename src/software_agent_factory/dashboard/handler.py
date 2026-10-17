@@ -135,6 +135,8 @@ _ACTION_KINDS = {
 _STOP_ACTION = "cancel"
 #: The steer route (ADR-047). It is routed only when the server can store a steer note.
 _STEER_ACTION = "steer"
+#: Longest action name written to the audit log.
+_MAX_LOGGED_ACTION_LENGTH = 16
 #: Largest request body a write accepts. A body of exactly this size is accepted.
 MAX_BODY_BYTES = 16 * 1024
 #: A refused write whose body is still unread is read and dropped after the answer when it is
@@ -736,7 +738,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         _audit_logger.info(
             "dashboard %s run=%s result=%s",
-            action_name,
+            _log_safe_text(action_name, _MAX_LOGGED_ACTION_LENGTH),
             _log_safe_text(raw_run_id, _MAX_LOGGED_RUN_ID_LENGTH),
             result,
         )
