@@ -125,6 +125,8 @@ class AgentRequest(ModelBase):
     #: False when ``risk_assessment.enabled`` is off: the TRIAGE prompt then stops
     #: asking for a ``risk_rationale``.
     risk_assessment_enabled: bool = True
+    #: A person's steer note for this call (ADR-047), sent as the operator section.
+    operator_note: str | None = None
 
     @model_validator(mode="after")
     def _validate_purpose(self) -> AgentRequest:

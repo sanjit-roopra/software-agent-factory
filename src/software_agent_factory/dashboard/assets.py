@@ -54,7 +54,7 @@ def render_index_html(*, token: str) -> str:
     <header>
       <p class="brand">Software Agent Factory</p>
       <p class="subtitle">
-        Local dashboard &mdash; loopback only. Can approve, answer, retry or stop a run.
+        Local dashboard &mdash; loopback only. Can approve, answer, retry, stop or steer a run.
       </p>
       <button id="theme-toggle" type="button">Switch theme</button>
       <button id="keys-help-open" type="button" aria-keyshortcuts="?">Keyboard shortcuts</button>
@@ -192,6 +192,16 @@ def render_index_html(*, token: str) -> str:
             This run changed since you started typing. Leave the field to see the new state.
           </p>
           <div id="next-step-body"></div>
+        </section>
+        <section id="run-steer" class="card steer" aria-labelledby="run-steer-label" hidden>
+          <label id="run-steer-label" for="run-steer-note">Steer the agent</label>
+          <textarea id="run-steer-note" rows="3" maxlength="2000"
+            aria-describedby="run-steer-hint"></textarea>
+          <p id="run-steer-hint" class="retry-note"></p>
+          <p class="steer-actions">
+            <button id="run-steer-send" type="button">Send note</button>
+            <span id="run-steer-status" class="retry-note" role="status"></span>
+          </p>
         </section>
         <div id="run-tabs" class="tabs" role="tablist" aria-label="Run sections">
           <button id="run-tab-overview" type="button" role="tab" data-tab="overview"

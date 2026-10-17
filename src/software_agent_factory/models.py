@@ -1529,6 +1529,23 @@ class RunStopRequest(VersionedModel):
     created_at: UtcDateTime = Field(default_factory=utc_now)
 
 
+#: The longest operator note a person can send to steer a run (ADR-047).
+MAX_STEER_NOTE_CHARS = 2000
+
+
+class RunSteerNote(VersionedModel):
+    """A person's note to the next agent call of a run (ADR-047).
+
+    The dashboard or ``factory steer`` creates it once, and never changes it. The
+    controller adds it to the next agent prompt as an operator section and deletes it.
+    """
+
+    run_id: str = Field(min_length=1)
+    source: Literal["dashboard", "cli"]
+    note: str = Field(min_length=1, max_length=MAX_STEER_NOTE_CHARS)
+    created_at: UtcDateTime = Field(default_factory=utc_now)
+
+
 class EscalationRecord(ModelBase):
     episode_id: str = Field(min_length=1)
     episode_number: int = Field(default=1, ge=1)

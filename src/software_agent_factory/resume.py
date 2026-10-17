@@ -24,6 +24,7 @@ from typing import Literal, TypeIs, get_args
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS, ReplyPolicy
 from .models import (
+    MAX_STEER_NOTE_CHARS,
     AcceptedReplyReceipt,
     DashboardResumeRequest,
     DeliveryRetryContext,
@@ -98,6 +99,20 @@ def clean_plan_answer(text: str) -> str | None:
     if REDACTION_PLACEHOLDER in answer or contains_unsafe_content(answer)[0]:
         return None
     return answer
+
+
+def clean_steer_note(text: str) -> str | None:
+    """A steer note once trimmed, or ``None`` when it is empty, too long or holds a secret.
+
+    A note may span lines and name repository paths: only credentials are refused, and the
+    redaction placeholder, which shows that a credential shape was there (ADR-047).
+    """
+    note = text.strip()
+    if not note or len(note) > MAX_STEER_NOTE_CHARS:
+        return None
+    if REDACTION_PLACEHOLDER in note or contains_secret(note):
+        return None
+    return note
 
 
 def build_plan_answers(

@@ -28,6 +28,7 @@ from software_agent_factory.cli import (
     build_resume_request_reader,
     build_resume_requester,
     build_resume_run_reader,
+    build_steer_requester,
     build_stop_requester,
 )
 from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
@@ -329,6 +330,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                     reply_policy=reply_policy,
                     clock=lambda: NOW,
                     stopper=build_stop_requester(store),
+                    steerer=build_steer_requester(store),
                 )
                 if actions
                 else None,
@@ -1102,7 +1104,7 @@ def _write_response(rig: Rig, method: str, path: str) -> tuple[int, str | None, 
     ("method", "path", "allow"),
     [
         ("POST", "/api/runs", READ_ONLY_METHODS),
-        ("POST", _path("steer"), READ_ONLY_METHODS),
+        ("POST", _path("reconfigure"), READ_ONLY_METHODS),
         ("POST", RUN_PATH, READ_ONLY_METHODS),
         ("POST", f"{_path(APPROVE)}/extra", READ_ONLY_METHODS),
         ("PUT", _path(APPROVE), "POST"),
@@ -1464,3 +1466,63 @@ def test_a_stop_needs_the_token(make_rig: RigFactory) -> None:
         )
 
     assert status == 401
+
+
+# -- steer (ADR-047) ----------------------------------------------------------------------
+
+STEER_ACTION = "steer"
+
+
+@pytest.mark.parametrize("state", [WorkflowState.IMPLEMENTING, WorkflowState.NEEDS_HUMAN])
+def test_a_steer_note_of_a_live_or_halted_run_is_stored_once(
+    make_rig: RigFactory, state: WorkflowState
+) -> None:
+    rig = make_rig(FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state))
+
+    status, payload = rig.post(_path(STEER_ACTION), {"note": "  Keep the old API.  "})
+    again, conflict = rig.post(_path(STEER_ACTION), {"note": "Another note."})
+
+    assert (status, payload) == (202, {"status": "accepted", "requested_at": NOW.isoformat()})
+    stored = rig.store.load_steer_note(RUN_ID)
+    assert stored is not None
+    assert (stored.source, stored.note, stored.created_at) == (
+        "dashboard",
+        "Keep the old API.",
+        NOW,
+    )
+    assert (again, conflict) == (409, {"error": "conflict", REASON: "existing_request"})
+
+
+def test_a_steer_note_of_a_finished_run_is_refused(make_rig: RigFactory) -> None:
+    rig = make_rig(FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.DONE))
+
+    with rig.assert_writes_nothing():
+        status, payload = rig.post(_path(STEER_ACTION), {"note": "Too late."})
+
+    assert (status, payload) == (409, {"error": "conflict", REASON: "not_active"})
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "expected"),
+    [
+        (_path(STEER_ACTION), {}, 400),
+        (_path(STEER_ACTION), {"note": "ok", "extra": 1}, 400),
+        (_path(STEER_ACTION), {"note": 5}, 400),
+        (_path(STEER_ACTION), {"note": "   "}, 400),
+        (_path(STEER_ACTION), {"note": "x" * 2001}, 400),
+        (_path(STEER_ACTION), {"note": "use ghp_" + "a" * 36}, 400),
+        (_path(STEER_ACTION, "bad%21id"), {"note": "ok"}, 400),
+        (_path(STEER_ACTION, MISSING_RUN), {"note": "ok"}, 404),
+    ],
+)
+def test_a_bad_steer_note_is_refused_and_writes_nothing(
+    make_rig: RigFactory, path: str, body: object, expected: int
+) -> None:
+    rig = make_rig(
+        FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.IMPLEMENTING)
+    )
+
+    with rig.assert_writes_nothing():
+        status, _ = rig.post(path, body)
+
+    assert status == expected

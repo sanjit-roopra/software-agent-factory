@@ -155,6 +155,7 @@ from .mutation_gate import (
     run_mutation_gate,
 )
 from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
+from .redaction import redact_secrets
 from .repository_profile import (
     generic_repository_profile,
     is_version_file,
@@ -566,6 +567,18 @@ class WorkflowController:
         # The terminal transition deletes the request.
         return _Halt(self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason))
 
+    def _with_steer_note(self, run: FactoryRun, request: AgentRequest) -> AgentRequest:
+        """Add a person's waiting steer note to ``request`` and forget it (ADR-047).
+
+        The note reaches exactly one agent call: the next one after it was sent.
+        """
+        note = self._store.load_steer_note(run.id)
+        if note is None:
+            return request
+        self._store.delete_steer_note(run.id)
+        logger.info("run %s sends the %s steer note to the %s", run.id, note.source, request.role)
+        return request.model_copy(update={"operator_note": redact_secrets(note.note)})
+
     def _call_runtime(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
         """Run the agent while a side thread writes the lease heartbeat (dashboard X1).
 
@@ -688,6 +701,9 @@ class WorkflowController:
         if new_state in TERMINAL_STATES:
             # A stop request the run did not reach must not stop a later resume of it.
             self._store.delete_stop_request(run.id)
+            if new_state is not WorkflowState.NEEDS_HUMAN:
+                # A halted run keeps its steer note for the call after it resumes.
+                self._store.delete_steer_note(run.id)
             updates["completed_at"] = now
             updates["lease"] = None
             updates["active_invocation"] = None
@@ -2687,6 +2703,7 @@ class WorkflowController:
         run.last_activity_at = started_at
         self._raise_if_cancelled(run)
         self._store.save_run(run)
+        request = self._with_steer_note(run, request)
         try:
             result = self._call_runtime(run, request)
         except (OSError, RuntimeError, ValueError) as exc:

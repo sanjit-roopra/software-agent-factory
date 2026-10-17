@@ -70,6 +70,7 @@ if TYPE_CHECKING:
         ResumeRequestReader,
         ResumeRequestResult,
         ResumeRunReader,
+        SteerRequester,
         StopRequester,
         StopRequestResult,
     )
@@ -871,6 +872,42 @@ def cancel_command(
     typer.echo(message)
 
 
+_STEER_MESSAGES: dict[str, str] = {
+    "created": "note saved for {run_id}. the agent reads it at its next call.",
+    "exists": "a note is already waiting for {run_id}; it goes with the next call.",
+    "finished": "run {run_id} has already finished; there is nothing to steer.",
+    "run_missing": "no such run: {run_id}",
+}
+
+
+@app.command("steer")
+def steer_command(
+    run_id: str = typer.Argument(..., help="The run id to steer."),
+    note: str = typer.Argument(..., help="The note for the next agent call, at most 2000 chars."),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Send a note to the next agent call of a run. A halted run reads it when it resumes."""
+    from .models import utc_now
+    from .resume import clean_steer_note
+    from .store import FileRunStore
+
+    cleaned = clean_steer_note(note)
+    if cleaned is None:
+        raise _fail("the note is empty, too long or holds a secret", code=FAILURE_EXIT_CODE)
+    factory_config = _load_config(config, data_dir)
+    store = FileRunStore(factory_config.data_dir)
+    result = request_run_steer(store, run_id, cleaned, "cli", utc_now())
+    message = _STEER_MESSAGES[result].format(run_id=run_id)
+    if result != "created":
+        raise _fail(message, code=FAILURE_EXIT_CODE)
+    typer.echo(message)
+
+
 @app.command("doctor")
 def doctor_command(
     config: Path = typer.Option(
@@ -1064,6 +1101,44 @@ def request_run_stop(
     return "created" if created else "exists"
 
 
+def request_run_steer(
+    store: FileRunStore,
+    run_id: str,
+    note: str,
+    source: Literal["dashboard", "cli"],
+    created_at: datetime,
+) -> StopRequestResult:
+    """Store a steer note for a run that has not finished (ADR-047). Create-only.
+
+    ``note`` is already clean. The controller adds it to the next agent prompt.
+    """
+    from .models import RunSteerNote, WorkflowState
+    from .workflow import is_run_finished
+
+    try:
+        run = store.load_run(run_id)
+    except (FileNotFoundError, ValueError):
+        return "run_missing"
+    # A halted run reads the note when it resumes, so only a run that ended is refused.
+    if is_run_finished(run) and run.state is not WorkflowState.NEEDS_HUMAN:
+        return "finished"
+    request = RunSteerNote(run_id=run_id, source=source, note=note, created_at=created_at)
+    try:
+        created = store.create_steer_note(request)
+    except FileNotFoundError:
+        return "run_missing"
+    return "created" if created else "exists"
+
+
+def build_steer_requester(store: FileRunStore) -> SteerRequester:
+    """The requester of the dashboard's steer route."""
+
+    def steer(run_id: str, note: str, created_at: datetime) -> StopRequestResult:
+        return request_run_steer(store, run_id, note, "dashboard", created_at)
+
+    return steer
+
+
 def build_stop_requester(store: FileRunStore) -> StopRequester:
     """The requester of the dashboard's stop route."""
 
@@ -1221,8 +1296,8 @@ def dashboard_command(
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and four ``POST`` routes that queue an approval, plan answers, a
-    publish retry or a stop for the factory. It is protected by a token generated
+    and five ``POST`` routes that queue an approval, plan answers, a
+    publish retry, a stop or a steer note for the factory. It is protected by a token generated
     for this process; the tokenized URL is printed to stdout once and never
     written to the log.
     Ctrl-C stops it and closes the socket.
@@ -1399,6 +1474,7 @@ def dashboard_command(
                     requester=build_resume_requester(store),
                     reply_policy=reply_policy,
                     stopper=build_stop_requester(store),
+                    steerer=build_steer_requester(store),
                 ),
                 host=LOOPBACK_HOST,
                 port=port,
@@ -1409,7 +1485,8 @@ def dashboard_command(
 
     typer.echo(f"dashboard: {server.dashboard_url}")
     typer.echo(
-        "loopback only. it can queue an approval, answers, a retry or a stop. press Ctrl-C to quit."
+        "loopback only. it can queue an approval, answers, a retry, a stop or a note. "
+        "press Ctrl-C to quit."
     )
     if open_browser:
         webbrowser.open(server.dashboard_url)

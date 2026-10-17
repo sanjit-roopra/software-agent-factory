@@ -252,6 +252,31 @@ A second request while one waits changes nothing.
 
 ---
 
+## factory steer
+
+Send a note to the next agent call of a run that is still open (ADR-047, ADR-051).
+
+```bash
+factory steer run-9bb36bbbdf114f53bd9599a103122976 "Keep the public API as it is."
+```
+
+| Argument | Required | Effect |
+| --- | --- | --- |
+| `run_id` | yes | The run id to steer. |
+| `note` | yes | The note, at most 2,000 characters. |
+
+Options: `--config`, `--data-dir`.
+
+The command writes one note file in the run directory and returns. The next
+agent call gets the note as an operator section of its prompt, and the factory
+then deletes the file. A run halted in `NEEDS_HUMAN` keeps the note until it
+resumes.
+
+These exit with code 1: an empty note, a note that is too long or holds a secret,
+and a finished or missing run. A second note while one waits exits with code 1 too.
+
+---
+
 ## factory doctor
 
 Check this machine's prerequisites for the configured feature set.
@@ -404,9 +429,9 @@ to serve it. Its tooltip gives the reason. Open a call to see the tools it used,
 each, read from its stored transcript.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
-generated for that process. It answers `GET` for reads. Four `POST` routes are the
+generated for that process. It answers `GET` for reads. Five `POST` routes are the
 only writes: approve a risk halt, answer plan decisions (ADR-033), retry
-publishing (ADR-042) and stop a working run (ADR-047). The
+publishing (ADR-042), and stop or steer a run (ADR-047). The
 tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
 
