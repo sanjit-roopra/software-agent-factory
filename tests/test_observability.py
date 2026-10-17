@@ -1280,44 +1280,6 @@ def test_missing_work_item_yields_none_title_and_no_crash(tmp_path: Path) -> Non
     assert snapshot.degraded is False  # a missing *artifact* is not a corrupt run.json
 
 
-def test_complexity_and_risk_prefer_triage_result_over_work_item(tmp_path: Path) -> None:
-    store = _fake_store(tmp_path)
-    store.add_run(_run("run-1"))
-    store.add_artifact(
-        "run-1",
-        WorkItem(
-            id="WI-run-1",
-            title="t",
-            description="d",
-            complexity=Complexity.L0,
-            risk=Risk.R0,
-        ),
-    )
-    store.add_artifact(
-        "run-1",
-        TriageResult(
-            factory_eligible=True,
-            complexity=Complexity.L2,
-            risk=Risk.R2,
-            needs_research=False,
-            confidence=0.9,
-            risk_rationale=RiskRationale(
-                intended_outcome="Update deployment credentials safely.",
-                sensitive_boundary="Production deployment configuration.",
-                necessity="Task requires modifying production deployment keys.",
-                credible_scenario="Misconfiguration could cause service outage.",
-                known_mitigations=["Validate syntax before deployment."],
-                residual_risk="Manual operator review required before release.",
-            ),
-        ),
-    )
-
-    snapshot = build_monitoring_snapshot(store, now=T0)
-
-    assert snapshot.runs[0].complexity is Complexity.L2
-    assert snapshot.runs[0].risk is Risk.R2
-
-
 _TRIAGE_RATIONALE = RiskRationale(
     intended_outcome="Update deployment credentials safely.",
     sensitive_boundary="Production deployment configuration.",

@@ -62,8 +62,8 @@ The Triage complexity selects the first worker model on every route.
 
 ## Model selection and worker cascade
 
-Each route option defines an execution route, worker complexity, and optional model profile.
-Short routes (`SINGLE` and `CRITIQUE`) also define a provisional risk.
+Each route option defines an execution route, the highest Triage complexity and risk it accepts,
+and an optional model profile.
 Worker model escalation is the existing cascade behavior in the factory.
 
 ## Setup
@@ -142,7 +142,7 @@ Run records from before ADR-037 can show `jev` or `fallback`.
 They also keep their `probabilities`, `model_id` and `usage`.
 
 Other fields include `offered_options`, `selected_option`, `initial_route`, `effective_route`,
-`selected_worker_complexity`, `selected_risk`, `selected_model_profile`, `fallback_reason` and `adjustments`.
+`selected_model_profile`, `fallback_reason` and `adjustments`.
 For `disabled` or `safety_floor` sources, `offered_options` lists all configured options.
 
 ## Troubleshooting

@@ -1010,7 +1010,7 @@ The controller selects the lightest legal route.
 The order is `SINGLE`, `CRITIQUE`, `FULL` and then `MANUAL_TRIAGE`.
 If two options have the same route, the first option in the configuration wins.
 When no option is legal, the controller selects `MANUAL_TRIAGE`.
-When routing is disabled, the controller selects the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
+When routing is disabled, the controller selects the first configured `FULL` option, or `MANUAL_TRIAGE` if no `FULL` option is configured.
 The packaged default enables routing.
 
 The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.

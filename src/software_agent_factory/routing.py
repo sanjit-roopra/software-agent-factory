@@ -288,7 +288,7 @@ def _route_decision(
     fallback_reason: str | None = None,
 ) -> RouteDecision:
     route = chosen.route if chosen is not None else ExecutionRoute.MANUAL_TRIAGE
-    # A disabled decision takes FULL without applying the option's worker settings.
+    # A disabled decision takes FULL without applying the option's model profile.
     detail = chosen if source != "disabled" else None
     return RouteDecision(
         work_item_id=work_item.id,
@@ -296,8 +296,6 @@ def _route_decision(
         selected_option=chosen.id if chosen is not None else "manual_triage",
         initial_route=route,
         effective_route=route,
-        selected_worker_complexity=detail.complexity if detail is not None else None,
-        selected_risk=detail.risk if detail is not None else None,
         selected_model_profile=detail.model_profile if detail is not None else None,
         source=source,
         confidence=1.0,
@@ -328,17 +326,16 @@ def determine_route(
         )
         for opt in config.routing.options
     ]
-    legal_ids = assess_safety_floors(work_item, repository_profile, config, triage)
-    offered_options = [opt for opt in all_options if opt.id in legal_ids]
-
     if not config.routing.enabled:
-        fallback = find_legal_full_fallback(offered_options)
+        fallback = find_legal_full_fallback(all_options)
         reason = (
             "routing is disabled by configuration"
             if fallback is not None
-            else "routing is disabled and no legal FULL option survived safety floors"
+            else "routing is disabled and no FULL option is configured"
         )
         return _route_decision(work_item, config, all_options, fallback, "disabled", reason)
+    legal_ids = assess_safety_floors(work_item, repository_profile, config, triage)
+    offered_options = [opt for opt in all_options if opt.id in legal_ids]
     if not offered_options:
         return _route_decision(
             work_item,

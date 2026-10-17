@@ -1748,11 +1748,11 @@ def test_unattended_synthesized_route_restarts_without_a_planner_call(
         }
     )
     with pytest.raises(KeyboardInterrupt):
-        controller.run(item, source_repo, run_id="single")
-    interrupted = store.load_run("single")
+        controller.run(item, source_repo, run_id="critique")
+    interrupted = store.load_run("critique")
     assert interrupted.effective_route is ExecutionRoute.CRITIQUE
 
-    recovered = controller.resume("single", source_repo)
+    recovered = controller.resume("critique", source_repo)
 
     assert recovered.state is WorkflowState.PR_READY, recovered.failure_reason
     assert recovered.completed_at is not None

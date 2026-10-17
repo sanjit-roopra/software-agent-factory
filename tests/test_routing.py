@@ -250,9 +250,26 @@ def test_routing_disabled_preserves_full_pipeline_without_network() -> None:
     assert decision.initial_route is ExecutionRoute.FULL
     assert decision.effective_route is ExecutionRoute.FULL
     assert decision.source == "disabled"
-    assert decision.selected_worker_complexity is None
     assert decision.selected_model_profile is None
     assert decision.fallback_reason == "routing is disabled by configuration"
+
+
+def test_routing_disabled_takes_full_when_no_full_option_fits_triage() -> None:
+    config_dict = _config_dict()
+    config_dict["routing"] = {
+        "enabled": False,
+        "options": [
+            {"id": "full_l2", "route": "FULL", "complexity": "L2"},
+            {"id": "manual_triage", "route": "MANUAL_TRIAGE"},
+        ],
+    }
+    config = FactoryConfig.model_validate(config_dict)
+    triage = _triage(Complexity.L3)
+
+    decision = determine_route(_work_item("WI-disabled-l3"), _default_profile(), config, triage)
+
+    assert decision.selected_option == "full_l2"
+    assert decision.initial_route is ExecutionRoute.FULL
 
 
 def _risk_gate_config(*, risk_assessment_enabled: bool) -> FactoryConfig:
@@ -465,7 +482,6 @@ def test_lightest_route_ties_keep_configuration_order() -> None:
 
     assert [opt.id for opt in decision.offered_options] == ["manual", "full_l3", "full_l2"]
     assert decision.selected_option == "full_l3"
-    assert decision.selected_worker_complexity is Complexity.L3
     assert decision.source == "triage"
 
 
