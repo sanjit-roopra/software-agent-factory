@@ -112,6 +112,12 @@ def test_a_write_sends_the_meta_token_in_the_token_header() -> None:
     assert 'credentials: "same-origin"' in poster
 
 
+def test_a_hidden_tab_refreshes_when_shown_again() -> None:
+    # pollView itself skips a hidden tab; see the poll-tick test below.
+    start = function_source(dashboard_assets.APP_JS, "start")
+    assert 'document.addEventListener("visibilitychange", pollView);' in start
+
+
 def test_route_parser_pins_every_route_shape() -> None:
     js = dashboard_assets.APP_JS
     parser = function_source(js, "parseRoute")
@@ -526,7 +532,8 @@ def test_a_refresh_never_ends_in_an_unhandled_rejection() -> None:
 
 def test_a_poll_tick_waits_while_the_open_view_has_a_request_in_flight() -> None:
     assert function_source(dashboard_assets.APP_JS, "pollView") == (
-        "function pollView() { if (requests[state.view].inFlight === 0) { void refreshView(); } }"
+        "function pollView() { if (document.hidden) { return; } "
+        "if (requests[state.view].inFlight === 0) { void refreshView(); } }"
     )
 
 
