@@ -1561,7 +1561,9 @@ metadata, and raw failure reasons. It never holds agent reasoning text or a raw
 artifact. The request handler then allowlists the fields it renders, so a
 future provider mistake still cannot leak content. The sanitizer redacts each
 failure reason and the escalation text first, then cuts it to 500 characters
-and keeps the start and the end (ADR-033). A run that does not exist, or whose id is
+and keeps the start and the end (ADR-033). The page can ask
+`GET /api/runs/<id>/reason` for the whole redacted run reason, cut only past
+20,000 characters (ADR-046). A run that does not exist, or whose id is
 not even shaped like one, is a 404.
 
 The three write actions are approve a risk approval, answer plan decisions

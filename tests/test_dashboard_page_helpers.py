@@ -12,7 +12,7 @@ import math
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 from dashboard_js import UNDEFINED, JsCall, JsResult, run_functions
@@ -879,3 +879,91 @@ def test_the_runs_that_need_you_sit_under_their_own_group_row(
     assert all(cell["colSpan"] == 10 for cell in groups)
     if groups:
         assert [cell["value"] for cell in groups] == ["Needs you (2)", "Other runs"]
+
+
+_HEALTH_NOW_MS = datetime(2026, 10, 1, 12, 0, tzinfo=UTC).timestamp() * 1000
+
+
+def _health_view(health: object) -> dict[str, Any]:
+    [result] = run_functions(
+        dashboard_assets.APP_JS, [JsCall("healthView", (health, _HEALTH_NOW_MS))]
+    )
+    assert result.error is None
+    assert isinstance(result.value, dict)
+    return result.value
+
+
+def test_a_degraded_health_report_shows_a_card_per_check_with_its_items() -> None:
+    view = _health_view(
+        {
+            "degraded": True,
+            "degraded_reasons": ["1 stale run"],
+            "generated_at": "2026-10-01T11:58:00Z",
+            "stale_runs": [{"run_id": RUN_1, "state": "IMPLEMENTING", "idle_seconds": 1500}],
+            "stale_locks": [
+                {"lock_name": "work-item-7.lock", "modified_at": "2026-10-01T09:00:00Z"}
+            ],
+            "orphaned_workspaces": [],
+        }
+    )
+
+    assert view["headline"] == {"text": "Degraded", "kind": "failed"}
+    assert view["reasons"] == ["1 stale run"]
+    assert view["checked"] == "Checked 2 min ago"
+    runs, locks, workspaces = view["cards"]
+    assert (runs["title"], runs["count"]) == ("Stale runs", 1)
+    assert runs["items"] == [{"text": "run-1 · IMPLEMENTING, idle 25 min", "href": "#run/run-1"}]
+    assert locks["items"] == [{"text": "work-item-7.lock · changed 3 h ago", "href": None}]
+    assert (workspaces["title"], workspaces["count"], workspaces["items"]) == (
+        "Orphaned workspaces",
+        0,
+        [],
+    )
+
+
+def test_a_healthy_report_with_no_lists_shows_empty_cards() -> None:
+    view = _health_view({"degraded": False})
+
+    assert view["headline"] == {"text": "Healthy", "kind": "done"}
+    assert view["checked"] == ""
+    assert [card["count"] for card in view["cards"]] == [0, 0, 0]
+    assert all(card["empty"] for card in view["cards"])
+
+
+def test_a_stale_run_with_a_bad_id_gets_no_link() -> None:
+    view = _health_view({"stale_runs": [{"run_id": "../etc", "state": "PLANNING"}]})
+
+    assert view["cards"][0]["items"] == [{"text": "../etc · PLANNING", "href": None}]
+
+
+_CUT = "Tests failed in"
+_CACHED = {"runId": RUN_1, "cut": _CUT, "text": "Tests failed in test_api.py"}
+
+
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        ({"failure_reason": _CUT, "failure_reason_truncated": True}, _CACHED["text"]),
+        ({"failure_reason": "Push failed", "failure_reason_truncated": True}, None),
+        ({"failure_reason": None, "failure_reason_truncated": False}, None),
+        ({"failure_reason": _CUT, "failure_reason_truncated": False}, None),
+    ],
+    ids=["same-cut", "new-reason", "cleared", "no-longer-cut"],
+)
+def test_a_loaded_full_reason_shows_only_while_the_same_cut_reason_stays(
+    detail: dict[str, object], expected: object
+) -> None:
+    [result] = run_functions(
+        dashboard_assets.APP_JS, [JsCall("matchingFullReason", (_CACHED, RUN_1, detail))]
+    )
+
+    assert result.value == expected
+
+
+def test_a_loaded_full_reason_belongs_to_its_own_run() -> None:
+    detail = {"failure_reason": _CUT, "failure_reason_truncated": True}
+    [result] = run_functions(
+        dashboard_assets.APP_JS, [JsCall("matchingFullReason", (_CACHED, "run-2", detail))]
+    )
+
+    assert result.value is None

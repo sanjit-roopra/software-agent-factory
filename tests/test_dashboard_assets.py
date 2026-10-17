@@ -216,7 +216,8 @@ def test_app_js_marks_the_active_link_and_focuses_the_heading() -> None:
 
 def test_loading_and_empty_states() -> None:
     js = dashboard_assets.APP_JS
-    assert '"No runs yet."' in function_source(js, "emptyRunsText")
+    assert "NO_RUNS_TEXT" in function_source(js, "emptyRunsText")
+    assert "Start one with factory run" in js
     assert "emptyRunsText(request)" in function_source(js, "renderRunsStatus")
     assert 'setRunDetailStatus("Loading\\u2026");' in function_source(js, "prepareRunDetailView")
     assert re.search(r'<p\s+id="runs-status">Loading&hellip;</p>', _INDEX_HTML)
@@ -336,7 +337,64 @@ def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
     assert 'active.matches("input, textarea")' in guard
     assert 'region.querySelector("dialog[open]") !== null' in guard
     refresh_view = function_source(js, "refreshView")
-    assert "isDirty(document.getElementById(VIEWS[view].section))" in refresh_view
+    assert (
+        "isDirty(document.getElementById(DIRTY_REGIONS[view] ?? VIEWS[view].section))"
+        in refresh_view
+    )
+    assert 'const DIRTY_REGIONS = { run: "next-step" };' in js
+
+
+def test_typing_in_the_needs_you_panel_freezes_only_the_panel() -> None:
+    source = function_source(dashboard_assets.APP_JS, "renderNextStep")
+    assert "const frozen = changed && isDirty(panel);" in source
+    assert 'document.getElementById("next-step-changed").hidden = !frozen;' in source
+    assert source.index("if (frozen) { return; }") < source.index("buildNextStep(")
+    assert re.search(r'<p id="next-step-changed"[^>]*role="status"[^>]*hidden>', _INDEX_HTML)
+
+
+def test_a_failed_first_load_shows_retry_and_a_loaded_view_keeps_its_data() -> None:
+    js = dashboard_assets.APP_JS
+    fail = function_source(js, "failBeforeLoad")
+    assert "isLatest(request) && !loadedViews.has(request.view)" in fail
+    assert "throw error;" in fail
+    show = function_source(js, "showLoadFailure")
+    assert 'actionButton("Retry", "button")' in show
+    assert "void refreshView();" in show
+    for refresher, container in (
+        ("refreshRuns", "runs-status"),
+        ("refreshHealth", "health-body"),
+        ("refreshProjects", "projects-body"),
+    ):
+        assert f'failBeforeLoad(request, "{container}",' in function_source(js, refresher)
+    for renderer, view in (
+        ("renderRuns", "runs"),
+        ("renderHealth", "health"),
+        ("renderProjectsOnChange", "projects"),
+    ):
+        assert f'loadedViews.add("{view}");' in function_source(js, renderer)
+    assert "showLoadFailure(" in function_source(js, "refreshRunDetail")
+
+
+def test_a_cut_run_reason_offers_the_full_text_from_the_reason_route() -> None:
+    js = dashboard_assets.APP_JS
+    assert 'runDetailPath(runId) + "/reason"' in function_source(js, "reasonPath")
+    show = function_source(js, "showFullReason")
+    assert "apiFetch(reasonPath(runId))" in show
+    assert "state.runId === runId" in show
+    render = function_source(js, "renderFullReason")
+    assert "detail.failure_reason_truncated === true" in render
+    assert 'setText(text, full ?? "")' in render
+    assert "void refreshView();" in show
+    assert "showFullReason(reasonButton);" in function_source(js, "bindControls")
+    assert "fullReasonFor(runId, detail) !== null" in function_source(js, "renderNextStep")
+    assert '<button id="run-reason-show" type="button">' in _INDEX_HTML
+    assert '<pre id="run-reason-full" class="reason-text reason-full" hidden></pre>' in _INDEX_HTML
+
+
+def test_the_run_header_links_the_pull_request_only_for_an_https_address() -> None:
+    source = function_source(dashboard_assets.APP_JS, "renderPullRequestLink")
+    assert "link.hidden = !isHttpsUrl(url);" in source
+    assert 'id="run-pr-link" target="_blank" rel="noopener noreferrer" hidden' in _INDEX_HTML
 
 
 def test_refresh_patches_rows_and_text_in_place() -> None:
@@ -952,8 +1010,8 @@ def test_no_needs_you_panel_is_shown_for_a_run_that_needs_nothing() -> None:
 
 def test_the_needs_you_panel_is_rebuilt_only_when_the_step_changes() -> None:
     source = function_source(dashboard_assets.APP_JS, "renderNextStep")
-    assert "JSON.stringify([runId, step])" in source
-    assert "panel.dataset.signature !== signature" in source
+    assert "JSON.stringify([runId, step, loaded])" in source
+    assert '(panel.dataset.signature ?? "") !== signature' in source
 
 
 def test_a_plain_object_is_never_an_array() -> None:
@@ -1001,7 +1059,9 @@ def test_the_reply_has_a_copy_button_that_announces_copied() -> None:
 def test_a_run_that_cannot_continue_says_so_and_shows_the_failure_reason() -> None:
     source = function_source(dashboard_assets.APP_JS, "failureSection")
     assert "step.failure_reason" in source
-    assert "reasonFields(step.failure_reason, step.failure_reason_truncated, runId)" in source
+    assert "reasonFields(reason, false, runId)" in source
+    assert "const reason = full ?? step.failure_reason;" in source
+    assert "showFullReason(more);" in source
 
 
 def test_the_run_attempts_table_shows_the_failure_reason() -> None:
@@ -1089,12 +1149,17 @@ def test_retry_says_retry_where_the_conflict_message_names_the_action() -> None:
     assert 'const RETRY_ACTION = "retry";' in _JS
 
 
-def test_retry_publishing_is_one_button_that_posts_the_context_without_a_dialog() -> None:
+def test_retry_publishing_needs_a_second_click_and_posts_the_context_without_a_dialog() -> None:
     section = function_source(_JS, "retrySection")
-    assert 'actionButton("Retry publishing", "button")' in section
+    assert 'actionButton(RETRY_LABEL, "button")' in section
+    assert 'actionButton("Cancel", "button")' in section
+    assert 'if (button.dataset.armed !== "true") { arm(true); return; }' in section
     assert "action: RETRY_ACTION" in section
     assert "payload: contextPayload(step)" in section
+    assert "controls: [button, cancel]" in section
+    assert "arm(false); button.focus();" in section
     assert "dialog" not in section
+    assert 'const RETRY_CONFIRM_LABEL = "Confirm retry publishing";' in _JS
 
 
 def test_the_page_maps_every_conflict_reason_the_server_sends() -> None:

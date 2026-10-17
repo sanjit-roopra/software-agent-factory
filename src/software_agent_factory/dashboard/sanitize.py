@@ -476,6 +476,25 @@ def _reason_fields(value: Any, run_id: str | None) -> dict[str, Any]:
     return {"failure_reason": reason, "failure_reason_truncated": truncated}
 
 
+#: Largest run failure reason ``GET /api/runs/<id>/reason`` returns, after redaction.
+FULL_REASON_LIMIT = 20_000
+
+
+def sanitize_full_reason(raw: Any) -> dict[str, Any]:
+    """The run's redacted failure reason, cut only past :data:`FULL_REASON_LIMIT`.
+
+    The run detail cuts the reason at ``REASON_LIMIT``; this is what its "Show full" asks for.
+    """
+    data = to_json_safe(raw)
+    if not isinstance(data, dict):
+        raise TypeError("run detail must serialize to a JSON object")
+    value = data.get("failure_reason")
+    if not isinstance(value, str) or not value:
+        return {"failure_reason": None, "failure_reason_truncated": False}
+    reason, truncated = bounded_reason(value, FULL_REASON_LIMIT, run_id_of(data))
+    return {"failure_reason": reason, "failure_reason_truncated": truncated}
+
+
 def sanitize_attempt(raw: Any, run_id: str | None = None) -> dict[str, Any]:
     """Reduce one attempt record to only the fields the UI renders."""
     data = to_json_safe(raw)

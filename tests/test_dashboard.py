@@ -46,6 +46,7 @@ from software_agent_factory.dashboard.sanitize import (
     ACTIVE_INVOCATION_FIELDS,
     ACTIVE_INVOCATION_STATUSES,
     ATTEMPT_FIELDS,
+    FULL_REASON_LIMIT,
     INVOCATION_FIELDS,
     MAX_NEEDS_LOOK_ITEMS,
     PROJECT_FIELDS,
@@ -56,6 +57,7 @@ from software_agent_factory.dashboard.sanitize import (
     is_active_status,
     sanitize_active_invocation,
     sanitize_attempt,
+    sanitize_full_reason,
     sanitize_invocation,
     sanitize_project,
     sanitize_run_detail,
@@ -3205,6 +3207,85 @@ def _reason_through_api(level: str, reason: str) -> tuple[str, bool]:
         return _shown_reason(level, _body_json(response))
     finally:
         _stop(running)
+
+
+def _full_reason_server(detail: dict[str, Any] | None) -> RunningServer:
+    return _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=lambda run_id: detail if run_id == "run-001" else None,
+        )
+    )
+
+
+def test_the_full_reason_route_returns_the_whole_redacted_reason() -> None:
+    long_reason = f"{GH_SECRET} " + "a" * 600 + " the end"
+    running = _full_reason_server(_detail_with_reason("run", long_reason))
+    try:
+        _, payload = _get_json(running, "/api/runs/run-001/reason")
+    finally:
+        _stop(running)
+    assert payload["failure_reason_truncated"] is False
+    assert payload["failure_reason"].endswith("a" * 600 + " the end")
+    assert "ghp_abcdefgh12345678" not in payload["failure_reason"]
+    assert set(payload) == {"failure_reason", "failure_reason_truncated"}
+
+
+def test_the_full_reason_is_still_cut_past_its_own_limit() -> None:
+    running = _full_reason_server(_detail_with_reason("run", "b" * (FULL_REASON_LIMIT + 50)))
+    try:
+        _, payload = _get_json(running, "/api/runs/run-001/reason")
+    finally:
+        _stop(running)
+    assert payload["failure_reason_truncated"] is True
+    assert len(payload["failure_reason"]) <= FULL_REASON_LIMIT
+
+
+def test_the_full_reason_route_answers_none_for_a_run_without_a_reason() -> None:
+    running = _full_reason_server(dict(FIXTURE_DETAILS["run-001"], failure_reason=None))
+    try:
+        _, payload = _get_json(running, "/api/runs/run-001/reason")
+    finally:
+        _stop(running)
+    assert payload == {"failure_reason": None, "failure_reason_truncated": False}
+
+
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [("/api/runs/run-404/reason", 404), ("/api/runs/..%2Fetc/reason", 404)],
+)
+def test_the_full_reason_route_refuses_an_unknown_or_bad_run(path: str, status: int) -> None:
+    running = _full_reason_server(None)
+    try:
+        response = running.request("GET", path, headers=running.authed_headers())
+    finally:
+        _stop(running)
+    assert response.status == status
+
+
+def test_the_full_reason_route_answers_503_when_the_provider_fails() -> None:
+    running = _start(
+        DashboardConfig(
+            host="127.0.0.1",
+            port=0,
+            snapshot_provider=fake_snapshot_provider,
+            run_detail_provider=failing_detail_provider,
+        )
+    )
+    try:
+        response = running.request(
+            "GET", "/api/runs/run-001/reason", headers=running.authed_headers()
+        )
+    finally:
+        _stop(running)
+    assert response.status == 503
+
+
+def test_sanitize_full_reason_rejects_a_detail_that_is_not_an_object() -> None:
+    with pytest.raises(TypeError):
+        sanitize_full_reason(["not", "an", "object"])
 
 
 @pytest.mark.parametrize("level", REASON_LEVELS)

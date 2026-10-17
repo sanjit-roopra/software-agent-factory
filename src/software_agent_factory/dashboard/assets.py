@@ -148,13 +148,21 @@ def render_index_html(*, token: str) -> str:
         <section id="run-summary" class="card run-summary" aria-labelledby="run-detail-heading">
           <div class="run-summary-head">
             <span id="run-badge" class="badge">&mdash;</span>
+            <a id="run-pr-link" target="_blank" rel="noopener noreferrer" hidden>Pull request</a>
           </div>
           <p id="run-headline" class="headline" hidden></p>
           <p id="run-status-line" class="status-line" hidden></p>
+          <p id="run-reason-more" hidden>
+            <button id="run-reason-show" type="button">Show full failure reason</button>
+          </p>
+          <pre id="run-reason-full" class="reason-text reason-full" hidden></pre>
           <div id="run-key-numbers" class="stats"></div>
         </section>
         <section id="next-step" class="card next-step" aria-labelledby="next-step-heading" hidden>
           <h2 id="next-step-heading">Needs you</h2>
+          <p id="next-step-changed" class="next-step-changed" role="status" hidden>
+            This run changed since you started typing. Leave the field to see the new state.
+          </p>
           <div id="next-step-body"></div>
         </section>
         <div class="card">
@@ -270,9 +278,7 @@ def render_index_html(*, token: str) -> str:
 
     <section id="view-health" aria-labelledby="health-heading" hidden>
       <h1 id="health-heading" tabindex="-1">Health</h1>
-      <div class="card">
-        <div id="health-body">Loading&hellip;</div>
-      </div>
+      <div id="health-body">Loading&hellip;</div>
     </section>
   </main>
 </div>

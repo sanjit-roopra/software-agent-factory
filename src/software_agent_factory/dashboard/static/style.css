@@ -478,3 +478,18 @@ button:disabled {
   nav { flex-direction: row; flex-wrap: wrap; }
   main { padding: 1rem; }
 }
+
+/* Health view: a Healthy or Degraded line, then one card per check. */
+.health-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.health-reasons { flex-basis: 100%; margin: 0.25rem 0 0; padding-left: 1.25rem; }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.75rem; }
+.health-card h2 { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 0.5rem; font-size: var(--fs-md); }
+.health-count { font-variant-numeric: tabular-nums; font-size: var(--fs-lg); color: var(--text-muted); }
+.health-card-warn { border-left: 3px solid var(--warn); }
+.health-card-warn .health-count { color: var(--warn); }
+.health-items { margin: 0; padding-left: 1.25rem; font-family: var(--font-mono); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.health-note { color: var(--text-muted); font-size: var(--fs-sm); margin: 0; }
+.next-step-changed { color: var(--warn); font-weight: 600; }
+.reason-full { max-height: 24rem; overflow: auto; font-family: var(--font-mono); font-size: var(--fs-sm); margin: 0.5rem 0 0; }
+.retry-note { color: var(--text-muted); }
+.next-step-section button + button { margin-left: 0.5rem; }
