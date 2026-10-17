@@ -343,7 +343,8 @@ Every non-terminal state can additionally escalate to `NEEDS_HUMAN` (a business
 decision: eligibility, risk, scope, exhausted budget, non-repairable CI) or
 `FAILED` (an operational agent/infrastructure failure).
 
-Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
+Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`. Only `factory escalate` moves an
+unmerged `DONE` or `NEEDS_HUMAN` run back to `PLANNING` (ADR-055).
 
 `NEEDS_HUMAN` is normally terminal. The controller can reopen the same run for
 a persisted `RISK_APPROVAL` escalation or a `PLAN_DECISION` escalation.

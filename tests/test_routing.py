@@ -11,11 +11,13 @@ from software_agent_factory.agents import AgentRequest, AgentResult
 from software_agent_factory.config import FactoryConfig, RoutingConfig, RoutingOptionConfig
 from software_agent_factory.models import (
     AgentRole,
+    AttemptTrigger,
     ChangeSet,
     Complexity,
     ExecutionPlan,
     ExecutionRoute,
     FactoryRun,
+    RepairContext,
     RepositoryPackageManager,
     RepositoryProfile,
     ReviewReport,
@@ -26,6 +28,8 @@ from software_agent_factory.models import (
     TestReport,
     TriageResult,
     WorkflowState,
+    WorkItem,
+    utc_now,
 )
 from software_agent_factory.routing import (
     ModelRouter,
@@ -35,7 +39,8 @@ from software_agent_factory.routing import (
     find_legal_full_fallback,
 )
 from software_agent_factory.store import FileRunStore
-from software_agent_factory.workflow import WorkflowController, _RunContext
+from software_agent_factory.workflow import WorkflowController, _RunContext, escalation_route
+from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError
 
 
 @pytest.fixture
@@ -1552,3 +1557,138 @@ def test_final_finding1_and_2_option_contracts_governance_terms_and_risk_floor()
     assert "critique_l1" not in legal_strict_r1
     assert "critique_l2" not in legal_strict_r1
     assert "full_l2" in legal_strict_r1
+
+
+def _escalation_controller(
+    data_dir: Path, triage: Complexity, *, max_total_attempts: int = 6
+) -> tuple[WorkflowController, FileRunStore, RecordingRuntime]:
+    config = _config(
+        data_dir,
+        same_model_attempts=min(2, max_total_attempts),
+        max_total_attempts=max_total_attempts,
+    )
+    commands = config.repository.commands.model_copy(update={"verify": ["git status"]})
+    config = config.model_copy(
+        update={
+            "routing": config.routing.model_copy(update={"enabled": True}),
+            "repository": config.repository.model_copy(update={"commands": commands}),
+        }
+    )
+    store = FileRunStore(data_dir)
+    runtime = RecordingRuntime(FakeAgentRuntime(triage=_triage_hook(triage)))
+    return WorkflowController(config, store, runtime), store, runtime
+
+
+def _escalation_item(work_item_id: str) -> WorkItem:
+    return _work_item(work_item_id).model_copy(
+        update={"acceptance_criteria": ["Ensure README exists"]}
+    )
+
+
+@pytest.mark.parametrize("finished", [None, WorkflowState.DONE, WorkflowState.NEEDS_HUMAN], ids=str)
+def test_escalation_moves_single_to_critique_with_the_note(
+    source_repo: Path, data_dir: Path, finished: WorkflowState | None
+) -> None:
+    controller, store, runtime = _escalation_controller(data_dir, Complexity.L0)
+    run = controller.run(_escalation_item("WI-escalate-single"), source_repo)
+    assert run.effective_route is ExecutionRoute.SINGLE
+    if finished is not None:
+        store.save_run(run.model_copy(update={"state": finished, "completed_at": utc_now()}))
+    runtime.requests.clear()
+
+    run = controller.escalate(run.id, "Also handle tabs.")
+
+    assert run.state is WorkflowState.PR_READY
+    assert run.initial_route is ExecutionRoute.SINGLE
+    assert run.effective_route is ExecutionRoute.CRITIQUE
+    assert run.route_decision is not None
+    adjustment = run.route_decision.adjustments[-1]
+    assert (adjustment.from_route, adjustment.to_route, adjustment.reason) == (
+        ExecutionRoute.SINGLE,
+        ExecutionRoute.CRITIQUE,
+        "operator escalation",
+    )
+    assert store.load_artifact(run.id, RouteDecision).adjustments == run.route_decision.adjustments
+    assert run.performance.counters["rework.route_ratchet.CRITIQUE"] == 1
+    roles = [request.role for request in runtime.requests]
+    assert AgentRole.PLANNER not in roles
+    assert AgentRole.REVIEWER in roles
+    first = next(r for r in runtime.requests if r.role is AgentRole.IMPLEMENTER)
+    assert isinstance(first.repair_context, RepairContext)
+    assert first.repair_context.trigger is AttemptTrigger.OPERATOR
+    assert first.repair_context.failures == ["Also handle tabs."]
+
+
+def test_escalation_moves_critique_to_full_and_replans_with_a_fresh_budget(
+    source_repo: Path, data_dir: Path
+) -> None:
+    controller, _, runtime = _escalation_controller(data_dir, Complexity.L2, max_total_attempts=1)
+    run = controller.run(_escalation_item("WI-escalate-critique"), source_repo)
+    assert run.effective_route is ExecutionRoute.CRITIQUE
+    runtime.requests.clear()
+
+    run = controller.escalate(run.id, "Use the shared validator.")
+
+    assert run.failure_reason is None
+    assert run.state is WorkflowState.PR_READY
+    assert run.effective_route is ExecutionRoute.FULL
+    assert not run.needs_look
+    planner = next(r for r in runtime.requests if r.role is AgentRole.PLANNER)
+    assert isinstance(planner.repair_context, str)
+    assert "Use the shared validator." in planner.repair_context
+    assert run.attempt_records[-1].triggered_by is AttemptTrigger.OPERATOR
+
+    run = controller.escalate(run.id, "Once more.")
+
+    assert run.effective_route is ExecutionRoute.FULL
+    assert run.route_decision is not None
+    assert run.route_decision.adjustments[-1].from_route is ExecutionRoute.FULL
+
+
+def test_escalation_refuses_a_merged_failed_or_locked_run(
+    source_repo: Path, data_dir: Path
+) -> None:
+    controller, store, _ = _escalation_controller(data_dir, Complexity.L0)
+    run = controller.run(_escalation_item("WI-escalate-refuse"), source_repo)
+    assert escalation_route(run) is ExecutionRoute.CRITIQUE
+
+    for update in ({"merge_commit_sha": "a" * 40}, {"state": WorkflowState.FAILED}):
+        store.save_run(run.model_copy(update=update))
+        with pytest.raises(ValueError, match="cannot escalate"):
+            controller.escalate(run.id, "note")
+    store.save_run(run.model_copy(update={"branch_name": "factory/other"}))
+    with pytest.raises(ValueError, match="workspace is missing or changed"):
+        controller.escalate(run.id, "note")
+    store.save_run(run.model_copy(update={"source_repo": None}))
+    with pytest.raises(ValueError, match="does not record its repository"):
+        controller.escalate(run.id, "note")
+    store.save_run(run.model_copy(update={"delivery_policy_fingerprint": "changed"}))
+    with pytest.raises(ValueError, match="delivery policy changed"):
+        controller.escalate(run.id, "note")
+
+    store.save_run(run)
+    holder = GitWorktreeWorkspace(data_dir, source_repo, run.work_item_id, branch_prefix="factory/")
+    holder.acquire_lock()
+    try:
+        with pytest.raises(WorkspaceLockError):
+            controller.escalate(run.id, "note")
+    finally:
+        holder.release_lock()
+    assert store.load_run(run.id).state is WorkflowState.PR_READY
+
+
+def test_escalation_that_fails_midway_stops_the_run_for_a_person(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _, _ = _escalation_controller(data_dir, Complexity.L0)
+    run = controller.run(_escalation_item("WI-escalate-crash"), source_repo)
+
+    def crash(*_args: object, **_kwargs: object) -> FactoryRun:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(controller, "_drive_synthesized", crash)
+    run = controller.escalate(run.id, "note")
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.lease is None
+    assert "escalation failed: disk full" in (run.failure_reason or "")

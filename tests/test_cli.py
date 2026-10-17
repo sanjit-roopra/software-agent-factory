@@ -236,6 +236,11 @@ def test_project_command_plans_and_executes_one_smallest_sufficient_task(
     assert "tasks: 1" in result.output
     assert "task 1: DONE" in result.output
     assert (data_dir / "projects" / "project-validation" / "project-plan.json").is_file()
+    from software_agent_factory.models import RunLaunch
+    from software_agent_factory.store import FileRunStore
+
+    (child,) = FileRunStore(data_dir).list_runs()
+    assert child.launch == RunLaunch(runtime="fake")
 
 
 def test_project_command_drops_a_blank_acceptance_criterion(
@@ -1140,6 +1145,19 @@ def test_start_once_runs_one_bounded_tick_without_touching_github(
     assert "PR_READY" in runs_result.output
     assert "tracker-acme/repo#11" in runs_result.output
 
+    from software_agent_factory.models import RunLaunch
+    from software_agent_factory.store import FileRunStore
+
+    (started,) = FileRunStore(data_dir).list_runs()
+    assert started.source_repo == str(source_repo.resolve())
+    assert started.launch == RunLaunch(runtime="fake", config_path=str(config_path.resolve()))
+    common = ["--data-dir", str(data_dir)]
+    escalated = runner.invoke(app, ["escalate", started.id, "--note", "Handle tabs too.", *common])
+    assert escalated.exit_code == 0, escalated.output
+    config_path.unlink()
+    gone = runner.invoke(app, ["escalate", started.id, "--note", "x", *common])
+    assert "config file not found" in gone.output
+
 
 def test_start_with_pi_runtime_selects_the_real_runtime(
     source_repo: Path,
@@ -1360,3 +1378,52 @@ def test_cli_deferred_seam_and_getattr(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = object()
     monkeypatch.setattr(cli_module, "WorkflowController", sentinel)
     assert cli_module._seam("WorkflowController") is sentinel
+
+
+def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
+    source_repo: Path, data_dir: Path
+) -> None:
+    first = runner.invoke(
+        app,
+        [
+            "run",
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--repo",
+            str(source_repo),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+    assert first.exit_code == 0, first.output
+    run_id = first.output.split("run id: ")[1].split()[0]
+
+    from software_agent_factory.models import RunLaunch
+    from software_agent_factory.store import FileRunStore
+
+    store = FileRunStore(data_dir)
+    started = store.load_run(run_id)
+    assert started.source_repo == str(source_repo.resolve())
+    assert started.launch == RunLaunch(runtime="fake")
+    common = ["--data-dir", str(data_dir)]
+    result = runner.invoke(app, ["escalate", run_id, "--note", "Handle tabs too.", *common])
+
+    assert result.exit_code == 0, result.output
+    assert f"run id: {run_id}" in result.output
+    assert "route: FULL" in result.output
+    empty = runner.invoke(app, ["escalate", run_id, "--note", "  ", *common])
+    assert empty.exit_code == 1
+    assert "the note is empty" in empty.output
+    missing = runner.invoke(app, ["escalate", "run-missing", "--note", "x", *common])
+    assert missing.exit_code == 1
+    assert "no such run" in missing.output
+    store.save_run(store.load_run(run_id).model_copy(update={"merge_commit_sha": "a" * 40}))
+    merged = runner.invoke(app, ["escalate", run_id, "--note", "x", *common])
+    assert merged.exit_code == 1
+    assert "cannot escalate run" in merged.output
+    store.save_run(store.load_run(run_id).model_copy(update={"launch": None}))
+    old = runner.invoke(app, ["escalate", run_id, "--note", "x", *common])
+    assert old.exit_code == 1
+    assert "started before runs recorded their settings" in old.output

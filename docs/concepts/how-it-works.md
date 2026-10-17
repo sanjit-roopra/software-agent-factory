@@ -94,7 +94,8 @@ Every non-terminal state can also transition to:
   budget, or a CI failure that is not repairable.
 - `FAILED`: An operational failure. An agent or infrastructure problem.
 
-Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`.
+Terminal states are `DONE`, `NEEDS_HUMAN` and `FAILED`. Only `factory escalate` moves an
+unmerged `DONE` or `NEEDS_HUMAN` run back to `PLANNING` (ADR-055).
 
 There is deliberately no `REPAIRING`, `PLAN_READY` or `BLOCKED` state. Repair is
 a bounded transition back to `IMPLEMENTING`, or back to `PLANNING` for scope
