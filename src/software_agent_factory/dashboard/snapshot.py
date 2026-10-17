@@ -74,6 +74,12 @@ class RunDetailProvider(Protocol):
     def __call__(self, run_id: str) -> Any | None: ...
 
 
+class RunDiffProvider(Protocol):
+    """Called for ``/api/runs/{run_id}/diff`` with a validated id and attempt index."""
+
+    def __call__(self, run_id: str, attempt: int | None) -> Any | None: ...
+
+
 class HealthProvider(Protocol):
     """Optional injectable for operational health findings (data directory
     writable, git/gh/copilot present, launchd service state, and so on --

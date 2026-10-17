@@ -24,7 +24,12 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from ..models import ResumeClassification
 from . import assets
 from .actions import ResumeActions, accept_action
-from .evidence import sanitize_run_checks, sanitize_run_review
+from .evidence import (
+    sanitize_run_checks,
+    sanitize_run_diff,
+    sanitize_run_plan,
+    sanitize_run_review,
+)
 from .responses import WriteRejected
 from .sanitize import sanitize_full_reason, sanitize_health, sanitize_run_detail
 from .security import (
@@ -94,11 +99,15 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 _INDEX_PATH = "/"
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
 _RUN_REASON_PATTERN = re.compile(r"^/api/runs/([^/]+)/reason$")
-_RUN_EVIDENCE_PATTERN = re.compile(r"^/api/runs/([^/]+)/(checks|review)$")
+_RUN_EVIDENCE_PATTERN = re.compile(r"^/api/runs/([^/]+)/(checks|review|plan)$")
+_RUN_DIFF_PATTERN = re.compile(r"^/api/runs/([^/]+)/diff$")
+#: An attempt index in ``?attempt=``: 1 to 999, no sign or leading zero.
+_ATTEMPT_PATTERN = re.compile(r"^[1-9]\d{0,2}$", re.ASCII)
 #: How each evidence route reduces the provider's raw evidence (ADR-047).
 _EVIDENCE_SANITIZERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "checks": sanitize_run_checks,
     "review": sanitize_run_review,
+    "plan": sanitize_run_plan,
 }
 #: The tab icons the page switches between (see ``assets.FAVICON_SVG``).
 _FAVICONS: dict[str, str] = {
@@ -425,6 +434,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if evidence_match:
             self._serve_run_evidence(evidence_match.group(1), evidence_match.group(2), send_body)
             return
+        diff_match = _RUN_DIFF_PATTERN.match(path)
+        if diff_match:
+            self._serve_run_diff(diff_match.group(1), query, send_body)
+            return
         self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
 
     def _serve_index(
@@ -571,6 +584,31 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         evidence = self._load_run(raw_run_id, _EVIDENCE_SANITIZERS[kind], send_body, provider)
         if evidence is not None:
             self._respond_json(HTTPStatus.OK, evidence, send_body)
+
+    def _serve_run_diff(
+        self, raw_run_id: str, query: dict[str, list[str]], send_body: bool
+    ) -> None:
+        """One saved patch of a run, split per file, redacted and capped (ADR-047).
+
+        ``?attempt=n`` picks a per-attempt patch; without it the latest one.
+        """
+        provider = self.server.run_diff_provider
+        if provider is None or not is_valid_run_id(raw_run_id):
+            self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
+            return
+        raw_attempt = query.get("attempt", [""])[0]
+        if raw_attempt and not _ATTEMPT_PATTERN.match(raw_attempt):
+            self._respond_json(HTTPStatus.BAD_REQUEST, {"error": "bad attempt"}, send_body)
+            return
+        attempt = int(raw_attempt) if raw_attempt else None
+        diff = self._load_run(
+            raw_run_id,
+            sanitize_run_diff,
+            send_body,
+            lambda run_id: provider(run_id, attempt),
+        )
+        if diff is not None:
+            self._respond_json(HTTPStatus.OK, diff, send_body)
 
     def _serve_compare(self, query: dict[str, list[str]], send_body: bool) -> None:
         a_id = query.get("a", [""])[0]

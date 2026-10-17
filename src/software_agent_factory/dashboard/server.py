@@ -21,6 +21,7 @@ from .snapshot import (
     ProjectProvider,
     ResumeRequestReader,
     RunDetailProvider,
+    RunDiffProvider,
     SnapshotProvider,
 )
 
@@ -44,8 +45,9 @@ class DashboardConfig:
     accidentally stand up a dashboard with no data source. ``health_provider``
     is optional -- a dashboard with no configured health source simply
     reports ``health: null`` rather than refusing to start.
-    ``run_evidence_provider`` turns on the check output and review routes
-    (ADR-047); without it both are ``404``. ``resume_actions`` turns on
+    ``run_evidence_provider`` turns on the check output, review and plan routes
+    and ``run_diff_provider`` the diff route (ADR-047); without them they are
+    ``404``. ``resume_actions`` turns on
     the approve, answer and retry routes; without it every ``POST`` is ``405``.
     ``request_timeout_seconds`` is how long a connection may stay silent: a client that
     declares a body and sends none gets ``408`` after it. Pass fakes in
@@ -58,6 +60,7 @@ class DashboardConfig:
     health_provider: HealthProvider | None = None
     project_provider: ProjectProvider | None = None
     run_evidence_provider: RunDetailProvider | None = None
+    run_diff_provider: RunDiffProvider | None = None
     resume_request_reader: ResumeRequestReader | None = None
     resume_actions: ResumeActions | None = None
     host: str = DEFAULT_HOST
@@ -83,6 +86,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.health_provider: HealthProvider | None = config.health_provider
         self.project_provider: ProjectProvider | None = config.project_provider
         self.run_evidence_provider: RunDetailProvider | None = config.run_evidence_provider
+        self.run_diff_provider: RunDiffProvider | None = config.run_diff_provider
         self.resume_request_reader: ResumeRequestReader | None = config.resume_request_reader
         self.resume_actions: ResumeActions | None = config.resume_actions
         self.request_timeout_seconds: float = config.request_timeout_seconds

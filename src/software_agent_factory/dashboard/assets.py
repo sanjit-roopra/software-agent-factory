@@ -165,6 +165,11 @@ def render_index_html(*, token: str) -> str:
           </p>
           <div id="next-step-body"></div>
         </section>
+        <section id="completion-card" class="card" aria-labelledby="completion-heading" hidden>
+          <h2 id="completion-heading">Result</h2>
+          <div id="completion-stats" class="stats"></div>
+          <dl id="completion-body"></dl>
+        </section>
         <div class="card">
           <h2 id="timeline-heading">Steps</h2>
           <p id="timeline-status">No calls yet.</p>
@@ -191,6 +196,19 @@ def render_index_html(*, token: str) -> str:
             </table>
           </div>
         </div>
+        <section id="plan-card" class="card" aria-labelledby="plan-heading" hidden>
+          <h2 id="plan-heading">Plan</h2>
+          <div id="plan-body"></div>
+        </section>
+        <section id="diff-card" class="card" aria-labelledby="diff-heading" hidden>
+          <div class="diff-head">
+            <h2 id="diff-heading">Changes</h2>
+            <label id="diff-attempt-label" hidden>Attempt
+              <select id="diff-attempt"></select>
+            </label>
+          </div>
+          <div id="diff-body"></div>
+        </section>
         <section id="checks-card" class="card" aria-labelledby="checks-heading" hidden>
           <h2 id="checks-heading">Checks</h2>
           <div id="checks-body"></div>

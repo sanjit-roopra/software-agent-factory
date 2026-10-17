@@ -1172,6 +1172,7 @@ def dashboard_command(
         build_monitoring_snapshot,
         build_operational_health,
         build_run_detail,
+        build_run_diff,
         build_run_evidence,
         resolve_usage,
     )
@@ -1320,6 +1321,7 @@ def dashboard_command(
                 health_provider=health_provider,
                 project_provider=project_provider,
                 run_evidence_provider=lambda run_id: build_run_evidence(store, run_id),
+                run_diff_provider=lambda run_id, attempt: build_run_diff(store, run_id, attempt),
                 resume_request_reader=build_resume_request_reader(store),
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),
