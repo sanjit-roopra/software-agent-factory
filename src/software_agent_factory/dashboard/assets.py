@@ -46,11 +46,13 @@ def render_index_html(*, token: str) -> str:
       <button id="theme-toggle" type="button">Switch theme</button>
     </header>
     <nav aria-label="Main">
-      <a href="#runs" data-route="runs">Runs</a>
+      <a href="#runs" data-route="runs">Runs
+        <span id="runs-count" class="nav-count" hidden></span></a>
       <a href="#compare" data-route="compare">Compare</a>
       <a href="#projects" data-route="projects">Projects</a>
       <a href="#health" data-route="health">Health</a>
     </nav>
+    <p id="live" class="live">Connecting&hellip;</p>
   </aside>
   <main>
     <p id="notice" role="status" aria-live="polite" tabindex="-1"></p>
@@ -125,7 +127,6 @@ def render_index_html(*, token: str) -> str:
                 <th scope="col">Title</th>
                 <th scope="col">State</th>
                 <th scope="col">Why</th>
-                <th scope="col">Models</th>
                 <th scope="col">Calls</th>
                 <th scope="col">Duration</th>
                 <th scope="col">Cost</th>

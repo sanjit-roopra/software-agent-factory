@@ -63,16 +63,27 @@ def _duration_ms(calls: list[dict[str, Any]]) -> int | None:
     return sum(lengths) if lengths else None
 
 
+#: The usage totals a run list row shows in its Cost cell.
+LIST_USAGE_FIELDS: tuple[str, ...] = ("list_price_estimate_usd", "premium_request_cost")
+
+
 def run_summary_view(raw: Any) -> dict[str, Any]:
     """A sanitized run list row with what the list shows: outcome, reason, models and length.
 
-    ``calls`` is replaced by ``models`` (``text`` for the cell, ``detail`` for its tooltip)
-    and ``duration_ms``. ``why`` is the redacted, bounded failure reason of a stopped run.
+    ``calls`` is replaced by ``models`` (``text`` and a role by role ``detail``, both for the
+    title tooltip) and ``duration_ms``. ``why`` is the redacted, bounded failure reason of a
+    stopped run; the row then drops ``failure_reason`` so the reason is sent once. ``usage``
+    keeps only the cost totals the list shows (:data:`LIST_USAGE_FIELDS`).
     """
     run = sanitize_run_summary(raw)
     calls = run.pop("calls", [])
     run["outcome"] = run_outcome(run)
     run["why"] = reason_line(run)
+    if run["why"] is not None:
+        run.pop("failure_reason", None)
+        run.pop("failure_reason_truncated", None)
+    if isinstance(usage := run.get("usage"), dict):
+        run["usage"] = {key: usage[key] for key in LIST_USAGE_FIELDS if key in usage}
     run["models"] = models_summary(calls)
     run["duration_ms"] = _duration_ms(calls)
     return run

@@ -1704,7 +1704,8 @@ def test_adversarial_snapshot_provider_secrets_never_reach_runs_response() -> No
             assert "prompt" not in run
             assert "tool_output" not in run
             assert "reasoning" not in run
-            assert "[REDACTED]" in run["failure_reason"]
+            # A stopped run sends its reason once, as ``why``.
+            assert "[REDACTED]" in (run.get("failure_reason") or run["why"])
             assert "token_usage" not in run
             assert "raw_artifact" not in run
     finally:
