@@ -172,7 +172,8 @@
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
-    baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null
+    baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null,
+    evidenceDrawn: { checks: null, review: null }
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -2826,6 +2827,206 @@
     setRunDetailStatus(null);
   }
 
+  // ---- Checks and review (ADR-047) ---------------------------------------
+
+  // One check line: the outcome word, the exit code and the time it took.
+  function checkStatusText(check) {
+    let word = "failed";
+    if (check.passed === true) {
+      word = "passed";
+    } else if (check.timed_out === true) {
+      word = "timed out";
+    }
+    const parts = [word];
+    if (isFiniteNumber(check.exit_code)) {
+      parts.push("exit " + check.exit_code);
+    }
+    if (isFiniteNumber(check.duration_seconds)) {
+      parts.push(durationText(Math.round(check.duration_seconds * MS_PER_SECOND)));
+    }
+    return parts.join(" · ");
+  }
+
+  // A check is a disclosure: its label and status, then its output tail. A failed
+  // check opens by default, since its output is what the operator came for.
+  // tone: "done" (passed), "failed" (open by default) or "" (neutral, e.g. pending CI).
+  function evidenceItem(label, status, tone, output) {
+    const item = element("details", "evidence-item");
+    item.open = tone === "failed";
+    const summary = item.appendChild(element("summary", ""));
+    summary.appendChild(element("span", tone ? "badge badge-" + tone : "badge", status));
+    summary.appendChild(element("code", "evidence-label", label));
+    item.appendChild(element("pre", "evidence-output", output || "No output."));
+    return item;
+  }
+
+  function checkNode(check) {
+    return evidenceItem(
+      displayValue(check.command),
+      checkStatusText(check),
+      check.passed === true ? "done" : "failed",
+      check.output
+    );
+  }
+
+  function ciCheckNode(check) {
+    const tone = { PASS: "done", FAIL: "failed" }[check.status] || "";
+    const status = [check.status, check.failure_category].filter(Boolean).join(" · ");
+    const item = evidenceItem(displayValue(check.name), status || EMPTY_VALUE, tone, check.output);
+    if (typeof check.description === "string" && check.description !== "") {
+      item.insertBefore(element("p", "evidence-note", check.description), item.lastChild);
+    }
+    if (isHttpsUrl(check.details_url)) {
+      item.insertBefore(createLink(check.details_url), item.lastChild);
+    }
+    return item;
+  }
+
+  function evidenceGroup(container, title, nodes) {
+    if (nodes.length === 0) {
+      return;
+    }
+    container.appendChild(element("h3", "", title));
+    for (const node of nodes) {
+      container.appendChild(node);
+    }
+  }
+
+  function renderChecks(body, payload) {
+    evidenceGroup(body, "Verification", asArray(payload.checks).map(checkNode));
+    evidenceGroup(body, "CI", asArray(payload.ci_checks).map(ciCheckNode));
+    return body.childElementCount > 0;
+  }
+
+  // "path:12-14", or "path:12" for one line.
+  function locationText(location) {
+    const end = location.end_line === location.start_line ? "" : "-" + location.end_line;
+    return location.path + ":" + location.start_line + end;
+  }
+
+  function findingNode(finding) {
+    const item = element("li", "finding");
+    const head = [finding.id, finding.category].filter(Boolean).join(" · ");
+    if (head !== "") {
+      item.appendChild(element("span", "chip", head));
+    }
+    item.appendChild(element("span", "finding-message", displayValue(finding.message)));
+    const places = asArray(finding.locations).map(locationText).join(", ");
+    if (places !== "") {
+      item.appendChild(element("code", "finding-where", places));
+    }
+    return item;
+  }
+
+  function findingList(container, title, findings) {
+    const items = asArray(findings);
+    if (items.length === 0) {
+      return;
+    }
+    container.appendChild(element("h4", "", title));
+    const list = container.appendChild(element("ul", "findings"));
+    for (const finding of items) {
+      list.appendChild(findingNode(finding));
+    }
+  }
+
+  function textList(container, title, texts) {
+    const items = asArray(texts);
+    if (items.length === 0) {
+      return;
+    }
+    container.appendChild(element("h4", "", title));
+    const list = container.appendChild(element("ul", "findings"));
+    for (const text of items) {
+      list.appendChild(element("li", "", text));
+    }
+  }
+
+  function dispositionText(item) {
+    return [item.finding_id, item.status].filter(Boolean).join(" ") + ": " +
+      displayValue(item.rationale);
+  }
+
+  function reviewVerdict(round) {
+    if (round.skipped === true) {
+      return { text: "skipped", passed: true };
+    }
+    return round.approved === true
+      ? { text: "approved", passed: true }
+      : { text: "changes requested", passed: false };
+  }
+
+  // One review round as a card: its verdict, then each list it holds.
+  function roundNode(round, open) {
+    const verdict = reviewVerdict(round);
+    const item = element("details", "evidence-item review-round");
+    item.open = open;
+    const summary = item.appendChild(element("summary", ""));
+    const kind = verdict.passed ? "badge-done" : "badge-failed";
+    summary.appendChild(element("span", "badge " + kind, verdict.text));
+    summary.appendChild(element("span", "evidence-label", "Attempt " + displayValue(round.attempt_number)));
+    if (typeof round.skip_reason === "string") {
+      item.appendChild(element("p", "evidence-note", round.skip_reason));
+    }
+    findingList(item, "Blocking findings", round.blocking_findings);
+    findingList(item, "Regressions", round.repair_regressions);
+    textList(item, "Prior findings", asArray(round.prior_finding_dispositions).map(dispositionText));
+    textList(item, "Suggested changes", round.suggested_changes);
+    textList(item, "Findings", round.findings);
+    textList(item, "Scope concerns", round.scope_concerns);
+    textList(item, "Security concerns", round.security_concerns);
+    textList(item, "Compatibility concerns", round.compatibility_concerns);
+    return item;
+  }
+
+  // Newest round first, and only it opens.
+  function renderReview(body, payload) {
+    findingList(body, "Open findings", payload.open_findings);
+    findingList(body, "Accepted findings", payload.accepted_findings);
+    const rounds = asArray(payload.rounds).slice().reverse();
+    rounds.forEach(function (round, index) {
+      body.appendChild(roundNode(round, index === 0));
+    });
+    return body.childElementCount > 0;
+  }
+
+  const EVIDENCE_RENDERERS = { checks: renderChecks, review: renderReview };
+
+  // Draws a card again only when its answer changed, so a poll keeps open items open.
+  function renderEvidence(kind, runId, payload) {
+    const key = runId + "\n" + JSON.stringify(payload);
+    if (state.evidenceDrawn[kind] === key) {
+      return;
+    }
+    state.evidenceDrawn[kind] = key;
+    const body = document.getElementById(kind + "-body");
+    clearChildren(body);
+    const shown = payload !== null && EVIDENCE_RENDERERS[kind](body, payload);
+    document.getElementById(kind + "-card").hidden = !shown;
+  }
+
+  function refreshRunPage(request) {
+    return [
+      refreshRunDetail(request),
+      refreshEvidence(request, "checks"),
+      refreshEvidence(request, "review")
+    ];
+  }
+
+  // A failed load hides the card; it never marks the server unreachable.
+  function refreshEvidence(request, kind) {
+    return apiFetch(runDetailPath(request.runId) + "/" + kind).then(
+      whenLatest(request, function (payload) {
+        renderEvidence(kind, request.runId, payload);
+      }),
+      function () {
+        if (isLatest(request)) {
+          renderEvidence(kind, request.runId, null);
+        }
+      }
+    );
+  }
+
   function runDetailPath(runId) {
     return "/api/runs/" + encodeURIComponent(runId);
   }
@@ -3164,7 +3365,7 @@
       return [refreshRuns(request), refreshTotals(request)];
     },
     run: function (request) {
-      return request.runId === null ? [pingServer()] : [refreshRunDetail(request)];
+      return request.runId === null ? [pingServer()] : refreshRunPage(request);
     },
     compare: refreshCompare,
     projects: function (request) {

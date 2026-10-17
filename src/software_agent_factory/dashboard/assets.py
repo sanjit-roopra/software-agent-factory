@@ -191,6 +191,14 @@ def render_index_html(*, token: str) -> str:
             </table>
           </div>
         </div>
+        <section id="checks-card" class="card" aria-labelledby="checks-heading" hidden>
+          <h2 id="checks-heading">Checks</h2>
+          <div id="checks-body"></div>
+        </section>
+        <section id="review-card" class="card" aria-labelledby="review-heading" hidden>
+          <h2 id="review-heading">Review</h2>
+          <div id="review-body"></div>
+        </section>
         <details id="run-details" class="card details-card">
           <summary>Details</summary>
           <h3>Totals</h3>

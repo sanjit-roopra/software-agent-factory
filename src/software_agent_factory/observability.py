@@ -97,6 +97,7 @@ from .models import (
     AgentRole,
     AttemptBudget,
     AttemptTrigger,
+    CIReport,
     Complexity,
     ContextTier,
     EscalationRecord,
@@ -112,6 +113,7 @@ from .models import (
     ResumeRefusal,
     ReviewFindingCategory,
     ReviewImpasse,
+    ReviewReport,
     Risk,
     TriageResult,
     UsageMetrics,
@@ -1478,9 +1480,12 @@ def _load_optional_artifact(
     store: RunStoreProtocol,
     run_id: str,
     artifact_type: type[Any],
+    attempt: int | None = None,
 ) -> Any | None:
     try:
-        return store.load_artifact(run_id, artifact_type)
+        if attempt is None:
+            return store.load_artifact(run_id, artifact_type)
+        return store.load_artifact(run_id, artifact_type, attempt=attempt)
     except (OSError, ValueError):
         return None
 
@@ -1775,6 +1780,43 @@ def build_run_detail(
         guidance=_build_run_guidance(store, run),
         failure_reason=run.failure_reason,
     )
+
+
+def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] | None:
+    """One run's check output and review text, or ``None`` if the run is not readable.
+
+    Read-only, like :func:`build_run_detail`. The text is raw: command output,
+    CI log excerpts and reviewer findings can quote repository content and
+    secrets, so the dashboard sanitizer must redact and cut it before it reaches
+    a client (ADR-047). The checks are the latest verification and CI reports.
+    The review has one round per attempt that saved a review, plus the open and
+    accepted findings of the review ledger.
+    """
+    try:
+        run = store.load_run(run_id)
+    except (OSError, ValueError):
+        return None
+    verification = _load_optional_artifact(store, run.id, VerificationReport)
+    ci = _load_optional_artifact(store, run.id, CIReport)
+    rounds: list[dict[str, Any]] = []
+    # attempts/NN is keyed by the run-global index, not the per-budget attempt_number.
+    for number in range(1, len(run.attempt_records) + 1):
+        review = _load_optional_artifact(store, run.id, ReviewReport, attempt=number)
+        if review is not None:
+            rounds.append({"attempt_number": number, **review.model_dump(mode="json")})
+    ledger = run.review_ledger
+    return {
+        "run_id": run.id,
+        "checks": [] if verification is None else _dumped(verification.deterministic_checks),
+        "ci_checks": [] if ci is None else _dumped(ci.checks),
+        "review_rounds": rounds,
+        "open_findings": _dumped(ledger.open_findings),
+        "accepted_findings": _dumped(ledger.accepted_findings),
+    }
+
+
+def _dumped(models: Sequence[ModelBase]) -> list[dict[str, Any]]:
+    return [model.model_dump(mode="json") for model in models]
 
 
 def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance | None:
