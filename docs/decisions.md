@@ -1,5 +1,45 @@
 # Architecture Decisions
 
+## ADR-052: Show the tools of the running call, and answer an unchanged poll with 304
+
+Status: accepted on 2026-10-17. This builds on ADR-050.
+
+### Context
+
+ADR-050 lists the tools of a call only once the call ends. A long call showed one
+static line on the dashboard until then. A person did not see if the agent worked or
+was stuck. The page also polls every few seconds and got the full JSON each time,
+even when nothing was new.
+
+### Decision
+
+- A runtime that streams its events reports each tool call as it starts. pi does
+  this now. Its RPC client passes each `tool_execution_start` event to the runtime.
+  The runtime redacts the tool arguments and reports the tool name and one short line.
+  Claude Code and Copilot wait for their whole output, so they do not report yet.
+- The workflow controller listens for the length of the agent call. It keeps the
+  latest 20 tool calls and a count of all of them on the active call. The heartbeat
+  thread saves the run within two seconds of a new tool call. It is the only thread
+  that saves the run during the call, as before.
+- The run detail sends these tool calls and the count with the active call. The page
+  shows the count and the last tool in the status line under the headline. The
+  latest tools show in its tooltip and in the running step.
+- Each `200` JSON answer to a `GET` carries a weak `ETag`, a hash of the body. The
+  hash counts the fields that grow with the clock (`idle_seconds`, `age_seconds`,
+  `generated_at`) in whole minutes, as the page shows them. A request whose
+  `If-None-Match` holds the same tag gets `304` with no body. The page keeps
+  the latest tagged answer per path and sends its tag. `Cache-Control: no-store`
+  stays, so the browser itself keeps nothing.
+- Server-sent events wait for a later change. The 2-second poll with `304` is enough
+  for a local page.
+
+### Consequences
+
+- A person sees what a pi call does while it runs.
+- An unchanged poll costs a hash on the server, not a JSON parse on the page.
+- The run file is written more often during a busy call: at most once per poll
+  interval, not once per tool call.
+
 ## ADR-051: A steer note is a file that the next agent call reads
 
 Status: accepted on 2026-10-17. This builds on ADR-047 and ADR-049.

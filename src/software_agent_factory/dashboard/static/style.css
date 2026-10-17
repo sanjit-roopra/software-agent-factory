@@ -438,7 +438,8 @@ button:disabled {
 .why-cell { min-width: 10rem; }
 .why-cell.muted { color: var(--text-muted); }
 .clamp,
-#runs-table td:first-child a {
+#runs-table td:first-child a,
+.live-tool {
   display: inline-block;
   vertical-align: middle;
   max-width: min(14rem, 16vw);
@@ -446,6 +447,8 @@ button:disabled {
   text-overflow: ellipsis;
 }
 .clamp { display: block; max-width: min(13rem, 13vw); }
+/* The last tool of the running call: one line, cut with an ellipsis. */
+.live-tool { max-width: min(32rem, 60vw); white-space: nowrap; font-family: var(--font-mono); }
 .run-id { margin: -0.5rem 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 #runs-table + .field-hint { margin-top: 0.75rem; }
 #runs-table td:first-child { min-width: 8rem; }
@@ -656,3 +659,4 @@ kbd {
 }
 .steer p { margin: 0; }
 .steer-actions { display: flex; align-items: center; gap: 0.75rem; }
+

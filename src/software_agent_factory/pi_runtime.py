@@ -110,6 +110,7 @@ from .subprocess_utils import (
     sanitize_output,
     track_child,
 )
+from .transcripts import report_tool_call
 from .usage_values import non_negative_float, non_negative_int
 
 if TYPE_CHECKING:
@@ -217,6 +218,21 @@ def _response_data(response: Mapping[str, Any], command: str) -> Mapping[str, An
     if data is not None and not isinstance(data, Mapping):
         raise _UnexpectedResponse(command)
     return data or {}
+
+
+def _report_tool_start(record: Mapping[str, Any], redact: Callable[[str], str]) -> None:
+    """Report a ``tool_execution_start`` event for the live tail (dashboard X6)."""
+    name = record.get("toolName")
+    if record.get("type") != "tool_execution_start" or not isinstance(name, str):
+        return
+    args = record.get("args")
+    if isinstance(args, dict):
+        args = {
+            key: redact(value) if isinstance(value, str) else value for key, value in args.items()
+        }
+    elif isinstance(args, str):
+        args = redact(args)
+    report_tool_call(redact(name), args)
 
 
 def _elapsed_ms(start: float) -> float:
@@ -636,8 +652,12 @@ class PiAgentRuntime(AgentRuntime):
         answer then fails artifact parsing.
         """
         request = ctx.request
+
+        def redact(text: str) -> str:
+            return redact_with_scrubbed_values(text, ctx.scrubbed_values)
+
         client = PiRpcClient(
-            process, redact=lambda text: redact_with_scrubbed_values(text, ctx.scrubbed_values)
+            process, redact=redact, on_event=lambda record: _report_tool_start(record, redact)
         )
         usage: UsageMetrics | None = None
         try:

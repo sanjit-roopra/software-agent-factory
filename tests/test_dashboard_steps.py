@@ -50,17 +50,21 @@ def test_tool_calls_and_the_fallback_reason_join_the_expanded_fields() -> None:
     assert _values(
         JsCall("toolCallFields", (None,)),
         JsCall("toolCallFields", (tools,)),
+        JsCall("toolCallFields", (tools, 2)),
+        JsCall("toolCallFields", (tools, 37)),
         JsCall("fallbackFields", ("",)),
         JsCall("fallbackFields", ("usage limit",)),
     ) == [
         [],
         [["Tool calls (2)", "Bash  pytest -q\nTodoWrite"]],
+        [["Tool calls (2)", "Bash  pytest -q\nTodoWrite"]],
+        [["Tool calls (latest 2 of 37)", "Bash  pytest -q\nTodoWrite"]],
         [],
         [["Why it fell back", "usage limit"]],
     ]
     fields = function_source(_JS, "callFields")
     assert '["Runtime", displayValue(call.runtime, NOT_REPORTED)]' in fields
-    assert "...toolCallFields(call.tool_calls)" in fields
+    assert "...toolCallFields(call.tool_calls, call.tool_call_count)" in fields
 
 
 def test_each_step_says_when_it_started_relative_to_the_first() -> None:

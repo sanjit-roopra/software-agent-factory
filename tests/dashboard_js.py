@@ -295,6 +295,14 @@ def _definitions_for(js: str, wanted: Iterable[str]) -> list[str]:
     return [chosen[name] for name in sorted(chosen, key=starts.__getitem__)]
 
 
+def definitions_source(js: str, names: Iterable[str]) -> str:
+    """Source of the top-level definitions ``names`` and those they use, in script order.
+
+    For a test that drives asynchronous helpers in its own ``node`` script.
+    """
+    return "\n".join(_definitions_for(js, names))
+
+
 def _encode(value: object) -> object:
     """``value`` with the JavaScript-only values replaced by their ``{"$js": name}`` form."""
     if value is UNDEFINED:

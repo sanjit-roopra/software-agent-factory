@@ -185,7 +185,7 @@ from .telemetry import (
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
 from .toolchain_commands import candidate_commands, root_version_files, select_package_runner
-from .transcripts import write_call_transcript
+from .transcripts import live_tool_calls, write_call_transcript
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -454,6 +454,8 @@ class RunCancelledError(BaseException):  # NOSONAR(S5709) must pass `except Exce
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 #: How often a run in an agent call looks for a stop request, in seconds.
 STOP_POLL_INTERVAL_SECONDS = 2.0
+#: How many of the latest tool calls the active call keeps for the live tail (dashboard X6).
+LIVE_TOOL_CALLS = 20
 
 
 class _Halt(Exception):
@@ -601,9 +603,10 @@ class WorkflowController:
         ignores its timeout still looks stalled to the service.
         """
         stop = threading.Event()
+        changed = threading.Event()
         beat = threading.Thread(
             target=self._heartbeat,
-            args=(run, stop, request.timeout_seconds, threading.get_ident()),
+            args=(run, stop, request.timeout_seconds, threading.get_ident(), changed),
             name=f"heartbeat-{run.id}",
             daemon=True,
         )
@@ -615,7 +618,8 @@ class WorkflowController:
             self._raise_if_cancelled(run)
             beat.start()
             try:
-                return self._runtime.run(request)
+                with live_tool_calls(lambda call: self._note_tool_call(run, call, changed)):
+                    return self._runtime.run(request)
             finally:
                 stop.set()
                 beat.join()
@@ -623,19 +627,38 @@ class WorkflowController:
             self._agent_threads.pop(run.id, None)
             release_thread(thread_id)
 
+    @staticmethod
+    def _note_tool_call(run: FactoryRun, call: dict[str, str], changed: threading.Event) -> None:
+        """Keep a tool call the running agent started on the active call (dashboard X6).
+
+        Only the active call is replaced, in one assignment; the heartbeat thread saves it.
+        """
+        active = run.active_invocation
+        if active is None:
+            return
+        run.active_invocation = active.model_copy(
+            update={
+                "recent_tool_calls": [*active.recent_tool_calls, call][-LIVE_TOOL_CALLS:],
+                "tool_call_count": active.tool_call_count + 1,
+            }
+        )
+        changed.set()
+
     def _heartbeat(
         self,
         run: FactoryRun,
         stop: threading.Event,
         timeout_seconds: int,
         agent_thread: int | None = None,
+        changed: threading.Event | None = None,
     ) -> None:
         """Persist a heartbeat on ``run`` until ``stop`` is set or the call's timeout passes.
 
         Between beats it looks for a stop request, and kills the agent processes of
         ``agent_thread`` when it finds one. The agent call then fails, and the controller
-        halts the run at its next check. The calling thread waits in the agent call, so
-        nothing else changes ``run`` meanwhile.
+        halts the run at its next check. When ``changed`` is set, a new tool call is on the
+        active call, and the run is saved at the next poll, not the next beat. The calling
+        thread waits in the agent call and changes only ``run.active_invocation`` meanwhile.
         """
         started = last_beat = time.monotonic()
         poll = min(self.heartbeat_interval_seconds, STOP_POLL_INTERVAL_SECONDS)
@@ -645,7 +668,10 @@ class WorkflowController:
                 return
             if agent_thread is not None and self._store.load_stop_request(run.id) is not None:
                 kill_thread_children(agent_thread)
-            if now_monotonic - last_beat >= self.heartbeat_interval_seconds:
+            fresh_tools = changed is not None and changed.is_set()
+            if fresh_tools or now_monotonic - last_beat >= self.heartbeat_interval_seconds:
+                if changed is not None:
+                    changed.clear()
                 last_beat = now_monotonic
                 self._write_heartbeat(run)
 

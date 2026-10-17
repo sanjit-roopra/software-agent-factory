@@ -3451,7 +3451,9 @@ def _raw_active(**overrides: Any) -> dict[str, Any]:
 def test_running_call_has_the_shape_of_a_finished_call_with_nothing_reported() -> None:
     call = sanitize_active_invocation(_raw_active())
 
-    assert list(call) == CALL_FIELD_ORDER
+    assert list(call) == [*CALL_FIELD_ORDER, "tool_call_count"]
+    assert call["tool_calls"] == []
+    assert call["tool_call_count"] == 0
     assert call["status"] == "running"
     assert call["started_at"] == "2024-01-01T00:06:00+00:00"
     assert call["success"] is None
@@ -3507,7 +3509,7 @@ def test_run_detail_api_returns_calls_in_number_order_with_the_timeline_fields(
 
     payload = _body_json(response)
     assert [list(call) for call in payload["invocations"]] == [[*CALL_FIELD_ORDER, "failure_link"]]
-    assert list(payload["active_invocation"]) == CALL_FIELD_ORDER
+    assert list(payload["active_invocation"]) == [*CALL_FIELD_ORDER, "tool_call_count"]
     assert payload["invocations"][0]["duration_ms"] == 300_000
     assert payload["failure_reason"] is None
     assert payload["failure_reason_truncated"] is False
@@ -4216,3 +4218,69 @@ def test_a_run_summary_keeps_valid_status_fields_and_drops_bad_ones() -> None:
     assert good["completed_at"] == "2026-10-01T11:00:00Z"
     assert set(bad) == {"run_id", "needs_look", "failure_reason", "failure_reason_truncated"}
     assert bad["needs_look"] == []
+
+
+# --------------------------------------------------------------------------
+# ETag and 304 on JSON reads (dashboard S6)
+# --------------------------------------------------------------------------
+
+
+def test_a_json_read_sends_an_etag_and_a_matching_poll_gets_304(
+    running_server: RunningServer,
+) -> None:
+    first = running_server.request("GET", "/api/summary", headers=running_server.authed_headers())
+    etag = first.getheader("ETag")
+    assert etag is not None
+    assert etag.startswith('W/"')
+    assert etag.endswith('"')
+    assert first.getheader("Cache-Control") == "no-store"
+
+    again = running_server.request(
+        "GET", "/api/summary", headers={**running_server.authed_headers(), "If-None-Match": etag}
+    )
+
+    assert again.status == 304
+    assert again.read_body == b""  # type: ignore[attr-defined]
+    assert again.getheader("ETag") == etag
+    assert again.getheader("Cache-Control") == "no-store"
+    assert again.getheader("X-Content-Type-Options") == "nosniff"
+
+
+def test_a_stale_etag_gets_the_full_answer(running_server: RunningServer) -> None:
+    response = running_server.request(
+        "GET", "/api/summary", headers={**running_server.authed_headers(), "If-None-Match": '"x"'}
+    )
+
+    assert response.status == 200
+    assert "overview" in _body_json(response)
+
+
+def test_an_error_answer_has_no_etag(running_server: RunningServer) -> None:
+    response = running_server.request("GET", "/api/nope", headers=running_server.authed_headers())
+
+    assert response.status == 404
+    assert response.getheader("ETag") is None
+
+
+def test_an_etag_never_skips_the_token_check(running_server: RunningServer) -> None:
+    first = running_server.request("GET", "/api/summary", headers=running_server.authed_headers())
+    response = running_server.request(
+        "GET",
+        "/api/summary",
+        headers={**running_server.host_header(), "If-None-Match": first.getheader("ETag") or ""},
+    )
+
+    assert response.status == 401
+
+
+def test_the_etag_counts_clock_fields_in_whole_minutes() -> None:
+    from software_agent_factory.dashboard.handler import _etag
+
+    def answer(idle: float, generated: str) -> dict[str, Any]:
+        return {"runs": [{"idle_seconds": idle, "flag": True}], "generated_at": generated}
+
+    same_minute = _etag(answer(61.0, "2026-10-17T00:48:01Z"))
+    assert _etag(answer(119.9, "2026-10-17T00:48:59Z")) == same_minute
+    assert _etag(answer(120.0, "2026-10-17T00:48:59Z")) != same_minute
+    assert _etag(answer(61.0, "2026-10-17T00:49:00Z")) != same_minute
+    assert _etag({"idle_seconds": None}) != _etag({"idle_seconds": 0})

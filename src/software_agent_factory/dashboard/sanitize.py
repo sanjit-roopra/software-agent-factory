@@ -220,7 +220,10 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
 )
 
 #: The active call has the same shape as a finished call, without telemetry.
-ACTIVE_INVOCATION_FIELDS: frozenset[str] = INVOCATION_FIELDS - {"performance"}
+#: It also counts the tool calls it started, of which ``tool_calls`` holds the latest.
+ACTIVE_INVOCATION_FIELDS: frozenset[str] = (INVOCATION_FIELDS - {"performance"}) | {
+    "tool_call_count"
+}
 
 _RUNTIME_NAMES: frozenset[str] = frozenset(runtime.value for runtime in RuntimeName)
 
@@ -249,6 +252,7 @@ _ACTIVE_INPUT_KEYS = (
     "context_tier",
     "started_at",
     "attempt_number",
+    "tool_calls",
 )
 
 #: ``usage_value_usd`` is derived from ``total_nano_aiu``; a provider value for
@@ -639,6 +643,8 @@ def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str,
     call = _sanitize_call({key: data.get(key) for key in _ACTIVE_INPUT_KEYS}, run_id)
     status = data.get("status")
     call["status"] = status if is_active_status(status) else "running"
+    count = data.get("tool_call_count")
+    call["tool_call_count"] = count if is_count(count) else len(call["tool_calls"])
     return call
 
 
