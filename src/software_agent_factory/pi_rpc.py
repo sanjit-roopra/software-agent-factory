@@ -180,6 +180,9 @@ class PiRpcClient:
     truncating it into :attr:`stderr_tail` or a ``line_excerpt``, so a secret
     the truncation would have cut in half is never left as an unredactable
     fragment. The default hides nothing.
+
+    ``on_event`` sees each event record as it is read, before it is kept for
+    :meth:`wait_for_settled`. The runtime uses it for the live tool-call tail.
     """
 
     def __init__(
@@ -188,8 +191,10 @@ class PiRpcClient:
         *,
         max_line_bytes: int = _MAX_LINE_BYTES,
         redact: Callable[[str], str] = str,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._process = process
+        self._on_event = on_event
         self._max_line_bytes = max_line_bytes
         self._redact = redact
         self._next_id = itertools.count(1)
@@ -251,7 +256,7 @@ class PiRpcClient:
                 if record.get("success") is False:
                     raise PiRpcCommandError(sent_command, record.get("error"))
                 return record
-            self._pending_events.append(record)
+            self._pending_events.append(self._seen(record))
 
     def wait_for_settled(self, *, deadline: float) -> list[dict[str, Any]]:
         """Collect event records until one with ``type == "agent_settled"`` arrives.
@@ -267,10 +272,16 @@ class PiRpcClient:
                 self._pending_events = events[index + 1 :]
                 return events[: index + 1]
         while True:
-            record = self._read_record(deadline)
+            record = self._seen(self._read_record(deadline))
             events.append(record)
             if record.get("type") == "agent_settled":
                 return events
+
+    def _seen(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Pass an event record to ``on_event``, then return it."""
+        if self._on_event is not None:
+            self._on_event(record)
+        return record
 
     def close(self, timeout: float = _DEFAULT_CLOSE_TIMEOUT_SECONDS) -> None:
         """Close stdin and reap the process, killing its process group on timeout."""

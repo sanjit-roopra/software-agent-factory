@@ -490,6 +490,10 @@ class ActiveInvocationSummary(ModelBase):
     status: ActiveInvocationStatus
     started_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
+    tool_calls: list[dict[str, str]] = Field(default_factory=list)
+    """The latest tool calls the call started, oldest first (dashboard X6)."""
+    tool_call_count: int = Field(default=0, ge=0)
+    """Every tool call the call started so far."""
 
 
 class RunGuidance(ModelBase):
@@ -2060,6 +2064,8 @@ def build_active_invocation_summary(
         status=status,
         started_at=active.started_at,
         attempt_number=active.attempt_number,
+        tool_calls=list(active.recent_tool_calls),
+        tool_call_count=active.tool_call_count,
     )
 
 

@@ -303,21 +303,57 @@
     return response.json().catch(onNetworkError);
   }
 
+  // The latest tagged answer per path, for If-None-Match. The oldest path goes first.
+  const heldAnswers = new Map();
+  const MAX_HELD_ANSWERS = 32;
+
+  function holdAnswer(path, etag, body) {
+    heldAnswers.delete(path);
+    if (!etag) {
+      return;
+    }
+    heldAnswers.set(path, { etag: etag, body: body });
+    if (heldAnswers.size > MAX_HELD_ANSWERS) {
+      heldAnswers.delete(heldAnswers.keys().next().value);
+    }
+  }
+
+  // A 304 reuses the held answer; any other answer is read and held under its new tag.
+  function readTagged(path, held, response) {
+    if (response.status === 304 && held) {
+      return held.body;
+    }
+    return readResponse(response).then(function (body) {
+      holdAnswer(path, response.headers.get("ETag"), body);
+      return body;
+    });
+  }
+
   // Rejects with an error whose "kind" tells a restarted server (401) from a
   // lost connection (network failure, timeout or 5xx) and from any other bad
   // request. The timeout covers reading the body too.
+  //
+  // A poll sends the tag of the answer it already holds; a 304 reuses that answer, so an
+  // unchanged run is neither sent again nor parsed again.
   function apiFetch(path) {
     const controller = new AbortController();
     const timer = globalThis.setTimeout(function () {
       controller.abort();
     }, REQUEST_TIMEOUT_MS);
+    const held = heldAnswers.get(path);
+    const headers = { "X-Factory-Token": token };
+    if (held) {
+      headers["If-None-Match"] = held.etag;
+    }
     return fetch(path, {
       method: "GET",
-      headers: { "X-Factory-Token": token },
+      headers: headers,
       credentials: "same-origin",
       signal: controller.signal
     })
-      .then(readResponse, onNetworkError)
+      .then(function (response) {
+        return readTagged(path, held, response);
+      }, onNetworkError)
       .finally(function () {
         globalThis.clearTimeout(timer);
       });
@@ -1564,8 +1600,10 @@
     if (!active) {
       return null;
     }
+    const tools = asArray(active.tool_calls);
+    const last = tools.length === 0 ? "" : " \u2014 last tool: " + toolLine(tools.at(-1));
     return active.role + " (" + active.model + ") \u2014 " + active.status +
-      " since " + active.started_at;
+      " since " + active.started_at + last;
   }
 
   function identityFields(detail) {
@@ -1918,7 +1956,7 @@
         return [tokenClass.label, displayNumber(usage[tokenClass.key])];
       }),
       ...fallbackFields(call.fallback_reason),
-      ...toolCallFields(call.tool_calls),
+      ...toolCallFields(call.tool_calls, call.tool_call_count),
       ...reasonFields(call.failure_reason, call.failure_reason_truncated, runId)
     ];
   }
@@ -1927,12 +1965,21 @@
     return typeof reason === "string" && reason !== "" ? [["Why it fell back", reason]] : [];
   }
 
-  // One line per tool the call used: its name, then what it ran or read.
-  function toolCallFields(toolCalls) {
-    const lines = asArray(toolCalls).map(function (tool) {
-      return tool.preview ? tool.name + "  " + tool.preview : tool.name;
-    });
-    return lines.length === 0 ? [] : [["Tool calls (" + lines.length + ")", lines.join("\n")]];
+  function toolLine(tool) {
+    return tool.preview ? tool.name + "  " + tool.preview : tool.name;
+  }
+
+  // One line per tool the call used: its name, then what it ran or read. A running call
+  // keeps only its latest tools, so the label says how many it started in all.
+  function toolCallFields(toolCalls, total) {
+    const lines = asArray(toolCalls).map(toolLine);
+    if (lines.length === 0) {
+      return [];
+    }
+    const count = typeof total === "number" && total > lines.length
+      ? "latest " + lines.length + " of " + total
+      : String(lines.length);
+    return [["Tool calls (" + count + ")", lines.join("\n")]];
   }
 
   // ---- Run detail: step tags, runtime chips and the duration bar ----------
@@ -2944,6 +2991,20 @@
     return { text: prefix + elapsedText(since, nowMs), prefix: prefix, tickSince: since };
   }
 
+  // The live tail of the running call: its last tool, with the latest ones in the tooltip.
+  function liveToolPart(active) {
+    const lines = asArray(active.tool_calls).map(toolLine);
+    if (lines.length === 0) {
+      return null;
+    }
+    const count = Math.max(lines.length, Number(active.tool_call_count) || 0);
+    return {
+      text: count + (count === 1 ? " tool" : " tools") + " \u00b7 last: " + lines.at(-1),
+      title: lines.join("\n"),
+      className: "live-tool"
+    };
+  }
+
   // The running timers of an active run: since its start, in its stage and in its
   // active call, then the idle time. A stopped run says how long it took.
   function timeParts(detail, nowMs) {
@@ -2959,6 +3020,10 @@
     if (isPlainObject(active) && typeof active.started_at === "string") {
       const role = displayValue(active.role, "active").toLowerCase();
       parts.push(tickPart(role + " call ", active.started_at, nowMs));
+    }
+    const tools = isPlainObject(active) ? liveToolPart(active) : null;
+    if (tools !== null) {
+      parts.push(tools);
     }
     const idle = idlePhrase(detail);
     // The idle text changes each minute, so it is patched in place, not rebuilt.

@@ -11,6 +11,7 @@ providers in :mod:`software_agent_factory.dashboard.snapshot`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -116,6 +117,36 @@ _FAVICONS: dict[str, str] = {
     "/assets/favicon.svg": assets.FAVICON_SVG,
     "/assets/favicon-alert.svg": assets.FAVICON_ALERT_SVG,
 }
+
+
+#: Answer fields that grow with the clock alone. The page shows them in whole minutes, so
+#: the tag counts them in whole minutes too: a poll in the same minute gets ``304``.
+_CLOCK_FIELDS = frozenset({"idle_seconds", "age_seconds", "generated_at"})
+
+
+def _in_minutes(value: object) -> object:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return value
+    # An ISO time cut after its minute: "2026-10-17T00:48".
+    return value[:16] if isinstance(value, str) else int(value // 60)
+
+
+def _without_seconds(value: object) -> object:
+    """``value`` with each clock field cut to its minute, for the tag only."""
+    if isinstance(value, dict):
+        return {
+            key: _in_minutes(item) if key in _CLOCK_FIELDS else _without_seconds(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_without_seconds(item) for item in value]
+    return value
+
+
+def _etag(payload: object) -> str:
+    """A weak tag for a JSON answer: a hash of the answer with its clock fields in minutes."""
+    text = json.dumps(_without_seconds(payload), sort_keys=True)
+    return f'W/"{hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]}"'
 
 
 class _UnknownRun:
@@ -815,9 +846,29 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         extra_headers: tuple[tuple[str, str], ...] = (),
     ) -> None:
         body = json.dumps(payload).encode("utf-8")
+        if status is HTTPStatus.OK and self.command in ("GET", "HEAD"):
+            etag = _etag(payload)
+            if self.headers.get("If-None-Match") == etag:
+                self._respond_not_modified(etag)
+                return
+            extra_headers = (*extra_headers, ("ETag", etag))
         self._respond_bytes(
             status, "application/json; charset=utf-8", body, send_body, extra_headers=extra_headers
         )
+
+    def _respond_not_modified(self, etag: str) -> None:
+        """Answer ``304`` with no body: the page already holds this answer (dashboard S6).
+
+        ``Cache-Control: no-store`` stays, so the browser keeps nothing; the page itself sends
+        ``If-None-Match`` with the tag of the answer it holds and reuses that answer.
+        """
+        self.send_response(HTTPStatus.NOT_MODIFIED)
+        self.send_header("ETag", etag)
+        for name, value in _SECURITY_HEADERS:
+            self.send_header(name, value)
+        if self.close_connection:
+            self.send_header("Connection", "close")
+        self.end_headers()
 
     def _respond_bytes(
         self,

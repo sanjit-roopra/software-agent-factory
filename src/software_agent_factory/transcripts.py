@@ -6,11 +6,18 @@ The workflow writes them to ``runs/<id>/calls/<n>.jsonl`` after
 same time it writes the tools the call used, one short line each, to a small
 ``calls/<n>.tools.json`` beside it. The dashboard reads only that small file,
 so a poll never parses a whole transcript.
+
+A runtime that streams its events (pi, dashboard X6) also reports each tool call as it
+starts, through :func:`report_tool_call`. The workflow listens with :func:`live_tool_calls`
+and keeps the latest ones on the active call, so the dashboard can show a live tail.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
@@ -26,6 +33,29 @@ PREVIEW_CHARS = 120
 
 # Input keys that best say what a tool call did, in order of preference.
 _PREVIEW_KEYS = ("command", "file_path", "path", "pattern", "url", "query", "description")
+
+
+#: Receives one ``{"name", "preview"}`` dict per tool call a running call starts.
+ToolCallSink = Callable[[dict[str, str]], None]
+
+_tool_call_sink: ContextVar[ToolCallSink | None] = ContextVar("tool_call_sink", default=None)
+
+
+@contextmanager
+def live_tool_calls(sink: ToolCallSink) -> Iterator[None]:
+    """Send each tool call reported in this context to ``sink``."""
+    token = _tool_call_sink.set(sink)
+    try:
+        yield
+    finally:
+        _tool_call_sink.reset(token)
+
+
+def report_tool_call(name: str, arguments: Any) -> None:
+    """Tell the listener, if any, that a tool call started. ``arguments`` gives the preview."""
+    sink = _tool_call_sink.get()
+    if sink is not None:
+        sink({"name": _one_line(redact_secrets(name)), "preview": _preview(arguments)})
 
 
 def transcript_name(invocation_number: int) -> str:
@@ -83,13 +113,13 @@ def _one_line(value: str) -> str:
 
 def _preview(arguments: Any) -> str:
     if isinstance(arguments, str):
-        return _one_line(arguments)
+        return _one_line(redact_secrets(arguments))
     if not isinstance(arguments, dict):
         return ""
     for key in _PREVIEW_KEYS:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
-            return _one_line(value)
+            return _one_line(redact_secrets(value))
     return ""
 
 

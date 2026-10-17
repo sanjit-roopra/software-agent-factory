@@ -998,6 +998,11 @@ class ActiveInvocation(ModelBase):
     started_at: UtcDateTime
     attempt_number: int | None = Field(default=None, ge=1)
     budget: AttemptBudget | None = None
+    #: The latest tool calls the call started, oldest first, each a ``name`` and a
+    #: one-line ``preview`` (dashboard X6). Only a runtime that streams its events fills it.
+    recent_tool_calls: list[dict[str, str]] = Field(default_factory=list)
+    #: Every tool call the call started so far, not only the recent ones.
+    tool_call_count: int = Field(default=0, ge=0)
 
 
 class AttemptRecord(ModelBase):

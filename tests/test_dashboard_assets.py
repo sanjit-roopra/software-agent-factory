@@ -263,9 +263,12 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert re.search(r"main\s*\{[^}]*min-width:\s*0;", css)
     assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
     assert "overflow-x: hidden" not in css
-    # The only clips are the reason block and the title of the run list, cut to one line.
+    # The only clips are the reason block, the title of the run list and the last tool of
+    # the running call, each cut to one line.
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
-    assert [selector.strip() for selector in clipped] == [".clamp,\n#runs-table td:first-child a"]
+    assert [selector.strip() for selector in clipped] == [
+        ".clamp,\n#runs-table td:first-child a,\n.live-tool"
+    ]
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
@@ -615,9 +618,11 @@ def test_a_request_times_out_after_ten_seconds_and_counts_as_a_lost_connection()
     assert "controller.abort()" in fetcher
     assert "}, REQUEST_TIMEOUT_MS);" in fetcher
     assert "signal: controller.signal" in fetcher
-    assert ".then(readResponse, onNetworkError)" in fetcher
+    assert "return readTagged(path, held, response);" in fetcher
+    assert "}, onNetworkError)" in fetcher
     # The timer stops only once the body is read, so a stalled body times out too.
-    assert fetcher.index(".then(readResponse") < fetcher.index(".finally(")
+    assert fetcher.index("readTagged(") < fetcher.index(".finally(")
+    assert "readResponse(response)" in function_source(js, "readTagged")
     assert "globalThis.clearTimeout(timer)" in fetcher.split(".finally(")[1]
     assert "response.json().catch(onNetworkError)" in function_source(js, "readResponse")
 
@@ -1670,7 +1675,7 @@ def test_a_run_row_stays_on_one_line_and_cuts_title_and_reason() -> None:
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"#runs-table td\s*\{[^}]*white-space:\s*nowrap;", css)
     assert re.search(
-        r"\.clamp,\s*#runs-table td:first-child a\s*\{[^}]*display:\s*inline-block;"
+        r"\.clamp,\s*#runs-table td:first-child a,\s*\.live-tool\s*\{[^}]*display:\s*inline-block;"
         r"[^}]*text-overflow:\s*ellipsis;",
         css,
     )
