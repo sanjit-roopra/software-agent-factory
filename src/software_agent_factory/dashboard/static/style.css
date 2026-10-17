@@ -573,6 +573,7 @@ button:disabled {
 #completion-body { margin: 0.75rem 0 0; }
 /* Run list search: one row of fields above the pager. */
 .runs-search { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
+#runs-toolbar[hidden], .runs-search[hidden] { display: none; }
 .runs-search input,
 .runs-search select {
   background: var(--surface);
@@ -595,6 +596,7 @@ button:disabled {
   text-transform: inherit;
 }
 .sort-button:hover { background: none; color: var(--text); }
+.sort-button:disabled { background: none; border: 0; cursor: default; }
 tr[aria-current="true"] > td { background: var(--surface-2); }
 tr[aria-current="true"] > td:first-child { box-shadow: inset 3px 0 0 var(--focus); }
 /* Run page tabs. A panel with nothing shown says so. */

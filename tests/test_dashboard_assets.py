@@ -1747,10 +1747,15 @@ def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> Non
         'document.getElementById("runs-filter").hidden = filter === null; '
         'document.getElementById("runs-toolbar").hidden = filter !== null; '
         'document.getElementById("runs-search-bar").hidden = filter !== null; '
+        'document.getElementById("runs-sort").disabled = filter !== null; '
         'document.getElementById("runs-filter-name").textContent = '
         'filter === FILTER_ACTIVE ? "active runs" : "runs that need you"; }'
     )
     assert "renderRunsFilter(request.filter);" in function_source(_JS, "renderRuns")
+    # The toolbar and search bar set display: flex, so hidden needs its own rule.
+    css = dashboard_assets.STYLE_CSS
+    assert "#runs-toolbar[hidden], .runs-search[hidden] { display: none; }" in css
+    assert ".sort-button:disabled { background: none; border: 0; cursor: default; }" in css
     assert '"No runs need you."' in function_source(_JS, "emptyRunsText")
 
 

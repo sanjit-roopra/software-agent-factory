@@ -1352,6 +1352,7 @@
     document.getElementById("runs-filter").hidden = filter === null;
     document.getElementById("runs-toolbar").hidden = filter !== null;
     document.getElementById("runs-search-bar").hidden = filter !== null;
+    document.getElementById("runs-sort").disabled = filter !== null;
     document.getElementById("runs-filter-name").textContent =
       filter === FILTER_ACTIVE ? "active runs" : "runs that need you";
   }
