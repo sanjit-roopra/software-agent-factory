@@ -233,6 +233,7 @@ MAX_RESTART_RECOVERIES = 2
 #: Routes that synthesize the specification and the plan instead of calling the planner.
 _SYNTHESIZED_ROUTES = frozenset({ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE})
 _RESTART_REASON = "interrupted by a factory restart"
+_DELIVERY_REPO_CHANGED = "delivery repository changed since this run started"
 _RESTART_REPAIR_CONTEXT = RepairContext(
     trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
     summary=(
@@ -1261,7 +1262,7 @@ class WorkflowController:
                 assert self._merger is not None
                 repository = self._merger.validate_repository(source_repo)
                 if repository != run.delivery_repository:
-                    raise ValueError("delivery repository changed since this run started")
+                    raise ValueError(_DELIVERY_REPO_CHANGED)
             if not self._workspace_matches(run, workspace):
                 return self._recover_interrupted_delivery(
                     run,
@@ -1781,7 +1782,7 @@ class WorkflowController:
                     assert self._merger is not None
                     repository = self._merger.validate_repository(source_repo)
                     if repository != run.delivery_repository:
-                        raise ValueError("delivery repository changed since this run started")
+                        raise ValueError(_DELIVERY_REPO_CHANGED)
 
                 now = utc_now()
                 run = run.model_copy(
@@ -1899,7 +1900,7 @@ class WorkflowController:
             if self._config.merge.enabled:
                 assert self._merger is not None
                 if self._merger.validate_repository(source_repo) != run.delivery_repository:
-                    raise ValueError("delivery repository changed since this run started")
+                    raise ValueError(_DELIVERY_REPO_CHANGED)
             if not self._workspace_matches(run, workspace):
                 raise ValueError(f"run {run_id} workspace is missing or changed")
             workspace.prepare()
