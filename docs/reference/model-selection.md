@@ -233,7 +233,8 @@ The factory passes the model id to pi with `--model` and the reasoning level wit
 `--thinking`. It does not change either value.
 
 The model id must be one that the pi provider lists. The default provider is
-`github-copilot`. To see the ids, run this command:
+`github-copilot`. A role can name another provider with `provider`. See
+[Configuration](configuration.md#models). To see the ids, run this command:
 
 ```bash
 pi --list-models

@@ -26,6 +26,7 @@ from .models import (
     RuntimeFallback,
     RuntimeName,
     check_claude_code_effort,
+    check_pi_provider,
 )
 
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
@@ -89,10 +90,13 @@ class RoleModelConfig(ConfigModel):
     """The runtime that serves this role. ``None`` uses ``--runtime`` (ADR-045)."""
     fallback: RuntimeFallback | None = None
     """Serves the call when ``runtime`` is unavailable, for example at a usage limit."""
+    provider: str | None = Field(default=None, min_length=1)
+    """The pi provider for this role; ``None`` uses ``pi.provider``."""
 
     @model_validator(mode="after")
-    def _validate_claude_code_effort(self) -> Self:
+    def _validate_runtime_settings(self) -> Self:
         check_claude_code_effort(self.runtime, self.reasoning)
+        check_pi_provider(self.runtime, self.provider)
         return self
 
     @property
@@ -783,12 +787,26 @@ class FactoryConfig(ConfigModel):
 
         ``None`` means the fake runtime, which serves every call (ADR-045).
         """
+        return frozenset(runtime for runtime, _ in self._served(default))
+
+    def pi_providers_for(self, default: RuntimeName | None) -> frozenset[str]:
+        """The pi providers of the calls :meth:`runtimes_for` sends to pi."""
+        return frozenset(
+            provider or self.pi.provider
+            for runtime, provider in self._served(default)
+            if runtime is RuntimeName.PI
+        )
+
+    def _served(self, default: RuntimeName | None) -> list[tuple[RuntimeName, str | None]]:
+        """The runtime and provider of every reachable role and fallback; none for fake."""
         if default is None:
-            return frozenset()
+            return []
         roles = self.reachable_roles().values()
-        return frozenset(role.runtime or default for role in roles) | {
-            role.fallback.runtime for role in roles if role.fallback is not None
-        }
+        return [(role.runtime or default, role.provider) for role in roles] + [
+            (role.fallback.runtime, role.fallback.provider)
+            for role in roles
+            if role.fallback is not None
+        ]
 
     def requires_human_approval(self, risk: Risk) -> bool:
         """Whether ``risk`` stops a run for a human.

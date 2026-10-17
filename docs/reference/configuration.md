@@ -106,6 +106,17 @@ models:
       fallback: { runtime: pi, model: gpt-6.1-sol, reasoning: high }
 ```
 
+A role or fallback that runs on pi can also set `provider`. Without it, the
+role uses `pi.provider`. So one run can bill one role to another pi provider.
+A role or fallback with another `runtime` cannot set `provider`. `factory
+doctor` checks for a credential for every provider that a pi role uses.
+
+```yaml
+models:
+  workers:
+    L3: { model: gpt-6-astra, reasoning: xhigh, runtime: pi, provider: openai-codex }
+```
+
 The Planner writes the specification and the plan in one call (ADR-035).
 An older file can have `refiner` and `researcher` keys in `models` or in a
 profile. The factory ignores them.
@@ -444,7 +455,7 @@ pi:
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `executable` | non-empty string | `pi` | The pi program. Doctor looks for it on `PATH`. |
-| `provider` | non-empty string | `github-copilot` | The pi provider passed with `--provider`. Doctor checks for a credential for it. |
+| `provider` | non-empty string | `github-copilot` | The pi provider passed with `--provider` for a role without its own `provider`. Doctor checks for a credential for each provider in use. |
 | `session_reuse_max_age_seconds` | int > 0 | `3600` | Longest gap after which the Implementer or Reviewer can continue its saved session. The factory never continues an older session. |
 | `cache_retention` | `short` or `long` | `long` | Value of `PI_CACHE_RETENTION` for the pi process. |
 

@@ -353,6 +353,19 @@ def test_run_launches_the_configured_executable_and_provider() -> None:
     assert launch.command[launch.command.index("--provider") + 1] == "anthropic"
 
 
+def test_run_role_provider_overrides_the_configured_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
+
+    launch = _launch(make_request(AgentRole.TRIAGE, provider="openai"))
+
+    assert launch.command[launch.command.index("--provider") + 1] == "openai"
+    assert launch.env["OPENAI_API_KEY"] == "openai-secret"
+    assert "COPILOT_GITHUB_TOKEN" not in launch.env
+
+
 def test_run_launches_the_requested_model_and_reasoning_level() -> None:
     launch = _launch(make_request(AgentRole.TRIAGE, model="gpt-5", reasoning="high"))
 
@@ -579,6 +592,16 @@ def test_run_changed_provider_starts_a_new_session(tmp_path: Path) -> None:
     rig.switch_provider("anthropic")
 
     rig.run(_implementer())
+
+    first, second = rig.session_paths()
+    assert second != first
+
+
+def test_run_changed_role_provider_starts_a_new_session(tmp_path: Path) -> None:
+    rig = _SessionRig(tmp_path)
+    rig.run(_implementer())
+
+    rig.run(_implementer(provider="openai"))
 
     first, second = rig.session_paths()
     assert second != first
