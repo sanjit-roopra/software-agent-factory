@@ -107,7 +107,17 @@ does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
 ### Approve, answer or retry a halted run
 
-A run that needs you shows a "Needs you" panel on its detail page.
+A run that needs you shows a panel on its detail page. The panel says why the
+run stopped and what to do. It has a colored border only when the page can act
+on the run.
+
+The run list puts these runs at the top, under a "Needs you" row. The state of
+each run says what it needs: **Needs approval**, **Needs answers**,
+**Needs retry**, or **Stopped, needs you**. A filled badge means the page can
+act on the run. A run the page cannot act on, for example after its reply window
+expired, says **Stopped, needs you**. A stopped run gives a `factory show` command to copy and run in
+a terminal. While a run needs you, the browser tab title starts with the count,
+for example `(2)`, and the tab icon shows a dot.
 
 - For a risk approval, choose **Approve**. A dialog shows the decision
   requested, the actions the approval allows, the actions it does not, and the

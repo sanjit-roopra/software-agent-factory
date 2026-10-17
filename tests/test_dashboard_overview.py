@@ -113,13 +113,34 @@ def _run(state: str, **extra: Any) -> dict[str, Any]:
     [
         (STATE_DONE, KIND_DONE, "Done"),
         (FAILED, KIND_FAILED, LABEL_FAILED),
-        (STATE_NEEDS_HUMAN, KIND_NEEDS_YOU, "Needs you"),
         (STATE_IMPLEMENTING, KIND_ACTIVE, LABEL_ACTIVE),
         ("CI_RUNNING", KIND_ACTIVE, LABEL_ACTIVE),
     ],
 )
 def test_run_outcome_names_every_state_in_words(state: str, kind: str, label: str) -> None:
     assert run_outcome(_run(state)) == {"kind": kind, LABEL_KEY: label}
+
+
+@pytest.mark.parametrize(
+    ("run", "action", LABEL_KEY),
+    [
+        ({"resume_classification": "RISK_APPROVAL"}, "waiting", "Needs approval"),
+        ({"escalation": {"resume_classification": "PLAN_DECISION"}}, "waiting", "Needs answers"),
+        ({"resume_classification": "DELIVERY_RETRY"}, "retry", "Needs retry"),
+        ({"resume_classification": "NOT_RESUMABLE"}, "stopped", "Stopped, needs you"),
+        ({"escalation": "not a block"}, "stopped", "Stopped, needs you"),
+        ({}, "stopped", "Stopped, needs you"),
+    ],
+    ids=["approve", "answer-in-escalation", "retry", "not-resumable", "bad-block", "none"],
+)
+def test_a_waiting_run_outcome_says_what_it_needs(
+    run: dict[str, Any], action: str, label: str
+) -> None:
+    assert run_outcome(_run(STATE_NEEDS_HUMAN, **run)) == {
+        "kind": KIND_NEEDS_YOU,
+        LABEL_KEY: label,
+        "action": action,
+    }
 
 
 def test_a_finished_pr_ready_run_is_done() -> None:
@@ -184,12 +205,15 @@ def test_a_failed_run_without_a_reason_says_only_failed() -> None:
 def test_a_waiting_run_headline_says_needs_you_and_the_reason() -> None:
     assert headline(_run(STATE_NEEDS_HUMAN, failure_reason="the plan needs decisions")) == {
         "kind": KIND_NEEDS_YOU,
-        "text": "Needs you: the plan needs decisions",
+        "text": "Stopped, needs you: the plan needs decisions",
     }
 
 
 def test_a_waiting_run_headline_without_a_reason_says_needs_you() -> None:
-    assert headline(_run(STATE_NEEDS_HUMAN)) == {"kind": KIND_NEEDS_YOU, "text": "Needs you"}
+    assert headline(_run(STATE_NEEDS_HUMAN)) == {
+        "kind": KIND_NEEDS_YOU,
+        "text": "Stopped, needs you",
+    }
 
 
 @pytest.mark.parametrize(
@@ -806,6 +830,17 @@ def test_a_run_list_row_carries_the_stage_and_drops_the_active_role() -> None:
 
     assert row["stage"] == "Implementing \u00b7 implementer"
     assert "active_role" not in row
+
+
+@pytest.mark.parametrize(
+    ("value", "label"),
+    [("RISK_APPROVAL", "Needs approval"), ("<script>", "Stopped, needs you")],
+)
+def test_a_run_list_row_keeps_only_a_known_resume_classification(value: str, label: str) -> None:
+    row = run_summary_view({**_run(STATE_NEEDS_HUMAN), "resume_classification": value})
+
+    assert row["outcome"]["label"] == label
+    assert row.get("resume_classification") in (None, "RISK_APPROVAL")
 
 
 def test_a_run_detail_headline_names_the_active_call_role() -> None:

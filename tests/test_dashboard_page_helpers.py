@@ -316,6 +316,7 @@ FORMATTER_CASES = [
         "a-failed-run",
         {
             "runId": RUN_1,
+            CLASS_NAME: "row-failed",
             "cells": [
                 {
                     "href": "#run/run-1",
@@ -324,7 +325,7 @@ FORMATTER_CASES = [
                     TITLE: RUN_1 + "\n" + DETAIL,
                     "chips": [],
                 },
-                {"badge": KIND_FAILED, VALUE: LABEL_FAILED, TITLE: STATE_FAILED},
+                {"badge": KIND_FAILED, "filled": False, VALUE: LABEL_FAILED, TITLE: STATE_FAILED},
                 {VALUE: REASON, "clamp": True, CLASS_NAME: "why-cell", TITLE: REASON},
                 {VALUE: DASH},
                 6,
@@ -347,9 +348,10 @@ FORMATTER_CASES = [
         "a-run-with-nothing-to-show",
         {
             "runId": UNDEFINED,
+            CLASS_NAME: "row-neutral",
             "cells": [
                 {VALUE: DASH},
-                {"badge": NEUTRAL, VALUE: DASH, TITLE: ""},
+                {"badge": NEUTRAL, "filled": False, VALUE: DASH, TITLE: ""},
                 {VALUE: DASH, "clamp": True, CLASS_NAME: "why-cell", TITLE: ""},
                 {VALUE: DASH},
                 UNDEFINED,
@@ -453,6 +455,15 @@ _FULL_RUN = {
 _OPTION_LABEL = f"{STARTED_AT} | DONE | {BUG_TITLE}"
 
 _order = partial(_case, "orderRuns")
+_alert = partial(_case, "alertTitle")
+_ACTIONABLE = {
+    **_run("w", waiting=True),
+    "outcome": {"kind": "needs_you", "label": "Needs retry", "action": "retry"},
+}
+_STOPPED = {
+    **_run("s", waiting=True),
+    "outcome": {"kind": "needs_you", "label": "Stopped, needs you", "action": "stopped"},
+}
 _hash = partial(_case, "compareHash")
 _option = partial(_case, "runOption")
 _normalize = partial(_case, "normalizeSelection")
@@ -482,6 +493,20 @@ LIST_AND_COMPARE_CASES = [
         None,
     ),
     _order("flag-missing", [_NO_FLAG], [_NO_FLAG], None),
+    _order(
+        "runs-the-page-can-act-on-before-stopped-ones",
+        [_ACTIONABLE, _STOPPED, _RUNS[0]],
+        [_RUNS[0], _STOPPED, _ACTIONABLE],
+        None,
+    ),
+    _order(
+        "filter-keeps-the-same-order",
+        [_ACTIONABLE, _STOPPED],
+        [_STOPPED, _RUNS[0], _ACTIONABLE],
+        FILTER_NEEDS_YOU,
+    ),
+    _alert("no-run-waits", "Runs", "Runs", 0),
+    _alert("two-runs-wait", "(2) Runs", "Runs", 2),
     _hash("nothing-picked", COMPARE, _pair(None, None)),
     _hash("run-a-only", f"{COMPARE}/run-1", _pair(RUN_1, None)),
     _hash("both-runs", f"{COMPARE}/run-1/run-2", _pair(RUN_1, "run-2")),
@@ -570,8 +595,18 @@ STATUS_CASES = [
     ),
     _state(
         "stale-run-is-its-own-kind",
-        {"badge": "stale", VALUE: "Active, stale", TITLE: ""},
+        {"badge": "stale", "filled": False, VALUE: "Active, stale", TITLE: ""},
         {"outcome": {"kind": "stale", LABEL: "Active, stale"}},
+    ),
+    _state(
+        "a-run-the-page-can-act-on-has-a-filled-badge",
+        {"badge": "needs_you", "filled": True, VALUE: "Needs approval", TITLE: ""},
+        {"outcome": {"kind": "needs_you", LABEL: "Needs approval", "action": "waiting"}},
+    ),
+    _state(
+        "a-stopped-run-has-an-outline-badge",
+        {"badge": "needs_you", "filled": False, VALUE: "Stopped, needs you", TITLE: ""},
+        {"outcome": {"kind": "needs_you", LABEL: "Stopped, needs you", "action": "stopped"}},
     ),
     _chips("none", [], {}),
     _chips("full-route-has-no-chip", [], {"initial_route": "SINGLE", "effective_route": "FULL"}),
@@ -770,3 +805,32 @@ def test_the_token_query_is_dropped_from_the_address_and_the_hash_stays(
 
     assert result.error is None
     assert result.history == case.history
+
+
+@pytest.mark.parametrize(
+    ("runs", "run_filter", "expected"),
+    [
+        (
+            [_ACTIONABLE, _STOPPED, _RUNS[0]],
+            None,
+            ["group-row", "row-needs_you", "row-needs_you", "group-row", "row-neutral"],
+        ),
+        ([_ACTIONABLE, _RUNS[0]], FILTER_NEEDS_YOU, ["row-needs_you", "row-neutral"]),
+        ([_ACTIONABLE, _STOPPED], None, ["row-needs_you", "row-needs_you"]),
+        ([_RUNS[0]], None, ["row-neutral"]),
+    ],
+    ids=["inbox-on-top", "filtered", "only-waiting", "none-waiting"],
+)
+def test_the_runs_that_need_you_sit_under_their_own_group_row(
+    runs: list[object], run_filter: str | None, expected: list[str]
+) -> None:
+    [result] = run_functions(
+        dashboard_assets.APP_JS, [JsCall("runListSpecs", (runs, run_filter, 0))]
+    )
+    specs = result.value
+    assert isinstance(specs, list)
+    assert [spec["className"] for spec in specs] == expected
+    groups = [spec["cells"][0] for spec in specs if spec["className"] == "group-row"]
+    assert all(cell["colSpan"] == 9 for cell in groups)
+    if groups:
+        assert [cell["value"] for cell in groups] == ["Needs you (2)", "Other runs"]

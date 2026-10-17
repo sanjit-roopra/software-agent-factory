@@ -12,7 +12,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..models import TOTAL_TOKEN_FIELDS, WorkflowState
+from ..models import TOTAL_TOKEN_FIELDS, ResumeClassification, WorkflowState
 from .aggregate import STATUS_FAILED
 from .validators import is_count, is_number
 
@@ -23,6 +23,18 @@ OUTCOME_NEEDS_YOU = "needs_you"
 OUTCOME_ACTIVE = "active"
 #: An active run with no new signal for longer than the stale limit.
 OUTCOME_STALE = "stale"
+
+#: What a run that waits for a person needs: the ``action`` of a ``needs_you`` outcome.
+#: ``waiting`` and ``retry`` have an action on the run page; ``stopped`` has only a command.
+ACTION_WAITING = "waiting"
+ACTION_RETRY = "retry"
+ACTION_STOPPED = "stopped"
+_NEEDS_YOU_ACTIONS: dict[str, tuple[str, str]] = {
+    ResumeClassification.RISK_APPROVAL: (ACTION_WAITING, "Needs approval"),
+    ResumeClassification.PLAN_DECISION: (ACTION_WAITING, "Needs answers"),
+    ResumeClassification.DELIVERY_RETRY: (ACTION_RETRY, "Needs retry"),
+}
+_STOPPED = (ACTION_STOPPED, "Stopped, needs you")
 
 #: How a call that did not fail itself relates to a failed run (see :func:`flag_failing_call`).
 FLAG_REJECTED = "rejected"
@@ -54,19 +66,34 @@ def _done_outcome(run: Mapping[str, Any], label: str | None = None) -> dict[str,
     return _outcome(OUTCOME_DONE, _NEEDS_LOOK_LABEL if run.get("needs_look") else label)
 
 
+def _resume_classification(run: Mapping[str, Any]) -> Any:
+    """The run list row carries it at the top, the run detail in its escalation block."""
+    escalation = run.get("escalation")
+    nested = escalation.get("resume_classification") if isinstance(escalation, Mapping) else None
+    return run.get("resume_classification", nested)
+
+
+def _needs_you_outcome(run: Mapping[str, Any]) -> dict[str, str]:
+    """A ``needs_you`` outcome whose label and ``action`` say what the person must do."""
+    action, label = _NEEDS_YOU_ACTIONS.get(_resume_classification(run), _STOPPED)
+    return {**_outcome(OUTCOME_NEEDS_YOU, label), "action": action}
+
+
 def run_outcome(run: Mapping[str, Any]) -> dict[str, str]:
     """The outcome of a run as a ``kind`` and a ``label``: done, failed, needs you, active or stale.
 
     The label always names the outcome in words, so a badge never relies on its color.
     ``PR_READY`` is done only once the run is finished (``is_finished``). Until then it is
     active, as :func:`software_agent_factory.observability.build_monitoring_snapshot` counts it.
-    A done run with ``needs_look`` reasons says ``Done, needs look``.
+    A done run with ``needs_look`` reasons says ``Done, needs look``. A run that waits for a
+    person also has an ``action``: ``waiting`` to approve or answer, ``retry`` to publish
+    again, ``stopped`` when only a command can help. Its label says the same in words.
     """
     state = _state(run)
     if state == WorkflowState.FAILED:
         return _outcome(OUTCOME_FAILED)
     if state == WorkflowState.NEEDS_HUMAN:
-        return _outcome(OUTCOME_NEEDS_YOU)
+        return _needs_you_outcome(run)
     if state == WorkflowState.PR_READY and run.get("is_finished") is True:
         return _done_outcome(run, _PR_READY_LABEL)
     if state == WorkflowState.DONE:
@@ -106,7 +133,7 @@ def reason_line(run: Mapping[str, Any]) -> str | None:
 def headline(run: Mapping[str, Any], active_role: Any = None) -> dict[str, str]:
     """The one outcome line of the run page, as a ``kind`` and ``text``.
 
-    A failed run says ``Failed: <reason>``. A run that waits for a person says ``Needs you``
+    A failed run says ``Failed: <reason>``. A run that waits for a person says what it needs
     and the reason it stopped, when it has one. An active run says its stage and the role of
     the call in progress (:func:`run_stage`). The other runs say their outcome in words.
     """

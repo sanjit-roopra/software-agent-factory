@@ -160,6 +160,7 @@ def _empty(kind: NextStepKind) -> dict[str, Any]:
         "failure_reason_truncated": False,
         "requested_at": None,
         "stale_sentence": None,
+        "cli_command": None,
     }
 
 
@@ -192,10 +193,8 @@ def _halt_step(kind: NextStepKind, sentence: str, escalation: dict[str, Any]) ->
     return step
 
 
-def _cannot_continue(
-    run: dict[str, Any], sentence: str, escalation: dict[str, Any]
-) -> dict[str, Any]:
-    step = _halt_step(NextStepKind.CANNOT_CONTINUE, f"{sentence} {CANNOT_CONTINUE}", escalation)
+def _with_reason(step: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """Add the run's failure reason, so the one "Needs you" callout says why it stopped."""
     reason = run.get("failure_reason")
     if isinstance(reason, str) and reason:
         step["failure_reason"] = reason
@@ -203,12 +202,23 @@ def _cannot_continue(
     return step
 
 
+def _with_command(step: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """Add the command that inspects the run, for a step the page has no action for."""
+    step["cli_command"] = f"factory show {run_id_of(run) or '<run>'}"
+    return step
+
+
+def _cannot_continue(
+    run: dict[str, Any], sentence: str, escalation: dict[str, Any]
+) -> dict[str, Any]:
+    step = _halt_step(NextStepKind.CANNOT_CONTINUE, f"{sentence} {CANNOT_CONTINUE}", escalation)
+    return _with_command(step, run)
+
+
 def _unavailable(run: dict[str, Any], escalation: dict[str, Any], what: str) -> dict[str, Any]:
-    target = run_id_of(run) or "<run>"
-    sentence = (
-        f"{_reason_sentence(escalation)} {what} Inspect the run with `factory show {target}`."
-    )
-    return _halt_step(NextStepKind.REMOTE_APPROVAL_UNAVAILABLE, sentence, escalation)
+    sentence = f"{_reason_sentence(escalation)} {what}"
+    step = _halt_step(NextStepKind.REMOTE_APPROVAL_UNAVAILABLE, sentence, escalation)
+    return _with_command(step, run)
 
 
 def _reply_open(escalation: dict[str, Any]) -> bool:
@@ -400,7 +410,9 @@ def _resume_step(
 def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, Any]:
     """What the operator must do to continue ``run``, or ``kind == "none"``.
 
-    ``requests`` are the dashboard requests of the run's current episode, oldest first. A
+    ``requests`` are the dashboard requests of the run's current episode, oldest first. Every
+    step of a waiting run carries its failure reason; one with no page action carries
+    ``cli_command``, the ``factory show`` command to inspect it. A
     failed run needs nothing from the operator: the page shows its failure reason in the run
     outcome, so its step is ``none``.
     """
@@ -414,5 +426,7 @@ def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, An
         ResumeClassification.PLAN_DECISION,
         ResumeClassification.DELIVERY_RETRY,
     ):
-        return _resume_step(run, escalation, _parsed_requests(requests))
-    return _cannot_continue(run, _reason_sentence(escalation), escalation)
+        step = _resume_step(run, escalation, _parsed_requests(requests))
+    else:
+        step = _cannot_continue(run, _reason_sentence(escalation), escalation)
+    return _with_reason(step, run)

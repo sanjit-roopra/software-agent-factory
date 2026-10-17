@@ -358,6 +358,8 @@ class RunSummary(ModelBase):
     leaves the process. ``calls`` lists each finished call's role, model and
     length in call order, so the run list can show the models and the duration.
     ``active_role`` is the role of the call in progress, when one is.
+    ``resume_classification`` is how a run that waits for a person can continue, so the
+    run list can say what it needs without loading the run detail.
     """
 
     run_id: str
@@ -394,6 +396,7 @@ class RunSummary(ModelBase):
     needs_look: list[str] = Field(default_factory=list)
     restart_recoveries: int = Field(default=0, ge=0)
     active_role: AgentRole | None = None
+    resume_classification: ResumeClassification | None = None
 
 
 class RunAttemptSummary(ModelBase):
@@ -749,6 +752,7 @@ def build_monitoring_snapshot(
     offset: int = 0,
     max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
     scan: RunScanResult | None = None,
+    reply_policy: ReplyPolicy | None = None,
 ) -> MonitoringSnapshot:
     """Derive a paginated, read-only monitoring snapshot from ``store``.
 
@@ -777,6 +781,9 @@ def build_monitoring_snapshot(
     ``unreadable_runs``/``degraded_reasons`` so the caller gets an honest
     degraded indicator instead of either an unhandled exception or a false
     "healthy" result.
+
+    With ``reply_policy``, a waiting run's ``resume_classification`` is kept only when the
+    dashboard would take a request for it now (see :func:`.resume.resume_refusal_within`).
     """
     if limit <= 0:
         raise ValueError("limit must be > 0")
@@ -804,6 +811,7 @@ def build_monitoring_snapshot(
             reference_time,
             stale_after,
             _memoized_artifact_facts(store, run.id, scan.artifact_facts),
+            reply_policy,
         )
         for run in page_runs
     ]
@@ -1581,6 +1589,7 @@ def _build_run_summary(
     now: datetime,
     stale_after: timedelta,
     facts: _ArtifactFacts,
+    reply_policy: ReplyPolicy | None = None,
 ) -> RunSummary:
     signal = _last_signal_at(run) or run.created_at
     finished = _is_run_finished(run)
@@ -1628,7 +1637,23 @@ def _build_run_summary(
         active_role=(
             run.active_invocation.role if run.active_invocation and not finished else None
         ),
+        resume_classification=_page_resume_classification(run, now, reply_policy),
     )
+
+
+def _page_resume_classification(
+    run: FactoryRun, now: datetime, policy: ReplyPolicy | None
+) -> ResumeClassification | None:
+    """How a waiting run can continue, or ``None`` when it does not wait or the page cannot act.
+
+    The run list badge reads it, so it follows the same refusal as the run page's action.
+    Without ``policy`` the reply window and the reopen limit are not judged.
+    """
+    if run.escalation is None or run.state is not WorkflowState.NEEDS_HUMAN:
+        return None
+    if policy is not None and resume_refusal_within(run, policy, now) is not None:
+        return None
+    return run.escalation.resume_classification
 
 
 def _call_briefs(invocations: Iterable[InvocationRecord]) -> list[RunCallBrief]:
@@ -1681,7 +1706,9 @@ def build_run_detail(
     summary = _build_run_summary(run, observed_at, stale_after, _artifact_facts(store, run.id))
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
-        **summary.model_dump(exclude={"calls", "failure_reason", "active_role"}),
+        **summary.model_dump(
+            exclude={"calls", "failure_reason", "active_role", "resume_classification"}
+        ),
         commit_sha=run.commit_sha,
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),

@@ -32,6 +32,7 @@ def render_index_html(*, token: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="{TOKEN_META_NAME}" content="{token}">
 <title>Software Agent Factory &mdash; Dashboard</title>
+<link id="favicon" rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
 <link rel="stylesheet" href="/assets/style.css">
 <script defer src="/assets/app.js"></script>
 </head>
@@ -299,3 +300,14 @@ def _read_static(name: str) -> str:
 #: PyInstaller spec), so there is still no bundler and no build step.
 STYLE_CSS: str = _read_static("style.css")
 APP_JS: str = _read_static("app.js")
+
+#: The tab icons: a plain square, and the same with an amber dot while a run needs the
+#: operator. Served from ``/assets/``, as the CSP allows images from the page's origin only.
+FAVICON_SVG: str = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect x="2" y="2" width="28" height="28" rx="6" fill="#2563eb"/></svg>'
+)
+FAVICON_ALERT_SVG: str = FAVICON_SVG.replace(
+    "</svg>",
+    '<circle cx="24" cy="8" r="7" fill="#f59e0b" stroke="#ffffff" stroke-width="2"/></svg>',
+)

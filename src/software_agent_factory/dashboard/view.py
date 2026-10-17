@@ -11,7 +11,7 @@ from typing import Any
 
 from ..models import WorkflowState
 from .aggregate import compare_roles, models_of, models_summary, run_totals
-from .next_step import next_step
+from .next_step import NextStepKind, next_step
 from .overview import (
     flag_failing_call,
     headline,
@@ -30,6 +30,12 @@ from .sanitize import (
 from .validators import is_episode_id, run_id_of
 
 RequestsFor = Callable[[str, str], Iterable[Any]]
+
+#: The next steps that keep a waiting run's "Needs approval/answers/retry" outcome. Any other
+#: step has no page action, so the run says "Stopped, needs you", as the run list does.
+_RESUMABLE_STEP_KINDS = frozenset(
+    {NextStepKind.APPROVE, NextStepKind.ANSWER, NextStepKind.RETRY, NextStepKind.QUEUED}
+)
 
 
 def _queued_requests(detail: dict[str, Any], requests_for: RequestsFor | None) -> Iterable[Any]:
@@ -53,7 +59,8 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
     ``requests_for`` supplies the dashboard requests of the run's current episode. Only a
     waiting run asks for them. The finished call a failed run most likely failed on carries
     ``failure_link`` (see :func:`.overview.flag_failing_call`). The headline of an active run
-    names the role of its active call.
+    names the role of its active call. A waiting run the page cannot act on says
+    ``Stopped, needs you``, whatever its resume classification.
     """
     detail = sanitize_run_detail(raw)
     if "invocations" in detail:
@@ -62,8 +69,10 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
     detail["next_step"] = next_step(detail, _queued_requests(detail, requests_for))
     active = detail.get("active_invocation")
     role = active.get("role") if isinstance(active, dict) else None
-    detail["outcome"] = run_outcome(detail)
-    detail["headline"] = headline(detail, role)
+    resumable = detail["next_step"]["kind"] in _RESUMABLE_STEP_KINDS
+    judged = detail if resumable else {**detail, "resume_classification": None}
+    detail["outcome"] = run_outcome(judged)
+    detail["headline"] = headline(judged, role)
     return detail
 
 

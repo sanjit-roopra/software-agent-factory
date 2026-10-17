@@ -108,6 +108,19 @@ thead th {
   text-transform: uppercase;
 }
 tr[data-run-id] { cursor: pointer; }
+/* A stripe on the left of each run row: its outcome at a glance. */
+tr.row-needs_you > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+tr.row-failed > td:first-child { box-shadow: inset 3px 0 0 var(--error); }
+tr.row-active > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+tr.row-stale > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+tr.group-row > td {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 tr[data-run-id]:hover { background: var(--surface-2); }
 .project-card {
   border: 1px solid var(--border);
@@ -181,7 +194,7 @@ a { color: var(--accent); }
   border-top: 2px solid var(--border);
   font-weight: 700;
 }
-.next-step { border: 2px solid var(--warn); }
+.next-step-action { border: 2px solid var(--warn); }
 .next-step h2 { margin-bottom: 0.5rem; }
 .next-step h3 { margin: 0.75rem 0 0.25rem; font-size: 1rem; }
 .next-step p { margin: 0 0 0.5rem; }
@@ -269,6 +282,8 @@ button:disabled {
 .badge-needs_you { color: var(--warn); border-color: var(--warn); }
 .badge-active { color: var(--accent); border-color: var(--accent); }
 .badge-stale { color: var(--warn); border-color: var(--warn); border-style: dashed; }
+/* Filled only when the page has an action for the run: approve, answer or retry. */
+.badge-needs_you.badge-filled { background: var(--warn); color: var(--accent-contrast); }
 /* A glyph before each outcome, hidden from screen readers: the label already says it. */
 .badge::before { font-size: 0.9em; line-height: 1; }
 .badge-done::before { content: "\2713\00a0"; content: "\2713\00a0" / ""; }
@@ -313,6 +328,8 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 .status-line .chip { margin-right: 0; }
+/* With the headline hidden (a waiting run says why in its callout), keep clear of the badge. */
+.headline[hidden] + .status-line { margin-top: 0.75rem; }
 #runs-table th, #runs-table td { padding: 0.35rem 0.4rem; font-size: 0.85rem; }
 #runs-table td { vertical-align: middle; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #runs-table td:first-child a { color: var(--text); font-weight: 600; text-decoration: none; }

@@ -117,6 +117,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "needs_look",
         "restart_recoveries",
         "active_role",
+        "resume_classification",
     }
 )
 
@@ -350,6 +351,7 @@ _RUN_FIELD_CHECKS: dict[str, Callable[[Any], bool]] = {
     "initial_route": lambda value: _short_token(value) is not None,
     "effective_route": lambda value: _short_token(value) is not None,
     "active_role": lambda value: _short_token(value) is not None,
+    "resume_classification": lambda value: value in RESUME_CLASSIFICATIONS,
 }
 
 

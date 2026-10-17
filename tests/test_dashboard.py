@@ -669,6 +669,8 @@ def test_each_dashboard_port_has_its_own_cookie_name() -> None:
         pytest.param("/", "text/html", id="page"),
         pytest.param("/assets/app.js", "javascript", id="script"),
         pytest.param("/assets/style.css", "css", id="stylesheet"),
+        pytest.param("/assets/favicon.svg", "image/svg+xml", id="icon"),
+        pytest.param("/assets/favicon-alert.svg", "image/svg+xml", id="alert-icon"),
         pytest.param(SUMMARY_PATH, "application/json", id="api"),
     ],
 )
@@ -1163,6 +1165,15 @@ def test_assets_are_served(running_server: RunningServer) -> None:
     assert css_response.status == 200
     assert "css" in css_response.getheader("Content-Type", "")
     assert css_response.read_body == _static_bytes("style.css")  # type: ignore[attr-defined]
+
+
+def test_the_page_links_the_icon_the_script_switches_from() -> None:
+    page = dashboard_assets.render_index_html(token="t")
+
+    assert 'id="favicon" rel="icon" type="image/svg+xml" href="/assets/favicon.svg"' in page
+    assert 'const FAVICON_PATH = "/assets/favicon.svg";' in dashboard_assets.APP_JS
+    assert 'const FAVICON_ALERT_PATH = "/assets/favicon-alert.svg";' in dashboard_assets.APP_JS
+    assert dashboard_assets.FAVICON_ALERT_SVG.count("<circle") == 1
 
 
 def test_the_script_names_the_same_query_parameter_as_the_server() -> None:
