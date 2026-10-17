@@ -90,6 +90,13 @@ def test_load_config_mixed_profile_pins_claude_code_and_pi_runtimes() -> None:
     assert models.reviewer.runtime is RuntimeName.CLAUDE_CODE
     assert {models.triage.runtime, models.tester.runtime} == {RuntimeName.PI}
     assert {worker.runtime for worker in models.workers.values()} == {RuntimeName.PI}
+    assert models.planner.model == "opus"
+    assert models.reviewer.model == "sonnet"
+
+
+@pytest.mark.parametrize("profile", [None, "claude", "mixed", "economy"])
+def test_every_model_profile_runs_triage_at_low_reasoning(profile: str | None) -> None:
+    assert load_config(model_profile=profile).models.triage.reasoning == "low"
 
 
 def test_load_config_rejects_unknown_model_profile() -> None:

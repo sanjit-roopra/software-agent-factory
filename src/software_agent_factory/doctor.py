@@ -96,9 +96,8 @@ SUPPORTED_MACHINES: frozenset[str] = frozenset({"arm64", "x86_64"})
 
 #: Minimum supported ``pi`` (``@earendil-works/pi-coding-agent``) version.
 #: 1.2.0 is the version whose ``github-copilot`` catalog lists the default
-#: models. The implementer command filter (``pi_extensions/command_filter.mjs``,
-#: ADR-032) needs 0.99.1 or later. Pi's package moves fast, so this is pinned
-#: here as a single source ``check_pi`` compares against.
+#: models. Pi's package moves fast, so this is pinned here as a single source
+#: ``check_pi`` compares against.
 PI_MIN_VERSION = "1.2.0"
 _parsed_pi_min_version = parse_version(PI_MIN_VERSION)
 assert _parsed_pi_min_version is not None, f"unparseable PI_MIN_VERSION: {PI_MIN_VERSION!r}"

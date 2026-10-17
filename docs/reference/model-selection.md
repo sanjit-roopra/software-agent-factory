@@ -9,7 +9,7 @@ Copilot. It combines:
   evidence,
 - the constraints of this factory's current deterministic router.
 
-**Snapshot date:** 2026-09-07.
+**Snapshot date:** 2026-10-17.
 
 Model catalogs, prices and benchmark leaderboards change. Recheck the linked
 sources before making a long-lived routing decision.

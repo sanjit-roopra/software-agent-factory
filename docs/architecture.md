@@ -107,9 +107,9 @@ concurrency and cherry-pick integration.
                 ▼
             Agent Runtime
                 │
-     ┌──────────┼────────────┬────────────┐
-     ▼          ▼            ▼            ▼
-   Claude      Gemini        GPT          MAI
+     ┌──────────┼──────────┐
+     ▼          ▼          ▼
+   Claude      GPT        MAI
 
                 │
                 ▼
