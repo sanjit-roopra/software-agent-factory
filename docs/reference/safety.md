@@ -55,7 +55,7 @@ Nothing in the factory contacts the network unless you turned something on.
 | Trigger | Talks to |
 | --- | --- |
 | `--runtime copilot` | GitHub Copilot, through the `copilot` CLI. Paid. |
-| `--runtime pi` | The configured `pi.provider`, through the `pi` CLI. The default provider is GitHub Copilot. Paid. |
+| `--runtime pi` | The role's pi `provider`, else `pi.provider`, through the `pi` CLI. The default provider is GitHub Copilot. Paid. |
 | `--runtime claude-code` | Anthropic, through the `claude` CLI. It uses your Claude subscription. |
 | `pull_request.enabled` | GitHub, through `gh`. |
 | `ci.enabled` | GitHub, through `gh`. |
@@ -110,7 +110,8 @@ subscription does not bill each call.
   `GITHUB_PAT`, `GIT_ASKPASS` and the Actions token variables. Agents never
   receive GitHub credentials.
 - The `pi` child process also starts with GitHub credential variables removed.
-  Only the credential variables of the configured `pi.provider` stay. For
+  Only the credential variables of the call's pi provider stay (the role's
+  `provider`, else `pi.provider`). For
   `github-copilot`, that is `COPILOT_GITHUB_TOKEN`. Other provider keys and
   every other `*_API_KEY` variable are removed.
 - The `claude` child process also starts with GitHub credential variables
