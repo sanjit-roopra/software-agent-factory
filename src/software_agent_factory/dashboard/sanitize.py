@@ -124,6 +124,7 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "unattended",
         "needs_look",
         "restart_recoveries",
+        "operator_escalation",
         "active_role",
         "resume_classification",
     }
@@ -396,6 +397,30 @@ def _sanitize_summary_fields(sanitized: dict[str, Any]) -> None:
             sanitized.pop(field)
     if "needs_look" in sanitized:
         sanitized["needs_look"] = _bounded_reasons(sanitized["needs_look"])
+    if "operator_escalation" in sanitized:
+        sanitized["operator_escalation"] = _operator_escalation(sanitized["operator_escalation"])
+
+
+#: ``OperatorEscalation.status`` in ``models.py``.
+_OPERATOR_ESCALATION_STATUSES = frozenset({"running", "done", "failed"})
+
+
+def _operator_escalation(value: Any) -> dict[str, Any] | None:
+    """The last operator escalation: routes, time, status, and a redacted, cut note and error."""
+    if not isinstance(value, dict) or value.get("status") not in _OPERATOR_ESCALATION_STATUSES:
+        return None
+    return {
+        "from_route": _short_token(value.get("from_route")),
+        "to_route": _short_token(value.get("to_route")),
+        "started_at": _timestamp(value.get("started_at")),
+        "status": value["status"],
+        "note": _bounded_text(value.get("note")),
+        "error": _bounded_text(value.get("error")),
+    }
+
+
+def _bounded_text(value: Any) -> str | None:
+    return bounded_reason(value, run_id=None)[0] if isinstance(value, str) and value else None
 
 
 def sanitize_performance(raw: Any) -> dict[str, Any]:

@@ -111,6 +111,7 @@ from .models import (
     HaltReasonCode,
     InvocationRecord,
     ModelBase,
+    OperatorEscalation,
     PerformanceRecord,
     ResumeClassification,
     ResumeRefusal,
@@ -134,7 +135,7 @@ from .models import (
 from .redaction import redact_secrets
 from .resume import escalation_route, resume_refusal_within
 from .setup_run import SETUP_WORKTREE_NAME
-from .store import ARTIFACT_FILENAMES
+from .store import ARTIFACT_FILENAMES, OPERATOR_ESCALATION_FILENAME
 from .transcripts import read_call_tool_calls
 
 try:
@@ -406,6 +407,8 @@ class RunSummary(ModelBase):
     unattended: bool = False
     needs_look: list[str] = Field(default_factory=list)
     restart_recoveries: int = Field(default=0, ge=0)
+    #: The last ``factory escalate`` of the run and how it went (ADR-055).
+    operator_escalation: OperatorEscalation | None = None
     active_role: AgentRole | None = None
     resume_classification: ResumeClassification | None = None
 
@@ -626,6 +629,7 @@ class RunDetail(ModelBase):
     restart_recoveries: int = Field(default=0, ge=0)
     #: The route ``factory escalate`` would move the run to, or ``None`` (ADR-055).
     escalation_route: ExecutionRoute | None = None
+    operator_escalation: OperatorEscalation | None = None
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -843,6 +847,7 @@ def build_monitoring_snapshot(
             stale_after,
             _memoized_artifact_facts(store, run.id, scan.artifact_facts),
             reply_policy,
+            _operator_escalation(store, run.id),
         )
         for run in page_runs
     ]
@@ -1514,6 +1519,16 @@ def _load_optional_artifact(
         return None
 
 
+def _operator_escalation(store: RunStoreProtocol, run_id: str) -> OperatorEscalation | None:
+    try:
+        loaded: OperatorEscalation = store.load_artifact(
+            run_id, OperatorEscalation, OPERATOR_ESCALATION_FILENAME
+        )
+        return loaded
+    except (OSError, ValueError):
+        return None
+
+
 def _safe_external_id(work_item: WorkItem | None) -> str | None:
     if work_item is None or work_item.external_id is None:
         return None
@@ -1670,6 +1685,7 @@ def _build_run_summary(
     stale_after: timedelta,
     facts: _ArtifactFacts,
     reply_policy: ReplyPolicy | None = None,
+    operator_escalation: OperatorEscalation | None = None,
 ) -> RunSummary:
     signal = _last_signal_at(run) or run.created_at
     finished = _is_run_finished(run)
@@ -1714,6 +1730,7 @@ def _build_run_summary(
         unattended=run.unattended,
         needs_look=list(run.needs_look),
         restart_recoveries=run.restart_recoveries,
+        operator_escalation=operator_escalation,
         active_role=(
             run.active_invocation.role if run.active_invocation and not finished else None
         ),
@@ -1798,7 +1815,10 @@ def build_run_detail(
         return None
 
     observed_at = _normalize_now(now)
-    summary = _build_run_summary(run, observed_at, stale_after, _artifact_facts(store, run.id))
+    operator_escalation = _operator_escalation(store, run.id)
+    summary = _build_run_summary(
+        run, observed_at, stale_after, _artifact_facts(store, run.id), None, operator_escalation
+    )
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
         **summary.model_dump(
@@ -1808,7 +1828,12 @@ def build_run_detail(
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),
         escalation=_escalation_summary(run, run.escalation, observed_at, reply_policy),
-        escalation_route=escalation_route(run),
+        # One escalation at a time: the page offers none while one runs.
+        escalation_route=(
+            None
+            if operator_escalation is not None and operator_escalation.status == "running"
+            else escalation_route(run)
+        ),
         attempts=[
             RunAttemptSummary(
                 attempt_number=attempt.attempt_number,

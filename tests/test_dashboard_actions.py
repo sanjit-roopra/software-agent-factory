@@ -25,7 +25,6 @@ from factory_testing import REPLY_POLICY
 
 from software_agent_factory import dashboard
 from software_agent_factory.cli import (
-    RuntimeChoice,
     build_escalator,
     build_resume_request_reader,
     build_resume_requester,
@@ -48,6 +47,7 @@ from software_agent_factory.models import (
     EscalationStatus,
     ExecutionRoute,
     FactoryRun,
+    OperatorEscalation,
     PlanDecisionAnswer,
     PlanDecisionContext,
     ResumeClassification,
@@ -64,7 +64,7 @@ from software_agent_factory.resume import (
     compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
-from software_agent_factory.store import FileRunStore
+from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 RUN_ID = "run-action"
@@ -338,9 +338,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                     clock=lambda: NOW,
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
-                    escalator=build_escalator(
-                        store, tmp_path / "repo", RuntimeChoice.FAKE, tmp_path, tmp_path / "f.yaml"
-                    )
+                    escalator=build_escalator(store, tmp_path, tmp_path / "f.yaml")
                     if escalate
                     else None,
                 )
@@ -1602,18 +1600,26 @@ def test_an_escalation_starts_a_detached_factory_escalate(
         "escalate",
         RUN_ID,
         "--note=-Use the cache.",
-        "--repo",
-        str(rig.data_dir / "repo"),
-        "--runtime",
-        "fake",
         "--data-dir",
         str(rig.data_dir),
         "--config",
         str(rig.data_dir / "f.yaml"),
     ]
     assert kwargs["start_new_session"] is True
-    assert (rig.data_dir / "logs" / f"escalate-{RUN_ID}.log").is_file()
     assert rig.store.load_run(RUN_ID) == rig.run
+    # The page shows the escalation at once and offers no second one.
+    record = rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
+    assert (record.status, record.from_route, record.to_route, record.note) == (
+        "running",
+        ExecutionRoute.SINGLE,
+        ExecutionRoute.CRITIQUE,
+        "-Use the cache.",
+    )
+    assert rig.post(_path(ESCALATE_ACTION), {"note": "again"}) == (
+        409,
+        {"error": "conflict", "reason": "not_escalatable"},
+    )
+    assert len(popen_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -1685,3 +1691,17 @@ def test_the_run_detail_names_the_route_an_escalation_moves_to(tmp_path: Path) -
 
     assert detail is not None
     assert detail.escalation_route is ExecutionRoute.CRITIQUE
+    assert detail.operator_escalation is None
+
+
+def test_a_running_escalation_shows_on_the_run_and_offers_no_second_one(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(_finished_run())
+    record = OperatorEscalation(note="Use the cache.", status="running")
+    store.save_artifact(RUN_ID, record, OPERATOR_ESCALATION_FILENAME)
+
+    detail = build_run_detail(store, RUN_ID, reply_policy=REPLY_POLICY)
+
+    assert detail is not None
+    assert detail.escalation_route is None
+    assert detail.operator_escalation == record

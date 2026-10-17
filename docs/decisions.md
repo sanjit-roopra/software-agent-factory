@@ -39,11 +39,17 @@ a run, and `DONE`, `NEEDS_HUMAN` and `FAILED` allow no transition.
 
 - The dashboard can show an escalation from the route adjustments and the
   stored steps.
-- `factory dashboard --repo <repo> --runtime <runtime>` can escalate a run from
-  the run page. It starts `factory escalate` as a detached process with the
-  dashboard's config and data directory, so it works without `factory start`.
-  The dashboard package still runs no process itself: the CLI gives it the
-  function that does.
+- The dashboard can escalate a run from the run page. It starts
+  `factory escalate` as a detached process with the dashboard's config and data
+  directory, so it works without `factory start`. The dashboard package still
+  runs no process itself: the CLI gives it the function that does.
+- `factory escalate` records the last escalation in `operator-escalation.json`
+  in the run directory: the routes, the note, the time and the status
+  (`running`, `done`, or `failed` with the error). A failure before the run
+  starts, such as a held workspace lock, is recorded too. The dashboard writes
+  `running` before it starts the command, so the page shows the escalation at
+  once and offers no second one while it runs. The run page shows the record at
+  the top and the run list marks the run.
 - An escalation clears the old needs-look reasons, so a run that was left open
   can merge after a new passing review. The `factory:needs-look` label stays on
   the pull request until a person removes it.

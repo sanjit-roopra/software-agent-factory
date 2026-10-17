@@ -1400,8 +1400,8 @@ def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     assert first.exit_code == 0, first.output
     run_id = first.output.split("run id: ")[1].split()[0]
 
-    from software_agent_factory.models import RunLaunch
-    from software_agent_factory.store import FileRunStore
+    from software_agent_factory.models import OperatorEscalation, RunLaunch
+    from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
     store = FileRunStore(data_dir)
     started = store.load_run(run_id)
@@ -1413,6 +1413,12 @@ def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     assert result.exit_code == 0, result.output
     assert f"run id: {run_id}" in result.output
     assert "route: FULL" in result.output
+    escalation = store.load_artifact(run_id, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
+    assert (escalation.status, escalation.note, escalation.error) == (
+        "done",
+        "Handle tabs too.",
+        None,
+    )
     empty = runner.invoke(app, ["escalate", run_id, "--note", "  ", *common])
     assert empty.exit_code == 1
     assert "the note is empty" in empty.output
@@ -1427,3 +1433,31 @@ def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     old = runner.invoke(app, ["escalate", run_id, "--note", "x", *common])
     assert old.exit_code == 1
     assert "started before runs recorded their settings" in old.output
+    escalation = store.load_artifact(run_id, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
+    assert escalation.status == "failed"
+    assert escalation.error == "it was started before runs recorded their settings"
+
+
+def test_a_crashed_escalation_records_the_error(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import software_agent_factory.cli as cli_module
+    from software_agent_factory.models import FactoryRun, OperatorEscalation, WorkflowState
+    from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
+
+    store = FileRunStore(data_dir)
+    store.save_run(FactoryRun(id="run-1", work_item_id="WI-1", state=WorkflowState.DONE))
+
+    def crash(*_args: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli_module, "_escalate", crash)
+    result = runner.invoke(app, ["escalate", "run-1", "--note", "x", "--data-dir", str(data_dir)])
+
+    assert isinstance(result.exception, RuntimeError)
+    escalation = store.load_artifact("run-1", OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
+    assert (escalation.status, escalation.error, escalation.to_route) == (
+        "failed",
+        "RuntimeError: boom",
+        None,
+    )

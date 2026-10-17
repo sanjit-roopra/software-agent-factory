@@ -311,6 +311,9 @@ it. These exit with code 1: a bad note, a missing run, a run with no saved plan,
 and a run that cannot escalate. A run that started before runs kept their
 settings cannot escalate.
 
+The command writes `operator-escalation.json` in the run directory: `running`
+when it starts, then `done`, or `failed` with the error. The dashboard shows it.
+
 ---
 
 ## factory doctor
@@ -415,8 +418,6 @@ factory dashboard --port 0 --open-browser
 | `--port <int>` | `8765` | Loopback port. `0` asks the OS for a free port. |
 | `--open-browser` | off | Open the tokenized link in the default browser. |
 | `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per request. |
-| `--repo <path>` | none | Target repository. With it and `--runtime`, the run page can escalate a run. |
-| `--runtime <name>` | none | Agent runtime of an escalation the run page starts. It has no default, so a fake run cannot push to a real pull request. |
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
@@ -446,8 +447,8 @@ last 24 hours when they differ from the totals.
 
 The run list shows these columns for each run: title, state badge, the reason it
 stopped, pull request, calls, duration, cost and start time. The tooltip of the title
-names the run id and the models. Small tags after the title show a route other than
-`FULL`, an unattended run, factory restarts and a pull request that needs a look. A
+names the run id and the models. Tags after the title show a route other than `FULL`,
+the last escalation, an unattended run, restarts and a pull request that needs a look. A
 run that is still working shows its stage, the role at work and the idle time where a
 stopped run shows its reason. A run with no new signal for too long gets its own
 "Active, stale" badge. The pull request cell shows the number, with a check mark once
@@ -455,7 +456,9 @@ it merged. Duration is the time from the start to the end of the run, and it cou
 every second while the run works. The time spent in agent calls is its tooltip.
 
 The run page starts with a summary and the steps of the run. Under the outcome line it
-shows the same tags and the pull request link. A working run then shows four times:
+shows the same tags, the route also for `FULL`, and the pull request link. A run that
+was escalated shows a line above them with the routes, time, note and status of its
+last escalation. A working run then shows four times:
 since its start, in its stage, in its active call, and with no new signal. A finished
 run shows how long it took. The long list of run facts is under Details.
 
@@ -470,8 +473,7 @@ Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a tok
 generated for that process. It answers `GET` for reads. Six `POST` routes are the
 only writes: approve a halt, answer plan decisions (ADR-033), retry
 publishing (ADR-042), stop or steer (ADR-047), and escalate (ADR-055).
-Escalate needs `--repo` and `--runtime`. The output of an escalation goes
-to `logs/escalate-<run>.log` in the data directory. The
+An escalation uses the repository and runtime that the run started with. The
 tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
 

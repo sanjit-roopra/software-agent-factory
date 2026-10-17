@@ -37,8 +37,15 @@
   const COMPARE_HASH = "#compare";
   const COMPARE_ICON = "\u21c4";
   const MERGED_ICON = "\u2713";
-  // ExecutionRoute.FULL in models.py: the route most runs take, so it gets no chip.
+  // ExecutionRoute.FULL in models.py: the route most runs take, so the run list shows no chip.
   const DEFAULT_ROUTE = "FULL";
+  // OperatorEscalation.status in models.py: the run list chip and the run page line tone.
+  const ESCALATION_CHIPS = {
+    running: "escalating",
+    done: "escalated",
+    failed: "escalation failed"
+  };
+  const ESCALATION_TONES = { running: "active", done: "done", failed: "failed" };
   const PULL_NUMBER_PATTERN = /\/pull\/(\d+)\/?$/;
   // A run idle for less than this shows no idle time.
   const IDLE_SHOWN_SECONDS = 60;
@@ -668,7 +675,7 @@
     trimChildren(box, chips.length);
     for (const [index, chip] of chips.entries()) {
       const node = childAt(box, index, "span");
-      node.className = "chip";
+      node.className = chip.failed ? "chip chip-failed" : "chip";
       setText(node, chip.text);
       setTitle(node, chip.title);
     }
@@ -1137,13 +1144,21 @@
     return count + " " + word + (count === 1 ? "" : "s");
   }
 
-  // A route other than the default full one, unattended, restarts and needs look,
-  // each as a short chip.
-  function runChips(run) {
+  // The route (the default full one only with "everyRoute"), the last escalation,
+  // unattended, restarts and needs look, each as a short chip.
+  function runChips(run, everyRoute = false) {
     const chips = [];
     const route = preferDefined(run.effective_route, run.initial_route);
-    if (typeof route === "string" && route !== "" && route !== DEFAULT_ROUTE) {
-      chips.push({ text: route.toLowerCase().replaceAll("_", " "), title: "Route" });
+    if (typeof route === "string" && route !== "" && (everyRoute || route !== DEFAULT_ROUTE)) {
+      chips.push({ text: route.toLowerCase().replaceAll("_", " ") + " route", title: "Route" });
+    }
+    const escalation = run.operator_escalation;
+    if (isPlainObject(escalation) && Object.hasOwn(ESCALATION_CHIPS, escalation.status)) {
+      chips.push({
+        text: ESCALATION_CHIPS[escalation.status],
+        title: escalationText(escalation),
+        failed: escalation.status === "failed"
+      });
     }
     if (run.unattended === true) {
       chips.push({ text: "unattended", title: "Started with factory.unattended" });
@@ -2807,11 +2822,37 @@
       runId: box.dataset.runId,
       action: ESCALATE_ACTION,
       payload: { note: note.value },
-      controls: [note, send],
-      onAccepted: function () {
-        status.textContent = "Escalation started.";
-      }
+      controls: [note, send]
     });
+  }
+
+  // "Escalated SINGLE -> CRITIQUE · <time> · <note> · failed: <error>".
+  function escalationText(escalation) {
+    const from = displayValue(escalation.from_route, "");
+    const to = displayValue(escalation.to_route, "");
+    let outcome = "running";
+    if (escalation.status === "done") {
+      outcome = "finished";
+    } else if (escalation.status === "failed") {
+      outcome = "failed: " + displayValue(escalation.error, "no reason given");
+    }
+    return [
+      to === "" ? "Escalation" : "Escalated " + from + " \u2192 " + to,
+      absoluteTimeText(escalation.started_at, ""),
+      displayValue(escalation.note, ""),
+      outcome
+    ].filter(Boolean).join(" \u00b7 ");
+  }
+
+  // The last escalation of the run at the top of the summary, in the tone of how it went.
+  function renderEscalationLine(escalation) {
+    const line = document.getElementById("run-escalation");
+    const tone = isPlainObject(escalation) ? ESCALATION_TONES[escalation.status] : undefined;
+    line.hidden = tone === undefined;
+    if (!line.hidden) {
+      line.className = "headline headline-" + tone;
+      setText(line, escalationText(escalation));
+    }
   }
 
   function answersReady(inputs) {
@@ -3075,8 +3116,9 @@
 
   // The line under the headline: chips, the pull request link and the times.
   function statusParts(detail, nowMs) {
-    const parts = runChips(detail).map(function (chip) {
-      return { text: chip.text, title: chip.title, className: "chip" };
+    const parts = runChips(detail, true).map(function (chip) {
+      const className = chip.failed ? "chip chip-failed" : "chip";
+      return { text: chip.text, title: chip.title, className: className };
     });
     const pr = pullRequestCell(detail);
     if (pr.href !== undefined) {
@@ -3143,6 +3185,7 @@
     setText(headline, displayValue(detail.headline?.text, ""));
     // A waiting run says why in the "Needs you" callout, so the headline would repeat it.
     headline.hidden = headline.textContent === "" || isStepVisible(detail.next_step);
+    renderEscalationLine(detail.operator_escalation);
     renderStatusLine(detail);
     renderPullRequestLink(detail.pull_request_url);
     renderStopControl(detail, runId);

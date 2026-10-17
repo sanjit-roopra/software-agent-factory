@@ -168,6 +168,7 @@ def render_index_html(*, token: str) -> str:
       <p id="run-detail-status">Loading&hellip;</p>
       <div id="run-detail-content" hidden>
         <section id="run-summary" class="card run-summary" aria-labelledby="run-detail-heading">
+          <p id="run-escalation" class="headline" role="status" hidden></p>
           <div class="run-summary-head">
             <span id="run-badge" class="badge">&mdash;</span>
             <a id="run-pr-link" target="_blank" rel="noopener noreferrer" hidden>Pull request</a>

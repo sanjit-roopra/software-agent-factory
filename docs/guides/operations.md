@@ -214,17 +214,20 @@ escalate. See [factory escalate](../reference/cli.md#factory-escalate).
 
 ### Escalate a run
 
-Start the dashboard with `--repo <repo>` and `--runtime <runtime>` to escalate
-from the run page. A run that can escalate then shows **Escalate this run**
-with a note box. The button names the new route, for example **Escalate to
-CRITIQUE**. Type what to change, then select it. The dashboard starts
-`factory escalate` for the run as its own process. You do not need `factory
-start` for this. The route chip and the steps then show the new work. A step
-that the escalation starts has the trigger `OPERATOR`. If nothing changes, read
-`logs/escalate-<run>.log` in the data directory to see why the escalation stopped.
+A run that can escalate shows **Escalate this run** on its page, with a note
+box. The button names the new route, for example **Escalate to CRITIQUE**. Type
+what to change, then select it. The dashboard starts `factory escalate` for the
+run as its own process. You do not need `factory start` for this.
 
-The dashboard cannot reconfigure anything. It can retry only publishing, and it
-can escalate a run only when you started it with `--repo`.
+A line at the top of the run page then shows the escalation, for example
+"Escalated SINGLE → CRITIQUE · 2026-10-17 18:42 UTC · Use the shared
+validator. · running". It ends in "finished", or in "failed:" and the error,
+for example when a process holds the workspace lock. The run list marks the run
+"escalating", "escalated" or "escalation failed". The run page always shows the
+route chip, also for `FULL`. A step that the escalation starts has the trigger
+`OPERATOR`.
+
+The dashboard cannot reconfigure anything. It can retry only publishing.
 Authority stays with the workflow controller and the factory service.
 
 It is built from the Python standard library. No framework, no npm, no bundler,
