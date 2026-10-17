@@ -268,19 +268,66 @@ button:disabled {
 .badge-failed { color: var(--error); border-color: var(--error); }
 .badge-needs_you { color: var(--warn); border-color: var(--warn); }
 .badge-active { color: var(--accent); border-color: var(--accent); }
+.badge-stale { color: var(--warn); border-color: var(--warn); border-style: dashed; }
+/* A glyph before each outcome, hidden from screen readers: the label already says it. */
+.badge::before { font-size: 0.9em; line-height: 1; }
+.badge-done::before { content: "\2713\00a0"; content: "\2713\00a0" / ""; }
+.badge-failed::before { content: "\2715\00a0"; content: "\2715\00a0" / ""; }
+.badge-needs_you::before { content: "\270B\FE0E\00a0"; content: "\270B\FE0E\00a0" / ""; }
+.badge-active::before,
+.badge-stale::before {
+  content: "";
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  vertical-align: 0.05rem;
+}
+.badge-active::before { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.badge-stale::before { background: var(--warn); }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .badge-active::before { animation: none; }
+}
+.chips { margin-left: 0.35rem; }
+.chip {
+  display: inline-block;
+  margin-right: 0.25rem;
+  padding: 0 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+  vertical-align: middle;
+}
+.status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.9rem;
+  margin: -0.5rem 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+.status-line .chip { margin-right: 0; }
 #runs-table th, #runs-table td { padding: 0.35rem 0.4rem; font-size: 0.85rem; }
-#runs-table td { vertical-align: middle; white-space: nowrap; }
+#runs-table td { vertical-align: middle; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #runs-table td:first-child a { color: var(--text); font-weight: 600; text-decoration: none; }
 #runs-table td:first-child a:hover { text-decoration: underline; }
 .why-cell { min-width: 10rem; }
+.why-cell.muted { color: var(--text-muted); }
 .clamp,
 #runs-table td:first-child a {
-  display: block;
-  max-width: min(18rem, 22vw);
+  display: inline-block;
+  vertical-align: middle;
+  max-width: min(16rem, 19vw);
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.clamp { max-width: min(16rem, 18vw); }
+.clamp { display: block; max-width: min(14rem, 15vw); }
 .run-id { margin: -0.5rem 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 #runs-table + .field-hint { margin-top: 0.75rem; }
 #runs-table td:first-child { min-width: 8rem; }
@@ -314,6 +361,7 @@ button:disabled {
 .headline-failed { color: var(--error); }
 .headline-needs_you { color: var(--warn); }
 .headline-active { color: var(--accent); }
+.headline-stale { color: var(--warn); }
 .details-card summary { cursor: pointer; font-size: 1.1rem; font-weight: 700; }
 .details-card h3 { margin: 1rem 0 0.5rem; font-size: 1rem; }
 .compare-pickers { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 0.75rem; }

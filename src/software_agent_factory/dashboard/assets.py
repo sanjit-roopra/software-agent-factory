@@ -127,6 +127,7 @@ def render_index_html(*, token: str) -> str:
                 <th scope="col">Title</th>
                 <th scope="col">State</th>
                 <th scope="col">Why</th>
+                <th scope="col">PR</th>
                 <th scope="col">Calls</th>
                 <th scope="col">Duration</th>
                 <th scope="col">Cost</th>
@@ -155,6 +156,7 @@ def render_index_html(*, token: str) -> str:
             <span id="run-badge" class="badge">&mdash;</span>
           </div>
           <p id="run-headline" class="headline" hidden></p>
+          <p id="run-status-line" class="status-line" hidden></p>
           <div id="run-key-numbers" class="stats"></div>
         </section>
         <section id="next-step" class="card next-step" aria-labelledby="next-step-heading" hidden>

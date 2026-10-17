@@ -26,6 +26,7 @@ from software_agent_factory.dashboard.overview import (
     OUTCOME_DONE,
     OUTCOME_FAILED,
     OUTCOME_NEEDS_YOU,
+    OUTCOME_STALE,
     snapshot_overview,
 )
 from software_agent_factory.dashboard.responses import ConflictReason
@@ -296,8 +297,9 @@ def test_one_poll_refreshes_only_the_open_view() -> None:
     js = dashboard_assets.APP_JS
     code = normalized(js)
     assert "const POLL_INTERVAL_MS = 5000;" in code
-    assert code.count("setInterval(") == 1
+    assert code.count("setInterval(") == 2
     assert "globalThis.setInterval(pollView, POLL_INTERVAL_MS);" in code
+    assert "globalThis.setInterval(tickTimers, TICK_INTERVAL_MS);" in code
     refreshers = object_literal_source(js, "REFRESHERS")
     assert re.findall(r"(\w+): (?:function|refreshCompare)", refreshers) == [
         "runs",
@@ -1536,13 +1538,16 @@ def test_a_run_state_is_a_badge_that_is_text_and_not_only_color() -> None:
     assert 'badge.className = "badge badge-" + entry.badge;' in function_source(
         _JS, "patchBadgeCell"
     )
-    assert 'const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active"]);' in _JS
+    assert (
+        'const OUTCOME_KINDS = new Set(["done", "failed", "needs_you", "active", "stale"]);' in _JS
+    )
     css = dashboard_assets.STYLE_CSS
     for kind, token in (
         ("done", "ok"),
         ("failed", "error"),
         ("needs_you", "warn"),
         ("active", "accent"),
+        ("stale", "warn"),
     ):
         assert re.search(rf"\.badge-{kind}\s*\{{[^}}]*color:\s*var\(--{token}\);", css)
     assert re.search(r"\.badge\s*\{[^}]*font-weight:\s*700;", css)
@@ -1553,7 +1558,7 @@ def test_the_badge_kinds_match_the_server_outcome_kinds() -> None:
     kinds = re.findall(
         r'"([a-z_]+)"', _JS.split("const OUTCOME_KINDS = new Set([")[1].split("]")[0]
     )
-    assert kinds == [OUTCOME_DONE, OUTCOME_FAILED, OUTCOME_NEEDS_YOU, OUTCOME_ACTIVE]
+    assert kinds == [OUTCOME_DONE, OUTCOME_FAILED, OUTCOME_NEEDS_YOU, OUTCOME_ACTIVE, OUTCOME_STALE]
 
 
 def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
@@ -1562,6 +1567,7 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "Title",
         "State",
         "Why",
+        "PR",
         "Calls",
         "Duration",
         "Cost",
@@ -1573,8 +1579,9 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "titleCell(run, runId)",
         "stateCell(run)",
         "whyCell(run)",
+        "pullRequestCell(run)",
         "run.invocation_count",
-        "durationCell(run)",
+        "durationCell(run, nowMs)",
         "listCostText(run.usage)",
         "startedCell(run, nowMs)",
         "compareCell(runId)",
@@ -1600,7 +1607,7 @@ def test_a_run_row_stays_on_one_line_and_cuts_title_and_reason() -> None:
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"#runs-table td\s*\{[^}]*white-space:\s*nowrap;", css)
     assert re.search(
-        r"\.clamp,\s*#runs-table td:first-child a\s*\{[^}]*display:\s*block;"
+        r"\.clamp,\s*#runs-table td:first-child a\s*\{[^}]*display:\s*inline-block;"
         r"[^}]*text-overflow:\s*ellipsis;",
         css,
     )

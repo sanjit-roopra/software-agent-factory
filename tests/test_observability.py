@@ -3172,3 +3172,47 @@ def test_default_scan_cache_ttl_outlasts_the_dashboard_poll() -> None:
     match = re.search(r"POLL_INTERVAL_MS = (\d+);", APP_JS)
     assert match is not None
     assert DEFAULT_SCAN_CACHE_TTL * 1000 > int(match.group(1))
+
+
+def test_a_run_summary_carries_the_stage_delivery_and_unattended_facts(tmp_path: Path) -> None:
+    url = "https://github.com/o/r/pull/7"
+    run = _run(
+        "run-facts",
+        state=WorkflowState.IMPLEMENTING,
+        active_invocation=ActiveInvocation(
+            invocation_number=1,
+            role=AgentRole.IMPLEMENTER,
+            model="gemini-3.8-flash",
+            reasoning="high",
+            started_at=T0,
+            attempt_number=1,
+            budget=AttemptBudget.IMPLEMENTATION,
+        ),
+    ).model_copy(
+        update={
+            "state_started_at": T0,
+            "pull_request_url": url,
+            "merge_commit_sha": "abc1234",
+            "unattended": True,
+            "needs_look": ["review skipped"],
+            "restart_recoveries": 2,
+        }
+    )
+
+    summary = _only_summary(tmp_path, run)
+
+    assert summary.active_role is AgentRole.IMPLEMENTER
+    assert summary.state_started_at == T0
+    assert summary.completed_at is None
+    assert (summary.pull_request_url, summary.merge_commit_sha) == (url, "abc1234")
+    assert (summary.unattended, summary.needs_look, summary.restart_recoveries) == (
+        True,
+        ["review skipped"],
+        2,
+    )
+
+
+def test_a_finished_run_summary_has_no_active_role(tmp_path: Path) -> None:
+    run = _run("run-done", state=WorkflowState.DONE, completed_at=T0)
+
+    assert _only_summary(tmp_path, run).active_role is None

@@ -357,6 +357,7 @@ class RunSummary(ModelBase):
     :class:`RunDetail`: the dashboard sanitizer redacts and bounds it before it
     leaves the process. ``calls`` lists each finished call's role, model and
     length in call order, so the run list can show the models and the duration.
+    ``active_role`` is the role of the call in progress, when one is.
     """
 
     run_id: str
@@ -385,6 +386,14 @@ class RunSummary(ModelBase):
     performance: PerformanceRecord | None = None
     failure_reason: str | None = None
     calls: list[RunCallBrief] = Field(default_factory=list)
+    state_started_at: UtcDateTime | None = None
+    completed_at: UtcDateTime | None = None
+    pull_request_url: str | None = None
+    merge_commit_sha: str | None = None
+    unattended: bool = False
+    needs_look: list[str] = Field(default_factory=list)
+    restart_recoveries: int = Field(default=0, ge=0)
+    active_role: AgentRole | None = None
 
 
 class RunAttemptSummary(ModelBase):
@@ -587,6 +596,10 @@ class RunDetail(ModelBase):
     active_invocation: ActiveInvocationSummary | None = None
     guidance: RunGuidance | None = None
     failure_reason: str | None = None
+    state_started_at: UtcDateTime | None = None
+    unattended: bool = False
+    needs_look: list[str] = Field(default_factory=list)
+    restart_recoveries: int = Field(default=0, ge=0)
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -1605,6 +1618,16 @@ def _build_run_summary(
         performance=run.performance,
         failure_reason=run.failure_reason,
         calls=_call_briefs(run.invocation_records),
+        state_started_at=run.state_started_at,
+        completed_at=run.completed_at,
+        pull_request_url=run.pull_request_url,
+        merge_commit_sha=run.merge_commit_sha,
+        unattended=run.unattended,
+        needs_look=list(run.needs_look),
+        restart_recoveries=run.restart_recoveries,
+        active_role=(
+            run.active_invocation.role if run.active_invocation and not finished else None
+        ),
     )
 
 
@@ -1658,11 +1681,8 @@ def build_run_detail(
     summary = _build_run_summary(run, observed_at, stale_after, _artifact_facts(store, run.id))
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
-        **summary.model_dump(exclude={"calls", "failure_reason"}),
-        completed_at=run.completed_at,
+        **summary.model_dump(exclude={"calls", "failure_reason", "active_role"}),
         commit_sha=run.commit_sha,
-        pull_request_url=run.pull_request_url,
-        merge_commit_sha=run.merge_commit_sha,
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),
         escalation=_escalation_summary(run, run.escalation, observed_at, reply_policy),
