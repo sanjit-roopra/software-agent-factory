@@ -2,7 +2,7 @@
 
 Routing, auth (cookie or header token, Host, Origin), method enforcement and security
 headers all live here. ``GET`` serves reads. The only ``POST`` routes are the approve,
-answer, retry and stop actions (ADR-033, ADR-042, ADR-047): they check the transport here
+answer, retry, stop and steer actions (ADR-033, ADR-042, ADR-047): they check the transport here
 and the run in :mod:`.actions`. Nothing in this module -- or anywhere in this package --
 imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
 ``subprocess`` or any shell helper. All data comes from the injectable
@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..models import ResumeClassification, RunListFilter
 from . import assets
-from .actions import ResumeActions, accept_action, accept_stop
+from .actions import ResumeActions, accept_action, accept_steer, accept_stop
 from .evidence import (
     sanitize_run_checks,
     sanitize_run_diff,
@@ -133,6 +133,10 @@ _ACTION_KINDS = {
 }
 #: The stop route (ADR-047). It is routed only when the server can store a stop request.
 _STOP_ACTION = "cancel"
+#: The steer route (ADR-047). It is routed only when the server can store a steer note.
+_STEER_ACTION = "steer"
+#: Longest action name written to the audit log.
+_MAX_LOGGED_ACTION_LENGTH = 16
 #: Largest request body a write accepts. A body of exactly this size is accepted.
 MAX_BODY_BYTES = 16 * 1024
 #: A refused write whose body is still unread is read and dropped after the answer when it is
@@ -329,10 +333,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except ValueError:  # e.g. an unterminated IPv6 literal in the target
             return ""
 
+    @staticmethod
+    def _routes_action(actions: ResumeActions, action: str) -> bool:
+        """Whether this server has the provider the named action needs."""
+        if action == _STOP_ACTION:
+            return actions.stopper is not None
+        if action == _STEER_ACTION:
+            return actions.steerer is not None
+        return action in _ACTION_KINDS
+
     def _action_route(self) -> tuple[ResumeActions, str, str] | None:
         """The actions, run id and action name this path names, or ``None`` when it names none.
 
-        Only a server that has actions routes the approve, answer, retry and stop paths.
+        Only a server that has actions routes the approve, answer, retry, stop and steer paths.
         """
         actions = self.server.resume_actions
         path = self._decoded_path()
@@ -340,8 +353,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return None
         # Split at the last "/" without a regex, so a hostile path cannot make matching slow.
         run_id, _, action = path[len(_ACTION_PREFIX) :].rpartition("/")
-        stop = action == _STOP_ACTION and actions.stopper is not None
-        if not run_id or (action not in _ACTION_KINDS and not stop):
+        if not run_id or not self._routes_action(actions, action):
             return None
         return actions, run_id, action
 
@@ -718,7 +730,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     # -- writes -----------------------------------------------------------------
 
     def _serve_action(self, actions: ResumeActions, raw_run_id: str, action_name: str) -> None:
-        """Run one approve, answer, retry or stop request and write its one audit event."""
+        """Run one approve, answer, retry, stop or steer request and write its one audit event."""
         body = _WriteBody(self.headers.get("Content-Length"))
         status, payload, result = self._action_outcome(actions, raw_run_id, action_name, body)
         to_drop = body.remaining_to_drain()
@@ -726,7 +738,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         _audit_logger.info(
             "dashboard %s run=%s result=%s",
-            action_name,
+            _log_safe_text(action_name, _MAX_LOGGED_ACTION_LENGTH),
             _log_safe_text(raw_run_id, _MAX_LOGGED_RUN_ID_LENGTH),
             result,
         )
@@ -758,6 +770,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             decoded = self._read_json_body(body)
             if action_name == _STOP_ACTION:
                 payload = accept_stop(actions, raw_run_id, decoded)
+            elif action_name == _STEER_ACTION:
+                payload = accept_steer(actions, raw_run_id, decoded)
             else:
                 payload = accept_action(actions, _ACTION_KINDS[action_name], raw_run_id, decoded)
         except WriteRejected as rejected:

@@ -1,5 +1,44 @@
 # Architecture Decisions
 
+## ADR-051: A steer note is a file that the next agent call reads
+
+Status: accepted on 2026-10-17. This builds on ADR-047 and ADR-049.
+
+### Context
+
+ADR-047 lets a person add a short note to the next prompt of a run, from the
+dashboard or the terminal. It works on a working run and on a halted run that can
+resume. Several halts, such as a review impasse or a used attempt budget, cannot
+resume yet. New resume classes for them touch the reopen rules, the receipts and
+the GitHub reply protocol, so they wait for a later change.
+
+### Decision
+
+- The note is one create-only file, `steer-note.json`, in the run directory. It
+  holds the run id, the source (`dashboard` or `cli`), the note and the time.
+- The dashboard route `POST /api/runs/<id>/steer` and `factory steer <run> <note>`
+  create it. Both refuse an empty note, a note over 2,000 characters and a note
+  that holds a secret or the redaction placeholder. Both refuse a run in `DONE`,
+  `FAILED` or a finished `PR_READY`. A run in `NEEDS_HUMAN` is accepted only when
+  its halt can resume. A halt that cannot resume has no later agent call to read
+  a note, so both refuse it and the dashboard hides the box.
+- Before each agent call, the workflow controller reads the file, redacts the note
+  again, adds it as the last prompt section `Operator note` and deletes the file.
+  When the call raises, the controller puts the file back, create-only, so the
+  retry gets the note and a newer note wins. So exactly one call that returns
+  gets the note, whichever driver runs it.
+- A move to `DONE` or `FAILED` deletes the file. A halt in `NEEDS_HUMAN` keeps it,
+  so the call after a resume gets it.
+
+### Consequences
+
+- A person can guide a working run without stopping it, and can leave guidance on
+  a halted run for its next attempt.
+- Per-halt actions for the halts that cannot resume (dashboard X4) still need new
+  resume classes. Until then a person uses the guidance the page shows.
+- The note is repository guidance from a person. The agent follows it only where it
+  does not break the role instructions or the output contract.
+
 ## ADR-050: Keep each agent call's event stream beside its run
 
 Status: accepted on 2026-10-17. This builds on ADR-045 and ADR-047.

@@ -76,6 +76,12 @@ _WRITING_RULES_TITLE = "Writing rules"
 _ROLE_INSTRUCTIONS_TITLE = "Role instructions"
 _OUTPUT_CONTRACT_TITLE = "Output contract"
 _NO_LONGER_APPLIES_TITLE = "No longer applies"
+_OPERATOR_NOTE_TITLE = "Operator note"
+#: Leads the operator section, so the agent reads the note as guidance from a person.
+_OPERATOR_NOTE_LEAD = (
+    "A person who watches this run sent this note. Follow it where it does not break "
+    "the role instructions or the output contract."
+)
 
 _ARTIFACT_MODELS: dict[str, type[ModelBase]] = {
     "TRIAGE": TriageResult,
@@ -629,7 +635,14 @@ def _artifact_sections(normalized_role: str, request: AgentRequest) -> list[tupl
     role_builder = _ROLE_SECTIONS.get(normalized_role)
     if role_builder is None:
         raise ValueError(f"unsupported agent role: {normalized_role!r}")
-    return role_builder(request)
+    return [*role_builder(request), *_operator_note_sections(request)]
+
+
+def _operator_note_sections(request: AgentRequest) -> list[tuple[str, object]]:
+    """The person's steer note (ADR-047), last so it reads as the newest guidance."""
+    if not request.operator_note:
+        return []
+    return [(_OPERATOR_NOTE_TITLE, f"{_OPERATOR_NOTE_LEAD}\n\n{request.operator_note}")]
 
 
 def _bounded_diff(diff: str) -> str:

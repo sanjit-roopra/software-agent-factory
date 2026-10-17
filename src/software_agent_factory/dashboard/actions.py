@@ -1,4 +1,4 @@
-"""The writes the dashboard asks for: approve, answer plan decisions, retry publishing, stop.
+"""The writes the dashboard asks for: approve, answer, retry publishing, stop and steer.
 
 ``POST /api/runs/<id>/approve``, ``/answer`` and ``/retry`` end in one create-only request file
 that the factory service reads later. This module checks the body and the run, and hands the
@@ -8,7 +8,8 @@ It never changes a run. It reads the run through the same rules the service uses
 request that passes here is one the service would accept now. It imports only the read
 functions of ``resume``: the write functions stay with the service, and a test checks it.
 
-``POST /api/runs/<id>/cancel`` hands a stop request to the injected ``StopRequester``.
+``POST /api/runs/<id>/cancel`` hands a stop request to the injected ``StopRequester``, and
+``POST /api/runs/<id>/steer`` hands a note to the injected ``SteerRequester``.
 
 Transport checks (route, ``Host``, ``Origin``, token, content type, length, JSON) live in
 ``handler.py``. Everything here starts with a decoded JSON body.
@@ -36,14 +37,23 @@ from ..resume import (
     RequestMismatch,
     build_plan_answers,
     clean_plan_answer,
+    clean_steer_note,
     request_refusal,
 )
 from .responses import ConflictReason, WriteRejected
-from .snapshot import ResumeRequester, ResumeRunReader, StopRequester, is_valid_run_id
+from .snapshot import (
+    ResumeRequester,
+    ResumeRunReader,
+    SteerRequester,
+    StopRequester,
+    is_valid_run_id,
+)
 from .validators import is_episode_id
 
 #: The error text for a run the dashboard cannot find or act on.
 _NOT_FOUND = "not found"
+#: The error text for a run id that does not have the run id shape.
+_BAD_RUN_ID = "the run id is not valid"
 
 #: The reasons :func:`~software_agent_factory.resume.request_refusal` gives, as the codes the
 #: page gets. A request that names the wrong episode, context or action is a stale one.
@@ -74,6 +84,8 @@ class ResumeActions:
     clock: Callable[[], datetime] = utc_now
     #: Stores a stop request (ADR-047). Without it the stop route is not routed.
     stopper: StopRequester | None = None
+    #: Stores a steer note (ADR-047). Without it the steer route is not routed.
+    steerer: SteerRequester | None = None
 
 
 def _bad_request(error: str, *, decision: int | None = None) -> WriteRejected:
@@ -169,7 +181,7 @@ def accept_action(
     """
     fields = _parse_fields(kind, body)
     if not is_valid_run_id(raw_run_id):
-        raise _bad_request("the run id is not valid")
+        raise _bad_request(_BAD_RUN_ID)
     run = actions.run_reader(raw_run_id)
     if run is None:
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
@@ -210,11 +222,36 @@ def accept_stop(actions: ResumeActions, raw_run_id: str, body: object) -> dict[s
     if not isinstance(body, dict) or body:
         raise _bad_request("the body must be an empty JSON object")
     if not is_valid_run_id(raw_run_id):
-        raise _bad_request("the run id is not valid")
+        raise _bad_request(_BAD_RUN_ID)
     if actions.stopper is None:
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     now = actions.clock()
-    result = actions.stopper(raw_run_id, now)
+    return _accepted(actions.stopper(raw_run_id, now), now)
+
+
+def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[str, object]:
+    """Check one steer note and store it. Returns the ``202`` body.
+
+    The body is ``{"note": "..."}``. A note that is empty, longer than 2,000 characters or
+    holds a secret is a ``400``. A finished run is a ``409 not_active``, and a note that is
+    already waiting is a ``409 existing_request``.
+    """
+    if not isinstance(body, dict) or set(body) != {"note"}:
+        raise _bad_request("the body must be a JSON object with one note")
+    raw_note = body["note"]
+    note = clean_steer_note(raw_note) if isinstance(raw_note, str) else None
+    if note is None:
+        raise _bad_request("the note is empty, too long or holds a secret")
+    if not is_valid_run_id(raw_run_id):
+        raise _bad_request(_BAD_RUN_ID)
+    if actions.steerer is None:
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
+    now = actions.clock()
+    return _accepted(actions.steerer(raw_run_id, note, now), now)
+
+
+def _accepted(result: str, now: datetime) -> dict[str, object]:
+    """The ``202`` body of a stored stop or steer request, or the refusal it comes to."""
     if result == "run_missing":
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     if result == "finished":

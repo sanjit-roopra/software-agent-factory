@@ -51,6 +51,7 @@ from .models import (
     ReviewImpasse,
     ReviewReport,
     RouteDecision,
+    RunSteerNote,
     RunStopRequest,
     Specification,
     TestReport,
@@ -68,6 +69,8 @@ ArtifactModel = TypeVar("ArtifactModel", bound=VersionedModel)
 _DASHBOARD_REQUEST_PREFIX = "dashboard-approval-"
 #: The one stop request a run can have (ADR-047).
 _STOP_REQUEST_NAME = "stop-request.json"
+#: The one waiting steer note a run can have (ADR-047).
+_STEER_NOTE_NAME = "steer-note.json"
 #: A request file name carries this many leading hex characters of its context fingerprint.
 _FINGERPRINT_PREFIX_CHARS = 16
 
@@ -373,6 +376,34 @@ class FileRunStore:
     def delete_stop_request(self, run_id: str) -> None:
         """Forget the stop request of a run, if any. Only the controller calls this."""
         (self._run_dir_readonly(run_id) / _STOP_REQUEST_NAME).unlink(missing_ok=True)
+
+    def create_steer_note(self, note: RunSteerNote) -> bool:
+        """Create the steer note of a run. ``False`` when one is already waiting.
+
+        A missing run raises ``FileNotFoundError`` and is never created.
+        """
+        run_dir = self._run_dir_readonly(note.run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run {note.run_id} does not exist")
+        return self._write_text_create_only(run_dir / _STEER_NOTE_NAME, self._model_text(note))
+
+    def load_steer_note(self, run_id: str) -> RunSteerNote | None:
+        """The waiting steer note of a run, or ``None``. Read-only.
+
+        A file that does not load is logged and read as no note.
+        """
+        path = self._run_dir_readonly(run_id) / _STEER_NOTE_NAME
+        try:
+            return RunSteerNote.model_validate_json(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            logger.warning("skipped the steer note of run %s: %s", run_id, type(exc).__name__)
+            return None
+
+    def delete_steer_note(self, run_id: str) -> None:
+        """Forget the steer note of a run, if any. Only the controller calls this."""
+        (self._run_dir_readonly(run_id) / _STEER_NOTE_NAME).unlink(missing_ok=True)
 
     def load_dashboard_request(
         self, run_id: str, episode_id: str, context_fingerprint: str

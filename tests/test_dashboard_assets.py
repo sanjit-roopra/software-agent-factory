@@ -11,10 +11,12 @@ from typing import get_args
 
 import pytest
 from dashboard_js import (
+    JsCall,
     function_source,
     listener_source,
     normalized,
     object_literal_source,
+    run_functions,
     strip_comments,
 )
 
@@ -2227,3 +2229,68 @@ def test_stop_needs_a_second_click_and_shows_only_on_a_working_run() -> None:
     literal = object_literal_source(_JS, "STOP_CONFLICT_MESSAGES")
     assert "...CONFLICT_MESSAGES" in literal
     assert _plain_strings(literal) == {"existing_request": "stop already requested"}
+
+
+def test_the_steer_box_is_a_bounded_note_with_a_send_button() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert '<section id="run-steer" class="card steer"' in html
+    assert re.search(r'<textarea id="run-steer-note" rows="3" maxlength="2000"', html)
+    assert 'id="run-steer-send" type="button">Send note</button>' in html
+    assert '<span id="run-steer-status" class="retry-note" role="status"></span>' in html
+    assert 'id="run-steer-hint"' in html
+    assert 'steerControls().send.addEventListener("click", onSteerSend)' in _JS
+    # The grid layout must not show a box the script hid.
+    assert ".steer[hidden] { display: none; }" in dashboard_assets.STYLE_CSS
+
+
+def test_the_steer_box_shows_on_a_working_run_or_a_halt_that_can_resume() -> None:
+    def halt(classification: object) -> dict[str, object]:
+        return {
+            "outcome": {"kind": "needs_you"},
+            "next_step": {"resume_classification": classification},
+        }
+
+    calls = [
+        JsCall("haltTakesSteerNote", (halt("RISK_APPROVAL"),)),
+        JsCall("haltTakesSteerNote", (halt("PLAN_DECISION"),)),
+        JsCall("haltTakesSteerNote", (halt("NOT_RESUMABLE"),)),
+        JsCall("haltTakesSteerNote", (halt(None),)),
+        JsCall("haltTakesSteerNote", ({"outcome": {"kind": "needs_you"}},)),
+        JsCall("haltTakesSteerNote", ({"outcome": {"kind": "done"}},)),
+    ]
+    values = [result.value for result in run_functions(_JS, calls)]
+    assert values == [True, True, False, False, False, False]
+    render = function_source(_JS, "renderSteerControl")
+    assert "const halted = haltTakesSteerNote(detail);" in render
+    assert "const show = runId !== null && (halted || isActiveRun(detail));" in render
+    assert "controls.box.hidden = !show;" in render
+    assert "renderSteerControl(detail, runId);" in _JS
+
+
+def test_another_run_starts_the_steer_box_empty() -> None:
+    render = function_source(_JS, "renderSteerControl")
+    assert 'const key = show ? runId : "";' in render
+    assert "if (controls.box.dataset.runId !== key) {" in render
+    assert 'controls.note.value = "";' in render
+    assert 'controls.status.textContent = "";' in render
+    assert "setDisabled([controls.note, controls.send], false);" in render
+    send = function_source(_JS, "onSteerSend")
+    assert "action: STEER_ACTION" in send
+    assert "payload: { note: note.value }" in send
+    assert "Note saved for the next agent call." in send
+
+
+def test_steer_refusals_have_their_own_words() -> None:
+    calls = [
+        JsCall("failureMessage", ({"status": 400, "body": {}}, "steer")),
+        JsCall(
+            "failureMessage",
+            ({"status": 409, "body": {"reason": "existing_request"}}, "steer"),
+        ),
+        JsCall("failureMessage", ({"status": 409, "body": {"reason": "not_active"}}, "steer")),
+        JsCall("failureMessage", ({"status": 409, "body": {"reason": "not_active"}}, "approve")),
+    ]
+    values = [result.value for result in run_functions(_JS, calls)]
+    assert values[0] == "the note is empty, too long or holds a secret"
+    assert values[1] == "a note is already waiting for the next agent call"
+    assert values[2] == values[3]

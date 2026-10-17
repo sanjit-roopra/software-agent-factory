@@ -2297,6 +2297,7 @@
   const ANSWER_ACTION = "answer";
   const RETRY_ACTION = "retry";
   const STOP_ACTION = "cancel";
+  const STEER_ACTION = "steer";
   const FAILURE_TEXT = "the request failed, try again";
   const RUN_CHANGED_TEXT = "the run changed, review again";
   const APPROVE_TITLE_ID = "approve-dialog-title";
@@ -2356,7 +2357,16 @@
     existing_request: "stop already requested"
   };
 
+  // The same for a steer note (ADR-047).
+  const STEER_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "a note is already waiting for the next agent call"
+  };
+
   function conflictMessages(action) {
+    if (action === STEER_ACTION) {
+      return STEER_CONFLICT_MESSAGES;
+    }
     if (action === STOP_ACTION) {
       return STOP_CONFLICT_MESSAGES;
     }
@@ -2369,6 +2379,9 @@
   function failureMessage(outcome, action) {
     if (outcome.status === CONFLICT_STATUS) {
       return lookupMessage(conflictMessages(action), outcome.body.reason);
+    }
+    if (outcome.status === BAD_REQUEST_STATUS && action === STEER_ACTION) {
+      return "the note is empty, too long or holds a secret";
     }
     if (outcome.status === BAD_REQUEST_STATUS && isDecisionNumber(outcome.body.decision)) {
       return "decision " + outcome.body.decision + ": use " + ANSWER_HINT;
@@ -2649,6 +2662,66 @@
       armStop(false);
       button.focus();
     });
+  }
+
+  // ---- Run detail: steer (ADR-047, dashboard X5) ----------------------------
+
+  const STEER_ACTIVE_HINT = "The agent reads this note at its next call, not in the middle of one.";
+  const STEER_HALTED_HINT = "The agent reads this note at its next call, once the run resumes.";
+  const NOT_RESUMABLE = "NOT_RESUMABLE";
+
+  function steerControls() {
+    return {
+      box: document.getElementById("run-steer"),
+      note: document.getElementById("run-steer-note"),
+      hint: document.getElementById("run-steer-hint"),
+      send: document.getElementById("run-steer-send"),
+      status: document.getElementById("run-steer-status")
+    };
+  }
+
+  // A halt that cannot resume has no later agent call, so a note there would never be read.
+  function haltTakesSteerNote(detail) {
+    const classification = detail.next_step?.resume_classification;
+    return detail.outcome?.kind === "needs_you" && Boolean(classification) &&
+      classification !== NOT_RESUMABLE;
+  }
+
+  // Shown on a working run and on a halt that can resume. Another run starts from an empty
+  // note.
+  function renderSteerControl(detail, runId) {
+    const controls = steerControls();
+    const halted = haltTakesSteerNote(detail);
+    const show = runId !== null && (halted || isActiveRun(detail));
+    const key = show ? runId : "";
+    if (controls.box.dataset.runId !== key) {
+      controls.box.dataset.runId = key;
+      controls.note.value = "";
+      controls.status.textContent = "";
+      setDisabled([controls.note, controls.send], false);
+    }
+    controls.hint.textContent = halted ? STEER_HALTED_HINT : STEER_ACTIVE_HINT;
+    controls.box.hidden = !show;
+  }
+
+  function onSteerSend() {
+    const { box, note, send, status } = steerControls();
+    status.textContent = "";
+    void sendAction({
+      runId: box.dataset.runId,
+      action: STEER_ACTION,
+      payload: { note: note.value },
+      controls: [note, send],
+      onAccepted: function () {
+        note.value = "";
+        setDisabled([note, send], false);
+        status.textContent = "Note saved for the next agent call.";
+      }
+    });
+  }
+
+  function bindSteerControl() {
+    steerControls().send.addEventListener("click", onSteerSend);
   }
 
   function answersReady(inputs) {
@@ -2965,6 +3038,7 @@
     renderStatusLine(detail);
     renderPullRequestLink(detail.pull_request_url);
     renderStopControl(detail, runId);
+    renderSteerControl(detail, runId);
     renderFullReason(detail, runId);
     syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
   }
@@ -4338,6 +4412,7 @@
       }
     });
     bindStopControl();
+    bindSteerControl();
     bindSearch();
     bindRunTabs();
     bindKeys();

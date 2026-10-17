@@ -159,6 +159,16 @@ class StopRequester(Protocol):
     def __call__(self, run_id: str, created_at: datetime) -> StopRequestResult: ...
 
 
+class SteerRequester(Protocol):
+    """Provider that stores one steer note for a run, create-only (ADR-047).
+
+    It never changes a run: the controller adds the note to the next agent prompt.
+    The results are the stop results: a finished run has no next prompt.
+    """
+
+    def __call__(self, run_id: str, note: str, created_at: datetime) -> StopRequestResult: ...
+
+
 #: The real ``build_monitoring_snapshot`` (``observability.py``) rejects
 #: ``limit <= 0``, so ``/api/summary`` -- which only needs counts/health, not
 #: the run page -- must still request at least one row rather than zero.

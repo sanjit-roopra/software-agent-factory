@@ -640,3 +640,19 @@ kbd {
   font-size: var(--fs-xs);
   padding: 0.05rem 0.35rem;
 }
+.steer { display: grid; gap: 0.5rem; }
+.steer[hidden] { display: none; }
+.steer label { font-weight: 600; }
+.steer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+.steer p { margin: 0; }
+.steer-actions { display: flex; align-items: center; gap: 0.75rem; }
