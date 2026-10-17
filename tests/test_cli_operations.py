@@ -759,13 +759,13 @@ def test_dashboard_project_totals_count_usage_a_call_reported_only_per_model(
                 InvocationRecord(
                     invocation_number=1,
                     role=AgentRole.PLANNER,
-                    model="gpt-5.6-sol",
+                    model="gpt-6.1-sol",
                     reasoning="high",
                     started_at=now,
                     completed_at=now,
                     success=True,
                     usage=UsageMetrics(
-                        model_usage=(ModelUsage(model="gpt-5.6-sol", input_tokens=40),)
+                        model_usage=(ModelUsage(model="gpt-6.1-sol", input_tokens=40),)
                     ),
                 )
             ],
@@ -794,13 +794,13 @@ def test_dashboard_project_totals_count_usage_a_task_run_call_reported_only_per_
                 InvocationRecord(
                     invocation_number=1,
                     role=AgentRole.PLANNER,
-                    model="gpt-5.6-sol",
+                    model="gpt-6.1-sol",
                     reasoning="high",
                     started_at=now,
                     completed_at=now,
                     success=True,
                     usage=UsageMetrics(
-                        model_usage=(ModelUsage(model="gpt-5.6-sol", input_tokens=40),)
+                        model_usage=(ModelUsage(model="gpt-6.1-sol", input_tokens=40),)
                     ),
                 )
             ],

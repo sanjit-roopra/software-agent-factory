@@ -744,7 +744,7 @@ def test_attempt_tallies_by_role_and_model_and_budget(tmp_path: Path) -> None:
                     model="claude-sonnet-5",
                     budget=AttemptBudget.CI_REPAIR,
                 ),
-                _attempt(3, role=AgentRole.IMPLEMENTER, model="gpt-5.6-sol"),
+                _attempt(3, role=AgentRole.IMPLEMENTER, model="gpt-6.1-sol"),
             ],
         )
     )
@@ -752,7 +752,7 @@ def test_attempt_tallies_by_role_and_model_and_budget(tmp_path: Path) -> None:
     snapshot = build_monitoring_snapshot(store, now=T0)
 
     assert snapshot.attempts_by_role == {"IMPLEMENTER": 2, "TESTER": 1}
-    assert snapshot.attempts_by_model == {"claude-sonnet-5": 2, "gpt-5.6-sol": 1}
+    assert snapshot.attempts_by_model == {"claude-sonnet-5": 2, "gpt-6.1-sol": 1}
     run_summary = snapshot.runs[0]
     assert run_summary.attempt_count == 3
     assert run_summary.implementation_attempts == 2
@@ -989,7 +989,7 @@ def test_runtime_reported_usage_is_summed_without_estimating_missing_values(
     invocation = InvocationRecord(
         invocation_number=1,
         role=AgentRole.REVIEWER,
-        model="gpt-5.6-sol",
+        model="gpt-6.1-sol",
         reasoning="high",
         started_at=T0,
         completed_at=T0 + timedelta(seconds=1),
@@ -999,7 +999,7 @@ def test_runtime_reported_usage_is_summed_without_estimating_missing_values(
             total_nano_aiu=123,
             model_usage=(
                 ModelUsage(
-                    model="gpt-5.6-sol",
+                    model="gpt-6.1-sol",
                     input_tokens=100,
                     output_tokens=20,
                     reasoning_tokens=5,
@@ -1195,7 +1195,7 @@ def test_list_price_estimate_falls_back_to_model_usage_when_aggregate_missing(
         usage=UsageMetrics(
             model_usage=(
                 ModelUsage(model="claude-sonnet-5", list_price_estimate_usd=0.3),
-                ModelUsage(model="gpt-5.6-sol", list_price_estimate_usd=0.2),
+                ModelUsage(model="gpt-6.1-sol", list_price_estimate_usd=0.2),
             ),
         ),
     )
@@ -2303,7 +2303,7 @@ def test_build_run_detail_shows_live_active_invocation(
         active_invocation=ActiveInvocation(
             invocation_number=3,
             role=AgentRole.IMPLEMENTER,
-            model="gemini-3.8-flash",
+            model="mai-code-1.1-flash",
             reasoning="high",
             started_at=T0,
             attempt_number=2,
@@ -2347,7 +2347,7 @@ def test_build_run_detail_marks_active_invocation_crashed(
         active_invocation=ActiveInvocation(
             invocation_number=1,
             role=AgentRole.IMPLEMENTER,
-            model="gemini-3.8-flash",
+            model="mai-code-1.1-flash",
             reasoning="high",
             started_at=T0,
             attempt_number=1,
@@ -2439,7 +2439,7 @@ def test_build_run_detail_carries_invocation_reasoning_level_and_failure_reason(
         return InvocationRecord(
             invocation_number=number,
             role=AgentRole.IMPLEMENTER,
-            model="gpt-5.6-sol",
+            model="gpt-6.1-sol",
             reasoning="xhigh" if number == 1 else "low",
             started_at=T0,
             completed_at=T0 + timedelta(seconds=1),
@@ -3215,7 +3215,7 @@ def test_a_run_summary_carries_the_stage_delivery_and_unattended_facts(tmp_path:
         active_invocation=ActiveInvocation(
             invocation_number=1,
             role=AgentRole.IMPLEMENTER,
-            model="gemini-3.8-flash",
+            model="mai-code-1.1-flash",
             reasoning="high",
             started_at=T0,
             attempt_number=1,

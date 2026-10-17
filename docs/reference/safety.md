@@ -226,7 +226,7 @@ that blocks a `tool_call`, the filter stops working.
 
 ### Verified pi version
 
-The filter was verified on pi 0.99.1. `factory doctor` requires pi 0.99.1 or later.
+The filter was verified on pi 0.99.1. `factory doctor` requires pi 1.2.0 or later.
 
 ### SSH keys
 

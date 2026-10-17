@@ -372,28 +372,28 @@ CI
 
 ```text
 triage
-  GPT-5.6 Terra
+  GPT-6 Luna
 
 plan (specification and plan)
-  Opus 5
+  GPT-6.1 Sol
 
 implement L0
-  MAI-Code-1.1-Flash
+  GPT-6 Luna
 
 implement L1
-  Gemini 3.8 Flash
+  GPT-6 Luna
 
 implement L2
-  Claude Sonnet 5
+  GPT-6.1 Sol
 
 implement L3
-  Opus 5
+  GPT-6.1 Sol
 
 test
-  Gemini 3.8 Flash
+  GPT-6 Luna
 
 review
-  GPT-5.6 Sol
+  Claude Sonnet 5.5
 
 investigate
   Opus 5

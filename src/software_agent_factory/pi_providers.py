@@ -17,7 +17,7 @@ API_KEY_SUFFIX = "_API_KEY"
 #: (``PiConfig.provider`` is a free string): :func:`pi_provider_credential_vars`
 #: derives its ``<PROVIDER>_API_KEY`` variable from the name instead.
 #:
-#: Extracted from pi 0.84.4 (``@earendil-works/pi-coding-agent``, its ``dist``
+#: Extracted from pi 1.2.0 (``@earendil-works/pi-coding-agent``, its ``dist``
 #: bundle) by grepping for the ``<provider>:"<VAR>"`` pairs of its
 #: provider-to-environment-variable table. The ``github-copilot``,
 #: ``anthropic`` (OAuth and auth tokens) and ``amazon-bedrock`` (AWS chain)
@@ -36,7 +36,7 @@ PI_PROVIDER_CREDENTIAL_ENV_VARS: dict[str, tuple[str, ...]] = {
     ),
     "google-vertex": ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_API_KEY"),
     "ant-ling": ("ANT_LING_API_KEY",),
-    "azure-openai-responses": ("AZURE_OPENAI_API_KEY",),
+    "azure": ("AZURE_OPENAI_API_KEY",),
     "baseten": ("BASETEN_API_KEY",),
     "cerebras": ("CEREBRAS_API_KEY",),
     "cloudflare-ai-gateway": ("CLOUDFLARE_API_KEY",),
@@ -47,6 +47,7 @@ PI_PROVIDER_CREDENTIAL_ENV_VARS: dict[str, tuple[str, ...]] = {
     "groq": ("GROQ_API_KEY",),
     "huggingface": ("HF_TOKEN",),
     "kimi-coding": ("KIMI_API_KEY",),
+    "meta": ("META_API_KEY",),
     "minimax": ("MINIMAX_API_KEY",),
     "minimax-cn": ("MINIMAX_CN_API_KEY",),
     "mistral": ("MISTRAL_API_KEY",),
@@ -62,6 +63,7 @@ PI_PROVIDER_CREDENTIAL_ENV_VARS: dict[str, tuple[str, ...]] = {
     "qwen-token-plan-individual": ("QWEN_TOKEN_PLAN_API_KEY",),
     "radius": ("RADIUS_API_KEY",),
     "together": ("TOGETHER_API_KEY",),
+    "typesafe": ("TYPESAFE_API_KEY",),
     "vercel-ai-gateway": ("AI_GATEWAY_API_KEY",),
     "xai": ("XAI_API_KEY",),
     "xiaomi": ("XIAOMI_API_KEY",),

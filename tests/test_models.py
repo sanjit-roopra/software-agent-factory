@@ -474,7 +474,7 @@ def test_invocation_record_requires_valid_timestamps_and_failure_reason() -> Non
         InvocationRecord(
             invocation_number=1,
             role=AgentRole.TRIAGE,
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             reasoning="medium",
             started_at=datetime(2026, 9, 4, 10, 5, tzinfo=UTC),
             completed_at=datetime(2026, 9, 4, 10, 0, tzinfo=UTC),
@@ -485,7 +485,7 @@ def test_invocation_record_requires_valid_timestamps_and_failure_reason() -> Non
         InvocationRecord(
             invocation_number=1,
             role=AgentRole.TRIAGE,
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             reasoning="medium",
             started_at=datetime(2026, 9, 4, 10, 0, tzinfo=UTC),
             completed_at=datetime(2026, 9, 4, 10, 1, tzinfo=UTC),
