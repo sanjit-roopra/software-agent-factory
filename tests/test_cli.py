@@ -1372,6 +1372,9 @@ def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     assert first.exit_code == 0, first.output
     run_id = first.output.split("run id: ")[1].split()[0]
 
+    from software_agent_factory.store import FileRunStore
+
+    common = [*common, "--runtime", "fake"]
     result = runner.invoke(app, ["escalate", run_id, "--note", "Handle tabs too.", *common])
 
     assert result.exit_code == 0, result.output
@@ -1383,3 +1386,8 @@ def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     missing = runner.invoke(app, ["escalate", "run-missing", "--note", "x", *common])
     assert missing.exit_code == 1
     assert "no such run" in missing.output
+    store = FileRunStore(data_dir)
+    store.save_run(store.load_run(run_id).model_copy(update={"merge_commit_sha": "a" * 40}))
+    merged = runner.invoke(app, ["escalate", run_id, "--note", "x", *common])
+    assert merged.exit_code == 1
+    assert "cannot escalate run" in merged.output

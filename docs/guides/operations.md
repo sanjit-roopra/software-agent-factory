@@ -207,7 +207,7 @@ it. A note is at most 2,000 characters, and a note that
 holds a secret is refused. One note waits at a time.
 
 If you do not like the change or pull request of a run, run
-`factory escalate <run> --repo <repo> --note "<what to change>"`. The run does the
+`factory escalate <run> --repo <repo> --runtime <runtime> --note "<what to change>"`. The run does the
 work again one route higher on the same branch, and pushes to the same pull
 request. A run that a process works on, or whose change is merged, cannot
 escalate. See [factory escalate](../reference/cli.md#factory-escalate).

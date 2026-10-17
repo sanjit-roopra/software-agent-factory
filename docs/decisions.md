@@ -34,8 +34,9 @@ a run, and `DONE`, `NEEDS_HUMAN` and `FAILED` allow no transition.
 
 - The dashboard can show an escalation from the route adjustments and the
   stored steps.
-- A pull request that already has the `factory:needs-look` label is still not
-  merged after an escalation.
+- An escalation clears the old needs-look reasons, so a run that was left open
+  can merge after a new passing review. The `factory:needs-look` label stays on
+  the pull request until a person removes it.
 
 ## ADR-054: Triage picks the route
 

@@ -283,7 +283,8 @@ Redo a run one route higher with your note, on the same branch and pull request
 (ADR-055).
 
 ```bash
-factory escalate run-9bb36bbbdf114f53bd9599a103122976 --repo . --note "Use the shared validator."
+factory escalate run-9bb36bbbdf114f53bd9599a103122976 --repo . --runtime copilot \
+  --note "Use the shared validator."
 ```
 
 | Argument or option | Required | Effect |
@@ -291,7 +292,7 @@ factory escalate run-9bb36bbbdf114f53bd9599a103122976 --repo . --note "Use the s
 | `run_id` | yes | The run id to redo. |
 | `--note` | yes | What to change, at most 2,000 characters. |
 | `--repo` | yes | The target Git repository of the run. |
-| `--runtime` | no | The agent runtime, as for `factory run`. |
+| `--runtime` | yes | The agent runtime, as for `factory run`. It has no default, so a fake run cannot push to a real pull request. |
 
 Options: `--config`, `--data-dir`.
 

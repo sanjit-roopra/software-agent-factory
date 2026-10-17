@@ -928,7 +928,7 @@ def escalate_command(
     ),
     repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
     runtime: RuntimeChoice = typer.Option(
-        RuntimeChoice.FAKE,
+        ...,
         "--runtime",
         help=RUNTIME_OPTION_HELP,
     ),

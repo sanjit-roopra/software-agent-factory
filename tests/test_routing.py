@@ -29,6 +29,7 @@ from software_agent_factory.models import (
     TriageResult,
     WorkflowState,
     WorkItem,
+    utc_now,
 )
 from software_agent_factory.routing import (
     ModelRouter,
@@ -1584,12 +1585,15 @@ def _escalation_item(work_item_id: str) -> WorkItem:
     )
 
 
+@pytest.mark.parametrize("finished", [None, WorkflowState.DONE, WorkflowState.NEEDS_HUMAN], ids=str)
 def test_escalation_moves_single_to_critique_with_the_note(
-    source_repo: Path, data_dir: Path
+    source_repo: Path, data_dir: Path, finished: WorkflowState | None
 ) -> None:
     controller, store, runtime = _escalation_controller(data_dir, Complexity.L0)
     run = controller.run(_escalation_item("WI-escalate-single"), source_repo)
     assert run.effective_route is ExecutionRoute.SINGLE
+    if finished is not None:
+        store.save_run(run.model_copy(update={"state": finished, "completed_at": utc_now()}))
     runtime.requests.clear()
 
     run = controller.escalate(run.id, source_repo, "Also handle tabs.")
@@ -1652,6 +1656,9 @@ def test_escalation_refuses_a_merged_failed_or_locked_run(
         store.save_run(run.model_copy(update=update))
         with pytest.raises(ValueError, match="cannot escalate"):
             controller.escalate(run.id, source_repo, "note")
+    store.save_run(run.model_copy(update={"branch_name": "factory/other"}))
+    with pytest.raises(ValueError, match="workspace is missing or changed"):
+        controller.escalate(run.id, source_repo, "note")
 
     store.save_run(run)
     holder = GitWorktreeWorkspace(data_dir, source_repo, run.work_item_id, branch_prefix="factory/")

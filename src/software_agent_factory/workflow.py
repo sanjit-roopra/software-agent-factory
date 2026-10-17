@@ -218,7 +218,6 @@ _ESCALATION_ROUTES: dict[ExecutionRoute, ExecutionRoute] = {
     ExecutionRoute.MANUAL_TRIAGE: ExecutionRoute.FULL,
     ExecutionRoute.FULL: ExecutionRoute.FULL,
 }
-OPERATOR_ESCALATION_REASON = "operator escalation"
 
 #: CI failure categories that may legitimately be repaired by another code
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
@@ -1887,25 +1886,22 @@ class WorkflowController:
             run = self._store.load_run(run_id)
             route = escalation_route(run)
             if route is None:
-                raise ValueError(
-                    f"run {run_id} cannot escalate from {run.state}: it must have a route, "
-                    "an unmerged change and a state of "
-                    + ", ".join(sorted(state.value for state in ESCALATABLE_STATES))
-                )
+                raise ValueError(f"run {run_id} cannot escalate from {run.state}")
             if not self._workspace_matches(run, workspace):
                 raise ValueError(f"run {run_id} workspace is missing or changed")
             workspace.prepare()
             context = self._stored_context(run, workspace, source_repo)
-            context.route_decision = run.route_decision
-            run = self._record_route(run, context, route, OPERATOR_ESCALATION_REASON)
+            run = self._record_route(run, context, route, "operator escalation")
             run = run.model_copy(
                 update={
                     "lease": RunLease(
                         host=socket.gethostname(), pid=os.getpid(), heartbeat_at=utc_now()
                     ),
                     "budget_start": len(run.attempt_records),
+                    "needs_look": [],
                 }
             )
+            self._store.delete_stop_request(run.id)
             run = self.transition(run, WorkflowState.PLANNING, operator_escalation=True)
             repair_context = RepairContext(
                 trigger=AttemptTrigger.OPERATOR,
