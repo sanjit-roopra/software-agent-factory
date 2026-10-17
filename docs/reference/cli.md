@@ -270,9 +270,9 @@ Options: `--config`, `--data-dir`.
 The command writes one note file in the run directory and returns. The next
 agent call gets the note as an operator section of its prompt, and the factory
 then deletes the file. A run halted in `NEEDS_HUMAN` keeps the note until it
-resumes.
+resumes. A halt that cannot resume refuses the note.
 
-These exit with code 1: an empty note, a note that is too long or holds a secret,
+These exit with code 1: an empty, long or secret note, a halt that cannot resume,
 and a finished or missing run. A second note while one waits exits with code 1 too.
 
 ---

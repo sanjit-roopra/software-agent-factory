@@ -196,6 +196,7 @@ def render_index_html(*, token: str) -> str:
         <section id="run-steer" class="card steer" aria-labelledby="run-steer-label" hidden>
           <label id="run-steer-label" for="run-steer-note">Steer the agent</label>
           <textarea id="run-steer-note" rows="3" maxlength="2000"
+            placeholder="Tell the agent what to do or what to avoid."
             aria-describedby="run-steer-hint"></textarea>
           <p id="run-steer-hint" class="retry-note"></p>
           <p class="steer-actions">

@@ -875,7 +875,7 @@ def cancel_command(
 _STEER_MESSAGES: dict[str, str] = {
     "created": "note saved for {run_id}. the agent reads it at its next call.",
     "exists": "a note is already waiting for {run_id}; it goes with the next call.",
-    "finished": "run {run_id} has already finished; there is nothing to steer.",
+    "finished": "run {run_id} has finished or cannot resume; there is nothing to steer.",
     "run_missing": "no such run: {run_id}",
 }
 
@@ -1101,6 +1101,24 @@ def request_run_stop(
     return "created" if created else "exists"
 
 
+def _can_take_steer_note(run: FactoryRun) -> bool:
+    """Whether a later agent call of ``run`` can read a steer note.
+
+    A working run can. A halted run can only when its halt can resume: a note on any other
+    halt would wait for a call that never comes.
+    """
+    from .models import ResumeClassification, WorkflowState
+    from .workflow import is_run_finished
+
+    if not is_run_finished(run):
+        return True
+    return (
+        run.state is WorkflowState.NEEDS_HUMAN
+        and run.escalation is not None
+        and run.escalation.resume_classification is not ResumeClassification.NOT_RESUMABLE
+    )
+
+
 def request_run_steer(
     store: FileRunStore,
     run_id: str,
@@ -1112,15 +1130,13 @@ def request_run_steer(
 
     ``note`` is already clean. The controller adds it to the next agent prompt.
     """
-    from .models import RunSteerNote, WorkflowState
-    from .workflow import is_run_finished
+    from .models import RunSteerNote
 
     try:
         run = store.load_run(run_id)
     except (FileNotFoundError, ValueError):
         return "run_missing"
-    # A halted run reads the note when it resumes, so only a run that ended is refused.
-    if is_run_finished(run) and run.state is not WorkflowState.NEEDS_HUMAN:
+    if not _can_take_steer_note(run):
         return "finished"
     request = RunSteerNote(run_id=run_id, source=source, note=note, created_at=created_at)
     try:

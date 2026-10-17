@@ -2664,26 +2664,15 @@
     });
   }
 
-  // ---- Run detail: steer (ADR-047, dashboard X5 and X4) ---------------------
+  // ---- Run detail: steer (ADR-047, dashboard X5) ----------------------------
 
   const STEER_ACTIVE_HINT = "The agent reads this note at its next call, not in the middle of one.";
   const STEER_HALTED_HINT = "The agent reads this note at its next call, once the run resumes.";
-  // One label and placeholder per halt that has no page action yet (X4): the note says what
-  // the person wants the next attempt to do.
-  const STEER_COPY = {
-    REVIEW_IMPASSE: ["Send back with a note", "Say which findings to fix and which to accept."],
-    ATTEMPT_BUDGET_EXHAUSTED: ["Note for the next attempt", "Say what the next attempt must change."],
-    SCOPE_REVIEW: ["Note about the scope", "Say which extra files are fine to change, or which to undo."],
-    CI_INTERVENTION: ["Note for the CI repair", "Say what CI needs and where to look."],
-    STALLED: ["Note for the next call", "Say what the agent should do differently."],
-    MANUAL_INSPECTION: ["Note for the next call", "Say what the agent should do next."]
-  };
-  const STEER_DEFAULT_COPY = ["Steer the agent", "Tell the agent what to do or what to avoid."];
+  const NOT_RESUMABLE = "NOT_RESUMABLE";
 
   function steerControls() {
     return {
       box: document.getElementById("run-steer"),
-      label: document.getElementById("run-steer-label"),
       note: document.getElementById("run-steer-note"),
       hint: document.getElementById("run-steer-hint"),
       send: document.getElementById("run-steer-send"),
@@ -2691,15 +2680,18 @@
     };
   }
 
-  function steerCopy(detail) {
-    const code = detail.next_step?.reason_code;
-    return Object.hasOwn(STEER_COPY, code) ? STEER_COPY[code] : STEER_DEFAULT_COPY;
+  // A halt that cannot resume has no later agent call, so a note there would never be read.
+  function haltTakesSteerNote(detail) {
+    const classification = detail.next_step?.resume_classification;
+    return detail.outcome?.kind === "needs_you" && Boolean(classification) &&
+      classification !== NOT_RESUMABLE;
   }
 
-  // Shown on every run that has not finished. Another run starts from an empty note.
+  // Shown on a working run and on a halt that can resume. Another run starts from an empty
+  // note.
   function renderSteerControl(detail, runId) {
     const controls = steerControls();
-    const halted = detail.outcome?.kind === "needs_you";
+    const halted = haltTakesSteerNote(detail);
     const show = runId !== null && (halted || isActiveRun(detail));
     const key = show ? runId : "";
     if (controls.box.dataset.runId !== key) {
@@ -2708,9 +2700,6 @@
       controls.status.textContent = "";
       setDisabled([controls.note, controls.send], false);
     }
-    const [label, placeholder] = steerCopy(detail);
-    controls.label.textContent = label;
-    controls.note.placeholder = placeholder;
     controls.hint.textContent = halted ? STEER_HALTED_HINT : STEER_ACTIVE_HINT;
     controls.box.hidden = !show;
   }

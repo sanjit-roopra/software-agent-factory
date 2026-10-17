@@ -641,6 +641,7 @@ kbd {
   padding: 0.05rem 0.35rem;
 }
 .steer { display: grid; gap: 0.5rem; }
+.steer[hidden] { display: none; }
 .steer label { font-weight: 600; }
 .steer textarea {
   width: 100%;

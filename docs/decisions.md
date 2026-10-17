@@ -7,10 +7,10 @@ Status: accepted on 2026-10-17. This builds on ADR-047 and ADR-049.
 ### Context
 
 ADR-047 lets a person add a short note to the next prompt of a run, from the
-dashboard or the terminal. It works on a working run and on a halted run. Several
-halts, such as a review impasse or a used attempt budget, have no page action yet.
-New resume classes for them touch the reopen rules, the receipts and the
-GitHub reply protocol, so they wait for a later change.
+dashboard or the terminal. It works on a working run and on a halted run that can
+resume. Several halts, such as a review impasse or a used attempt budget, cannot
+resume yet. New resume classes for them touch the reopen rules, the receipts and
+the GitHub reply protocol, so they wait for a later change.
 
 ### Decision
 
@@ -19,21 +19,23 @@ GitHub reply protocol, so they wait for a later change.
 - The dashboard route `POST /api/runs/<id>/steer` and `factory steer <run> <note>`
   create it. Both refuse an empty note, a note over 2,000 characters and a note
   that holds a secret or the redaction placeholder. Both refuse a run in `DONE`,
-  `FAILED` or a finished `PR_READY`. A run in `NEEDS_HUMAN` is accepted.
+  `FAILED` or a finished `PR_READY`. A run in `NEEDS_HUMAN` is accepted only when
+  its halt can resume. A halt that cannot resume has no later agent call to read
+  a note, so both refuse it and the dashboard hides the box.
 - Before each agent call, the workflow controller reads the file, redacts the note
   again, adds it as the last prompt section `Operator note` and deletes the file.
-  So exactly one call gets the note, whichever driver runs it.
+  When the call raises, the controller puts the file back, create-only, so the
+  retry gets the note and a newer note wins. So exactly one call that returns
+  gets the note, whichever driver runs it.
 - A move to `DONE` or `FAILED` deletes the file. A halt in `NEEDS_HUMAN` keeps it,
   so the call after a resume gets it.
-- On a halt with no page action, the dashboard labels the note box for that halt.
-  On a review impasse it reads "Send back with a note". This is the first, small
-  step of the per-halt actions. It does not resume the run.
 
 ### Consequences
 
 - A person can guide a working run without stopping it, and can leave guidance on
   a halted run for its next attempt.
-- A note on a halt that cannot resume waits until the run ends, and then goes.
+- Per-halt actions for the halts that cannot resume (dashboard X4) still need new
+  resume classes. Until then a person uses the guidance the page shows.
 - The note is repository guidance from a person. The agent follows it only where it
   does not break the role instructions or the output contract.
 

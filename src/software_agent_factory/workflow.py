@@ -137,6 +137,7 @@ from .models import (
     Risk,
     RouteDecision,
     RunLease,
+    RunSteerNote,
     RunStopRequest,
     Specification,
     TestReport,
@@ -567,17 +568,31 @@ class WorkflowController:
         # The terminal transition deletes the request.
         return _Halt(self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason))
 
-    def _with_steer_note(self, run: FactoryRun, request: AgentRequest) -> AgentRequest:
-        """Add a person's waiting steer note to ``request`` and forget it (ADR-047).
+    def _call_with_steer_note(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
+        """Run the agent with a person's waiting steer note added to ``request`` (ADR-047).
 
-        The note reaches exactly one agent call: the next one after it was sent.
+        The note reaches exactly one agent call that returns: the next one after it was
+        sent. A call that raises puts the note back, create-only, so a newer note wins and
+        the retry or the next attempt still gets it.
         """
         note = self._store.load_steer_note(run.id)
         if note is None:
-            return request
+            return self._call_runtime(run, request)
         self._store.delete_steer_note(run.id)
         logger.info("run %s sends the %s steer note to the %s", run.id, note.source, request.role)
-        return request.model_copy(update={"operator_note": redact_secrets(note.note)})
+        steered = request.model_copy(update={"operator_note": redact_secrets(note.note)})
+        try:
+            return self._call_runtime(run, steered)
+        except BaseException:
+            self._restore_steer_note(note)
+            raise
+
+    def _restore_steer_note(self, note: RunSteerNote) -> None:
+        """Put back a steer note whose agent call failed. A failure here is only logged."""
+        try:
+            self._store.create_steer_note(note)
+        except OSError as exc:
+            logger.warning("run %s lost its steer note: %s", note.run_id, type(exc).__name__)
 
     def _call_runtime(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
         """Run the agent while a side thread writes the lease heartbeat (dashboard X1).
@@ -2703,9 +2718,8 @@ class WorkflowController:
         run.last_activity_at = started_at
         self._raise_if_cancelled(run)
         self._store.save_run(run)
-        request = self._with_steer_note(run, request)
         try:
-            result = self._call_runtime(run, request)
+            result = self._call_with_steer_note(run, request)
         except (OSError, RuntimeError, ValueError) as exc:
             self._raise_if_cancelled(run)
             completed_at = utc_now()

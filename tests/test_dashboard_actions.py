@@ -1477,7 +1477,12 @@ STEER_ACTION = "steer"
 def test_a_steer_note_of_a_live_or_halted_run_is_stored_once(
     make_rig: RigFactory, state: WorkflowState
 ) -> None:
-    rig = make_rig(FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state))
+    escalation = EscalationRecord(
+        episode_id="episode-x", resume_classification=ResumeClassification.RISK_APPROVAL
+    )
+    rig = make_rig(
+        FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
+    )
 
     status, payload = rig.post(_path(STEER_ACTION), {"note": "  Keep the old API.  "})
     again, conflict = rig.post(_path(STEER_ACTION), {"note": "Another note."})
@@ -1493,8 +1498,21 @@ def test_a_steer_note_of_a_live_or_halted_run_is_stored_once(
     assert (again, conflict) == (409, {"error": "conflict", REASON: "existing_request"})
 
 
-def test_a_steer_note_of_a_finished_run_is_refused(make_rig: RigFactory) -> None:
-    rig = make_rig(FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.DONE))
+@pytest.mark.parametrize(
+    "run",
+    [
+        FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.DONE),
+        FactoryRun(
+            id=RUN_ID,
+            work_item_id=WORK_ITEM_ID,
+            state=WorkflowState.NEEDS_HUMAN,
+            escalation=EscalationRecord(episode_id="episode-x"),
+        ),
+    ],
+    ids=["done", "not-resumable-halt"],
+)
+def test_a_steer_note_of_a_finished_run_is_refused(make_rig: RigFactory, run: FactoryRun) -> None:
+    rig = make_rig(run)
 
     with rig.assert_writes_nothing():
         status, payload = rig.post(_path(STEER_ACTION), {"note": "Too late."})

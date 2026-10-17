@@ -16,7 +16,14 @@ from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRu
 from software_agent_factory.cli import app, request_run_steer
 from software_agent_factory.dashboard.actions import ResumeActions, accept_steer
 from software_agent_factory.dashboard.responses import WriteRejected
-from software_agent_factory.models import AgentRole, FactoryRun, RunSteerNote, WorkflowState
+from software_agent_factory.models import (
+    AgentRole,
+    EscalationRecord,
+    FactoryRun,
+    ResumeClassification,
+    RunSteerNote,
+    WorkflowState,
+)
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.redaction import REDACTION_PLACEHOLDER
 from software_agent_factory.resume import clean_steer_note
@@ -137,6 +144,51 @@ def test_the_next_agent_call_gets_the_note_once(source_repo: Path, data_dir: Pat
     assert store.load_steer_note("run-steer") is None
 
 
+class FailsOnce:
+    """Raises on the first call and records the note each call received."""
+
+    def __init__(self) -> None:
+        self.notes: list[str | None] = []
+
+    def run(self, request: AgentRequest) -> AgentResult:
+        self.notes.append(request.operator_note)
+        if len(self.notes) == 1:
+            raise RuntimeError("runtime unavailable")
+        return AgentResult(role=request.role, success=True)
+
+
+def test_a_failed_agent_call_puts_the_note_back(source_repo: Path, data_dir: Path) -> None:
+    store = FileRunStore(data_dir)
+    runtime = FailsOnce()
+    controller = WorkflowController(build_config(data_dir), store, runtime)
+    run = _saved(store, "run-retry", WorkflowState.IMPLEMENTING)
+    store.create_steer_note(RunSteerNote(run_id="run-retry", source="cli", note=NOTE))
+    request = AgentRequest(
+        role=AgentRole.IMPLEMENTER,
+        model="m",
+        reasoning="high",
+        work_item=_work_item(source_repo),
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(RuntimeError):
+        controller._call_with_steer_note(run, request)
+    assert store.load_steer_note("run-retry") is not None
+    controller._call_with_steer_note(run, request)
+
+    assert runtime.notes == [NOTE, NOTE]
+    assert store.load_steer_note("run-retry") is None
+
+
+def test_a_lost_note_is_only_logged(data_dir: Path, caplog: pytest.LogCaptureFixture) -> None:
+    store = FileRunStore(data_dir)
+    controller = WorkflowController(build_config(data_dir), store, FakeAgentRuntime())
+
+    controller._restore_steer_note(RunSteerNote(run_id="run-gone", source="cli", note=NOTE))
+
+    assert "lost its steer note" in caplog.text
+
+
 @pytest.mark.parametrize(
     ("state", "kept"),
     [(WorkflowState.NEEDS_HUMAN, True), (WorkflowState.DONE, False), (WorkflowState.FAILED, False)],
@@ -160,12 +212,22 @@ def test_a_halt_keeps_the_note_and_an_end_drops_it(
 def test_request_run_steer_reports_each_outcome(data_dir: Path) -> None:
     store = FileRunStore(data_dir)
     _saved(store, "run-live", WorkflowState.IMPLEMENTING)
-    _saved(store, "run-wait", WorkflowState.NEEDS_HUMAN)
+    waiting = _saved(store, "run-wait", WorkflowState.NEEDS_HUMAN)
+    waiting.escalation = EscalationRecord(
+        episode_id="e1", resume_classification=ResumeClassification.RISK_APPROVAL
+    )
+    store.save_run(waiting)
+    stuck = _saved(store, "run-stuck", WorkflowState.NEEDS_HUMAN)
+    stuck.escalation = EscalationRecord(episode_id="e1")
+    store.save_run(stuck)
+    _saved(store, "run-bare", WorkflowState.NEEDS_HUMAN)
     _saved(store, "run-done", WorkflowState.DONE)
 
     assert request_run_steer(store, "run-live", NOTE, "cli", NOW) == "created"
     assert request_run_steer(store, "run-live", NOTE, "cli", NOW) == "exists"
     assert request_run_steer(store, "run-wait", NOTE, "cli", NOW) == "created"
+    assert request_run_steer(store, "run-stuck", NOTE, "cli", NOW) == "finished"
+    assert request_run_steer(store, "run-bare", NOTE, "cli", NOW) == "finished"
     assert request_run_steer(store, "run-done", NOTE, "cli", NOW) == "finished"
     assert request_run_steer(store, "run-none", NOTE, "cli", NOW) == "run_missing"
 
@@ -199,7 +261,7 @@ def test_factory_steer_saves_a_note(data_dir: Path) -> None:
 @pytest.mark.parametrize(
     ("run_id", "note", "message"),
     [
-        ("run-old", NOTE, "has already finished"),
+        ("run-old", NOTE, "has finished or cannot resume"),
         ("run-cli", "   ", "the note is empty"),
         ("run-none", NOTE, "no such run"),
     ],

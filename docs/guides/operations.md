@@ -195,15 +195,15 @@ The run halts in Needs you with its workspace and commits kept.
 
 ### Steer a run with a note
 
-A run that is still open shows a note box under Needs you. Type what the
-agent must do or avoid, then select **Send note**. `factory steer <run> "<note>"`
+A working run, and a halted run that can resume, show a note box under Needs
+you. Type what the agent must do or avoid, then select **Send note**. `factory steer <run> "<note>"`
 does the same from the terminal.
 
 The next agent call gets the note as an operator section at the end of its
 prompt. Only that one call gets it. A working run reads it at its next call, not
-in the middle of one. A halted run keeps the note until it resumes. On a halt the
-page has no button for, the box says what kind of note helps, such as which
-review findings to accept. A note is at most 2,000 characters, and a note that
+in the middle of one. A halted run keeps the note until it resumes. A halt that
+cannot resume, such as a review impasse, refuses a note: no later call reads
+it. A note is at most 2,000 characters, and a note that
 holds a secret is refused. One note waits at a time.
 
 The dashboard cannot reconfigure anything, and it can retry only publishing.
