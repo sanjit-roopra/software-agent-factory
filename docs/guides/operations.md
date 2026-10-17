@@ -224,8 +224,7 @@ A line at the top of the run page then shows the escalation, for example
 validator. · running". It ends in "finished", or in "failed:" and the error,
 for example when a process holds the workspace lock. The run list marks the run
 "escalating", "escalated" or "escalation failed". The run page always shows the
-route chip, also for `FULL`. A step that the escalation starts has the trigger
-`OPERATOR`.
+route chip, also for `FULL`.
 
 The dashboard cannot reconfigure anything. It can retry only publishing.
 Authority stays with the workflow controller and the factory service.

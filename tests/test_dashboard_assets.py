@@ -2302,6 +2302,22 @@ def test_the_escalate_box_names_the_route_and_shows_only_when_the_run_can_escala
     assert "payload: { note: note.value }" in send
 
 
+def test_the_run_page_shows_the_last_escalation_at_the_top_in_its_tone() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert '<p id="run-escalation" class="headline" role="status" hidden></p>' in html
+    assert 'const ESCALATION_TONES = { running: "active", done: "done", failed: "failed" };' in _JS
+    render = function_source(_JS, "renderEscalationLine")
+    assert "ESCALATION_TONES[escalation.status]" in render
+    assert "line.hidden = tone === undefined;" in render
+    assert 'line.className = "headline headline-" + tone;' in render
+    assert "setText(line, escalationText(escalation));" in render
+    assert "renderEscalationLine(detail.operator_escalation);" in _JS
+    # A failed escalation is a red chip on the run page and in the run list.
+    assert re.search(
+        r"\.chip\.chip-failed\s*\{\s*color:\s*var\(--error\)", dashboard_assets.STYLE_CSS
+    )
+
+
 @pytest.mark.parametrize("action", ["steer", "escalate"])
 def test_steer_refusals_have_their_own_words(action: str) -> None:
     calls = [

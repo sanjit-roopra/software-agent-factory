@@ -801,6 +801,18 @@ STATUS_CASES = [
         {"outcome": {"kind": "done"}, "effective_route": "FULL"},
         _NOW,
     ),
+    _status(
+        "a-failed-escalation-is-a-red-chip",
+        [
+            {
+                "text": "escalation failed",
+                TITLE: _FAILED_ESCALATION_TEXT,
+                CLASS_NAME: "chip chip-failed",
+            }
+        ],
+        {"outcome": {"kind": "done"}, "operator_escalation": _FAILED_ESCALATION},
+        _NOW,
+    ),
     _case(
         "statusKeyOf",
         "live-part-keys-on-its-place-not-its-text",

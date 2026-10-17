@@ -847,7 +847,7 @@ def build_monitoring_snapshot(
             stale_after,
             _memoized_artifact_facts(store, run.id, scan.artifact_facts),
             reply_policy,
-            _operator_escalation(store, run.id),
+            load_operator_escalation(store, run.id),
         )
         for run in page_runs
     ]
@@ -1519,14 +1519,35 @@ def _load_optional_artifact(
         return None
 
 
-def _operator_escalation(store: RunStoreProtocol, run_id: str) -> OperatorEscalation | None:
+def load_operator_escalation(store: RunStoreProtocol, run_id: str) -> OperatorEscalation | None:
+    """The last ``factory escalate`` of the run, or ``None`` when there is none or it is bad.
+
+    A ``running`` record whose process is gone (killed, crashed, the host rebooted) reads as
+    ``failed``, so it never blocks the run or hides the error.
+    """
     try:
         loaded: OperatorEscalation = store.load_artifact(
             run_id, OperatorEscalation, OPERATOR_ESCALATION_FILENAME
         )
-        return loaded
     except (OSError, ValueError):
         return None
+    if loaded.status == "running" and not _process_alive(loaded.pid):
+        return loaded.model_copy(
+            update={"status": "failed", "error": "the escalation stopped before it finished"}
+        )
+    return loaded
+
+
+def _process_alive(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _safe_external_id(work_item: WorkItem | None) -> str | None:
@@ -1815,7 +1836,7 @@ def build_run_detail(
         return None
 
     observed_at = _normalize_now(now)
-    operator_escalation = _operator_escalation(store, run.id)
+    operator_escalation = load_operator_escalation(store, run.id)
     summary = _build_run_summary(
         run, observed_at, stale_after, _artifact_facts(store, run.id), None, operator_escalation
     )

@@ -1461,3 +1461,22 @@ def test_a_crashed_escalation_records_the_error(
         "RuntimeError: boom",
         None,
     )
+
+
+def test_escalate_refuses_while_another_process_escalates_the_run(data_dir: Path) -> None:
+    import os
+
+    from software_agent_factory.models import FactoryRun, OperatorEscalation, WorkflowState
+    from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
+
+    store = FileRunStore(data_dir)
+    store.save_run(FactoryRun(id="run-1", work_item_id="WI-1", state=WorkflowState.DONE))
+    # The parent process is alive and is not this one.
+    live = OperatorEscalation(note="first", status="running", pid=os.getppid())
+    store.save_artifact("run-1", live, OPERATOR_ESCALATION_FILENAME)
+
+    result = runner.invoke(app, ["escalate", "run-1", "--note", "x", "--data-dir", str(data_dir)])
+
+    assert result.exit_code == 1
+    assert "another escalation of it still runs" in result.output
+    assert store.load_artifact("run-1", OperatorEscalation, OPERATOR_ESCALATION_FILENAME) == live

@@ -967,6 +967,8 @@ def escalate_command(
     The run's repository, runtime, model profile and config come from the run itself. The
     run's ``operator-escalation.json`` says how it went, for the dashboard.
     """
+    import os
+
     from .redaction import redact_secrets
     from .resume import clean_steer_note
     from .store import OPERATOR_ESCALATION_FILENAME, FileRunStore
@@ -977,9 +979,14 @@ def escalate_command(
     run_data_dir = _load_config(config, data_dir).data_dir
     store = FileRunStore(run_data_dir)
     try:
-        record = save_escalation_start(store, run_id, cleaned)
+        record = save_escalation_start(store, run_id, cleaned, os.getpid())
     except FileNotFoundError:
         raise _fail(f"no such run: {run_id}", code=FAILURE_EXIT_CODE)
+    if record is None:
+        raise _fail(
+            f"cannot escalate run {run_id}: another escalation of it still runs",
+            code=FAILURE_EXIT_CODE,
+        )
     try:
         run = _escalate(store, run_data_dir, run_id, cleaned)
     except Exception as exc:
@@ -997,20 +1004,28 @@ def escalate_command(
     _report_run(store, run)
 
 
-def save_escalation_start(store: FileRunStore, run_id: str, note: str) -> OperatorEscalation:
-    """Record that an escalation of ``run_id`` runs now (ADR-055), and return the record.
+def save_escalation_start(
+    store: FileRunStore, run_id: str, note: str, pid: int
+) -> OperatorEscalation | None:
+    """Record that process ``pid`` escalates ``run_id`` now (ADR-055), and return the record.
 
-    A missing run raises ``FileNotFoundError``.
+    Returns ``None`` and writes nothing when another process still escalates the run. A
+    missing run raises ``FileNotFoundError``.
     """
     from .models import OperatorEscalation
+    from .observability import load_operator_escalation
     from .resume import escalation_route
     from .store import OPERATOR_ESCALATION_FILENAME
 
     run = store.load_run(run_id)
+    last = load_operator_escalation(store, run_id)
+    if last is not None and last.status == "running" and last.pid != pid:
+        return None
     record = OperatorEscalation(
         from_route=None if run.route_decision is None else run.route_decision.effective_route,
         to_route=escalation_route(run),
         note=note,
+        pid=pid,
     )
     store.save_artifact(run_id, record, OPERATOR_ESCALATION_FILENAME)
     return record
@@ -1286,51 +1301,54 @@ def build_steer_requester(store: FileRunStore) -> SteerRequester:
     return steer
 
 
-def build_escalator(store: FileRunStore, data_dir: Path, config: Path | None) -> EscalateRequester:
+def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
     """The requester of the dashboard's escalate route: a detached ``factory escalate``.
 
     The dashboard never drives a run, so the escalation runs as its own process that outlives
-    the request. It records the escalation as running first, so the page shows it at once and
-    offers no second one. The command records how it went (ADR-055).
+    the request. It records the escalation as running at once, so the page shows it and offers
+    no second one. The command records how it went (ADR-055).
     """
     import subprocess
+    import threading
 
+    from .models import OperatorEscalation
+    from .observability import load_operator_escalation
     from .resume import escalation_route
+    from .store import OPERATOR_ESCALATION_FILENAME
+
+    one_at_a_time = threading.Lock()
 
     def escalate(run_id: str, note: str) -> EscalateRequestResult:
-        try:
-            if escalation_route(store.load_run(run_id)) is None or _escalation_runs(store, run_id):
-                return "not_escalatable"
-            save_escalation_start(store, run_id, note)
-        except (FileNotFoundError, ValueError):
-            return "run_missing"
-        command = [sys.executable, "-m", "software_agent_factory", "escalate", run_id]
-        # ``--note=`` keeps a note that starts with a dash from reading as an option.
-        command += [f"--note={note}", "--data-dir", str(data_dir)]
-        if config is not None:
-            command += ["--config", str(config)]
-        subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        with one_at_a_time:
+            try:
+                last = load_operator_escalation(store, run_id)
+                if escalation_route(store.load_run(run_id)) is None or (
+                    last is not None and last.status == "running"
+                ):
+                    return "not_escalatable"
+            except (FileNotFoundError, ValueError):
+                return "run_missing"
+            # ``--note=`` keeps a note that starts with a dash from reading as an option.
+            command = [sys.executable, "-m", "software_agent_factory", "escalate", run_id]
+            command += [f"--note={note}", "--data-dir", str(data_dir)]
+            try:
+                child = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                failed = OperatorEscalation(note=note, status="failed", error=str(exc))
+                store.save_artifact(run_id, failed, OPERATOR_ESCALATION_FILENAME)
+                return "started"
+            save_escalation_start(store, run_id, note, child.pid)
+        # Reap the child when it ends, so its pid reads as gone.
+        threading.Thread(target=child.wait, daemon=True).start()
         return "started"
 
     return escalate
-
-
-def _escalation_runs(store: FileRunStore, run_id: str) -> bool:
-    """Whether the last escalation of the run still runs."""
-    from .models import OperatorEscalation
-    from .store import OPERATOR_ESCALATION_FILENAME
-
-    try:
-        last = store.load_artifact(run_id, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
-    except FileNotFoundError:
-        return False
-    return last.status == "running"
 
 
 def build_stop_requester(store: FileRunStore) -> StopRequester:
@@ -1670,7 +1688,7 @@ def dashboard_command(
                     reply_policy=reply_policy,
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
-                    escalator=build_escalator(store, factory_config.data_dir, config),
+                    escalator=build_escalator(store, factory_config.data_dir),
                 ),
                 host=LOOPBACK_HOST,
                 port=port,

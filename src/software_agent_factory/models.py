@@ -1578,7 +1578,8 @@ class OperatorEscalation(VersionedModel):
     """The last ``factory escalate`` of a run and how it went, for the dashboard (ADR-055).
 
     The command writes ``running`` when it starts, then ``done`` or ``failed`` with the error.
-    ``to_route`` is ``None`` when the run could not escalate at all.
+    ``to_route`` is ``None`` when the run could not escalate at all. ``pid`` is the process
+    that runs it, so a ``running`` record whose process is gone reads as failed.
     """
 
     from_route: ExecutionRoute | None = None
@@ -1587,6 +1588,7 @@ class OperatorEscalation(VersionedModel):
     started_at: UtcDateTime = Field(default_factory=utc_now)
     status: Literal["running", "done", "failed"] = "running"
     error: str | None = None
+    pid: int | None = None
 
 
 class EscalationRecord(ModelBase):

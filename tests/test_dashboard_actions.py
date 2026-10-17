@@ -11,7 +11,10 @@ import ast
 import http.client
 import json
 import logging
+import os
 import socket
+import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -338,9 +341,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                     clock=lambda: NOW,
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
-                    escalator=build_escalator(store, tmp_path, tmp_path / "f.yaml")
-                    if escalate
-                    else None,
+                    escalator=build_escalator(store, tmp_path) if escalate else None,
                 )
                 if actions
                 else None,
@@ -1577,12 +1578,28 @@ def _finished_run(**updates: object) -> FactoryRun:
     return run.model_copy(update=updates)
 
 
+#: The real ``Popen``, for a process the escalate fixtures do not fake.
+_REAL_POPEN = subprocess.Popen
+
+
+class _FakeChild:
+    """A started ``factory escalate``: this test process stands in, so its pid is alive."""
+
+    pid = os.getpid()
+
+    def wait(self) -> int:
+        return 0
+
+
 @pytest.fixture
 def popen_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], dict[str, object]]]:
     calls: list[tuple[list[str], dict[str, object]]] = []
-    monkeypatch.setattr(
-        "subprocess.Popen", lambda command, **kwargs: calls.append((command, kwargs))
-    )
+
+    def popen(command: list[str], **kwargs: object) -> _FakeChild:
+        calls.append((command, kwargs))
+        return _FakeChild()
+
+    monkeypatch.setattr("subprocess.Popen", popen)
     return calls
 
 
@@ -1602,18 +1619,17 @@ def test_an_escalation_starts_a_detached_factory_escalate(
         "--note=-Use the cache.",
         "--data-dir",
         str(rig.data_dir),
-        "--config",
-        str(rig.data_dir / "f.yaml"),
     ]
     assert kwargs["start_new_session"] is True
     assert rig.store.load_run(RUN_ID) == rig.run
     # The page shows the escalation at once and offers no second one.
     record = rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
-    assert (record.status, record.from_route, record.to_route, record.note) == (
+    assert (record.status, record.from_route, record.to_route, record.note, record.pid) == (
         "running",
         ExecutionRoute.SINGLE,
         ExecutionRoute.CRITIQUE,
         "-Use the cache.",
+        os.getpid(),
     )
     assert rig.post(_path(ESCALATE_ACTION), {"note": "again"}) == (
         409,
@@ -1697,7 +1713,7 @@ def test_the_run_detail_names_the_route_an_escalation_moves_to(tmp_path: Path) -
 def test_a_running_escalation_shows_on_the_run_and_offers_no_second_one(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path)
     store.save_run(_finished_run())
-    record = OperatorEscalation(note="Use the cache.", status="running")
+    record = OperatorEscalation(note="Use the cache.", status="running", pid=os.getpid())
     store.save_artifact(RUN_ID, record, OPERATOR_ESCALATION_FILENAME)
 
     detail = build_run_detail(store, RUN_ID, reply_policy=REPLY_POLICY)
@@ -1705,3 +1721,49 @@ def test_a_running_escalation_shows_on_the_run_and_offers_no_second_one(tmp_path
     assert detail is not None
     assert detail.escalation_route is None
     assert detail.operator_escalation == record
+
+
+def test_an_escalation_whose_process_is_gone_reads_as_failed_and_can_run_again(
+    make_rig: RigFactory, popen_calls: list[tuple[list[str], dict[str, object]]]
+) -> None:
+    rig = make_rig(_finished_run())
+    gone = _REAL_POPEN([sys.executable, "-c", ""])
+    gone.wait()
+    record = OperatorEscalation(note="Use the cache.", status="running", pid=gone.pid)
+    rig.store.save_artifact(RUN_ID, record, OPERATOR_ESCALATION_FILENAME)
+
+    detail = build_run_detail(rig.store, RUN_ID, reply_policy=REPLY_POLICY)
+
+    assert detail is not None
+    assert detail.escalation_route is ExecutionRoute.CRITIQUE
+    assert detail.operator_escalation is not None
+    assert detail.operator_escalation.status == "failed"
+    assert detail.operator_escalation.error == "the escalation stopped before it finished"
+    assert rig.post(_path(ESCALATE_ACTION), {"note": "again"})[0] == 202
+    assert len(popen_calls) == 1
+
+
+def test_a_bad_escalation_record_does_not_hide_the_run(
+    make_rig: RigFactory, popen_calls: list[tuple[list[str], dict[str, object]]]
+) -> None:
+    rig = make_rig(_finished_run())
+    (rig.data_dir / "runs" / RUN_ID / OPERATOR_ESCALATION_FILENAME).write_text(
+        "{}", encoding="utf-8"
+    )
+
+    assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 202
+    assert len(popen_calls) == 1
+
+
+def test_an_escalation_that_cannot_start_shows_the_error(
+    make_rig: RigFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def popen(command: list[str], **kwargs: object) -> None:
+        raise OSError("no python")
+
+    monkeypatch.setattr("subprocess.Popen", popen)
+    rig = make_rig(_finished_run())
+
+    assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 202
+    record = rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
+    assert (record.status, record.error) == ("failed", "no python")
