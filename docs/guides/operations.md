@@ -220,7 +220,8 @@ with a note box. The button names the new route, for example **Escalate to
 CRITIQUE**. Type what to change, then select it. The dashboard starts
 `factory escalate` for the run as its own process. You do not need `factory
 start` for this. The route chip and the steps then show the new work. A step
-that the escalation starts has the trigger `OPERATOR`.
+that the escalation starts has the trigger `OPERATOR`. If nothing changes, read
+`logs/escalate-<run>.log` in the data directory to see why the escalation stopped.
 
 The dashboard cannot reconfigure anything. It can retry only publishing, and it
 can escalate a run only when you started it with `--repo`.

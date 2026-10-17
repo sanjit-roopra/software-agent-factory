@@ -1245,10 +1245,12 @@ def build_escalator(
     """The requester of the dashboard's escalate route: a detached ``factory escalate``.
 
     The dashboard never drives a run, so the escalation runs as its own process that outlives
-    the request. That command takes the workspace lock and refuses a run a process works on.
+    the request. That command takes the workspace lock and refuses a run a process works on;
+    its output goes to ``logs/escalate-<run_id>.log`` so a refusal leaves a trace.
     """
     import subprocess
 
+    from .observability import LOG_DIRNAME
     from .resume import escalation_route
 
     def escalate(run_id: str, note: str) -> EscalateRequestResult:
@@ -1264,13 +1266,16 @@ def build_escalator(
         command += ["--data-dir", str(data_dir)]
         if config is not None:
             command += ["--config", str(config)]
-        subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        log_dir = data_dir / LOG_DIRNAME
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / f"escalate-{run_id}.log").open("ab") as log:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         return "started"
 
     return escalate
@@ -1428,12 +1433,14 @@ def dashboard_command(
         help="Hard cap on how many run files one dashboard request parses.",
     ),
     repo: Path = typer.Option(
-        None, "--repo", help="Target Git repository. With it, the run page can escalate a run."
+        None,
+        "--repo",
+        help="Target Git repository. With it and --runtime, the run page can escalate a run.",
     ),
-    runtime: RuntimeChoice = typer.Option(
-        RuntimeChoice.FAKE,
+    runtime: RuntimeChoice | None = typer.Option(
+        None,
         "--runtime",
-        help="Agent runtime of an escalation. " + RUNTIME_OPTION_HELP,
+        help="Agent runtime of an escalation. No default. " + RUNTIME_OPTION_HELP,
     ),
 ) -> None:
     """Serve the local dashboard until interrupted (ADR-016, ADR-033).
@@ -1443,7 +1450,7 @@ def dashboard_command(
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
     and six ``POST`` routes that queue an approval, plan answers, a
     publish retry, a stop or a steer note for the factory, or start an escalation (only with
-    ``--repo``). It is protected by a token generated
+    ``--repo`` and ``--runtime``). It is protected by a token generated
     for this process; the tokenized URL is printed to stdout once and never
     written to the log.
     Ctrl-C stops it and closes the socket.
@@ -1622,7 +1629,7 @@ def dashboard_command(
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
                     escalator=None
-                    if repo is None
+                    if repo is None or runtime is None
                     else build_escalator(store, repo, runtime, factory_config.data_dir, config),
                 ),
                 host=LOOPBACK_HOST,

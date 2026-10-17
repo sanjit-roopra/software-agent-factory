@@ -117,7 +117,7 @@ def clean_steer_note(text: str) -> str | None:
 
 
 #: States ``factory escalate`` takes a run out of, when nothing works on it (ADR-055).
-ESCALATABLE_STATES: frozenset[WorkflowState] = frozenset(
+_ESCALATABLE_STATES: frozenset[WorkflowState] = frozenset(
     {
         WorkflowState.PR_READY,
         WorkflowState.PR_CREATED,
@@ -143,7 +143,7 @@ def escalation_route(run: FactoryRun) -> ExecutionRoute | None:
     It does not check for a live process: the workspace lock does that (ADR-055).
     """
     if (
-        run.state not in ESCALATABLE_STATES
+        run.state not in _ESCALATABLE_STATES
         or run.merge_commit_sha is not None
         or run.route_decision is None
     ):

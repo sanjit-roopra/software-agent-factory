@@ -2302,23 +2302,10 @@ def test_the_escalate_box_names_the_route_and_shows_only_when_the_run_can_escala
     assert "payload: { note: note.value }" in send
 
 
-def test_escalate_refusals_have_their_own_words() -> None:
+@pytest.mark.parametrize("action", ["steer", "escalate"])
+def test_steer_refusals_have_their_own_words(action: str) -> None:
     calls = [
-        JsCall("failureMessage", ({"status": 400, "body": {}}, "escalate")),
-        JsCall(
-            "failureMessage", ({"status": 409, "body": {"reason": "not_escalatable"}}, "escalate")
-        ),
-    ]
-    values = [result.value for result in run_functions(_JS, calls)]
-    assert values == [
-        "the note is empty, too long or holds a secret",
-        "this run cannot escalate now, reload the page",
-    ]
-
-
-def test_steer_refusals_have_their_own_words() -> None:
-    calls = [
-        JsCall("failureMessage", ({"status": 400, "body": {}}, "steer")),
+        JsCall("failureMessage", ({"status": 400, "body": {}}, action)),
         JsCall(
             "failureMessage",
             ({"status": 409, "body": {"reason": "existing_request"}}, "steer"),

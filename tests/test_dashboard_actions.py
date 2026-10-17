@@ -339,7 +339,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
                     escalator=build_escalator(
-                        store, tmp_path / "repo", RuntimeChoice.FAKE, tmp_path, None
+                        store, tmp_path / "repo", RuntimeChoice.FAKE, tmp_path, tmp_path / "f.yaml"
                     )
                     if escalate
                     else None,
@@ -1593,8 +1593,7 @@ def test_an_escalation_starts_a_detached_factory_escalate(
 ) -> None:
     rig = make_rig(_finished_run())
 
-    with rig.assert_writes_nothing():
-        status, payload = rig.post(_path(ESCALATE_ACTION), {"note": " -Use the cache. "})
+    status, payload = rig.post(_path(ESCALATE_ACTION), {"note": " -Use the cache. "})
 
     assert (status, payload) == (202, {"status": "accepted", "requested_at": NOW.isoformat()})
     ((command, kwargs),) = popen_calls
@@ -1609,8 +1608,12 @@ def test_an_escalation_starts_a_detached_factory_escalate(
         "fake",
         "--data-dir",
         str(rig.data_dir),
+        "--config",
+        str(rig.data_dir / "f.yaml"),
     ]
     assert kwargs["start_new_session"] is True
+    assert (rig.data_dir / "logs" / f"escalate-{RUN_ID}.log").is_file()
+    assert rig.store.load_run(RUN_ID) == rig.run
 
 
 @pytest.mark.parametrize(
@@ -1646,6 +1649,15 @@ def test_a_bad_escalation_is_refused_and_starts_nothing(
     assert popen_calls == []
 
 
+def test_without_an_escalator_the_escalate_route_does_not_exist(
+    make_rig: RigFactory, popen_calls: list[tuple[list[str], dict[str, object]]]
+) -> None:
+    rig = make_rig(_finished_run(), escalate=False)
+    with rig.assert_writes_nothing():
+        assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 405
+    assert popen_calls == []
+
+
 def _detail(rig: Rig) -> Any:
     conn = http.client.HTTPConnection(LOOPBACK, rig.port, timeout=5)
     try:
@@ -1673,16 +1685,3 @@ def test_the_run_detail_names_the_route_an_escalation_moves_to(tmp_path: Path) -
 
     assert detail is not None
     assert detail.escalation_route is ExecutionRoute.CRITIQUE
-
-
-def test_an_escalation_passes_the_dashboard_config_on(
-    tmp_path: Path, popen_calls: list[tuple[list[str], dict[str, object]]]
-) -> None:
-    store = FileRunStore(tmp_path)
-    store.save_run(_finished_run())
-    config = tmp_path / "factory.yaml"
-
-    escalate = build_escalator(store, tmp_path, RuntimeChoice.PI, tmp_path, config)
-
-    assert escalate(RUN_ID, "note") == "started"
-    assert popen_calls[0][0][-4:] == ["--data-dir", str(tmp_path), "--config", str(config)]

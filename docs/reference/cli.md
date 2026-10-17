@@ -415,8 +415,8 @@ factory dashboard --port 0 --open-browser
 | `--port <int>` | `8765` | Loopback port. `0` asks the OS for a free port. |
 | `--open-browser` | off | Open the tokenized link in the default browser. |
 | `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per request. |
-| `--repo <path>` | none | Target repository. With it, the run page can escalate a run. |
-| `--runtime <name>` | `fake` | Agent runtime of an escalation the run page starts. |
+| `--repo <path>` | none | Target repository. With it and `--runtime`, the run page can escalate a run. |
+| `--runtime <name>` | none | Agent runtime of an escalation the run page starts. It has no default, so a fake run cannot push to a real pull request. |
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
@@ -467,9 +467,11 @@ to serve it. Its tooltip gives the reason. Open a call to see the tools it used,
 each, read from its stored transcript.
 
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
-generated for that process. It answers `GET` for reads. Five `POST` routes are the
-only writes: approve a risk halt, answer plan decisions (ADR-033), retry
-publishing (ADR-042), and stop or steer a run (ADR-047). The
+generated for that process. It answers `GET` for reads. Six `POST` routes are the
+only writes: approve a halt, answer plan decisions (ADR-033), retry
+publishing (ADR-042), stop or steer (ADR-047), and escalate (ADR-055).
+Escalate needs `--repo` and `--runtime`. The output of an escalation goes
+to `logs/escalate-<run>.log` in the data directory. The
 tokenized link is printed to stdout once and never written to the log. Ctrl-C stops
 it and closes the socket.
 
