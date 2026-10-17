@@ -4230,7 +4230,9 @@ def test_a_json_read_sends_an_etag_and_a_matching_poll_gets_304(
 ) -> None:
     first = running_server.request("GET", "/api/summary", headers=running_server.authed_headers())
     etag = first.getheader("ETag")
-    assert etag is not None and etag.startswith('W/"') and etag.endswith('"')
+    assert etag is not None
+    assert etag.startswith('W/"')
+    assert etag.endswith('"')
     assert first.getheader("Cache-Control") == "no-store"
 
     again = running_server.request(
