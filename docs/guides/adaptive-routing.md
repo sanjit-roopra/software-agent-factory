@@ -2,7 +2,9 @@
 
 Simple tasks do not always need the full multi-agent pipeline.
 Adaptive execution routing selects the lightest safe execution route for a work item.
-The controller makes this decision with fixed rules (ADR-037).
+Every run starts with the Triage agent. Triage sets complexity and risk.
+The controller then picks the route with fixed rules (ADR-037, ADR-054).
+Routing is on by default.
 Routing makes no network call and needs no API key.
 
 ## Execution routes
@@ -12,16 +14,18 @@ The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `M
 
 | Route | Execution path | Review gate |
 | --- | --- | --- |
-| `SINGLE` | Implementer and deterministic verification | Deterministic check only |
-| `CRITIQUE` | Implementer and deterministic verification | Independent Reviewer |
+| `SINGLE` | Triage, Implementer and deterministic verification | Deterministic check only |
+| `CRITIQUE` | Triage, Implementer and deterministic verification | Independent Reviewer |
 | `FULL` | Triage, Planner, Implementer, verification, optional polish | Independent Tester and Reviewer |
 | `MANUAL_TRIAGE` | Safe stop before implementation | Human intervention |
 | `FULL_REVIEW` | Upgrade after implementation | Independent Tester and Reviewer |
 
-`SINGLE` does not invoke Triage, Planner, Tester, Reviewer, or the polish attempt.
+`SINGLE` does not invoke the Planner, Tester, Reviewer, or the polish attempt.
+The controller writes the specification and the plan itself.
 Deterministic verification accepts the change only when every sufficiency condition passes.
 `CRITIQUE` adds the independent Reviewer to `SINGLE`.
 `MANUAL_TRIAGE` moves the run to `NEEDS_HUMAN` before implementation starts.
+An unattended run takes `FULL` instead.
 `FULL_REVIEW` runs the full Tester and Reviewer gates. It does not restart triage or planning.
 
 For `SINGLE` and `CRITIQUE`, the controller skips the polish attempt.
@@ -29,20 +33,32 @@ For `FULL_REVIEW` and `FULL`, the polish attempt is eligible when `polish.enable
 
 ## How the controller selects a route
 
-1. The safety floors remove each configured option that is not safe for the work item.
-2. If routing is disabled, the controller selects the first legal `FULL` option.
+1. The Triage agent sets complexity and risk.
+2. An option is legal only if its complexity is not lower than the Triage complexity.
+   Its risk must also not be lower than the Triage risk. An option with no risk passes.
+3. The safety floors remove each option that is not safe for the work item.
+4. If routing is disabled, the controller selects the first legal `FULL` option.
    If no legal `FULL` option exists, it selects `MANUAL_TRIAGE`.
-3. If no option is legal, the controller selects `MANUAL_TRIAGE`.
-4. If one option is legal, the controller selects it.
-5. If more than one option is legal, the controller selects the lightest legal route.
+5. If no option is legal, the controller selects `MANUAL_TRIAGE`.
+6. Otherwise the controller selects the lightest legal route.
    The order is `SINGLE`, `CRITIQUE`, `FULL` and then `MANUAL_TRIAGE`.
    If two options have the same route, the first option in the configuration wins.
+
+With the packaged options, Triage results map to routes like this:
+
+| Triage result | Route |
+| --- | --- |
+| `L0` or `L1` with `R0` | `SINGLE` |
+| `L2`, or `R1` | `CRITIQUE` |
+| `L3`, `R2` or `R3` | `FULL` |
+
+The Triage prompt tells the agent to pick the lower complexity and risk when it is not sure.
+The ratchets move the run to a heavier route if the change grows.
 
 The human administrator owns the option list, the risk mappings and `full_only_terms`.
 The controller owns the safety floors, workflow state, budgets, ratchets, review and delivery.
 
-When the selected route is `FULL`, the selected option complexity can raise the Triage complexity.
-It cannot lower it.
+The Triage complexity selects the first worker model on every route.
 
 ## Model selection and worker cascade
 
@@ -53,8 +69,7 @@ Worker model escalation is the existing cascade behavior in the factory.
 ## Setup
 
 1. Copy the complete `routing` block from `config/factory.example.yaml`.
-2. Set `routing.enabled: true`.
-3. Configure at least one verification command in `repository.commands.verify`.
+2. Configure at least one verification command in `repository.commands.verify`.
 
 YAML lists replace the complete default list.
 When you specify `full_only_terms` or `options`, YAML does not merge items into the packaged defaults.
@@ -83,10 +98,9 @@ Packaged defaults enable human approval for `R2` and `R3`.
 - `SINGLE` requires explicitly named, repository-relative file paths in the work item text.
 - Missing acceptance criteria disallow `SINGLE` and `CRITIQUE`.
 - Missing verification commands disallow `SINGLE` and `CRITIQUE`.
-- Explicit work item complexity of `L2` or `L3` disallows `SINGLE`.
-- Options with worker complexity below explicit work item complexity are disallowed.
-- Explicit work item risk that requires human approval disallows `SINGLE` and `CRITIQUE`.
-- Options with risk below explicit work item risk are disallowed.
+- Options with worker complexity below the Triage complexity are disallowed.
+- Triage risk that requires human approval disallows `SINGLE` and `CRITIQUE`.
+- Options with risk below the Triage risk are disallowed.
 - Route options whose configured risk requires human approval cannot use `SINGLE` or `CRITIQUE`.
 - Labels `full-only` and `full` disallow `SINGLE` and `CRITIQUE`.
 - Labels `no-single` and `critique-or-full` disallow `SINGLE`.
@@ -110,7 +124,7 @@ The controller never downgrades an execution route.
 
 ## Route decision artifact
 
-The controller records every decision in `route-decision.json` before implementation starts.
+The controller records every decision in `route-decision.json` after Triage and before planning.
 A reopened run reuses this decision.
 
 ```bash
@@ -119,11 +133,11 @@ cat <data_dir>/runs/<run-id>/route-decision.json
 
 The `source` field shows the origin of the decision:
 
-- `rule`: more than one option was legal, and the controller selected the lightest one.
-- `single_option`: only one option was legal.
+- `triage`: the controller selected the lightest option that the Triage result and the safety floors allow.
 - `safety_floor`: no option was legal.
 - `disabled`: routing is disabled.
 
+Run records from before ADR-054 can show `rule` or `single_option`.
 Run records from before ADR-037 can show `jev` or `fallback`.
 They also keep their `probabilities`, `model_id` and `usage`.
 
@@ -135,6 +149,7 @@ For `disabled` or `safety_floor` sources, `offered_options` lists all configured
 
 ### No short routes offered
 
+If Triage set a high complexity or risk, short routes are not legal.
 If the work item has no named file paths, `SINGLE` is not legal.
 If the task mentions terms in `full_only_terms`, short routes are not legal.
 If verification commands are missing, short routes are not legal.

@@ -222,7 +222,9 @@ against real success and cost data.
 ## Adaptive execution routing
 
 Simple tasks do not always need the full pipeline.
-When enabled, fixed rules select the lightest route that the safety floors allow.
+Every run starts with the Triage agent, which sets complexity and risk.
+Fixed rules then select the lightest route that the Triage result and the safety floors allow.
+Routing is on by default.
 Routing makes no network call.
 The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
 `FULL_REVIEW` is a controller-only post-implementation route.

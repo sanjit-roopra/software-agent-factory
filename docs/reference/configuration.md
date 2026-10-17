@@ -465,15 +465,18 @@ does on Copilot. Pi ignores `context_tier`. See
 
 ## routing
 
-Policy for adaptive execution routing.
-Fixed rules select the lightest route that the safety floors allow (ADR-037).
+Policy for adaptive execution routing. Routing is on by default.
+Every run starts with the Triage agent.
+Fixed rules then select the lightest route that the Triage complexity and risk and the safety
+floors allow (ADR-037, ADR-054).
+When routing is disabled, every run takes `FULL`.
 Routing makes no network call.
 
 Read the [adaptive routing guide](../guides/adaptive-routing.md) for complete setup instructions.
 
 ```yaml
 routing:
-  enabled: false
+  enabled: true
   single_max_changed_files: 5
   rubric_version: "1.0"
   full_only_terms:
@@ -533,7 +536,7 @@ routing:
 
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | Whether adaptive routing is active. |
+| `enabled` | bool | `true` | Whether adaptive routing is active. |
 | `single_max_changed_files` | int between 1 and 50 | `5` | File change ceiling for SINGLE and CRITIQUE routes before ratcheting to FULL_REVIEW. |
 | `rubric_version` | string | `"1.0"` | Version tag for the routing rubric. |
 | `full_only_terms` | list of string | list of 20 terms | Terms that disallow short routes when matched. |
@@ -551,8 +554,8 @@ Each entry in `options` defines a route candidate:
 | --- | --- | --- | --- |
 | `id` | string (1-64 chars) | yes | Unique option identifier. |
 | `route` | `SINGLE`, `CRITIQUE`, `FULL`, `MANUAL_TRIAGE` | yes | Execution route for this option. |
-| `complexity` | `L0`, `L1`, `L2`, `L3` | varies | Worker complexity for implementation. |
-| `risk` | `R0`, `R1`, `R2`, `R3` | varies | Provisional risk level for short routes. |
+| `complexity` | `L0`, `L1`, `L2`, `L3` | varies | Highest Triage complexity this option accepts. |
+| `risk` | `R0`, `R1`, `R2`, `R3` | varies | Highest Triage risk this option accepts. |
 | `model_profile` | string | no | Named model profile override. |
 | `description` | string (0-200 chars) | no | Description for people who read the configuration. |
 

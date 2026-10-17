@@ -995,27 +995,28 @@ Model profile controls worker strength.
 Worker model escalation is the existing cascade behavior in the factory.
 We do not add a duplicate cascade route.
 
-When enabled, fixed rules in the controller select the route (ADR-037).
+Every run starts with the Triage agent.
+Fixed rules in the controller then select the route from the Triage complexity and risk (ADR-037, ADR-054).
 Routing makes no network call.
 
 The controller evaluates deterministic safety floors first.
 The factory does not treat governance categories as an intrinsic truth.
 Governance categories are human-owned configuration in `routing.full_only_terms`.
 The configured risk policy decides which routes are legal.
-Configured sensitive terms, repository labels, protected paths, and explicit work item risk serve as deterministic floors.
+An option is legal only if its complexity and risk are not lower than the Triage complexity and risk.
+Configured sensitive terms, repository labels and protected paths serve as deterministic floors.
 
-When only one legal option exists, the controller selects it.
-When more than one option is legal, the controller selects the lightest legal route.
+The controller selects the lightest legal route.
 The order is `SINGLE`, `CRITIQUE`, `FULL` and then `MANUAL_TRIAGE`.
 If two options have the same route, the first option in the configuration wins.
 When no option is legal, the controller selects `MANUAL_TRIAGE`.
 When routing is disabled, the controller selects the first legal `FULL` option, or `MANUAL_TRIAGE` if no legal `FULL` option exists.
-The packaged default disables routing.
+The packaged default enables routing.
 
 The factory defines four configured routes: `SINGLE`, `CRITIQUE`, `FULL`, and `MANUAL_TRIAGE`.
 `FULL_REVIEW` is a controller-only post-implementation route.
 
-For `SINGLE` and `CRITIQUE` routes, the controller synthesizes triage, specification, and execution plan artifacts.
+For `SINGLE` and `CRITIQUE` routes, the controller keeps the real Triage result and synthesizes the specification and execution plan artifacts.
 These artifacts record explicit `SYNTHESIZED` provenance.
 `SINGLE` runs the Implementer and deterministic verification.
 `CRITIQUE` runs the Implementer, deterministic verification, and the independent Reviewer.

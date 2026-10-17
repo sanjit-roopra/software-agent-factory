@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -221,14 +222,30 @@ def _default_profile() -> RepositoryProfile:
     )
 
 
+def _triage(complexity: Complexity = Complexity.L0, risk: Risk = Risk.R0) -> TriageResult:
+    return TriageResult(factory_eligible=True, complexity=complexity, risk=risk, confidence=1.0)
+
+
+def _triage_hook(
+    complexity: Complexity = Complexity.L0, risk: Risk = Risk.R0
+) -> Callable[[AgentRequest], AgentResult]:
+    def hook(_: AgentRequest) -> AgentResult:
+        return AgentResult(
+            role=AgentRole.TRIAGE, success=True, triage_result=_triage(complexity, risk)
+        )
+
+    return hook
+
+
 def test_routing_disabled_preserves_full_pipeline_without_network() -> None:
-    config = FactoryConfig.model_validate(_config_dict())
-    assert config.routing.enabled is False
+    config_dict = _config_dict()
+    config_dict["routing"] = {"enabled": False}
+    config = FactoryConfig.model_validate(config_dict)
 
     wi = _work_item("WI-routing-disabled")
     profile = _default_profile()
 
-    decision = determine_route(wi, profile, config)
+    decision = determine_route(wi, profile, config, _triage())
 
     assert decision.initial_route is ExecutionRoute.FULL
     assert decision.effective_route is ExecutionRoute.FULL
@@ -254,27 +271,25 @@ def _risk_gate_config(*, risk_assessment_enabled: bool) -> FactoryConfig:
 
 
 @pytest.mark.parametrize(
-    ("explicit_risk", "enabled", "expected"),
+    ("triage_risk", "enabled", "expected"),
     [
-        (None, True, {"manual_triage", "full_l2"}),
-        (None, False, {"manual_triage", "full_l2", "single_r2"}),
+        (Risk.R0, True, {"manual_triage", "full_l2"}),
+        (Risk.R0, False, {"manual_triage", "full_l2", "single_r2"}),
         (Risk.R2, True, {"manual_triage", "full_l2"}),
         (Risk.R2, False, {"manual_triage", "full_l2", "single_r2"}),
     ],
 )
 def test_assess_safety_floors_ignores_the_approval_gate_when_risk_assessment_is_off(
-    explicit_risk: Risk | None, enabled: bool, expected: set[str]
+    triage_risk: Risk, enabled: bool, expected: set[str]
 ) -> None:
     config = _risk_gate_config(risk_assessment_enabled=enabled)
     wi = _work_item("WI-risk-gate").model_copy(
-        update={
-            "risk": explicit_risk,
-            "description": "Fix the typo in src/app.py.",
-            "acceptance_criteria": ["Check"],
-        }
+        update={"description": "Fix the typo in src/app.py.", "acceptance_criteria": ["Check"]}
     )
 
-    assert assess_safety_floors(wi, _default_profile(), config) == expected
+    assert (
+        assess_safety_floors(wi, _default_profile(), config, _triage(risk=triage_risk)) == expected
+    )
 
 
 def test_model_router_reports_no_approval_needed_when_risk_assessment_is_off() -> None:
@@ -292,16 +307,14 @@ def test_assess_safety_floors_filters_disallowed_options() -> None:
     config = FactoryConfig.model_validate(config_dict)
     profile = _default_profile()
 
-    # 1. Human approval required (Risk R2)
-    wi_r2 = _work_item("WI-risk-r2").model_copy(
-        update={"risk": Risk.R2, "acceptance_criteria": ["Check"]}
-    )
-    legal_r2 = assess_safety_floors(wi_r2, profile, config)
+    # 1. Human approval required (triage risk R2)
+    wi_r2 = _work_item("WI-risk-r2").model_copy(update={"acceptance_criteria": ["Check"]})
+    legal_r2 = assess_safety_floors(wi_r2, profile, config, _triage(risk=Risk.R2))
     assert legal_r2 == {"manual_triage", "full_l2", "full_l3"}
 
     # 2. Missing acceptance criteria
     wi_no_ac = _work_item("WI-no-ac").model_copy(update={"acceptance_criteria": []})
-    legal_no_ac = assess_safety_floors(wi_no_ac, profile, config)
+    legal_no_ac = assess_safety_floors(wi_no_ac, profile, config, _triage())
     assert legal_no_ac == {"manual_triage", "full_l2", "full_l3"}
 
     # 3. Missing verify commands
@@ -313,21 +326,21 @@ def test_assess_safety_floors_filters_disallowed_options() -> None:
         }
     )
     wi_normal = _work_item("WI-normal").model_copy(update={"acceptance_criteria": ["Check"]})
-    legal_no_verify = assess_safety_floors(wi_normal, profile, cfg_no_verify)
+    legal_no_verify = assess_safety_floors(wi_normal, profile, cfg_no_verify, _triage())
     assert legal_no_verify == {"manual_triage", "full_l2", "full_l3"}
 
     # 4. Research required label
     wi_research = _work_item("WI-research").model_copy(
         update={"labels": ["needs-research"], "acceptance_criteria": ["Check"]}
     )
-    legal_research = assess_safety_floors(wi_research, profile, config)
+    legal_research = assess_safety_floors(wi_research, profile, config, _triage())
     assert legal_research == {"manual_triage", "full_l2", "full_l3"}
 
     # 5. Full-only label
     wi_full = _work_item("WI-full").model_copy(
         update={"labels": ["full-only"], "acceptance_criteria": ["Check"]}
     )
-    legal_full = assess_safety_floors(wi_full, profile, config)
+    legal_full = assess_safety_floors(wi_full, profile, config, _triage())
     assert legal_full == {"manual_triage", "full_l2", "full_l3"}
 
     # 6. Sensitive / protected files mentioned in work item prose
@@ -337,14 +350,12 @@ def test_assess_safety_floors_filters_disallowed_options() -> None:
             "acceptance_criteria": ["Check"],
         }
     )
-    legal_protected = assess_safety_floors(wi_protected, profile, config)
+    legal_protected = assess_safety_floors(wi_protected, profile, config, _triage())
     assert legal_protected == {"manual_triage", "full_l2", "full_l3"}
 
-    # 7. Complexity floor: L2 task filters out L0 and L1 options
-    wi_l2 = _work_item("WI-l2").model_copy(
-        update={"complexity": Complexity.L2, "acceptance_criteria": ["Check"]}
-    )
-    legal_l2 = assess_safety_floors(wi_l2, profile, config)
+    # 7. Complexity floor: L2 triage filters out L0 and L1 options
+    wi_l2 = _work_item("WI-l2").model_copy(update={"acceptance_criteria": ["Check"]})
+    legal_l2 = assess_safety_floors(wi_l2, profile, config, _triage(Complexity.L2))
     assert "single_l0" not in legal_l2
     assert "single_l1" not in legal_l2
     assert "critique_l1" not in legal_l2
@@ -369,9 +380,9 @@ def test_single_legal_option_is_selected() -> None:
     profile = _default_profile()
     wi = _work_item("WI-single-option")
 
-    decision = determine_route(wi, profile, config)
+    decision = determine_route(wi, profile, config, _triage())
 
-    assert decision.source == "single_option"
+    assert decision.source == "triage"
     assert decision.selected_option == "full_l2"
     assert decision.effective_route is ExecutionRoute.FULL
 
@@ -404,18 +415,41 @@ def test_several_legal_options_pick_the_lightest_route(
     config = _enabled_routing_config()
     wi = _work_item("WI-lightest").model_copy(update=update)
 
-    decision = determine_route(wi, _default_profile(), config)
+    decision = determine_route(wi, _default_profile(), config, _triage())
 
     assert len(decision.offered_options) > 1
     assert decision.selected_option == expected_option
     assert decision.initial_route is expected_route
     assert decision.effective_route is expected_route
-    assert decision.source == "rule"
+    assert decision.source == "triage"
     assert decision.confidence == 1.0
     assert decision.probabilities is None
     assert decision.model_id is None
     assert decision.latency_ms == 0.0
     assert decision.fallback_reason is None
+
+
+@pytest.mark.parametrize(
+    ("triage", "expected_option"),
+    [
+        (_triage(Complexity.L1), "single_l1"),
+        (_triage(Complexity.L0, Risk.R1), "critique_l1"),
+        (_triage(Complexity.L2), "critique_l2"),
+        (_triage(Complexity.L1, Risk.R2), "full_l2"),
+        (_triage(Complexity.L3), "full_l3"),
+    ],
+)
+def test_triage_complexity_and_risk_set_the_route(
+    triage: TriageResult, expected_option: str
+) -> None:
+    wi = _work_item("WI-triage").model_copy(
+        update={"title": "Fix typo in README.md", "acceptance_criteria": ["Typo is gone"]}
+    )
+
+    decision = determine_route(wi, _default_profile(), _enabled_routing_config(), triage)
+
+    assert decision.selected_option == expected_option
+    assert decision.source == "triage"
 
 
 def test_lightest_route_ties_keep_configuration_order() -> None:
@@ -427,12 +461,12 @@ def test_lightest_route_ties_keep_configuration_order() -> None:
         ]
     )
 
-    decision = determine_route(_work_item("WI-tie"), _default_profile(), config)
+    decision = determine_route(_work_item("WI-tie"), _default_profile(), config, _triage())
 
     assert [opt.id for opt in decision.offered_options] == ["manual", "full_l3", "full_l2"]
     assert decision.selected_option == "full_l3"
     assert decision.selected_worker_complexity is Complexity.L3
-    assert decision.source == "rule"
+    assert decision.source == "triage"
 
 
 def test_config_with_removed_classifier_keys_still_loads() -> None:
@@ -498,10 +532,10 @@ def test_manual_triage_route_halts_in_needs_human(
         update={"routing": config.routing.model_copy(update={"enabled": True})}
     )
     store = FileRunStore(data_dir)
-    runtime = FakeAgentRuntime()
+    runtime = FakeAgentRuntime(triage=_triage_hook(Complexity.L3))
 
     # The only FULL option (L2) is below the L3 floor, so only manual triage stays legal.
-    work_item = _work_item("WI-manual").model_copy(update={"complexity": Complexity.L3})
+    work_item = _work_item("WI-manual")
     restricted = [opt for opt in config.routing.options if opt.id in {"full_l2", "manual_triage"}]
     config = config.model_copy(
         update={"routing": config.routing.model_copy(update={"options": restricted})}
@@ -523,16 +557,15 @@ def test_unattended_manual_triage_route_runs_the_full_workflow(
 ) -> None:
     config = _config(data_dir)
     config.factory.unattended = True
-    work_item = _work_item("WI-manual").model_copy(update={"complexity": Complexity.L3})
+    work_item = _work_item("WI-manual")
     restricted = [opt for opt in config.routing.options if opt.id in {"full_l2", "manual_triage"}]
     config = config.model_copy(
         update={
             "routing": config.routing.model_copy(update={"enabled": True, "options": restricted})
         }
     )
-    run = WorkflowController(config, FileRunStore(data_dir), FakeAgentRuntime()).run(
-        work_item, source_repo
-    )
+    runtime = FakeAgentRuntime(triage=_triage_hook(Complexity.L3))
+    run = WorkflowController(config, FileRunStore(data_dir), runtime).run(work_item, source_repo)
 
     assert run.state is WorkflowState.PR_READY
     assert any(attempt.role is AgentRole.IMPLEMENTER for attempt in run.attempt_records)
@@ -551,7 +584,7 @@ def test_single_route_skips_agents_and_synthesizes_artifacts(
         }
     )
     store = FileRunStore(data_dir)
-    runtime = RecordingRuntime(FakeAgentRuntime())
+    runtime = RecordingRuntime(FakeAgentRuntime(triage=_triage_hook()))
 
     controller = WorkflowController(
         config,
@@ -570,11 +603,11 @@ def test_single_route_skips_agents_and_synthesizes_artifacts(
     assert run.state is WorkflowState.PR_READY
     assert run.initial_route is ExecutionRoute.SINGLE
     assert run.effective_route is ExecutionRoute.SINGLE
-    assert run.performance.counters["route.saved_calls"] == 4
+    assert run.performance.counters["route.saved_calls"] == 3
 
-    # Verify agent invocations: only implementer
+    # Verify agent invocations: only triage and implementer
     invoked_roles = [r.role for r in runtime.requests]
-    assert AgentRole.TRIAGE not in invoked_roles
+    assert AgentRole.TRIAGE in invoked_roles
     assert AgentRole.REFINER not in invoked_roles
     assert AgentRole.RESEARCHER not in invoked_roles
     assert AgentRole.PLANNER not in invoked_roles
@@ -587,7 +620,7 @@ def test_single_route_skips_agents_and_synthesizes_artifacts(
     spec = store.load_artifact(run.id, Specification)
     plan = store.load_artifact(run.id, ExecutionPlan)
 
-    assert triage.provenance == "SYNTHESIZED"
+    assert triage.provenance == "AGENT"
     assert spec.provenance == "SYNTHESIZED"
     assert plan.provenance == "SYNTHESIZED"
 
@@ -624,10 +657,10 @@ def test_critique_route_runs_implementer_and_reviewer_only(
     assert run.state is WorkflowState.PR_READY
     assert run.initial_route is ExecutionRoute.CRITIQUE
     assert run.effective_route is ExecutionRoute.CRITIQUE
-    assert run.performance.counters["route.saved_calls"] == 3
+    assert run.performance.counters["route.saved_calls"] == 2
 
     invoked_roles = [r.role for r in runtime.requests]
-    assert AgentRole.TRIAGE not in invoked_roles
+    assert AgentRole.TRIAGE in invoked_roles
     assert AgentRole.REFINER not in invoked_roles
     assert AgentRole.PLANNER not in invoked_roles
     assert AgentRole.TESTER not in invoked_roles
@@ -667,7 +700,7 @@ def test_monotonic_ratchet_triggers(
             ),
         )
 
-    runtime = FakeAgentRuntime(implementer=multi_file_implementer)
+    runtime = FakeAgentRuntime(triage=_triage_hook(), implementer=multi_file_implementer)
 
     controller = WorkflowController(config, store, runtime)
     wi = _work_item("WI-ratchet").model_copy(
@@ -777,7 +810,7 @@ def test_finding3_derive_named_paths_and_narrow_scope_enforcement() -> None:
     config_dict["routing"] = {"enabled": True}
     config_dict["repository"]["commands"]["verify"] = ["pytest"]
     cfg = FactoryConfig.model_validate(config_dict)
-    legal = assess_safety_floors(wi_no_paths, _default_profile(), cfg)
+    legal = assess_safety_floors(wi_no_paths, _default_profile(), cfg, _triage())
     assert "single_l0" not in legal
     assert "single_l1" not in legal
 
@@ -813,7 +846,7 @@ def test_finding3_and_4_unrelated_src_changes_ratchet_to_full_review(
             ),
         )
 
-    runtime = FakeAgentRuntime(implementer=rogue_implementer)
+    runtime = FakeAgentRuntime(triage=_triage_hook(), implementer=rogue_implementer)
 
     controller = WorkflowController(config, store, runtime)
     wi = _work_item("WI-rogue").model_copy(
@@ -853,7 +886,7 @@ def test_finding6_single_and_critique_skipped_reports_semantics(
     controller = WorkflowController(
         config,
         store,
-        FakeAgentRuntime(),
+        FakeAgentRuntime(triage=_triage_hook()),
     )
     wi_single = _work_item("WI-single-rep").model_copy(
         update={"title": "Update README.md", "acceptance_criteria": ["Check README.md"]}
@@ -996,7 +1029,7 @@ def test_finding7_model_profile_validation_and_application(
         )
 
     store = FileRunStore(data_dir)
-    runtime = FakeAgentRuntime(implementer=recording_implementer)
+    runtime = FakeAgentRuntime(triage=_triage_hook(), implementer=recording_implementer)
     controller = WorkflowController(
         config_custom,
         store,
@@ -1180,6 +1213,7 @@ def test_final_review_item3_unexpected_scope_ratchets_before_replan(
 
     store = FileRunStore(data_dir)
     runtime = FakeAgentRuntime(
+        triage=_triage_hook(),
         implementer=implementer_touching_unrelated,
         tester=recording_tester,
         reviewer=recording_reviewer,
@@ -1247,7 +1281,7 @@ def test_final_review_item5_sensitive_paths_with_backticks_and_quotes() -> None:
             "acceptance_criteria": ["Pass tests"],
         }
     )
-    legal1 = assess_safety_floors(wi1, profile, config)
+    legal1 = assess_safety_floors(wi1, profile, config, _triage())
     assert "single_l0" not in legal1
     assert "critique_l1" not in legal1
 
@@ -1258,7 +1292,7 @@ def test_final_review_item5_sensitive_paths_with_backticks_and_quotes() -> None:
             "acceptance_criteria": ["Pass tests"],
         }
     )
-    legal2 = assess_safety_floors(wi2, profile, config)
+    legal2 = assess_safety_floors(wi2, profile, config, _triage())
     assert "single_l0" not in legal2
     assert "critique_l1" not in legal2
 
@@ -1279,11 +1313,9 @@ def test_final_review_item6_no_legal_full_fallback_returns_manual_triage() -> No
     config = FactoryConfig.model_validate(config_dict)
     profile = _default_profile()
 
-    # Work item with Complexity.L3: full_l2 does not satisfy L3 floor!
-    wi = _work_item("WI-l3").model_copy(
-        update={"complexity": Complexity.L3, "title": "Heavy L3 task"}
-    )
-    decision = determine_route(wi, profile, config)
+    # Triage L3: full_l2 does not satisfy the L3 floor.
+    wi = _work_item("WI-l3").model_copy(update={"title": "Heavy L3 task"})
+    decision = determine_route(wi, profile, config, _triage(Complexity.L3))
 
     # Must return MANUAL_TRIAGE even though manual_triage was not in config
     assert decision.initial_route is ExecutionRoute.MANUAL_TRIAGE
@@ -1324,7 +1356,7 @@ def test_final_review_item9_authoritative_route_decision_ratchet_and_ci_repair(
     )
 
     store = FileRunStore(data_dir)
-    runtime = FakeAgentRuntime()
+    runtime = FakeAgentRuntime(triage=_triage_hook())
     controller = WorkflowController(
         config,
         store,
@@ -1450,7 +1482,7 @@ def test_final_finding1_and_2_option_contracts_governance_terms_and_risk_floor()
             "acceptance_criteria": ["Update auth check"],
         }
     )
-    legal_auth = assess_safety_floors(wi_auth, profile, config)
+    legal_auth = assess_safety_floors(wi_auth, profile, config, _triage())
     # Neither SINGLE nor CRITIQUE options should be offered
     assert "single_l0" not in legal_auth
     assert "single_l1" not in legal_auth
@@ -1467,36 +1499,25 @@ def test_final_finding1_and_2_option_contracts_governance_terms_and_risk_floor()
                 "acceptance_criteria": ["Check changes"],
             }
         )
-        legal_term = assess_safety_floors(wi_term, profile, config)
+        legal_term = assess_safety_floors(wi_term, profile, config, _triage())
         assert "single_l0" not in legal_term
         assert "critique_l1" not in legal_term
         assert "full_l2" in legal_term
 
-    # 3. Explicit WorkItem risk as lower floor
-    # Work item with risk=R1: filters out SINGLE (R0) because R0 < R1; allows CRITIQUE (R1)
+    # 3. Triage risk as lower floor
+    # Triage risk R1: filters out SINGLE (R0) because R0 < R1; allows CRITIQUE (R1)
     wi_r1 = _work_item("WI-r1").model_copy(
-        update={
-            "title": "Update README.md",
-            "acceptance_criteria": ["Check README.md"],
-            "risk": Risk.R1,
-        }
+        update={"title": "Update README.md", "acceptance_criteria": ["Check README.md"]}
     )
-    legal_r1 = assess_safety_floors(wi_r1, profile, config)
+    legal_r1 = assess_safety_floors(wi_r1, profile, config, _triage(risk=Risk.R1))
     assert "single_l0" not in legal_r1
     assert "single_l1" not in legal_r1
     assert "critique_l1" in legal_r1
     assert "critique_l2" in legal_r1
     assert "full_l2" in legal_r1
 
-    # Work item with risk=R2: filters out SINGLE and CRITIQUE (R0, R1 < R2)
-    wi_r2 = _work_item("WI-r2").model_copy(
-        update={
-            "title": "Update README.md",
-            "acceptance_criteria": ["Check README.md"],
-            "risk": Risk.R2,
-        }
-    )
-    legal_r2 = assess_safety_floors(wi_r2, profile, config)
+    # Triage risk R2: filters out SINGLE and CRITIQUE (R0, R1 < R2)
+    legal_r2 = assess_safety_floors(wi_r1, profile, config, _triage(risk=Risk.R2))
     assert "single_l0" not in legal_r2
     assert "critique_l1" not in legal_r2
     assert "full_l2" in legal_r2
@@ -1511,44 +1532,7 @@ def test_final_finding1_and_2_option_contracts_governance_terms_and_risk_floor()
             }
         }
     )
-    legal_strict_r1 = assess_safety_floors(wi_r1, profile, strict_r1_config)
+    legal_strict_r1 = assess_safety_floors(wi_r1, profile, strict_r1_config, _triage(risk=Risk.R1))
     assert "critique_l1" not in legal_strict_r1
     assert "critique_l2" not in legal_strict_r1
     assert "full_l2" in legal_strict_r1
-
-    # 5. _synthesize_triage_result requires selected_worker_complexity and selected_risk
-    from software_agent_factory.workflow import WorkflowController
-
-    dummy_controller = WorkflowController.__new__(WorkflowController)
-    valid_decision = RouteDecision(
-        work_item_id="WI-1",
-        offered_options=[
-            RouteOption(
-                id="single_l0",
-                route=ExecutionRoute.SINGLE,
-                complexity=Complexity.L0,
-                risk=Risk.R0,
-            )
-        ],
-        selected_option="single_l0",
-        initial_route=ExecutionRoute.SINGLE,
-        effective_route=ExecutionRoute.SINGLE,
-        selected_worker_complexity=Complexity.L0,
-        selected_risk=Risk.R0,
-        source="rule",
-        request_hash="hash",
-    )
-    triage = dummy_controller._synthesize_triage_result(wi_r1, valid_decision)
-    assert triage.complexity == Complexity.L0
-    assert triage.risk == Risk.R0
-    assert triage.provenance == "SYNTHESIZED"
-
-    # Missing complexity raises ValueError
-    bad_decision_complexity = valid_decision.model_copy(update={"selected_worker_complexity": None})
-    with pytest.raises(ValueError, match="requires selected worker complexity"):
-        dummy_controller._synthesize_triage_result(wi_r1, bad_decision_complexity)
-
-    # Missing risk raises ValueError
-    bad_decision_risk = valid_decision.model_copy(update={"selected_risk": None})
-    with pytest.raises(ValueError, match="requires a selected risk"):
-        dummy_controller._synthesize_triage_result(wi_r1, bad_decision_risk)

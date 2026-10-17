@@ -201,7 +201,7 @@ repository:
     - "**/.ssh/**"
 
 routing:
-  enabled: false
+  enabled: true
   single_max_changed_files: 5
   rubric_version: "1.0"
   # Editable human policy of sensitive terms that disable short routes.
