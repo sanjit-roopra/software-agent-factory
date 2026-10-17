@@ -52,6 +52,7 @@ class RoutingAgentRuntime:
         fallback_request = request.model_copy(
             update={
                 "runtime": fallback.runtime,
+                "provider": fallback.provider,
                 "model": fallback.model,
                 "reasoning": fallback.reasoning,
                 "context_tier": fallback.context_tier,

@@ -119,12 +119,20 @@ def test_unavailable_runtime_hands_the_call_to_its_fallback_route() -> None:
     assert served.fallback is None
 
 
+def test_fallback_serves_with_its_own_provider() -> None:
+    fallback = PI_FALLBACK.model_copy(update={"provider": "openai-codex"})
+
+    _, _, served = _served_after_fallback(_request(fallback=fallback))
+
+    assert served.provider == "openai-codex"
+
+
 def test_fallback_keeps_every_other_request_field_and_the_attempt_number() -> None:
     request = _request()
 
     _, _, served = _served_after_fallback(request)
 
-    routing_fields = {"runtime", "model", "reasoning", "context_tier", "fallback"}
+    routing_fields = {"runtime", "provider", "model", "reasoning", "context_tier", "fallback"}
     assert served.model_dump(exclude=routing_fields) == request.model_dump(exclude=routing_fields)
     assert served.attempt_number == 2
 
