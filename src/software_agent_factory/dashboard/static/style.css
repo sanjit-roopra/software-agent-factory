@@ -252,6 +252,45 @@ a { color: var(--accent); }
 .call-toggle[aria-expanded="true"]::before { content: "\25BE"; content: "\25BE" / ""; }
 .call-fields { margin: 0; padding: 0.25rem 0.6rem 0.5rem 1.4rem; }
 .call-rejected > :first-child { box-shadow: inset 4px 0 0 var(--error); }
+/* Steps read as a timeline: a line down the first column, one dot per call in its outcome color. */
+.call-row > td:first-child { position: relative; padding-left: 1.6rem; white-space: nowrap; }
+.call-row > td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.call-row > td:first-child::after {
+  content: "";
+  position: absolute;
+  left: calc(0.6rem - 4px);
+  top: 0.85rem;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.call-row[data-outcome="status-ok"] > td:first-child::after { background: var(--ok); }
+.call-row[data-outcome="status-error"] > td:first-child::after { background: var(--error); }
+.call-row[data-outcome="status-warn"] > td:first-child::after { background: var(--warn); }
+.call-row[data-outcome="status-active"] > td:first-child::after { background: var(--accent); }
+.step-extra { display: block; }
+.step-extra:empty { display: none; }
+.step-extra .chip { margin-top: 0.2rem; }
+.chip-warn { color: var(--warn); border-color: var(--warn); cursor: help; }
+.duration-bar {
+  display: block;
+  height: 4px;
+  margin-top: 0.3rem;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.6;
+}
+.duration-bar[hidden] { display: none; }
+.step-offset { display: block; color: var(--text-muted); font-size: 0.75rem; }
 .timeline-total th, .timeline-total td {
   background: var(--surface-2);
   border-top: 2px solid var(--border);

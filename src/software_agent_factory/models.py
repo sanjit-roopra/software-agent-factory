@@ -945,6 +945,9 @@ class InvocationRecord(ModelBase):
     """Why the configured runtime could not serve the call, when its fallback
     did (ADR-045). ``model`` stays the configured model; ``usage`` names the
     runtime and model that served the call."""
+    transcript_path: str | None = None
+    """Run-relative path of the call's redacted event stream
+    (``calls/<n>.jsonl``), when the runtime returned one."""
 
     @model_validator(mode="before")
     @classmethod

@@ -334,6 +334,7 @@ def test_triage_artifact_parses_to_the_expected_result(monkeypatch: pytest.Monke
     result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
 
     assert result.success is True
+    assert result.transcript == _stream(_result_event(TRIAGE_JSON))
     assert result.triage_result is not None
     assert result.triage_result.model_dump(exclude={"provenance"}) == TriageResult(
         factory_eligible=True,
@@ -389,9 +390,10 @@ def test_nonzero_exit_after_a_success_result_fails(monkeypatch: pytest.MonkeyPat
         monkeypatch, _FakePopen(stdout=_stream(_result_event(TRIAGE_JSON)), returncode=1)
     )
 
-    _assert_failed(
-        ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE)), "claude exited with code 1"
-    )
+    result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))
+
+    _assert_failed(result, "claude exited with code 1")
+    assert result.transcript == _stream(_result_event(TRIAGE_JSON))
 
 
 def test_unparseable_result_text_fails_and_keeps_usage(monkeypatch: pytest.MonkeyPatch) -> None:

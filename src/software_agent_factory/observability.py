@@ -134,6 +134,7 @@ from .redaction import redact_secrets
 from .resume import resume_refusal_within
 from .setup_run import SETUP_WORKTREE_NAME
 from .store import ARTIFACT_FILENAMES
+from .transcripts import read_call_tool_calls
 
 try:
     import fcntl
@@ -468,6 +469,12 @@ class RunInvocationSummary(ModelBase):
     failure_reason: str | None = None
     usage: UsageMetrics | None = None
     performance: PerformanceRecord | None = None
+    runtime: str | None = None
+    """The runtime that served the call, from its usage; ``None`` when unknown."""
+    fallback_reason: str | None = None
+    """Raw reason the configured runtime could not serve the call (ADR-045)."""
+    tool_calls: list[dict[str, str]] = Field(default_factory=list)
+    """Tools the call used, read from the small file stored with its transcript."""
 
 
 class ActiveInvocationSummary(ModelBase):
@@ -1704,6 +1711,21 @@ def _elapsed_ms(started_at: datetime, completed_at: datetime) -> int:
     return (completed_at - started_at) // timedelta(milliseconds=1)
 
 
+def _served_runtime(invocation: InvocationRecord) -> str | None:
+    """The runtime its usage says served the call, or ``None`` when no usage names one."""
+    model_usage = invocation.usage.model_usage if invocation.usage is not None else ()
+    return next((str(usage.runtime) for usage in model_usage if usage.runtime), None)
+
+
+def _call_tool_calls(
+    store: RunStoreProtocol, run_id: str, invocation: InvocationRecord
+) -> list[dict[str, str]]:
+    """The tool calls stored with the call's transcript; none when it has no transcript."""
+    if invocation.transcript_path is None:
+        return []
+    return read_call_tool_calls(store.runs_dir / run_id, invocation.invocation_number)
+
+
 def build_run_detail(
     store: RunStoreProtocol,
     run_id: str,
@@ -1773,6 +1795,9 @@ def build_run_detail(
                 failure_reason=invocation.failure_reason,
                 usage=resolve_usage(invocation.usage) if invocation.usage is not None else None,
                 performance=invocation.performance,
+                runtime=_served_runtime(invocation),
+                fallback_reason=invocation.fallback_reason,
+                tool_calls=_call_tool_calls(store, run.id, invocation),
             )
             for invocation in run.invocation_records
         ],

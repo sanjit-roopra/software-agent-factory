@@ -23,6 +23,13 @@ redacted with :func:`software_agent_factory.redaction.redact_secrets`. They are 
 A value that is not text becomes ``None``. The health messages, remediation text,
 degraded reasons and error get the same redaction.
 
+A call's ``tool_calls`` are the one free-text field that comes from what an
+agent did: each is a tool name and a one-line preview, such as a shell command
+or a file path. They are redacted and cut like the fields above, and every
+absolute path in them is made relative: a path inside a run's worktree keeps
+only the part after the worktree, and any other absolute path keeps only its
+last part. Tool output is never sent.
+
 Nothing here composes a view model. :mod:`software_agent_factory.dashboard.view`
 adds the run totals and the next step to what these functions return.
 """
@@ -44,6 +51,7 @@ from ..models import (
     ActiveInvocationStatus,
     HaltReasonCode,
     ReviewFindingCategory,
+    RuntimeName,
 )
 from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
@@ -205,11 +213,20 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
         "failure_reason",
         "failure_reason_truncated",
         "performance",
+        "runtime",
+        "fallback_reason",
+        "tool_calls",
     }
 )
 
 #: The active call has the same shape as a finished call, without telemetry.
 ACTIVE_INVOCATION_FIELDS: frozenset[str] = INVOCATION_FIELDS - {"performance"}
+
+_RUNTIME_NAMES: frozenset[str] = frozenset(runtime.value for runtime in RuntimeName)
+
+#: Most tool calls one call sends, and the longest name or preview kept.
+MAX_CALL_TOOL_CALLS = 40
+TOOL_CALL_TEXT_LIMIT = 160
 
 #: What the provider may say about the active call. Any other value shows as
 #: ``running``.
@@ -551,6 +568,7 @@ def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         "usage": usage,
         "total_tokens": call_total_tokens(usage),
         **_reason_fields(data.get("failure_reason"), run_id),
+        **_served_fields(data, run_id),
     }
     return _redact_names(call)
 
@@ -564,6 +582,53 @@ def sanitize_invocation(raw: Any, run_id: str | None = None) -> dict[str, Any]:
     if "performance" in data:
         sanitized["performance"] = sanitize_performance(data["performance"])
     return sanitized
+
+
+#: An absolute POSIX path that does not follow a word, a dot, a colon or a slash
+#: (so the path part of a URL and a relative path stay as they are).
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.:/~])~?/(?:[^\s/'\"`]+/)*[^\s/'\"`]+")
+_IN_WORKTREE_RE = re.compile(r"/worktrees/[^/]+/(.+)")
+
+
+def _relative_path(match: re.Match[str]) -> str:
+    """A path inside a worktree from the worktree root; any other path by its last part."""
+    path = match.group(0)
+    inside = _IN_WORKTREE_RE.search(path)
+    return inside.group(1) if inside else path.rsplit("/", 1)[-1]
+
+
+def _tool_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = redact_secrets(" ".join(value.split()))
+    return _ABSOLUTE_PATH_RE.sub(_relative_path, text)[:TOOL_CALL_TEXT_LIMIT]
+
+
+def _sanitize_tool_calls(raw: Any) -> list[dict[str, str]]:
+    """Each tool call as a redacted, bounded name and one-line preview."""
+    if not isinstance(raw, list):
+        return []
+    calls = (item for item in raw[:MAX_CALL_TOOL_CALLS] if isinstance(item, dict))
+    return [
+        {"name": _tool_text(item.get("name")), "preview": _tool_text(item.get("preview"))}
+        for item in calls
+        if _tool_text(item.get("name"))
+    ]
+
+
+def _served_fields(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
+    """Which runtime served a finished call, why a fallback did, and its tool calls."""
+    runtime = data.get("runtime")
+    fallback = data.get("fallback_reason")
+    return {
+        "runtime": runtime if runtime in _RUNTIME_NAMES else None,
+        "fallback_reason": (
+            bounded_reason(fallback, run_id=run_id)[0]
+            if isinstance(fallback, str) and fallback
+            else None
+        ),
+        "tool_calls": _sanitize_tool_calls(data.get("tool_calls")),
+    }
 
 
 def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str, Any]:

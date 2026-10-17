@@ -71,6 +71,9 @@
   const TOTAL_LABEL_SPAN = 3;
   const TOTAL_LABEL = "Total";
   const OUTCOME_CELL = 3;
+  const ROLE_CELL = 1;
+  const MODEL_CELL = 2;
+  const DURATION_CELL = 4;
   const STAT_PART_CLASSES = ["stat-label", "stat-value", "stat-note", "stat-help"];
   const COPIED_TEXT = "Copied";
   const COPY_FAILED_TEXT = "Copy failed, select the text and copy it.";
@@ -1869,12 +1872,113 @@
     return [
       ["Purpose", displayValue(call.purpose, NOT_REPORTED)],
       ["Reasoning level", displayValue(call.reasoning, NOT_REPORTED)],
+      ["Runtime", displayValue(call.runtime, NOT_REPORTED)],
       ["Started", displayValue(call.started_at, NOT_REPORTED)],
       ...TOKEN_CLASSES.map(function (tokenClass) {
         return [tokenClass.label, displayNumber(usage[tokenClass.key])];
       }),
+      ...fallbackFields(call.fallback_reason),
+      ...toolCallFields(call.tool_calls),
       ...reasonFields(call.failure_reason, call.failure_reason_truncated, runId)
     ];
+  }
+
+  function fallbackFields(reason) {
+    return typeof reason === "string" && reason !== "" ? [["Why it fell back", reason]] : [];
+  }
+
+  // One line per tool the call used: its name, then what it ran or read.
+  function toolCallFields(toolCalls) {
+    const lines = asArray(toolCalls).map(function (tool) {
+      return tool.preview ? tool.name + "  " + tool.preview : tool.name;
+    });
+    return lines.length === 0 ? [] : [["Tool calls (" + lines.length + ")", lines.join("\n")]];
+  }
+
+  // ---- Run detail: step tags, runtime chips and the duration bar ----------
+
+  // A tag shows only when the call is not the usual kind: a purpose other than STANDARD,
+  // a context tier other than the default.
+  function stepTags(call) {
+    const tags = [];
+    if (typeof call.purpose === "string" && call.purpose !== "STANDARD") {
+      tags.push({ text: roleText(call.purpose).toLowerCase() });
+    }
+    if (call.context_tier === "long_context") {
+      tags.push({ text: "long context" });
+    }
+    return tags;
+  }
+
+  // The runtime that served the call, and a warning chip when a fallback served it.
+  function runtimeChips(call) {
+    const chips = [];
+    if (typeof call.runtime === "string") {
+      chips.push({ text: call.runtime });
+    }
+    if (typeof call.fallback_reason === "string" && call.fallback_reason !== "") {
+      chips.push({ text: "fell back", title: call.fallback_reason, className: "chip chip-warn" });
+    }
+    return chips;
+  }
+
+  function syncStepChips(container, chips) {
+    trimChildren(container, chips.length);
+    for (const [index, chip] of chips.entries()) {
+      const node = childAt(container, index, "span");
+      node.className = chip.className || "chip";
+      setText(node, chip.text);
+      if (chip.title) {
+        node.title = chip.title;
+      } else {
+        node.removeAttribute("title");
+      }
+    }
+  }
+
+  function startMs(call) {
+    const time = Date.parse(call.started_at);
+    return Number.isFinite(time) ? time : null;
+  }
+
+  // The first start and the longest duration among the calls, for the start offset
+  // and the width of each duration bar.
+  function stepScale(calls) {
+    const starts = calls.map(startMs).filter(function (time) { return time !== null; });
+    const durations = calls.map(function (call) { return call.duration_ms; }).filter(isFiniteNumber);
+    return {
+      firstStart: starts.length === 0 ? null : Math.min(...starts),
+      longest: durations.length === 0 ? 0 : Math.max(...durations)
+    };
+  }
+
+  function offsetText(call, scale) {
+    const begin = startMs(call);
+    if (begin === null || scale.firstStart === null) {
+      return "";
+    }
+    const offset = begin - scale.firstStart;
+    return offset > 0 ? "at +" + durationText(offset) : "at start";
+  }
+
+  function patchDurationBar(container, call, scale) {
+    const bar = childAt(container, 0, "span");
+    bar.className = "duration-bar";
+    const share = isFiniteNumber(call.duration_ms) && scale.longest > 0
+      ? call.duration_ms / scale.longest
+      : 0;
+    bar.style.width = Math.max(2, Math.round(share * 100)) + "%";
+    bar.hidden = !isFiniteNumber(call.duration_ms);
+    const offset = childAt(container, 1, "span");
+    offset.className = "step-offset";
+    setText(offset, offsetText(call, scale));
+  }
+
+  function patchStepExtras(row, call, scale) {
+    syncStepChips(row.children[ROLE_CELL].lastElementChild, stepTags(call));
+    syncStepChips(row.children[MODEL_CELL].lastElementChild, runtimeChips(call));
+    patchDurationBar(row.children[DURATION_CELL].lastElementChild, call, scale);
+    row.dataset.outcome = callOutcome(call).className;
   }
 
   // A call is two table rows: the default columns, and below them a row that holds the
@@ -1903,7 +2007,10 @@
     const detailId = CALL_MORE_ID_PREFIX + body.children.length / ROWS_PER_CALL;
     const row = body.appendChild(element("tr", "call-row"));
     for (let column = 0; column < CALL_COLUMN_COUNT; column += 1) {
-      row.appendChild(element("td"));
+      const cell = row.appendChild(element("td"));
+      if (column > 0) {
+        cell.append(element("span"), element("span", "step-extra"));
+      }
     }
     row.firstElementChild.appendChild(buildToggle(row, detailId));
     const detail = body.appendChild(element("tr", "call-detail"));
@@ -1921,7 +2028,7 @@
 
   // The same rows are reused for the same call, so an open call stays open across a
   // refresh. A different call in the slot starts closed.
-  function patchCall(row, call, runId) {
+  function patchCall(row, call, runId, scale) {
     const key = runId + "/" + displayValue(call.invocation_number);
     if (row.dataset.call !== key) {
       row.dataset.call = key;
@@ -1930,8 +2037,9 @@
     const [number, ...columns] = callCells(call);
     setText(row.firstElementChild.firstElementChild.lastElementChild, number);
     for (const [index, text] of columns.entries()) {
-      setText(row.children[index + 1], text);
+      setText(row.children[index + 1].firstElementChild, text);
     }
+    patchStepExtras(row, call, scale);
     row.children[OUTCOME_CELL].className = callOutcome(call).className;
     row.classList.toggle("call-rejected", call.failure_link === "rejected");
     const fields = row.nextElementSibling.firstElementChild.firstElementChild;
@@ -1984,8 +2092,9 @@
     const calls = [...asArray(detail.invocations), ...active];
     const body = document.getElementById("timeline-body");
     trimChildren(body, calls.length * ROWS_PER_CALL);
+    const scale = stepScale(calls);
     for (const [index, call] of calls.entries()) {
-      patchCall(callAt(body, index), call, runId);
+      patchCall(callAt(body, index), call, runId, scale);
     }
     patchTotalRow(document.getElementById("timeline-total"), detail.totals || {});
     document.getElementById("timeline-status").hidden = calls.length > 0;

@@ -141,6 +141,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
                 usage=usage,
                 performance=performance,
                 runtime_unavailable=runtime_unavailable,
+                transcript=stdout or None,
             )
 
         boot_start = time.perf_counter()
@@ -217,13 +218,14 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             )
         except ValueError as exc:
             return build_failure_result(str(exc), stdout, stderr, usage=usage, performance=perf)
-        return build_success_result(
+        success = build_success_result(
             request.role,
             purpose=request.purpose,
             artifact=artifact,
             usage=usage,
             performance=perf,
         )
+        return success.model_copy(update={"transcript": stdout})
 
     def build_command(self, request: AgentRequest) -> list[str]:
         """The ``claude`` argv; the prompt itself goes to stdin."""
