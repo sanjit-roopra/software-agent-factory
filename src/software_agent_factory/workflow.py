@@ -1895,6 +1895,11 @@ class WorkflowController:
             route = escalation_route(run)
             if route is None:
                 raise ValueError(f"run {run_id} cannot escalate from {run.state}")
+            self._require_unchanged_delivery_policy(run)
+            if self._config.merge.enabled:
+                assert self._merger is not None
+                if self._merger.validate_repository(source_repo) != run.delivery_repository:
+                    raise ValueError("delivery repository changed since this run started")
             if not self._workspace_matches(run, workspace):
                 raise ValueError(f"run {run_id} workspace is missing or changed")
             workspace.prepare()
@@ -1947,6 +1952,13 @@ class WorkflowController:
                 )
             except _Halt as halt:
                 return halt.run
+            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
+                return self._recover_interrupted_delivery(
+                    self._store.load_run(run_id),
+                    workspace,
+                    source_repo,
+                    f"escalation failed: {exc}",
+                )
         finally:
             workspace.release_lock()
 

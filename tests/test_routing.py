@@ -1662,6 +1662,9 @@ def test_escalation_refuses_a_merged_failed_or_locked_run(
     store.save_run(run.model_copy(update={"source_repo": None}))
     with pytest.raises(ValueError, match="does not record its repository"):
         controller.escalate(run.id, "note")
+    store.save_run(run.model_copy(update={"delivery_policy_fingerprint": "changed"}))
+    with pytest.raises(ValueError, match="delivery policy changed"):
+        controller.escalate(run.id, "note")
 
     store.save_run(run)
     holder = GitWorktreeWorkspace(data_dir, source_repo, run.work_item_id, branch_prefix="factory/")
@@ -1672,3 +1675,20 @@ def test_escalation_refuses_a_merged_failed_or_locked_run(
     finally:
         holder.release_lock()
     assert store.load_run(run.id).state is WorkflowState.PR_READY
+
+
+def test_escalation_that_fails_midway_stops_the_run_for_a_person(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _, _ = _escalation_controller(data_dir, Complexity.L0)
+    run = controller.run(_escalation_item("WI-escalate-crash"), source_repo)
+
+    def crash(*_args: object, **_kwargs: object) -> FactoryRun:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(controller, "_drive_synthesized", crash)
+    run = controller.escalate(run.id, "note")
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.lease is None
+    assert "escalation failed: disk full" in (run.failure_reason or "")

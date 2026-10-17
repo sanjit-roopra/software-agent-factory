@@ -236,6 +236,11 @@ def test_project_command_plans_and_executes_one_smallest_sufficient_task(
     assert "tasks: 1" in result.output
     assert "task 1: DONE" in result.output
     assert (data_dir / "projects" / "project-validation" / "project-plan.json").is_file()
+    from software_agent_factory.models import RunLaunch
+    from software_agent_factory.store import FileRunStore
+
+    (child,) = FileRunStore(data_dir).list_runs()
+    assert child.launch == RunLaunch(runtime="fake")
 
 
 def test_project_command_drops_a_blank_acceptance_criterion(
@@ -1139,6 +1144,19 @@ def test_start_once_runs_one_bounded_tick_without_touching_github(
     runs_result = runner.invoke(app, ["runs", "--data-dir", str(data_dir)])
     assert "PR_READY" in runs_result.output
     assert "tracker-acme/repo#11" in runs_result.output
+
+    from software_agent_factory.models import RunLaunch
+    from software_agent_factory.store import FileRunStore
+
+    (started,) = FileRunStore(data_dir).list_runs()
+    assert started.source_repo == str(source_repo.resolve())
+    assert started.launch == RunLaunch(runtime="fake", config_path=str(config_path.resolve()))
+    common = ["--data-dir", str(data_dir)]
+    escalated = runner.invoke(app, ["escalate", started.id, "--note", "Handle tabs too.", *common])
+    assert escalated.exit_code == 0, escalated.output
+    config_path.unlink()
+    gone = runner.invoke(app, ["escalate", started.id, "--note", "x", *common])
+    assert "config file not found" in gone.output
 
 
 def test_start_with_pi_runtime_selects_the_real_runtime(
