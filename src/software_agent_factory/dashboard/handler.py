@@ -2,9 +2,9 @@
 
 Routing, auth (cookie or header token, Host, Origin), method enforcement and security
 headers all live here. ``GET`` serves reads. The only ``POST`` routes are the approve,
-answer, retry, stop and steer actions (ADR-033, ADR-042, ADR-047): they check the transport here
-and the run in :mod:`.actions`. Nothing in this module -- or anywhere in this package --
-imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
+answer, retry, stop, steer and escalate actions (ADR-033, ADR-042, ADR-047, ADR-055): they check
+the transport here and the run in :mod:`.actions`. Nothing in this module -- or anywhere in this
+package -- imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
 ``subprocess`` or any shell helper. All data comes from the injectable
 providers in :mod:`software_agent_factory.dashboard.snapshot`.
 """
@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..models import ResumeClassification, RunListFilter
 from . import assets
-from .actions import ResumeActions, accept_action, accept_steer, accept_stop
+from .actions import ResumeActions, accept_action, accept_escalate, accept_steer, accept_stop
 from .evidence import (
     sanitize_run_checks,
     sanitize_run_diff,
@@ -166,6 +166,8 @@ _ACTION_KINDS = {
 _STOP_ACTION = "cancel"
 #: The steer route (ADR-047). It is routed only when the server can store a steer note.
 _STEER_ACTION = "steer"
+#: The escalate route (ADR-055). It is routed only when the server can start an escalation.
+_ESCALATE_ACTION = "escalate"
 #: Longest action name written to the audit log.
 _MAX_LOGGED_ACTION_LENGTH = 16
 #: Largest request body a write accepts. A body of exactly this size is accepted.
@@ -371,12 +373,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return actions.stopper is not None
         if action == _STEER_ACTION:
             return actions.steerer is not None
+        if action == _ESCALATE_ACTION:
+            return actions.escalator is not None
         return action in _ACTION_KINDS
 
     def _action_route(self) -> tuple[ResumeActions, str, str] | None:
         """The actions, run id and action name this path names, or ``None`` when it names none.
 
-        Only a server that has actions routes the approve, answer, retry, stop and steer paths.
+        Only a server that has actions routes the approve, answer, retry, stop, steer and escalate
+        paths.
         """
         actions = self.server.resume_actions
         path = self._decoded_path()
@@ -621,7 +626,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         sanitized = self._load_run(
             raw_run_id, lambda detail: run_detail_view(detail, self._resume_requests), send_body
         )
+        actions = self.server.resume_actions
         if sanitized is not None:
+            # The page offers Escalate only where this server can start one.
+            if actions is None or actions.escalator is None:
+                sanitized.pop("escalation_route", None)
             self._respond_json(HTTPStatus.OK, sanitized, send_body)
 
     def _serve_run_reason(self, raw_run_id: str, send_body: bool) -> None:
@@ -761,7 +770,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     # -- writes -----------------------------------------------------------------
 
     def _serve_action(self, actions: ResumeActions, raw_run_id: str, action_name: str) -> None:
-        """Run one approve, answer, retry, stop or steer request and write its one audit event."""
+        """Run one write request and write its one audit event."""
         body = _WriteBody(self.headers.get("Content-Length"))
         status, payload, result = self._action_outcome(actions, raw_run_id, action_name, body)
         to_drop = body.remaining_to_drain()
@@ -803,6 +812,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 payload = accept_stop(actions, raw_run_id, decoded)
             elif action_name == _STEER_ACTION:
                 payload = accept_steer(actions, raw_run_id, decoded)
+            elif action_name == _ESCALATE_ACTION:
+                payload = accept_escalate(actions, raw_run_id, decoded)
             else:
                 payload = accept_action(actions, _ACTION_KINDS[action_name], raw_run_id, decoded)
         except WriteRejected as rejected:

@@ -429,6 +429,7 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 .status-line .chip { margin-right: 0; }
+.chip.chip-failed { color: var(--error); border-color: var(--error); }
 /* With the headline hidden (a waiting run says why in its callout), keep clear of the badge. */
 .headline[hidden] + .status-line { margin-top: 0.75rem; }
 #runs-table th, #runs-table td { padding: 0.35rem 0.4rem; font-size: 0.85rem; }

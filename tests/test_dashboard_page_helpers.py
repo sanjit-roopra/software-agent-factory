@@ -613,6 +613,18 @@ _ACTIVE_RUN = {
     "active_invocation": {"role": "REVIEWER", "started_at": _minutes_before(2)},
     DURATION_MS: 63_000,
 }
+_FAILED_ESCALATION = {
+    "from_route": "SINGLE",
+    "to_route": "CRITIQUE",
+    "started_at": STARTED_AT,
+    "note": "Use the shared validator.",
+    "status": "failed",
+    "error": "workspace is locked",
+}
+_ESCALATION_TEXT = (
+    "Escalated SINGLE \u2192 CRITIQUE \u00b7 2026-10-01 10:00 UTC \u00b7 Use the shared validator."
+)
+_FAILED_ESCALATION_TEXT = _ESCALATION_TEXT + " \u00b7 failed: workspace is locked"
 _state = partial(_case, "stateCell")
 _why = partial(_case, "whyCell")
 _chips = partial(_case, "runChips")
@@ -658,7 +670,7 @@ STATUS_CASES = [
     _chips(
         "all",
         [
-            {"text": "critique", TITLE: "Route"},
+            {"text": "critique route", TITLE: "Route"},
             {"text": "unattended", TITLE: "Started with factory.unattended"},
             {"text": "2 restarts", TITLE: "Factory restarts"},
             {"text": "needs look", TITLE: "a\nb"},
@@ -674,10 +686,26 @@ STATUS_CASES = [
     _chips(
         "one-restart-and-two-word-route",
         [
-            {"text": "manual triage", TITLE: "Route"},
+            {"text": "manual triage route", TITLE: "Route"},
             {"text": "1 restart", TITLE: "Factory restarts"},
         ],
         {"initial_route": "MANUAL_TRIAGE", "restart_recoveries": 1},
+    ),
+    _chips(
+        "failed-escalation-is-a-warning-chip",
+        [{"text": "escalation failed", TITLE: _FAILED_ESCALATION_TEXT, "failed": True}],
+        {"operator_escalation": _FAILED_ESCALATION},
+    ),
+    _chips(
+        "finished-escalation",
+        [{"text": "escalated", TITLE: _ESCALATION_TEXT + " \u00b7 finished", "failed": False}],
+        {"operator_escalation": {**_FAILED_ESCALATION, "status": "done"}},
+    ),
+    _case(
+        "escalationText",
+        "refused-before-any-route",
+        "Escalation \u00b7 locked \u00b7 failed: no reason given",
+        {"status": "failed", "note": "locked"},
     ),
     _pull("none", {VALUE: DASH}, {}),
     _pull("not-https", {VALUE: DASH}, {"pull_request_url": "javascript:alert(1)"}),
@@ -767,6 +795,24 @@ STATUS_CASES = [
         _NOW,
     ),
     _status("nothing-known", [], {"outcome": {"kind": "done"}}, _NOW),
+    _status(
+        "the-run-page-shows-the-full-route",
+        [{"text": "full route", TITLE: "Route", CLASS_NAME: "chip"}],
+        {"outcome": {"kind": "done"}, "effective_route": "FULL"},
+        _NOW,
+    ),
+    _status(
+        "a-failed-escalation-is-a-red-chip",
+        [
+            {
+                "text": "escalation failed",
+                TITLE: _FAILED_ESCALATION_TEXT,
+                CLASS_NAME: "chip chip-failed",
+            }
+        ],
+        {"outcome": {"kind": "done"}, "operator_escalation": _FAILED_ESCALATION},
+        _NOW,
+    ),
     _case(
         "statusKeyOf",
         "live-part-keys-on-its-place-not-its-text",

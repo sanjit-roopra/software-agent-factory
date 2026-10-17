@@ -66,6 +66,8 @@ if TYPE_CHECKING:
     from .agents import AgentRuntime
     from .config import FactoryConfig
     from .dashboard.snapshot import (
+        EscalateRequester,
+        EscalateRequestResult,
         ResumeRequester,
         ResumeRequestReader,
         ResumeRequestResult,
@@ -78,6 +80,7 @@ if TYPE_CHECKING:
         DashboardResumeRequest,
         FactoryRun,
         InvocationRecord,
+        OperatorEscalation,
         RunLaunch,
         RuntimeName,
         ToolchainSetupPlan,
@@ -182,12 +185,20 @@ def _current_system() -> str:
     return platform.system()
 
 
+class _Failure(typer.Exit):
+    """The ``Exit`` of :func:`_fail`, which keeps its message."""
+
+    def __init__(self, message: str, code: int) -> None:
+        super().__init__(code=code)
+        self.message = message
+
+
 def _fail(message: str, *, code: int = CONFIG_ERROR_EXIT_CODE) -> typer.Exit:
     """Print ``message`` to stderr and return an ``Exit`` for the caller to
     raise. Returning rather than raising keeps ``raise _fail(...)`` explicit
     at the call site, so a reader always sees the control flow."""
     typer.echo(message, err=True)
-    return typer.Exit(code=code)
+    return _Failure(message, code)
 
 
 def _load_config(
@@ -953,37 +964,94 @@ def escalate_command(
 ) -> None:
     """Redo a run one route higher with your note, on the same branch and pull request.
 
-    The run's repository, runtime, model profile and config come from the run itself.
+    The run's repository, runtime, model profile and config come from the run itself. The
+    run's ``operator-escalation.json`` says how it went, for the dashboard.
     """
+    import os
+
+    from .redaction import redact_secrets
     from .resume import clean_steer_note
-    from .store import FileRunStore
-    from .workspace import WorkspaceError
+    from .store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
     cleaned = clean_steer_note(note)
     if cleaned is None:
         raise _fail("the note is empty, too long or holds a secret", code=FAILURE_EXIT_CODE)
     run_data_dir = _load_config(config, data_dir).data_dir
+    store = FileRunStore(run_data_dir)
     try:
-        launch = FileRunStore(run_data_dir).load_run(run_id).launch
+        record = save_escalation_start(store, run_id, cleaned, os.getpid())
     except FileNotFoundError:
         raise _fail(f"no such run: {run_id}", code=FAILURE_EXIT_CODE)
+    if record is None:
+        raise _fail(
+            f"cannot escalate run {run_id}: another escalation of it still runs",
+            code=FAILURE_EXIT_CODE,
+        )
+    try:
+        run = _escalate(store, run_data_dir, run_id, cleaned)
+    except Exception as exc:
+        # The page names the run, so the record keeps only why.
+        error = (
+            exc.message.removeprefix(f"cannot escalate run {run_id}: ")
+            if isinstance(exc, _Failure)
+            else f"{type(exc).__name__}: {exc}"
+        )
+        failed = record.model_copy(update={"status": "failed", "error": redact_secrets(error)})
+        store.save_artifact(run_id, failed, OPERATOR_ESCALATION_FILENAME)
+        raise
+    done = record.model_copy(update={"status": "done"})
+    store.save_artifact(run_id, done, OPERATOR_ESCALATION_FILENAME)
+    _report_run(store, run)
+
+
+def save_escalation_start(
+    store: FileRunStore, run_id: str, note: str, pid: int
+) -> OperatorEscalation | None:
+    """Record that process ``pid`` escalates ``run_id`` now (ADR-055), and return the record.
+
+    Returns ``None`` and writes nothing when another process still escalates the run. A
+    missing run raises ``FileNotFoundError``.
+    """
+    from .models import OperatorEscalation
+    from .observability import load_operator_escalation
+    from .resume import escalation_route
+    from .store import OPERATOR_ESCALATION_FILENAME
+
+    run = store.load_run(run_id)
+    last = load_operator_escalation(store, run_id)
+    if last is not None and last.status == "running" and last.pid != pid:
+        return None
+    record = OperatorEscalation(
+        from_route=None if run.route_decision is None else run.route_decision.effective_route,
+        to_route=escalation_route(run),
+        note=note,
+        pid=pid,
+    )
+    store.save_artifact(run_id, record, OPERATOR_ESCALATION_FILENAME)
+    return record
+
+
+def _escalate(store: FileRunStore, data_dir: Path, run_id: str, note: str) -> FactoryRun:
+    """Build the controller the run started with and escalate the run."""
+    from .workspace import WorkspaceError
+
+    refused = f"cannot escalate run {run_id}"
+    launch = store.load_run(run_id).launch
     if launch is None:
         raise _fail(
-            f"cannot escalate run {run_id}: it was started before runs recorded their settings",
+            f"{refused}: it was started before runs recorded their settings",
             code=FAILURE_EXIT_CODE,
         )
     launch_config = None if launch.config_path is None else Path(launch.config_path)
-    factory_config = _load_config(launch_config, run_data_dir, launch.model_profile)
-    store, controller = _synchronous_controller(
-        RuntimeChoice(launch.runtime), factory_config, launch
-    )
+    factory_config = _load_config(launch_config, data_dir, launch.model_profile)
+    _, controller = _synchronous_controller(RuntimeChoice(launch.runtime), factory_config, launch)
     try:
-        run = controller.escalate(run_id, cleaned)
+        run: FactoryRun = controller.escalate(run_id, note)
     except FileNotFoundError:
-        raise _fail(f"run {run_id} has no saved plan", code=FAILURE_EXIT_CODE)
+        raise _fail(f"{refused}: it has no saved plan", code=FAILURE_EXIT_CODE)
     except (ValueError, WorkspaceError) as exc:
-        raise _fail(f"cannot escalate run {run_id}: {exc}", code=FAILURE_EXIT_CODE)
-    _report_run(store, run)
+        raise _fail(f"{refused}: {exc}", code=FAILURE_EXIT_CODE)
+    return run
 
 
 @app.command("doctor")
@@ -1233,6 +1301,56 @@ def build_steer_requester(store: FileRunStore) -> SteerRequester:
     return steer
 
 
+def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
+    """The requester of the dashboard's escalate route: a detached ``factory escalate``.
+
+    The dashboard never drives a run, so the escalation runs as its own process that outlives
+    the request. It records the escalation as running at once, so the page shows it and offers
+    no second one. The command records how it went (ADR-055).
+    """
+    import subprocess
+    import threading
+
+    from .models import OperatorEscalation
+    from .observability import load_operator_escalation
+    from .resume import escalation_route
+    from .store import OPERATOR_ESCALATION_FILENAME
+
+    one_at_a_time = threading.Lock()
+
+    def escalate(run_id: str, note: str) -> EscalateRequestResult:
+        with one_at_a_time:
+            try:
+                last = load_operator_escalation(store, run_id)
+                if escalation_route(store.load_run(run_id)) is None or (
+                    last is not None and last.status == "running"
+                ):
+                    return "not_escalatable"
+            except (FileNotFoundError, ValueError):
+                return "run_missing"
+            # ``--note=`` keeps a note that starts with a dash from reading as an option.
+            command = [sys.executable, "-m", "software_agent_factory", "escalate", run_id]
+            command += [f"--note={note}", "--data-dir", str(data_dir)]
+            try:
+                child = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                failed = OperatorEscalation(note=note, status="failed", error=str(exc))
+                store.save_artifact(run_id, failed, OPERATOR_ESCALATION_FILENAME)
+                return "started"
+            save_escalation_start(store, run_id, note, child.pid)
+        # Reap the child when it ends, so its pid reads as gone.
+        threading.Thread(target=child.wait, daemon=True).start()
+        return "started"
+
+    return escalate
+
+
 def build_stop_requester(store: FileRunStore) -> StopRequester:
     """The requester of the dashboard's stop route."""
 
@@ -1390,8 +1508,9 @@ def dashboard_command(
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and five ``POST`` routes that queue an approval, plan answers, a
-    publish retry, a stop or a steer note for the factory. It is protected by a token generated
+    and six ``POST`` routes that queue an approval, plan answers, a
+    publish retry, a stop or a steer note for the factory, or start an escalation. It is
+    protected by a token generated
     for this process; the tokenized URL is printed to stdout once and never
     written to the log.
     Ctrl-C stops it and closes the socket.
@@ -1569,6 +1688,7 @@ def dashboard_command(
                     reply_policy=reply_policy,
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
+                    escalator=build_escalator(store, factory_config.data_dir),
                 ),
                 host=LOOPBACK_HOST,
                 port=port,
@@ -1579,7 +1699,8 @@ def dashboard_command(
 
     typer.echo(f"dashboard: {server.dashboard_url}")
     typer.echo(
-        "loopback only. it can queue an approval, answers, a retry, a stop or a note. "
+        "loopback only. it can queue an approval, answers, a retry, a stop or a note, "
+        "or escalate a run. "
         "press Ctrl-C to quit."
     )
     if open_browser:

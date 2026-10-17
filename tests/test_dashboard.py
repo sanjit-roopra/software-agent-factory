@@ -4284,3 +4284,27 @@ def test_the_etag_counts_clock_fields_in_whole_minutes() -> None:
     assert _etag(answer(120.0, "2026-10-17T00:48:59Z")) != same_minute
     assert _etag(answer(61.0, "2026-10-17T00:49:00Z")) != same_minute
     assert _etag({"idle_seconds": None}) != _etag({"idle_seconds": 0})
+
+
+def test_the_operator_escalation_is_kept_with_its_note_and_error_redacted() -> None:
+    escalation = {
+        "from_route": "SINGLE",
+        "to_route": "CRITIQUE",
+        "started_at": "2026-10-01T10:00:00Z",
+        "status": "failed",
+        "note": "fine",
+        "error": f"lock held {GH_SECRET}",
+        "schema_version": 1,
+    }
+
+    kept = sanitize_run_summary({"run_id": "r", "operator_escalation": escalation})
+
+    assert kept["operator_escalation"]["status"] == "failed"
+    assert kept["operator_escalation"]["to_route"] == "CRITIQUE"
+    assert "ghp_" not in kept["operator_escalation"]["error"]
+    assert "schema_version" not in kept["operator_escalation"]
+    bad = {**escalation, "status": "lost"}
+    assert (
+        sanitize_run_summary({"run_id": "r", "operator_escalation": bad}).get("operator_escalation")
+        is None
+    )

@@ -1132,6 +1132,7 @@ def test_each_conflict_reason_has_the_message_the_plan_names() -> None:
         "wrong_action": "this run needs a different action, reload the page",
         "expired": "approval expired, approve again",
         "not_active": "this run has already finished",
+        "not_escalatable": "this run cannot escalate now, reload the page",
     }
     run_changed = {"stale_episode", "stale_fingerprint", "not_waiting"}
     assert set(re.findall(r"(\w+): RUN_CHANGED_TEXT", literal)) == run_changed
@@ -2285,9 +2286,42 @@ def test_another_run_starts_the_steer_box_empty() -> None:
     assert "Note saved for the next agent call." in send
 
 
-def test_steer_refusals_have_their_own_words() -> None:
+def test_the_escalate_box_names_the_route_and_shows_only_when_the_run_can_escalate() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert '<section id="run-escalate" class="card steer"' in html
+    assert re.search(r'<textarea id="run-escalate-note" rows="3" maxlength="2000"', html)
+    assert '<span id="run-escalate-status" class="retry-note" role="status"></span>' in html
+    assert 'escalateControls().send.addEventListener("click", onEscalateSend)' in _JS
+    render = function_source(_JS, "renderEscalateControl")
+    assert 'const key = runId !== null && route !== "" ? runId : "";' in render
+    assert 'controls.send.textContent = "Escalate to " + route;' in render
+    assert 'controls.box.hidden = key === "";' in render
+    assert "renderEscalateControl(detail, runId);" in _JS
+    send = function_source(_JS, "onEscalateSend")
+    assert "action: ESCALATE_ACTION" in send
+    assert "payload: { note: note.value }" in send
+
+
+def test_the_run_page_shows_the_last_escalation_at_the_top_in_its_tone() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert '<p id="run-escalation" class="headline" role="status" hidden></p>' in html
+    assert 'const ESCALATION_TONES = { running: "active", done: "done", failed: "failed" };' in _JS
+    render = function_source(_JS, "renderEscalationLine")
+    assert "ESCALATION_TONES[escalation.status]" in render
+    assert "line.hidden = tone === undefined;" in render
+    assert 'line.className = "headline headline-" + tone;' in render
+    assert "setText(line, escalationText(escalation));" in render
+    assert "renderEscalationLine(detail.operator_escalation);" in _JS
+    # A failed escalation is a red chip on the run page and in the run list.
+    assert re.search(
+        r"\.chip\.chip-failed\s*\{\s*color:\s*var\(--error\)", dashboard_assets.STYLE_CSS
+    )
+
+
+@pytest.mark.parametrize("action", ["steer", "escalate"])
+def test_steer_refusals_have_their_own_words(action: str) -> None:
     calls = [
-        JsCall("failureMessage", ({"status": 400, "body": {}}, "steer")),
+        JsCall("failureMessage", ({"status": 400, "body": {}}, action)),
         JsCall(
             "failureMessage",
             ({"status": 409, "body": {"reason": "existing_request"}}, "steer"),
