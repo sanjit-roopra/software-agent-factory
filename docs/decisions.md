@@ -1,5 +1,76 @@
 # Architecture Decisions
 
+## ADR-047: The dashboard shows what the agent did, and can stop or steer a run
+
+Status: accepted on 2026-10-16. This amends ADR-016 and ADR-033.
+The code lands in later dashboard slices. This record only sets the rules they must follow.
+
+### Context
+
+ADR-016 and ADR-033 keep command logs, diffs, prompts and raw artifacts out of the dashboard.
+ADR-033 also bans cancel and any write other than the named actions.
+The operator sees that a run failed, but not what the agent did, what it changed, which check failed or what the reviewer said.
+To learn that, the operator opens the terminal and reads files in the run directory.
+When an agent is stuck, the operator cannot stop it or tell it what to do from the page.
+
+### Decision: data that can reach the dashboard
+
+These kinds of text can now reach the browser:
+
+| Data | Source | Cap |
+| --- | --- | --- |
+| Agent trace | One event file per agent call in the run directory | 400 characters per event, the last 2,000 events per call |
+| Diff | The saved `patch.diff` of an attempt | 256 KB per attempt |
+| Check output | The output of each verification and CI command | The last 80 lines and at most 8 KB per command |
+| Review text | Findings, suggested changes and dispositions of each review round | 2,000 characters per field |
+| Plan and change set | The allowlisted fields of the saved plan and change set | 2,000 characters per field, 200 items per list |
+| Prompts | The prompt of each agent call | 100 KB per prompt, and only when `dashboard.show_prompts` is on |
+
+The same rules hold for all of them:
+
+- The sanitizer runs `redact_secrets` over the full text before any cut, as ADR-033 says.
+- A cut keeps the start and the end of the text where that helps, and a marker names the cut.
+  For check output and the trace, the end is kept, since the failure is near the end.
+- Each kind has its own `GET` route per run, such as `/api/runs/<id>/diff`.
+  The run list, the snapshot and health never carry this text.
+  The run detail carries counts and short one-line previews only.
+- Each route has its own field allowlist in the sanitizer, as ADR-016 asks.
+- Prompts are off by default. A prompt holds the most repository content, so the operator turns it on with intent.
+- The factory writes these files to the data directory only. Nothing leaves the machine.
+
+The loopback bind, the per-start token and the cookie rules of ADR-033 do not change.
+
+### Decision: cancel and steer
+
+ADR-033 bans cancel. Two new write actions replace that rule:
+
+- **Stop** asks the factory to stop a run. The route is `POST /api/runs/<id>/cancel`.
+  The service kills the process group of the agent call, keeps the commits and halts the run for a person with `MANUAL_INSPECTION`.
+  `factory cancel <run>` does the same from the terminal.
+- **Steer** adds a short note from the operator to the next prompt of a run. The route is `POST /api/runs/<id>/steer`.
+  It works on an active run and on a halted run.
+  The note is at most 2,000 characters. The route refuses a note that holds a secret, as ADR-033 does for plan answers.
+  The service adds the note as a marked operator section. The agent sees it at its next call, not in the middle of a call.
+
+Both actions follow the write path of ADR-033:
+
+- The dashboard creates one create-only request file in the run directory and never writes `run.json`.
+- The factory service ingests the request and is the only writer of `run.json`.
+- A `POST` needs the token header, the exact `Origin` and a JSON body of at most 16 KB.
+- The receipt records the source `dashboard`, the time and the action.
+
+Reconfigure and any other write stay banned. A new write still needs a new ADR.
+
+### Consequences
+
+- The operator can see what the agent did, what it changed and why a check or a review failed, on one page.
+- A secret that the patterns miss can now leak in more kinds of text, and in larger amounts.
+  The risk stays on the operator's machine, behind loopback and the token, as ADR-033 accepts.
+- Diffs and prompts carry repository content to the browser. A private repository is then readable by anything that holds the dashboard cookie.
+- Stop and steer give anyone who can write the run directory two more ways to change a run.
+  This is the same trust boundary as ADR-033: anyone who can write there can already edit `run.json`.
+- A stopped run keeps its commits, so the operator can inspect or resume it.
+
 ## ADR-046: The dashboard can show a run's full failure reason
 
 Status: accepted on 2026-10-16. This amends ADR-033.
@@ -639,7 +710,7 @@ Consequences:
 ## ADR-033: The dashboard may request a resume
 
 Status: accepted on 2026-10-01 for the data minimization part and the write path part.
-This amends ADR-016. It extends ADR-024 and ADR-026. Amended by ADR-035.
+This amends ADR-016. It extends ADR-024 and ADR-026. Amended by ADR-035 and ADR-047.
 
 ### Data minimization
 
@@ -1602,6 +1673,8 @@ so the default offline run does not demand tools it will never call.
 ADR-033 amends the data minimization rule below: the dashboard now shows
 redacted failure reasons. ADR-033 also replaces the read-only rule below with
 two named write actions that only create a request file.
+ADR-047 lets redacted, capped traces, diffs, check output, review text and
+prompts reach the dashboard, and adds the stop and steer actions.
 
 `AGENTS.md` bans a web dashboard in V1. One narrow exception is granted.
 Inspecting runs, states, attempts, and metrics by reading JSON files is worse
