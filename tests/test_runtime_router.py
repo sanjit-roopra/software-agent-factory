@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from factory_testing import build_config, work_item
+from pydantic import BaseModel
 
 from software_agent_factory import cli
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
@@ -15,6 +16,7 @@ from software_agent_factory.models import (
     AgentRole,
     Complexity,
     ModelUsage,
+    RuntimeFallback,
     RuntimeName,
     UsageMetrics,
     WorkflowState,
@@ -96,6 +98,27 @@ def test_each_role_runs_on_the_runtime_it_names(
         AgentRole.REVIEWER: RuntimeName.COPILOT,
     }
     assert len(built) == len(set(built))  # each runtime built once
+
+
+def test_role_providers_reach_the_agent_requests(source_repo: Path, data_dir: Path) -> None:
+    payload = build_config(data_dir).model_dump(mode="json")
+    payload["models"]["triage"]["provider"] = "anthropic"
+    for worker in payload["models"]["workers"].values():
+        worker["provider"] = "openai-codex"
+    config = FactoryConfig.model_validate(payload)
+    providers: dict[AgentRole, str | None] = {}
+    fake = FakeAgentRuntime()
+
+    class Recording:
+        def run(self, request: AgentRequest) -> AgentResult:
+            providers[request.role] = request.provider
+            return fake.run(request)
+
+    WorkflowController(config, FileRunStore(data_dir), Recording()).run(work_item(), source_repo)
+
+    assert providers[AgentRole.TRIAGE] == "anthropic"
+    assert providers[AgentRole.IMPLEMENTER] == "openai-codex"
+    assert providers[AgentRole.REVIEWER] is None
 
 
 def test_fake_runtime_ignores_role_runtimes(
@@ -194,6 +217,45 @@ def test_escalation_treats_a_runtime_change_as_a_new_model(data_dir: Path) -> No
 def test_claude_code_role_rejects_an_unknown_effort() -> None:
     with pytest.raises(ValueError, match="runtime claude-code accepts reasoning"):
         RoleModelConfig(model="claude-opus-5", reasoning="minimal", runtime="claude-code")
+
+
+def test_escalation_treats_a_provider_change_as_a_new_model(data_dir: Path) -> None:
+    payload = build_config(data_dir, same_model_attempts=2).model_dump(mode="json")
+    payload["models"]["workers"]["L3"]["provider"] = "openai-codex"
+    router = ModelRouter(FactoryConfig.model_validate(payload))
+
+    selected = router.model_for_implementer(Complexity.L2, 3)
+
+    assert selected is not None
+    assert selected.provider == "openai-codex"
+
+
+@pytest.mark.parametrize("model", [RoleModelConfig, RuntimeFallback])
+def test_provider_is_rejected_on_a_runtime_other_than_pi(model: type[BaseModel]) -> None:
+    with pytest.raises(ValueError, match="provider is a pi setting"):
+        model.model_validate(
+            {"model": "gpt-6", "reasoning": "high", "runtime": "copilot", "provider": "openai"}
+        )
+
+
+def test_doctor_pi_providers_cover_pi_roles_and_fallbacks(data_dir: Path) -> None:
+    payload = build_config(data_dir).model_dump(mode="json")
+    payload["models"]["workers"]["L3"].update(runtime="pi", provider="openai-codex")
+    payload["models"]["planner"]["fallback"] = {
+        "runtime": "pi",
+        "model": "gpt-6",
+        "reasoning": "high",
+        "provider": "anthropic",
+    }
+    config = FactoryConfig.model_validate(payload)
+
+    assert config.pi_providers_for(None) == frozenset()
+    assert config.pi_providers_for(RuntimeName.COPILOT) == {"openai-codex", "anthropic"}
+    assert config.pi_providers_for(RuntimeName.PI) == {
+        "openai-codex",
+        "anthropic",
+        "github-copilot",
+    }
 
 
 def test_doctor_runtimes_cover_roles_and_the_default(data_dir: Path) -> None:

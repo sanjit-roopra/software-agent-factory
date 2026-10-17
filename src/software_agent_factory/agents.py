@@ -101,6 +101,8 @@ class AgentRequest(ModelBase):
     context_tier: ContextTier = ContextTier.DEFAULT
     runtime: RuntimeName | None = None
     """The runtime that serves this call; ``None`` uses ``--runtime`` (ADR-045)."""
+    provider: str | None = None
+    """The pi provider for this call; ``None`` uses ``pi.provider``."""
     fallback: RuntimeFallback | None = None
     """Serves this call once when ``runtime`` reports itself unavailable."""
     work_item: WorkItem

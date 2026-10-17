@@ -355,6 +355,12 @@ Before a run starts, `factory doctor` and the run check still require the execut
 The invocation record keeps the configured model and stores the first runtime's failure reason as `fallback_reason`.
 Its usage names the runtime and model that served the call.
 
+Amendment on 2026-10-17 (per-role pi provider): a role or a fallback on pi can set `provider`.
+Without it, the call uses `pi.provider`. A role or a fallback on another runtime cannot set it.
+The pi runtime passes the provider with `--provider`, keys the session on it and keeps only that provider's credential variables.
+A provider change counts as a new model for escalation.
+`factory doctor` checks for a credential for every provider that a pi role or a pi fallback uses.
+
 ## ADR-044: Unattended projects continue past a task that did not merge
 
 Status: accepted on 2026-10-04.

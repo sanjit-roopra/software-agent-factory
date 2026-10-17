@@ -199,8 +199,13 @@ def test_project_planner_request_carries_the_configured_fallback(
     factory_data_dir: Path,
 ) -> None:
     payload = build_config(factory_data_dir).model_dump(mode="json")
-    fallback = {"runtime": "pi", "model": "mai-code-1.1-flash", "reasoning": "high"}
-    payload["models"]["planner"]["fallback"] = fallback
+    fallback = {
+        "runtime": "pi",
+        "model": "mai-code-1.1-flash",
+        "reasoning": "high",
+        "provider": "openai-codex",
+    }
+    payload["models"]["planner"].update(fallback=fallback, provider="anthropic")
     decompositions: list[AgentRequest] = []
 
     def planner(request: AgentRequest) -> AgentResult:
@@ -222,6 +227,7 @@ def test_project_planner_request_carries_the_configured_fallback(
 
     runner.run(brief, factory_source_repo)
 
+    assert decompositions[0].provider == "anthropic"
     assert decompositions[0].fallback is not None
     assert decompositions[0].fallback.model_dump(mode="json", exclude={"context_tier"}) == fallback
 
