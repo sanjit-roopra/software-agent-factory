@@ -161,20 +161,20 @@ def _config(
                     "L3": {"model": "claude-opus-5", "reasoning": "high"},
                 },
                 "tester": {"model": "claude-sonnet-5", "reasoning": "high"},
-                "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
+                "reviewer": {"model": "gpt-6.1-sol", "reasoning": "high"},
             },
             "model_profiles": {
                 "economy": {
-                    "triage": {"model": "gpt-5.6-luna", "reasoning": "medium"},
-                    "planner": {"model": "gpt-5.6-terra", "reasoning": "high"},
+                    "triage": {"model": "gpt-6-luna", "reasoning": "medium"},
+                    "planner": {"model": "gpt-6-sol", "reasoning": "high"},
                     "workers": {
                         "L0": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
-                        "L1": {"model": "gemini-3.8-flash", "reasoning": "medium"},
+                        "L1": {"model": "mai-code-1.1-flash", "reasoning": "medium"},
                         "L2": {"model": "claude-sonnet-5", "reasoning": "high"},
                         "L3": {"model": "claude-opus-5", "reasoning": "high"},
                     },
-                    "tester": {"model": "gemini-3.8-flash", "reasoning": "high"},
-                    "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
+                    "tester": {"model": "mai-code-1.1-flash", "reasoning": "high"},
+                    "reviewer": {"model": "gpt-6.1-sol", "reasoning": "high"},
                 }
             },
             "repository": {

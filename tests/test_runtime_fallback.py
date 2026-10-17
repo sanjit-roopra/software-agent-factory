@@ -32,7 +32,7 @@ Hook = Callable[[AgentRequest], AgentResult]
 
 PI_FALLBACK = RuntimeFallback(
     runtime=RuntimeName.PI,
-    model="gpt-5.6-terra",
+    model="gpt-6-sol",
     reasoning="medium",
     context_tier=ContextTier.LONG_CONTEXT,
 )

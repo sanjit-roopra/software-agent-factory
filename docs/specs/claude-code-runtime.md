@@ -85,7 +85,7 @@ models:
       runtime: claude-code
       model: claude-opus-5-5
       reasoning: high
-      fallback: {runtime: pi, model: gpt-5.6-terra, reasoning: high}
+      fallback: {runtime: pi, model: gpt-6.1-sol, reasoning: high}
 ```
 
 - `fallback` has `runtime`, `model`, `reasoning` and optional `context_tier`. It has no

@@ -20,58 +20,52 @@ There is no single best model across every factory role.
 
 | Need | Strong candidates | Why |
 | --- | --- | --- |
-| Lowest-cost mechanical work | `mai-code-1.1-flash`, `gpt-5.6-luna` | Both cost about $0.016 for the illustrative small call below. MAI is coding-specialized. Luna has broader reasoning evidence. |
-| Cost-effective implementation | `gemini-3.8-flash`, `gpt-5.6-terra` | Gemini 3.8 has unusually strong DeepSWE results for its measured task cost. Terra offers broader reasoning evidence and selectable long context. |
-| Hard implementation | `gpt-6-astra`, `claude-opus-5` | Astra leads the current DeepSWE comparison. Opus remains a strong lower-cost frontier alternative. |
+| Lowest-cost mechanical work | `gpt-6-luna`, `mai-code-1.1-flash` | Luna costs about $0.0075 for the illustrative small call below, half the MAI price. MAI is coding-specialized. |
+| Cost-effective implementation | `gpt-6-luna` at `high` | Lowest price with a 1M window. No exact DeepSWE score was found yet, so validate it locally. |
+| Hard implementation | `gpt-6.1-sol`, `gpt-6-astra` | Sol costs a fifth of Astra. Astra leads the current DeepSWE comparison. |
 | Hard planning and novel reasoning | `gpt-6-astra`, `claude-opus-5` | Strongest current reasoning and agentic evidence, but expensive. |
-| Web research and synthesis | `claude-opus-5`, then `gpt-5.6-sol` | Best available exact-model BrowseComp and synthesis evidence, with major benchmark setup caveats. |
-| Cost-effective testing experiment | `gemini-3.8-flash`, `gpt-5.6-terra` | Attractive economics and coding evidence, but weaker Terminal-Bench 4 results than the frontier models. Validate locally before adopting. |
-| High-value final review | `gpt-5.6-sol` | Best independent audit-and-correct-patch evidence among the generally available exact models reviewed. |
+| Web research and synthesis | `claude-opus-5` | Best available exact-model BrowseComp and synthesis evidence, with major benchmark setup caveats. |
+| Cost-effective testing experiment | `gpt-6-luna` | Lowest price. No exact Terminal-Bench 4 score was found yet. Validate locally before adopting. |
+| High-value final review | `claude-sonnet-5.5` | A different family from the GPT workers, at the same price as `gpt-6.1-sol`. |
 | Security-focused testing | `claude-opus-5`, then `gpt-6-astra` | Opus has stronger disclosed prompt-injection resistance. Astra is an optional offensive second pass for high-risk changes. |
 | Untrusted-repository review | `claude-opus-5` has the strongest published prompt-injection result | This conflicts with the factory's reviewer-family rule when any Claude worker is configured. Use it as a separate specialist or change the worker families. |
 
-The strongest public autonomous-coding cluster is currently **GPT-6 Astra,
-Gemini 3.8 Flash, Claude Opus 5 and GPT-5.6 Sol**. Their best DeepSWE v1.1
-scores overlap statistically, so the ranking does not establish one universal
-winner. Price differs by more than an order of magnitude, which makes a local
-bakeoff more useful than selecting the top headline score.
+The strongest public autonomous-coding results are currently **GPT-6 Astra and
+Claude Opus 5**. Their best DeepSWE v1.1 scores overlap statistically, so the
+ranking does not establish one winner. No exact benchmark scores were found
+yet for GPT-6 Luna, GPT-6.1 Sol or the Claude 5.5 models. A local bakeoff is
+more useful than selecting the top headline score.
 
 The packaged `default` profile is:
 
 ```yaml
 models:
-  triage:     { model: "gpt-5.6-terra",        reasoning: "medium", context_tier: "default" }
-  planner:    { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
+  triage:     { model: "gpt-6-luna",        reasoning: "low",    context_tier: "default" }
+  planner:    { model: "gpt-6.1-sol",       reasoning: "high",   context_tier: "default" }
   workers:
-    L0:       { model: "mai-code-1.1-flash",   reasoning: "medium", context_tier: "default" }
-    L1:       { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
-    L2:       { model: "claude-sonnet-5",      reasoning: "high",   context_tier: "default" }
-    L3:       { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
-  tester:     { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
-  reviewer:   { model: "gpt-5.6-sol",          reasoning: "high",   context_tier: "default" }
+    L0:       { model: "gpt-6-luna",        reasoning: "medium", context_tier: "default" }
+    L1:       { model: "gpt-6-luna",        reasoning: "high",   context_tier: "default" }
+    L2:       { model: "gpt-6.1-sol",       reasoning: "high",   context_tier: "default" }
+    L3:       { model: "gpt-6.1-sol",       reasoning: "xhigh",  context_tier: "default" }
+  tester:     { model: "gpt-6-luna",        reasoning: "medium", context_tier: "default" }
+  reviewer:   { model: "claude-sonnet-5.5", reasoning: "high",   context_tier: "default" }
 ```
 
-It keeps cheap models on L0/L1 and testing, retains Claude for planning and
-complex implementation, and uses Sol for an independent final review.
+It uses Luna for cheap work and Sol for planning and complex implementation.
+Every role runs on `--runtime`. The reviewer is a Claude model, so its family
+differs from every GPT worker.
 
-The packaged `economy` profile reduces frontier-model use while retaining Sol
-for the final security-sensitive gate:
+The packaged `economy` profile uses `gpt-6-luna` for every role except the
+reviewer, which stays `claude-sonnet-5.5`.
 
-```yaml
-model_profiles:
-  economy:
-    triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
-    planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
-    workers:
-      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
-      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-      L2:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-      L3:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-    tester:     { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
-```
+The packaged `mixed` profile runs the planner (`opus`) and the reviewer
+(`sonnet`) on Claude Code at `high`. It runs triage, the workers and the tester
+on pi with the same Luna and Sol choices as the default. Each role names its
+runtime, so `--runtime` does not change this profile.
 
-Select it with `--model-profile economy` on `run`, `project`, `start`,
+The packaged `claude` profile uses Claude Code aliases for every role.
+
+Select a profile with `--model-profile <name>` on `run`, `project`, `start`,
 `doctor`, `skill refresh` or `service install`. Profiles are complete routing
 tables, not partial overlays.
 
@@ -79,18 +73,8 @@ Adaptive execution routing can also select a profile per route option with `rout
 When an option specifies a profile name from `model_profiles`, implementation attempts use the workers from that profile.
 If omitted or set to `default`, implementation attempts use the default models.
 
-Gemini 3.8 Flash is intentional here. In the illustrative pricing comparison,
-its call costs 5.63 credits versus 15.00 for Sonnet 5 and 16.00 for Terra.
-Sonnet has stronger directly reported research evidence, but that evidence used
-a much richer research test framework than the factory's allowlisted `web_fetch`-only
-skill-generation call. Gemini at medium effort provides a materially cheaper
-economy choice with stronger general and long-document proxies than the minimum-cost
-Luna or GPT-5 mini alternatives. Re-evaluate after Gemini's promotional pricing
-ends.
-
-This candidate requires Copilot Pro+ or another plan that includes Opus 5,
-GPT-5.5 and GPT-5.6 Sol. On Copilot Pro, use only rows marked `Yes` in the
-price table and re-check the reviewer-family constraint.
+Check that the account lists `gpt-6.1-sol` and `claude-sonnet-5.5` before a
+real run with the defaults.
 
 ## How Copilot billing works
 
@@ -135,8 +119,8 @@ Official sources:
 
 Organization policy, rollout state and account eligibility can still hide a
 model even when GitHub's global documentation lists it as generally available.
-The packaged factory defaults use Claude Opus 5 and GPT-5.6 Sol. Copilot Pro
-alone is not sufficient for a real run with unchanged defaults.
+The packaged factory defaults use GPT-6.1 Sol and Claude Sonnet 5.5. Check
+that the account can select both before a real run.
 
 ## Available model and price table
 
@@ -154,15 +138,13 @@ larger outputs, hidden reasoning tokens, cache effects and long-context rates.
 
 | Model | Factory selector | Pro | Selectable 1M | Reasoning levels | Price I/C/W/O | Illustrative call |
 | --- | --- | :---: | :---: | --- | --- | ---: |
+| GPT-6 Luna | `gpt-6-luna` | - | Yes | low, medium, high, xhigh, max | $0.10 / $0.01 / $0.125 / $0.50 | $0.0075 / 0.75 credits |
+| GPT-6.1 Sol | `gpt-6.1-sol` | - | Yes | low, medium, high, xhigh, max | $2 / $0.10 / $2.50 / $10 | $0.1500 / 15.00 credits |
+| Claude Haiku 5.5 | `claude-haiku-5.5` | - | Yes | low, medium, high, xhigh, max | $0.10 / $0.01 / $0.125 / $0.50 | $0.0075 / 0.75 credits |
+| Claude Sonnet 5.5 | `claude-sonnet-5.5` | - | Yes | low, medium, high, xhigh, max | $2 / $0.10 / $2.50 / $10 | $0.1500 / 15.00 credits |
+| Claude Opus 5.5 | `claude-opus-5.5` | - | Yes | low, medium, high, xhigh, max | $4 / $0.20 / $5 / $20 | $0.3000 / 30.00 credits |
 | Claude Sonnet 5 | `claude-sonnet-5` | Yes | Yes | low, medium, high, xhigh, max | $2 / $0.20 / $2.50 / $10 | $0.1500 / 15.00 credits |
 | Claude Opus 5 | `claude-opus-5` | No | Yes | low, medium, high, xhigh, max | $5 / $0.50 / $6.25 / $25 | $0.3750 / 37.50 credits |
-| GPT-5.6 Sol | `gpt-5.6-sol` | No | Yes | low, medium, high, xhigh, max | $4 / $0.40 / $5 / $20 | $0.3000 / 30.00 credits |
-| GPT-5.6 Terra | `gpt-5.6-terra` | Yes | Yes | low, medium, high, xhigh, max | $2 / $0.20 / $2.50 / $12 | $0.1600 / 16.00 credits |
-| GPT-5.6 Luna | `gpt-5.6-luna` | Yes | Yes | low, medium, high, xhigh, max | $0.20 / $0.02 / $0.25 / $1.20 | $0.0160 / 1.60 credits |
-| Gemini 3.7 Flash | `gemini-3.7-flash` | Yes | No | low, medium, high | $0.75 / $0.075 / - / $3.75 | $0.0563 / 5.63 credits |
-| Gemini 3.8 Flash | `gemini-3.8-flash` | Yes | No | low, medium, high | $0.75 / $0.075 / - / $3.75 | $0.0563 / 5.63 credits |
-| Gemini 3.6 Flash | `gemini-3.6-flash` | Yes | No | minimal, low, medium, high | $0.75 / $0.075 / - / $3.75 | $0.0563 / 5.63 credits |
-| Gemini 3.5 Flash | `gemini-3.5-flash` | Yes | No | minimal, low, medium, high | $1.50 / $0.15 / - / $9 | $0.1200 / 12.00 credits |
 | MAI-Code-1.1-Flash | `mai-code-1.1-flash` | Yes | No | low, medium, high | $0.20 / $0.02 / - / $1.20 | $0.0160 / 1.60 credits |
 | GPT-6 Astra | `gpt-6-astra` | No | Yes | low, medium, high, xhigh, max | $10 / $1 / $12.50 / $50 | $0.7500 / 75.00 credits |
 | Grok 4.6 | `grok-4.6` | Yes | No | low, medium, high, xhigh | $2 / $0.50 / - / $6 | $0.1300 / 13.00 credits |
@@ -186,16 +168,17 @@ on 1M.
 documentation uses `mai-code-1-flash`. Confirm the exact selector shown by the
 installed CLI before configuring this older model.
 
-The Gemini 3.6, 3.7 and 3.8 Flash rates are promotional through
-2026-12-31 according to GitHub's pricing page.
+The GPT-6 Luna, GPT-6.1 Sol and Claude 5.5 rows come from the pi 1.2.0
+`github-copilot` model catalog. `-` in the Pro column means plan availability
+was not checked for that model.
 
 ### Long-context price changes
 
 | Model family | Threshold | Long-tier I/C/W/O per million tokens |
 | --- | ---: | --- |
-| GPT-5.6 Sol | More than 272K input | $8 / $0.80 / $10 / $30 |
-| GPT-5.6 Terra | More than 272K input | $4 / $0.40 / $5 / $18 |
-| GPT-5.6 Luna | More than 200K input | $0.40 / $0.04 / $0.50 / $1.80 |
+| GPT-6 Luna | More than 272K input | $0.20 / $0.02 / $0.25 / $0.75 |
+| GPT-6.1 Sol | More than 272K input | $4 / $0.20 / $5 / $15 |
+| Claude Haiku 5.5 | More than 100K input | $0.50 / $0.05 / $0.625 / $2.50 |
 | GPT-6 Astra | More than 272K input | $20 / $2 / $25 / $75 |
 | GPT-5.5 | More than 272K input | $10 / $1 / - / $45 |
 | GPT-5.4 | More than 272K input | $5 / $0.50 / - / $22.50 |
@@ -288,23 +271,16 @@ found. It does not mean zero.
 | Model | DeepSWE pass@1 | Effort | 95% CI | Mean $/task | Terminal-Bench 4 |
 | --- | ---: | --- | ---: | ---: | ---: |
 | GPT-6 Astra | 74.12% | xhigh | 71.25-76.98 | $6.52 | 58.18% |
-| Gemini 3.8 Flash | 73.83% | high | 72.41-75.24 | $2.36 | 19.09% |
 | Claude Opus 5 | 73.65% | max | 69.78-77.52 | $11.84 | 51.82% |
-| GPT-5.6 Sol | 72.67% | max | 69.84-75.50 | $8.39 | 37.27% |
-| GPT-5.6 Terra | 69.62% | max | 67.07-72.18 | $4.95 | 21.52% |
 | Grok 4.6 | 67.48% | medium | 65.20-69.76 | $3.45 | 20.30% |
-| GPT-5.6 Luna | 67.19% | max | 63.20-71.18 | $3.03 | 17.27% |
 | GPT-5.5 | 67.04% | xhigh | 60.57-73.50 | $7.23 | - |
-| Gemini 3.7 Flash | 65.49% | medium | 62.40-68.57 | $2.03 | 11.21% |
 | Claude Opus 4.8 | 58.97% | max | 57.21-60.74 | $13.22 | 23.64% |
 | Claude Sonnet 5 | 53.85% | max | 49.61-58.08 | $26.40 | 12.42% |
 | Grok 4.5 | 53.76% | high | 51.48-56.04 | $2.42 | 12.42% |
 | GPT-5.4 | 51.77% | xhigh | 50.27-53.27 | $5.65 | - |
-| Gemini 3.6 Flash | 46.68% | high | 42.98-50.39 | $4.42 | - |
-| Gemini 3.5 Flash | 36.06% | high | 32.10-40.03 | $3.45 | - |
 
 The DeepSWE mean-cost column is workload-specific. For example, Sonnet 5 used
-far more steps and cached input than Gemini 3.8 in this benchmark framework. It
+far more steps and cached input than Grok 4.6 in this benchmark framework. It
 does not contradict the token price table. It shows why price per token is not
 cost per successful task.
 
@@ -319,20 +295,13 @@ effort intended for production during the local bakeoff.
 | --- | ---: | ---: | ---: |
 | GPT-6 Astra | 54.7 | - | 80.7% |
 | Claude Opus 5 | 54.1 | - | - |
-| GPT-5.6 Sol | 51.3 | 72.7% | 84.0% |
 | Grok 4.6 | 50.6 | - | 80.3% |
 | Claude Opus 4.8 | 47.8 | 62.2% | - |
-| Gemini 3.8 Flash | 47.1 | - | 84.0% medium |
-| GPT-5.6 Terra | 46.8 | 71.2% | 83.0% |
 | GPT-5.5 | 45.6 | 75.9% | 84.3% |
 | Grok 4.5 | 45.5 | - | - |
-| Gemini 3.7 Flash | 45.2 | - | - |
 | Claude Sonnet 5 | 45.1 | - | - |
 | Claude Opus 4.7 | 44.3 | 58.6% | - |
-| GPT-5.6 Luna | 43.4 | - | 83.7% |
 | GPT-5.4 | 42.8 | 73.9% | - |
-| Gemini 3.6 Flash | 40.3 | - | - |
-| Gemini 3.5 Flash | 39.7 | 76.3% | - |
 | GPT-5.3-Codex | 36.9 | 75.4% | - |
 | GPT-5.4 mini | 31.9 | 73.3% | - |
 | GPT-5 mini | 18.4 | 75.4% | - |
@@ -350,7 +319,7 @@ Benchmark sources:
 
 ### How to interpret the snapshot
 
-1. DeepSWE's top four are a leading cluster, not a proven strict ordering.
+1. DeepSWE's top two are a leading pair, not a proven strict ordering.
    Their confidence intervals overlap.
 2. Terminal-Bench measures the model plus its agent scaffold. Claude Code,
    Codex, Grok Build and mini-swe-agent are not equivalent.
@@ -393,9 +362,7 @@ reproducible.
 adoption, not model quality. They are useful for ecosystem maturity and
 operational popularity only.
 
-For example, GPT-5.6 Luna ranked second by weekly OpenRouter tokens in the
-research snapshot while ranking tenth among DeepSWE-tested models and
-37th on BenchLM. Popularity can reflect price, free tiers, prompt length,
+Popularity can reflect price, free tiers, prompt length,
 availability and integrations rather than successful work.
 
 ## Capability-specific evidence
@@ -405,13 +372,8 @@ availability and integrations rather than successful work.
 - Claude Opus 5 has the strongest broad vendor-published SWE-bench set:
   96.0% Verified, 79.2% Pro and 89.5% Multilingual under Anthropic's
   five-trial maximum-effort setup.
-- DeepSWE's directly comparable leading cluster is Astra, Gemini 3.8, Opus 5
-  and Sol at 72.7-74.1%.
-- Gemini 3.8 is the standout cost/performance candidate: near-frontier
-  DeepSWE at Flash pricing.
-- Gemini 3.8's Terminal-Bench 4 result is weak under mini-swe-agent. Using it as
-  a Tester is a price-driven hypothesis, not an evidence-backed conclusion
-  about native-runner terminal performance.
+- DeepSWE's directly comparable leading pair is Astra and Opus 5 at
+  73.7-74.1%.
 - MAI-Code-1.1-Flash reports 72.6% SWE-bench Verified and 62.9%
   Terminal-Bench 2.1 in Microsoft production environments. No directly
   comparable DeepSWE score was found.
@@ -422,9 +384,7 @@ Primary reports:
 
 - [Claude Opus 5 system card](https://www.anthropic.com/claude-opus-5-system-card)
 - [Claude Sonnet 5 system card](https://www.anthropic.com/claude-sonnet-5-system-card)
-- [GPT-5.6 announcement](https://openai.com/index/gpt-5-6/)
 - [GPT-6 Astra announcement](https://openai.com/index/gpt-6-astra/)
-- [Gemini 3.8 Flash evaluation](https://storage.googleapis.com/deepmind-media/gemini/gemini_3-8_flash_model_evaluation.pdf)
 - [Grok 4.6 model card](https://media.x.ai/v1/website/card-4p6-4cd2dc57.pdf)
 - [MAI-Code-1.1-Flash model card](https://microsoft.ai/pdf/MAI-Code-1.1-Flash-Model-Card.PDF)
 
@@ -435,11 +395,8 @@ Primary reports:
 - Astra scored 62.7% on ARC-AGI-3's standard interface and 98.6% using the
   provider adapter. That enormous difference shows that test framework design can be
   as important as model choice.
-- GPT-5.5, GPT-5.3-Codex, GPT-5 mini, GPT-5.4 and Sol/Terra have strong exact
-  IFBench results. Gemini 3.5 Flash leads the available exact rows, despite not
-  being the strongest general reasoning model.
-- Higher effort is not monotonically better. Gemini 3.8 medium beat high on
-  AA-LCR in the observed snapshot.
+- GPT-5.5, GPT-5.3-Codex, GPT-5 mini and GPT-5.4 have strong exact IFBench
+  results.
 
 Sources:
 
@@ -456,11 +413,7 @@ research product rather than the bare model.
 
 - Claude Opus 5 has the strongest directly reported single-agent BrowseComp
   result among the candidates with available evidence.
-- GPT-5.6 Sol is close and remains a strong research model.
-- Claude Sonnet 5 is the best-supported lower-cost research alternative when
-  research quality is preferred over the economy profile's larger savings.
-- Gemini 3.8 Flash is the economy research option. It is 62.5% cheaper than Sonnet
-  in the illustrative call and well matched to bounded documentation synthesis.
+- Claude Sonnet 5 is the best-supported lower-cost research alternative.
 - GPT-6 Astra has strong factuality and analytical proxies, but no exact
   directly comparable BrowseComp result was found in this review.
 
@@ -492,14 +445,7 @@ repository audit where exploits must be blocked while regressions still pass:
 
 | Model/system | CWE-Bench pass@1 |
 | --- | ---: |
-| Gemini 3.8 Flash Cyber | 47.2% |
-| GPT-5.6 Sol | 44.2% |
 | Grok 4.6 | 38.2% |
-
-Gemini 3.8 Flash Cyber is a distinct restricted model. Its result must not be
-assigned to ordinary Gemini 3.8 Flash. Among the generally available exact
-models in this guide, Sol therefore has the best independent audit-and-patch
-evidence.
 
 GPT-6 Astra has strong offensive evidence with 85.4% on SEC-Bench Pro.
 It lacks public CWE-Bench results, false-positive measurements, or
@@ -510,8 +456,7 @@ reviewer.
 Claude Opus 5 remains useful as a complementary security tester because it
 has the strongest disclosed prompt-injection resistance in the reviewed
 comparisons. Grok 4.6 has credible review evidence on private evaluations.
-However, it trails Sol on independent CWE-Bench results and has weaker
-disclosed safeguard evidence.
+However, it has weaker disclosed safeguard evidence.
 
 MAI-Code-1.1-Flash's model card says CyberBench, CyberSecEval and SecRepo were
 used, but publishes no versions, scores or task breakdown. Keep it on low-risk,
@@ -525,7 +470,6 @@ Sources:
 
 - [Claude Opus 5 system card](https://www.anthropic.com/claude-opus-5-system-card)
 - [Claude Sonnet 5 system card](https://www.anthropic.com/claude-sonnet-5-system-card)
-- [GPT-5.6 system card](https://deploymentsafety.openai.com/gpt-5-6/gpt-5-6.pdf)
 - [GPT-6 Astra system card](https://deploymentsafety.openai.com/gpt-6-astra)
 - [Grok 4.6 model card](https://media.x.ai/v1/website/card-4p6-4cd2dc57.pdf)
 - [CWE-Bench](https://cwe-bench.com/#leaderboard)
@@ -538,12 +482,9 @@ Sources:
 Independent long-context evidence reinforces that capacity is not
 comprehension:
 
-- AA-LCR places GPT-5.5, Sol, Gemini 3.8, Luna and Terra in a narrow
-  83.0-84.3% group.
+- AA-LCR places GPT-5.5, GPT-6 Astra and Grok 4.6 between 80.3% and 84.3%.
 - On Context Arena's harder eight-needle MRCR, several nominal 1M models fall
   sharply at the largest bins.
-- Gemini 3.7 Flash retained the strongest reported full-1M result. Copilot does
-  not expose its 1M window through the selectable long-context tier.
 - RULER's general result is that effective context is often much shorter than
   the claimed window.
 

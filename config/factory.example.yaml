@@ -23,36 +23,36 @@ factory:
 
 models:
   triage:
-    model: "gpt-5.6-terra"
-    reasoning: "medium"
+    model: "gpt-6-luna"
+    reasoning: "low"
     context_tier: "default"
   planner:
-    model: "claude-opus-5"
+    model: "gpt-6.1-sol"
     reasoning: "high"
     context_tier: "default"
   workers:
     L0:
-      model: "mai-code-1.1-flash"
+      model: "gpt-6-luna"
       reasoning: "medium"
       context_tier: "default"
     L1:
-      model: "gemini-3.8-flash"
+      model: "gpt-6-luna"
       reasoning: "high"
       context_tier: "default"
     L2:
-      model: "claude-sonnet-5"
+      model: "gpt-6.1-sol"
       reasoning: "high"
       context_tier: "default"
     L3:
-      model: "claude-opus-5"
-      reasoning: "high"
+      model: "gpt-6.1-sol"
+      reasoning: "xhigh"
       context_tier: "default"
   tester:
-    model: "gemini-3.8-flash"
-    reasoning: "high"
+    model: "gpt-6-luna"
+    reasoning: "medium"
     context_tier: "default"
   reviewer:
-    model: "gpt-5.6-sol"
+    model: "claude-sonnet-5.5"
     reasoning: "high"
     context_tier: "default"
 
@@ -63,7 +63,7 @@ model_profiles:
   claude:
     triage:
       model: "haiku"
-      reasoning: "medium"
+      reasoning: "low"
     planner:
       model: "opus"
       reasoning: "high"
@@ -86,38 +86,74 @@ model_profiles:
     reviewer:
       model: "opus"
       reasoning: "high"
+  # Planner and reviewer on Claude Code, every other role on pi.
+  # Each role names its runtime, so --runtime does not change this profile.
+  mixed:
+    triage:
+      model: "gpt-6-luna"
+      reasoning: "low"
+      runtime: "pi"
+    planner:
+      model: "opus"
+      reasoning: "high"
+      runtime: "claude-code"
+    workers:
+      L0:
+        model: "gpt-6-luna"
+        reasoning: "medium"
+        runtime: "pi"
+      L1:
+        model: "gpt-6-luna"
+        reasoning: "high"
+        runtime: "pi"
+      L2:
+        model: "gpt-6.1-sol"
+        reasoning: "high"
+        runtime: "pi"
+      L3:
+        model: "gpt-6.1-sol"
+        reasoning: "xhigh"
+        runtime: "pi"
+    tester:
+      model: "gpt-6-luna"
+      reasoning: "medium"
+      runtime: "pi"
+    reviewer:
+      model: "sonnet"
+      reasoning: "high"
+      runtime: "claude-code"
   economy:
     triage:
-      model: "gpt-5.6-luna"
-      reasoning: "medium"
+      model: "gpt-6-luna"
+      reasoning: "low"
       context_tier: "default"
     planner:
-      model: "gpt-5.6-terra"
+      model: "gpt-6-luna"
       reasoning: "high"
       context_tier: "default"
     workers:
       L0:
-        model: "mai-code-1.1-flash"
+        model: "gpt-6-luna"
         reasoning: "medium"
         context_tier: "default"
       L1:
-        model: "gemini-3.8-flash"
+        model: "gpt-6-luna"
         reasoning: "high"
         context_tier: "default"
       L2:
-        model: "gemini-3.8-flash"
+        model: "gpt-6-luna"
         reasoning: "high"
         context_tier: "default"
       L3:
-        model: "gemini-3.8-flash"
+        model: "gpt-6-luna"
         reasoning: "high"
         context_tier: "default"
     tester:
-      model: "gemini-3.8-flash"
+      model: "gpt-6-luna"
       reasoning: "high"
       context_tier: "default"
     reviewer:
-      model: "gpt-5.6-sol"
+      model: "claude-sonnet-5.5"
       reasoning: "high"
       context_tier: "default"
 

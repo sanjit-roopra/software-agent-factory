@@ -409,28 +409,28 @@ Initial desired routing:
 
 ```text
 Triage
-  GPT-5.6 Terra
+  GPT-6 Luna
 
 Planner (specification and plan)
-  Claude Opus 5
+  GPT-6.1 Sol
 
 L0 Worker
-  MAI-Code-1.1-Flash
+  GPT-6 Luna
 
 L1 Worker
-  Gemini 3.8 Flash
+  GPT-6 Luna
 
 L2 Worker
-  Claude Sonnet 5
+  GPT-6.1 Sol
 
 L3 Worker
-  Claude Opus 5
+  GPT-6.1 Sol
 
 Tester
-  Gemini 3.8 Flash
+  GPT-6 Luna
 
 Reviewer
-  GPT-5.6 Sol
+  Claude Sonnet 5.5
 
 Failure Investigator
   Claude Opus 5

@@ -1,5 +1,38 @@
 # Architecture Decisions
 
+## ADR-053: GPT-6 defaults, a Claude reviewer and a mixed profile
+
+Status: accepted on 2026-10-17. This builds on ADR-045.
+
+### Context
+
+The packaged models used the GPT-5.6 and Gemini 3.8 families. Pi 1.2.0's
+`github-copilot` catalog now lists `gpt-6-luna` and `gpt-6.1-sol`. Luna costs half
+of the old cheapest model, and Sol costs half of `gpt-5.6-sol`. Triage only picks a
+route, so it does not need much reasoning.
+
+### Decision
+
+- The default `models` block uses `gpt-6-luna` for cheap work (triage, L0, L1 and
+  the tester) and `gpt-6.1-sol` for expensive work (the planner, L2 and L3).
+- The reviewer is `claude-sonnet-5.5`. Its family differs from every GPT worker.
+- Triage uses the cheapest model at reasoning `low` in every profile. In the
+  `claude` profile, triage is `haiku`.
+- The default block names no runtime, so every role runs on `--runtime`.
+- A new `mixed` profile runs the planner (`opus`) and the reviewer (`sonnet`) on
+  Claude Code at `high`. Triage, the workers and the tester run on pi with the
+  default Luna and Sol choices. Each role names its runtime.
+- The `economy` profile uses `gpt-6-luna` for every role except the reviewer.
+- `factory doctor` requires pi 1.2.0 or later.
+
+### Consequences
+
+- No packaged profile names a GPT-5.6 or Gemini model.
+- A real run with the defaults needs an account that can select `gpt-6.1-sol` and
+  `claude-sonnet-5.5`.
+- An operator with pi older than 1.2.0 must upgrade before `--runtime pi` passes
+  `factory doctor`.
+
 ## ADR-052: Show the tools of the running call, and answer an unchanged poll with 304
 
 Status: accepted on 2026-10-17. This builds on ADR-050.

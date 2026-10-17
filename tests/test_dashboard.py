@@ -2240,7 +2240,7 @@ def test_usage_sanitizer_keeps_only_non_negative_numeric_fields() -> None:
             "api_key": SECRET_MARKER,
             "model_usage": [
                 {
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6.1-sol",
                     "input_tokens": 100,
                     "output_tokens": False,
                     "api_key": SECRET_MARKER,
@@ -2518,7 +2518,7 @@ def _stored_run_detail_payload(tmp_path: Path, reason: str) -> dict[str, Any]:
                 AttemptRecord(
                     attempt_number=1,
                     role=AgentRole.IMPLEMENTER,
-                    model="gpt-5.6-sol",
+                    model="gpt-6.1-sol",
                     reasoning="high",
                     started_at=started,
                     completed_at=done,
@@ -2530,7 +2530,7 @@ def _stored_run_detail_payload(tmp_path: Path, reason: str) -> dict[str, Any]:
                 InvocationRecord(
                     invocation_number=1,
                     role=AgentRole.IMPLEMENTER,
-                    model="gpt-5.6-sol",
+                    model="gpt-6.1-sol",
                     reasoning="high",
                     started_at=started,
                     completed_at=done,
@@ -3620,7 +3620,7 @@ def _usage_call(number: int, usage: Any) -> Any:
     return InvocationRecord(
         invocation_number=number,
         role=AgentRole.IMPLEMENTER,
-        model="gpt-5.6-sol",
+        model="gpt-6.1-sol",
         reasoning="high",
         started_at=started,
         completed_at=started + timedelta(minutes=1),
@@ -3644,7 +3644,7 @@ def test_a_call_that_reports_usage_only_per_model_still_counts_in_the_totals(
                 reasoning_tokens=5,
                 total_nano_aiu=100_000_000_000,
             ),
-            ModelUsage(model="gpt-5.6-sol", premium_request_cost=0.5, input_tokens=10),
+            ModelUsage(model="gpt-6.1-sol", premium_request_cost=0.5, input_tokens=10),
         )
     )
     aggregate = UsageMetrics(input_tokens=1000, total_premium_request_cost=2.0)
@@ -3713,7 +3713,7 @@ def test_the_running_calls_reasoning_level_goes_from_the_provider_to_the_page(
         active_invocation=ActiveInvocation(
             invocation_number=2,
             role=AgentRole.REVIEWER,
-            model="gpt-5.6-sol",
+            model="gpt-6.1-sol",
             reasoning="xhigh",
             started_at=started,
         ),
