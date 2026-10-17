@@ -35,6 +35,8 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from ..models import PROJECT_ID_PATTERN, RUN_LIST_STATES, RunListFilter
+
 if TYPE_CHECKING:
     from ..models import DashboardResumeRequest, FactoryRun
 
@@ -68,7 +70,10 @@ def is_valid_run_id(candidate: str) -> bool:
 
 
 class SnapshotProvider(Protocol):
-    def __call__(self, *, limit: int, offset: int) -> Any: ...
+    """``filters`` is passed only when the run list asks for a search, a state, a project
+    or the oldest runs first, so a provider without it still serves every other request."""
+
+    def __call__(self, *, limit: int, offset: int, filters: RunListFilter | None = None) -> Any: ...
 
 
 class RunDetailProvider(Protocol):
@@ -211,3 +216,39 @@ def clamp_pagination(raw_limit: str | None, raw_offset: str | None) -> tuple[int
             return None
 
     return limit, offset
+
+
+#: The longest search text ``/api/runs`` takes in ``q``.
+MAX_SEARCH_LENGTH = 100
+
+#: The ``sort`` values of ``/api/runs``: whether the oldest runs come first.
+_SORT_OLDEST_FIRST: dict[str, bool] = {"newest": False, "oldest": True}
+
+_PROJECT_ID = re.compile(PROJECT_ID_PATTERN)
+
+
+def _first(query: dict[str, list[str]], name: str) -> str | None:
+    """The first value of ``name``, stripped, or ``None`` when it is missing or blank."""
+    value = query.get(name, [""])[0].strip()
+    return value or None
+
+
+def parse_run_filter(query: dict[str, list[str]]) -> RunListFilter | None:
+    """Read ``q``, ``state``, ``project`` and ``sort`` from a ``/api/runs`` query.
+
+    Returns ``None`` when a value is not one the run list takes; callers answer 400. A
+    query without them gives the default filter, which keeps every run.
+    """
+    text = _first(query, "q")
+    state = _first(query, "state")
+    project = _first(query, "project")
+    sort = _first(query, "sort") or "newest"
+    if text is not None and len(text) > MAX_SEARCH_LENGTH:
+        return None
+    if state is not None and state not in RUN_LIST_STATES:
+        return None
+    if project is not None and not _PROJECT_ID.fullmatch(project):
+        return None
+    if sort not in _SORT_OLDEST_FIRST:
+        return None
+    return RunListFilter(text, state, project, _SORT_OLDEST_FIRST[sort])

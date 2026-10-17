@@ -1580,6 +1580,20 @@ run time, the checks, the branch and the pull request. All of these redact
 before they cut, and each has its own allowlist (ADR-047). A run
 that does not exist, or whose id is not even shaped like one, is a 404.
 
+`GET /api/runs` takes `q`, `state`, `project` and `sort` as well as `limit` and
+`offset`. `q` matches part of the run id, the work item id, the issue id or the
+title, without case, up to 100 characters. `state` is `escalated`, `active`,
+`failed` or `succeeded`. `project` is a project id. `sort=oldest` puts the
+oldest runs first. The server filters before it pages, so `page.total` counts
+the matching runs. The overview counts still cover every run. A value outside
+these is a 400. The run list sends these from its search bar. The address keeps
+them with the page offset, so a link or Back opens the same list. The run
+page splits its cards into tabs (Overview, Activity, Changes, Review, Checks and
+Raw), and `?tab=` in the address opens one. Keys work on every view. `g` then
+`r`, `c`, `p` or `h` opens a view. `j` and `k` move through the runs, and Enter
+opens one. `n` and `f` jump to the next run that needs you or that failed. `/`
+searches, `r` refreshes and `?` lists the keys. Keys do nothing in a field.
+
 The three write actions are approve a risk approval, answer plan decisions
 (ADR-033) and retry publishing when the first pull request failed to open
 (ADR-042). The dashboard never writes `run.json`. An action creates one

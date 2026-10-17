@@ -568,6 +568,26 @@ class WorkItem(VersionedModel):
 
 
 PROJECT_ID_PATTERN = r"^[A-Za-z0-9._-]{1,80}$"
+
+
+#: The run classes a run list can narrow to. They are the classes the monitoring snapshot
+#: counts: a run that waits for a person, a failed run, a finished run and any other run.
+RUN_LIST_STATES: frozenset[str] = frozenset({"escalated", "failed", "succeeded", "active"})
+
+
+class RunListFilter(NamedTuple):
+    """What narrows and orders one page of the run list. The default keeps every run.
+
+    ``text`` matches, without case, part of the run id, the work item id, the issue id or
+    the title. ``state`` is one of :data:`RUN_LIST_STATES`.
+    """
+
+    text: str | None = None
+    state: str | None = None
+    project_id: str | None = None
+    oldest_first: bool = False
+
+
 MAX_PROJECT_TASKS = 12
 MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA = 8
 MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA = 6

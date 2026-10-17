@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from importlib import resources
 
-from .snapshot import MAX_PAGE_LIMIT
+from .snapshot import MAX_PAGE_LIMIT, MAX_SEARCH_LENGTH
 
 #: Name of the ``<meta>`` tag the initial HTML uses to hand the token to
 #: ``app.js`` without ever placing it in an inline ``<script>`` (the CSP
@@ -57,6 +57,7 @@ def render_index_html(*, token: str) -> str:
         Local dashboard &mdash; loopback only. Can approve, answer, retry or stop a run.
       </p>
       <button id="theme-toggle" type="button">Switch theme</button>
+      <button id="keys-help-open" type="button" aria-keyshortcuts="?">Keyboard shortcuts</button>
     </header>
     <nav aria-label="Main">
       <a href="#runs" data-route="runs">Runs
@@ -111,6 +112,24 @@ def render_index_html(*, token: str) -> str:
           from the newest {MAX_PAGE_LIMIT} runs.
           <a href="#runs">Show all runs</a>
         </p>
+        <form id="runs-search-bar" class="runs-search" role="search">
+          <label class="visually-hidden" for="runs-search">Search runs</label>
+          <input id="runs-search" type="search" maxlength="{MAX_SEARCH_LENGTH}"
+            placeholder="Search title, run id or issue" autocomplete="off"
+            aria-keyshortcuts="/">
+          <label class="visually-hidden" for="runs-state">State</label>
+          <select id="runs-state">
+            <option value="">All states</option>
+            <option value="escalated">Needs you</option>
+            <option value="active">Active</option>
+            <option value="failed">Failed</option>
+            <option value="succeeded">Done</option>
+          </select>
+          <label class="visually-hidden" for="runs-project">Project</label>
+          <select id="runs-project">
+            <option value="">All projects</option>
+          </select>
+        </form>
         <div id="runs-toolbar">
           <button id="runs-prev" type="button">Previous</button>
           <span id="runs-page-info"></span>
@@ -129,7 +148,9 @@ def render_index_html(*, token: str) -> str:
                 <th scope="col">Duration</th>
                 <th scope="col">Tokens</th>
                 <th scope="col">Cost {COST_INFO}</th>
-                <th scope="col">Started</th>
+                <th id="runs-started-head" scope="col" aria-sort="descending">
+                  <button id="runs-sort" class="sort-button" type="button">Started</button>
+                </th>
                 <th scope="col"><span class="visually-hidden">Compare</span></th>
               </tr>
             </thead>
@@ -172,84 +193,122 @@ def render_index_html(*, token: str) -> str:
           </p>
           <div id="next-step-body"></div>
         </section>
-        <section id="completion-card" class="card" aria-labelledby="completion-heading" hidden>
-          <h2 id="completion-heading">Result</h2>
-          <div id="completion-stats" class="stats"></div>
-          <dl id="completion-body"></dl>
-        </section>
-        <div class="card">
-          <h2 id="timeline-heading">Steps</h2>
-          <p id="timeline-status">No calls yet.</p>
-          <div class="table-wrap" id="timeline-wrap" hidden>
-            <table id="timeline-table" class="timeline" aria-labelledby="timeline-heading">
-              <thead>
-                <tr>
-                  <th scope="col">
-                    <span aria-hidden="true">#</span>
-                    <span class="visually-hidden">Call number</span>
-                  </th>
-                  <th scope="col">Role</th>
-                  <th scope="col">Model</th>
-                  <th scope="col">Outcome</th>
-                  <th scope="col">Duration</th>
-                  <th scope="col">Tokens</th>
-                  <th scope="col">Cost {COST_INFO}</th>
-                </tr>
-              </thead>
-              <tbody id="timeline-body"></tbody>
-              <tfoot>
-                <tr id="timeline-total" class="timeline-total"></tr>
-              </tfoot>
-            </table>
+        <div id="run-tabs" class="tabs" role="tablist" aria-label="Run sections">
+          <button id="run-tab-overview" type="button" role="tab" data-tab="overview"
+            aria-controls="run-panel-overview" aria-selected="true" tabindex="0">Overview</button>
+          <button id="run-tab-activity" type="button" role="tab" data-tab="activity"
+            aria-controls="run-panel-activity" aria-selected="false" tabindex="-1">Activity</button>
+          <button id="run-tab-changes" type="button" role="tab" data-tab="changes"
+            aria-controls="run-panel-changes" aria-selected="false" tabindex="-1">Changes</button>
+          <button id="run-tab-review" type="button" role="tab" data-tab="review"
+            aria-controls="run-panel-review" aria-selected="false" tabindex="-1">Review</button>
+          <button id="run-tab-checks" type="button" role="tab" data-tab="checks"
+            aria-controls="run-panel-checks" aria-selected="false" tabindex="-1">Checks</button>
+          <button id="run-tab-raw" type="button" role="tab" data-tab="raw"
+            aria-controls="run-panel-raw" aria-selected="false" tabindex="-1">Raw</button>
+        </div>
+        <div id="run-panel-overview" class="tab-panel" role="tabpanel"
+          aria-labelledby="run-tab-overview">
+          <p class="tab-empty">Nothing to show here yet.</p>
+          <section id="completion-card" class="card" aria-labelledby="completion-heading" hidden>
+            <h2 id="completion-heading">Result</h2>
+            <div id="completion-stats" class="stats"></div>
+            <dl id="completion-body"></dl>
+          </section>
+          <section id="plan-card" class="card" aria-labelledby="plan-heading" hidden>
+            <h2 id="plan-heading">Plan</h2>
+            <div id="plan-body"></div>
+          </section>
+        </div>
+        <div id="run-panel-activity" class="tab-panel" role="tabpanel"
+          aria-labelledby="run-tab-activity" hidden>
+          <p class="tab-empty">Nothing to show here yet.</p>
+          <div class="card">
+            <h2 id="timeline-heading">Steps</h2>
+            <p id="timeline-status">No calls yet.</p>
+            <div class="table-wrap" id="timeline-wrap" hidden>
+              <table id="timeline-table" class="timeline" aria-labelledby="timeline-heading">
+                <thead>
+                  <tr>
+                    <th scope="col">
+                      <span aria-hidden="true">#</span>
+                      <span class="visually-hidden">Call number</span>
+                    </th>
+                    <th scope="col">Role</th>
+                    <th scope="col">Model</th>
+                    <th scope="col">Outcome</th>
+                    <th scope="col">Duration</th>
+                    <th scope="col">Tokens</th>
+                    <th scope="col">Cost {COST_INFO}</th>
+                  </tr>
+                </thead>
+                <tbody id="timeline-body"></tbody>
+                <tfoot>
+                  <tr id="timeline-total" class="timeline-total"></tr>
+                </tfoot>
+              </table>
+            </div>
           </div>
         </div>
-        <section id="plan-card" class="card" aria-labelledby="plan-heading" hidden>
-          <h2 id="plan-heading">Plan</h2>
-          <div id="plan-body"></div>
-        </section>
-        <section id="diff-card" class="card" aria-labelledby="diff-heading" hidden>
-          <div class="diff-head">
-            <h2 id="diff-heading">Changes</h2>
-            <label id="diff-attempt-label" hidden>Attempt
-              <select id="diff-attempt"></select>
-            </label>
-          </div>
-          <div id="diff-body"></div>
-        </section>
-        <section id="checks-card" class="card" aria-labelledby="checks-heading" hidden>
-          <h2 id="checks-heading">Checks</h2>
-          <div id="checks-body"></div>
-        </section>
-        <section id="review-card" class="card" aria-labelledby="review-heading" hidden>
-          <h2 id="review-heading">Review</h2>
-          <div id="review-body"></div>
-        </section>
-        <details id="run-details" class="card details-card">
-          <summary>Details</summary>
-          <h3>Totals</h3>
-          <div id="run-totals" class="stats"></div>
-          <h3>Run facts</h3>
-          <dl id="run-detail-body"></dl>
-          <h3>Attempts</h3>
-          <div class="table-wrap">
-            <table id="attempts-table">
-              <thead>
-                <tr>
-                  <th scope="col">#</th>
-                  <th scope="col">Role</th>
-                  <th scope="col">Model</th>
-                  <th scope="col">Budget</th>
-                  <th scope="col">Trigger</th>
-                  <th scope="col">Outcome</th>
-                  <th scope="col">Started</th>
-                  <th scope="col">Completed</th>
-                  <th scope="col">Failure reason</th>
-                </tr>
-              </thead>
-              <tbody id="attempts-body"></tbody>
-            </table>
-          </div>
-        </details>
+        <div id="run-panel-changes" class="tab-panel" role="tabpanel"
+          aria-labelledby="run-tab-changes" hidden>
+          <p class="tab-empty">Nothing to show here yet.</p>
+          <section id="diff-card" class="card" aria-labelledby="diff-heading" hidden>
+            <div class="diff-head">
+              <h2 id="diff-heading">Changes</h2>
+              <label id="diff-attempt-label" hidden>Attempt
+                <select id="diff-attempt"></select>
+              </label>
+            </div>
+            <div id="diff-body"></div>
+          </section>
+        </div>
+        <div id="run-panel-review" class="tab-panel" role="tabpanel"
+          aria-labelledby="run-tab-review" hidden>
+          <p class="tab-empty">Nothing to show here yet.</p>
+          <section id="review-card" class="card" aria-labelledby="review-heading" hidden>
+            <h2 id="review-heading">Review</h2>
+            <div id="review-body"></div>
+          </section>
+        </div>
+        <div id="run-panel-checks" class="tab-panel" role="tabpanel"
+          aria-labelledby="run-tab-checks" hidden>
+          <p class="tab-empty">Nothing to show here yet.</p>
+          <section id="checks-card" class="card" aria-labelledby="checks-heading" hidden>
+            <h2 id="checks-heading">Checks</h2>
+            <div id="checks-body"></div>
+          </section>
+        </div>
+        <div id="run-panel-raw" class="tab-panel" role="tabpanel"
+          aria-labelledby="run-tab-raw" hidden>
+          <p class="tab-empty">Nothing to show here yet.</p>
+          <details id="run-details" class="card details-card" open>
+            <summary>Details</summary>
+            <h3>Totals</h3>
+            <div id="run-totals" class="stats"></div>
+            <h3>Run facts</h3>
+            <dl id="run-detail-body"></dl>
+            <h3>Attempts</h3>
+            <div class="table-wrap">
+              <table id="attempts-table">
+                <thead>
+                  <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">Role</th>
+                    <th scope="col">Model</th>
+                    <th scope="col">Budget</th>
+                    <th scope="col">Trigger</th>
+                    <th scope="col">Outcome</th>
+                    <th scope="col">Started</th>
+                    <th scope="col">Completed</th>
+                    <th scope="col">Failure reason</th>
+                  </tr>
+                </thead>
+                <tbody id="attempts-body"></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
       </div>
     </section>
 
@@ -315,6 +374,26 @@ def render_index_html(*, token: str) -> str:
     </section>
   </main>
 </div>
+<dialog id="keys-help" class="keys-dialog" aria-labelledby="keys-help-heading">
+  <h2 id="keys-help-heading">Keyboard shortcuts</h2>
+  <dl class="keys-list">
+    <dt><kbd>g</kbd> <kbd>r</kbd></dt><dd>Runs</dd>
+    <dt><kbd>g</kbd> <kbd>c</kbd></dt><dd>Compare</dd>
+    <dt><kbd>g</kbd> <kbd>p</kbd></dt><dd>Projects</dd>
+    <dt><kbd>g</kbd> <kbd>h</kbd></dt><dd>Health</dd>
+    <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next or previous run in the list</dd>
+    <dt><kbd>Enter</kbd></dt><dd>Open the chosen run</dd>
+    <dt><kbd>n</kbd></dt><dd>Next run that needs you</dd>
+    <dt><kbd>f</kbd></dt><dd>Next failed run</dd>
+    <dt><kbd>/</kbd></dt><dd>Search runs</dd>
+    <dt><kbd>r</kbd></dt><dd>Refresh now</dd>
+    <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+  </dl>
+  <p class="keys-note">Keys do nothing while you type in a field.</p>
+  <div class="dialog-actions">
+    <button id="keys-help-close" type="button">Close</button>
+  </div>
+</dialog>
 </body>
 </html>
 """

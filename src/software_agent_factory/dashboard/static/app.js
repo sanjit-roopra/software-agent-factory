@@ -44,6 +44,33 @@
   const IDLE_SHOWN_SECONDS = 60;
   // MAX_PAGE_LIMIT in dashboard/snapshot.py: the most runs one request returns.
   const MAX_RUNS_LIMIT = 100;
+  // MAX_PAGE_OFFSET in dashboard/snapshot.py: the largest offset the server takes.
+  const MAX_RUNS_OFFSET = 1000000;
+  // RUN_LIST_STATES in models.py, MAX_SEARCH_LENGTH in dashboard/snapshot.py and
+  // PROJECT_ID_PATTERN in models.py: what the run list filters on the server take.
+  const RUN_STATES = new Set(["escalated", "active", "failed", "succeeded"]);
+  const MAX_SEARCH_LENGTH = 100;
+  const PROJECT_ID_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
+  const SORT_OLDEST = "oldest";
+  const EMPTY_SEARCH = { q: "", state: "", project: "", sort: "" };
+  // Typing waits this long before the list asks the server again.
+  const SEARCH_DELAY_MS = 300;
+  const RUN_TABS = ["overview", "activity", "changes", "review", "checks", "raw"];
+  const DEFAULT_TAB = "overview";
+  const TAB_STEPS = { ArrowRight: 1, ArrowLeft: -1 };
+  // g then one of these keys opens a view.
+  const KEY_ROUTES = { r: "#runs", c: "#compare", p: "#projects", h: "#health" };
+  const KEY_COMMANDS = {
+    g: "await-go",
+    j: "next",
+    k: "previous",
+    Enter: "open",
+    n: "needs-you",
+    f: "failure",
+    "/": "search",
+    r: "refresh",
+    "?": "help"
+  };
   const NOT_FOUND_STATUS = 404;
   const LOADING_TEXT = "Loading\u2026";
   const TITLE_SUFFIX = " \u2014 Factory dashboard";
@@ -61,7 +88,7 @@
   };
   // While the operator types, a refresh skips only this region of the view. Other views
   // skip the whole section.
-  const DIRTY_REGIONS = { run: "next-step" };
+  const DIRTY_REGIONS = { run: "next-step", runs: "runs-body" };
 
   // What a screen reader hears before each cell of a call row. The visible header
   // row is hidden from assistive technology, so the row carries its own labels.
@@ -177,7 +204,9 @@
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
     baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null,
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
-    evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, diffKey: null
+    evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, diffKey: null,
+    search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
+    projectsListed: false
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -308,6 +337,7 @@
       limit: state.limit,
       runId: state.runId,
       filter: state.filter,
+      search: state.search,
       compare: state.compare
     };
   }
@@ -1304,6 +1334,9 @@
     if (request.filter !== null) {
       return "No runs need you.";
     }
+    if (searchParams(request.search, 0) !== "") {
+      return "No runs match the search.";
+    }
     return request.offset === 0 ? NO_RUNS_TEXT : "No runs on this page.";
   }
 
@@ -1318,6 +1351,8 @@
   function renderRunsFilter(filter) {
     document.getElementById("runs-filter").hidden = filter === null;
     document.getElementById("runs-toolbar").hidden = filter !== null;
+    document.getElementById("runs-search-bar").hidden = filter !== null;
+    document.getElementById("runs-sort").disabled = filter !== null;
     document.getElementById("runs-filter-name").textContent =
       filter === FILTER_ACTIVE ? "active runs" : "runs that need you";
   }
@@ -1327,15 +1362,20 @@
     const runs = orderRuns(asArray(payload.runs), request.filter);
     const nowMs = Date.now();
     syncRows(document.getElementById("runs-body"), runListSpecs(runs, request.filter, nowMs));
+    markSelectedRow();
     renderRunsPager(payload.page || {}, runs.length, request);
     renderRunsStatus(runs.length, request);
     renderRunsFilter(request.filter);
   }
 
+  function runsQuery(request) {
+    const filters = searchParams(request.search, 0);
+    return "limit=" + encodeURIComponent(request.limit) +
+      "&offset=" + encodeURIComponent(request.offset) + (filters === "" ? "" : "&" + filters);
+  }
+
   function refreshRuns(request) {
-    const query =
-      "limit=" + encodeURIComponent(request.limit) +
-      "&offset=" + encodeURIComponent(request.offset);
+    const query = runsQuery(request);
     return apiFetch("/api/runs?" + query).then(
       whenLatest(request, renderRuns),
       failBeforeLoad(request, "runs-status", "The runs could not load.")
@@ -3652,6 +3692,53 @@
     return filter === FILTER_NEEDS_YOU || filter === FILTER_ACTIVE ? filter : null;
   }
 
+  // The run list search a hash asks for. A value the server would refuse is dropped.
+  function routeSearch(query) {
+    const params = new URLSearchParams(query);
+    const runState = params.get("state") ?? "";
+    const project = params.get("project") ?? "";
+    return {
+      q: (params.get("q") ?? "").trim().slice(0, MAX_SEARCH_LENGTH),
+      state: RUN_STATES.has(runState) ? runState : "",
+      project: PROJECT_ID_PATTERN.test(project) ? project : "",
+      sort: params.get("sort") === SORT_OLDEST ? SORT_OLDEST : ""
+    };
+  }
+
+  function routeOffset(query) {
+    const offset = Number(new URLSearchParams(query).get("offset"));
+    return Number.isInteger(offset) && offset > 0 && offset <= MAX_RUNS_OFFSET ? offset : 0;
+  }
+
+  function routeTab(query) {
+    const tab = new URLSearchParams(query).get("tab");
+    return RUN_TABS.includes(tab) ? tab : DEFAULT_TAB;
+  }
+
+  // The search fields that are set, and the offset when past the first page.
+  function searchParams(search, offset) {
+    const params = new URLSearchParams();
+    for (const key of Object.keys(EMPTY_SEARCH)) {
+      if (search[key]) {
+        params.set(key, search[key]);
+      }
+    }
+    if (offset > 0) {
+      params.set("offset", String(offset));
+    }
+    return params.toString();
+  }
+
+  function runsHash(search, offset) {
+    const query = searchParams(search, offset);
+    return query === "" ? "#runs" : "#runs?" + query;
+  }
+
+  function runHash(runId, tab) {
+    const path = "#run/" + encodeURIComponent(runId);
+    return tab === DEFAULT_TAB ? path : path + "?tab=" + tab;
+  }
+
   // Returns null for an empty or unknown hash. The run id is only checked
   // for shape later, so a bad id still opens the run view with "Unknown run".
   // Compare takes up to two ids, run A then run B, checked for shape later too.
@@ -3660,13 +3747,18 @@
     const parts = path.split("/");
     const name = parts[0];
     if (name === "run" && parts.length === 2) {
-      return { view: "run", runId: parts[1] };
+      return { view: "run", runId: parts[1], tab: routeTab(query) };
     }
     if (name === "compare" && parts.length <= 3) {
       return { view: "compare", a: parts[1], b: parts[2] };
     }
     if (parts.length === 1 && SIMPLE_VIEWS.has(name)) {
-      return { view: name, filter: routeFilter(query) };
+      return {
+        view: name,
+        filter: routeFilter(query),
+        search: routeSearch(query),
+        offset: routeOffset(query)
+      };
     }
     return null;
   }
@@ -3700,12 +3792,10 @@
   }
 
   // The list filter needs the whole newest page, so it asks for the largest one.
-  function applyRunsFilter(filter) {
+  function applyRunsFilter(filter, offset) {
     state.filter = filter;
     state.limit = filter === null ? PAGE_SIZE : MAX_RUNS_LIMIT;
-    if (filter !== null) {
-      state.offset = 0;
-    }
+    state.offset = filter === null ? offset : 0;
   }
 
   function markNavLink(link, isActive) {
@@ -3829,7 +3919,14 @@
       state.evidence = { plan: null, diff: null };
     }
     state.runId = runId;
-    applyRunsFilter(route.filter ?? null);
+    applyRunsFilter(route.filter ?? null, route.offset ?? 0);
+    state.search = route.search ?? EMPTY_SEARCH;
+    state.tab = route.tab ?? DEFAULT_TAB;
+    syncSearchControls(state.search);
+    showRunTab(state.tab);
+    if (route.view === "runs") {
+      listProjects();
+    }
     state.compare = compareSelection(route);
     supersede(route.view);
     resetActionState();
@@ -3882,9 +3979,311 @@
 
   // ---- Wiring ------------------------------------------------------------
 
+  // A new page or a new search is a new history entry, so Back returns to the last one.
+  function navigateRuns(search, offset, replace = false) {
+    const hash = runsHash(search, offset);
+    if (replace) {
+      globalThis.history.replaceState(null, "", hash);
+    } else {
+      globalThis.history.pushState(null, "", hash);
+    }
+    applyRoute(false);
+  }
+
   function goToOffset(offset) {
-    state.offset = offset;
-    void refreshView();
+    navigateRuns(state.search, offset);
+  }
+
+  // ---- Search and sort ---------------------------------------------------
+
+  function readSearch() {
+    return {
+      q: document.getElementById("runs-search").value.trim().slice(0, MAX_SEARCH_LENGTH),
+      state: document.getElementById("runs-state").value,
+      project: document.getElementById("runs-project").value,
+      sort: state.search.sort
+    };
+  }
+
+  // A field the operator is in keeps what they typed.
+  function setControlValue(id, value) {
+    const control = document.getElementById(id);
+    if (control !== document.activeElement && control.value !== value) {
+      control.value = value;
+    }
+  }
+
+  function addProjectOption(select, projectId) {
+    if (![...select.options].some(function (option) { return option.value === projectId; })) {
+      select.appendChild(optionNode(projectId, projectId));
+    }
+  }
+
+  function syncSearchControls(search) {
+    if (search.project !== "") {
+      addProjectOption(document.getElementById("runs-project"), search.project);
+    }
+    setControlValue("runs-search", search.q);
+    setControlValue("runs-state", search.state);
+    setControlValue("runs-project", search.project);
+    const oldest = search.sort === SORT_OLDEST;
+    document.getElementById("runs-started-head").setAttribute(
+      "aria-sort", oldest ? "ascending" : "descending"
+    );
+    document.getElementById("runs-sort").textContent = oldest ? "Started \u2191" : "Started \u2193";
+  }
+
+  // The project picker lists the projects once per page load. A failed load tries again
+  // the next time the run list opens.
+  function listProjects() {
+    if (state.projectsListed) {
+      return;
+    }
+    state.projectsListed = true;
+    apiFetch("/api/projects").then(function (payload) {
+      const select = document.getElementById("runs-project");
+      for (const project of asArray(payload.projects)) {
+        if (typeof project.project_id === "string") {
+          addProjectOption(select, project.project_id);
+        }
+      }
+      setControlValue("runs-project", state.search.project);
+    }, function () {
+      state.projectsListed = false;
+    });
+  }
+
+  let searchTimer = null;
+
+  function onSearchInput() {
+    globalThis.clearTimeout(searchTimer);
+    searchTimer = globalThis.setTimeout(function () {
+      navigateRuns(readSearch(), 0, true);
+    }, SEARCH_DELAY_MS);
+  }
+
+  function toggleSort() {
+    const sort = state.search.sort === SORT_OLDEST ? "" : SORT_OLDEST;
+    navigateRuns({ ...state.search, sort: sort }, 0);
+  }
+
+  function bindSearch() {
+    const form = document.getElementById("runs-search-bar");
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      globalThis.clearTimeout(searchTimer);
+      navigateRuns(readSearch(), 0, true);
+    });
+    document.getElementById("runs-search").addEventListener("input", onSearchInput);
+    for (const id of ["runs-state", "runs-project"]) {
+      document.getElementById(id).addEventListener("change", function () {
+        navigateRuns(readSearch(), 0);
+      });
+    }
+    document.getElementById("runs-sort").addEventListener("click", toggleSort);
+  }
+
+  // ---- Run detail tabs ---------------------------------------------------
+
+  function showRunTab(tab) {
+    for (const name of RUN_TABS) {
+      const selected = name === tab;
+      const button = document.getElementById("run-tab-" + name);
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      document.getElementById("run-panel-" + name).hidden = !selected;
+    }
+  }
+
+  // The tab goes in the address, so a link or a reload opens the same tab.
+  function pickRunTab(tab, moveFocus) {
+    state.tab = tab;
+    showRunTab(tab);
+    if (state.runId !== null) {
+      globalThis.history.replaceState(null, "", runHash(state.runId, tab));
+    }
+    if (moveFocus) {
+      document.getElementById("run-tab-" + tab).focus();
+    }
+  }
+
+  function bindRunTabs() {
+    const list = document.getElementById("run-tabs");
+    list.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-tab]");
+      if (button) {
+        pickRunTab(button.dataset.tab, false);
+      }
+    });
+    list.addEventListener("keydown", function (event) {
+      const step = TAB_STEPS[event.key];
+      if (step === undefined) {
+        return;
+      }
+      event.preventDefault();
+      const index = RUN_TABS.indexOf(state.tab);
+      pickRunTab(RUN_TABS[(index + step + RUN_TABS.length) % RUN_TABS.length], true);
+    });
+  }
+
+  // ---- Keyboard ----------------------------------------------------------
+
+  // The command a key asks for, or null. After g, only a view key counts.
+  function keyCommand(key, pendingGo) {
+    if (pendingGo) {
+      return Object.hasOwn(KEY_ROUTES, key) ? "go:" + KEY_ROUTES[key] : null;
+    }
+    return Object.hasOwn(KEY_COMMANDS, key) ? KEY_COMMANDS[key] : null;
+  }
+
+  // The row index a step of j or k moves to: the first or last row when none is chosen.
+  function steppedIndex(count, current, step) {
+    if (count === 0) {
+      return -1;
+    }
+    if (current < 0) {
+      return step > 0 ? 0 : count - 1;
+    }
+    return Math.min(Math.max(current + step, 0), count - 1);
+  }
+
+  // The next row after current that matches, wrapping round, or -1 when none does.
+  function nextMatchIndex(matches, current) {
+    for (let step = 1; step <= matches.length; step += 1) {
+      const index = (current + step + matches.length) % matches.length;
+      if (matches[index]) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  function runRows() {
+    return [...document.querySelectorAll("#runs-body tr[data-run-id]")];
+  }
+
+  function markSelectedRow() {
+    for (const row of runRows()) {
+      if (row.dataset.runId === state.selectedRunId) {
+        row.setAttribute("aria-current", "true");
+      } else {
+        row.removeAttribute("aria-current");
+      }
+    }
+  }
+
+  function selectRowAt(rows, index) {
+    if (index < 0) {
+      return false;
+    }
+    const row = rows[index];
+    state.selectedRunId = row.dataset.runId;
+    markSelectedRow();
+    row.tabIndex = -1;
+    row.focus();
+    row.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
+  function selectedIndex(rows) {
+    return rows.findIndex(function (row) { return row.dataset.runId === state.selectedRunId; });
+  }
+
+  function moveRow(step) {
+    const rows = runRows();
+    return selectRowAt(rows, steppedIndex(rows.length, selectedIndex(rows), step));
+  }
+
+  function jumpToRow(className) {
+    const rows = runRows();
+    const matches = rows.map(function (row) { return row.classList.contains(className); });
+    return selectRowAt(rows, nextMatchIndex(matches, selectedIndex(rows)));
+  }
+
+  function openSelectedRow() {
+    if (selectedIndex(runRows()) < 0) {
+      return false;
+    }
+    navigateToRun(state.selectedRunId);
+    return true;
+  }
+
+  function focusSearch() {
+    const field = document.getElementById("runs-search");
+    field.focus();
+    field.select();
+    return true;
+  }
+
+  function showKeysHelp() {
+    const dialog = document.getElementById("keys-help");
+    if (!dialog.open) {
+      dialog.showModal();
+    }
+    return true;
+  }
+
+  // Row keys work on the run list only.
+  function onRunsView(action) {
+    return function () {
+      return state.view === "runs" && action();
+    };
+  }
+
+  const KEY_ACTIONS = {
+    next: onRunsView(function () { return moveRow(1); }),
+    previous: onRunsView(function () { return moveRow(-1); }),
+    open: onRunsView(openSelectedRow),
+    "needs-you": onRunsView(function () { return jumpToRow("row-needs_you"); }),
+    failure: onRunsView(function () { return jumpToRow("row-failed"); }),
+    search: onRunsView(focusSearch),
+    refresh: function () {
+      void refreshView();
+      return true;
+    },
+    help: showKeysHelp
+  };
+
+  function runKeyCommand(command) {
+    if (command.startsWith("go:")) {
+      globalThis.location.hash = command.slice("go:".length);
+      return true;
+    }
+    return KEY_ACTIONS[command]();
+  }
+
+  // A key typed in a field, or with a modifier, is the browser's.
+  function isOwnKey(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return false;
+    }
+    const target = event.target;
+    if (target.closest("input, textarea, select, [contenteditable], dialog")) {
+      return false;
+    }
+    return !(event.key === "Enter" && target.closest("a, button, summary"));
+  }
+
+  function onKeydown(event) {
+    if (!isOwnKey(event)) {
+      return;
+    }
+    const command = keyCommand(event.key, state.pendingGo);
+    state.pendingGo = command === "await-go";
+    if (command === null) {
+      return;
+    }
+    if (state.pendingGo || runKeyCommand(command)) {
+      event.preventDefault();
+    }
+  }
+
+  function bindKeys() {
+    document.addEventListener("keydown", onKeydown);
+    document.getElementById("keys-help-open").addEventListener("click", showKeysHelp);
+    document.getElementById("keys-help-close").addEventListener("click", function () {
+      document.getElementById("keys-help").close();
+    });
   }
 
   function navigateToRun(runId) {
@@ -3909,7 +4308,7 @@
   // picker.
   function onComparePick() {
     state.compare = readCompareSelection();
-    globalThis.history.replaceState(null, "", compareHash(state.compare));
+    globalThis.history.pushState(null, "", compareHash(state.compare));
     resetCompareStatus(state.compare);
     void refreshView();
   }
@@ -3939,6 +4338,9 @@
       }
     });
     bindStopControl();
+    bindSearch();
+    bindRunTabs();
+    bindKeys();
     const reasonButton = document.getElementById("run-reason-show");
     reasonButton.addEventListener("click", function () {
       showFullReason(reasonButton);
