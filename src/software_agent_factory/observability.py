@@ -1605,17 +1605,11 @@ def _artifact_facts(store: RunStoreProtocol, run_id: str) -> _ArtifactFacts:
     triage = _load_optional_artifact(store, run_id, TriageResult)
 
     title = redact_secrets(work_item.title) if work_item is not None else None
-    if triage is not None:
-        complexity, risk = triage.complexity, triage.risk
-    elif work_item is not None:
-        complexity, risk = work_item.complexity, work_item.risk
-    else:
-        complexity, risk = None, None
     return _ArtifactFacts(
         title=title,
         source_external_id=_safe_external_id(work_item),
-        complexity=complexity,
-        risk=risk,
+        complexity=triage.complexity if triage is not None else None,
+        risk=triage.risk if triage is not None else None,
         project_id=work_item.project_id if work_item is not None else None,
     )
 

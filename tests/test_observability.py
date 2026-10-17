@@ -1280,64 +1280,6 @@ def test_missing_work_item_yields_none_title_and_no_crash(tmp_path: Path) -> Non
     assert snapshot.degraded is False  # a missing *artifact* is not a corrupt run.json
 
 
-def test_complexity_and_risk_prefer_triage_result_over_work_item(tmp_path: Path) -> None:
-    store = _fake_store(tmp_path)
-    store.add_run(_run("run-1"))
-    store.add_artifact(
-        "run-1",
-        WorkItem(
-            id="WI-run-1",
-            title="t",
-            description="d",
-            complexity=Complexity.L0,
-            risk=Risk.R0,
-        ),
-    )
-    store.add_artifact(
-        "run-1",
-        TriageResult(
-            factory_eligible=True,
-            complexity=Complexity.L2,
-            risk=Risk.R2,
-            needs_research=False,
-            confidence=0.9,
-            risk_rationale=RiskRationale(
-                intended_outcome="Update deployment credentials safely.",
-                sensitive_boundary="Production deployment configuration.",
-                necessity="Task requires modifying production deployment keys.",
-                credible_scenario="Misconfiguration could cause service outage.",
-                known_mitigations=["Validate syntax before deployment."],
-                residual_risk="Manual operator review required before release.",
-            ),
-        ),
-    )
-
-    snapshot = build_monitoring_snapshot(store, now=T0)
-
-    assert snapshot.runs[0].complexity is Complexity.L2
-    assert snapshot.runs[0].risk is Risk.R2
-
-
-def test_complexity_and_risk_fall_back_to_work_item_without_triage(tmp_path: Path) -> None:
-    store = _fake_store(tmp_path)
-    store.add_run(_run("run-1"))
-    store.add_artifact(
-        "run-1",
-        WorkItem(
-            id="WI-run-1",
-            title="t",
-            description="d",
-            complexity=Complexity.L1,
-            risk=Risk.R1,
-        ),
-    )
-
-    snapshot = build_monitoring_snapshot(store, now=T0)
-
-    assert snapshot.runs[0].complexity is Complexity.L1
-    assert snapshot.runs[0].risk is Risk.R1
-
-
 _TRIAGE_RATIONALE = RiskRationale(
     intended_outcome="Update deployment credentials safely.",
     sensitive_boundary="Production deployment configuration.",
@@ -1372,25 +1314,21 @@ def _store_with_mixed_artifacts(tmp_path: Path) -> FileRunStore:
             title="Fix ghp_abcdefghijklmnopqrstuvwxyz012345",
             description="d",
             external_id="acme/example#17",
-            complexity=Complexity.L0,
-            risk=Risk.R0,
         ),
     )
     store.save_artifact("run-a", _triage(Complexity.L2, Risk.R2))
-    store.save_artifact(
-        "run-b",
-        WorkItem(id="WI-b", title="Plain", description="d", complexity=Complexity.L1, risk=Risk.R1),
-    )
+    store.save_artifact("run-b", WorkItem(id="WI-b", title="Plain", description="d"))
     (store.runs_dir / "run-c" / "work-item.json").write_text("{not json", encoding="utf-8")
     store.save_artifact("run-c", _triage(Complexity.L1, Risk.R0))
     return store
 
 
 # What the summaries of _store_with_mixed_artifacts resolve: (run id, title, source external id,
-# complexity, risk). A triage wins over a work item; an unreadable or missing artifact is absent.
+# complexity, risk). Complexity and risk come from triage; an unreadable or missing artifact is
+# absent.
 MIXED_ARTIFACT_FACTS = [
     ("run-a", "Fix [REDACTED]", "acme/example#17", Complexity.L2, Risk.R2),
-    ("run-b", "Plain", None, Complexity.L1, Risk.R1),
+    ("run-b", "Plain", None, None, None),
     ("run-c", None, None, Complexity.L1, Risk.R0),
     ("run-d", None, None, None, None),
 ]

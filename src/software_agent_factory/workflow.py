@@ -170,7 +170,6 @@ from .resume import (
     receipt_approves_risk_context,
 )
 from .routing import (
-    COMPLEXITY_ORDER,
     ModelRouter,
     derive_named_paths,
     determine_route,
@@ -211,6 +210,8 @@ MAX_CONSECUTIVE_UNRESOLVED_REVIEWS = 3
 MAX_CONSECUTIVE_REPLACEMENT_REVIEWS = 2
 #: Factory restarts one unattended run may spend before it ends as it is (ADR-043).
 MAX_RESTART_RECOVERIES = 2
+#: Routes that synthesize the specification and the plan instead of calling the planner.
+_SYNTHESIZED_ROUTES = frozenset({ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE})
 _RESTART_REASON = "interrupted by a factory restart"
 _RESTART_REPAIR_CONTEXT = RepairContext(
     trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
@@ -1299,7 +1300,7 @@ class WorkflowController:
             workspace.prepare()
             repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
             run = self._restart_at(run, WorkflowState.PLANNING)
-            if triage_result.provenance == "SYNTHESIZED":
+            if run.initial_route in _SYNTHESIZED_ROUTES:
                 return self._drive_synthesized(
                     run,
                     work_item,
@@ -1939,28 +1940,6 @@ class WorkflowController:
 
     # -- internal orchestration --------------------------------------------
 
-    def _synthesize_triage_result(
-        self, work_item: WorkItem, route_decision: RouteDecision
-    ) -> TriageResult:
-        if route_decision.selected_worker_complexity is None:
-            raise ValueError(
-                f"Route {route_decision.effective_route.value} requires selected worker complexity"
-            )
-        if route_decision.selected_risk is None:
-            raise ValueError(
-                f"Route {route_decision.effective_route.value} requires a selected risk"
-            )
-        return TriageResult(
-            factory_eligible=True,
-            complexity=route_decision.selected_worker_complexity,
-            risk=route_decision.selected_risk,
-            dependencies=[],
-            unknowns=[],
-            confidence=route_decision.confidence if route_decision.confidence is not None else 1.0,
-            risk_rationale=None,
-            provenance="SYNTHESIZED",
-        )
-
     def _synthesize_specification(self, work_item: WorkItem) -> Specification:
         return Specification(
             problem=f"SYNTHESIZED: {work_item.description}",
@@ -2060,35 +2039,13 @@ class WorkflowController:
         repository_profile: RepositoryProfile,
     ) -> FactoryRun:
         try:
-            workspace_path = str(workspace.path)
             run = self.transition(run, WorkflowState.TRIAGING)
-
-            # Route decision right after profiling while in TRIAGING, before triage agent
-            route_decision = determine_route(
-                work_item,
-                repository_profile,
-                self._config,
-            )
-            self._store.save_artifact(run.id, route_decision)
-            run = run.model_copy(
-                update={
-                    "initial_route": route_decision.initial_route,
-                    "effective_route": route_decision.effective_route,
-                    "route_decision": route_decision,
-                    "updated_at": utc_now(),
-                }
-            )
-            self._store.save_run(run)
-
-            # Record observability
-            run.performance.record_counter(
-                f"route.{route_decision.effective_route.value}",
-                1,
-                stage=WorkflowState.TRIAGING.value,
-                operation="routing",
+            triage_result = self._run_triage(run, work_item, workspace_path=str(workspace.path))
+            run, route_decision = self._decide_route(
+                run, work_item, repository_profile, triage_result
             )
 
-            # 1. Manual / Abstain route
+            # Unattended runs take FULL instead of manual triage.
             if (
                 route_decision.effective_route is ExecutionRoute.MANUAL_TRIAGE
                 and not run.unattended
@@ -2098,72 +2055,75 @@ class WorkflowController:
                     or f"routing selected manual triage: {route_decision.selected_option}"
                 )
                 raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
+            if not triage_result.factory_eligible and not run.unattended:
+                raise self._halt(
+                    run, WorkflowState.NEEDS_HUMAN, "triage marked this work item ineligible"
+                )
+            if self._approval_required(run, triage_result.risk):
+                raise self._halt(
+                    run,
+                    WorkflowState.NEEDS_HUMAN,
+                    f"risk {triage_result.risk} requires human approval",
+                )
 
-            # 2. FULL route. Unattended runs take it instead of manual triage.
-            if route_decision.effective_route in {
-                ExecutionRoute.FULL,
-                ExecutionRoute.MANUAL_TRIAGE,
-            }:
-                triage_result = self._run_triage(run, work_item, workspace_path=workspace_path)
-                if (
-                    route_decision.source != "disabled"
-                    and route_decision.selected_worker_complexity is not None
-                ):
-                    if COMPLEXITY_ORDER.index(
-                        route_decision.selected_worker_complexity
-                    ) > COMPLEXITY_ORDER.index(triage_result.complexity):
-                        triage_result = triage_result.model_copy(
-                            update={"complexity": route_decision.selected_worker_complexity}
-                        )
-                        self._store.save_artifact(run.id, triage_result)
-
-                if not triage_result.factory_eligible and not run.unattended:
-                    raise self._halt(
-                        run, WorkflowState.NEEDS_HUMAN, "triage marked this work item ineligible"
-                    )
-                if self._approval_required(run, triage_result.risk):
-                    raise self._halt(
-                        run,
-                        WorkflowState.NEEDS_HUMAN,
-                        f"risk {triage_result.risk} requires human approval",
-                    )
-
-                run = self.transition(run, WorkflowState.PLANNING)
-                return self._drive_from_planning(
+            run = self.transition(run, WorkflowState.PLANNING)
+            if route_decision.effective_route in _SYNTHESIZED_ROUTES:
+                # SINGLE skips the planner, tester and reviewer; CRITIQUE keeps the reviewer.
+                saved_calls = 3 if route_decision.effective_route is ExecutionRoute.SINGLE else 2
+                run.performance.record_counter(
+                    "route.saved_calls",
+                    saved_calls,
+                    stage=WorkflowState.TRIAGING.value,
+                    operation="routing",
+                )
+                return self._drive_synthesized(
                     run,
                     work_item,
                     triage_result,
-                    None,
+                    route_decision,
                     workspace,
                     source_repo,
                     repository_profile,
-                    route_decision=route_decision,
                 )
-
-            # 3. SINGLE or CRITIQUE route
-            saved_calls = 4 if route_decision.effective_route is ExecutionRoute.SINGLE else 3
-            run.performance.record_counter(
-                "route.saved_calls",
-                saved_calls,
-                stage=WorkflowState.TRIAGING.value,
-                operation="routing",
-            )
-
-            triage_result = self._synthesize_triage_result(work_item, route_decision)
-            self._store.save_artifact(run.id, triage_result)
-
-            run = self.transition(run, WorkflowState.PLANNING)
-            return self._drive_synthesized(
+            return self._drive_from_planning(
                 run,
                 work_item,
                 triage_result,
-                route_decision,
+                None,
                 workspace,
                 source_repo,
                 repository_profile,
+                route_decision=route_decision,
             )
         except _Halt as halt:
             return halt.run
+
+    def _decide_route(
+        self,
+        run: FactoryRun,
+        work_item: WorkItem,
+        repository_profile: RepositoryProfile,
+        triage_result: TriageResult,
+    ) -> tuple[FactoryRun, RouteDecision]:
+        """Pick the route from the triage result and record it on the run (ADR-037)."""
+        route_decision = determine_route(work_item, repository_profile, self._config, triage_result)
+        self._store.save_artifact(run.id, route_decision)
+        run = run.model_copy(
+            update={
+                "initial_route": route_decision.initial_route,
+                "effective_route": route_decision.effective_route,
+                "route_decision": route_decision,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.save_run(run)
+        run.performance.record_counter(
+            f"route.{route_decision.effective_route.value}",
+            1,
+            stage=WorkflowState.TRIAGING.value,
+            operation="routing",
+        )
+        return run, route_decision
 
     def _drive_synthesized(
         self,
@@ -3041,7 +3001,7 @@ class WorkflowController:
             # Monotonic post-implementation ratchets
             # 1. Evaluate unexpected scope against original synthesized scope
             # before any scope replan
-            if context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}:
+            if context.effective_route in _SYNTHESIZED_ROUTES:
                 original_scope = (
                     context.original_synthesized_scope
                     if context.original_synthesized_scope is not None
@@ -3107,7 +3067,7 @@ class WorkflowController:
             # Monotonic post-implementation ratchets (continued)
             # 2. Excessive changed files
             if len(evidence.changed_files) > self._config.routing.single_max_changed_files:
-                if context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}:
+                if context.effective_route in _SYNTHESIZED_ROUTES:
                     run = self._ratchet_route(
                         run,
                         context,
@@ -3709,7 +3669,7 @@ class WorkflowController:
         if (
             budget is not AttemptBudget.IMPLEMENTATION
             or not self._config.polish.enabled
-            or context.effective_route in {ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE}
+            or context.effective_route in _SYNTHESIZED_ROUTES
         ):
             return False
         if context.polish_attempted:

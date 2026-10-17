@@ -4,7 +4,7 @@ import hashlib
 import re
 from pathlib import PurePosixPath
 
-from .config import FactoryConfig, RoleModelConfig
+from .config import FactoryConfig, RoleModelConfig, RoutingOptionConfig
 from .governance import find_protected_matches
 from .models import (
     AgentRole,
@@ -14,6 +14,7 @@ from .models import (
     Risk,
     RouteDecision,
     RouteOption,
+    TriageResult,
     WorkItem,
 )
 
@@ -185,138 +186,83 @@ def find_legal_full_fallback(
     return None
 
 
+def _fits_triage(option: RoutingOptionConfig, triage: TriageResult) -> bool:
+    """Whether ``option`` is at least as strong as the triage complexity and risk."""
+    if option.complexity is not None and COMPLEXITY_ORDER.index(
+        option.complexity
+    ) < COMPLEXITY_ORDER.index(triage.complexity):
+        return False
+    return option.risk is None or RISK_ORDER.index(option.risk) >= RISK_ORDER.index(triage.risk)
+
+
+def _text_floors(
+    work_item: WorkItem,
+    repository_profile: RepositoryProfile,
+    config: FactoryConfig,
+) -> tuple[bool, bool]:
+    """Return whether the work item text blocks short routes, and whether it blocks SINGLE."""
+    named_paths = derive_named_paths(work_item)
+    labels = {lbl.casefold().strip() for lbl in work_item.labels}
+    version_files = set(repository_profile.version_files)
+    manifest_names = {"pyproject.toml", "package.json", "requirements.txt", "uv.lock"}
+    full_text = " ".join(
+        [
+            work_item.title,
+            work_item.description,
+            *work_item.acceptance_criteria,
+            *work_item.constraints,
+            *work_item.labels,
+        ]
+    )
+    blocks_short = (
+        not work_item.acceptance_criteria
+        or not config.repository.commands.verify
+        or bool(labels & {"research-required", "research", "needs-research", "full-only", "full"})
+        or bool(find_protected_matches(named_paths, config.repository.protected_file_patterns))
+        or any(
+            path in version_files or PurePosixPath(path).name in manifest_names
+            for path in named_paths
+        )
+        or any(
+            re.search(r"\b" + re.escape(term) + r"\b", full_text, re.IGNORECASE)
+            for term in config.routing.full_only_terms
+        )
+    )
+    blocks_single = not named_paths or bool(labels & {"no-single", "critique-or-full"})
+    return blocks_short, blocks_single
+
+
 def assess_safety_floors(
     work_item: WorkItem,
     repository_profile: RepositoryProfile,
     config: FactoryConfig,
+    triage: TriageResult,
 ) -> set[str]:
-    """Return the subset of configured option IDs that satisfy safety floors.
+    """Return the configured option IDs that the triage result and the safety floors allow.
 
-    Constraints:
-    - Explicit WorkItem risk requiring human approval (R2, R3): disallow SINGLE and CRITIQUE.
-    - Explicit WorkItem complexity (L2, L3): disallow SINGLE. Also disallow options
-      whose worker complexity is strictly lower than work_item.complexity.
-    - Missing acceptance criteria: disallow SINGLE.
-    - Missing verification commands: disallow SINGLE.
-    - Research-required labels: disallow SINGLE and CRITIQUE (FULL or MANUAL only).
-    - Forbidden labels (e.g. 'full-only', 'no-single'): filter accordingly.
-    - Protected/sensitive/manifest/version patterns mentioned in task prose:
-      disallow SINGLE and CRITIQUE.
+    - An option is legal only if its complexity and risk are not lower than the triage's.
+    - Triage risk that needs human approval disallows SINGLE and CRITIQUE.
+    - Missing acceptance criteria or verify commands, research or full-only labels,
+      protected or manifest files and ``full_only_terms`` disallow SINGLE and CRITIQUE.
+    - No named path or a no-single label disallows SINGLE.
+    - MANUAL_TRIAGE is always legal.
     """
+    blocks_short, blocks_single = _text_floors(work_item, repository_profile, config)
+    blocks_short = blocks_short or config.requires_human_approval(triage.risk)
     legal_ids: set[str] = set()
-
-    requires_human = False
-    if work_item.risk is not None:
-        requires_human = config.requires_human_approval(work_item.risk)
-
-    has_acceptance_criteria = bool(work_item.acceptance_criteria)
-    has_verify_commands = bool(config.repository.commands.verify)
-    named_paths = derive_named_paths(work_item)
-    has_narrow_scope = bool(named_paths)
-
-    normalized_labels = {lbl.casefold().strip() for lbl in work_item.labels}
-    research_required = bool(
-        normalized_labels.intersection({"research-required", "research", "needs-research"})
-    )
-    full_only = bool(normalized_labels.intersection({"full-only", "full"}))
-    no_single = bool(normalized_labels.intersection({"no-single", "critique-or-full"}))
-
-    touches_protected = bool(
-        find_protected_matches(named_paths, config.repository.protected_file_patterns)
-    )
-
-    version_files = set(repository_profile.version_files)
-    manifest_names = {"pyproject.toml", "package.json", "requirements.txt", "uv.lock"}
-    touches_manifest_or_version = any(
-        path in version_files or PurePosixPath(path).name in manifest_names for path in named_paths
-    )
-
-    sensitive_found = touches_protected or touches_manifest_or_version
-
-    # Check governance-sensitive terms across all prose and labels
-    prose_sources = [
-        work_item.title,
-        work_item.description,
-        *work_item.acceptance_criteria,
-        *work_item.constraints,
-        *work_item.labels,
-    ]
-    full_text = " ".join(prose_sources)
-    governance_sensitive = any(
-        re.search(r"\b" + re.escape(term) + r"\b", full_text, re.IGNORECASE)
-        for term in config.routing.full_only_terms
-    )
-
-    for opt_cfg in config.routing.options:
-        route = opt_cfg.route
-
-        # MANUAL_TRIAGE is always a safe floor option
-        if route is ExecutionRoute.MANUAL_TRIAGE:
-            legal_ids.add(opt_cfg.id)
+    for opt in config.routing.options:
+        if opt.route is ExecutionRoute.MANUAL_TRIAGE:
+            legal_ids.add(opt.id)
+        elif not _fits_triage(opt, triage):
             continue
-
-        # Check complexity lower-bound floor
-        if work_item.complexity is not None and opt_cfg.complexity is not None:
-            if COMPLEXITY_ORDER.index(opt_cfg.complexity) < COMPLEXITY_ORDER.index(
-                work_item.complexity
-            ):
-                continue
-
-        # Check risk lower-bound floor: explicit WorkItem risk is a lower floor
-        if work_item.risk is not None and opt_cfg.risk is not None:
-            if RISK_ORDER.index(opt_cfg.risk) < RISK_ORDER.index(work_item.risk):
-                continue
-
-        # Configured risk policy decides which routes are legal:
-        # An option whose risk requires human approval cannot run via SINGLE or CRITIQUE
-        option_requires_human = opt_cfg.risk is not None and config.requires_human_approval(
-            opt_cfg.risk
-        )
-
-        # FULL route is allowed unless constrained by complexity above
-        if route is ExecutionRoute.FULL:
-            legal_ids.add(opt_cfg.id)
-            continue
-
-        # CRITIQUE route checks
-        if route is ExecutionRoute.CRITIQUE:
-            if (
-                requires_human
-                or option_requires_human
-                or research_required
-                or full_only
-                or sensitive_found
-                or governance_sensitive
-            ):
-                continue
-            if not has_acceptance_criteria or not has_verify_commands:
-                continue
-            legal_ids.add(opt_cfg.id)
-            continue
-
-        # SINGLE route checks
-        if route is ExecutionRoute.SINGLE:
-            if not has_narrow_scope:
-                continue
-            if requires_human or option_requires_human:
-                continue
-            if not has_acceptance_criteria:
-                continue
-            if not has_verify_commands:
-                continue
-            if (
-                research_required
-                or full_only
-                or no_single
-                or sensitive_found
-                or governance_sensitive
-            ):
-                continue
-            if work_item.complexity in {Complexity.L2, Complexity.L3}:
-                continue
-            legal_ids.add(opt_cfg.id)
-            continue
-
+        elif opt.route is ExecutionRoute.FULL:
+            legal_ids.add(opt.id)
+        elif not (
+            blocks_short
+            or (opt.risk is not None and config.requires_human_approval(opt.risk))
+            or (opt.route is ExecutionRoute.SINGLE and blocks_single)
+        ):
+            legal_ids.add(opt.id)
     return legal_ids
 
 
@@ -333,16 +279,42 @@ def select_lightest_option(legal_options: list[RouteOption]) -> RouteOption:
     return min(legal_options, key=lambda opt: _ROUTE_WEIGHT[opt.route])
 
 
+def _route_decision(
+    work_item: WorkItem,
+    config: FactoryConfig,
+    offered: list[RouteOption],
+    chosen: RouteOption | None,
+    source: str,
+    fallback_reason: str | None = None,
+) -> RouteDecision:
+    route = chosen.route if chosen is not None else ExecutionRoute.MANUAL_TRIAGE
+    # A disabled decision takes FULL without applying the option's model profile.
+    detail = chosen if source != "disabled" else None
+    return RouteDecision(
+        work_item_id=work_item.id,
+        offered_options=offered,
+        selected_option=chosen.id if chosen is not None else "manual_triage",
+        initial_route=route,
+        effective_route=route,
+        selected_model_profile=detail.model_profile if detail is not None else None,
+        source=source,
+        confidence=1.0,
+        protocol_version=config.routing.rubric_version,
+        latency_ms=0.0,
+        request_hash=hashlib.sha256(
+            f"{work_item.id}:{work_item.title}:{work_item.description}".encode("utf-8")
+        ).hexdigest(),
+        fallback_reason=fallback_reason,
+    )
+
+
 def determine_route(
     work_item: WorkItem,
     repository_profile: RepositoryProfile,
     config: FactoryConfig,
+    triage: TriageResult,
 ) -> RouteDecision:
-    """Apply the safety floors and pick a route with a fixed rule (ADR-037)."""
-    request_hash = hashlib.sha256(
-        f"{work_item.id}:{work_item.title}:{work_item.description}".encode("utf-8")
-    ).hexdigest()
-
+    """Pick the lightest route the triage result and the safety floors allow (ADR-037)."""
     all_options = [
         RouteOption(
             id=opt.id,
@@ -354,111 +326,25 @@ def determine_route(
         )
         for opt in config.routing.options
     ]
-
-    legal_ids = assess_safety_floors(work_item, repository_profile, config)
-    offered_options = [opt for opt in all_options if opt.id in legal_ids]
-
-    # 1. When routing is disabled or not configured
     if not config.routing.enabled:
-        fallback_option = find_legal_full_fallback(offered_options)
-        if fallback_option is None:
-            return RouteDecision(
-                work_item_id=work_item.id,
-                offered_options=all_options,
-                selected_option="manual_triage",
-                initial_route=ExecutionRoute.MANUAL_TRIAGE,
-                effective_route=ExecutionRoute.MANUAL_TRIAGE,
-                selected_worker_complexity=None,
-                selected_risk=None,
-                selected_model_profile=None,
-                source="disabled",
-                confidence=1.0,
-                probabilities=None,
-                model_id=None,
-                protocol_version=config.routing.rubric_version,
-                latency_ms=0.0,
-                request_hash=request_hash,
-                fallback_reason=(
-                    "routing is disabled and no legal FULL option survived safety floors"
-                ),
-            )
-        return RouteDecision(
-            work_item_id=work_item.id,
-            offered_options=all_options,
-            selected_option=fallback_option.id,
-            initial_route=fallback_option.route,
-            effective_route=fallback_option.route,
-            selected_worker_complexity=None,
-            selected_risk=None,
-            selected_model_profile=None,
-            source="disabled",
-            confidence=1.0,
-            probabilities=None,
-            model_id=None,
-            protocol_version=config.routing.rubric_version,
-            latency_ms=0.0,
-            request_hash=request_hash,
-            fallback_reason="routing is disabled by configuration",
+        fallback = find_legal_full_fallback(all_options)
+        reason = (
+            "routing is disabled by configuration"
+            if fallback is not None
+            else "routing is disabled and no FULL option is configured"
         )
-
-    # 2. When routing is enabled:
-    # If no legal options exist, return MANUAL_TRIAGE
+        return _route_decision(work_item, config, all_options, fallback, "disabled", reason)
+    legal_ids = assess_safety_floors(work_item, repository_profile, config, triage)
+    offered_options = [opt for opt in all_options if opt.id in legal_ids]
     if not offered_options:
-        return RouteDecision(
-            work_item_id=work_item.id,
-            offered_options=all_options,
-            selected_option="manual_triage",
-            initial_route=ExecutionRoute.MANUAL_TRIAGE,
-            effective_route=ExecutionRoute.MANUAL_TRIAGE,
-            selected_worker_complexity=None,
-            selected_risk=None,
-            selected_model_profile=None,
-            source="safety_floor",
-            confidence=1.0,
-            protocol_version=config.routing.rubric_version,
-            latency_ms=0.0,
-            request_hash=request_hash,
-            fallback_reason="no legal options satisfied safety floors",
+        return _route_decision(
+            work_item,
+            config,
+            all_options,
+            None,
+            "safety_floor",
+            "no legal options satisfied safety floors",
         )
-
-    # If only one legal option exists, it is the route.
-    if len(offered_options) == 1:
-        chosen = offered_options[0]
-        return RouteDecision(
-            work_item_id=work_item.id,
-            offered_options=offered_options,
-            selected_option=chosen.id,
-            initial_route=chosen.route,
-            effective_route=chosen.route,
-            selected_worker_complexity=chosen.complexity,
-            selected_risk=chosen.risk,
-            selected_model_profile=chosen.model_profile,
-            source="single_option",
-            confidence=1.0,
-            probabilities={chosen.id: 1.0},
-            model_id=None,
-            protocol_version=config.routing.rubric_version,
-            latency_ms=0.0,
-            request_hash=request_hash,
-        )
-
-    # Several legal options: the safety floors already removed every unsafe
-    # route, so take the lightest one that is left.
-    chosen = select_lightest_option(offered_options)
-    return RouteDecision(
-        work_item_id=work_item.id,
-        offered_options=offered_options,
-        selected_option=chosen.id,
-        initial_route=chosen.route,
-        effective_route=chosen.route,
-        selected_worker_complexity=chosen.complexity,
-        selected_risk=chosen.risk,
-        selected_model_profile=chosen.model_profile,
-        source="rule",
-        confidence=1.0,
-        probabilities=None,
-        model_id=None,
-        protocol_version=config.routing.rubric_version,
-        latency_ms=0.0,
-        request_hash=request_hash,
+    return _route_decision(
+        work_item, config, offered_options, select_lightest_option(offered_options), "triage"
     )

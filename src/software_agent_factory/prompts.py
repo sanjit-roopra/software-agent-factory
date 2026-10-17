@@ -407,7 +407,17 @@ def _triage_instructions(risk_assessment: bool) -> str:
     return f"""Assess the work item.
 - Decide whether the factory can do the work.
 - Set complexity and risk.{rationale_rule}
-- List missing information."""
+- List missing information.
+
+Complexity and risk pick the route:
+- L0 or L1 with R0 (SINGLE): a mechanical change of 1-5 files that tests already cover, \
+such as a typo, a rename, a config value or a bug with a failing test.
+- L2 or R1 (CRITIQUE): a clear scope where logic can be subtly wrong, such as a small \
+feature or an edge-case fix. A reviewer from another model family checks it.
+- L3, R2 or R3 (FULL): an unclear scope, many modules or a new design. The planner \
+writes the spec and the plan.
+When unsure, pick the lower complexity and risk. The factory escalates automatically if \
+the change grows."""
 
 
 def _output_contract(

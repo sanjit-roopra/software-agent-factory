@@ -551,6 +551,7 @@ class WorkItem(VersionedModel):
     constraints: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
     priority: str | None = None
+    #: No longer used; triage sets complexity and risk. Kept so old work item files load.
     complexity: Complexity | None = None
     risk: Risk | None = None
     project_id: str | None = None
