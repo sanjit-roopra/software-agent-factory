@@ -2368,17 +2368,13 @@ def test_dashboard_project_usage_table_ends_with_the_list_price_estimate_column(
     ]
 
 
-def test_dashboard_overview_shows_the_list_price_estimate_through_the_money_helper() -> None:
-    """The overview reads ``list_price_usd`` from the server and formats it with
-    ``moneyText``, which shows "not reported" for a missing value. The Runs page no
-    longer dumps the nested ``metrics.usage`` object as ``[object Object]``."""
+def test_dashboard_overview_shows_the_week_cost_through_a_money_helper() -> None:
+    """The week's cost tile formats its USD figure with ``moneyText``, which shows "not
+    reported" for a missing value. The Runs page never dumps a nested object as
+    ``[object Object]``."""
     js = dashboard_assets.APP_JS
 
-    assert re.search(
-        r'id: "figure-list-price",\s*read: function \(overview\) '
-        r"\{ return overview\.list_price_usd; \},\s*format: moneyText",
-        js,
-    )
+    assert '{ id: "figure-week-cost", read: weekCost, format: weekMoney }' in js
     assert "[object Object]" not in js
 
 
@@ -2929,7 +2925,7 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
 
 #: What the run list view adds to a sanitized run summary: the outcome, the reason line,
 #: the models of the calls and their total length.
-RUN_SUMMARY_VIEW_FIELDS = {"outcome", "stage", "why", "models", "duration_ms"}
+RUN_SUMMARY_VIEW_FIELDS = {"outcome", "stage", "why", "models", "duration_ms", "tokens"}
 CALL_FIELD_ORDER = [
     "invocation_number",
     "role",

@@ -396,6 +396,39 @@ def test_tokens_last_24h_counts_only_calls_completed_after_the_cutoff(
     assert snapshot.tokens_last_24h == expected
 
 
+def test_daily_usage_puts_each_call_in_its_day_oldest_first(tmp_path: Path) -> None:
+    day = timedelta(days=1)
+    store = _fake_store(tmp_path)
+    store.add_run(
+        _run_with_calls(
+            "run",
+            _token_call(
+                1, KEY_FIGURES_NOW - timedelta(hours=1), usage=UsageMetrics(input_tokens=1)
+            ),
+            _token_call(
+                2,
+                KEY_FIGURES_NOW - day - timedelta(hours=1),
+                usage=UsageMetrics(list_price_estimate_usd=0.5),
+            ),
+            _token_call(
+                3,
+                KEY_FIGURES_NOW - 7 * day - timedelta(hours=1),
+                usage=UsageMetrics(input_tokens=1000),
+            ),
+            _token_call(
+                4, KEY_FIGURES_NOW + timedelta(hours=1), usage=UsageMetrics(input_tokens=9)
+            ),
+        )
+    )
+
+    snapshot = build_monitoring_snapshot(store, now=KEY_FIGURES_NOW)
+
+    assert len(snapshot.daily_usage) == 7
+    assert snapshot.daily_usage[-1].input_tokens == 1
+    assert snapshot.daily_usage[-2].list_price_estimate_usd == 0.5
+    assert [day.invocation_count for day in snapshot.daily_usage] == [0, 0, 0, 0, 0, 1, 1]
+
+
 def test_tokens_last_24h_adds_the_token_classes_of_a_call_but_not_reasoning(
     tmp_path: Path,
 ) -> None:

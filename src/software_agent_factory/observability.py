@@ -197,6 +197,9 @@ DEFAULT_PAGE_LIMIT = 100
 #: snapshot's own ``now`` so a fixed clock gives a fixed answer.
 KEY_FIGURE_WINDOW = timedelta(hours=24)
 
+#: How many days of usage the cost trend covers, one :class:`UsageSummary` a day.
+COST_TREND_DAYS = 7
+
 #: Conservative hard cap on how many ``run.json`` files one call to
 #: :func:`build_monitoring_snapshot` will open and parse, independent of
 #: ``limit``/``offset``. Directory enumeration to *find* candidates is cheap
@@ -716,6 +719,8 @@ class MonitoringSnapshot(VersionedModel):
     cutoff; a value a call did not report adds nothing. It is ``None`` when calls
     completed after the cutoff and none reported a counted token class, and ``0`` when
     no call did (unknown is never zero). All three cover only the scanned subset.
+    ``daily_usage`` sums the usage of the calls that completed on each of the last
+    ``COST_TREND_DAYS`` 24-hour periods before ``generated_at``, oldest first.
     """
 
     generated_at: UtcDateTime
@@ -731,6 +736,7 @@ class MonitoringSnapshot(VersionedModel):
     needs_human_count: int = Field(default=0, ge=0)
     failed_last_24h: int = Field(default=0, ge=0)
     tokens_last_24h: int | None = Field(default=0, ge=0)
+    daily_usage: list[UsageSummary] = Field(default_factory=list)
     attempts_by_role: dict[str, int] = Field(default_factory=dict)
     attempts_by_model: dict[str, int] = Field(default_factory=dict)
     metrics: AggregateMetrics
@@ -830,6 +836,7 @@ def build_monitoring_snapshot(
         needs_human_count=counts.escalated,
         failed_last_24h=_failed_since(scan.readable_runs, cutoff),
         tokens_last_24h=_tokens_since(scan.readable_runs, cutoff),
+        daily_usage=_daily_usage(scan.readable_runs, reference_time),
         attempts_by_role=attempts_by_role,
         attempts_by_model=attempts_by_model,
         metrics=metrics,
@@ -1206,6 +1213,21 @@ def _tokens_since(runs: list[FactoryRun], cutoff: datetime) -> int | None:
         if (tokens := _reported_tokens(invocation.usage)) is not None
     ]
     return sum(reported) if reported else None
+
+
+def _daily_usage(runs: list[FactoryRun], reference_time: datetime) -> list[UsageSummary]:
+    """The usage of the calls that completed in each of the last ``COST_TREND_DAYS`` days.
+
+    Day ``COST_TREND_DAYS - 1`` is the 24 hours before ``reference_time``; a call that
+    completed earlier, or after ``reference_time``, is left out.
+    """
+    days: list[list[InvocationRecord]] = [[] for _ in range(COST_TREND_DAYS)]
+    for run in runs:
+        for invocation in run.invocation_records:
+            days_ago = (reference_time - invocation.completed_at) // timedelta(days=1)
+            if 0 <= days_ago < COST_TREND_DAYS:
+                days[COST_TREND_DAYS - 1 - days_ago].append(invocation)
+    return [summarize_usage(day) for day in days]
 
 
 def _compute_attempt_tallies(
