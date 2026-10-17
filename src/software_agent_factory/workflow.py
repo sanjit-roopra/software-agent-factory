@@ -164,6 +164,7 @@ from .repository_profile import (
     profile_repository,
 )
 from .resume import (
+    escalation_route,
     is_valid_delivery_retry_context,
     is_valid_plan_decision_answers,
     is_valid_plan_decision_context,
@@ -200,26 +201,6 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
     {WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
 )
-#: States ``factory escalate`` takes a run out of, when nothing works on it (ADR-055).
-ESCALATABLE_STATES: frozenset[WorkflowState] = frozenset(
-    {
-        WorkflowState.PR_READY,
-        WorkflowState.PR_CREATED,
-        WorkflowState.CI_RUNNING,
-        WorkflowState.CI_DIAGNOSIS,
-        WorkflowState.NEEDS_HUMAN,
-        WorkflowState.DONE,
-    }
-)
-#: The route an operator escalation moves a run to (ADR-055). ``FULL`` stays ``FULL``.
-_ESCALATION_ROUTES: dict[ExecutionRoute, ExecutionRoute] = {
-    ExecutionRoute.SINGLE: ExecutionRoute.CRITIQUE,
-    ExecutionRoute.CRITIQUE: ExecutionRoute.FULL,
-    ExecutionRoute.FULL_REVIEW: ExecutionRoute.FULL,
-    ExecutionRoute.MANUAL_TRIAGE: ExecutionRoute.FULL,
-    ExecutionRoute.FULL: ExecutionRoute.FULL,
-}
-
 #: CI failure categories that may legitimately be repaired by another code
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
 #: operator problem, not a code problem, and escalates with evidence.
@@ -356,20 +337,6 @@ def is_run_finished(run: FactoryRun) -> bool:
 _PLANNING_RESULT_REQUEST = (
     "Return a complete PlanningResult JSON object with the specification and the execution plan."
 )
-
-
-def escalation_route(run: FactoryRun) -> ExecutionRoute | None:
-    """The route ``factory escalate`` moves ``run`` to, or ``None`` when it cannot escalate.
-
-    It does not check for a live process: the workspace lock does that (ADR-055).
-    """
-    if (
-        run.state not in ESCALATABLE_STATES
-        or run.merge_commit_sha is not None
-        or run.route_decision is None
-    ):
-        return None
-    return _ESCALATION_ROUTES[run.route_decision.effective_route]
 
 
 def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:

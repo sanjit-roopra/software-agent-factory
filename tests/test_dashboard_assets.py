@@ -1132,6 +1132,7 @@ def test_each_conflict_reason_has_the_message_the_plan_names() -> None:
         "wrong_action": "this run needs a different action, reload the page",
         "expired": "approval expired, approve again",
         "not_active": "this run has already finished",
+        "not_escalatable": "this run cannot escalate now, reload the page",
     }
     run_changed = {"stale_episode", "stale_fingerprint", "not_waiting"}
     assert set(re.findall(r"(\w+): RUN_CHANGED_TEXT", literal)) == run_changed
@@ -2283,6 +2284,36 @@ def test_another_run_starts_the_steer_box_empty() -> None:
     assert "action: STEER_ACTION" in send
     assert "payload: { note: note.value }" in send
     assert "Note saved for the next agent call." in send
+
+
+def test_the_escalate_box_names_the_route_and_shows_only_when_the_run_can_escalate() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert '<section id="run-escalate" class="card steer"' in html
+    assert re.search(r'<textarea id="run-escalate-note" rows="3" maxlength="2000"', html)
+    assert '<span id="run-escalate-status" class="retry-note" role="status"></span>' in html
+    assert 'escalateControls().send.addEventListener("click", onEscalateSend)' in _JS
+    render = function_source(_JS, "renderEscalateControl")
+    assert 'const key = runId !== null && route !== "" ? runId : "";' in render
+    assert 'controls.send.textContent = "Escalate to " + route;' in render
+    assert 'controls.box.hidden = key === "";' in render
+    assert "renderEscalateControl(detail, runId);" in _JS
+    send = function_source(_JS, "onEscalateSend")
+    assert "action: ESCALATE_ACTION" in send
+    assert "payload: { note: note.value }" in send
+
+
+def test_escalate_refusals_have_their_own_words() -> None:
+    calls = [
+        JsCall("failureMessage", ({"status": 400, "body": {}}, "escalate")),
+        JsCall(
+            "failureMessage", ({"status": 409, "body": {"reason": "not_escalatable"}}, "escalate")
+        ),
+    ]
+    values = [result.value for result in run_functions(_JS, calls)]
+    assert values == [
+        "the note is empty, too long or holds a secret",
+        "this run cannot escalate now, reload the page",
+    ]
 
 
 def test_steer_refusals_have_their_own_words() -> None:

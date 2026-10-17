@@ -25,6 +25,8 @@ from factory_testing import REPLY_POLICY
 
 from software_agent_factory import dashboard
 from software_agent_factory.cli import (
+    RuntimeChoice,
+    build_escalator,
     build_resume_request_reader,
     build_resume_requester,
     build_resume_run_reader,
@@ -44,6 +46,7 @@ from software_agent_factory.models import (
     DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
+    ExecutionRoute,
     FactoryRun,
     PlanDecisionAnswer,
     PlanDecisionContext,
@@ -51,8 +54,10 @@ from software_agent_factory.models import (
     Risk,
     RiskApprovalContext,
     RiskRationale,
+    RouteDecision,
     WorkflowState,
 )
+from software_agent_factory.observability import build_run_detail
 from software_agent_factory.resume import (
     MAX_PLAN_DECISION_ANSWER_CHARS,
     compute_approval_context_fingerprint,
@@ -315,6 +320,8 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
         requester: Callable[[str, DashboardResumeRequest], ResumeRequestResult] | None = None,
         actions: bool = True,
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        escalate: bool = True,
+        run_detail: dict[str, object] | None = None,
     ) -> Rig:
         stored = run if run is not None else _run()
         store = FileRunStore(tmp_path)
@@ -323,7 +330,7 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
         server = create_server(
             DashboardConfig(
                 snapshot_provider=lambda *, limit, offset: {},
-                run_detail_provider=lambda run_id: None,
+                run_detail_provider=lambda run_id: run_detail,
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),
                     requester=requester or build_resume_requester(store),
@@ -331,6 +338,11 @@ def make_rig(tmp_path: Path) -> Iterator[RigFactory]:
                     clock=lambda: NOW,
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
+                    escalator=build_escalator(
+                        store, tmp_path / "repo", RuntimeChoice.FAKE, tmp_path, None
+                    )
+                    if escalate
+                    else None,
                 )
                 if actions
                 else None,
@@ -1544,3 +1556,133 @@ def test_a_bad_steer_note_is_refused_and_writes_nothing(
         status, _ = rig.post(path, body)
 
     assert status == expected
+
+
+# -- escalate (ADR-055) -------------------------------------------------------------------
+
+ESCALATE_ACTION = "escalate"
+
+
+def _finished_run(**updates: object) -> FactoryRun:
+    decision = RouteDecision(
+        work_item_id=WORK_ITEM_ID,
+        offered_options=[],
+        selected_option="single",
+        initial_route=ExecutionRoute.SINGLE,
+        effective_route=ExecutionRoute.SINGLE,
+        source="test",
+        request_hash="a" * 64,
+    )
+    run = FactoryRun(
+        id=RUN_ID, work_item_id=WORK_ITEM_ID, state=WorkflowState.DONE, route_decision=decision
+    )
+    return run.model_copy(update=updates)
+
+
+@pytest.fixture
+def popen_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], dict[str, object]]]:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda command, **kwargs: calls.append((command, kwargs))
+    )
+    return calls
+
+
+def test_an_escalation_starts_a_detached_factory_escalate(
+    make_rig: RigFactory, popen_calls: list[tuple[list[str], dict[str, object]]]
+) -> None:
+    rig = make_rig(_finished_run())
+
+    with rig.assert_writes_nothing():
+        status, payload = rig.post(_path(ESCALATE_ACTION), {"note": " -Use the cache. "})
+
+    assert (status, payload) == (202, {"status": "accepted", "requested_at": NOW.isoformat()})
+    ((command, kwargs),) = popen_calls
+    assert command[2:] == [
+        "software_agent_factory",
+        "escalate",
+        RUN_ID,
+        "--note=-Use the cache.",
+        "--repo",
+        str(rig.data_dir / "repo"),
+        "--runtime",
+        "fake",
+        "--data-dir",
+        str(rig.data_dir),
+    ]
+    assert kwargs["start_new_session"] is True
+
+
+@pytest.mark.parametrize(
+    ("run", "path", "body", "expected"),
+    [
+        (_finished_run(merge_commit_sha="a" * 40), _path(ESCALATE_ACTION), {"note": "ok"}, 409),
+        (
+            _finished_run(state=WorkflowState.IMPLEMENTING),
+            _path(ESCALATE_ACTION),
+            {"note": "x"},
+            409,
+        ),
+        (_finished_run(), _path(ESCALATE_ACTION, MISSING_RUN), {"note": "ok"}, 404),
+        (_finished_run(), _path(ESCALATE_ACTION, "bad%21id"), {"note": "ok"}, 400),
+        (_finished_run(), _path(ESCALATE_ACTION), {"note": "   "}, 400),
+    ],
+)
+def test_a_bad_escalation_is_refused_and_starts_nothing(
+    make_rig: RigFactory,
+    popen_calls: list[tuple[list[str], dict[str, object]]],
+    run: FactoryRun,
+    path: str,
+    body: object,
+    expected: int,
+) -> None:
+    rig = make_rig(run)
+
+    status, payload = rig.post(path, body)
+
+    assert status == expected
+    if expected == 409:
+        assert payload[REASON] == "not_escalatable"
+    assert popen_calls == []
+
+
+def _detail(rig: Rig) -> Any:
+    conn = http.client.HTTPConnection(LOOPBACK, rig.port, timeout=5)
+    try:
+        conn.request("GET", RUN_PATH, headers={TOKEN_HEADER: rig.server.token})
+        return json.loads(conn.getresponse().read())
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("escalate", [True, False])
+def test_the_run_page_offers_escalate_only_where_the_server_can_start_one(
+    make_rig: RigFactory, escalate: bool
+) -> None:
+    detail: dict[str, object] = {"run_id": RUN_ID, "state": "DONE", "escalation_route": "CRITIQUE"}
+    rig = make_rig(_finished_run(), escalate=escalate, run_detail=detail)
+
+    assert _detail(rig).get("escalation_route") == ("CRITIQUE" if escalate else None)
+
+
+def test_the_run_detail_names_the_route_an_escalation_moves_to(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(_finished_run())
+
+    detail = build_run_detail(store, RUN_ID, reply_policy=REPLY_POLICY)
+
+    assert detail is not None
+    assert detail.escalation_route is ExecutionRoute.CRITIQUE
+
+
+def test_an_escalation_passes_the_dashboard_config_on(
+    tmp_path: Path, popen_calls: list[tuple[list[str], dict[str, object]]]
+) -> None:
+    store = FileRunStore(tmp_path)
+    store.save_run(_finished_run())
+    config = tmp_path / "factory.yaml"
+
+    escalate = build_escalator(store, tmp_path, RuntimeChoice.PI, tmp_path, config)
+
+    assert escalate(RUN_ID, "note") == "started"
+    assert popen_calls[0][0][-4:] == ["--data-dir", str(tmp_path), "--config", str(config)]

@@ -139,6 +139,7 @@ RUN_DETAIL_FIELDS: frozenset[str] = (RUN_SUMMARY_FIELDS - {_CALLS_FIELD}) | froz
         "verification",
         "artifacts",
         "escalation",
+        "escalation_route",
     }
 )
 
@@ -371,6 +372,7 @@ _RUN_FIELD_CHECKS: dict[str, Callable[[Any], bool]] = {
     ),
     "initial_route": lambda value: _short_token(value) is not None,
     "effective_route": lambda value: _short_token(value) is not None,
+    "escalation_route": lambda value: _short_token(value) is not None,
     "active_role": lambda value: _short_token(value) is not None,
     "resume_classification": lambda value: value in RESUME_CLASSIFICATIONS,
 }

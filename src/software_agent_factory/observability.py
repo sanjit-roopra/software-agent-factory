@@ -132,7 +132,7 @@ from .models import (
     utc_now,
 )
 from .redaction import redact_secrets
-from .resume import resume_refusal_within
+from .resume import escalation_route, resume_refusal_within
 from .setup_run import SETUP_WORKTREE_NAME
 from .store import ARTIFACT_FILENAMES
 from .transcripts import read_call_tool_calls
@@ -624,6 +624,8 @@ class RunDetail(ModelBase):
     unattended: bool = False
     needs_look: list[str] = Field(default_factory=list)
     restart_recoveries: int = Field(default=0, ge=0)
+    #: The route ``factory escalate`` would move the run to, or ``None`` (ADR-055).
+    escalation_route: ExecutionRoute | None = None
 
 
 class FirstPassSuccessMetric(ModelBase):
@@ -1806,6 +1808,7 @@ def build_run_detail(
         verification=_verification_summary(verification),
         artifacts=_artifact_inventory(store, run.id),
         escalation=_escalation_summary(run, run.escalation, observed_at, reply_policy),
+        escalation_route=escalation_route(run),
         attempts=[
             RunAttemptSummary(
                 attempt_number=attempt.attempt_number,

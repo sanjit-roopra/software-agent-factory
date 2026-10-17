@@ -66,6 +66,8 @@ if TYPE_CHECKING:
     from .agents import AgentRuntime
     from .config import FactoryConfig
     from .dashboard.snapshot import (
+        EscalateRequester,
+        EscalateRequestResult,
         ResumeRequester,
         ResumeRequestReader,
         ResumeRequestResult,
@@ -1233,6 +1235,47 @@ def build_steer_requester(store: FileRunStore) -> SteerRequester:
     return steer
 
 
+def build_escalator(
+    store: FileRunStore,
+    repo: Path,
+    runtime: RuntimeChoice,
+    data_dir: Path,
+    config: Path | None,
+) -> EscalateRequester:
+    """The requester of the dashboard's escalate route: a detached ``factory escalate``.
+
+    The dashboard never drives a run, so the escalation runs as its own process that outlives
+    the request. That command takes the workspace lock and refuses a run a process works on.
+    """
+    import subprocess
+
+    from .resume import escalation_route
+
+    def escalate(run_id: str, note: str) -> EscalateRequestResult:
+        try:
+            run = store.load_run(run_id)
+        except (FileNotFoundError, ValueError):
+            return "run_missing"
+        if escalation_route(run) is None:
+            return "not_escalatable"
+        command = [sys.executable, "-m", "software_agent_factory", "escalate", run_id]
+        # ``--note=`` keeps a note that starts with a dash from reading as an option.
+        command += [f"--note={note}", "--repo", str(repo), "--runtime", runtime.value]
+        command += ["--data-dir", str(data_dir)]
+        if config is not None:
+            command += ["--config", str(config)]
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return "started"
+
+    return escalate
+
+
 def build_stop_requester(store: FileRunStore) -> StopRequester:
     """The requester of the dashboard's stop route."""
 
@@ -1384,14 +1427,23 @@ def dashboard_command(
         min=1,
         help="Hard cap on how many run files one dashboard request parses.",
     ),
+    repo: Path = typer.Option(
+        None, "--repo", help="Target Git repository. With it, the run page can escalate a run."
+    ),
+    runtime: RuntimeChoice = typer.Option(
+        RuntimeChoice.FAKE,
+        "--runtime",
+        help="Agent runtime of an escalation. " + RUNTIME_OPTION_HELP,
+    ),
 ) -> None:
     """Serve the local dashboard until interrupted (ADR-016, ADR-033).
 
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and five ``POST`` routes that queue an approval, plan answers, a
-    publish retry, a stop or a steer note for the factory. It is protected by a token generated
+    and six ``POST`` routes that queue an approval, plan answers, a
+    publish retry, a stop or a steer note for the factory, or start an escalation (only with
+    ``--repo``). It is protected by a token generated
     for this process; the tokenized URL is printed to stdout once and never
     written to the log.
     Ctrl-C stops it and closes the socket.
@@ -1569,6 +1621,9 @@ def dashboard_command(
                     reply_policy=reply_policy,
                     stopper=build_stop_requester(store),
                     steerer=build_steer_requester(store),
+                    escalator=None
+                    if repo is None
+                    else build_escalator(store, repo, runtime, factory_config.data_dir, config),
                 ),
                 host=LOOPBACK_HOST,
                 port=port,
@@ -1579,7 +1634,8 @@ def dashboard_command(
 
     typer.echo(f"dashboard: {server.dashboard_url}")
     typer.echo(
-        "loopback only. it can queue an approval, answers, a retry, a stop or a note. "
+        "loopback only. it can queue an approval, answers, a retry, a stop or a note, "
+        "or escalate a run. "
         "press Ctrl-C to quit."
     )
     if open_browser:

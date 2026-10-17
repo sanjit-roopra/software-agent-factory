@@ -54,7 +54,8 @@ def render_index_html(*, token: str) -> str:
     <header>
       <p class="brand">Software Agent Factory</p>
       <p class="subtitle">
-        Local dashboard &mdash; loopback only. Can approve, answer, retry, stop or steer a run.
+        Local dashboard &mdash; loopback only. Can approve, answer, retry, stop, steer or
+        escalate a run.
       </p>
       <button id="theme-toggle" type="button">Switch theme</button>
       <button id="keys-help-open" type="button" aria-keyshortcuts="?">Keyboard shortcuts</button>
@@ -202,6 +203,19 @@ def render_index_html(*, token: str) -> str:
           <p class="steer-actions">
             <button id="run-steer-send" type="button">Send note</button>
             <span id="run-steer-status" class="retry-note" role="status"></span>
+          </p>
+        </section>
+        <section id="run-escalate" class="card steer" aria-labelledby="run-escalate-label" hidden>
+          <label id="run-escalate-label" for="run-escalate-note">Escalate this run</label>
+          <textarea id="run-escalate-note" rows="3" maxlength="2000"
+            placeholder="Tell the agents what to change."
+            aria-describedby="run-escalate-hint"></textarea>
+          <p id="run-escalate-hint" class="retry-note">
+            The factory does the work again one route higher, on the same branch and pull request.
+          </p>
+          <p class="steer-actions">
+            <button id="run-escalate-send" type="button">Escalate</button>
+            <span id="run-escalate-status" class="retry-note" role="status"></span>
           </p>
         </section>
         <div id="run-tabs" class="tabs" role="tablist" aria-label="Run sections">

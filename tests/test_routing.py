@@ -31,6 +31,7 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
+from software_agent_factory.resume import escalation_route
 from software_agent_factory.routing import (
     ModelRouter,
     assess_safety_floors,
@@ -39,7 +40,7 @@ from software_agent_factory.routing import (
     find_legal_full_fallback,
 )
 from software_agent_factory.store import FileRunStore
-from software_agent_factory.workflow import WorkflowController, _RunContext, escalation_route
+from software_agent_factory.workflow import WorkflowController, _RunContext
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError
 
 

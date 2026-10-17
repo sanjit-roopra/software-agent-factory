@@ -2345,6 +2345,7 @@
   const RETRY_ACTION = "retry";
   const STOP_ACTION = "cancel";
   const STEER_ACTION = "steer";
+  const ESCALATE_ACTION = "escalate";
   const FAILURE_TEXT = "the request failed, try again";
   const RUN_CHANGED_TEXT = "the run changed, review again";
   const APPROVE_TITLE_ID = "approve-dialog-title";
@@ -2369,7 +2370,8 @@
     stale_episode: RUN_CHANGED_TEXT,
     stale_fingerprint: RUN_CHANGED_TEXT,
     not_waiting: RUN_CHANGED_TEXT,
-    not_active: "this run has already finished"
+    not_active: "this run has already finished",
+    not_escalatable: "this run cannot escalate now, reload the page"
   };
   // The same for answers: only the two reasons that name the action differ.
   const ANSWER_CONFLICT_MESSAGES = {
@@ -2427,7 +2429,8 @@
     if (outcome.status === CONFLICT_STATUS) {
       return lookupMessage(conflictMessages(action), outcome.body.reason);
     }
-    if (outcome.status === BAD_REQUEST_STATUS && action === STEER_ACTION) {
+    if (outcome.status === BAD_REQUEST_STATUS &&
+      (action === STEER_ACTION || action === ESCALATE_ACTION)) {
       return "the note is empty, too long or holds a secret";
     }
     if (outcome.status === BAD_REQUEST_STATUS && isDecisionNumber(outcome.body.decision)) {
@@ -2771,6 +2774,46 @@
     steerControls().send.addEventListener("click", onSteerSend);
   }
 
+  // ---- Run detail: escalate (ADR-055) ---------------------------------------
+
+  function escalateControls() {
+    return {
+      box: document.getElementById("run-escalate"),
+      note: document.getElementById("run-escalate-note"),
+      send: document.getElementById("run-escalate-send"),
+      status: document.getElementById("run-escalate-status")
+    };
+  }
+
+  // Shown while the server says the run can escalate, and names the route it moves to.
+  function renderEscalateControl(detail, runId) {
+    const controls = escalateControls();
+    const route = typeof detail.escalation_route === "string" ? detail.escalation_route : "";
+    const key = runId !== null && route !== "" ? runId : "";
+    if (controls.box.dataset.runId !== key) {
+      controls.box.dataset.runId = key;
+      controls.note.value = "";
+      controls.status.textContent = "";
+      setDisabled([controls.note, controls.send], false);
+    }
+    controls.send.textContent = "Escalate to " + route;
+    controls.box.hidden = key === "";
+  }
+
+  function onEscalateSend() {
+    const { box, note, send, status } = escalateControls();
+    status.textContent = "";
+    void sendAction({
+      runId: box.dataset.runId,
+      action: ESCALATE_ACTION,
+      payload: { note: note.value },
+      controls: [note, send],
+      onAccepted: function () {
+        status.textContent = "Escalation started.";
+      }
+    });
+  }
+
   function answersReady(inputs) {
     return inputs.every(function (input) {
       const length = input.value.trim().length;
@@ -3104,6 +3147,7 @@
     renderPullRequestLink(detail.pull_request_url);
     renderStopControl(detail, runId);
     renderSteerControl(detail, runId);
+    renderEscalateControl(detail, runId);
     renderFullReason(detail, runId);
     syncStats(document.getElementById("run-key-numbers"), keyNumberCards(detail.totals || {}));
   }
@@ -4478,6 +4522,7 @@
     });
     bindStopControl();
     bindSteerControl();
+    escalateControls().send.addEventListener("click", onEscalateSend);
     bindSearch();
     bindRunTabs();
     bindKeys();

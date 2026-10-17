@@ -415,6 +415,8 @@ factory dashboard --port 0 --open-browser
 | `--port <int>` | `8765` | Loopback port. `0` asks the OS for a free port. |
 | `--open-browser` | off | Open the tokenized link in the default browser. |
 | `--max-scanned-runs <int>` | `1000` | Hard cap on run files parsed per request. |
+| `--repo <path>` | none | Target repository. With it, the run page can escalate a run. |
+| `--runtime <name>` | `fake` | Agent runtime of an escalation the run page starts. |
 | `--config <path>` | packaged | Config YAML. |
 | `--data-dir <path>` | configured | Data directory override. |
 
