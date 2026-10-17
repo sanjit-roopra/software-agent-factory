@@ -1596,7 +1596,7 @@ def test_escalation_moves_single_to_critique_with_the_note(
         store.save_run(run.model_copy(update={"state": finished, "completed_at": utc_now()}))
     runtime.requests.clear()
 
-    run = controller.escalate(run.id, source_repo, "Also handle tabs.")
+    run = controller.escalate(run.id, "Also handle tabs.")
 
     assert run.state is WorkflowState.PR_READY
     assert run.initial_route is ExecutionRoute.SINGLE
@@ -1627,7 +1627,7 @@ def test_escalation_moves_critique_to_full_and_replans_with_a_fresh_budget(
     assert run.effective_route is ExecutionRoute.CRITIQUE
     runtime.requests.clear()
 
-    run = controller.escalate(run.id, source_repo, "Use the shared validator.")
+    run = controller.escalate(run.id, "Use the shared validator.")
 
     assert run.failure_reason is None
     assert run.state is WorkflowState.PR_READY
@@ -1638,7 +1638,7 @@ def test_escalation_moves_critique_to_full_and_replans_with_a_fresh_budget(
     assert "Use the shared validator." in planner.repair_context
     assert run.attempt_records[-1].triggered_by is AttemptTrigger.OPERATOR
 
-    run = controller.escalate(run.id, source_repo, "Once more.")
+    run = controller.escalate(run.id, "Once more.")
 
     assert run.effective_route is ExecutionRoute.FULL
     assert run.route_decision is not None
@@ -1655,17 +1655,20 @@ def test_escalation_refuses_a_merged_failed_or_locked_run(
     for update in ({"merge_commit_sha": "a" * 40}, {"state": WorkflowState.FAILED}):
         store.save_run(run.model_copy(update=update))
         with pytest.raises(ValueError, match="cannot escalate"):
-            controller.escalate(run.id, source_repo, "note")
+            controller.escalate(run.id, "note")
     store.save_run(run.model_copy(update={"branch_name": "factory/other"}))
     with pytest.raises(ValueError, match="workspace is missing or changed"):
-        controller.escalate(run.id, source_repo, "note")
+        controller.escalate(run.id, "note")
+    store.save_run(run.model_copy(update={"source_repo": None}))
+    with pytest.raises(ValueError, match="does not record its repository"):
+        controller.escalate(run.id, "note")
 
     store.save_run(run)
     holder = GitWorktreeWorkspace(data_dir, source_repo, run.work_item_id, branch_prefix="factory/")
     holder.acquire_lock()
     try:
         with pytest.raises(WorkspaceLockError):
-            controller.escalate(run.id, source_repo, "note")
+            controller.escalate(run.id, "note")
     finally:
         holder.release_lock()
     assert store.load_run(run.id).state is WorkflowState.PR_READY

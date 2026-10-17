@@ -77,6 +77,7 @@ from .models import (
     FactoryRun,
     HaltReasonCode,
     ResumeClassification,
+    RunLaunch,
     WorkflowState,
     WorkItem,
     utc_now,
@@ -288,6 +289,7 @@ class FactoryService:
     controller: WorkflowController | None = None
     github_client: GitHubClient | None = None
     setup_trigger: SetupTrigger | None = None
+    launch: RunLaunch | None = None
 
     def __post_init__(self) -> None:
         if not self.config.scheduler.enabled:
@@ -301,6 +303,7 @@ class FactoryService:
                 self.store,
                 self.runtime,
                 github_client=self.github_client,
+                launch=self.launch,
             )
         if self.github_client is None:
             self.github_client = (

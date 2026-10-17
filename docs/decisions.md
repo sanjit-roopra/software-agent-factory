@@ -29,6 +29,11 @@ a run, and `DONE`, `NEEDS_HUMAN` and `FAILED` allow no transition.
   before it do not count, so an old used-up budget does not end the escalation.
 - The run keeps its worktree, branch and pull request. It publishes to the same
   pull request and watches CI as usual. It never stops for a person on its own.
+- Each new run records its source repository (`source_repo`) and its command
+  settings (`launch`: the `--runtime` choice, model profile and config path).
+  The command reads them, so it takes no `--repo` or `--runtime`, and a run
+  started on pi escalates on pi. Roles that name their own runtime keep it from
+  the config. A run recorded before these fields cannot escalate.
 
 ### Consequences
 

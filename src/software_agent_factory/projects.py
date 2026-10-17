@@ -65,6 +65,7 @@ from .models import (
     ProjectTask,
     ProjectTaskExecution,
     ProjectTaskState,
+    RunLaunch,
     VersionedModel,
     WorkflowState,
     WorkItem,
@@ -300,6 +301,7 @@ class ProjectRunner:
         repository_verifier: RepositoryVerifier | None = None,
         delivery_repository_resolver: Callable[[Path], str] | None = None,
         delivery_base_resolver: Callable[[Path, str], DeliveryTarget] | None = None,
+        launch: RunLaunch | None = None,
     ) -> None:
         if not config.merge.enabled and (config.pull_request.enabled or config.ci.enabled):
             raise ValueError(
@@ -312,7 +314,9 @@ class ProjectRunner:
         self._runtime = runtime
         self._project_store = project_store or FileProjectStore(config.data_dir)
         self._github = github_client or GitHubClient(token=resolve_github_token())
-        self._configured_controller = controller or WorkflowController(config, run_store, runtime)
+        self._configured_controller = controller or WorkflowController(
+            config, run_store, runtime, launch=launch
+        )
         self._controller = self._configured_controller
         self._repository_verifier = repository_verifier or RepositoryVerifier()
         self._router = ModelRouter(config)

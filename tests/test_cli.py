@@ -1365,16 +1365,31 @@ def test_cli_deferred_seam_and_getattr(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     source_repo: Path, data_dir: Path
 ) -> None:
-    common = ["--repo", str(source_repo), "--data-dir", str(data_dir)]
     first = runner.invoke(
-        app, ["run", "--title", "Test task", "--description", "A demonstration task", *common]
+        app,
+        [
+            "run",
+            "--title",
+            "Test task",
+            "--description",
+            "A demonstration task",
+            "--repo",
+            str(source_repo),
+            "--data-dir",
+            str(data_dir),
+        ],
     )
     assert first.exit_code == 0, first.output
     run_id = first.output.split("run id: ")[1].split()[0]
 
+    from software_agent_factory.models import RunLaunch
     from software_agent_factory.store import FileRunStore
 
-    common = [*common, "--runtime", "fake"]
+    store = FileRunStore(data_dir)
+    started = store.load_run(run_id)
+    assert started.source_repo == str(source_repo.resolve())
+    assert started.launch == RunLaunch(runtime="fake")
+    common = ["--data-dir", str(data_dir)]
     result = runner.invoke(app, ["escalate", run_id, "--note", "Handle tabs too.", *common])
 
     assert result.exit_code == 0, result.output
@@ -1386,8 +1401,11 @@ def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
     missing = runner.invoke(app, ["escalate", "run-missing", "--note", "x", *common])
     assert missing.exit_code == 1
     assert "no such run" in missing.output
-    store = FileRunStore(data_dir)
     store.save_run(store.load_run(run_id).model_copy(update={"merge_commit_sha": "a" * 40}))
     merged = runner.invoke(app, ["escalate", run_id, "--note", "x", *common])
     assert merged.exit_code == 1
     assert "cannot escalate run" in merged.output
+    store.save_run(store.load_run(run_id).model_copy(update={"launch": None}))
+    old = runner.invoke(app, ["escalate", run_id, "--note", "x", *common])
+    assert old.exit_code == 1
+    assert "started before runs recorded their settings" in old.output

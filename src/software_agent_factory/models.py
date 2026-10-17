@@ -1039,6 +1039,17 @@ class AttemptRecord(ModelBase):
         return self
 
 
+class RunLaunch(ModelBase):
+    """The command settings a run started with, so ``factory escalate`` builds the same
+    controller again (ADR-055). Roles that name their own runtime take it from the config."""
+
+    #: The ``--runtime`` choice: the runtime of every role that names none.
+    runtime: str = Field(min_length=1)
+    model_profile: str = "default"
+    #: ``None`` for the packaged configuration.
+    config_path: str | None = None
+
+
 class RunLease(ModelBase):
     """Ownership marker for a run held by one local process.
 
@@ -1760,6 +1771,10 @@ class FactoryRun(VersionedModel):
     #: Attempt records before this index do not count against attempt budgets.
     #: An operator escalation moves it, so it starts fresh budgets (ADR-055).
     budget_start: int = Field(default=0, ge=0)
+    #: The repository the run started from and the command settings (ADR-055).
+    #: ``None`` on runs recorded before ``factory escalate`` read them.
+    source_repo: str | None = None
+    launch: RunLaunch | None = None
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
     route_decision: RouteDecision | None = None

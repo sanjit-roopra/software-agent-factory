@@ -136,6 +136,7 @@ from .models import (
     ReviewSourceLocation,
     Risk,
     RouteDecision,
+    RunLaunch,
     RunLease,
     RunSteerNote,
     RunStopRequest,
@@ -521,10 +522,12 @@ class WorkflowController:
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
         toolchain_inventory: Callable[[Path, RepositoryProfile], ToolchainInventory] | None = None,
         github_client: GitHubClient | None = None,
+        launch: RunLaunch | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._runtime = runtime
+        self._launch = launch
         self._router = router if router is not None else ModelRouter(config)
         self._command_runner = verifier if verifier is not None else DeterministicVerifier()
         self._verifier = (
@@ -1006,6 +1009,8 @@ class WorkflowController:
             risk_assessment_enabled=self._config.risk_assessment.enabled,
             unattended=self._config.factory.unattended,
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
+            source_repo=str(source_repo.expanduser().resolve()),
+            launch=self._launch,
         )
         if not run.risk_assessment_enabled:
             logger.warning(
@@ -1866,7 +1871,7 @@ class WorkflowController:
         run = self._transition_reopened(run)
         return self._publish_and_observe(run, context)
 
-    def escalate(self, run_id: str, source_repo: Path, note: str) -> FactoryRun:
+    def escalate(self, run_id: str, note: str) -> FactoryRun:
         """Redo a run one route higher with a person's note (ADR-055).
 
         The run keeps its worktree, branch and pull request. ``CRITIQUE`` implements again with
@@ -1875,6 +1880,9 @@ class WorkflowController:
         and ``WorkspaceLockError`` one that a live process works on.
         """
         run = self._store.load_run(run_id)
+        if run.source_repo is None:
+            raise ValueError(f"run {run_id} does not record its repository")
+        source_repo = Path(run.source_repo)
         workspace = GitWorktreeWorkspace(
             self._config.data_dir,
             source_repo,

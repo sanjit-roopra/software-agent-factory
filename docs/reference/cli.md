@@ -283,18 +283,19 @@ Redo a run one route higher with your note, on the same branch and pull request
 (ADR-055).
 
 ```bash
-factory escalate run-9bb36bbbdf114f53bd9599a103122976 --repo . --runtime copilot \
-  --note "Use the shared validator."
+factory escalate run-9bb36bbbdf114f53bd9599a103122976 --note "Use the shared validator."
 ```
 
 | Argument or option | Required | Effect |
 | --- | --- | --- |
 | `run_id` | yes | The run id to redo. |
 | `--note` | yes | What to change, at most 2,000 characters. |
-| `--repo` | yes | The target Git repository of the run. |
-| `--runtime` | yes | The agent runtime, as for `factory run`. It has no default, so a fake run cannot push to a real pull request. |
 
-Options: `--config`, `--data-dir`.
+Options: `--config`, `--data-dir`. They only find the run.
+
+The run keeps the repository, `--runtime`, `--model-profile` and `--config` it
+started with, so the command uses those again. Roles that name their own runtime
+still use it.
 
 The route moves up one step: `SINGLE` to `CRITIQUE`, and every other route to
 `FULL`. `FULL` stays `FULL`. `CRITIQUE` implements again with the note and then
@@ -307,7 +308,8 @@ Only a run in `PR_READY`, `PR_CREATED`, `CI_RUNNING`, `CI_DIAGNOSIS`,
 `NEEDS_HUMAN` or `DONE` can escalate, and only when its change is not merged. A
 process that works on the run holds its workspace lock, so the command refuses
 it. These exit with code 1: a bad note, a missing run, a run with no saved plan,
-and a run that cannot escalate.
+and a run that cannot escalate. A run that started before runs kept their
+settings cannot escalate.
 
 ---
 
