@@ -132,6 +132,7 @@ The factory does not add the `agent-ready` label.
 | `factory dashboard` | Loopback-only, token-protected viewer. It can approve a halted run, answer its plan decisions, stop a working run or send it a note. |
 | `factory cancel` | Stop a working run. It keeps the commits and halts the run for you. |
 | `factory steer` | Send a short note to the next agent call of a run that is still open. |
+| `factory escalate` | Redo a run one route higher with your note, on the same pull request. |
 | `factory service` | Install or remove the opt-in macOS launchd agent. |
 
 See the

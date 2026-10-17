@@ -433,10 +433,28 @@ def run_command(
     """Run one work item synchronously through the factory workflow."""
     from uuid import uuid4
 
-    from .models import ChangeSet, WorkItem
-    from .store import FileRunStore
+    from .models import WorkItem
 
     factory_config = _load_config(config, data_dir, model_profile, no_risk_assessment)
+    store, controller = _synchronous_controller(runtime, factory_config)
+
+    work_item = WorkItem(
+        id=work_item_id or f"WI-{uuid4().hex[:12]}",
+        title=title,
+        description=description,
+        acceptance_criteria=acceptance_criteria or [],
+        constraints=constraints or [],
+    )
+
+    _report_run(store, controller.run(work_item, repo))
+
+
+def _synchronous_controller(
+    runtime: RuntimeChoice, factory_config: FactoryConfig
+) -> tuple[FileRunStore, Any]:
+    """The store and controller of a command that drives a run in this process."""
+    from .store import FileRunStore
+
     # A manual run needs ``gh`` only for the publishing/CI features it would
     # actually reach; the scheduler is irrelevant here, so an offline default
     # run requires nothing but ``git``.
@@ -447,20 +465,14 @@ def run_command(
     )
     _require_claude_code_effort(runtime, factory_config)
     _configure_logging(factory_config)
-
     store = FileRunStore(factory_config.data_dir)
     controller_cls = _seam("WorkflowController")
-    controller = controller_cls(factory_config, store, _build_runtime(runtime, factory_config))
+    return store, controller_cls(factory_config, store, _build_runtime(runtime, factory_config))
 
-    work_item = WorkItem(
-        id=work_item_id or f"WI-{uuid4().hex[:12]}",
-        title=title,
-        description=description,
-        acceptance_criteria=acceptance_criteria or [],
-        constraints=constraints or [],
-    )
 
-    run = controller.run(work_item, repo)
+def _report_run(store: FileRunStore, run: FactoryRun) -> None:
+    """Print where a synchronous run ended; exit with failure unless it succeeded."""
+    from .models import ChangeSet
 
     typer.echo(f"run id: {run.id}")
     typer.echo(f"state: {run.state}")
@@ -906,6 +918,42 @@ def steer_command(
     if result != "created":
         raise _fail(message, code=FAILURE_EXIT_CODE)
     typer.echo(message)
+
+
+@app.command("escalate")
+def escalate_command(
+    run_id: str = typer.Argument(..., help="The run id to redo one route higher."),
+    note: str = typer.Option(
+        ..., "--note", help="What to change, for the agents. At most 2000 chars."
+    ),
+    repo: Path = typer.Option(..., "--repo", help="Path to the target Git repository."),
+    runtime: RuntimeChoice = typer.Option(
+        RuntimeChoice.FAKE,
+        "--runtime",
+        help=RUNTIME_OPTION_HELP,
+    ),
+    config: Path = typer.Option(
+        None, "--config", help="Path to a factory config YAML file (default: packaged config)."
+    ),
+    data_dir: Path = typer.Option(
+        None, "--data-dir", help="Override the configured data directory."
+    ),
+) -> None:
+    """Redo a run one route higher with your note, on the same branch and pull request."""
+    from .resume import clean_steer_note
+    from .workspace import WorkspaceError
+
+    cleaned = clean_steer_note(note)
+    if cleaned is None:
+        raise _fail("the note is empty, too long or holds a secret", code=FAILURE_EXIT_CODE)
+    store, controller = _synchronous_controller(runtime, _load_config(config, data_dir))
+    try:
+        run = controller.escalate(run_id, repo, cleaned)
+    except FileNotFoundError:
+        raise _fail(f"no such run, or it has no saved plan: {run_id}", code=FAILURE_EXIT_CODE)
+    except (ValueError, WorkspaceError) as exc:
+        raise _fail(f"cannot escalate run {run_id}: {exc}", code=FAILURE_EXIT_CODE)
+    _report_run(store, run)
 
 
 @app.command("doctor")

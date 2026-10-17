@@ -1360,3 +1360,26 @@ def test_cli_deferred_seam_and_getattr(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = object()
     monkeypatch.setattr(cli_module, "WorkflowController", sentinel)
     assert cli_module._seam("WorkflowController") is sentinel
+
+
+def test_escalate_redoes_a_finished_run_and_refuses_bad_input(
+    source_repo: Path, data_dir: Path
+) -> None:
+    common = ["--repo", str(source_repo), "--data-dir", str(data_dir)]
+    first = runner.invoke(
+        app, ["run", "--title", "Test task", "--description", "A demonstration task", *common]
+    )
+    assert first.exit_code == 0, first.output
+    run_id = first.output.split("run id: ")[1].split()[0]
+
+    result = runner.invoke(app, ["escalate", run_id, "--note", "Handle tabs too.", *common])
+
+    assert result.exit_code == 0, result.output
+    assert f"run id: {run_id}" in result.output
+    assert "route: FULL" in result.output
+    empty = runner.invoke(app, ["escalate", run_id, "--note", "  ", *common])
+    assert empty.exit_code == 1
+    assert "the note is empty" in empty.output
+    missing = runner.invoke(app, ["escalate", "run-missing", "--note", "x", *common])
+    assert missing.exit_code == 1
+    assert "no such run" in missing.output

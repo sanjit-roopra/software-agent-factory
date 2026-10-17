@@ -1,5 +1,42 @@
 # Architecture Decisions
 
+## ADR-055: Operator escalation leaves a finished state
+
+Status: accepted on 2026-10-17. This amends ADR-037 and ADR-040.
+
+### Context
+
+A person who did not like the pull request of a run had no way to ask for better
+work on it. Ratchets only move the route up inside
+a run, and `DONE`, `NEEDS_HUMAN` and `FAILED` allow no transition.
+
+### Decision
+
+- `factory escalate <run> --note "<comment>"` redoes a run one route higher:
+  `SINGLE` to `CRITIQUE`, and `CRITIQUE`, `FULL_REVIEW` and `MANUAL_TRIAGE` to
+  `FULL`. `FULL` stays `FULL` and runs again with the note.
+- A run can escalate from `PR_READY`, `PR_CREATED`, `CI_RUNNING`,
+  `CI_DIAGNOSIS`, `NEEDS_HUMAN` or `DONE` when its change is not merged. The
+  workspace lock refuses a run that a process works on.
+- Only an operator escalation can move a run from these states to `PLANNING`.
+  For every other transition the terminal states still allow none.
+- `CRITIQUE` writes its plan again without a Planner call and implements with the
+  note. `FULL` plans again with the note and the saved triage result. The first
+  Implementer attempt has the trigger `OPERATOR`.
+- The run records the escalation as a route adjustment with the reason
+  `operator escalation`, and counts it as route rework.
+- `budget_start` on the run marks where fresh attempt budgets start. Attempts
+  before it do not count, so an old used-up budget does not end the escalation.
+- The run keeps its worktree, branch and pull request. It publishes to the same
+  pull request and watches CI as usual. It never stops for a person on its own.
+
+### Consequences
+
+- The dashboard can show an escalation from the route adjustments and the
+  stored steps.
+- A pull request that already has the `factory:needs-look` label is still not
+  merged after an escalation.
+
 ## ADR-054: Triage picks the route
 
 Status: accepted on 2026-10-17. This amends ADR-037.

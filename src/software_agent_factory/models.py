@@ -172,6 +172,8 @@ class AttemptTrigger(StrEnum):
     REVIEW = "REVIEW"
     SCOPE = "SCOPE"
     CI = "CI"
+    #: ``factory escalate``: a person asked for the work again one route higher.
+    OPERATOR = "OPERATOR"
 
 
 class ReviewFindingCategory(StrEnum):
@@ -1755,6 +1757,9 @@ class FactoryRun(VersionedModel):
     needs_look: list[str] = Field(default_factory=list)
     #: How often a factory restart interrupted this unattended run before delivery (ADR-043).
     restart_recoveries: int = Field(default=0, ge=0)
+    #: Attempt records before this index do not count against attempt budgets.
+    #: An operator escalation moves it, so it starts fresh budgets (ADR-055).
+    budget_start: int = Field(default=0, ge=0)
     initial_route: ExecutionRoute | None = None
     effective_route: ExecutionRoute | None = None
     route_decision: RouteDecision | None = None
