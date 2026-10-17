@@ -89,8 +89,10 @@ def test_a_steer_note_is_created_once_and_deleted(data_dir: Path) -> None:
 def test_a_steer_note_for_a_missing_run_creates_nothing(data_dir: Path) -> None:
     store = FileRunStore(data_dir)
 
+    note = RunSteerNote(run_id="run-gone", source="cli", note=NOTE)
+
     with pytest.raises(FileNotFoundError):
-        store.create_steer_note(RunSteerNote(run_id="run-gone", source="cli", note=NOTE))
+        store.create_steer_note(note)
 
     assert not (data_dir / "runs" / "run-gone").exists()
 

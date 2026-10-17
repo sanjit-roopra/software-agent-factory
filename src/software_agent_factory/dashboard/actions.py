@@ -52,6 +52,8 @@ from .validators import is_episode_id
 
 #: The error text for a run the dashboard cannot find or act on.
 _NOT_FOUND = "not found"
+#: The error text for a run id that does not have the run id shape.
+_BAD_RUN_ID = "the run id is not valid"
 
 #: The reasons :func:`~software_agent_factory.resume.request_refusal` gives, as the codes the
 #: page gets. A request that names the wrong episode, context or action is a stale one.
@@ -179,7 +181,7 @@ def accept_action(
     """
     fields = _parse_fields(kind, body)
     if not is_valid_run_id(raw_run_id):
-        raise _bad_request("the run id is not valid")
+        raise _bad_request(_BAD_RUN_ID)
     run = actions.run_reader(raw_run_id)
     if run is None:
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
@@ -220,7 +222,7 @@ def accept_stop(actions: ResumeActions, raw_run_id: str, body: object) -> dict[s
     if not isinstance(body, dict) or body:
         raise _bad_request("the body must be an empty JSON object")
     if not is_valid_run_id(raw_run_id):
-        raise _bad_request("the run id is not valid")
+        raise _bad_request(_BAD_RUN_ID)
     if actions.stopper is None:
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     now = actions.clock()
@@ -241,7 +243,7 @@ def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[
     if note is None:
         raise _bad_request("the note is empty, too long or holds a secret")
     if not is_valid_run_id(raw_run_id):
-        raise _bad_request("the run id is not valid")
+        raise _bad_request(_BAD_RUN_ID)
     if actions.steerer is None:
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     now = actions.clock()
