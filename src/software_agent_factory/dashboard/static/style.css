@@ -313,9 +313,8 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 .status-line .chip { margin-right: 0; }
-#runs-table td { font-variant-numeric: tabular-nums; }
 #runs-table th, #runs-table td { padding: 0.35rem 0.4rem; font-size: 0.85rem; }
-#runs-table td { vertical-align: middle; white-space: nowrap; }
+#runs-table td { vertical-align: middle; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #runs-table td:first-child a { color: var(--text); font-weight: 600; text-decoration: none; }
 #runs-table td:first-child a:hover { text-decoration: underline; }
 .why-cell { min-width: 10rem; }
