@@ -1,5 +1,45 @@
 # Architecture Decisions
 
+## ADR-054: Triage picks the route
+
+Status: accepted on 2026-10-17. This amends ADR-037.
+
+### Context
+
+ADR-037 chose the route before any agent call. Its complexity and risk floors read
+`WorkItem.complexity` and `WorkItem.risk`, but nothing sets those fields. So the
+floors never applied, and the `SINGLE` and `CRITIQUE` routes copied a made-up
+complexity and risk from the selected option. Routing was also off by default, so
+every run took `FULL`. Triage now runs on a cheap model at low reasoning (ADR-053),
+so a triage call on every run costs little.
+
+### Decision
+
+- Routing is on by default. When it is off, every run takes `FULL` as before.
+- Every run starts with the Triage agent. The controller then picks the route.
+- An option is legal only if its complexity is not lower than the triage complexity.
+  Its risk must be empty or not lower than the triage risk. The other safety floors
+  do not change. The controller picks the lightest legal option, and ties keep the
+  configuration order.
+- Triage risk that needs human approval disallows `SINGLE` and `CRITIQUE`.
+- `SINGLE` and `CRITIQUE` keep the real triage result. The controller still writes
+  their specification and plan, so they make no Planner call.
+- The triage complexity selects the first worker model on every route. The option
+  complexity no longer raises it.
+- The triage prompt explains how complexity and risk map to routes. It tells the
+  agent to pick the lower level when it is not sure, because the ratchets escalate
+  a change that grows.
+- The decision records the source `triage`. The sources `rule` and `single_option`
+  are gone.
+- The factory no longer reads `WorkItem.complexity` and `WorkItem.risk`. The fields
+  stay so old work item files load.
+
+### Consequences
+
+- A clear, small task can finish without a Planner, Tester or Reviewer call.
+- The `route.saved_calls` counter is 3 for `SINGLE` and 2 for `CRITIQUE`.
+- A restarted run uses its stored initial route to decide whether to plan again.
+
 ## ADR-053: GPT-6 defaults, a Claude reviewer and a mixed profile
 
 Status: accepted on 2026-10-17. This builds on ADR-045.

@@ -105,6 +105,8 @@ def build_config(
             "approved_sensitive_files": approved_sensitive_files or [],
         },
         "polish": {"enabled": polish_enabled},
+        # Workflow tests drive the FULL pipeline; routing tests turn routing on themselves.
+        "routing": {"enabled": False},
         "risk": {
             "R0": {"human_approval": False},
             "R1": {"human_approval": False},

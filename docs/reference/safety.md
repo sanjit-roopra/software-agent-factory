@@ -36,7 +36,6 @@ because a prompt is not what enforces it.
 | `ci.enabled` | `false` |
 | `merge.enabled` | `false` |
 | `scheduler.enabled` | `false` |
-| `routing.enabled` | `false` |
 | Dashboard | not running |
 | launchd service | not installed |
 

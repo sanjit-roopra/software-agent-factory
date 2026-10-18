@@ -571,9 +571,9 @@ _REMOVED_ROUTING_KEYS = frozenset(
 
 
 class RoutingConfig(ConfigModel):
-    """Opt-in policy for deterministic execution routing (ADR-037)."""
+    """Policy for picking the execution route from the triage result (ADR-037)."""
 
-    enabled: bool = False
+    enabled: bool = True
     single_max_changed_files: int = Field(default=5, ge=1, le=50)
     rubric_version: str = Field(default="1.0", min_length=1)
     full_only_terms: list[str] = Field(
