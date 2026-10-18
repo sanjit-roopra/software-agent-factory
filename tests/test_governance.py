@@ -18,6 +18,7 @@ from software_agent_factory.governance import (
     VerificationFailureKind,
     assess_publish_gate,
     find_protected_matches,
+    paths_outside_scope,
 )
 from software_agent_factory.models import (
     CommandResult,
@@ -355,6 +356,13 @@ def test_scope_drift_policy_replans_when_all_files_miss_planned_scope() -> None:
 
     assert assessment.decision is ScopeDecision.REPLAN
     assert [finding.category for finding in assessment.findings] == ["unexpected-module"]
+
+
+def test_paths_outside_scope_normalizes_paths_and_needs_planned_modules() -> None:
+    changed = ["./src/app.py", "docs\\guide.md", "docs/guide.md", "srcx/a.py"]
+
+    assert paths_outside_scope(["src/"], changed) == ("docs/guide.md", "srcx/a.py")
+    assert paths_outside_scope([], changed) == ()
 
 
 def test_scope_drift_policy_treats_plan_file_count_as_advisory() -> None:

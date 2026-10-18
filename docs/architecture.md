@@ -1279,7 +1279,10 @@ Deterministically detect at least:
 
 The execution plan's file-count range remains useful planning metadata but is
 not a scope gate. The configured repository changed-file ceiling is enforced
-separately before publication.
+separately before publication. Some files outside the expected modules are
+allowed, so growth is shown instead. The PR body and the dashboard plan view
+give the changed-file count beside the estimate. They also list the changed
+files outside the expected modules.
 
 Later add:
 - public API detection
