@@ -128,6 +128,7 @@ class NextStepKind(StrEnum):
     GRANT = "grant"
     ACCEPT = "accept"
     WIDEN = "widen"
+    REPAIR = "repair"
     QUEUED = "queued"
 
 
@@ -403,6 +404,7 @@ _STEPS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = 
     "grant": _dashboard_only(NextStepKind.GRANT, "One more attempt"),
     "accept": _dashboard_only(NextStepKind.ACCEPT, "Accepting the findings"),
     "widen": _dashboard_only(NextStepKind.WIDEN, "Approving a wider scope"),
+    "repair": _dashboard_only(NextStepKind.REPAIR, "Retrying CI"),
 }
 
 

@@ -1182,6 +1182,8 @@ def test_retry_grant_and_accept_need_a_second_click_and_post_the_context_without
     assert "action: ACCEPT_ACTION" in sections
     assert 'label: "Approve wider scope"' in sections
     assert "action: WIDEN_ACTION" in sections
+    assert 'label: "Retry CI repair"' in sections
+    assert "action: REPAIR_ACTION" in sections
 
 
 def test_grant_says_grant_where_the_conflict_message_names_the_action() -> None:
@@ -1215,6 +1217,17 @@ def test_widen_says_scope_where_the_conflict_message_names_the_action() -> None:
     }
     assert "action === WIDEN_ACTION" in function_source(_JS, "conflictMessages")
     assert 'const WIDEN_ACTION = "widen";' in _JS
+
+
+def test_repair_says_ci_where_the_conflict_message_names_the_action() -> None:
+    literal = object_literal_source(_JS, "REPAIR_CONFLICT_MESSAGES")
+    assert "...CONFLICT_MESSAGES" in literal
+    assert _plain_strings(literal) == {
+        "existing_request": "CI retry already requested",
+        "expired": "CI retry expired, retry again",
+    }
+    assert "action === REPAIR_ACTION" in function_source(_JS, "conflictMessages")
+    assert 'const REPAIR_ACTION = "repair";' in _JS
 
 
 def test_the_callout_lists_the_files_a_scope_approval_adds() -> None:
@@ -2240,8 +2253,8 @@ def test_every_next_step_kind_with_a_panel_has_a_heading() -> None:
 def test_the_callout_has_a_warn_border_only_when_the_page_can_act() -> None:
     frame = function_source(_JS, "renderNextStepFrame")
 
-    kinds = '["approve", "answer", "retry", "grant", "accept", "widen"]'
-    assert f"const ACTION_STEP_KINDS = new Set({kinds});" in _JS
+    kinds = '"approve", "answer", "retry", "grant", "accept", "widen", "repair"'
+    assert f"const ACTION_STEP_KINDS = new Set([\n    {kinds}\n  ]);" in _JS
     assert '(hasAction ? " next-step-action" : "")' in frame
     assert ".next-step-action { border: 2px solid var(--warn); }" in dashboard_assets.STYLE_CSS
     assert ".next-step {" not in dashboard_assets.STYLE_CSS

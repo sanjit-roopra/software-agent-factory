@@ -1067,6 +1067,21 @@ def test_a_review_impasse_gives_accept_and_queues_it() -> None:
     )
 
 
+def test_a_ci_halt_gives_repair_and_queues_it() -> None:
+    run = _run(resume_classification="CI_REPAIR_RETRY", reason_code="CI_INTERVENTION")
+
+    step = next_step(run)
+    queued = next_step(run, [_request("CI_REPAIR_RETRY")])
+
+    assert (step["kind"], step["context_fingerprint"]) == ("repair", FINGERPRINT)
+    assert step["sentence"] == (
+        "The run stopped because CI could not pass or be repaired by itself."
+    )
+    assert queued["sentence"] == (
+        f"CI repair retry requested at {QUEUED_AT}, queued for the factory service. {START_HINT}"
+    )
+
+
 def test_a_scope_halt_gives_widen_with_its_paths_and_queues_it() -> None:
     paths = ["migrations/0001_init.py"]
     run = _run(
@@ -1168,6 +1183,7 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "grant",
         "accept",
         "widen",
+        "repair",
         "queued",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'

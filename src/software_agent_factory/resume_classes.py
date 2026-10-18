@@ -28,6 +28,7 @@ from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, form
 from .models import (
     AttemptBudget,
     AttemptGrantContext,
+    CIRepairRetryContext,
     DeliveryRetryContext,
     EscalationRecord,
     FindingsAcceptanceContext,
@@ -49,6 +50,7 @@ ResumeContext = (
     | AttemptGrantContext
     | FindingsAcceptanceContext
     | ScopeApprovalContext
+    | CIRepairRetryContext
 )
 
 # Absolute, network, and system file system paths
@@ -368,6 +370,55 @@ def is_valid_scope_approval_context(
     return secrets.compare_digest(context.context_fingerprint, expected)
 
 
+def compute_ci_repair_retry_context_fingerprint(
+    *,
+    run_id: str,
+    episode_id: str,
+    pull_request_url: str,
+    head_sha: str,
+    failed_checks: Sequence[str],
+    repair_attempts_used: int,
+    timed_out: bool,
+) -> str:
+    """Bind the pull request head and CI result a person may retry to one episode."""
+    return _fingerprint_dict(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "pull_request_url": pull_request_url,
+            "head_sha": head_sha,
+            "failed_checks": list(failed_checks),
+            "repair_attempts_used": repair_attempts_used,
+            "timed_out": timed_out,
+        }
+    )
+
+
+def is_valid_ci_repair_retry_context(
+    context: CIRepairRetryContext | None, run_id: str, episode_id: str
+) -> bool:
+    """Verify a CI repair retry context has safe check names and is bound to its episode."""
+    if not isinstance(context, CIRepairRetryContext):
+        return False
+    if any(contains_unsafe_content(name)[0] for name in context.failed_checks):
+        return False
+    expected = compute_ci_repair_retry_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        pull_request_url=context.pull_request_url,
+        head_sha=context.head_sha,
+        failed_checks=context.failed_checks,
+        repair_attempts_used=context.repair_attempts_used,
+        timed_out=context.timed_out,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected)
+
+
+def _ci_repair_retry_state(context: CIRepairRetryContext | None) -> WorkflowState | None:
+    """A CI wait that ran out watches CI again; a used-up repair budget repairs (ADR-061)."""
+    return WorkflowState.CI_RUNNING if context is not None and context.timed_out else None
+
+
 @dataclass(frozen=True)
 class ResumeClass:
     """How one resumable halt class asks for, records and applies a person's decision."""
@@ -394,6 +445,12 @@ class ResumeClass:
     #: Whether a GitHub reply may resume it. A dashboard-only class needs its context to
     #: resume at all (ADR-042).
     github_replies: bool
+    #: The state a reopen resumes at for one stored context, when not ``reopen_state``.
+    context_reopen_state: Callable[[Any], WorkflowState | None] = lambda _context: None
+
+    def resume_state(self, escalation: EscalationRecord) -> WorkflowState:
+        """The state a reopen of ``escalation`` resumes at."""
+        return self.context_reopen_state(self.context(escalation)) or self.reopen_state
 
     def context(self, escalation: EscalationRecord) -> ResumeContext | None:
         """The decision context ``escalation`` stores for this class, or ``None``."""
@@ -493,6 +550,23 @@ RESUME_CLASSES: Mapping[ResumeClassification, ResumeClass] = {
         ),
         expired_sentence="scope approval expired, approve again",
         github_replies=False,
+    ),
+    ResumeClassification.CI_REPAIR_RETRY: ResumeClass(
+        context_field="ci_repair_retry_context",
+        receipt_field="ci_repair_retry_context_fingerprint",
+        is_valid_context=is_valid_ci_repair_retry_context,
+        command=format_resume_command,
+        # A CI wait that ran out resumes at CI_RUNNING instead (ADR-061).
+        reopen_state=WorkflowState.CI_DIAGNOSIS,
+        dashboard_action="repair",
+        needs_you_action="repair",
+        needs_you_label="Needs CI retry",
+        queued_sentence=(
+            "CI repair retry requested at {moment}, queued for the factory service. {start_hint}"
+        ),
+        expired_sentence="CI retry expired, retry again",
+        github_replies=False,
+        context_reopen_state=_ci_repair_retry_state,
     ),
 }
 

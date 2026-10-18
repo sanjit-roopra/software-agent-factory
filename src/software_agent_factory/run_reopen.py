@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import pr_delivery, review_ledger, run_recovery
+from .ci_repair_retry import check_ci_repair_retry, reopen_ci_repair_retry
 from .models import (
     MAX_OPEN_REVIEW_FINDINGS,
     REPLY_CURSOR_CLOSED,
@@ -172,7 +173,7 @@ def _reopen_target_state(
     if spec is None or check is None:
         raise ValueError(f"run {run.id} halt category {classification} cannot be reopened")
     check(controller, run, escalation, receipt)
-    return spec.reopen_state
+    return spec.resume_state(escalation)
 
 
 def _check_risk_approval(
@@ -306,6 +307,7 @@ _REOPEN_CHECKS: dict[
     ResumeClassification.ATTEMPT_GRANT: _check_attempt_grant,
     ResumeClassification.ACCEPT_FINDINGS: _check_findings_acceptance,
     ResumeClassification.SCOPE_APPROVAL: _check_scope_approval,
+    ResumeClassification.CI_REPAIR_RETRY: check_ci_repair_retry,
 }
 
 
@@ -376,7 +378,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
     resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING, DELIVERY_RETRY ->
     PR_READY and publish again, ATTEMPT_GRANT -> IMPLEMENTING with one more attempt,
     ACCEPT_FINDINGS -> PR_READY with the open findings accepted, SCOPE_APPROVAL ->
-    IMPLEMENTING to verify the same work again with a wider scope). Only ATTEMPT_GRANT adds
+    IMPLEMENTING to verify the same work again with a wider scope, CI_REPAIR_RETRY ->
+    CI_RUNNING or CI_DIAGNOSIS). Only ATTEMPT_GRANT and a CI_REPAIR_RETRY of red CI add
     attempt budget, and only one attempt per reopen.
     """
     run = controller._store.load_run(run_id)
@@ -689,6 +692,7 @@ _CLASS_REOPENERS: dict[
     ResumeClassification.ATTEMPT_GRANT: reopen_attempt_grant,
     ResumeClassification.ACCEPT_FINDINGS: reopen_findings_acceptance,
     ResumeClassification.SCOPE_APPROVAL: reopen_scope_approval,
+    ResumeClassification.CI_REPAIR_RETRY: reopen_ci_repair_retry,
 }
 
 

@@ -1,5 +1,52 @@
 # Architecture Decisions
 
+## ADR-061: Retry CI repair from the dashboard
+
+Status: accepted on 2026-10-19. This is the fourth class that ADR-057 planned.
+
+### Context
+
+CI can stop a run that has an open pull request. Either the CI repair budget
+ran out, or CI failed in a way the factory does not repair. Or the checks did
+not finish in time. The run stops in `NEEDS_HUMAN`, and the only ways on were a new
+run or an escalation. Often one more repair, or one more wait, is all it needs.
+
+### Decision
+
+- A CI halt gets the resume class `CI_REPAIR_RETRY`. The halt reasons "CI repair
+  budget exhausted" and "CI checks were still pending" now map to the halt code
+  `CI_INTERVENTION`, not `ATTEMPT_BUDGET_EXHAUSTED`. The reason text holds the
+  word "budget", so the word check picked the wrong code.
+- The context holds the pull request link and the head commit CI ran on. It also
+  holds the names of the failed checks in `ci.json`, the CI repair attempts used
+  and whether CI ran out of time. A fingerprint binds it to the run and the episode.
+- Only a CI wait that ran out, or red CI with failed checks, gets a context. A
+  cancelled CI run, a failed read of CI or a merged pull request has none, so it
+  stays not resumable.
+- The dashboard shows **Retry CI repair**. It takes two clicks, like **Retry
+  publishing**. The route is `POST /api/runs/<id>/repair`. Only the dashboard
+  can resume this class.
+- The reopen refuses the retry when the receipt fingerprint does not match. It
+  refuses a run with another head or attempt count, and a worktree that no
+  longer holds the reviewed work. It refuses a pull request that is not open on
+  the same head.
+- A CI wait that ran out resumes at `CI_RUNNING` and watches CI again. It grants
+  no attempt.
+- Red CI resumes at `CI_DIAGNOSIS`. The retry grants one more `CI_REPAIR`
+  attempt, counted in `attempt_grants` as in ADR-058, and repairs the stored CI
+  result. It skips the check of the failure category, because the person chose
+  to repair. The fix is verified, reviewed and pushed as in any CI repair.
+- If CI fails again, the run stops again and can be retried again. Each retry
+  counts as a reopen.
+
+### Consequences
+
+- A person can give a run one more CI repair, or one more CI wait, without a new
+  run.
+- The dashboard has one more write action, `repair`.
+- The guidance for these two halts now says that CI did not pass, not that the
+  run used its attempts.
+
 ## ADR-060: Approve a wider scope from the dashboard
 
 Status: accepted on 2026-10-18. This is the third class that ADR-057 planned.

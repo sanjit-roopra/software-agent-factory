@@ -14,6 +14,7 @@ from software_agent_factory.models import (
     AcceptedReplyReceipt,
     AttemptBudget,
     AttemptGrantContext,
+    CIRepairRetryContext,
     Complexity,
     DeliveryRetryContext,
     EscalationRecord,
@@ -114,6 +115,13 @@ def _notified() -> EscalationRecord:
         ),
         scope_approval_context=ScopeApprovalContext(
             paths=["docs/extra.md"], patch_sha256="c" * 64, context_fingerprint=FINGERPRINT
+        ),
+        ci_repair_retry_context=CIRepairRetryContext(
+            pull_request_url="https://github.example.com/owner/repo/pull/42",
+            head_sha="d" * 40,
+            failed_checks=["tests"],
+            repair_attempts_used=2,
+            context_fingerprint=FINGERPRINT,
         ),
         remote_resume_enabled=True,
         created_at=BEFORE,
