@@ -122,7 +122,7 @@ from .models import (
     utc_now,
 )
 from .redaction import redact_secrets
-from .resume import escalation_route, resume_refusal_within
+from .resume import current_context_fingerprint, escalation_route, resume_refusal_within
 from .run_metrics import (
     AggregateMetrics,
     UsageSummary,
@@ -1090,7 +1090,6 @@ def _escalation_summary(
         return None
     approval = escalation.approval_context
     plan = escalation.plan_decision_context
-    context = approval or plan or escalation.delivery_retry_context
     last_reply = escalation.accepted_replies[-1] if escalation.accepted_replies else None
     is_resumed = escalation.status in {EscalationStatus.REOPENED, EscalationStatus.RESUMED}
     return EscalationSummary(
@@ -1117,7 +1116,7 @@ def _escalation_summary(
         is_resumed=is_resumed,
         resumed_at=escalation.updated_at if is_resumed else None,
         episode_id=escalation.episode_id,
-        context_fingerprint=context.context_fingerprint if context is not None else None,
+        context_fingerprint=current_context_fingerprint(escalation),
         max_reopens=policy.max_reopens,
         reply_closed_cause=reply_closed_cause(escalation, policy, now),
         dashboard_action_refusal=resume_refusal_within(run, policy, now),

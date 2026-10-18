@@ -32,10 +32,16 @@ from .validators import is_episode_id, run_id_of
 
 RequestsFor = Callable[[str, str], Iterable[Any]]
 
-#: The next steps that keep a waiting run's "Needs approval/answers/retry" outcome. Any other
-#: step has no page action, so the run says "Stopped, needs you", as the run list does.
+#: The next steps that keep a waiting run's "Needs approval/answers/retry/attempt" outcome. Any
+#: other step has no page action, so the run says "Stopped, needs you", as the run list does.
 _RESUMABLE_STEP_KINDS = frozenset(
-    {NextStepKind.APPROVE, NextStepKind.ANSWER, NextStepKind.RETRY, NextStepKind.QUEUED}
+    {
+        NextStepKind.APPROVE,
+        NextStepKind.ANSWER,
+        NextStepKind.RETRY,
+        NextStepKind.GRANT,
+        NextStepKind.QUEUED,
+    }
 )
 
 

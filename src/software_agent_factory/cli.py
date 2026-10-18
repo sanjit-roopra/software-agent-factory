@@ -1397,8 +1397,8 @@ def dashboard_command(
     Blocks in the foreground and is the *only* thing that ever starts a
     dashboard: nothing in ``factory run`` or ``factory start`` opens a
     socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and six ``POST`` routes that queue an approval, plan answers, a
-    publish retry, a stop or a steer note for the factory, or start an escalation. It is
+    and seven ``POST`` routes that queue an approval, plan answers, a publish retry,
+    an attempt grant, a stop or a steer note for the factory, or start an escalation. It is
     protected by a token generated
     for this process; the tokenized URL is printed to stdout once and never
     written to the log.
@@ -1586,7 +1586,7 @@ def dashboard_command(
 
     typer.echo(f"dashboard: {server.dashboard_url}")
     typer.echo(
-        "loopback only. it can queue an approval, answers, a retry, a stop or a note, "
+        "loopback only. it can queue an approval, answers, a retry, a grant, a stop or a note, "
         "or escalate a run. "
         "press Ctrl-C to quit."
     )

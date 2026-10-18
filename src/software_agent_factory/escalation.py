@@ -46,7 +46,6 @@ from .github import (
     parse_issue_reference,
     parse_pull_request_url,
 )
-from .halt_contexts import build_delivery_retry_context as build_delivery_retry_context
 from .halt_contexts import build_plan_decision_context as build_plan_decision_context
 from .halt_contexts import build_resume_context, escape_notice_text
 from .halt_contexts import build_risk_approval_context as build_risk_approval_context
@@ -54,6 +53,7 @@ from .halt_contexts import has_dispatched_risk_approval as has_dispatched_risk_a
 from .halt_contexts import normalize_whitespace as normalize_whitespace
 from .models import (
     HALT_REASON_COPY,
+    IMPLEMENTATION_BUDGET_HALT_REASON,
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
@@ -293,14 +293,14 @@ def classify_halt_reason(
 
 def _resume_classification(run: FactoryRun, code: HaltReasonCode) -> ResumeClassification:
     """How a halt with ``code``, other than a plan decision, can resume."""
+    reason = (run.failure_reason or "").lower()
     if code is HaltReasonCode.RISK_APPROVAL:
         return ResumeClassification.RISK_APPROVAL
-    if (
-        (run.failure_reason or "").lower().startswith(PUBLISH_FAILED_HALT_REASON)
-        and run.pull_request_url is None
-        and run.reviewed_tree_sha
-    ):
+    publish_failed = reason.startswith(PUBLISH_FAILED_HALT_REASON) and not run.pull_request_url
+    if publish_failed and run.reviewed_tree_sha:
         return ResumeClassification.DELIVERY_RETRY
+    if reason.startswith(IMPLEMENTATION_BUDGET_HALT_REASON):
+        return ResumeClassification.ATTEMPT_GRANT
     return ResumeClassification.NOT_RESUMABLE
 
 

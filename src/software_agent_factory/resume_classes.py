@@ -26,6 +26,8 @@ from typing import Any, cast
 
 from .escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
 from .models import (
+    AttemptBudget,
+    AttemptGrantContext,
     DeliveryRetryContext,
     EscalationRecord,
     PlanDecisionContext,
@@ -38,7 +40,9 @@ from .models import (
 from .redaction import contains_secret
 
 #: The decision context a resumable halt stores on its escalation.
-ResumeContext = RiskApprovalContext | PlanDecisionContext | DeliveryRetryContext
+ResumeContext = (
+    RiskApprovalContext | PlanDecisionContext | DeliveryRetryContext | AttemptGrantContext
+)
 
 # Absolute, network, and system file system paths
 _ABSOLUTE_OR_NETWORK_PATH_PATTERN = re.compile(
@@ -251,6 +255,48 @@ def is_valid_delivery_retry_context(
     return secrets.compare_digest(context.context_fingerprint, expected)
 
 
+def compute_attempt_grant_context_fingerprint(
+    *,
+    run_id: str,
+    episode_id: str,
+    budget: str,
+    attempts_used: int,
+    last_failure: str,
+) -> str:
+    """Bind the used-up budget a person may extend to one run and escalation episode."""
+    return _fingerprint_dict(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "budget": budget,
+            "attempts_used": attempts_used,
+            "last_failure": last_failure,
+        }
+    )
+
+
+def is_valid_attempt_grant_context(
+    context: AttemptGrantContext | None,
+    run_id: str,
+    episode_id: str,
+) -> bool:
+    """Verify an attempt grant context is safe, for the implementation budget, and bound."""
+    if not isinstance(context, AttemptGrantContext):
+        return False
+    if context.budget is not AttemptBudget.IMPLEMENTATION:
+        return False
+    if contains_unsafe_content(context.last_failure)[0]:
+        return False
+    expected = compute_attempt_grant_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        budget=context.budget.value,
+        attempts_used=context.attempts_used,
+        last_failure=context.last_failure,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected)
+
+
 @dataclass(frozen=True)
 class ResumeClass:
     """How one resumable halt class asks for, records and applies a person's decision."""
@@ -329,6 +375,21 @@ RESUME_CLASSES: Mapping[ResumeClassification, ResumeClass] = {
             "Retry requested at {moment}, queued for the factory service. {start_hint}"
         ),
         expired_sentence="retry expired, retry again",
+        github_replies=False,
+    ),
+    ResumeClassification.ATTEMPT_GRANT: ResumeClass(
+        context_field="attempt_grant_context",
+        receipt_field="attempt_grant_context_fingerprint",
+        is_valid_context=is_valid_attempt_grant_context,
+        command=format_resume_command,
+        reopen_state=WorkflowState.IMPLEMENTING,
+        dashboard_action="grant",
+        needs_you_action="grant",
+        needs_you_label="Needs attempt",
+        queued_sentence=(
+            "One more attempt granted at {moment}, queued for the factory service. {start_hint}"
+        ),
+        expired_sentence="grant expired, grant again",
         github_replies=False,
     ),
 }

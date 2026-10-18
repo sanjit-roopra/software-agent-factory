@@ -1163,17 +1163,32 @@ def test_retry_says_retry_where_the_conflict_message_names_the_action() -> None:
     assert 'const RETRY_ACTION = "retry";' in _JS
 
 
-def test_retry_publishing_needs_a_second_click_and_posts_the_context_without_a_dialog() -> None:
-    section = function_source(_JS, "retrySection")
-    assert 'actionButton(RETRY_LABEL, "button")' in section
+def test_retry_and_grant_need_a_second_click_and_post_the_context_without_a_dialog() -> None:
+    section = function_source(_JS, "confirmSection")
+    assert 'actionButton(spec.label, "button")' in section
     assert 'actionButton("Cancel", "button")' in section
     assert 'if (button.dataset.armed !== "true") { arm(true); return; }' in section
-    assert "action: RETRY_ACTION" in section
+    assert "action: spec.action" in section
     assert "payload: contextPayload(step)" in section
     assert "controls: [button, cancel]" in section
     assert "arm(false); button.focus();" in section
     assert "dialog" not in section
-    assert 'const RETRY_CONFIRM_LABEL = "Confirm retry publishing";' in _JS
+    sections = object_literal_source(_JS, "CONFIRM_SECTIONS")
+    assert 'confirmLabel: "Confirm retry publishing"' in sections
+    assert "action: RETRY_ACTION" in sections
+    assert 'label: "Grant +1 attempt"' in sections
+    assert "action: GRANT_ACTION" in sections
+
+
+def test_grant_says_grant_where_the_conflict_message_names_the_action() -> None:
+    literal = object_literal_source(_JS, "GRANT_CONFLICT_MESSAGES")
+    assert "...CONFLICT_MESSAGES" in literal
+    assert _plain_strings(literal) == {
+        "existing_request": "attempt already granted",
+        "expired": "grant expired, grant again",
+    }
+    assert "action === GRANT_ACTION" in function_source(_JS, "conflictMessages")
+    assert 'const GRANT_ACTION = "grant";' in _JS
 
 
 def test_the_page_maps_every_conflict_reason_the_server_sends() -> None:
@@ -1419,7 +1434,7 @@ def test_an_action_is_offered_only_for_the_kinds_that_have_one() -> None:
     assert 'typeof step.context_fingerprint === "string"' in action
     assert 'step.kind === "approve"' in action
     assert 'step.kind === "answer"' in action
-    assert 'step.kind === "retry"' in action
+    assert "Object.hasOwn(CONFIRM_SECTIONS, step.kind)" in action
     assert "queued" not in action
     assert "remote_approval_unavailable" not in action
 
@@ -2192,7 +2207,7 @@ def test_every_next_step_kind_with_a_panel_has_a_heading() -> None:
 def test_the_callout_has_a_warn_border_only_when_the_page_can_act() -> None:
     frame = function_source(_JS, "renderNextStepFrame")
 
-    assert 'const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry"]);' in _JS
+    assert 'const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry", "grant"]);' in _JS
     assert '(hasAction ? " next-step-action" : "")' in frame
     assert ".next-step-action { border: 2px solid var(--warn); }" in dashboard_assets.STYLE_CSS
     assert ".next-step {" not in dashboard_assets.STYLE_CSS

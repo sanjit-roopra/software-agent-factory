@@ -1761,14 +1761,14 @@ class WorkflowController:
 
     # -- bounded implementation/repair loop ---------------------------------
 
-    def _attempts_used(self, run: FactoryRun, budget: AttemptBudget) -> int:
-        """Attempts already spent from ``budget``, derived from persisted
-        state so a restart can never reset it (``ADR-003``)."""
-        return sum(
-            1
-            for attempt in run.attempt_records[run.budget_start :]
-            if attempt.budget is budget and attempt.role is AgentRole.IMPLEMENTER
+    def _attempt_limit(self, run: FactoryRun, budget: AttemptBudget) -> int:
+        """The attempts ``budget`` allows: the configured ones plus any a person granted."""
+        configured = (
+            self._config.ci.repair_attempts
+            if budget is AttemptBudget.CI_REPAIR
+            else self._config.retries.max_total_attempts
         )
+        return configured + run.attempt_grants.get(budget, 0)
 
     def _replans_used(self, run: FactoryRun) -> int:
         legacy_scope_attempts = sum(
@@ -1779,8 +1779,10 @@ class WorkflowController:
     def _select_worker(
         self, run: FactoryRun, context: RunContext, budget: AttemptBudget
     ) -> tuple[RoleModelConfig | None, int]:
-        used = self._attempts_used(run, budget)
+        used = run.attempts_used(budget)
         attempt_number = used + 1
+        if used >= self._attempt_limit(run, budget):
+            return None, attempt_number
         model_profile = (
             context.route_decision.selected_model_profile
             if context.route_decision is not None
@@ -1790,21 +1792,11 @@ class WorkflowController:
         )
         if model_profile == "default":
             model_profile = None
-        if budget is AttemptBudget.CI_REPAIR:
-            if used >= self._config.ci.repair_attempts:
-                return None, attempt_number
-            routing_attempt = min(attempt_number, self._config.retries.max_total_attempts)
-            return (
-                self._router.model_for_implementer(
-                    context.triage_result.complexity, routing_attempt
-                ),
-                attempt_number,
-            )
+        # A granted or CI repair attempt routes as the last configured attempt does.
+        routing_attempt = min(attempt_number, self._config.retries.max_total_attempts)
         return (
             self._router.model_for_implementer(
-                context.triage_result.complexity,
-                attempt_number,
-                model_profile=model_profile,
+                context.triage_result.complexity, routing_attempt, model_profile=model_profile
             ),
             attempt_number,
         )
@@ -1853,6 +1845,7 @@ class WorkflowController:
                 reason = self._budget_exhausted_reason(budget, attempt_number - 1)
                 if run.unattended:
                     return pr_delivery.publish_as_is(self, run, context, reason)
+                run = run.model_copy(update={"exhausted_repair": repair_context})
                 raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
 
             # Snapshot directories are keyed by the run-global attempt index so
@@ -2207,16 +2200,11 @@ class WorkflowController:
             ):
                 acceptance_reason = ReviewAcceptanceReason.REVIEW_ROUND_LIMIT
 
-            attempts_limit = (
-                self._config.ci.repair_attempts
-                if budget is AttemptBudget.CI_REPAIR
-                else self._config.retries.max_total_attempts
-            )
             if (
                 acceptance_reason is None
                 and impasse is None
                 and run.review_ledger.open_findings
-                and self._attempts_used(run, budget) >= attempts_limit
+                and run.attempts_used(budget) >= self._attempt_limit(run, budget)
             ):
                 acceptance_reason = ReviewAcceptanceReason.ATTEMPT_BUDGET_LIMIT
 
@@ -2610,8 +2598,7 @@ class WorkflowController:
             return False
         if any(attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records):
             return False
-        used = self._attempts_used(run, budget)
-        return used + 1 < self._config.retries.max_total_attempts
+        return run.attempts_used(budget) + 1 < self._config.retries.max_total_attempts
 
     def _record_reviewed_tree(
         self,

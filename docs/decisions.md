@@ -1,5 +1,44 @@
 # Architecture Decisions
 
+## ADR-058: Grant one more attempt from the dashboard
+
+Status: accepted on 2026-10-18. This is the first class that ADR-057 planned.
+
+### Context
+
+A run that used its implementation attempt budget stopped as a dead end. Often
+one more try with the last failure in view is enough. The only way on was
+`factory escalate`, which plans again on a higher route with fresh budgets.
+
+### Decision
+
+- The halt `implementation attempt budget exhausted` gets the resume class
+  `ATTEMPT_GRANT`. Its context holds the budget, the attempts used and a short
+  safe summary of the last failure. A fingerprint binds it to the run and the
+  episode.
+- The dashboard shows **Grant +1 attempt**. It takes two clicks, like
+  **Retry publishing**. The route is `POST /api/runs/<id>/grant`. Only the
+  dashboard can resume this class.
+- The service reopens the run at `IMPLEMENTING`. The reopen check refuses a
+  context whose fingerprint does not match the receipt, or a run whose attempt
+  count changed since the halt.
+- The run counts grants per budget in `attempt_grants`. The budget allows the
+  configured attempts plus the grants, counted from `budget_start` (ADR-055). An
+  operator escalation clears the grants, because it starts fresh budgets.
+- When the budget runs out, the run keeps the repair for the next attempt in
+  `exhausted_repair`. The granted attempt has the trigger `OPERATOR` and
+  gets that failure.
+- The granted attempt routes to the model of the last configured attempt.
+- If the attempt fails, the run halts again on the same budget. Each grant is a
+  reopen, so `escalation.max_reopens` bounds them.
+- A used-up CI repair budget stays not resumable. ADR-057 plans its own class.
+
+### Consequences
+
+- A person can let a run try once more without a new run or a new route.
+- `factory escalate` stays the way to redo the work with fresh budgets.
+- The dashboard has one more write action, `grant`.
+
 ## ADR-057: Dashboard-only resume actions for dead-end halts
 
 Status: accepted on 2026-10-18.

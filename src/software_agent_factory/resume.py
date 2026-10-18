@@ -275,11 +275,7 @@ def dashboard_already_accepted(escalation: EscalationRecord, fingerprint: str) -
         receipt.source == "dashboard"
         and receipt.episode_id == escalation.episode_id
         and fingerprint
-        in (
-            receipt.approval_context_fingerprint,
-            receipt.plan_decision_context_fingerprint,
-            receipt.delivery_retry_context_fingerprint,
-        )
+        in {getattr(receipt, spec.receipt_field) for spec in RESUME_CLASSES.values()}
         for receipt in escalation.accepted_replies
     )
 

@@ -23,6 +23,7 @@ from . import pr_delivery, run_recovery
 from .models import (
     REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
+    AttemptBudget,
     AttemptTrigger,
     EscalationRecord,
     EscalationStatus,
@@ -51,7 +52,7 @@ from .resume import (
     is_valid_risk_approval_context,
     receipt_approves_risk_context,
 )
-from .resume_classes import RESUME_CLASSES
+from .resume_classes import RESUME_CLASSES, is_valid_attempt_grant_context
 from .run_context import Halt, TransitionError
 from .run_recovery import DELIVERY_REPO_CHANGED
 from .workspace import GitWorktreeWorkspace, WorkspaceError
@@ -228,6 +229,23 @@ def _check_delivery_retry(
         raise ValueError(f"run {run.id} no longer matches its delivery retry context")
 
 
+def _check_attempt_grant(
+    _controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
+) -> None:
+    grant = escalation.attempt_grant_context
+    if grant is None or not is_valid_attempt_grant_context(grant, run.id, escalation.episode_id):
+        raise ValueError(f"run {run.id} has missing or invalid attempt grant context")
+    if receipt.attempt_grant_context_fingerprint is None or not secrets.compare_digest(
+        receipt.attempt_grant_context_fingerprint, grant.context_fingerprint
+    ):
+        raise ValueError(f"run {run.id} receipt fingerprint does not match active grant context")
+    if run.attempts_used(grant.budget) != grant.attempts_used:
+        raise ValueError(f"run {run.id} no longer matches its attempt grant context")
+
+
 #: The check a reopen runs on the decision a person gave, one per resumable class. Each
 #: raises ``ValueError`` when the decision no longer matches the run.
 _REOPEN_CHECKS: dict[
@@ -237,6 +255,7 @@ _REOPEN_CHECKS: dict[
     ResumeClassification.RISK_APPROVAL: _check_risk_approval,
     ResumeClassification.PLAN_DECISION: _check_plan_decision,
     ResumeClassification.DELIVERY_RETRY: _check_delivery_retry,
+    ResumeClassification.ATTEMPT_GRANT: _check_attempt_grant,
 }
 
 
@@ -305,7 +324,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
     workspace identity, reopen limits, durable resume-pending status,
     accepted reply receipt bound to current run and episode, and the supported
     resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING, DELIVERY_RETRY ->
-    PR_READY and publish again) without granting additional attempt budget.
+    PR_READY and publish again, ATTEMPT_GRANT -> IMPLEMENTING with one more attempt). Only
+    ATTEMPT_GRANT adds attempt budget, and only one attempt per reopen.
     """
     run = controller._store.load_run(run_id)
     if run.state is not WorkflowState.NEEDS_HUMAN:
@@ -361,6 +381,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
 
             if reopened_class is ResumeClassification.DELIVERY_RETRY:
                 return reopen_delivery_retry(controller, run, workspace, source_repo)
+            if reopened_class is ResumeClassification.ATTEMPT_GRANT:
+                return reopen_attempt_grant(controller, run, workspace, source_repo)
 
             return _resume_reopened(controller, run, workspace, source_repo)
         except Halt as halt:
@@ -495,6 +517,40 @@ def reopen_delivery_retry(
     return pr_delivery.publish_and_observe(controller, run, context)
 
 
+def reopen_attempt_grant(
+    controller: WorkflowController,
+    run: FactoryRun,
+    workspace: GitWorktreeWorkspace,
+    source_repo: Path,
+) -> FactoryRun:
+    """Reopen a run whose implementation budget ran out at ``IMPLEMENTING`` with one more
+    attempt (ADR-058).
+
+    The grant is counted on the run, so the budget allows exactly one attempt more than
+    before. The attempt has the trigger ``OPERATOR`` and carries the failure the next attempt
+    would have had. If it fails, the run halts again on the same budget.
+    """
+    context = run_recovery.stored_context(controller, run, workspace, source_repo)
+    budget = AttemptBudget.IMPLEMENTATION
+    last = run.exhausted_repair
+    grants = {**run.attempt_grants, budget: run.attempt_grants.get(budget, 0) + 1}
+    run = run.model_copy(update={"attempt_grants": grants, "exhausted_repair": None})
+    run = transition_reopened(controller, run)
+    repair_context = RepairContext(
+        trigger=AttemptTrigger.OPERATOR,
+        summary=(
+            "A person granted one more attempt after the attempt budget ran out. "
+            + (last.summary if last is not None else "Fix the last failure.")
+        ),
+        failures=list(last.failures) if last is not None else [],
+        log_excerpt=last.log_excerpt if last is not None else None,
+    )
+    run = controller._drive_to_pr_ready(run, context, budget, repair_context)
+    if not controller._config.pull_request.enabled:
+        return controller.finalize_pr_ready(run)
+    return pr_delivery.publish_and_observe(controller, run, context)
+
+
 def escalate(controller: WorkflowController, run_id: str, note: str) -> FactoryRun:
     """Redo a run one route higher with a person's note (ADR-055).
 
@@ -535,6 +591,8 @@ def escalate(controller: WorkflowController, run_id: str, note: str) -> FactoryR
                     host=socket.gethostname(), pid=os.getpid(), heartbeat_at=utc_now()
                 ),
                 "budget_start": len(run.attempt_records),
+                "attempt_grants": {},
+                "exhausted_repair": None,
                 "needs_look": [],
             }
         )

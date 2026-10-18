@@ -341,7 +341,10 @@ There is no unlimited retry loop anywhere.
 | `scheduler.max_runs_per_day` | `20` | Claims per UTC day. |
 | `--max-scanned-runs` | `1000` | Run files parsed per `status` call or dashboard request. |
 
-Budgets are persisted on the run. A restart does not reset them.
+Budgets are persisted on the run. A restart does not reset them. After the
+implementation budget runs out, a person can grant one more attempt from the
+dashboard (ADR-058). The run records each grant, and each grant is a reopen, so
+`escalation.max_reopens` bounds them.
 
 Polish uses the implementation budget. It runs only when one recovery attempt
 remains, never runs during CI repair, and is always verified again. It can make
@@ -377,7 +380,7 @@ named write actions, not a control plane.
 - Reads with `GET`. These `POST` routes in `dashboard/handler.py` are the only
   writes: `approve` (risk approval), `answer` (plan decisions) and `retry`
   (publish again) from ADR-033 and ADR-042, `cancel` and `steer` from ADR-047,
-  and `escalate` from ADR-055.
+  and `escalate` from ADR-055. ADR-058 adds `grant` (one more attempt).
 - `escalate` starts `factory escalate` as a detached process. The CLI gives the
   dashboard the function that starts it. Each other write creates a request file
   only. A `steer` note replaces the note that waits, if there is one (ADR-051).

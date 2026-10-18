@@ -1,10 +1,11 @@
 """Decision contexts for a halt that a person can resume.
 
 When a run halts in ``NEEDS_HUMAN`` with a resumable class, the factory snapshots the
-context the person decides: the risk approval, the plan decisions or the reviewed work to
-publish again. :func:`build_resume_context` picks the builder from the class, one per entry
-of :data:`.resume_classes.RESUME_CLASSES`. The builders read the run's artifacts through the
-store, so they live here and not in the pure :mod:`.resume_classes`.
+context the person decides: the risk approval, the plan decisions, the reviewed work to
+publish again or the used-up attempt budget. :func:`build_resume_context` picks the builder
+from the class, one per entry of :data:`.resume_classes.RESUME_CLASSES`. The builders read
+the run's artifacts through the store, so they live here and not in the pure
+:mod:`.resume_classes`.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from collections.abc import Callable
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS
 from .models import (
+    AttemptBudget,
+    AttemptGrantContext,
     DeliveryRetryContext,
     ExecutionPlan,
     FactoryRun,
@@ -39,7 +42,11 @@ from .resume import (
     contains_unsafe_content,
     receipt_approves_risk_context,
 )
-from .resume_classes import RESUME_CLASSES, ResumeContext
+from .resume_classes import (
+    RESUME_CLASSES,
+    ResumeContext,
+    compute_attempt_grant_context_fingerprint,
+)
 from .store import FileRunStore
 
 logger = logging.getLogger(__name__)
@@ -348,6 +355,34 @@ def _delivery_retry_context(
     return build_delivery_retry_context(run, episode_id=episode_id)
 
 
+#: The last failure a grant context shows when the repair text is missing or unsafe.
+_UNKNOWN_LAST_FAILURE = "The last attempt failed. The run artifacts hold the details."
+
+
+def build_attempt_grant_context(run: FactoryRun, *, episode_id: str) -> AttemptGrantContext | None:
+    """Snapshot the used-up implementation budget a person may extend by one attempt."""
+    budget = AttemptBudget.IMPLEMENTATION
+    used = run.attempts_used(budget)
+    if used < 1:
+        return None
+    repair = run.exhausted_repair
+    summary = normalize_whitespace(redact_secrets(repair.summary))[:300] if repair else ""
+    if not summary or contains_unsafe_content(summary)[0]:
+        summary = _UNKNOWN_LAST_FAILURE
+    return AttemptGrantContext(
+        budget=budget,
+        attempts_used=used,
+        last_failure=summary,
+        context_fingerprint=compute_attempt_grant_context_fingerprint(
+            run_id=run.id,
+            episode_id=episode_id,
+            budget=budget.value,
+            attempts_used=used,
+            last_failure=summary,
+        ),
+    )
+
+
 #: How a halt snapshots its decision context, one builder per resumable class.
 _CONTEXT_BUILDERS: dict[
     ResumeClassification,
@@ -360,6 +395,9 @@ _CONTEXT_BUILDERS: dict[
         build_plan_decision_context(run, store, episode_id=episode_id)
     ),
     ResumeClassification.DELIVERY_RETRY: _delivery_retry_context,
+    ResumeClassification.ATTEMPT_GRANT: lambda run, _store, _config, episode_id: (
+        build_attempt_grant_context(run, episode_id=episode_id)
+    ),
 }
 
 

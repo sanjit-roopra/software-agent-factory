@@ -127,11 +127,12 @@ def test_run_outcome_names_every_state_in_words(state: str, kind: str, label: st
         ({"resume_classification": "RISK_APPROVAL"}, "waiting", "Needs approval"),
         ({"escalation": {"resume_classification": "PLAN_DECISION"}}, "waiting", "Needs answers"),
         ({"resume_classification": "DELIVERY_RETRY"}, "retry", "Needs retry"),
+        ({"resume_classification": "ATTEMPT_GRANT"}, "grant", "Needs attempt"),
         ({"resume_classification": "NOT_RESUMABLE"}, "stopped", "Stopped, needs you"),
         ({"escalation": "not a block"}, "stopped", "Stopped, needs you"),
         ({}, "stopped", "Stopped, needs you"),
     ],
-    ids=["approve", "answer-in-escalation", "retry", "not-resumable", "bad-block", "none"],
+    ids=["approve", "answer-in-escalation", "retry", "grant", "not-resumable", "bad-block", "none"],
 )
 def test_a_waiting_run_outcome_says_what_it_needs(
     run: dict[str, Any], action: str, label: str
