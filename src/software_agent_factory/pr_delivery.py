@@ -346,8 +346,8 @@ def _build_pr_body(
 
 
 def ci_loop(controller: WorkflowController, run: FactoryRun, context: RunContext) -> FactoryRun:
-    """Poll CI, and repair (bounded by ``ci.repair_attempts``) when the
-    failure is genuinely a code/test failure."""
+    """Poll CI, and repair (bounded by ``ci.repair_attempts`` plus any granted attempts)
+    when the failure is genuinely a code/test failure."""
     observer = resolve_ci_observer(
         controller,
     )
