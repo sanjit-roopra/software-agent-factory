@@ -401,7 +401,7 @@ def _sanitize_summary_fields(sanitized: dict[str, Any]) -> None:
         sanitized["operator_escalation"] = _operator_escalation(sanitized["operator_escalation"])
 
 
-#: ``OperatorEscalation.status`` in ``models.py``.
+#: ``OperatorEscalation.status`` in ``escalation_models.py``.
 _OPERATOR_ESCALATION_STATUSES = frozenset({"running", "done", "failed"})
 
 

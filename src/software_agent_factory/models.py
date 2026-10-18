@@ -1,1653 +1,282 @@
+"""Run, route, triage, specification and plan models.
+
+The other model modules are re-exported here, so callers can import any model
+from ``software_agent_factory.models``.
+"""
+
 from __future__ import annotations
 
-import re
-from datetime import datetime, timezone
-from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal, NamedTuple, Self
+from typing import Any, Literal, Self
 
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    ConfigDict,
-    Field,
-    SerializerFunctionWrapHandler,
-    field_validator,
-    model_serializer,
-    model_validator,
+from pydantic import ConfigDict, Field, field_validator, model_validator
+
+from software_agent_factory.escalation_models import (
+    CONTEXT_FINGERPRINT_PATTERN,
+    DASHBOARD_USER_LOGIN,
+    EPISODE_ID_PATTERN,
+    HALT_REASON_COPY,
+    MAX_PLAN_DECISIONS,
+    MAX_STEER_NOTE_CHARS,
+    PUBLISH_FAILED_HALT_REASON,
+    REPLY_CURSOR_CLOSED,
+    STALLED_HALT_REASON,
+    STOPPED_HALT_REASON,
+    UNRESOLVED_DECISIONS_HALT_REASON,
+    UNRESOLVED_DECISIONS_REPLACE_ACTION,
+    AcceptedReplyReceipt,
+    ActiveInvocationStatus,
+    DashboardRequestStaleReason,
+    DashboardResumeRequest,
+    DeliveryRetryContext,
+    EscalationRecord,
+    EscalationStatus,
+    EscalationTargetType,
+    HaltReasonCode,
+    OperatorEscalation,
+    PlanDecisionAnswer,
+    PlanDecisionAnswers,
+    PlanDecisionContext,
+    ReplySource,
+    ResumeClassification,
+    ResumeRefusal,
+    ReviewAcceptance,
+    ReviewFinding,
+    ReviewFindingDisposition,
+    ReviewFindingDraft,
+    ReviewLedger,
+    ReviewSourceLocation,
+    RiskApprovalContext,
+    RiskRationale,
+    RunSteerNote,
+    RunStopRequest,
+    unresolved_decisions_count,
+    unresolved_decisions_summary,
+)
+from software_agent_factory.model_base import (
+    CLAUDE_CODE_EFFORT_LEVELS,
+    MAX_GUIDANCE_FINDINGS,
+    MAX_OPEN_REVIEW_FINDINGS,
+    MAX_PERFORMANCE_MAP_ENTRIES,
+    MAX_PERFORMANCE_METRICS,
+    MAX_PERFORMANCE_NAME_LENGTH,
+    AgentPurpose,
+    AgentRole,
+    AttemptBudget,
+    AttemptTrigger,
+    Complexity,
+    ContextTier,
+    ExecutionRoute,
+    ModelBase,
+    NonBlankStr,
+    ReviewAcceptanceReason,
+    ReviewDispositionStatus,
+    ReviewFindingCategory,
+    ReviewFindingOrigin,
+    ReviewImpasseKind,
+    Risk,
+    RuntimeFallback,
+    RuntimeName,
+    UtcDateTime,
+    VersionedModel,
+    WorkflowState,
+    check_claude_code_effort,
+    check_pi_provider,
+    utc_now,
+)
+from software_agent_factory.project_models import (
+    PROJECT_ID_PATTERN,
+    RUN_LIST_STATES,
+    ProjectBrief,
+    ProjectExecution,
+    ProjectPlan,
+    ProjectState,
+    ProjectTask,
+    ProjectTaskExecution,
+    ProjectTaskState,
+    RunListFilter,
+)
+from software_agent_factory.report_models import (
+    ChangeSet,
+    CICheckEvidence,
+    CIReport,
+    CommandResult,
+    RepairContext,
+    ReviewImpasse,
+    ReviewReport,
+    TestReport,
+    VerificationReport,
+)
+from software_agent_factory.repository_models import (
+    MAX_COMMAND_NOTES,
+    MAX_COMMAND_TEXT_LENGTH,
+    DependencyEcosystem,
+    MutationReport,
+    MutationStatus,
+    RejectedCommand,
+    RepositoryCommandsPlan,
+    RepositoryCommandsSource,
+    RepositoryDependency,
+    RepositoryPackageManager,
+    RepositoryProfile,
+    RepositoryTechnology,
+    RepositoryTestTool,
+    SetupState,
+    ToolchainInventory,
+    ToolchainLane,
+    ToolchainProvider,
+    ToolchainSetupPlan,
+    ToolchainSlot,
+    ToolchainSlotBinding,
+    WorkItem,
+)
+from software_agent_factory.usage_models import (
+    COST_UNIT_FIELDS,
+    TOKEN_CLASS_FIELDS,
+    TOTAL_TOKEN_FIELDS,
+    ActiveInvocation,
+    AttemptRecord,
+    InvocationRecord,
+    ModelUsage,
+    PerformanceMetric,
+    PerformanceRecord,
+    RunLaunch,
+    RunLease,
+    UsageMetrics,
 )
 
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _normalize_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("datetime must be timezone-aware")
-    return value.astimezone(timezone.utc)
-
-
-UtcDateTime = Annotated[datetime, AfterValidator(_normalize_utc)]
-
-
-def _reject_blank(value: str) -> str:
-    if not value.strip():
-        raise ValueError("text must not be blank")
-    return value
-
-
-#: Agent-authored prose. Whitespace-only text is a structural error, so it fails
-#: model validation and takes the ordinary retry. The original text is kept.
-NonBlankStr = Annotated[str, AfterValidator(_reject_blank)]
-
-
-def _without_blank_entries(data: object, fields: tuple[str, ...]) -> object:
-    """Drop blank entries from the named human-input lists before validation."""
-    if not isinstance(data, dict):
-        return data
-    cleaned = dict(data)
-    for field in fields:
-        values = cleaned.get(field)
-        if isinstance(values, list | tuple):
-            cleaned[field] = [
-                value for value in values if not isinstance(value, str) or value.strip()
-            ]
-    return cleaned
-
-
-MAX_OPEN_REVIEW_FINDINGS = 24
-#: The most findings the run guidance names, and the largest count it shows for one category.
-MAX_GUIDANCE_FINDINGS = 12
-MAX_PERFORMANCE_METRICS = 250
-MAX_PERFORMANCE_NAME_LENGTH = 100
-MAX_PERFORMANCE_STAGE_LENGTH = 50
-MAX_PERFORMANCE_OPERATION_LENGTH = 50
-MAX_PERFORMANCE_UNIT_LENGTH = 20
-MAX_PERFORMANCE_MAP_ENTRIES = 100
-
-
-class WorkflowState(StrEnum):
-    CREATED = "CREATED"
-    TRIAGING = "TRIAGING"
-    #: Kept so old run records load. New runs go from TRIAGING to PLANNING (ADR-035).
-    REFINING = "REFINING"
-    #: Kept so old run records load. New runs go from TRIAGING to PLANNING (ADR-035).
-    RESEARCHING = "RESEARCHING"
-    PLANNING = "PLANNING"
-    IMPLEMENTING = "IMPLEMENTING"
-    VERIFYING = "VERIFYING"
-    REVIEWING = "REVIEWING"
-    PR_READY = "PR_READY"
-    PR_CREATED = "PR_CREATED"
-    CI_RUNNING = "CI_RUNNING"
-    CI_DIAGNOSIS = "CI_DIAGNOSIS"
-    DONE = "DONE"
-    NEEDS_HUMAN = "NEEDS_HUMAN"
-    FAILED = "FAILED"
-
-
-class ExecutionRoute(StrEnum):
-    SINGLE = "SINGLE"
-    CRITIQUE = "CRITIQUE"
-    FULL = "FULL"
-    MANUAL_TRIAGE = "MANUAL_TRIAGE"
-    FULL_REVIEW = "FULL_REVIEW"
-
-
-class Complexity(StrEnum):
-    L0 = "L0"
-    L1 = "L1"
-    L2 = "L2"
-    L3 = "L3"
-
-
-class Risk(StrEnum):
-    R0 = "R0"
-    R1 = "R1"
-    R2 = "R2"
-    R3 = "R3"
-
-
-class AgentRole(StrEnum):
-    TRIAGE = "TRIAGE"
-    #: Kept so old run records load. The planner writes the specification (ADR-035).
-    REFINER = "REFINER"
-    #: Kept so old run records load. Nothing invokes it (ADR-035).
-    RESEARCHER = "RESEARCHER"
-    PLANNER = "PLANNER"
-    IMPLEMENTER = "IMPLEMENTER"
-    TESTER = "TESTER"
-    REVIEWER = "REVIEWER"
-
-
-class AgentPurpose(StrEnum):
-    """The typed output contract for an agent invocation."""
-
-    STANDARD = "STANDARD"
-    DECOMPOSE_PROJECT = "DECOMPOSE_PROJECT"
-    #: Kept so old run records load. Nothing creates it.
-    GENERATE_REPOSITORY_SKILL = "GENERATE_REPOSITORY_SKILL"
-    #: Kept so old run records load. Nothing creates it.
-    CORRECT_CHANGE_SET = "CORRECT_CHANGE_SET"
-
-
-class ContextTier(StrEnum):
-    DEFAULT = "default"
-    LONG_CONTEXT = "long_context"
-
-
-class RuntimeName(StrEnum):
-    """A real agent runtime a role can name (ADR-045)."""
-
-    COPILOT = "copilot"
-    PI = "pi"
-    CLAUDE_CODE = "claude-code"
-
-
-#: The reasoning values ``claude --effort`` accepts (ADR-045).
-CLAUDE_CODE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-
-
-class AttemptBudget(StrEnum):
-    """Which bounded retry budget an attempt consumes.
-
-    ``IMPLEMENTATION`` covers the pre-PR implement/verify/review repair loop
-    (``ADR-003``: one global budget shared by implementer, verification,
-    review and scope failures). ``CI_REPAIR`` is the separate, independently
-    bounded post-PR budget.
-    """
-
-    IMPLEMENTATION = "IMPLEMENTATION"
-    CI_REPAIR = "CI_REPAIR"
-
-
-class AttemptTrigger(StrEnum):
-    """Why an attempt was started, recorded for auditability."""
-
-    INITIAL = "INITIAL"
-    POLISH = "POLISH"
-    IMPLEMENTER_FAILURE = "IMPLEMENTER_FAILURE"
-    VERIFICATION = "VERIFICATION"
-    REVIEW = "REVIEW"
-    SCOPE = "SCOPE"
-    CI = "CI"
-    #: ``factory escalate``: a person asked for the work again one route higher.
-    OPERATOR = "OPERATOR"
-
-
-class ReviewFindingCategory(StrEnum):
-    CORRECTNESS = "CORRECTNESS"
-    SCOPE = "SCOPE"
-    SECURITY = "SECURITY"
-    COMPATIBILITY = "COMPATIBILITY"
-    SIMPLICITY = "SIMPLICITY"
-
-
-class ReviewFindingOrigin(StrEnum):
-    INITIAL = "INITIAL"
-    LATE_ADOPTED = "LATE_ADOPTED"
-    REPAIR_REGRESSION_DIRECT = "REPAIR_REGRESSION_DIRECT"
-    REPAIR_REGRESSION_INDIRECT = "REPAIR_REGRESSION_INDIRECT"
-
-
-class ReviewDispositionStatus(StrEnum):
-    RESOLVED = "RESOLVED"
-    UNRESOLVED = "UNRESOLVED"
-    WITHDRAWN = "WITHDRAWN"
-
-
-class ReviewAcceptanceReason(StrEnum):
-    REVIEW_ROUND_LIMIT = "REVIEW_ROUND_LIMIT"
-    REVIEW_IMPASSE = "REVIEW_IMPASSE"
-    ATTEMPT_BUDGET_LIMIT = "ATTEMPT_BUDGET_LIMIT"
-    CARRIED_FORWARD = "CARRIED_FORWARD"
-
-
-class ReviewImpasseKind(StrEnum):
-    UNKNOWN = "UNKNOWN"
-    TOO_MANY_FINDINGS = "TOO_MANY_FINDINGS"
-    REPEATED_PATH = "REPEATED_PATH"
-    REPEATED_FINDING = "REPEATED_FINDING"
-    REPLACEMENT_LOOP = "REPLACEMENT_LOOP"
-    ATTEMPT_BUDGET_LIMIT = "ATTEMPT_BUDGET_LIMIT"
-    REVIEW_ROUND_LIMIT = "REVIEW_ROUND_LIMIT"
-
-
-class ModelBase(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-def check_claude_code_effort(runtime: RuntimeName | None, reasoning: str) -> None:
-    """Reject a ``claude-code`` reasoning value that ``--effort`` does not accept."""
-    if runtime is RuntimeName.CLAUDE_CODE and reasoning not in CLAUDE_CODE_EFFORT_LEVELS:
-        raise ValueError(
-            f"runtime claude-code accepts reasoning {', '.join(CLAUDE_CODE_EFFORT_LEVELS)}, "
-            f"not {reasoning!r}"
-        )
-
-
-def check_pi_provider(runtime: RuntimeName | None, provider: str | None) -> None:
-    """Reject a ``provider`` on a runtime other than pi, which would ignore it."""
-    if provider is not None and runtime not in (None, RuntimeName.PI):
-        raise ValueError(f"provider is a pi setting; runtime {runtime} does not use it")
-
-
-class RuntimeFallback(ModelBase):
-    """The runtime and model that serve a call its first runtime cannot serve (ADR-045).
-
-    The router uses it once, when the first runtime reports itself unavailable.
-    It has no nested fallback.
-    """
-
-    runtime: RuntimeName
-    model: str = Field(min_length=1)
-    reasoning: str = Field(min_length=1)
-    context_tier: ContextTier = ContextTier.DEFAULT
-    provider: str | None = Field(default=None, min_length=1)
-    """The pi provider; ``None`` uses ``pi.provider``."""
-
-    @model_validator(mode="after")
-    def _validate_runtime_settings(self) -> Self:
-        check_claude_code_effort(self.runtime, self.reasoning)
-        check_pi_provider(self.runtime, self.provider)
-        return self
-
-
-class VersionedModel(ModelBase):
-    schema_version: Literal[1] = 1
-
-
-class RepositoryTechnology(StrEnum):
-    PYTHON = "python"
-    JAVASCRIPT = "javascript"
-    TYPESCRIPT = "typescript"
-    REACT = "react"
-    VITE = "vite"
-
-
-class RepositoryTestTool(StrEnum):
-    PYTEST = "pytest"
-    VITEST = "vitest"
-
-
-class RepositoryPackageManager(StrEnum):
-    UV = "uv"
-    PIP = "pip"
-    POETRY = "poetry"
-    NPM = "npm"
-    PNPM = "pnpm"
-    YARN = "yarn"
-    BUN = "bun"
-
-
-class DependencyEcosystem(StrEnum):
-    PYTHON = "python"
-    NPM = "npm"
-
-
-class RepositoryDependency(ModelBase):
-    """One direct dependency declaration retained with its version evidence."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    ecosystem: DependencyEcosystem
-    name: str = Field(min_length=1, max_length=200)
-    declared_version: str = Field(min_length=1, max_length=500)
-    resolved_version: str | None = Field(default=None, max_length=200)
-    manifest_path: str = Field(min_length=1, max_length=1000)
-    resolution_path: str | None = Field(default=None, max_length=1000)
-    group: str = Field(min_length=1, max_length=100)
-
-
-class RepositoryProfile(VersionedModel):
-    """Deterministic, read-only repository facts about one worktree."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    detector_version: Literal[2] = 2
-    manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    dependency_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    shape_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    markers: tuple[str, ...] = ()
-    version_files: tuple[str, ...] = ()
-    technologies: tuple[RepositoryTechnology, ...] = ()
-    test_tools: tuple[RepositoryTestTool, ...] = ()
-    package_managers: tuple[RepositoryPackageManager, ...] = ()
-    dependencies: tuple[RepositoryDependency, ...] = Field(default=(), max_length=200)
-    warnings: tuple[str, ...] = ()
-
-
-MAX_PACKAGE_SCRIPTS = 20
-MAX_REJECTED_COMMANDS = 40
-MAX_COMMAND_NOTES = 20
-MAX_COMMAND_TEXT_LENGTH = 500
-
-
-class ToolchainLane(StrEnum):
-    """A language lane in the toolchain registry."""
-
-    PYTHON = "python"
-    JAVASCRIPT = "javascript"
-
-
-class ToolchainSlot(StrEnum):
-    """One job a toolchain provider does for a lane."""
-
-    FORMAT = "format"
-    LINT = "lint"
-    TYPECHECK = "typecheck"
-    TEST = "test"
-
-
-class ToolchainProvider(StrEnum):
-    """A recognized tool that can fill a toolchain slot."""
-
-    RUFF = "ruff"
-    BLACK = "black"
-    FLAKE8 = "flake8"
-    PYLINT = "pylint"
-    MYPY = "mypy"
-    PYRIGHT = "pyright"
-    PYTEST = "pytest"
-    PRETTIER = "prettier"
-    BIOME = "biome"
-    ESLINT = "eslint"
-    OXLINT = "oxlint"
-    TSC = "tsc"
-    VITEST = "vitest"
-    JEST = "jest"
-
-
-class ToolchainSlotBinding(ModelBase):
-    """The provider found for one lane slot, or the default to add when none is found."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    lane: ToolchainLane
-    slot: ToolchainSlot
-    provider: ToolchainProvider | None = None
-    default_provider: ToolchainProvider
-    evidence: tuple[str, ...] = Field(default=(), max_length=40)
-
-    @model_validator(mode="after")
-    def _provider_matches_evidence(self) -> Self:
-        if (self.provider is None) != (not self.evidence):
-            raise ValueError("a bound provider needs evidence, and a missing one has none")
-        return self
-
-    @property
-    def is_missing(self) -> bool:
-        return self.provider is None
-
-
-class ToolchainInventory(VersionedModel):
-    """Deterministic inventory of the repository toolchain (ADR-034).
-
-    ``complete`` is false when the profile evidence or the root configuration
-    evidence was cut short, unreadable or degraded. A missing binding is then
-    not proof that the repository lacks the tool.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    registry_version: Literal[1] = 1
-    lanes: tuple[ToolchainLane, ...] = ()
-    bindings: tuple[ToolchainSlotBinding, ...] = ()
-    complete: bool = True
-    package_json_scripts: tuple[str, ...] = Field(default=(), max_length=MAX_PACKAGE_SCRIPTS)
-    self_targeting_providers: tuple[ToolchainProvider, ...] = ()
-    #: Lanes whose mutation tool is already declared or configured.
-    mutation_tool_lanes: tuple[ToolchainLane, ...] = ()
-    #: Whether the root holds ``pnpm-workspace.yaml``.
-    pnpm_workspace: bool = False
-    #: Whether the project uses Yarn 2 or later: a root ``.yarnrc.yml``, a
-    #: ``packageManager`` of ``yarn@2`` or later, or a Yarn 2 ``yarn.lock``.
-    yarn_berry: bool = False
-    #: Whether the root ``package.json`` declares ``workspaces``.
-    yarn_workspace: bool = False
-    warnings: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def _bindings_match_lanes(self) -> Self:
-        keys = [(binding.lane, binding.slot) for binding in self.bindings]
-        if len(keys) != len(set(keys)):
-            raise ValueError("each lane slot can have only one binding")
-        if any(binding.lane not in self.lanes for binding in self.bindings):
-            raise ValueError("every binding lane must be an inventory lane")
-        return self
-
-    def binding(self, lane: ToolchainLane, slot: ToolchainSlot) -> ToolchainSlotBinding | None:
-        """Return the binding for ``lane`` and ``slot``, if the slot applies."""
-        return next(
-            (b for b in self.bindings if b.lane is lane and b.slot is slot),
-            None,
-        )
-
-
-class RepositoryCommandsSource(StrEnum):
-    """Where the repository commands for a run come from (ADR-034)."""
-
-    CONFIG = "config"
-    DERIVED = "derived"
-    NONE = "none"
-
-
-class RejectedCommand(ModelBase):
-    """A derived command that the factory did not use, with the reason."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    command: str = Field(min_length=1, max_length=MAX_COMMAND_TEXT_LENGTH)
-    reason: str = Field(min_length=1, max_length=MAX_COMMAND_TEXT_LENGTH)
-
-
-class RepositoryCommandsPlan(VersionedModel):
-    """The install, verify and build commands one run uses (ADR-034).
-
-    Commands from the YAML configuration always win. Otherwise the factory
-    derives commands from the toolchain inventory and keeps only those that
-    pass on the unchanged base commit.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    source: RepositoryCommandsSource
-    install: tuple[str, ...] = ()
-    verify: tuple[str, ...] = ()
-    build: tuple[str, ...] = ()
-    rejected: tuple[RejectedCommand, ...] = Field(default=(), max_length=MAX_REJECTED_COMMANDS)
-    notes: tuple[str, ...] = Field(default=(), max_length=MAX_COMMAND_NOTES)
-
-    @model_validator(mode="after")
-    def _commands_match_source(self) -> Self:
-        if self.source is RepositoryCommandsSource.NONE and (
-            self.install or self.verify or self.build
-        ):
-            raise ValueError("a plan without a source has no commands")
-        if self.source is RepositoryCommandsSource.DERIVED and (not self.verify or self.build):
-            raise ValueError("a derived plan has verify commands and no build commands")
-        if self.source is RepositoryCommandsSource.CONFIG and self.rejected:
-            raise ValueError("a configured plan rejects no commands")
-        return self
-
-
-class ToolchainSetupPlan(VersionedModel):
-    """The tools a setup run adds to a repository (ADR-034).
-
-    Each command adds missing development dependencies with the lane's own
-    package manager, so the manifest and the lockfile change together. The
-    plan never replaces a tool that the repository already has.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    commands: tuple[str, ...] = ()
-    packages: tuple[str, ...] = ()
-    #: Repository files the setup writes: AGENTS.md, skills and their links.
-    files: tuple[str, ...] = ()
-    notes: tuple[str, ...] = Field(default=(), max_length=MAX_COMMAND_NOTES)
-
-    @model_validator(mode="after")
-    def _packages_match_commands(self) -> Self:
-        if bool(self.commands) != bool(self.packages):
-            raise ValueError("a setup plan has packages exactly when it has commands")
-        return self
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.commands and not self.files
-
-
-class SetupState(VersionedModel):
-    """The last setup decision for one source repository (ADR-034).
-
-    The trigger plans again only when the source HEAD changes, and it does not
-    open a second pull request for commands and files it already proposed.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    head_commit: str = Field(min_length=1, max_length=200)
-    commands: tuple[str, ...] = ()
-    files: tuple[str, ...] = ()
-    pull_request_url: str | None = Field(default=None, max_length=1000)
-    note: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
-
-
-class MutationStatus(StrEnum):
-    PASSED = "passed"
-    NO_KILL = "no_kill"
-    SKIPPED = "skipped"
-
-
-class MutationReport(VersionedModel):
-    """The result of the mutation gate for one verification (ADR-034).
-
-    ``no_kill`` means the tests kill no mutant of a changed module. That is
-    evidence for review, not a failure: a mutant can be equivalent to the code.
-    ``skipped`` means the gate could not judge, and the reason says why.
-    ``survived`` lists at most 50 mutant names. ``survived_count`` counts all.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    status: MutationStatus
-    modules: tuple[str, ...] = ()
-    killed: int = Field(default=0, ge=0)
-    survived: tuple[str, ...] = Field(default=(), max_length=50)
-    survived_count: int = Field(default=0, ge=0)
-    no_tests: int = Field(default=0, ge=0)
-    other: int = Field(default=0, ge=0)
-    reason: str | None = Field(default=None, max_length=MAX_COMMAND_TEXT_LENGTH)
-
-
-class WorkItem(VersionedModel):
-    id: str = Field(min_length=1)
-    external_id: str | None = None
-    source: Literal["MANUAL", "GITHUB"] = "MANUAL"
-    title: NonBlankStr = Field(min_length=1)
-    description: NonBlankStr = Field(min_length=1)
-    acceptance_criteria: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    labels: list[str] = Field(default_factory=list)
-    priority: str | None = None
-    #: No longer used; triage sets complexity and risk. Kept so old work item files load.
-    complexity: Complexity | None = None
-    risk: Risk | None = None
-    project_id: str | None = None
-    project_task_id: int | None = Field(default=None, ge=1)
-    depends_on: list[int] = Field(default_factory=list)
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_blank_entries(cls, data: object) -> object:
-        return _without_blank_entries(data, ("acceptance_criteria", "constraints"))
-
-    @model_validator(mode="after")
-    def _validate_project_linkage(self) -> WorkItem:
-        if self.project_task_id is not None and self.project_id is None:
-            raise ValueError("project_task_id requires project_id")
-        if self.depends_on and self.project_task_id is None:
-            raise ValueError("depends_on requires project_task_id")
-        if self.project_task_id is not None and any(
-            dependency >= self.project_task_id for dependency in self.depends_on
-        ):
-            raise ValueError("work item dependencies must reference earlier project task ids")
-        return self
-
-
-PROJECT_ID_PATTERN = r"^[A-Za-z0-9._-]{1,80}$"
-
-
-#: The run classes a run list can narrow to. They are the classes the monitoring snapshot
-#: counts: a run that waits for a person, a failed run, a finished run and any other run.
-RUN_LIST_STATES: frozenset[str] = frozenset({"escalated", "failed", "succeeded", "active"})
-
-
-class RunListFilter(NamedTuple):
-    """What narrows and orders one page of the run list. The default keeps every run.
-
-    ``text`` matches, without case, part of the run id, the work item id, the issue id or
-    the title. ``state`` is one of :data:`RUN_LIST_STATES`.
-    """
-
-    text: str | None = None
-    state: str | None = None
-    project_id: str | None = None
-    oldest_first: bool = False
-
-
-MAX_PROJECT_TASKS = 12
-MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA = 8
-MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA = 6
-MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS = 2000
-
-
-class ProjectState(StrEnum):
-    PLANNING = "PLANNING"
-    RUNNING = "RUNNING"
-    DONE = "DONE"
-    NEEDS_HUMAN = "NEEDS_HUMAN"
-    FAILED = "FAILED"
-
-
-class ProjectTaskState(StrEnum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    DONE = "DONE"
-    NEEDS_HUMAN = "NEEDS_HUMAN"
-    FAILED = "FAILED"
-
-
-class ProjectBrief(VersionedModel):
-    id: str = Field(pattern=PROJECT_ID_PATTERN)
-    title: NonBlankStr = Field(min_length=1, max_length=300)
-    description: NonBlankStr = Field(min_length=1, max_length=20000)
-    repository_path: str = Field(min_length=1, max_length=2000)
-    acceptance_criteria: list[str] = Field(default_factory=list, max_length=50)
-    constraints: list[str] = Field(default_factory=list, max_length=50)
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_blank_entries(cls, data: object) -> object:
-        return _without_blank_entries(data, ("acceptance_criteria", "constraints"))
-
-
-class ProjectTask(ModelBase):
-    id: int = Field(ge=1)
-    title: NonBlankStr = Field(min_length=1, max_length=300)
-    description: NonBlankStr = Field(min_length=1, max_length=10000)
-    acceptance_criteria: tuple[NonBlankStr, ...] = Field(
-        min_length=1,
-        max_length=MAX_PROJECT_TASK_ACCEPTANCE_CRITERIA,
-    )
-    constraints: tuple[NonBlankStr, ...] = Field(default=(), max_length=30)
-    dependencies: tuple[int, ...] = Field(default=(), max_length=8)
-    priority: str | None = Field(default=None, max_length=20)
-    labels: tuple[str, ...] = Field(default=(), max_length=20)
-
-    @model_validator(mode="after")
-    def _validate_dependencies(self) -> ProjectTask:
-        if len(set(self.dependencies)) != len(self.dependencies):
-            raise ValueError("project task dependencies must be unique")
-        if any(dependency < 1 or dependency >= self.id for dependency in self.dependencies):
-            raise ValueError("project task dependencies must reference valid earlier task ids")
-        return self
-
-
-class ProjectPlan(VersionedModel):
-    project_id: str = Field(pattern=PROJECT_ID_PATTERN)
-    summary: NonBlankStr = Field(min_length=1, max_length=2000)
-    delivery_approach: NonBlankStr = Field(min_length=1, max_length=2000)
-    tasks: tuple[ProjectTask, ...] = Field(min_length=1, max_length=MAX_PROJECT_TASKS)
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-
-    @model_validator(mode="after")
-    def _validate_tasks(self) -> ProjectPlan:
-        expected_ids = list(range(1, len(self.tasks) + 1))
-        task_ids = [task.id for task in self.tasks]
-        if task_ids != expected_ids:
-            raise ValueError("project task ids must be contiguous and ordered from 1")
-        normalized_titles = [task.title.strip().casefold() for task in self.tasks]
-        if len(set(normalized_titles)) != len(normalized_titles):
-            raise ValueError("project task titles must be unique")
-        if len(self.tasks) == 1:
-            task = self.tasks[0]
-            if len(task.acceptance_criteria) > MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA:
-                raise ValueError(
-                    "a single project task may have at most "
-                    f"{MAX_SINGLE_PROJECT_TASK_ACCEPTANCE_CRITERIA} acceptance criteria; "
-                    "split independently verifiable or prerequisite outcomes into a task DAG"
-                )
-            if len(task.description) > MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS:
-                raise ValueError(
-                    "a single project task description may have at most "
-                    f"{MAX_SINGLE_PROJECT_TASK_DESCRIPTION_CHARS} characters; split the "
-                    "project into reviewable, independently verifiable task outcomes"
-                )
-        return self
-
-
-class ProjectTaskExecution(ModelBase):
-    task_id: int = Field(ge=1)
-    work_item_id: str = Field(min_length=1)
-    state: ProjectTaskState = ProjectTaskState.PENDING
-    issue_url: str | None = None
-    run_id: str | None = None
-    commit_sha: str | None = None
-    pull_request_url: str | None = None
-    merge_commit_sha: str | None = None
-    failure_reason: str | None = None
-
-
-class ProjectExecution(VersionedModel):
-    project_id: str = Field(pattern=PROJECT_ID_PATTERN)
-    state: ProjectState
-    tasks: tuple[ProjectTaskExecution, ...] = ()
-    invocation_records: list[InvocationRecord] = Field(default_factory=list)
-    integration_workspace: str | None = None
-    integration_branch: str | None = None
-    delivery_mode: Literal["local", "merge"] = "local"
-    github_repository: str | None = None
-    delivery_base_branch: str | None = None
-    delivery_repository: str | None = None
-    delivery_host: str | None = None
-    delivery_policy_fingerprint: str | None = None
-    risk_assessment_enabled: bool = True
-    #: ``factory.unattended`` when the project started (ADR-044).
-    unattended: bool = False
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-    updated_at: UtcDateTime = Field(default_factory=utc_now)
-    completed_at: UtcDateTime | None = None
-    failure_reason: str | None = None
-    warnings: tuple[str, ...] = ()
-    #: Why an unattended project ends ``DONE`` with work that is not on the target:
-    #: a task that did not merge, a task skipped because of it, a failed final check (ADR-044).
-    needs_look: tuple[str, ...] = ()
-    verification_report: VerificationReport | None = None
-
-    @model_validator(mode="after")
-    def _validate_execution(self) -> ProjectExecution:
-        task_ids = [task.task_id for task in self.tasks]
-        if len(set(task_ids)) != len(task_ids):
-            raise ValueError("project execution task ids must be unique")
-        if self.updated_at < self.created_at:
-            raise ValueError("updated_at must be greater than or equal to created_at")
-        if self.completed_at is not None and self.completed_at < self.created_at:
-            raise ValueError("completed_at must be greater than or equal to created_at")
-        return self
-
-
-class ModelUsage(ModelBase):
-    """Runtime-reported usage for one model within an invocation."""
-
-    model: str = Field(min_length=1)
-    runtime: RuntimeName | None = None
-    """The runtime that served the call. ``None`` for the fake runtime and for
-    usage persisted before ADR-045 slice 2."""
-    requests: int | None = Field(default=None, ge=0)
-    premium_request_cost: float | None = Field(default=None, ge=0.0)
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    reasoning_tokens: int | None = Field(default=None, ge=0)
-    cache_read_tokens: int | None = Field(default=None, ge=0)
-    cache_write_tokens: int | None = Field(default=None, ge=0)
-    total_nano_aiu: int | None = Field(default=None, ge=0)
-    list_price_estimate_usd: float | None = Field(default=None, ge=0.0)
-    """List-price USD estimate the runtime computed from its own price
-    catalog (pi), never what the provider actually billed. ``None`` when the
-    runtime did not report one."""
-
-
-class UsageMetrics(ModelBase):
-    """Optional aggregate usage reported by the Copilot, pi or Claude Code runtime.
-
-    Values are persisted exactly as reported by whichever runtime produced
-    them, never coerced and never zero-filled for a missing value. Copilot's
-    ``total_nano_aiu``/premium-request units are Copilot-specific and are
-    not converted to AI Credits or USD. ``list_price_estimate_usd`` is the
-    list-price estimate in USD that pi or Claude Code computed -- never what a
-    provider actually billed.
-    """
-
-    current_model: str | None = None
-    premium_requests: float | None = Field(default=None, ge=0.0)
-    total_premium_request_cost: float | None = Field(default=None, ge=0.0)
-    total_user_requests: int | None = Field(default=None, ge=0)
-    total_nano_aiu: int | None = Field(default=None, ge=0)
-    total_api_duration_ms: int | None = Field(default=None, ge=0)
-    session_duration_ms: int | None = Field(default=None, ge=0)
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    reasoning_tokens: int | None = Field(default=None, ge=0)
-    cache_read_tokens: int | None = Field(default=None, ge=0)
-    cache_write_tokens: int | None = Field(default=None, ge=0)
-    last_call_input_tokens: int | None = Field(default=None, ge=0)
-    last_call_output_tokens: int | None = Field(default=None, ge=0)
-    model_usage: tuple[ModelUsage, ...] = ()
-    list_price_estimate_usd: float | None = Field(default=None, ge=0.0)
-    """List-price USD estimate the runtime computed from its own price
-    catalog (pi), never what the provider actually billed. ``None`` when the
-    runtime did not report one (including every run persisted before this
-    field existed)."""
-
-
-#: Token classes and cost units a call reports, named once here. The dashboard
-#: totals, the key figures and the page keys all read these. An unreported value
-#: is ``None``, never ``0``. ``usage_value_usd`` is derived from ``total_nano_aiu``,
-#: so it is not a ``UsageMetrics`` field.
-TOKEN_CLASS_FIELDS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-)
-COST_UNIT_FIELDS: tuple[str, ...] = (
-    "total_premium_request_cost",
-    "usage_value_usd",
-    "list_price_estimate_usd",
-)
-
-#: The token classes one call's total adds up. Reasoning tokens stay out: the
-#: runtime already counts them inside the output tokens (see "Usage mapping" in
-#: docs/specs/pi-agent-runtime.md). Cache classes stay in: they are separate from
-#: input. The Copilot usage fixture in tests/test_copilot_runtime.py reports 1195
-#: input tokens beside 47104 cache-read tokens, so cache read cannot be part of input.
-TOTAL_TOKEN_FIELDS: tuple[str, ...] = tuple(
-    field for field in TOKEN_CLASS_FIELDS if field != "reasoning_tokens"
-)
-
-
-class PerformanceMetric(ModelBase):
-    """One bounded typed performance metric observation."""
-
-    name: str = Field(min_length=1, max_length=MAX_PERFORMANCE_NAME_LENGTH)
-    value: float = Field(ge=0.0)
-    unit: str = Field(default="ms", max_length=MAX_PERFORMANCE_UNIT_LENGTH)
-    stage: str | None = Field(default=None, max_length=MAX_PERFORMANCE_STAGE_LENGTH)
-    operation: str | None = Field(default=None, max_length=MAX_PERFORMANCE_OPERATION_LENGTH)
-
-
-class PerformanceRecord(ModelBase):
-    """Cohesive bounded telemetry record for operations, timings, sizes, and rework."""
-
-    durations_ms: dict[str, float] = Field(default_factory=dict)
-    counters: dict[str, int] = Field(default_factory=dict)
-    prompt_chars: int | None = Field(default=None, ge=0)
-    response_chars: int | None = Field(default=None, ge=0)
-    process_boot_ms: float | None = Field(default=None, ge=0.0)
-    first_event_ms: float | None = Field(default=None, ge=0.0)
-    metrics: list[PerformanceMetric] = Field(
-        default_factory=list,
-        max_length=MAX_PERFORMANCE_METRICS,
-    )
-
-    @field_validator("durations_ms")
-    @classmethod
-    def _validate_durations(cls, value: dict[str, float]) -> dict[str, float]:
-        if len(value) > MAX_PERFORMANCE_MAP_ENTRIES:
-            raise ValueError(f"durations_ms cannot exceed {MAX_PERFORMANCE_MAP_ENTRIES} entries")
-        for k, v in value.items():
-            if not k or len(k) > MAX_PERFORMANCE_NAME_LENGTH:
-                raise ValueError("duration key must be between 1 and 100 characters")
-            if v < 0:
-                raise ValueError("duration value must be non-negative")
-        return value
-
-    @field_validator("counters")
-    @classmethod
-    def _validate_counters(cls, value: dict[str, int]) -> dict[str, int]:
-        if len(value) > MAX_PERFORMANCE_MAP_ENTRIES:
-            raise ValueError(f"counters cannot exceed {MAX_PERFORMANCE_MAP_ENTRIES} entries")
-        for k, v in value.items():
-            if not k or len(k) > MAX_PERFORMANCE_NAME_LENGTH:
-                raise ValueError("counter key must be between 1 and 100 characters")
-            if v < 0:
-                raise ValueError("counter value must be non-negative")
-        return value
-
-    def record_duration(
-        self,
-        name: str,
-        duration_ms: float,
-        *,
-        stage: str | None = None,
-        operation: str | None = None,
-        accumulate: bool = False,
-    ) -> None:
-        clean_name = str(name)[:MAX_PERFORMANCE_NAME_LENGTH]
-        duration = max(0.0, float(duration_ms))
-        if accumulate:
-            val = self.durations_ms.get(clean_name, 0.0) + duration
-        else:
-            val = duration
-        if len(self.durations_ms) < MAX_PERFORMANCE_MAP_ENTRIES or clean_name in self.durations_ms:
-            self.durations_ms[clean_name] = val
-        if len(self.metrics) < MAX_PERFORMANCE_METRICS:
-            self.metrics.append(
-                PerformanceMetric(
-                    name=clean_name,
-                    value=duration,
-                    unit="ms",
-                    stage=stage,
-                    operation=operation,
-                )
-            )
-
-    def record_counter(
-        self,
-        name: str,
-        delta: int = 1,
-        *,
-        stage: str | None = None,
-        operation: str | None = None,
-    ) -> None:
-        if delta < 0:
-            raise ValueError("delta must be non-negative")
-        clean_name = str(name)[:MAX_PERFORMANCE_NAME_LENGTH]
-        if len(self.counters) < MAX_PERFORMANCE_MAP_ENTRIES or clean_name in self.counters:
-            self.counters[clean_name] = self.counters.get(clean_name, 0) + delta
-        if len(self.metrics) < MAX_PERFORMANCE_METRICS:
-            self.metrics.append(
-                PerformanceMetric(
-                    name=clean_name,
-                    value=float(delta),
-                    unit="count",
-                    stage=stage,
-                    operation=operation,
-                )
-            )
-
-    def add_metric(
-        self,
-        name: str,
-        value: float,
-        unit: str = "ms",
-        *,
-        stage: str | None = None,
-        operation: str | None = None,
-    ) -> None:
-        clean_name = str(name)[:MAX_PERFORMANCE_NAME_LENGTH]
-        if len(self.metrics) < MAX_PERFORMANCE_METRICS:
-            self.metrics.append(
-                PerformanceMetric(
-                    name=clean_name,
-                    value=max(0.0, float(value)),
-                    unit=unit,
-                    stage=stage,
-                    operation=operation,
-                )
-            )
-
-    def record_size(
-        self,
-        *,
-        prompt_chars: int | None = None,
-        response_chars: int | None = None,
-    ) -> None:
-        if prompt_chars is not None:
-            self.prompt_chars = max(0, (self.prompt_chars or 0) + prompt_chars)
-        if response_chars is not None:
-            self.response_chars = max(0, (self.response_chars or 0) + response_chars)
-
-
-class InvocationRecord(ModelBase):
-    """One persisted agent invocation, independent of retry-budget attempts."""
-
-    invocation_number: int = Field(ge=1)
-    role: AgentRole
-    purpose: AgentPurpose = AgentPurpose.STANDARD
-    model: str = Field(min_length=1)
-    reasoning: str = Field(min_length=1)
-    context_tier: ContextTier = ContextTier.DEFAULT
-    started_at: UtcDateTime
-    completed_at: UtcDateTime
-    success: bool
-    failure_reason: str | None = None
-    attempt_number: int | None = Field(default=None, ge=1)
-    budget: AttemptBudget | None = None
-    usage: UsageMetrics | None = None
-    performance: PerformanceRecord | None = None
-    fallback_reason: str | None = None
-    """Why the configured runtime could not serve the call, when its fallback
-    did (ADR-045). ``model`` stays the configured model; ``usage`` names the
-    runtime and model that served the call."""
-    transcript_path: str | None = None
-    """Run-relative path of the call's redacted event stream
-    (``calls/<n>.jsonl``), when the runtime returned one."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_removed_writing_findings(cls, data: object) -> object:
-        """Load invocation records written before ADR-036 removed ``writing_findings``."""
-        if isinstance(data, dict) and "writing_findings" in data:
-            return {key: value for key, value in data.items() if key != "writing_findings"}
-        return data
-
-    @model_validator(mode="after")
-    def _validate_invocation(self) -> InvocationRecord:
-        if self.completed_at < self.started_at:
-            raise ValueError("completed_at must be greater than or equal to started_at")
-        if not self.success and not self.failure_reason:
-            raise ValueError("failure_reason is required when success is False")
-        return self
-
-
-class ActiveInvocation(ModelBase):
-    """One agent invocation currently owned by the workflow controller."""
-
-    invocation_number: int = Field(ge=1)
-    role: AgentRole
-    purpose: AgentPurpose = AgentPurpose.STANDARD
-    model: str = Field(min_length=1)
-    reasoning: str = Field(min_length=1)
-    context_tier: ContextTier = ContextTier.DEFAULT
-    started_at: UtcDateTime
-    attempt_number: int | None = Field(default=None, ge=1)
-    budget: AttemptBudget | None = None
-    #: The latest tool calls the call started, oldest first, each a ``name`` and a
-    #: one-line ``preview`` (dashboard X6). Only a runtime that streams its events fills it.
-    recent_tool_calls: list[dict[str, str]] = Field(default_factory=list)
-    #: Every tool call the call started so far, not only the recent ones.
-    tool_call_count: int = Field(default=0, ge=0)
-
-
-class AttemptRecord(ModelBase):
-    attempt_number: int = Field(ge=1)
-    role: AgentRole
-    model: str = Field(min_length=1)
-    reasoning: str = Field(min_length=1)
-    context_tier: ContextTier = ContextTier.DEFAULT
-    invocation_number: int | None = Field(default=None, ge=1)
-    started_at: UtcDateTime
-    completed_at: UtcDateTime
-    outcome: str = Field(min_length=1)
-    failure_reason: str | None = None
-    budget: AttemptBudget = AttemptBudget.IMPLEMENTATION
-    triggered_by: AttemptTrigger = AttemptTrigger.INITIAL
-    reviewed_tree_sha: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_timestamps(self) -> AttemptRecord:
-        if self.completed_at < self.started_at:
-            raise ValueError("completed_at must be greater than or equal to started_at")
-        return self
-
-
-class RunLaunch(ModelBase):
-    """The command settings a run started with, so ``factory escalate`` builds the same
-    controller again (ADR-055). Roles that name their own runtime take it from the config."""
-
-    #: The ``--runtime`` choice: the runtime of every role that names none.
-    runtime: str = Field(min_length=1)
-    model_profile: str = "default"
-    #: ``None`` for the packaged configuration.
-    config_path: str | None = None
-
-
-class RunLease(ModelBase):
-    """Ownership marker for a run held by one local process.
-
-    Recorded so a restarted factory (or the scheduler's reconciliation pass)
-    can tell an actively owned run from an abandoned one without a database.
-    """
-
-    host: str = Field(min_length=1)
-    pid: int = Field(ge=1)
-    heartbeat_at: UtcDateTime
-
-
-class ReviewSourceLocation(ModelBase):
-    path: str = Field(min_length=1)
-    start_line: int = Field(ge=1)
-    end_line: int = Field(ge=1)
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if (
-            not value
-            or value == "."
-            or "\0" in value
-            or "\n" in value
-            or "\r" in value
-            or "\\" in value
-        ):
-            raise ValueError("path must be a normalized repository-relative path")
-        path = PurePosixPath(value)
-        if path.is_absolute() or value != path.as_posix() or ".." in path.parts:
-            raise ValueError("path must be a normalized repository-relative path")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_lines(self) -> ReviewSourceLocation:
-        if self.end_line < self.start_line:
-            raise ValueError("end_line must be greater than or equal to start_line")
-        return self
-
-
-class ReviewFindingDraft(ModelBase):
-    category: ReviewFindingCategory
-    message: NonBlankStr = Field(min_length=1, max_length=1000)
-    locations: list[ReviewSourceLocation] = Field(min_length=1, max_length=8)
-
-
-class ReviewFinding(ReviewFindingDraft):
-    id: str = Field(min_length=1, max_length=80)
-    origin: ReviewFindingOrigin
-    first_seen_snapshot: int = Field(ge=1)
-
-
-class ReviewFindingDisposition(ModelBase):
-    finding_id: str = Field(min_length=1, max_length=80)
-    status: ReviewDispositionStatus
-    rationale: NonBlankStr = Field(min_length=1, max_length=1000)
-
-
-class ReviewLedger(ModelBase):
-    open_findings: list[ReviewFinding] = Field(
-        default_factory=list,
-        max_length=MAX_OPEN_REVIEW_FINDINGS,
-    )
-    accepted_findings: list[ReviewFinding] = Field(
-        default_factory=list,
-        max_length=MAX_OPEN_REVIEW_FINDINGS,
-    )
-    last_reviewed_tree_sha: str | None = None
-    late_adoption_rounds: int = Field(default=0, ge=0)
-    consecutive_replacement_rounds: int = Field(default=0, ge=0)
-    path_streaks: dict[str, int] = Field(default_factory=dict)
-    unresolved_streaks: dict[str, int] = Field(default_factory=dict)
-
-
-class ReviewAcceptance(VersionedModel):
-    snapshot: int = Field(ge=1)
-    reason: ReviewAcceptanceReason
-    risk: Risk
-    review_rounds: int = Field(ge=1)
-    reviewed_tree_sha: str = Field(min_length=40, max_length=64)
-    findings: list[ReviewFinding] = Field(min_length=1, max_length=MAX_OPEN_REVIEW_FINDINGS)
-
-
-class EscalationStatus(StrEnum):
-    PENDING_NOTIFICATION = "PENDING_NOTIFICATION"
-    NOTIFIED = "NOTIFIED"
-    NOTIFICATION_FAILED = "NOTIFICATION_FAILED"
-    REOPENED = "REOPENED"
-    RESUMED = "RESUMED"
-    EXPIRED = "EXPIRED"
-
-
-class ResumeClassification(StrEnum):
-    RISK_APPROVAL = "RISK_APPROVAL"
-    PLAN_DECISION = "PLAN_DECISION"
-    DELIVERY_RETRY = "DELIVERY_RETRY"
-    NOT_RESUMABLE = "NOT_RESUMABLE"
-
-
-class HaltReasonCode(StrEnum):
-    """Why a run stopped, or why its guidance reads as it does.
-
-    The values are stored in run files and sent to the dashboard, so they never change.
-    Every copy table keys on this enum: the escalation classifier, the run guidance,
-    the dashboard guidance copy and the dashboard halt sentences.
-    """
-
-    BOUNDED_REVIEW_ACCEPTANCE = "BOUNDED_REVIEW_ACCEPTANCE"
-    REVIEW_IMPASSE = "REVIEW_IMPASSE"
-    UNRESOLVED_DECISIONS = "UNRESOLVED_DECISIONS"
-    RISK_APPROVAL = "RISK_APPROVAL"
-    SCOPE_REVIEW = "SCOPE_REVIEW"
-    ATTEMPT_BUDGET_EXHAUSTED = "ATTEMPT_BUDGET_EXHAUSTED"
-    CI_INTERVENTION = "CI_INTERVENTION"
-    DELIVERY_INTERVENTION = "DELIVERY_INTERVENTION"
-    RECOVERY_INTERVENTION = "RECOVERY_INTERVENTION"
-    MANUAL_INSPECTION = "MANUAL_INSPECTION"
-    STALLED = "STALLED"
-
-    @classmethod
-    def parse(cls, value: object) -> HaltReasonCode | None:
-        """The code a stored or sent value names, or ``None`` for anything else."""
-        if not isinstance(value, str):
-            return None
-        try:
-            return cls(value)
-        except ValueError:
-            return None
-
-
-class HaltReasonCopy(NamedTuple):
-    """The words for one halt reason: what happened and what a person does next."""
-
-    summary: str
-    next_action: str
-
-
-#: The one copy source for halt reasons. The run guidance and the dashboard guidance read
-#: it as it is. The GitHub notice reads it too, except the plan-decision next action, which
-#: says "this GitHub thread" because the notice is posted there. For UNRESOLVED_DECISIONS
-#: the summary is the form without a count and the next action is the one for a reply.
-HALT_REASON_COPY: dict[HaltReasonCode, HaltReasonCopy] = {
-    HaltReasonCode.BOUNDED_REVIEW_ACCEPTANCE: HaltReasonCopy(
-        "The controller continued after the bounded review limit.",
-        "Review the accepted findings in the pull request before merging.",
-    ),
-    HaltReasonCode.REVIEW_IMPASSE: HaltReasonCopy(
-        "Independent review did not converge within the safe automatic policy.",
-        "Inspect review-impasse.json, resolve or accept the listed findings, then retry.",
-    ),
-    HaltReasonCode.UNRESOLVED_DECISIONS: HaltReasonCopy(
-        "The execution plan has unresolved architectural decisions.",
-        "Reply with complete numbered decisions on the escalation thread.",
-    ),
-    HaltReasonCode.RISK_APPROVAL: HaltReasonCopy(
-        "The run requires approval under the configured risk policy.",
-        "Review the work item risk and approve or change the policy before retrying.",
-    ),
-    HaltReasonCode.SCOPE_REVIEW: HaltReasonCopy(
-        "The proposed changes exceeded the approved scope.",
-        "Review the planned and changed files, then update the scope or retry.",
-    ),
-    HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED: HaltReasonCopy(
-        "The run exhausted a bounded retry budget.",
-        "Inspect the run artifacts, correct the underlying issue, then retry.",
-    ),
-    HaltReasonCode.CI_INTERVENTION: HaltReasonCopy(
-        "CI could not be completed or repaired automatically.",
-        "Inspect the pull request checks, fix the failing check, then retry delivery.",
-    ),
-    HaltReasonCode.DELIVERY_INTERVENTION: HaltReasonCopy(
-        "The controller could not complete pull request delivery.",
-        "Check repository permissions and delivery settings, then retry delivery.",
-    ),
-    HaltReasonCode.RECOVERY_INTERVENTION: HaltReasonCopy(
-        "The run could not safely recover its persisted workspace.",
-        "Inspect the run and workspace metadata before starting a replacement run.",
-    ),
-    HaltReasonCode.MANUAL_INSPECTION: HaltReasonCopy(
-        "The controller stopped at a manual decision boundary.",
-        "Inspect the typed run artifacts and decide whether to retry or replace the run.",
-    ),
-    HaltReasonCode.STALLED: HaltReasonCopy(
-        "The run made no progress within the stall timeout, so the factory stopped its agent.",
-        "Inspect the last invocation and the workspace, then start a replacement run.",
-    ),
-}
-
-#: The start of the halt reason of a run the service stopped because it made no progress.
-STALLED_HALT_REASON = "stalled: no progress within the stall timeout"
-
-#: The halt reason of a run that stopped on unresolved plan decisions. A count can follow
-#: it, so the classifiers match it as a prefix.
-UNRESOLVED_DECISIONS_HALT_REASON = "execution plan has unresolved decisions"
-
-#: The start of the halt reason of a run whose publish step failed. The error follows it.
-PUBLISH_FAILED_HALT_REASON = "could not publish the pull request:"
-
-#: The next action when no reply can resume a run that stopped on unresolved decisions.
-UNRESOLVED_DECISIONS_REPLACE_ACTION = (
-    "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
-)
-
-
-def unresolved_decisions_count(plan: ExecutionPlan | None, reason: str) -> int | None:
-    """How many decisions a halt left open: the plan's own count, else a count in ``reason``."""
-    if plan is not None and plan.unresolved_decisions:
-        return len(plan.unresolved_decisions)
-    match = re.search(r"\b(\d+)\s+unresolved", reason) or re.search(r"\((\d+)\)", reason)
-    return int(match.group(1)) if match else None
-
-
-def unresolved_decisions_summary(count: int | None) -> str:
-    """The halt summary for a plan with ``count`` unresolved decisions, or none counted."""
-    if count is None:
-        return HALT_REASON_COPY[HaltReasonCode.UNRESOLVED_DECISIONS].summary
-    label = "decision" if count == 1 else "decisions"
-    return f"The execution plan has {count} unresolved architectural {label}."
-
-
-class EscalationTargetType(StrEnum):
-    PULL_REQUEST = "PULL_REQUEST"
-    ISSUE = "ISSUE"
-
-
-DASHBOARD_USER_LOGIN = "dashboard-local"
-
-#: The most numbered decisions one plan-decision reply can answer. Lives here so the
-#: models below can bound their lists with it; ``escalation_protocol`` re-exports it.
-MAX_PLAN_DECISIONS = 24
-
-#: ``EscalationRecord.reply_cursor`` once no further reply can resume the run.
-REPLY_CURSOR_CLOSED = "closed"
-
-#: An episode id as a whole. Lives here so the request model can check it without
-#: importing ``escalation_protocol``, which imports this module.
-EPISODE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
-
-#: A context fingerprint is a full SHA-256 digest in lowercase hex.
-CONTEXT_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
-
-ReplySource = Literal["github", "dashboard"]
-
-#: How alive the call recorded as active looks. The run view reports it and the dashboard
-#: shows it; the page names an outcome for each one.
-ActiveInvocationStatus = Literal["running", "stale", "crashed", "abandoned"]
-
-
-def _check_reply_source(source: ReplySource, comment_id: int | None, user_login: str) -> None:
-    """Shared rule: a GitHub reply has a comment id, a dashboard reply has the fixed login."""
-    if source == "github" and comment_id is None:
-        raise ValueError("a github reply needs a comment_id")
-    if source == "dashboard" and comment_id is not None:
-        raise ValueError("a dashboard reply has no GitHub comment_id")
-    if source == "dashboard" and user_login != DASHBOARD_USER_LOGIN:
-        raise ValueError(f"a dashboard reply must use user_login {DASHBOARD_USER_LOGIN!r}")
-
-
-def _without_github_source(data: dict[str, Any]) -> dict[str, Any]:
-    """Drop ``source`` when it is ``github``, so a GitHub reply is saved as it was before.
-
-    Code from before the field existed forbids unknown keys. Leaving the key out of GitHub
-    replies means only a dashboard reply changes the file, and a rollback fails only for those.
-    """
-    if data.get("source") == "github":
-        data.pop("source")
-    return data
-
-
-class AcceptedReplyReceipt(ModelBase):
-    source: ReplySource = "github"
-    comment_id: int | None = Field(default=None, ge=1)
-    user_login: str = Field(min_length=1)
-    user_id: int | None = None
-    author_association: str = ""
-    created_at: UtcDateTime
-    accepted_at: UtcDateTime = Field(default_factory=utc_now)
-    dispatched_at: UtcDateTime | None = None
-    command: str = Field(min_length=1)
-    episode_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    approval_context_fingerprint: str | None = None
-    plan_decision_context_fingerprint: str | None = None
-    delivery_retry_context_fingerprint: str | None = None
-
-    @model_validator(mode="after")
-    def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
-        _check_reply_source(self.source, self.comment_id, self.user_login)
-        return self
-
-    @model_serializer(mode="wrap")
-    def _omit_github_source(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        return _without_github_source(handler(self))
-
-
-class RiskRationale(ModelBase):
-    intended_outcome: str = Field(min_length=1, max_length=300)
-    sensitive_boundary: str = Field(min_length=1, max_length=300)
-    necessity: str = Field(min_length=1, max_length=300)
-    credible_scenario: str = Field(min_length=1, max_length=400)
-    known_mitigations: list[str] = Field(min_length=1, max_length=10)
-    residual_risk: str = Field(min_length=1, max_length=300)
-
-    @field_validator(
-        "intended_outcome",
-        "sensitive_boundary",
-        "necessity",
-        "credible_scenario",
-        "residual_risk",
-    )
-    @classmethod
-    def _validate_prose(cls, value: str) -> str:
-        s = value.strip()
-        if not s:
-            raise ValueError("field must not be blank")
-        return s
-
-    @field_validator("known_mitigations")
-    @classmethod
-    def _validate_known_mitigations(cls, items: list[str]) -> list[str]:
-        if not items:
-            raise ValueError("known_mitigations must contain at least one mitigation")
-        cleaned: list[str] = []
-        for item in items:
-            s = item.strip()
-            if not s:
-                raise ValueError("known_mitigations entries must not be blank")
-            if len(s) > 200:
-                raise ValueError("known_mitigations entries must be 200 characters or fewer")
-            cleaned.append(s)
-        return cleaned
-
-
-class RiskApprovalContext(ModelBase):
-    risk: Risk
-    complexity: Complexity
-    work_item_id: str = Field(min_length=1, max_length=128)
-    work_item_title: str = Field(min_length=1, max_length=256)
-    risk_rationale: RiskRationale
-    decision_requested: str = Field(min_length=1, max_length=300)
-    #: Contexts written before ADR-035 name REFINING. New contexts set PLANNING.
-    next_state: WorkflowState = WorkflowState.REFINING
-    authorized_actions: list[str] = Field(min_length=1, max_length=10)
-    unauthorized_actions: list[str] = Field(min_length=1, max_length=10)
-    conditions_in_force: list[str] = Field(min_length=1, max_length=10)
-    context_fingerprint: str = Field(min_length=64, max_length=64)
-
-
-class PlanDecisionContext(ModelBase):
-    """Immutable decision questions that an authorized human may answer."""
-
-    plan_fingerprint: str = Field(min_length=64, max_length=64)
-    decisions: list[str] = Field(min_length=1, max_length=MAX_PLAN_DECISIONS)
-    context_fingerprint: str = Field(min_length=64, max_length=64)
-
-    @field_validator("decisions")
-    @classmethod
-    def _validate_decisions(cls, values: list[str]) -> list[str]:
-        cleaned = [value.strip() for value in values]
-        if any(not value for value in cleaned):
-            raise ValueError("decision questions must not be blank")
-        if any(len(value) > 500 for value in cleaned):
-            raise ValueError("decision questions must be 500 characters or fewer")
-        return cleaned
-
-
-class DeliveryRetryContext(ModelBase):
-    """The reviewed work a person may publish again after the pull request failed to open."""
-
-    reviewed_tree_sha: str = Field(min_length=40, max_length=64)
-    base_commit_sha: str = Field(min_length=40, max_length=64)
-    branch_name: str = Field(min_length=1)
-    context_fingerprint: str = Field(min_length=64, max_length=64)
-
-
-class PlanDecisionAnswer(ModelBase):
-    """One validated answer to a numbered plan decision."""
-
-    decision_number: int = Field(ge=1, le=MAX_PLAN_DECISIONS)
-    answer: str = Field(min_length=1, max_length=500)
-
-    @field_validator("answer")
-    @classmethod
-    def _validate_answer(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("answer must not be blank")
-        if "\r" in cleaned or "\n" in cleaned:
-            raise ValueError("answer must be a single line")
-        return cleaned
-
-
-class PlanDecisionAnswers(VersionedModel):
-    """Durable authorized answers bound to one unresolved-plan escalation."""
-
-    run_id: str = Field(min_length=1)
-    episode_id: str = Field(min_length=1)
-    plan_fingerprint: str = Field(min_length=64, max_length=64)
-    context_fingerprint: str = Field(min_length=64, max_length=64)
-    source: ReplySource = "github"
-    comment_id: int | None = Field(default=None, ge=1)
-    user_login: str = Field(min_length=1)
-    user_id: int | None = None
-    author_association: str = ""
-    answers: list[PlanDecisionAnswer] = Field(min_length=1, max_length=MAX_PLAN_DECISIONS)
-    accepted_at: UtcDateTime = Field(default_factory=utc_now)
-
-    @model_validator(mode="after")
-    def _require_reply_source_fields(self) -> PlanDecisionAnswers:
-        _check_reply_source(self.source, self.comment_id, self.user_login)
-        return self
-
-    @model_serializer(mode="wrap")
-    def _omit_github_source(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        return _without_github_source(handler(self))
-
-    @model_validator(mode="after")
-    def _require_ordered_answers(self) -> PlanDecisionAnswers:
-        _check_ordered_answers(self.answers)
-        return self
-
-
-def _check_ordered_answers(answers: list[PlanDecisionAnswer]) -> None:
-    expected = list(range(1, len(answers) + 1))
-    if [answer.decision_number for answer in answers] != expected:
-        raise ValueError("answers must use contiguous decision numbers in order")
-
-
-DashboardRequestAction = Literal[
-    ResumeClassification.RISK_APPROVAL,
-    ResumeClassification.PLAN_DECISION,
-    ResumeClassification.DELIVERY_RETRY,
+__all__ = [
+    "AcceptedReplyReceipt",
+    "ActiveInvocation",
+    "ActiveInvocationStatus",
+    "AgentPurpose",
+    "AgentRole",
+    "AttemptBudget",
+    "AttemptRecord",
+    "AttemptTrigger",
+    "CICheckEvidence",
+    "CIReport",
+    "CLAUDE_CODE_EFFORT_LEVELS",
+    "CONTEXT_FINGERPRINT_PATTERN",
+    "COST_UNIT_FIELDS",
+    "ChangeSet",
+    "CommandResult",
+    "Complexity",
+    "ContextTier",
+    "DASHBOARD_USER_LOGIN",
+    "DashboardRequestStaleReason",
+    "DashboardResumeRequest",
+    "DeliveryRetryContext",
+    "DependencyEcosystem",
+    "EPISODE_ID_PATTERN",
+    "EscalationRecord",
+    "EscalationStatus",
+    "EscalationTargetType",
+    "ExecutionPlan",
+    "ExecutionRoute",
+    "ExpectedScope",
+    "FactoryRun",
+    "HALT_REASON_COPY",
+    "HaltReasonCode",
+    "InvocationRecord",
+    "MAX_COMMAND_NOTES",
+    "MAX_COMMAND_TEXT_LENGTH",
+    "MAX_GUIDANCE_FINDINGS",
+    "MAX_OPEN_REVIEW_FINDINGS",
+    "MAX_PERFORMANCE_MAP_ENTRIES",
+    "MAX_PERFORMANCE_METRICS",
+    "MAX_PERFORMANCE_NAME_LENGTH",
+    "MAX_PLAN_DECISIONS",
+    "MAX_STEER_NOTE_CHARS",
+    "ModelBase",
+    "ModelUsage",
+    "MutationReport",
+    "MutationStatus",
+    "OperatorEscalation",
+    "PROJECT_ID_PATTERN",
+    "PUBLISH_FAILED_HALT_REASON",
+    "PerformanceMetric",
+    "PerformanceRecord",
+    "PlanDecisionAnswer",
+    "PlanDecisionAnswers",
+    "PlanDecisionContext",
+    "PlanStep",
+    "PlanningResult",
+    "ProjectBrief",
+    "ProjectExecution",
+    "ProjectPlan",
+    "ProjectState",
+    "ProjectTask",
+    "ProjectTaskExecution",
+    "ProjectTaskState",
+    "REPLY_CURSOR_CLOSED",
+    "RUN_LIST_STATES",
+    "RejectedCommand",
+    "RepairContext",
+    "ReplySource",
+    "RepositoryCommandsPlan",
+    "RepositoryCommandsSource",
+    "RepositoryDependency",
+    "RepositoryPackageManager",
+    "RepositoryProfile",
+    "RepositoryTechnology",
+    "RepositoryTestTool",
+    "ResumeClassification",
+    "ResumeRefusal",
+    "ReviewAcceptance",
+    "ReviewAcceptanceReason",
+    "ReviewDispositionStatus",
+    "ReviewFinding",
+    "ReviewFindingCategory",
+    "ReviewFindingDisposition",
+    "ReviewFindingDraft",
+    "ReviewFindingOrigin",
+    "ReviewImpasse",
+    "ReviewImpasseKind",
+    "ReviewLedger",
+    "ReviewReport",
+    "ReviewSourceLocation",
+    "Risk",
+    "RiskApprovalContext",
+    "RiskRationale",
+    "RouteAdjustment",
+    "RouteDecision",
+    "RouteOption",
+    "RunLaunch",
+    "RunLease",
+    "RunListFilter",
+    "RunSteerNote",
+    "RunStopRequest",
+    "RuntimeFallback",
+    "RuntimeName",
+    "STALLED_HALT_REASON",
+    "STOPPED_HALT_REASON",
+    "SetupState",
+    "Specification",
+    "TOKEN_CLASS_FIELDS",
+    "TOTAL_TOKEN_FIELDS",
+    "TestReport",
+    "ToolchainInventory",
+    "ToolchainLane",
+    "ToolchainProvider",
+    "ToolchainSetupPlan",
+    "ToolchainSlot",
+    "ToolchainSlotBinding",
+    "TriageResult",
+    "UNRESOLVED_DECISIONS_HALT_REASON",
+    "UNRESOLVED_DECISIONS_REPLACE_ACTION",
+    "UsageMetrics",
+    "UtcDateTime",
+    "VerificationReport",
+    "VersionedModel",
+    "WorkItem",
+    "WorkflowState",
+    "check_claude_code_effort",
+    "check_pi_provider",
+    "unresolved_decisions_count",
+    "unresolved_decisions_summary",
+    "utc_now",
 ]
-DashboardRequestStatus = Literal["pending", "stale"]
-#: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
-ResumeRefusal = Literal["expired", "reopen_limit", "context_changed", "state_changed"]
-#: A new ``ResumeRefusal`` value changes the stored request schema: older code rejects it.
-DashboardRequestStaleReason = ResumeRefusal
-
-
-class DashboardResumeRequest(VersionedModel):
-    """A local approval or plan answer waiting for the service to read it.
-
-    The dashboard creates it as ``pending``. Only the service marks it ``stale``,
-    with the reason it refused it.
-    """
-
-    run_id: str = Field(min_length=1)
-    episode_id: str = Field(min_length=1)
-    context_fingerprint: str
-    action: DashboardRequestAction
-    answers: list[PlanDecisionAnswer] = Field(default_factory=list, max_length=MAX_PLAN_DECISIONS)
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-    status: DashboardRequestStatus = "pending"
-    reason: DashboardRequestStaleReason | None = None
-
-    @field_validator("episode_id")
-    @classmethod
-    def _validate_episode_id(cls, value: str) -> str:
-        if EPISODE_ID_PATTERN.fullmatch(value) is None:
-            raise ValueError("episode_id must be 1-128 letters, digits, '.', '_' or '-'")
-        return value
-
-    @field_validator("context_fingerprint")
-    @classmethod
-    def _validate_context_fingerprint(cls, value: str) -> str:
-        if CONTEXT_FINGERPRINT_PATTERN.fullmatch(value) is None:
-            raise ValueError("context_fingerprint must be 64 lowercase hex characters")
-        return value
-
-    @model_validator(mode="after")
-    def _require_consistent_fields(self) -> DashboardResumeRequest:
-        if self.action == ResumeClassification.PLAN_DECISION:
-            if not self.answers:
-                raise ValueError("a plan answer request needs answers")
-            _check_ordered_answers(self.answers)
-        elif self.answers:
-            raise ValueError("a risk approval request has no answers")
-        if (self.status == "stale") != (self.reason is not None):
-            raise ValueError("a stale request needs a reason and a pending one has none")
-        return self
-
-    def marked_stale(self, reason: DashboardRequestStaleReason) -> DashboardResumeRequest:
-        """This request as the service leaves it when it refuses it, validated again."""
-        return DashboardResumeRequest.model_validate(
-            {**self.model_dump(), "status": "stale", "reason": reason}
-        )
-
-
-#: The start of the halt reason of a run a person stopped with Stop or ``factory cancel``.
-STOPPED_HALT_REASON = "stopped on request"
-
-
-class RunStopRequest(VersionedModel):
-    """A person's request to stop a run (ADR-047).
-
-    The dashboard or ``factory cancel`` creates it once, and never changes it. The
-    controller that drives the run reads it, kills the live agent call, halts the run in
-    ``NEEDS_HUMAN`` and deletes the request.
-    """
-
-    run_id: str = Field(min_length=1)
-    source: Literal["dashboard", "cli"]
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-
-
-#: The longest operator note a person can send to steer a run (ADR-047).
-MAX_STEER_NOTE_CHARS = 2000
-
-
-class RunSteerNote(VersionedModel):
-    """A person's note to the next agent call of a run (ADR-047).
-
-    The dashboard or ``factory steer`` creates it once, and never changes it. The
-    controller adds it to the next agent prompt as an operator section and deletes it.
-    """
-
-    run_id: str = Field(min_length=1)
-    source: Literal["dashboard", "cli"]
-    note: str = Field(min_length=1, max_length=MAX_STEER_NOTE_CHARS)
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-
-
-class OperatorEscalation(VersionedModel):
-    """The last ``factory escalate`` of a run and how it went, for the dashboard (ADR-055).
-
-    The command writes ``running`` when it starts, then ``done`` or ``failed`` with the error.
-    ``to_route`` is ``None`` when the run could not escalate at all. ``pid`` is the process
-    that runs it, so a ``running`` record whose process is gone reads as failed.
-    """
-
-    from_route: ExecutionRoute | None = None
-    to_route: ExecutionRoute | None = None
-    note: str = Field(min_length=1, max_length=MAX_STEER_NOTE_CHARS)
-    started_at: UtcDateTime = Field(default_factory=utc_now)
-    status: Literal["running", "done", "failed"] = "running"
-    error: str | None = None
-    pid: int | None = None
-
-
-class EscalationRecord(ModelBase):
-    episode_id: str = Field(min_length=1)
-    episode_number: int = Field(default=1, ge=1)
-    status: EscalationStatus = EscalationStatus.PENDING_NOTIFICATION
-    resume_classification: ResumeClassification = ResumeClassification.NOT_RESUMABLE
-    target_type: EscalationTargetType | None = None
-    target_host: str | None = None
-    target_repository: str | None = None
-    target_number: int | None = Field(default=None, ge=1)
-    target_url: str | None = None
-    comment_id: int | None = Field(default=None, ge=1)
-    comment_url: str | None = None
-    #: A ``HaltReasonCode`` value. It stays ``str`` so a ``run.json`` that holds a code
-    #: this version does not know still loads. Readers use ``HaltReasonCode.parse``.
-    reason_code: str = ""
-    delivery_attempts: int = Field(default=0, ge=0)
-    delivery_error: str | None = None
-    last_notified_at: UtcDateTime | None = None
-    reply_cursor: str | None = None
-    accepted_replies: list[AcceptedReplyReceipt] = Field(default_factory=list)
-    reopen_count: int = Field(default=0, ge=0)
-    approval_context: RiskApprovalContext | None = None
-    plan_decision_context: PlanDecisionContext | None = None
-    delivery_retry_context: DeliveryRetryContext | None = None
-    remote_resume_enabled: bool = False
-    created_at: UtcDateTime = Field(default_factory=utc_now)
-    updated_at: UtcDateTime = Field(default_factory=utc_now)
-
-    def advanced_cursor(self, cursor: str, now: datetime) -> Self:
-        """This record with the reply cursor at ``cursor``, stamped ``now``."""
-        return self.model_copy(update={"reply_cursor": cursor, "updated_at": now})
-
-    def closed_to_replies(self, now: datetime) -> Self:
-        """This record with the cursor closed and remote resume off, stamped ``now``."""
-        return self.model_copy(
-            update={
-                "remote_resume_enabled": False,
-                "reply_cursor": REPLY_CURSOR_CLOSED,
-                "updated_at": now,
-            }
-        )
-
-    def expired(self, now: datetime) -> Self:
-        """:meth:`closed_to_replies`, with the status ``EXPIRED``."""
-        return self.closed_to_replies(now).model_copy(update={"status": EscalationStatus.EXPIRED})
-
-    def reopened(self, receipt: AcceptedReplyReceipt, now: datetime) -> Self:
-        """This record after ``receipt`` reopened the run: one more reopen, the cursor closed."""
-        return self.model_copy(
-            update={
-                "accepted_replies": [*self.accepted_replies, receipt],
-                "reopen_count": self.reopen_count + 1,
-                "status": EscalationStatus.REOPENED,
-                "reply_cursor": REPLY_CURSOR_CLOSED,
-                "updated_at": now,
-            }
-        )
 
 
 class RouteAdjustment(ModelBase):
@@ -1971,143 +600,3 @@ class PlanningResult(ModelBase):
 
     specification: Specification
     execution_plan: ExecutionPlan
-
-
-class ChangeSet(VersionedModel):
-    summary: NonBlankStr = Field(min_length=1)
-    changed_files: list[str] = Field(default_factory=list)
-    tests_added: list[str] = Field(default_factory=list)
-    commands_run: list[str] = Field(default_factory=list)
-
-
-class CommandResult(ModelBase):
-    command: str = Field(min_length=1)
-    exit_code: int
-    stdout: str = ""
-    stderr: str = ""
-    duration_seconds: float = Field(ge=0.0)
-    timed_out: bool = False
-
-
-class VerificationReport(VersionedModel):
-    """Deterministic, factory-produced evidence only.
-
-    Every field here is derived from executing repository-configured
-    commands (``verification.DeterministicVerifier``); nothing in this model
-    is an agent claim. Independent AI tester judgement lives in
-    :class:`TestReport`.
-    """
-
-    passed: bool
-    deterministic_checks: list[CommandResult] = Field(default_factory=list)
-    failures: list[str] = Field(default_factory=list)
-    coverage_change: float | None = None
-    test_findings: list[str] = Field(default_factory=list)
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class TestReport(VersionedModel):
-    """Independent AI tester output.
-
-    Kept distinct from :class:`VerificationReport` so a model's judgement is
-    never mistaken for deterministic evidence ("a model does not approve its
-    own work"). ``passed`` is advisory: the workflow controller still relies
-    on the deterministic report for gating.
-    """
-
-    passed: bool
-    findings: list[NonBlankStr] = Field(default_factory=list)
-    suggested_tests: list[NonBlankStr] = Field(default_factory=list)
-    confidence: float = Field(ge=0.0, le=1.0)
-    skipped: bool = False
-    provenance: Literal["AGENT", "SKIPPED"] = "AGENT"
-    skip_reason: str | None = None
-
-    # Not a pytest test class despite the ``Test`` prefix.
-    __test__ = False
-
-
-class RepairContext(ModelBase):
-    """Minimal, bounded context handed to a repair attempt.
-
-    Deliberately small: only why the repair is happening plus the relevant
-    excerpt, so historical failure context is never dumped wholesale into a
-    prompt (``PLAN.md`` Phase 12). The *current* diff is not carried here --
-    it travels as controller-derived Git evidence on ``AgentRequest.diff``.
-    ``previous_attempts`` holds at most three one-line failure signatures from
-    earlier attempts of this run, so a stateless runtime can see it is looping.
-    """
-
-    trigger: AttemptTrigger
-    summary: str = Field(min_length=1)
-    failures: list[str] = Field(default_factory=list)
-    log_excerpt: str | None = None
-    previous_attempts: list[str] = Field(default_factory=list, max_length=3)
-
-
-class ReviewReport(VersionedModel):
-    approved: bool
-    findings: list[NonBlankStr] = Field(default_factory=list)
-    scope_concerns: list[NonBlankStr] = Field(default_factory=list)
-    security_concerns: list[NonBlankStr] = Field(default_factory=list)
-    compatibility_concerns: list[NonBlankStr] = Field(default_factory=list)
-    suggested_changes: list[NonBlankStr] = Field(default_factory=list)
-    blocking_findings: list[ReviewFindingDraft] = Field(
-        default_factory=list,
-        max_length=MAX_OPEN_REVIEW_FINDINGS,
-    )
-    prior_finding_dispositions: list[ReviewFindingDisposition] = Field(
-        default_factory=list,
-        max_length=MAX_OPEN_REVIEW_FINDINGS,
-    )
-    repair_regressions: list[ReviewFindingDraft] = Field(
-        default_factory=list,
-        max_length=MAX_OPEN_REVIEW_FINDINGS,
-    )
-    skipped: bool = False
-    provenance: Literal["AGENT", "SKIPPED"] = "AGENT"
-    skip_reason: str | None = None
-
-
-class ReviewImpasse(VersionedModel):
-    snapshot: int = Field(ge=1)
-    kind: ReviewImpasseKind = ReviewImpasseKind.UNKNOWN
-    reason: str = Field(min_length=1)
-    paths: list[str] = Field(default_factory=list)
-    finding_ids: list[str] = Field(default_factory=list)
-    findings: list[str] = Field(default_factory=list)
-
-
-class CICheckEvidence(ModelBase):
-    """One normalized CI check outcome.
-
-    Deliberately expressed with plain strings rather than the enums declared
-    in :mod:`software_agent_factory.github`: this module is the domain layer
-    and must not depend on the ``gh`` adapter. The controller normalizes a
-    ``github.CIStatus`` into this shape before persisting it.
-    """
-
-    name: str = Field(min_length=1)
-    status: str = Field(min_length=1)
-    description: str = ""
-    details_url: str = ""
-    failure_category: str | None = None
-    log_excerpt: str = ""
-
-
-class CIReport(VersionedModel):
-    """Persisted, normalized CI evidence for one observation cycle.
-
-    Controller-produced deterministic evidence (``PLAN.md`` Phase 11): it
-    records what GitHub Actions reported, never a model's opinion of it.
-    """
-
-    overall: str = Field(min_length=1)
-    checks: list[CICheckEvidence] = Field(default_factory=list)
-    observed_at: UtcDateTime = Field(default_factory=utc_now)
-    repair_attempts_used: int = Field(ge=0, default=0)
-    timed_out: bool = False
-
-    @property
-    def failed_checks(self) -> list[CICheckEvidence]:
-        return [check for check in self.checks if check.status == "FAIL"]
