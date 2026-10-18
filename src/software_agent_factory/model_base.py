@@ -33,7 +33,7 @@ def _reject_blank(value: str) -> str:
 NonBlankStr = Annotated[str, AfterValidator(_reject_blank)]
 
 
-def _without_blank_entries(data: object, fields: tuple[str, ...]) -> object:
+def without_blank_entries(data: object, fields: tuple[str, ...]) -> object:
     """Drop blank entries from the named human-input lists before validation."""
     if not isinstance(data, dict):
         return data

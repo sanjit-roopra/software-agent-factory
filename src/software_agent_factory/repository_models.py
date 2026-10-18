@@ -14,8 +14,8 @@ from software_agent_factory.model_base import (
     Risk,
     UtcDateTime,
     VersionedModel,
-    _without_blank_entries,
     utc_now,
+    without_blank_entries,
 )
 
 
@@ -325,7 +325,7 @@ class WorkItem(VersionedModel):
     @model_validator(mode="before")
     @classmethod
     def _drop_blank_entries(cls, data: object) -> object:
-        return _without_blank_entries(data, ("acceptance_criteria", "constraints"))
+        return without_blank_entries(data, ("acceptance_criteria", "constraints"))
 
     @model_validator(mode="after")
     def _validate_project_linkage(self) -> WorkItem:

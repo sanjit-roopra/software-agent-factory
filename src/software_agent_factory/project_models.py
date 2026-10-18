@@ -12,8 +12,8 @@ from software_agent_factory.model_base import (
     NonBlankStr,
     UtcDateTime,
     VersionedModel,
-    _without_blank_entries,
     utc_now,
+    without_blank_entries,
 )
 from software_agent_factory.report_models import VerificationReport
 from software_agent_factory.usage_models import InvocationRecord
@@ -73,7 +73,7 @@ class ProjectBrief(VersionedModel):
     @model_validator(mode="before")
     @classmethod
     def _drop_blank_entries(cls, data: object) -> object:
-        return _without_blank_entries(data, ("acceptance_criteria", "constraints"))
+        return without_blank_entries(data, ("acceptance_criteria", "constraints"))
 
 
 class ProjectTask(ModelBase):
