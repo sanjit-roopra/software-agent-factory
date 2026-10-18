@@ -193,6 +193,8 @@ class ReviewAcceptanceReason(StrEnum):
     REVIEW_IMPASSE = "REVIEW_IMPASSE"
     ATTEMPT_BUDGET_LIMIT = "ATTEMPT_BUDGET_LIMIT"
     CARRIED_FORWARD = "CARRIED_FORWARD"
+    #: A person accepted the open findings after a review impasse (ADR-059).
+    OPERATOR = "OPERATOR"
 
 
 class ReviewImpasseKind(StrEnum):

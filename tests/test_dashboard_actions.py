@@ -55,6 +55,7 @@ from software_agent_factory.models import (
     EscalationStatus,
     ExecutionRoute,
     FactoryRun,
+    FindingsAcceptanceContext,
     OperatorEscalation,
     PlanDecisionAnswer,
     PlanDecisionContext,
@@ -72,7 +73,10 @@ from software_agent_factory.resume import (
     compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
-from software_agent_factory.resume_classes import compute_attempt_grant_context_fingerprint
+from software_agent_factory.resume_classes import (
+    compute_attempt_grant_context_fingerprint,
+    compute_findings_acceptance_context_fingerprint,
+)
 from software_agent_factory.run_requests import build_steer_requester, build_stop_requester
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
@@ -85,6 +89,7 @@ RISK = ResumeClassification.RISK_APPROVAL
 PLAN = ResumeClassification.PLAN_DECISION
 RETRY = ResumeClassification.DELIVERY_RETRY
 GRANT = ResumeClassification.ATTEMPT_GRANT
+ACCEPT = ResumeClassification.ACCEPT_FINDINGS
 ORIGIN_HEADER = "Origin"
 CONTENT_TYPE = "Content-Type"
 HOST_HEADER = "Host"
@@ -116,6 +121,7 @@ APPROVE = "approve"
 ANSWER = "answer"
 RETRY_ACTION = "retry"
 GRANT_ACTION = "grant"
+ACCEPT_ACTION = "accept"
 
 
 # -- runs ---------------------------------------------------------------------------------
@@ -206,6 +212,17 @@ def _grant_context() -> AttemptGrantContext:
     )
 
 
+def _accept_context() -> FindingsAcceptanceContext:
+    finding_ids = ["review-security-0123456789abcdef"]
+    return FindingsAcceptanceContext(
+        finding_ids=finding_ids,
+        reviewed_tree_sha="a" * 40,
+        context_fingerprint=compute_findings_acceptance_context_fingerprint(
+            run_id=RUN_ID, episode_id=EPISODE, finding_ids=finding_ids, reviewed_tree_sha="a" * 40
+        ),
+    )
+
+
 def _run(
     kind: ResumeClassification = RISK,
     *,
@@ -221,6 +238,7 @@ def _run(
         "plan_decision_context": _plan_context() if kind is PLAN else None,
         "delivery_retry_context": _retry_context() if kind is RETRY else None,
         "attempt_grant_context": _grant_context() if kind is GRANT else None,
+        "findings_acceptance_context": _accept_context() if kind is ACCEPT else None,
     }
     escalation = EscalationRecord.model_validate({**fields, **record})
     return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
@@ -233,6 +251,7 @@ def _fingerprint(run: FactoryRun) -> str:
         or run.escalation.plan_decision_context
         or run.escalation.delivery_retry_context
         or run.escalation.attempt_grant_context
+        or run.escalation.findings_acceptance_context
     )
     assert context is not None
     return context.context_fingerprint
@@ -439,6 +458,27 @@ def test_an_attempt_grant_is_accepted_and_stored_as_an_attempt_grant(
     assert stored.status == "pending"
     assert stored.answers == []
     assert stored.context_fingerprint == _fingerprint(rig.run)
+
+
+def test_a_findings_acceptance_is_accepted_and_stored(make_rig: RigFactory) -> None:
+    rig = make_rig(_run(ACCEPT))
+
+    status, payload = rig.post(_path(ACCEPT_ACTION), rig.body(), headers=rig.headers())
+
+    assert (status, payload["status"]) == (202, "accepted")
+    (stored,) = rig.requests()
+    assert (stored.action, stored.context_fingerprint) == (ACCEPT, _fingerprint(rig.run))
+
+
+def test_a_findings_acceptance_for_a_changed_context_is_409(make_rig: RigFactory) -> None:
+    rig = make_rig(_run(ACCEPT))
+
+    with rig.assert_writes_nothing():
+        status, payload = rig.post(
+            _path(ACCEPT_ACTION), rig.body(**{FINGERPRINT_FIELD: "f" * 64}), headers=rig.headers()
+        )
+
+    assert (status, payload[REASON]) == (409, "stale_fingerprint")
 
 
 @pytest.mark.parametrize(

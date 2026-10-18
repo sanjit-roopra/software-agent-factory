@@ -24,7 +24,7 @@
   const FILTER_NEEDS_YOU = "needs-you";
   const FILTER_ACTIVE = "active";
   // needs_you_action of each entry in resume_classes.py: a waiting run the page can act on.
-  const ACTIONABLE = new Set(["waiting", "retry", "grant"]);
+  const ACTIONABLE = new Set(["waiting", "retry", "grant", "accept"]);
   const RUNS_COLUMN_COUNT = 10;
   const SVG_NS = "http://www.w3.org/2000/svg";
   // The sparkline draws in the viewBox of #figure-week-trend in dashboard/assets.py.
@@ -2359,6 +2359,7 @@
   const ANSWER_ACTION = "answer";
   const RETRY_ACTION = "retry";
   const GRANT_ACTION = "grant";
+  const ACCEPT_ACTION = "accept";
   const STOP_ACTION = "cancel";
   const STEER_ACTION = "steer";
   const ESCALATE_ACTION = "escalate";
@@ -2423,6 +2424,13 @@
     expired: "grant expired, grant again"
   };
 
+  // The same for accepting open review findings (ADR-059).
+  const ACCEPT_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "findings already accepted",
+    expired: "acceptance expired, accept again"
+  };
+
   // The same for a stop (ADR-047).
   const STOP_CONFLICT_MESSAGES = {
     ...CONFLICT_MESSAGES,
@@ -2438,6 +2446,9 @@
     }
     if (action === GRANT_ACTION) {
       return GRANT_CONFLICT_MESSAGES;
+    }
+    if (action === ACCEPT_ACTION) {
+      return ACCEPT_CONFLICT_MESSAGES;
     }
     return action === ANSWER_ACTION ? ANSWER_CONFLICT_MESSAGES : CONFLICT_MESSAGES;
   }
@@ -2619,9 +2630,9 @@
     return section;
   }
 
-  // Publishing again or granting an attempt takes two clicks: the first arms the button and
-  // says what happens, the second sends it. Cancel disarms it. The pull request link shows in
-  // the run header.
+  // Publishing again, granting an attempt or accepting findings takes two clicks: the first
+  // arms the button and says what happens, the second sends it. Cancel disarms it. The pull
+  // request link shows in the run header.
   function confirmSection(step, runId, spec) {
     const section = element("div", "next-step-section");
     const note = section.appendChild(element("p", "retry-note", spec.note));
@@ -2668,6 +2679,13 @@
       confirmLabel: "Confirm +1 attempt",
       note: "The factory makes one more implementation attempt with the last failure. " +
         "If it fails, the run stops here again."
+    },
+    accept: {
+      action: ACCEPT_ACTION,
+      label: "Accept with findings",
+      confirmLabel: "Confirm accept with findings",
+      note: "The factory publishes the reviewed work with the open findings accepted. " +
+        "The pull request lists them and gets the factory:needs-look label, so it is not merged."
     }
   };
 
@@ -3060,11 +3078,12 @@
     ["answer", "Answer to continue"],
     ["retry", "Retry to continue"],
     ["grant", "Grant an attempt to continue"],
+    ["accept", "Accept the findings to continue"],
     ["queued", "Queued"],
     ["cannot_continue", "Cannot continue"],
     ["remote_approval_unavailable", "Inspect the run"]
   ]);
-  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry", "grant"]);
+  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry", "grant", "accept"]);
 
   function renderNextStepFrame(panel, step) {
     const heading = STEP_HEADINGS.get(step.kind) || "Needs you";

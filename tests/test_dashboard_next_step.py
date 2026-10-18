@@ -1029,6 +1029,18 @@ def test_a_stale_grant_says_grant_again() -> None:
     assert (step["kind"], step["stale_sentence"]) == ("grant", "grant expired, grant again")
 
 
+def test_a_review_impasse_gives_accept_and_queues_it() -> None:
+    run = _run(resume_classification="ACCEPT_FINDINGS", reason_code="REVIEW_IMPASSE")
+
+    step = next_step(run)
+    queued = next_step(run, [_request("ACCEPT_FINDINGS")])
+
+    assert (step["kind"], step["context_fingerprint"]) == ("accept", FINGERPRINT)
+    assert queued["sentence"] == (
+        f"Findings accepted at {QUEUED_AT}, queued for the factory service. {START_HINT}"
+    )
+
+
 def test_without_a_request_the_step_has_no_queued_fields() -> None:
     step = next_step(_risk_run())
 
@@ -1110,6 +1122,7 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "answer",
         "retry",
         "grant",
+        "accept",
         "queued",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'

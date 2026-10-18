@@ -84,7 +84,8 @@ def run_outcome(run: Mapping[str, Any]) -> dict[str, str]:
     active, as :func:`software_agent_factory.observability.build_monitoring_snapshot` counts it.
     A done run with ``needs_look`` reasons says ``Done, needs look``. A run that waits for a
     person also has an ``action``: ``waiting`` to approve or answer, ``retry`` to publish
-    again, ``grant`` to grant one more attempt, ``stopped`` when only a command can help.
+    again, ``grant`` to grant one more attempt, ``accept`` to accept open review findings,
+    ``stopped`` when only a command can help.
     Its label says the same in words.
     """
     state = _state(run)

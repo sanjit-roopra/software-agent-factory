@@ -513,8 +513,8 @@ def test_dashboard_binds_loopback_on_the_default_port_and_prints_the_token_url(
     assert server.config.port == cli.DEFAULT_DASHBOARD_PORT == 8765
     assert "http://127.0.0.1:8765/?token=test-token" in result.output
     assert (
-        "loopback only. it can queue an approval, answers, a retry, a grant, a stop or a note"
-        in result.output
+        "loopback only. it can queue an approval, answers, a retry, a grant, an acceptance, "
+        "a stop or a note" in result.output
     )
     assert server.served is True
     assert server.closed is True

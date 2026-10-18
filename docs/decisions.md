@@ -1,5 +1,49 @@
 # Architecture Decisions
 
+## ADR-059: Accept open review findings from the dashboard
+
+Status: accepted on 2026-10-18. This is the second class that ADR-057 planned.
+
+### Context
+
+When independent review does not converge, the run stops with
+`review-impasse.json`. The review policy did not let the controller accept the
+open findings. Often a person can see that the findings are fine to ship and
+look at later. The only way on was to fix the findings by hand or to escalate
+the run.
+
+### Decision
+
+- A halt with a stored review impasse gets the resume class `ACCEPT_FINDINGS`.
+  Its context holds the ids of the open blocking findings in the review ledger
+  and the tree that review saw. A fingerprint binds it to the run and the
+  episode. A run with no open findings has no context, so it stays not
+  resumable.
+- The dashboard shows **Accept with findings**. It takes two clicks, like
+  **Retry publishing**. The route is `POST /api/runs/<id>/accept`. Only the
+  dashboard can resume this class.
+- The service reopens the run at `PR_READY` on the same reviewed tree. The
+  reopen check refuses a context whose fingerprint does not match the receipt,
+  or a ledger whose open findings or reviewed tree changed. The delivery
+  checkpoint check refuses a worktree that changed since the review. Like a
+  publish retry, the reopen refuses a delivery policy that changed since the run
+  started.
+- The open findings move to accepted in the ledger. A `ReviewAcceptance` with
+  the reason `OPERATOR` records them. A person's acceptance passes the delivery
+  check even when it is beyond the review policy.
+- The findings are a `needs_look` reason. The pull request body lists the
+  accepted findings, the pull request gets the `factory:needs-look` label, and
+  the factory does not merge it.
+- "Send back with a note" is not a new action. **Escalate** (ADR-055) already
+  does it.
+
+### Consequences
+
+- A person can ship a stuck review with its findings in plain view, without a
+  new run.
+- A person still merges the pull request by hand.
+- The dashboard has one more write action, `accept`.
+
 ## ADR-058: Grant one more attempt from the dashboard
 
 Status: accepted on 2026-10-18. This is the first class that ADR-057 planned.

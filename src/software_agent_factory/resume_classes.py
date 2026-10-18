@@ -30,6 +30,7 @@ from .models import (
     AttemptGrantContext,
     DeliveryRetryContext,
     EscalationRecord,
+    FindingsAcceptanceContext,
     PlanDecisionContext,
     ResumeClassification,
     Risk,
@@ -41,7 +42,11 @@ from .redaction import contains_secret
 
 #: The decision context a resumable halt stores on its escalation.
 ResumeContext = (
-    RiskApprovalContext | PlanDecisionContext | DeliveryRetryContext | AttemptGrantContext
+    RiskApprovalContext
+    | PlanDecisionContext
+    | DeliveryRetryContext
+    | AttemptGrantContext
+    | FindingsAcceptanceContext
 )
 
 # Absolute, network, and system file system paths
@@ -297,6 +302,41 @@ def is_valid_attempt_grant_context(
     return secrets.compare_digest(context.context_fingerprint, expected)
 
 
+def compute_findings_acceptance_context_fingerprint(
+    *,
+    run_id: str,
+    episode_id: str,
+    finding_ids: Sequence[str],
+    reviewed_tree_sha: str,
+) -> str:
+    """Bind the open findings a person may accept, and the tree they are on, to one episode."""
+    return _fingerprint_dict(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "finding_ids": list(finding_ids),
+            "reviewed_tree_sha": reviewed_tree_sha,
+        }
+    )
+
+
+def is_valid_findings_acceptance_context(
+    context: FindingsAcceptanceContext | None,
+    run_id: str,
+    episode_id: str,
+) -> bool:
+    """Verify a findings acceptance context is bound to its run and episode."""
+    if not isinstance(context, FindingsAcceptanceContext):
+        return False
+    expected = compute_findings_acceptance_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        finding_ids=context.finding_ids,
+        reviewed_tree_sha=context.reviewed_tree_sha,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected)
+
+
 @dataclass(frozen=True)
 class ResumeClass:
     """How one resumable halt class asks for, records and applies a person's decision."""
@@ -390,6 +430,21 @@ RESUME_CLASSES: Mapping[ResumeClassification, ResumeClass] = {
             "One more attempt granted at {moment}, queued for the factory service. {start_hint}"
         ),
         expired_sentence="grant expired, grant again",
+        github_replies=False,
+    ),
+    ResumeClassification.ACCEPT_FINDINGS: ResumeClass(
+        context_field="findings_acceptance_context",
+        receipt_field="findings_acceptance_context_fingerprint",
+        is_valid_context=is_valid_findings_acceptance_context,
+        command=format_resume_command,
+        reopen_state=WorkflowState.PR_READY,
+        dashboard_action="accept",
+        needs_you_action="accept",
+        needs_you_label="Needs acceptance",
+        queued_sentence=(
+            "Findings accepted at {moment}, queued for the factory service. {start_hint}"
+        ),
+        expired_sentence="acceptance expired, accept again",
         github_replies=False,
     ),
 }

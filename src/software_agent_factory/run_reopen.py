@@ -19,8 +19,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import pr_delivery, run_recovery
+from . import pr_delivery, review_ledger, run_recovery
 from .models import (
+    MAX_OPEN_REVIEW_FINDINGS,
     REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
     AttemptBudget,
@@ -35,6 +36,8 @@ from .models import (
     RepairContext,
     RepositoryProfile,
     ResumeClassification,
+    ReviewAcceptance,
+    ReviewAcceptanceReason,
     RouteDecision,
     RunLease,
     Specification,
@@ -52,7 +55,11 @@ from .resume import (
     is_valid_risk_approval_context,
     receipt_approves_risk_context,
 )
-from .resume_classes import RESUME_CLASSES, is_valid_attempt_grant_context
+from .resume_classes import (
+    RESUME_CLASSES,
+    is_valid_attempt_grant_context,
+    is_valid_findings_acceptance_context,
+)
 from .run_context import Halt, TransitionError
 from .run_recovery import DELIVERY_REPO_CHANGED
 from .workspace import GitWorktreeWorkspace, WorkspaceError
@@ -246,6 +253,29 @@ def _check_attempt_grant(
         raise ValueError(f"run {run.id} no longer matches its attempt grant context")
 
 
+def _check_findings_acceptance(
+    _controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
+) -> None:
+    accept = escalation.findings_acceptance_context
+    if accept is None or not is_valid_findings_acceptance_context(
+        accept, run.id, escalation.episode_id
+    ):
+        raise ValueError(f"run {run.id} has missing or invalid findings acceptance context")
+    if receipt.findings_acceptance_context_fingerprint is None or not secrets.compare_digest(
+        receipt.findings_acceptance_context_fingerprint, accept.context_fingerprint
+    ):
+        raise ValueError(f"run {run.id} receipt fingerprint does not match active acceptance")
+    ledger = run.review_ledger
+    if (ledger.last_reviewed_tree_sha, [finding.id for finding in ledger.open_findings]) != (
+        accept.reviewed_tree_sha,
+        accept.finding_ids,
+    ):
+        raise ValueError(f"run {run.id} no longer matches its findings acceptance context")
+
+
 #: The check a reopen runs on the decision a person gave, one per resumable class. Each
 #: raises ``ValueError`` when the decision no longer matches the run.
 _REOPEN_CHECKS: dict[
@@ -256,6 +286,7 @@ _REOPEN_CHECKS: dict[
     ResumeClassification.PLAN_DECISION: _check_plan_decision,
     ResumeClassification.DELIVERY_RETRY: _check_delivery_retry,
     ResumeClassification.ATTEMPT_GRANT: _check_attempt_grant,
+    ResumeClassification.ACCEPT_FINDINGS: _check_findings_acceptance,
 }
 
 
@@ -324,8 +355,9 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
     workspace identity, reopen limits, durable resume-pending status,
     accepted reply receipt bound to current run and episode, and the supported
     resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING, DELIVERY_RETRY ->
-    PR_READY and publish again, ATTEMPT_GRANT -> IMPLEMENTING with one more attempt). Only
-    ATTEMPT_GRANT adds attempt budget, and only one attempt per reopen.
+    PR_READY and publish again, ATTEMPT_GRANT -> IMPLEMENTING with one more attempt,
+    ACCEPT_FINDINGS -> PR_READY with the open findings accepted). Only ATTEMPT_GRANT adds
+    attempt budget, and only one attempt per reopen.
     """
     run = controller._store.load_run(run_id)
     if run.state is not WorkflowState.NEEDS_HUMAN:
@@ -383,6 +415,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
                 return reopen_delivery_retry(controller, run, workspace, source_repo)
             if reopened_class is ResumeClassification.ATTEMPT_GRANT:
                 return reopen_attempt_grant(controller, run, workspace, source_repo)
+            if reopened_class is ResumeClassification.ACCEPT_FINDINGS:
+                return reopen_findings_acceptance(controller, run, workspace, source_repo)
 
             return _resume_reopened(controller, run, workspace, source_repo)
         except Halt as halt:
@@ -546,6 +580,55 @@ def reopen_attempt_grant(
         log_excerpt=last.log_excerpt if last is not None else None,
     )
     run = controller._drive_to_pr_ready(run, context, budget, repair_context)
+    if not controller._config.pull_request.enabled:
+        return controller.finalize_pr_ready(run)
+    return pr_delivery.publish_and_observe(controller, run, context)
+
+
+def reopen_findings_acceptance(
+    controller: WorkflowController,
+    run: FactoryRun,
+    workspace: GitWorktreeWorkspace,
+    source_repo: Path,
+) -> FactoryRun:
+    """Reopen a run that stopped on a review impasse at ``PR_READY`` with its open findings
+    accepted by a person (ADR-059).
+
+    The findings move to accepted in the ledger and a :class:`ReviewAcceptance` with the reason
+    ``OPERATOR`` records them. They are also a ``needs_look`` reason, so the pull request is
+    labelled and never merged by the factory. The run publishes the same reviewed tree: the
+    delivery checkpoint fails closed if the worktree changed since the review.
+    """
+    accept = run.escalation.findings_acceptance_context if run.escalation else None
+    if accept is None:
+        raise ValueError(f"run {run.id} has no findings acceptance context")
+    ledger = run.review_ledger
+    findings = review_ledger.deduplicate_findings(
+        [*ledger.accepted_findings, *ledger.open_findings]
+    )
+    acceptance = ReviewAcceptance(
+        snapshot=max(1, len(run.attempt_records)),
+        reason=ReviewAcceptanceReason.OPERATOR,
+        risk=controller._store.load_artifact(run.id, TriageResult).risk,
+        review_rounds=max(1, sum(1 for a in run.attempt_records if a.reviewed_tree_sha)),
+        reviewed_tree_sha=accept.reviewed_tree_sha,
+        findings=findings[-MAX_OPEN_REVIEW_FINDINGS:],
+    )
+    reason = "a person accepted open review findings: " + ", ".join(accept.finding_ids)
+    run = run.model_copy(
+        update={
+            "reviewed_tree_sha": acceptance.reviewed_tree_sha,
+            "review_acceptance": acceptance,
+            "review_ledger": ledger.model_copy(update={"accepted_findings": acceptance.findings}),
+            "needs_look": [*run.needs_look, reason],
+        }
+    )
+    # The checkpoint check reads the acceptance from the run, so it runs before any save. The
+    # reopen check still needs the open findings, so they are cleared after the transition.
+    run_recovery.require_unchanged_delivery_policy(controller, run)
+    context = run_recovery.reconcile_delivery_checkpoint(controller, run, workspace, source_repo)
+    run = transition_reopened(controller, run)
+    run = controller._persist_review_acceptance(run, acceptance)
     if not controller._config.pull_request.enabled:
         return controller.finalize_pr_ready(run)
     return pr_delivery.publish_and_observe(controller, run, context)

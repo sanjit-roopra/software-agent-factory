@@ -124,6 +124,7 @@ class ResumeClassification(StrEnum):
     PLAN_DECISION = "PLAN_DECISION"
     DELIVERY_RETRY = "DELIVERY_RETRY"
     ATTEMPT_GRANT = "ATTEMPT_GRANT"
+    ACCEPT_FINDINGS = "ACCEPT_FINDINGS"
     NOT_RESUMABLE = "NOT_RESUMABLE"
 
 
@@ -316,6 +317,7 @@ class AcceptedReplyReceipt(ModelBase):
     plan_decision_context_fingerprint: str | None = None
     delivery_retry_context_fingerprint: str | None = None
     attempt_grant_context_fingerprint: str | None = None
+    findings_acceptance_context_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
@@ -416,6 +418,14 @@ class AttemptGrantContext(ModelBase):
     context_fingerprint: str = Field(min_length=64, max_length=64)
 
 
+class FindingsAcceptanceContext(ModelBase):
+    """The open review findings a person may accept after a review impasse (ADR-059)."""
+
+    finding_ids: list[str] = Field(min_length=1, max_length=MAX_OPEN_REVIEW_FINDINGS)
+    reviewed_tree_sha: str = Field(min_length=40, max_length=64)
+    context_fingerprint: str = Field(min_length=64, max_length=64)
+
+
 class PlanDecisionAnswer(ModelBase):
     """One validated answer to a numbered plan decision."""
 
@@ -474,6 +484,7 @@ DashboardRequestAction = Literal[
     ResumeClassification.PLAN_DECISION,
     ResumeClassification.DELIVERY_RETRY,
     ResumeClassification.ATTEMPT_GRANT,
+    ResumeClassification.ACCEPT_FINDINGS,
 ]
 DashboardRequestStatus = Literal["pending", "stale"]
 #: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
@@ -607,6 +618,7 @@ class EscalationRecord(ModelBase):
     plan_decision_context: PlanDecisionContext | None = None
     delivery_retry_context: DeliveryRetryContext | None = None
     attempt_grant_context: AttemptGrantContext | None = None
+    findings_acceptance_context: FindingsAcceptanceContext | None = None
     remote_resume_enabled: bool = False
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)

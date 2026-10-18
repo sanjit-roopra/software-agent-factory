@@ -276,7 +276,7 @@ def classify_halt_reason(
         )
 
     if _load_optional(store, run.id, ReviewImpasse) is not None:
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.REVIEW_IMPASSE)
+        return _halt(ResumeClassification.ACCEPT_FINDINGS, HaltReasonCode.REVIEW_IMPASSE)
 
     reason = run.failure_reason or ""
     code = halt_code_for_reason(reason)
