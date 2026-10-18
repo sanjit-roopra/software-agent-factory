@@ -7,7 +7,7 @@ safe fields: the source, the time, and the note redacted and cut.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -19,10 +19,9 @@ if TYPE_CHECKING:
     from ..store import FileRunStore
 
 _SOURCES = frozenset({"dashboard", "cli"})
-_Detail = TypeVar("_Detail", bound=BaseModel)
 
 
-def with_pending(store: FileRunStore, run_id: str, detail: _Detail) -> _Detail:
+def with_pending[Detail: BaseModel](store: FileRunStore, run_id: str, detail: Detail) -> Detail:
     """``detail`` with the ``stop_request`` and ``steer_note`` of the run, or ``None``."""
     return detail.model_copy(
         update={

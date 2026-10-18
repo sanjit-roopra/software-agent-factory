@@ -109,8 +109,9 @@ def test_a_newer_steer_note_replaces_the_waiting_one(data_dir: Path) -> None:
     assert store.load_steer_note("run-a") == second
     assert [path.name for path in (data_dir / "runs" / "run-a").glob(".*.tmp")] == []
 
+    gone = RunSteerNote(run_id="run-gone", source="cli", note=NOTE)
     with pytest.raises(FileNotFoundError):
-        store.replace_steer_note(RunSteerNote(run_id="run-gone", source="cli", note=NOTE))
+        store.replace_steer_note(gone)
     assert not (data_dir / "runs" / "run-gone").exists()
 
 
