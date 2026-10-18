@@ -362,7 +362,8 @@ def _role_instructions(
 - Make the narrowest change that meets the acceptance criteria.
 - Reuse existing mechanisms. Do not do unrelated cleanup.
 - Treat sibling-task constraints as hard scope boundaries.
-- Stop when the required behavior and configured checks pass.
+- Add or update a test for each acceptance criterion.
+- Run the verification commands before you stop.
 - Return ChangeSet metadata only."""
     if role == "TESTER":
         return """Test the implementation independently.
@@ -502,6 +503,7 @@ def _implementer_sections(request: AgentRequest) -> list[tuple[str, object]]:
             (_SPECIFICATION_TITLE, request.specification),
             (_EXECUTION_PLAN_TITLE, request.execution_plan),
             ("Attempt number", request.attempt_number),
+            ("Verification commands", list(request.verification_commands) or None),
             (_REPAIR_CONTEXT_TITLE, request.repair_context),
             (_CURRENT_DIFF_TITLE, _diff_or_none(request.diff)),
         ),

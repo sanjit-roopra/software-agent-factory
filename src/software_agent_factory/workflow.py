@@ -3656,6 +3656,7 @@ class WorkflowController:
             dependency_names=_dependency_names(context.repository_profile),
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
+            verification_commands=tuple(self._commands_for_run(run.id).verify),
             timeout_seconds=self._config.agent_timeout_seconds,
         )
         result = self._invoke_agent(run, request, budget=budget)
@@ -3817,8 +3818,9 @@ class WorkflowController:
         ]
         excerpt = None
         if failed:
-            last = failed[-1]
-            excerpt = _bounded(f"$ {last.command}\n{last.stdout}\n{last.stderr}")
+            # The first failure is the one the failure kind describes.
+            first = failed[0]
+            excerpt = _bounded(f"$ {first.command}\n{first.stdout}\n{first.stderr}")
         phase = verification.failed_phase.value if verification.failed_phase else "verify"
         kind = verification.failure_kind.value if verification.failure_kind else "unknown"
         return RepairContext(
