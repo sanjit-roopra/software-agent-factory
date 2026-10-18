@@ -350,7 +350,7 @@ def test_scope_drift_policy_continues_for_benign_in_scope_low_risk_changes() -> 
     assert assessment.decision is ScopeDecision.CONTINUE
     assert assessment.findings == ()
     assert assessment.changed_file_count == 2
-    assert assessment.has_sensitive_findings is False
+    assert not any(finding.sensitive for finding in assessment.findings)
 
 
 def test_scope_drift_policy_allows_supporting_files_beside_planned_scope() -> None:
@@ -431,7 +431,7 @@ def test_scope_drift_policy_requires_human_for_sensitive_high_risk_drift(
 
     assert assessment.decision is ScopeDecision.NEEDS_HUMAN
     assert category in {finding.category for finding in assessment.findings}
-    assert assessment.has_sensitive_findings is True
+    assert any(finding.sensitive for finding in assessment.findings)
 
 
 # -- scope drift authorization (approved sensitive files) -------------------
@@ -470,7 +470,7 @@ def test_scope_drift_planned_and_approved_dependency_succeeds(risk: Risk) -> Non
     assert assessment.findings == ()
     assert assessment.changed_file_count == 2
     assert assessment.approved_sensitive_files == ("pyproject.toml",)
-    assert assessment.has_sensitive_findings is False
+    assert not any(finding.sensitive for finding in assessment.findings)
 
 
 def test_scope_drift_planned_and_approved_ci_workflow_succeeds() -> None:
@@ -489,7 +489,7 @@ def test_scope_drift_planned_and_approved_ci_workflow_succeeds() -> None:
     assert assessment.decision is ScopeDecision.CONTINUE
     assert assessment.findings == ()
     assert assessment.approved_sensitive_files == (".github/workflows/ci.yml",)
-    assert assessment.has_sensitive_findings is False
+    assert not any(finding.sensitive for finding in assessment.findings)
 
 
 @pytest.mark.parametrize("path", ["/pyproject.toml", "./pyproject.toml", "../pyproject.toml"])

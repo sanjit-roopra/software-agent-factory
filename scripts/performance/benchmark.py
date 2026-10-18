@@ -383,23 +383,6 @@ def benchmark_dashboard_shared_cache_warm(
         return _measure_repeated(run_warm, iterations=iterations, warmup=warmup)
 
 
-def benchmark_dashboard_shared_cache(
-    store_runs: int = 100,
-    iterations: int = 5,
-    warmup: int = 1,
-    *,
-    cache_state: str = "cold",
-) -> dict[str, Any]:
-    """Measure dashboard operations using shared scan cache.
-
-    Default is cold shared-scan (1 scan for summary and health) to ensure fair comparison
-    against baseline store scans. Pass cache_state='warm' for in-memory hit latency.
-    """
-    if cache_state == "warm":
-        return benchmark_dashboard_shared_cache_warm(store_runs, iterations, warmup)
-    return benchmark_dashboard_shared_scan_cold(store_runs, iterations, warmup)
-
-
 # ---------------------------------------------------------------------------
 # Benchmark 4: Scheduler Backlog Drain
 # ---------------------------------------------------------------------------

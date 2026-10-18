@@ -14,22 +14,21 @@ MAX_MODULE_LINES = 800
 # it, and remove it once it is under the limit.
 OVERSIZED_MODULES = {
     "workflow.py": 4226,
-    "github.py": 2825,
-    "observability.py": 2462,
+    "github.py": 2818,
+    "observability.py": 2455,
     "models.py": 2113,
     "cli.py": 1896,
     "escalation.py": 1784,
-    "projects.py": 1711,
+    "projects.py": 1701,
     "dashboard/sanitize.py": 1068,
     "service.py": 960,
-    "scheduler.py": 996,
+    "scheduler.py": 961,
     "repository_profile.py": 970,
     "dashboard/handler.py": 904,
     "doctor.py": 881,
     "prompts.py": 865,
     "config.py": 860,
     "pi_runtime.py": 864,
-    "workspace.py": 815,
 }
 
 _PATH_TOKEN = re.compile(

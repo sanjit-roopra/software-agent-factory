@@ -81,14 +81,6 @@ def write_call_transcript(run_dir: Path, invocation_number: int, text: str) -> s
     return name
 
 
-def read_call_transcript(run_dir: Path, invocation_number: int) -> str | None:
-    """One call's stored transcript, or ``None`` when there is none to read."""
-    try:
-        return (run_dir / transcript_name(invocation_number)).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-
-
 def read_call_tool_calls(run_dir: Path, invocation_number: int) -> list[dict[str, str]]:
     """The tool calls stored for one call; none when the file is missing or unreadable."""
     try:

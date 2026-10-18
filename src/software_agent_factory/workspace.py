@@ -517,10 +517,6 @@ class GitWorktreeWorkspace:
         finally:
             self._release_fd(fd)
 
-    def _prune_worktrees(self) -> None:
-        with self._prune_lock():
-            self._prune_worktrees_unlocked()
-
     def _prune_worktrees_unlocked(self) -> None:
         """``git worktree prune`` without acquiring the admin lock.
 
@@ -800,16 +796,3 @@ class GitWorktreeWorkspace:
             _run_git(self.source_repo, ["branch", "-D", self.branch_name], check=False)
         self._meta_path.unlink(missing_ok=True)
         self.base_commit = None
-
-    def cleanup(self, force: bool = False) -> None:
-        """Remove the worktree. Only called explicitly; never part of the
-        default workflow. Refuses to act on paths outside the workspace
-        root and never touches the source repository itself."""
-        _ensure_strictly_within(self.path, self.workspace_root)
-        args = ["worktree", "remove"]
-        if force:
-            args.append("--force")
-        args.append(str(self.path))
-        _run_git(self.source_repo, args)
-        if self._meta_path.exists():
-            self._meta_path.unlink()

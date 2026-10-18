@@ -777,38 +777,6 @@ def _prune_lock_is_held(lock_path: Path) -> bool:
         os.close(probe)
 
 
-# -- cleanup() ------------------------------------------------------------
-
-
-def test_cleanup_removes_worktree(source_repo: Path, data_dir: Path) -> None:
-    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-8")
-    path = ws.prepare()
-    assert path.exists()
-
-    ws.cleanup(force=True)
-
-    assert not path.exists()
-    listing = _git(source_repo, "worktree", "list", "--porcelain")
-    assert str(path.resolve()) not in listing
-
-
-def test_cleanup_refuses_path_outside_workspace_root(source_repo: Path, data_dir: Path) -> None:
-    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-9")
-    ws.prepare()
-
-    # Simulate a defect/attempted misuse that points ``path`` outside the
-    # workspace root; cleanup must refuse rather than touching source_repo.
-    ws.path = source_repo
-
-    with pytest.raises(WorkspaceSafetyError):
-        ws.cleanup(force=True)
-
-    # Source repo must remain completely intact.
-    assert source_repo.exists()
-    assert (source_repo / "README.md").exists()
-    assert _git(source_repo, "status", "--porcelain") == ""
-
-
 def test_workspace_and_lock_paths_are_root_contained(source_repo: Path, data_dir: Path) -> None:
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-10")
     assert ws.path.is_relative_to((data_dir / "workspaces").resolve())

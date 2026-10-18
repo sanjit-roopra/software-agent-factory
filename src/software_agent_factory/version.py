@@ -50,21 +50,6 @@ def get_version() -> str:
         return _read_pyproject_version()
 
 
-@lru_cache(maxsize=1)
-def get_version_source() -> str:
-    """Describe where :func:`get_version` resolved the version from."""
-    build_info = get_build_info()
-    bundled_version = build_info.get("version")
-    if isinstance(bundled_version, str) and bundled_version:
-        return "build-info"
-
-    try:
-        distribution_version(PROJECT_NAME)
-    except PackageNotFoundError:
-        return "pyproject"
-    return "installed-metadata"
-
-
 def get_program_name() -> str:
     """The program name printed by ``--version``.
 

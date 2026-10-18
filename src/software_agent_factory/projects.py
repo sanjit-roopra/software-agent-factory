@@ -163,9 +163,6 @@ class DeliverySettings:
     repository: str | None = None
     #: Host the first authorized fetch resolved, pinned for every later fetch.
     host: str | None = None
-    #: Commit the dedicated integration worktree was created from, used to tell
-    #: untouched factory scaffolding from real integration history.
-    integration_base: str | None = None
 
     @property
     def is_remote(self) -> bool:
@@ -410,9 +407,6 @@ class ProjectRunner:
                     base_ref = initial.commit_sha
                     delivery = replace(delivery, host=initial.host)
                 integration_path = project_workspace.prepare(base_ref=base_ref)
-                delivery = replace(
-                    delivery, integration_base=base_ref or project_workspace.base_commit
-                )
                 execution = execution.model_copy(
                     update={
                         "integration_workspace": str(integration_path),
@@ -521,11 +515,7 @@ class ProjectRunner:
             integration_path = project_workspace.prepare()
             # The host the project was authorized against is pinned across the
             # resume, so a remote re-pointed to another host is refused.
-            delivery = replace(
-                delivery,
-                integration_base=project_workspace.base_commit,
-                host=execution.delivery_host,
-            )
+            delivery = replace(delivery, host=execution.delivery_host)
             if execution.integration_workspace != str(integration_path) or (
                 execution.integration_branch != project_workspace.branch_name
             ):

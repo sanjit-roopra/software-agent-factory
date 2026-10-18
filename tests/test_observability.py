@@ -2835,12 +2835,6 @@ def test_run_scan_cache_no_stale_mutation_behavior(tmp_path: Path) -> None:
     assert len(scan4.readable_runs) == 2
     assert {r.id for r in scan4.readable_runs} == {"run-mut-001", "run-mut-002"}
 
-    # 3. Explicit invalidation also clears cache immediately
-    store.save_run(_run("run-mut-003", state=WorkflowState.DONE))
-    cache.invalidate()
-    scan5 = cache.get_scan()
-    assert len(scan5.readable_runs) == 3
-
 
 def test_run_scan_cache_thread_safety(tmp_path: Path) -> None:
     import threading
