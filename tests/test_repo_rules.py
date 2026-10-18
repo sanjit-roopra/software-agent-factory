@@ -14,9 +14,9 @@ MAX_AGENTS_MD_LINES = 100
 # A listed module may shrink but never grow. Lower its number when you shrink
 # it, and remove it once it is under the limit.
 OVERSIZED_MODULES = {
-    "workflow.py": 2809,
+    "workflow.py": 2796,
     "github.py": 1979,
-    "observability.py": 1606,
+    "observability.py": 1605,
     "cli.py": 1806,
     "escalation.py": 1501,
     "projects.py": 1696,

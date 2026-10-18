@@ -33,7 +33,6 @@ from software_agent_factory.config import FactoryConfig, load_config
 from software_agent_factory.escalation import (
     ValidationResult,
     _gate_transition,
-    build_delivery_retry_context,
     build_escalation_comment,
     build_plan_decision_context,
     build_risk_approval_context,
@@ -54,6 +53,7 @@ from software_agent_factory.github import (
     GitHubComment,
     GitHubError,
 )
+from software_agent_factory.halt_contexts import build_delivery_retry_context
 from software_agent_factory.models import (
     REPLY_CURSOR_CLOSED,
     UNRESOLVED_DECISIONS_HALT_REASON,

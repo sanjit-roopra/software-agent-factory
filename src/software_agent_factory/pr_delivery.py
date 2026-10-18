@@ -362,7 +362,7 @@ def ci_loop(controller: WorkflowController, run: FactoryRun, context: RunContext
                 report = observer.observe(
                     repo_path=context.workspace.path,
                     pull_request_url=run.pull_request_url,
-                    repair_attempts_used=controller._attempts_used(run, AttemptBudget.CI_REPAIR),
+                    repair_attempts_used=run.attempts_used(AttemptBudget.CI_REPAIR),
                     before_wait=functools.partial(controller._raise_if_cancelled, run),
                 )
         except (GitPublishError, GitHubError, OSError) as exc:
@@ -398,7 +398,7 @@ def ci_stop_reason(controller: WorkflowController, run: FactoryRun, report: CIRe
         return "CI failure is not repairable by a code change: " + ", ".join(
             f"{check.name}={check.failure_category or 'UNKNOWN'}" for check in failed
         )
-    used = controller._attempts_used(run, AttemptBudget.CI_REPAIR)
+    used = run.attempts_used(AttemptBudget.CI_REPAIR)
     if used >= controller._config.ci.repair_attempts:
         return controller._budget_exhausted_reason(AttemptBudget.CI_REPAIR, used)
     return None

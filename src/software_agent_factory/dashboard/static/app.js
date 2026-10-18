@@ -24,7 +24,7 @@
   const FILTER_NEEDS_YOU = "needs-you";
   const FILTER_ACTIVE = "active";
   // needs_you_action of each entry in resume_classes.py: a waiting run the page can act on.
-  const ACTIONABLE = new Set(["waiting", "retry"]);
+  const ACTIONABLE = new Set(["waiting", "retry", "grant"]);
   const RUNS_COLUMN_COUNT = 10;
   const SVG_NS = "http://www.w3.org/2000/svg";
   // The sparkline draws in the viewBox of #figure-week-trend in dashboard/assets.py.
@@ -2358,6 +2358,7 @@
   const CONFLICT_STATUS = 409;
   const ANSWER_ACTION = "answer";
   const RETRY_ACTION = "retry";
+  const GRANT_ACTION = "grant";
   const STOP_ACTION = "cancel";
   const STEER_ACTION = "steer";
   const ESCALATE_ACTION = "escalate";
@@ -2415,6 +2416,13 @@
     expired: "retry expired, retry again"
   };
 
+  // The same for one more attempt (ADR-058).
+  const GRANT_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "attempt already granted",
+    expired: "grant expired, grant again"
+  };
+
   // The same for a stop (ADR-047).
   const STOP_CONFLICT_MESSAGES = {
     ...CONFLICT_MESSAGES,
@@ -2427,6 +2435,9 @@
     }
     if (action === RETRY_ACTION) {
       return RETRY_CONFLICT_MESSAGES;
+    }
+    if (action === GRANT_ACTION) {
+      return GRANT_CONFLICT_MESSAGES;
     }
     return action === ANSWER_ACTION ? ANSWER_CONFLICT_MESSAGES : CONFLICT_MESSAGES;
   }
@@ -2608,18 +2619,19 @@
     return section;
   }
 
-  // Publishing again takes two clicks: the first arms the button and says what happens,
-  // the second sends it. Cancel disarms it. The pull request link shows in the run header.
-  function retrySection(step, runId) {
+  // Publishing again or granting an attempt takes two clicks: the first arms the button and
+  // says what happens, the second sends it. Cancel disarms it. The pull request link shows in
+  // the run header.
+  function confirmSection(step, runId, spec) {
     const section = element("div", "next-step-section");
-    const note = section.appendChild(element("p", "retry-note", RETRY_NOTE));
+    const note = section.appendChild(element("p", "retry-note", spec.note));
     note.hidden = true;
-    const button = section.appendChild(actionButton(RETRY_LABEL, "button"));
+    const button = section.appendChild(actionButton(spec.label, "button"));
     const cancel = section.appendChild(actionButton("Cancel", "button"));
     cancel.hidden = true;
     function arm(armed) {
       button.dataset.armed = String(armed);
-      button.textContent = armed ? RETRY_CONFIRM_LABEL : RETRY_LABEL;
+      button.textContent = armed ? spec.confirmLabel : spec.label;
       note.hidden = !armed;
       cancel.hidden = !armed;
     }
@@ -2630,7 +2642,7 @@
       }
       void sendAction({
         runId: runId,
-        action: RETRY_ACTION,
+        action: spec.action,
         payload: contextPayload(step),
         controls: [button, cancel]
       });
@@ -2642,10 +2654,22 @@
     return section;
   }
 
-  const RETRY_LABEL = "Retry publishing";
-  const RETRY_CONFIRM_LABEL = "Confirm retry publishing";
-  const RETRY_NOTE =
-    "The factory pushes the reviewed work again and opens or updates its pull request.";
+  // The two-click actions, by next step kind.
+  const CONFIRM_SECTIONS = {
+    retry: {
+      action: RETRY_ACTION,
+      label: "Retry publishing",
+      confirmLabel: "Confirm retry publishing",
+      note: "The factory pushes the reviewed work again and opens or updates its pull request."
+    },
+    grant: {
+      action: GRANT_ACTION,
+      label: "Grant +1 attempt",
+      confirmLabel: "Confirm +1 attempt",
+      note: "The factory makes one more implementation attempt with the last failure. " +
+        "If it fails, the run stops here again."
+    }
+  };
 
   const SHOW_REASON_LABEL = "Show full failure reason";
 
@@ -2985,8 +3009,8 @@
     if (step.kind === "approve") {
       return approveSection(step, runId);
     }
-    if (step.kind === "retry") {
-      return retrySection(step, runId);
+    if (Object.hasOwn(CONFIRM_SECTIONS, step.kind)) {
+      return confirmSection(step, runId, CONFIRM_SECTIONS[step.kind]);
     }
     return step.kind === "answer" ? answerSection(step, runId) : null;
   }
@@ -3035,11 +3059,12 @@
     ["approve", "Approve to continue"],
     ["answer", "Answer to continue"],
     ["retry", "Retry to continue"],
+    ["grant", "Grant an attempt to continue"],
     ["queued", "Queued"],
     ["cannot_continue", "Cannot continue"],
     ["remote_approval_unavailable", "Inspect the run"]
   ]);
-  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry"]);
+  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry", "grant"]);
 
   function renderNextStepFrame(panel, step) {
     const heading = STEP_HEADINGS.get(step.kind) || "Needs you";

@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from software_agent_factory.models import (
     REPLY_CURSOR_CLOSED,
     AcceptedReplyReceipt,
+    AttemptBudget,
+    AttemptGrantContext,
     Complexity,
     DeliveryRetryContext,
     EscalationRecord,
@@ -95,6 +97,12 @@ def _notified() -> EscalationRecord:
             reviewed_tree_sha="a" * 40,
             base_commit_sha="b" * 40,
             branch_name="factory/task-1",
+            context_fingerprint=FINGERPRINT,
+        ),
+        attempt_grant_context=AttemptGrantContext(
+            budget=AttemptBudget.IMPLEMENTATION,
+            attempts_used=3,
+            last_failure="The independent reviewer rejected the change.",
             context_fingerprint=FINGERPRINT,
         ),
         remote_resume_enabled=True,

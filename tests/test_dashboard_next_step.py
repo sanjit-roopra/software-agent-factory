@@ -991,6 +991,44 @@ def test_a_stale_retry_says_retry(reason: str, sentence: str) -> None:
     assert RETRY_STALE_SENTENCES.keys() == STALE_SENTENCES.keys()
 
 
+def _grant_run(**kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("reason_code", "ATTEMPT_BUDGET_EXHAUSTED")
+    return _run(resume_classification="ATTEMPT_GRANT", **kwargs)
+
+
+def test_a_budget_halt_gives_grant_without_scope_or_reply() -> None:
+    step = next_step(_grant_run(comment_url=COMMENT_URL))
+
+    assert step["kind"] == "grant"
+    assert step["sentence"] == REASON_SENTENCES["ATTEMPT_BUDGET_EXHAUSTED"]
+    assert (step["episode_id"], step["context_fingerprint"]) == (EPISODE_ID, FINGERPRINT)
+    assert (step["approval_scope"], step["reply_text"]) == (None, None)
+
+
+def test_a_refused_grant_says_why_it_is_unavailable() -> None:
+    step = next_step(_grant_run(dashboard_action_refusal="reopen_limit"))
+
+    assert step["kind"] == "remote_approval_unavailable"
+    assert f"One more attempt is not available because {REOPEN_LIMIT_CAUSE}." in step["sentence"]
+
+
+def test_a_pending_grant_shows_when_it_was_queued() -> None:
+    step = next_step(_grant_run(), [_request("ATTEMPT_GRANT")])
+
+    assert step["kind"] == "queued"
+    assert step["sentence"] == (
+        f"One more attempt granted at {QUEUED_AT}, queued for the factory service. {START_HINT}"
+    )
+
+
+def test_a_stale_grant_says_grant_again() -> None:
+    stale = _request("ATTEMPT_GRANT", status="stale", reason="expired")
+
+    step = next_step(_grant_run(), [stale])
+
+    assert (step["kind"], step["stale_sentence"]) == ("grant", "grant expired, grant again")
+
+
 def test_without_a_request_the_step_has_no_queued_fields() -> None:
     step = next_step(_risk_run())
 
@@ -1071,6 +1109,7 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "approve",
         "answer",
         "retry",
+        "grant",
         "queued",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'

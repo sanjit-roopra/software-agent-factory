@@ -46,6 +46,8 @@ from software_agent_factory.dashboard.server import DEFAULT_REQUEST_TIMEOUT_SECO
 from software_agent_factory.dashboard.snapshot import ResumeRequestResult
 from software_agent_factory.escalation_protocol import ReplyPolicy
 from software_agent_factory.models import (
+    AttemptBudget,
+    AttemptGrantContext,
     Complexity,
     DashboardResumeRequest,
     DeliveryRetryContext,
@@ -70,6 +72,7 @@ from software_agent_factory.resume import (
     compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
+from software_agent_factory.resume_classes import compute_attempt_grant_context_fingerprint
 from software_agent_factory.run_requests import build_steer_requester, build_stop_requester
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
@@ -81,6 +84,7 @@ DECISIONS = ["Pick a storage format.", "Pick a cache size."]
 RISK = ResumeClassification.RISK_APPROVAL
 PLAN = ResumeClassification.PLAN_DECISION
 RETRY = ResumeClassification.DELIVERY_RETRY
+GRANT = ResumeClassification.ATTEMPT_GRANT
 ORIGIN_HEADER = "Origin"
 CONTENT_TYPE = "Content-Type"
 HOST_HEADER = "Host"
@@ -111,6 +115,7 @@ RESUME = "resume"
 APPROVE = "approve"
 ANSWER = "answer"
 RETRY_ACTION = "retry"
+GRANT_ACTION = "grant"
 
 
 # -- runs ---------------------------------------------------------------------------------
@@ -185,6 +190,22 @@ def _retry_context() -> DeliveryRetryContext:
     )
 
 
+def _grant_context() -> AttemptGrantContext:
+    last_failure = "Deterministic verify failed (test failure)."
+    return AttemptGrantContext(
+        budget=AttemptBudget.IMPLEMENTATION,
+        attempts_used=2,
+        last_failure=last_failure,
+        context_fingerprint=compute_attempt_grant_context_fingerprint(
+            run_id=RUN_ID,
+            episode_id=EPISODE,
+            budget=AttemptBudget.IMPLEMENTATION.value,
+            attempts_used=2,
+            last_failure=last_failure,
+        ),
+    )
+
+
 def _run(
     kind: ResumeClassification = RISK,
     *,
@@ -199,6 +220,7 @@ def _run(
         "approval_context": _risk_context() if kind is RISK else None,
         "plan_decision_context": _plan_context() if kind is PLAN else None,
         "delivery_retry_context": _retry_context() if kind is RETRY else None,
+        "attempt_grant_context": _grant_context() if kind is GRANT else None,
     }
     escalation = EscalationRecord.model_validate({**fields, **record})
     return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
@@ -210,6 +232,7 @@ def _fingerprint(run: FactoryRun) -> str:
         run.escalation.approval_context
         or run.escalation.plan_decision_context
         or run.escalation.delivery_retry_context
+        or run.escalation.attempt_grant_context
     )
     assert context is not None
     return context.context_fingerprint
@@ -298,6 +321,13 @@ class Rig:
     def retry(self, body: object = None, **header_overrides: str | None) -> tuple[int, Any]:
         return self.post(
             _path(RETRY_ACTION),
+            self.body() if body is None else body,
+            headers=self.headers(**header_overrides),
+        )
+
+    def grant(self, body: object = None, **header_overrides: str | None) -> tuple[int, Any]:
+        return self.post(
+            _path(GRANT_ACTION),
             self.body() if body is None else body,
             headers=self.headers(**header_overrides),
         )
@@ -394,6 +424,42 @@ def test_a_publish_retry_is_accepted_and_stored_as_a_delivery_retry(make_rig: Ri
     assert stored.status == "pending"
     assert stored.answers == []
     assert stored.context_fingerprint == _fingerprint(rig.run)
+
+
+def test_an_attempt_grant_is_accepted_and_stored_as_an_attempt_grant(
+    make_rig: RigFactory,
+) -> None:
+    rig = make_rig(_run(GRANT))
+
+    status, payload = rig.grant()
+
+    assert (status, payload["status"]) == (202, "accepted")
+    (stored,) = rig.requests()
+    assert stored.action is GRANT
+    assert stored.status == "pending"
+    assert stored.answers == []
+    assert stored.context_fingerprint == _fingerprint(rig.run)
+
+
+@pytest.mark.parametrize(
+    ("run", "overrides", "reason"),
+    [
+        (_run(GRANT), {FINGERPRINT_FIELD: "f" * 64}, "stale_fingerprint"),
+        (_run(GRANT), {EPISODE_FIELD: "ep-old"}, STALE_EPISODE),
+        (_run(GRANT, created_at=NOW - timedelta(hours=25)), {}, EXPIRED),
+        (_run(RETRY), {}, WRONG_ACTION),
+    ],
+    ids=["changed-context", "old-episode", "expired", "retry-halt"],
+)
+def test_an_attempt_grant_the_service_would_refuse_is_409(
+    make_rig: RigFactory, run: FactoryRun, overrides: dict[str, object], reason: str
+) -> None:
+    rig = make_rig(run)
+
+    with rig.assert_writes_nothing():
+        status, payload = rig.grant(rig.body(**overrides))
+
+    assert (status, payload[REASON]) == (409, reason)
 
 
 def test_a_retry_for_a_risk_approval_halt_is_a_wrong_action(make_rig: RigFactory) -> None:

@@ -16,6 +16,7 @@ from software_agent_factory.escalation_models import (
     DASHBOARD_USER_LOGIN,
     EPISODE_ID_PATTERN,
     HALT_REASON_COPY,
+    IMPLEMENTATION_BUDGET_HALT_REASON,
     MAX_PLAN_DECISIONS,
     MAX_STEER_NOTE_CHARS,
     PUBLISH_FAILED_HALT_REASON,
@@ -26,6 +27,7 @@ from software_agent_factory.escalation_models import (
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     AcceptedReplyReceipt,
     ActiveInvocationStatus,
+    AttemptGrantContext,
     DashboardRequestStaleReason,
     DashboardResumeRequest,
     DeliveryRetryContext,
@@ -167,6 +169,8 @@ __all__ = [
     "DashboardRequestStaleReason",
     "DashboardResumeRequest",
     "DeliveryRetryContext",
+    "AttemptGrantContext",
+    "IMPLEMENTATION_BUDGET_HALT_REASON",
     "DependencyEcosystem",
     "EPISODE_ID_PATTERN",
     "EscalationRecord",
@@ -417,6 +421,10 @@ class FactoryRun(VersionedModel):
     #: Attempt records before this index do not count against attempt budgets.
     #: An operator escalation moves it, so it starts fresh budgets (ADR-055).
     budget_start: int = Field(default=0, ge=0)
+    #: Attempts a person granted per budget after it ran out (ADR-058). An escalation clears it.
+    attempt_grants: dict[AttemptBudget, int] = Field(default_factory=dict)
+    #: The repair the next attempt would have had when the budget ran out (ADR-058).
+    exhausted_repair: RepairContext | None = None
     #: The repository the run started from and the command settings (ADR-055).
     #: ``None`` on runs recorded before ``factory escalate`` read them.
     source_repo: str | None = None
@@ -436,6 +444,14 @@ class FactoryRun(VersionedModel):
         if isinstance(data, dict):
             return {key: value for key, value in data.items() if key not in _REMOVED_RUN_KEYS}
         return data
+
+    def attempts_used(self, budget: AttemptBudget) -> int:
+        """Implementer attempts spent from ``budget`` since ``budget_start`` (ADR-003, ADR-055)."""
+        return sum(
+            1
+            for attempt in self.attempt_records[self.budget_start :]
+            if attempt.budget is budget and attempt.role is AgentRole.IMPLEMENTER
+        )
 
     @model_validator(mode="after")
     def _validate_completion(self) -> FactoryRun:

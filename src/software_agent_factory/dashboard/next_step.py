@@ -125,6 +125,7 @@ class NextStepKind(StrEnum):
     APPROVE = "approve"
     ANSWER = "answer"
     RETRY = "retry"
+    GRANT = "grant"
     QUEUED = "queued"
 
 
@@ -303,17 +304,24 @@ def _answer(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
     return _github_reply(step, escalation, reply)
 
 
-def _retry(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
-    refused = _action_refusal_cause(escalation)
-    if refused is not None:
-        return _unavailable(run, escalation, f"Retry is not available because {refused}.")
-    ids = _reply_ids(run, escalation)
-    if ids is None:
-        return _unavailable(run, escalation, "Retry is not available.")
-    _, episode_id, fingerprint = ids
-    step = _halt_step(NextStepKind.RETRY, _reason_sentence(escalation), escalation)
-    step.update(episode_id=episode_id, context_fingerprint=fingerprint)
-    return step
+def _dashboard_only(
+    kind: NextStepKind, what: str
+) -> Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]:
+    """The step builder of a class only the dashboard resumes: one button, no reply text."""
+
+    def step_for(run: dict[str, Any], escalation: dict[str, Any]) -> dict[str, Any]:
+        refused = _action_refusal_cause(escalation)
+        if refused is not None:
+            return _unavailable(run, escalation, f"{what} is not available because {refused}.")
+        ids = _reply_ids(run, escalation)
+        if ids is None:
+            return _unavailable(run, escalation, f"{what} is not available.")
+        _, episode_id, fingerprint = ids
+        step = _halt_step(kind, _reason_sentence(escalation), escalation)
+        step.update(episode_id=episode_id, context_fingerprint=fingerprint)
+        return step
+
+    return step_for
 
 
 def _parsed_requests(raw: Iterable[Any]) -> list[_Request]:
@@ -382,7 +390,8 @@ def _stale_sentence(request: _Request) -> str:
 _STEPS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = {
     "approve": _approve,
     "answer": _answer,
-    "retry": _retry,
+    "retry": _dashboard_only(NextStepKind.RETRY, "Retry"),
+    "grant": _dashboard_only(NextStepKind.GRANT, "One more attempt"),
 }
 
 

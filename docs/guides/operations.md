@@ -123,7 +123,7 @@ on the run.
 
 The run list puts these runs at the top, under a "Needs you" row. The state of
 each run says what it needs: **Needs approval**, **Needs answers**,
-**Needs retry**, or **Stopped, needs you**. A filled badge means the page can
+**Needs retry**, **Needs attempt**, or **Stopped, needs you**. A filled badge means the page can
 act on the run. A run the page cannot act on, for example after its reply window
 expired, says **Stopped, needs you**. A stopped run gives a `factory show` command to copy and run in
 a terminal. While a run needs you, the browser tab title starts with the count,
@@ -140,12 +140,18 @@ for example `(2)`, and the tab icon shows a dot.
 - For a run that failed to open its first pull request, choose **Retry
   publishing**. The factory publishes the reviewed work again. It runs no agent
   and grants no new attempt. Each retry counts as a reopen.
+- For a run that used all of its implementation attempts, choose **Grant +1
+  attempt**, then **Confirm +1 attempt**. The run goes back to the implement step
+  and makes exactly one more attempt. That attempt sees the last failure. If it
+  fails, the run stops here again. Each grant counts as a reopen. To redo the
+  work with fresh attempts on a higher route, escalate the run instead.
 
 The dashboard does not resume the run. It writes one request file in the run
 directory. The factory service reads it and reopens the run. The panel then
 shows "Approved at <time>, queued for the factory service". An answer shows
 "Answers sent at <time>, queued for the factory service". A retry shows "Retry
-requested at <time>, queued for the factory service". If `factory start` is not running,
+requested at <time>, queued for the factory service". A grant shows "One more
+attempt granted at <time>, queued for the factory service". If `factory start` is not running,
 start it. The request waits until it does.
 
 #### When the service refuses a request
@@ -229,7 +235,8 @@ for example when a process holds the workspace lock. The run list marks the run
 "escalating", "escalated" or "escalation failed". The run page always shows the
 route chip, also for `FULL`.
 
-The dashboard cannot reconfigure anything. It can retry only publishing.
+The dashboard cannot reconfigure anything. It can retry only publishing, and it
+can grant only one implementation attempt at a time.
 Authority stays with the workflow controller and the factory service.
 
 It is built from the Python standard library. No framework, no npm, no bundler,
