@@ -157,6 +157,10 @@ repository:
   # Run mutmut on changed Python modules after verification and list the
   # surviving mutants for review (ADR-034). Advisory: it never fails a run.
   mutation_gate: true
+  # Run the verify commands again with the changed files that are not tests
+  # at the base commit, and warn when the tests still pass (ADR-034).
+  # Advisory: it never fails a run.
+  revert_check: true
   # Extra environment variable names repository commands may read. The
   # verifier always provides PATH, HOME, LANG and TERM and never inherits
   # credentials (GH_TOKEN, AWS_*, ...) implicitly.

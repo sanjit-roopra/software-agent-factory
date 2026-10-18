@@ -7,8 +7,9 @@ outcomes; they never transition the run themselves, and their claims about
 what changed on disk are never trusted -- ``changed_files`` and the diff are
 always re-derived from :meth:`GitWorktreeWorkspace.collect_evidence`.
 
-The allowed transition table is declared as data (``ALLOWED_TRANSITIONS``)
-and enforced by :meth:`WorkflowController.transition`:
+The allowed transition table is declared as data in
+:mod:`software_agent_factory.lifecycle` (``ALLOWED_TRANSITIONS``) and enforced
+by :meth:`WorkflowController.transition`:
 
 ```text
 CREATED -> TRIAGING -> PLANNING -> IMPLEMENTING
@@ -49,7 +50,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import secrets
 import socket
 import subprocess
@@ -60,6 +60,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from . import review_ledger
 from .agents import (
     AgentRequest,
     AgentResult,
@@ -92,8 +93,13 @@ from .governance import (
     assess_publish_gate,
     find_protected_matches,
 )
+from .lifecycle import (
+    ALLOWED_TRANSITIONS,
+    RECOVERY_TRANSITIONS,
+    TERMINAL_STATES,
+    is_run_finished,
+)
 from .models import (
-    MAX_GUIDANCE_FINDINGS,
     MAX_OPEN_REVIEW_FINDINGS,
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
@@ -107,6 +113,7 @@ from .models import (
     AttemptTrigger,
     ChangeSet,
     CIReport,
+    CommandResult,
     EscalationRecord,
     EscalationStatus,
     ExecutionPlan,
@@ -128,14 +135,10 @@ from .models import (
     ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
-    ReviewDispositionStatus,
     ReviewFinding,
-    ReviewFindingDraft,
-    ReviewFindingOrigin,
     ReviewImpasse,
     ReviewImpasseKind,
     ReviewReport,
-    ReviewSourceLocation,
     Risk,
     RouteDecision,
     RunLaunch,
@@ -189,6 +192,7 @@ from .resume import (
     is_valid_risk_approval_context,
     receipt_approves_risk_context,
 )
+from .revert_check import revert_check
 from .routing import (
     ModelRouter,
     derive_named_paths,
@@ -215,18 +219,10 @@ from .workspace import (
 
 logger = logging.getLogger(__name__)
 
-#: States from which no further transition is possible.
-TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
-    {WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-)
 #: CI failure categories that may legitimately be repaired by another code
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
 #: operator problem, not a code problem, and escalates with evidence.
 REPAIRABLE_CI_CATEGORIES: frozenset[str] = frozenset({"CODE_FAILURE", "TEST_FAILURE"})
-MAX_LATE_REVIEW_ADOPTION_ROUNDS = 1
-MAX_CONSECUTIVE_BLOCKING_REVIEWS_PER_PATH = 3
-MAX_CONSECUTIVE_UNRESOLVED_REVIEWS = 3
-MAX_CONSECUTIVE_REPLACEMENT_REVIEWS = 2
 #: Factory restarts one unattended run may spend before it ends as it is (ADR-043).
 MAX_RESTART_RECOVERIES = 2
 #: Routes that synthesize the specification and the plan instead of calling the planner.
@@ -242,110 +238,6 @@ _RESTART_REPAIR_CONTEXT = RepairContext(
     failures=[_RESTART_REASON],
     log_excerpt=None,
 )
-
-_DIFF_HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
-
-# The single declared transition table. Every non-terminal state may also
-# escalate to NEEDS_HUMAN (business decision, e.g. risk/eligibility/scope) or
-# FAILED (operational agent/infrastructure failure).
-ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
-    WorkflowState.CREATED: frozenset(
-        {WorkflowState.TRIAGING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-    ),
-    WorkflowState.TRIAGING: frozenset(
-        {WorkflowState.PLANNING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-    ),
-    # No new run enters REFINING or RESEARCHING (ADR-035). An old run halted
-    # there can only stop for a human, then reopen at PLANNING.
-    WorkflowState.REFINING: frozenset({WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}),
-    WorkflowState.RESEARCHING: frozenset({WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}),
-    WorkflowState.PLANNING: frozenset(
-        {
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.VERIFYING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    # Unattended only (ADR-040): a used-up attempt budget publishes the work
-    # as it is (PR_READY) or leaves the open pull request as it is (DONE).
-    WorkflowState.IMPLEMENTING: frozenset(
-        {
-            WorkflowState.VERIFYING,
-            WorkflowState.PR_READY,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.VERIFYING: frozenset(
-        {
-            WorkflowState.REVIEWING,
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.PLANNING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.REVIEWING: frozenset(
-        {
-            WorkflowState.PR_READY,
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    # Unattended only (ADR-041): a CI repair that cannot be published leaves
-    # the open pull request as it is (DONE).
-    WorkflowState.PR_READY: frozenset(
-        {
-            WorkflowState.PR_CREATED,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.PR_CREATED: frozenset(
-        {
-            WorkflowState.CI_RUNNING,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.CI_RUNNING: frozenset(
-        {
-            WorkflowState.DONE,
-            WorkflowState.CI_DIAGNOSIS,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.CI_DIAGNOSIS: frozenset(
-        {
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.DONE: frozenset(),
-    WorkflowState.NEEDS_HUMAN: frozenset(),
-    WorkflowState.FAILED: frozenset(),
-}
-
-
-def is_run_finished(run: FactoryRun) -> bool:
-    """True when a persisted run needs no further factory work.
-
-    Terminal states always qualify. ``PR_READY`` qualifies only once the
-    controller has explicitly finalized it (``completed_at`` stamped), which
-    is what distinguishes "the manual, PR-disabled flow completed here" from
-    "a PR-enabled run was interrupted at the publishing boundary".
-    """
-    if run.state in TERMINAL_STATES:
-        return True
-    return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
 def _fold_legacy_concerns(review: ReviewReport) -> ReviewReport:
@@ -677,7 +569,7 @@ class WorkflowController:
         """
         allowed = ALLOWED_TRANSITIONS.get(run.state, frozenset())
         if operator_escalation:
-            allowed = allowed | {WorkflowState.PLANNING}
+            allowed = allowed | RECOVERY_TRANSITIONS["operator_escalation"]
         if new_state not in allowed:
             raise TransitionError(f"cannot transition from {run.state} to {new_state}")
 
@@ -1362,6 +1254,8 @@ class WorkflowController:
         The transition table has no edge back to an earlier stage from every state. The
         interrupted stage is not timed, because its duration would include the downtime.
         """
+        if state not in RECOVERY_TRANSITIONS["restart"]:
+            raise TransitionError(f"cannot restart run {run.id} at {state}")
         now = utc_now()
         run = run.model_copy(
             update={
@@ -2323,7 +2217,7 @@ class WorkflowController:
                     run, self._store, self._config, self._github, workspace_path
                 )
             except Exception as exc:
-                logger.debug("escalation notice delivery failed: %s", exc)
+                logger.warning("run %s: escalation notice delivery failed: %s", run.id, exc)
         return _Halt(run)
 
     def _sensitive_scope_reason(
@@ -3351,8 +3245,8 @@ class WorkflowController:
                         if acceptance_reason is ReviewAcceptanceReason.ATTEMPT_BUDGET_LIMIT
                         else ReviewImpasseKind.REVIEW_ROUND_LIMIT
                     )
-                    impasse = self._review_impasse(
-                        run,
+                    impasse = review_ledger.impasse(
+                        run.review_ledger,
                         snapshot,
                         "review reached its configured limit and the remaining findings "
                         "are not eligible for automatic acceptance",
@@ -3411,15 +3305,7 @@ class WorkflowController:
                         if run.review_ledger.accepted_findings
                         else None
                     ),
-                    "review_ledger": run.review_ledger.model_copy(
-                        update={
-                            "open_findings": [],
-                            "last_reviewed_tree_sha": None,
-                            "consecutive_replacement_rounds": 0,
-                            "path_streaks": {},
-                            "unresolved_streaks": {},
-                        }
-                    ),
+                    "review_ledger": review_ledger.clear_open_findings(run.review_ledger),
                 }
             )
             self._store.save_run(run)
@@ -3493,7 +3379,7 @@ class WorkflowController:
         return self.transition(run, WorkflowState.VERIFYING)
 
     def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
-        """Run install, verify and build with persisted logs, then the mutation gate."""
+        """Run install, verify and build with persisted logs, then the advisory checks."""
         result = self._verifier.run(
             self._commands_for_run(run.id),
             cwd=context.workspace.path,
@@ -3503,18 +3389,24 @@ class WorkflowController:
             capture_bytes=self._config.repository.log_capture_bytes,
             before_command=lambda: self._raise_if_cancelled(run),
         )
-        if not result.report.passed:
+        evidence = context.latest_evidence
+        if not result.report.passed or evidence is None or not result.report.deterministic_checks:
+            # No verify command ran, so the repository's code is not run here either.
             return result
         self._raise_if_cancelled(run)
-        return self._apply_mutation_gate(run, context, result)
+        verify = self._commands_for_run(run.id).verify
+        advisory = (
+            self._mutation_check(run, context, evidence),
+            revert_check(
+                self._command_runner, context.workspace, evidence, verify, self._config.repository
+            ),
+        )
+        return result.with_checks(check for check in advisory if check is not None)
 
-    def _apply_mutation_gate(
-        self,
-        run: FactoryRun,
-        context: _RunContext,
-        result: RepositoryVerificationResult,
-    ) -> RepositoryVerificationResult:
-        """Add the advisory mutation gate to a passed verification (ADR-034).
+    def _mutation_check(
+        self, run: FactoryRun, context: _RunContext, evidence: WorkspaceEvidence
+    ) -> CommandResult | None:
+        """Return the advisory mutation gate check for a passed verification (ADR-034).
 
         The gate runs only for changed Python modules in a lane whose mutation
         tool and package runner are known. Its result is one more check in the
@@ -3522,10 +3414,8 @@ class WorkflowController:
         fails verification, because a surviving mutant can be equivalent.
         """
         exec_prefix = self._mutation_exec_prefix(run)
-        evidence = context.latest_evidence
-        if exec_prefix is None or evidence is None or not result.report.deterministic_checks:
-            # No verify command ran, so the repository's code is not run here either.
-            return result
+        if exec_prefix is None:
+            return None
         targets = mutation_targets(evidence.changed_files)
         started = time.monotonic()
         if not targets:
@@ -3536,17 +3426,7 @@ class WorkflowController:
             report = self._run_mutation_gate(context, exec_prefix, targets)
         # Saved on every passed verification, so no report from an older attempt stays.
         self._store.save_artifact(run.id, report)
-        check = mutation_check_result(report, time.monotonic() - started)
-        verification = result.report.model_copy(
-            update={"deterministic_checks": [*result.report.deterministic_checks, check]}
-        )
-        return RepositoryVerificationResult(
-            report=verification,
-            command_logs=result.command_logs,
-            failure_kind=result.failure_kind,
-            failed_phase=result.failed_phase,
-            failed_command=result.failed_command,
-        )
+        return mutation_check_result(report, time.monotonic() - started)
 
     def _run_mutation_gate(
         self, context: _RunContext, exec_prefix: str, targets: tuple[MutationTarget, ...]
@@ -3594,7 +3474,8 @@ class WorkflowController:
         repair_context: RepairContext | None,
     ) -> tuple[FactoryRun, bool, WorkspaceEvidence | None]:
         started_at = utc_now()
-        current_diff = context.latest_evidence.diff if context.latest_evidence else None
+        # A first attempt starts clean: only a repair sees the current diff.
+        evidence = context.latest_evidence if repair_context is not None else None
         request = AgentRequest(
             role=AgentRole.IMPLEMENTER,
             model=role_model.model,
@@ -3607,15 +3488,12 @@ class WorkflowController:
             specification=context.specification,
             execution_plan=context.execution_plan,
             repair_context=repair_context,
-            diff=current_diff if repair_context is not None else None,
-            changed_files=(
-                list(context.latest_evidence.changed_files)
-                if repair_context is not None and context.latest_evidence is not None
-                else []
-            ),
+            diff=evidence.diff if evidence is not None else None,
+            changed_files=list(evidence.changed_files) if evidence is not None else [],
             dependency_names=_dependency_names(context.repository_profile),
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
+            verification_commands=tuple(self._commands_for_run(run.id).verify),
             timeout_seconds=self._config.agent_timeout_seconds,
         )
         result = self._invoke_agent(run, request, budget=budget)
@@ -3791,231 +3669,17 @@ class WorkflowController:
                 WorkflowState.NEEDS_HUMAN,
                 "review evidence is missing its immutable Git tree",
             )
-        ledger = run.review_ledger
-        prior = list(ledger.open_findings)
-        if not prior:
-            accepted = list(ledger.accepted_findings)
-            new_drafts = [
-                draft
-                for draft in review.blocking_findings
-                if not any(_review_draft_matches_finding(draft, finding) for finding in accepted)
-            ]
-            open_findings = self._mint_review_findings(
-                new_drafts,
-                ReviewFindingOrigin.INITIAL,
-                snapshot,
-            )
-            ledger = ledger.model_copy(
-                update={
-                    "open_findings": open_findings,
-                    "last_reviewed_tree_sha": tree_sha if open_findings else None,
-                    "late_adoption_rounds": 0,
-                    "consecutive_replacement_rounds": 0,
-                    "path_streaks": dict.fromkeys(_review_finding_paths(open_findings), 1),
-                    "unresolved_streaks": {finding.id: 1 for finding in open_findings},
-                }
-            )
-            effective = review.model_copy(update={"approved": not open_findings})
-            run = run.model_copy(update={"review_ledger": ledger, "updated_at": utc_now()})
-            self._store.save_run(run)
-            return run, effective, None
-
-        dispositions = {
-            disposition.finding_id: disposition for disposition in review.prior_finding_dispositions
-        }
-        unresolved_ids = {
-            finding.id
-            for finding in prior
-            if dispositions[finding.id].status is ReviewDispositionStatus.UNRESOLVED
-        }
-        prior_by_id = {finding.id: finding for finding in prior}
-
-        regression_overlaps, regression_drafts = _partition_review_drafts(
-            prior,
-            review.repair_regressions,
-        )
-        latent_overlaps, latent_drafts = _partition_review_drafts(
-            prior,
-            review.blocking_findings,
-        )
-        unresolved_ids.update(regression_overlaps)
-        unresolved_ids.update(latent_overlaps)
-
-        changed_ranges = _changed_line_ranges(repair_diff or "")
-        regressions: list[ReviewFinding] = []
-        for draft in regression_drafts:
-            origin = (
-                ReviewFindingOrigin.REPAIR_REGRESSION_DIRECT
-                if _review_draft_intersects_ranges(draft, changed_ranges)
-                else ReviewFindingOrigin.REPAIR_REGRESSION_INDIRECT
-            )
-            regressions.extend(self._mint_review_findings([draft], origin, snapshot))
-
-        safety_late_drafts = [
-            draft
-            for draft in latent_drafts
-            if draft.category in self._config.review.blocked_categories
-        ]
-        adopt_late = bool(latent_drafts) and (
-            ledger.late_adoption_rounds < MAX_LATE_REVIEW_ADOPTION_ROUNDS
-        )
-        adopted_late = (
-            self._mint_review_findings(
-                latent_drafts,
-                ReviewFindingOrigin.LATE_ADOPTED,
-                snapshot,
-            )
-            if adopt_late
-            else self._mint_review_findings(
-                safety_late_drafts,
-                ReviewFindingOrigin.LATE_ADOPTED,
-                snapshot,
-            )
-        )
-        unresolved = [finding for finding in prior if finding.id in unresolved_ids]
-        current = _deduplicate_review_findings([*unresolved, *regressions, *adopted_late])
-        too_many_findings = len(current) > MAX_OPEN_REVIEW_FINDINGS
-        if too_many_findings:
-            current = current[:MAX_OPEN_REVIEW_FINDINGS]
-
-        replacement_rounds = (
-            ledger.consecutive_replacement_rounds + 1
-            if not unresolved and bool(regressions or adopted_late)
-            else 0
-        )
-        current_paths = _review_finding_paths(current)
-        path_streaks = {path: ledger.path_streaks.get(path, 0) + 1 for path in current_paths}
-        unresolved_streaks = {
-            finding.id: (
-                ledger.unresolved_streaks.get(finding.id, 0) + 1 if finding.id in prior_by_id else 1
-            )
-            for finding in current
-        }
-        ledger = ledger.model_copy(
-            update={
-                "open_findings": current,
-                "last_reviewed_tree_sha": tree_sha if current else None,
-                "late_adoption_rounds": ledger.late_adoption_rounds + int(adopt_late),
-                "consecutive_replacement_rounds": replacement_rounds,
-                "path_streaks": path_streaks,
-                "unresolved_streaks": unresolved_streaks,
-            }
-        )
-        suggestions = list(review.suggested_changes)
-        advisory_late_drafts = [draft for draft in latent_drafts if draft not in safety_late_drafts]
-        if advisory_late_drafts and not adopt_late:
-            suggestions.extend(
-                f"Late review finding left advisory after the bounded adoption round: "
-                f"{draft.message}"
-                for draft in advisory_late_drafts
-            )
-        effective = review.model_copy(
-            update={
-                "approved": not current,
-                "suggested_changes": suggestions,
-            }
+        ledger, effective, impasse = review_ledger.apply_review(
+            run.review_ledger,
+            review,
+            snapshot=snapshot,
+            tree_sha=tree_sha,
+            repair_diff=repair_diff,
+            blocked_categories=self._config.review.blocked_categories,
         )
         run = run.model_copy(update={"review_ledger": ledger, "updated_at": utc_now()})
         self._store.save_run(run)
-
-        if too_many_findings:
-            return (
-                run,
-                effective,
-                self._review_impasse(
-                    run,
-                    snapshot,
-                    f"more than {MAX_OPEN_REVIEW_FINDINGS} blockers remained open",
-                    kind=ReviewImpasseKind.TOO_MANY_FINDINGS,
-                ),
-            )
-        path_limit = sorted(
-            path
-            for path, count in path_streaks.items()
-            if count >= MAX_CONSECUTIVE_BLOCKING_REVIEWS_PER_PATH
-        )
-        unresolved_limit = sorted(
-            finding_id
-            for finding_id, count in unresolved_streaks.items()
-            if count >= MAX_CONSECUTIVE_UNRESOLVED_REVIEWS
-        )
-        if path_limit:
-            return (
-                run,
-                effective,
-                self._review_impasse(
-                    run,
-                    snapshot,
-                    "review blockers kept returning on the same path(s): " + ", ".join(path_limit),
-                    kind=ReviewImpasseKind.REPEATED_PATH,
-                ),
-            )
-        if unresolved_limit:
-            return (
-                run,
-                effective,
-                self._review_impasse(
-                    run,
-                    snapshot,
-                    "review findings remained unresolved across repeated repairs: "
-                    + ", ".join(unresolved_limit),
-                    kind=ReviewImpasseKind.REPEATED_FINDING,
-                ),
-            )
-        if replacement_rounds >= MAX_CONSECUTIVE_REPLACEMENT_REVIEWS:
-            return (
-                run,
-                effective,
-                self._review_impasse(
-                    run,
-                    snapshot,
-                    "consecutive repairs replaced every previous blocker with new blockers",
-                    kind=ReviewImpasseKind.REPLACEMENT_LOOP,
-                ),
-            )
-        return run, effective, None
-
-    def _mint_review_findings(
-        self,
-        drafts: list[ReviewFindingDraft],
-        origin: ReviewFindingOrigin,
-        snapshot: int,
-    ) -> list[ReviewFinding]:
-        findings = [
-            ReviewFinding(
-                id=_review_finding_id(draft),
-                category=draft.category,
-                message=draft.message,
-                locations=draft.locations,
-                origin=origin,
-                first_seen_snapshot=snapshot,
-            )
-            for draft in drafts
-        ]
-        return _deduplicate_review_findings(findings)
-
-    def _review_impasse(
-        self,
-        run: FactoryRun,
-        snapshot: int,
-        summary: str,
-        *,
-        kind: ReviewImpasseKind = ReviewImpasseKind.UNKNOWN,
-    ) -> ReviewImpasse:
-        findings = run.review_ledger.open_findings[:MAX_GUIDANCE_FINDINGS]
-        paths = sorted(_review_finding_paths(findings))
-        details = [f"[{finding.id}] {finding.message}" for finding in findings]
-        reason = f"review failed to converge at snapshot {snapshot}: {summary}"
-        if paths:
-            reason += "; blocking paths: " + ", ".join(paths)
-        return ReviewImpasse(
-            snapshot=snapshot,
-            kind=kind,
-            reason=reason,
-            paths=paths,
-            finding_ids=[finding.id for finding in findings],
-            findings=details,
-        )
+        return run, effective, impasse
 
     def _review_rounds_used(self, run: FactoryRun, budget: AttemptBudget) -> int:
         return sum(
@@ -4035,7 +3699,7 @@ class WorkflowController:
         review_rounds: int,
         reason: ReviewAcceptanceReason,
     ) -> ReviewAcceptance | None:
-        findings = _deduplicate_review_findings(
+        findings = review_ledger.deduplicate_findings(
             [*run.review_ledger.accepted_findings, *run.review_ledger.open_findings]
         )
         if len(findings) > MAX_OPEN_REVIEW_FINDINGS:
@@ -4047,25 +3711,11 @@ class WorkflowController:
             findings = findings[-MAX_OPEN_REVIEW_FINDINGS:]
         if not tree_sha or not verification.passed or not findings:
             return None
-        if not run.unattended and (
-            context.triage_result.risk not in self._config.review.accepted_risks
-            or len(findings) > self._config.review.max_accepted_findings
-            or any(
-                finding.category in self._config.review.blocked_categories for finding in findings
+        if not run.unattended and not (
+            review_ledger.within_policy(
+                self._config.review, context.triage_result.risk, findings, review
             )
-            or any(
-                finding.origin
-                not in {
-                    ReviewFindingOrigin.INITIAL,
-                    ReviewFindingOrigin.LATE_ADOPTED,
-                }
-                for finding in findings
-            )
-            or review.repair_regressions
-            or any(
-                finding.category in self._config.review.blocked_categories
-                for finding in review.blocking_findings
-            )
+            and review_ledger.has_acceptable_origins(findings)
         ):
             return None
         return ReviewAcceptance(
@@ -4082,15 +3732,8 @@ class WorkflowController:
         run: FactoryRun,
         acceptance: ReviewAcceptance,
     ) -> FactoryRun:
-        ledger = run.review_ledger.model_copy(
-            update={
-                "open_findings": [],
-                "accepted_findings": acceptance.findings,
-                "last_reviewed_tree_sha": None,
-                "consecutive_replacement_rounds": 0,
-                "path_streaks": {},
-                "unresolved_streaks": {},
-            }
+        ledger = review_ledger.clear_open_findings(run.review_ledger).model_copy(
+            update={"accepted_findings": acceptance.findings}
         )
         run = run.model_copy(
             update={
@@ -4138,19 +3781,8 @@ class WorkflowController:
     ) -> bool:
         """Whether the configured review policy allows an attended run to
         accept these findings."""
-        return (
-            acceptance.risk is risk
-            and acceptance.risk in self._config.review.accepted_risks
-            and 0 < len(acceptance.findings) <= self._config.review.max_accepted_findings
-            and not review.repair_regressions
-            and not any(
-                finding.category in self._config.review.blocked_categories
-                for finding in acceptance.findings
-            )
-            and not any(
-                finding.category in self._config.review.blocked_categories
-                for finding in review.blocking_findings
-            )
+        return acceptance.risk is risk and review_ledger.within_policy(
+            self._config.review, acceptance.risk, acceptance.findings, review
         )
 
     # -- publishing and CI observation ---------------------------------------
@@ -4198,11 +3830,7 @@ class WorkflowController:
             and acceptance is not None
             and (
                 not self._acceptance_within_policy(acceptance, review, triage.risk)
-                or any(
-                    finding.origin
-                    not in {ReviewFindingOrigin.INITIAL, ReviewFindingOrigin.LATE_ADOPTED}
-                    for finding in acceptance.findings
-                )
+                or not review_ledger.has_acceptable_origins(acceptance.findings)
             )
         ):
             reasons.append("review findings were accepted beyond the review policy")
@@ -4581,110 +4209,6 @@ def _describe_scope(scope: ScopeAssessment) -> str:
     if not scope.findings:
         return "no findings recorded"
     return "; ".join(finding.message for finding in scope.findings)
-
-
-def _review_finding_id(draft: ReviewFindingDraft) -> str:
-    locations = ",".join(
-        f"{location.path}:{location.start_line}-{location.end_line}"
-        for location in sorted(
-            draft.locations,
-            key=lambda item: (item.path, item.start_line, item.end_line),
-        )
-    )
-    digest = hashlib.sha256(f"{draft.category.value}:{locations}".encode("utf-8")).hexdigest()[:16]
-    return f"review-{draft.category.value.lower()}-{digest}"
-
-
-def _deduplicate_review_findings(findings: list[ReviewFinding]) -> list[ReviewFinding]:
-    deduplicated: dict[str, ReviewFinding] = {}
-    for finding in findings:
-        deduplicated.setdefault(finding.id, finding)
-    return list(deduplicated.values())
-
-
-def _review_finding_paths(findings: list[ReviewFinding]) -> set[str]:
-    return {location.path for finding in findings for location in finding.locations}
-
-
-def _locations_overlap(
-    left: ReviewSourceLocation,
-    right: ReviewSourceLocation,
-) -> bool:
-    return (
-        left.path == right.path
-        and left.start_line <= right.end_line
-        and right.start_line <= left.end_line
-    )
-
-
-def _review_draft_overlaps_finding(
-    draft: ReviewFindingDraft,
-    finding: ReviewFinding,
-) -> bool:
-    return any(
-        _locations_overlap(draft_location, finding_location)
-        for draft_location in draft.locations
-        for finding_location in finding.locations
-    )
-
-
-def _review_draft_matches_finding(
-    draft: ReviewFindingDraft,
-    finding: ReviewFinding,
-) -> bool:
-    return (
-        draft.category is finding.category
-        and draft.message == finding.message
-        and draft.locations == finding.locations
-    )
-
-
-def _partition_review_drafts(
-    prior: list[ReviewFinding],
-    drafts: list[ReviewFindingDraft],
-) -> tuple[set[str], list[ReviewFindingDraft]]:
-    overlapping_ids: set[str] = set()
-    new_drafts: list[ReviewFindingDraft] = []
-    for draft in drafts:
-        overlapping = {
-            finding.id for finding in prior if _review_draft_overlaps_finding(draft, finding)
-        }
-        if overlapping:
-            overlapping_ids.update(overlapping)
-        else:
-            new_drafts.append(draft)
-    return overlapping_ids, new_drafts
-
-
-def _changed_line_ranges(diff: str) -> dict[str, list[tuple[int, int]]]:
-    ranges: dict[str, list[tuple[int, int]]] = {}
-    current_path: str | None = None
-    for line in diff.splitlines():
-        if line.startswith("+++ b/"):
-            current_path = line[6:]
-            ranges.setdefault(current_path, [])
-            continue
-        if current_path is None:
-            continue
-        match = _DIFF_HUNK_PATTERN.match(line)
-        if match is None:
-            continue
-        start = int(match.group("start"))
-        count = int(match.group("count") or "1")
-        end = start + max(count, 1) - 1
-        ranges[current_path].append((start, end))
-    return ranges
-
-
-def _review_draft_intersects_ranges(
-    draft: ReviewFindingDraft,
-    changed_ranges: dict[str, list[tuple[int, int]]],
-) -> bool:
-    return any(
-        location.start_line <= end and start <= location.end_line
-        for location in draft.locations
-        for start, end in changed_ranges.get(location.path, [])
-    )
 
 
 def _dependency_names(profile: RepositoryProfile) -> tuple[str, ...]:

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -27,6 +29,7 @@ from software_agent_factory.command_probe import ProbeLimits
 from software_agent_factory.config import FactoryConfig, PullRequestConfig, SetupConfig
 from software_agent_factory.escalation_protocol import format_resume_command
 from software_agent_factory.github import GitHubClient, GitHubCommandError, MergeNotAllowedError
+from software_agent_factory.lifecycle import is_run_finished
 from software_agent_factory.models import (
     REPLY_CURSOR_CLOSED,
     AgentRole,
@@ -38,6 +41,7 @@ from software_agent_factory.models import (
     PlanDecisionAnswer,
     ResumeClassification,
     Risk,
+    RunLease,
     WorkflowState,
     utc_now,
 )
@@ -57,7 +61,7 @@ from software_agent_factory.service import (
 from software_agent_factory.setup_run import SetupTrigger
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.verification import DeterministicVerifier
-from software_agent_factory.workflow import WorkflowController, is_run_finished
+from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
 
 
@@ -287,6 +291,17 @@ def test_default_recovery_decision_leaves_finished_runs_alone() -> None:
 
     assert default_recovery_decision(finished) is ReconciliationAction.LEAVE
     assert default_recovery_decision(unfinished) is ReconciliationAction.NEEDS_HUMAN
+
+
+def test_default_recovery_decision_leaves_a_run_held_by_a_live_process() -> None:
+    def held_by(pid: int) -> FactoryRun:
+        lease = RunLease(host=socket.gethostname(), pid=pid, heartbeat_at=utc_now())
+        return FactoryRun(id="r4", work_item_id="w", state=WorkflowState.PLANNING, lease=lease)
+
+    assert default_recovery_decision(held_by(os.getppid())) is ReconciliationAction.LEAVE
+    # A dead owner, or this process itself, does not hold the run.
+    assert default_recovery_decision(held_by(2**22 + 1)) is ReconciliationAction.NEEDS_HUMAN
+    assert default_recovery_decision(held_by(os.getpid())) is ReconciliationAction.NEEDS_HUMAN
 
 
 def test_default_recovery_decision_requeues_an_unfinished_unattended_run() -> None:
@@ -603,17 +618,33 @@ def test_run_forever_retries_transient_github_poll_failures(
     assert "GitHub backlog polling failed; retrying after 1.0 seconds" in caplog.text
 
 
-def test_run_forever_does_not_hide_unexpected_poll_failures(
-    source_repo: Path, data_dir: Path
+def test_run_forever_survives_an_unexpected_tick_failure(
+    source_repo: Path, data_dir: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     class BrokenProvider(LocalProvider):
         def fetch_candidates(self) -> Sequence[TrackerItem]:
-            raise RuntimeError("programming error")
+            self.fetch_calls += 1
+            raise RuntimeError("bad run.json")
 
-    service = _service(data_dir, source_repo, BrokenProvider([]))
+    class StopAfterTwoWaits:
+        def __init__(self) -> None:
+            self.wait_calls = 0
 
-    with pytest.raises(RuntimeError, match="programming error"):
-        service.run_forever(threading.Event())
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, _timeout: float) -> bool:
+            self.wait_calls += 1
+            return self.wait_calls == 2
+
+    provider = BrokenProvider([])
+    service = _service(data_dir, source_repo, provider)
+
+    with caplog.at_level("ERROR", logger="software_agent_factory.service"):
+        service.run_forever(StopAfterTwoWaits())
+
+    assert provider.fetch_calls == 2
+    assert "factory tick failed (RuntimeError: bad run.json); retrying" in caplog.text
 
 
 # ---------------------------------------------------------------------------

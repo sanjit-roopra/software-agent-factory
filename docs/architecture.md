@@ -322,7 +322,7 @@ eligible polish attempt transitions `VERIFYING → IMPLEMENTING` with trigger
 `POLISH`, followed by normal `VERIFYING`.
 
 The workflow controller owns every transition. Normal transitions are declared
-in `workflow.ALLOWED_TRANSITIONS` and enforced on every call:
+in `lifecycle.ALLOWED_TRANSITIONS` and enforced on every call:
 
 ```text
 CREATED      → TRIAGING
@@ -363,7 +363,7 @@ verification and quality gates remain in force.
 `PR_READY` is *not* terminal. When pull requests are enabled it continues to
 `PR_CREATED`. When they are disabled it is the completed endpoint of the manual
 flow and the controller finalizes it explicitly by stamping `completed_at`.
-`workflow.is_run_finished` is the single predicate that expresses this, and the
+`lifecycle.is_run_finished` is the single predicate that expresses this, and the
 scheduler uses it rather than a raw state comparison.
 
 ## Scheduling state
@@ -1345,7 +1345,7 @@ merged commit before `DONE`. It never overrides branch protection or turns a
 pending merge request into a success claim.
 
 GitHub credentials are read from the controller's own environment and handed to
-`gh` through the child environment only. `CopilotAgentRuntime` independently
+`gh` through the child environment only. Every agent runtime independently
 removes `GH_TOKEN`, `GITHUB_TOKEN`, and related credential variables from every
 agent subprocess, so no agent ever sees them.
 

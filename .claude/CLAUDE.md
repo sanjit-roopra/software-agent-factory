@@ -1,6 +1,7 @@
 # software-agent-factory — project conventions
 
 Read `AGENTS.md` first. It holds the architecture rules, delivery workflow and writing rules for this repository.
+Its "Code rules" section lists the rules every change must follow; `tests/test_repo_rules.py` enforces the mechanical ones.
 
 ## Stack
 

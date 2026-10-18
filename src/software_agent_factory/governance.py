@@ -201,6 +201,15 @@ class RepositoryVerificationResult:
     failed_phase: CheckPhase | None
     failed_command: CommandLogMetadata | None
 
+    def with_checks(self, checks: Iterable[CommandResult]) -> RepositoryVerificationResult:
+        """Return a copy whose report also lists ``checks``."""
+        report = self.report.model_copy(
+            update={"deterministic_checks": [*self.report.deterministic_checks, *checks]}
+        )
+        return RepositoryVerificationResult(
+            report, self.command_logs, self.failure_kind, self.failed_phase, self.failed_command
+        )
+
 
 @dataclass(frozen=True)
 class ScopeFinding:
@@ -314,10 +323,13 @@ class RepositoryVerifier:
                 timeout_seconds=timeout_seconds,
                 env_passthrough=env_passthrough,
                 capture_bytes=capture_bytes,
+                # Every verify command runs, so one attempt sees every failing check.
+                stop_on_failure=phase is not CheckPhase.VERIFY,
                 before_command=before_command,
             )
             executed_results.extend(phase_report.deterministic_checks)
 
+            first_failure: tuple[CommandResult, CommandLogMetadata] | None = None
             for phase_index, result in enumerate(phase_report.deterministic_checks, start=1):
                 overall_index += 1
                 command_log = self._persist_command_log(
@@ -328,18 +340,20 @@ class RepositoryVerifier:
                     result=result,
                 )
                 command_logs.append(command_log)
+                if first_failure is None and (result.timed_out or result.exit_code != 0):
+                    first_failure = (result, command_log)
 
             if not phase_report.passed:
                 failed_phase = phase
-                if command_logs:
-                    failed_command = command_logs[-1]
-                # A failed phase with no check result is an infrastructure fault, never a pass.
-                failure_kind = (
-                    self.classify_failure(phase, phase_report.deterministic_checks[-1])
-                    if phase_report.deterministic_checks
-                    else VerificationFailureKind.INFRA
+                # A failed phase with no failed check is an infrastructure fault, never a pass.
+                failure_kind = VerificationFailureKind.INFRA
+                if first_failure is not None:
+                    failure_kind = self.classify_failure(phase, first_failure[0])
+                    failed_command = first_failure[1]
+                failures.extend(
+                    f"{phase.value}: {failure}"
+                    for failure in phase_report.failures or ["verification failed"]
                 )
-                failures.append(self._describe_phase_failure(phase, phase_report))
                 break
 
         passed = failed_phase is None
@@ -434,15 +448,6 @@ class RepositoryVerifier:
         slug = _SAFE_FILENAME_PATTERN.sub("-", command.lower()).strip("-")
         slug = slug[:40].strip("-")
         return slug or "command"
-
-    def _describe_phase_failure(
-        self,
-        phase: CheckPhase,
-        report: VerificationReport,
-    ) -> str:
-        if not report.failures:
-            return f"{phase.value}: verification failed"
-        return f"{phase.value}: {report.failures[0]}"
 
     @staticmethod
     def _contains_any(text: str, candidates: Iterable[str]) -> bool:
