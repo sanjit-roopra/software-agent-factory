@@ -126,6 +126,7 @@ CASES: dict[str, Callable[[], AgentRequest]] = {
         execution_plan=plan(),
         workspace_path="/w",
         attempt_number=1,
+        verification_commands=("uv run pytest -q",),
     ),
     "implementer_repair": lambda: _request(
         AgentRole.IMPLEMENTER,

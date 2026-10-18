@@ -35,10 +35,9 @@ work runs at once, and ``scheduler.max_runs_per_day`` bounds how much work may
 be *claimed* per UTC calendar day. Both are passed to the scheduler by this
 composition root; the scheduler owns their enforcement.
 
-Dispatch and completion are also emitted as structured, ``run_id``-tagged log
-records (``observability.log_run_event``), so an installed launchd service
-leaves a durable, bounded audit trail under ``<data_dir>/logs/factory.log``
-without any workflow change.
+Dispatch and completion are also logged as structured, ``run_id``-tagged records
+(``observability.log_run_event``), leaving a durable, bounded audit trail under
+``<data_dir>/logs/factory.log`` without any workflow change.
 """
 
 from __future__ import annotations
@@ -46,10 +45,12 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import os
+import socket
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -83,12 +84,12 @@ from .models import (
     WorkItem,
     utc_now,
 )
-from .observability import log_run_event
+from .observability import log_run_event, process_alive
 from .publishing import PullRequestPublisher
 from .resume import awaits_human, unsettled_requests
 from .resume_writes import ingest_dashboard_request
+from .run_handle import ThreadPoolRunHandle
 from .scheduler import (
-    DispatchOutcome,
     ReconciliationAction,
     RecoveryRecord,
     Scheduler,
@@ -180,74 +181,27 @@ class AlreadyRunFilter:
         return kept
 
 
-class ThreadPoolRunHandle:
-    """``RunHandle`` over a ``concurrent.futures.Future``.
-
-    ``last_activity_at`` is read back from the persisted run so stall
-    detection uses the controller's real progress signal rather than a
-    dispatch-time constant.
-    """
-
-    def __init__(self, run_id: str, store: FileRunStore, started_at: datetime) -> None:
-        self.run_id = run_id
-        self._store = store
-        self._started_at = started_at
-        self._future: Future[FactoryRun] | None = None
-        self._cancelled = threading.Event()
-
-    def attach(self, future: Future[FactoryRun]) -> None:
-        self._future = future
-
-    @property
-    def future(self) -> Future[FactoryRun] | None:
-        return self._future
-
-    @property
-    def cancel_requested(self) -> bool:
-        return self._cancelled.is_set()
-
-    def is_done(self) -> bool:
-        return self._future is not None and self._future.done()
-
-    def outcome(self) -> DispatchOutcome:
-        if self._future is None:  # pragma: no cover - defensive
-            return DispatchOutcome.CANCELLED
-        if self._future.cancelled():
-            return DispatchOutcome.CANCELLED
-        error = self._future.exception()
-        if error is not None:
-            logger.error("run %s raised: %s", self.run_id, error)
-            return DispatchOutcome.FAILED
-        run = self._future.result()
-        if run.state is WorkflowState.NEEDS_HUMAN:
-            return DispatchOutcome.NEEDS_HUMAN
-        if run.state is WorkflowState.FAILED:
-            return DispatchOutcome.FAILED
-        return DispatchOutcome.SUCCEEDED
-
-    def last_activity_at(self) -> datetime:
-        try:
-            run = self._store.load_run(self.run_id)
-        except (FileNotFoundError, ValueError):
-            return self._started_at
-        # Work that restarts an old run has no activity yet. The dispatch time counts then.
-        # A lease heartbeat written during an agent call counts as activity too.
-        heartbeat = run.lease.heartbeat_at if run.lease is not None else self._started_at
-        return max(run.last_activity_at or run.updated_at, heartbeat, self._started_at)
-
-    def cancel(self) -> None:
-        self._cancelled.set()
-        if self._future is not None:
-            self._future.cancel()
-
-
 def default_recovery_decision(run: FactoryRun) -> ReconciliationAction:
-    """Continue an abandoned unattended run. Escalate every other unfinished run to a human."""
-    if is_run_finished(run):
+    """Continue an abandoned unattended run. Escalate every other unfinished run to a human.
+
+    A run still held by another live process on this host (a manual ``factory run``) is
+    not abandoned, so it is left alone. A reused pid after a reboot reads as live too.
+    """
+    if is_run_finished(run) or _held_by_other_live_process(run):
         return ReconciliationAction.LEAVE
     if run.unattended:
         return ReconciliationAction.REQUEUE
     return ReconciliationAction.NEEDS_HUMAN
+
+
+def _held_by_other_live_process(run: FactoryRun) -> bool:
+    lease = run.lease
+    return (
+        lease is not None
+        and lease.host == socket.gethostname()
+        and lease.pid != os.getpid()
+        and process_alive(lease.pid)
+    )
 
 
 @dataclass
@@ -965,6 +919,13 @@ class FactoryService:
                 except GitHubCommandError:
                     logger.exception(
                         "GitHub backlog polling failed; retrying after %.1f seconds",
+                        poll_interval,
+                    )
+                except Exception as exc:  # noqa: BLE001 - a failed tick dispatches nothing
+                    logger.exception(
+                        "factory tick failed (%s: %s); retrying after %.1f seconds",
+                        type(exc).__name__,
+                        exc,
                         poll_interval,
                     )
                 else:

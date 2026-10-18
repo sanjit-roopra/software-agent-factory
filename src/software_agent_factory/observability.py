@@ -84,6 +84,7 @@ from .escalation_protocol import (
     halt_code_for_reason,
     reply_closed_cause,
 )
+from .governance import paths_outside_scope
 from .lifecycle import is_run_finished
 from .models import (
     HALT_REASON_COPY,
@@ -1501,14 +1502,15 @@ def load_operator_escalation(store: RunStoreProtocol, run_id: str) -> OperatorEs
         )
     except (OSError, ValueError):
         return None
-    if loaded.status == "running" and not _process_alive(loaded.pid):
+    if loaded.status == "running" and not process_alive(loaded.pid):
         return loaded.model_copy(
             update={"status": "failed", "error": "the escalation stopped before it finished"}
         )
     return loaded
 
 
-def _process_alive(pid: int | None) -> bool:
+def process_alive(pid: int | None) -> bool:
+    """Return true when a process with ``pid`` exists on this host."""
     if pid is None:
         return False
     try:
@@ -1879,7 +1881,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
     a client (ADR-047). The checks are the latest verification and CI reports.
     The review has one round per attempt that saved a review, plus the open and
     accepted findings of the review ledger. The plan part is the latest saved
-    specification, execution plan and change set, each ``None`` when absent.
+    specification, execution plan and change set, each ``None`` when absent, and
+    the changed files outside the plan's modules.
     """
     try:
         run = store.load_run(run_id)
@@ -1894,6 +1897,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
         if review is not None:
             rounds.append({"attempt_number": number, **review.model_dump(mode="json")})
     ledger = run.review_ledger
+    plan = _load_optional_artifact(store, run.id, ExecutionPlan)
+    change_set = _load_optional_artifact(store, run.id, ChangeSet)
     return {
         "run_id": run.id,
         "branch_name": run.branch_name,
@@ -1903,8 +1908,13 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
         "open_findings": _dumped(ledger.open_findings),
         "accepted_findings": _dumped(ledger.accepted_findings),
         "specification": _dumped_optional(store, run.id, Specification),
-        "execution_plan": _dumped_optional(store, run.id, ExecutionPlan),
-        "change_set": _dumped_optional(store, run.id, ChangeSet),
+        "execution_plan": None if plan is None else plan.model_dump(mode="json"),
+        "change_set": None if change_set is None else change_set.model_dump(mode="json"),
+        "out_of_scope_paths": (
+            []
+            if plan is None or change_set is None
+            else list(paths_outside_scope(plan.expected_scope.modules, change_set.changed_files))
+        ),
     }
 
 
@@ -2073,13 +2083,7 @@ def _active_invocation_status(
     if lease is None:
         return "abandoned"
     if lease.host == socket.gethostname():
-        try:
-            os.kill(lease.pid, 0)
-        except ProcessLookupError:
-            return "crashed"
-        except PermissionError:
-            return "running"
-        return "running"
+        return "running" if process_alive(lease.pid) else "crashed"
     if _is_stale(run, now, stale_after):
         return "stale"
     return "running"
@@ -2325,14 +2329,7 @@ def _probe_lock_staleness(lock_path: Path) -> tuple[bool, datetime | None]:
     if owner_pid <= 0:
         raise ValueError(f"lock file has an invalid owner PID: {lock_path}")
 
-    try:
-        os.kill(owner_pid, 0)
-    except ProcessLookupError:
-        is_stale = True
-    except PermissionError:
-        is_stale = False
-    else:
-        is_stale = False
+    is_stale = not process_alive(owner_pid)
 
     try:
         modified_at = datetime.fromtimestamp(lock_path.stat().st_mtime, tz=timezone.utc)

@@ -978,6 +978,26 @@ def test_build_pr_body_discloses_checks_not_run_and_open_questions() -> None:
     ) in body
 
 
+def test_build_pr_body_shows_scope_growth_against_the_plan() -> None:
+    plan = ExecutionPlan(
+        summary="Add validation.",
+        steps=[PlanStep(id="s1", goal="Add input validation")],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+    )
+    body = build_pr_body(
+        work_item=_work_item(),
+        specification=None,
+        plan=plan,
+        changed_files=["src/app.py", "docs/app.md", "README.md"],
+        verification=None,
+        review=None,
+        run_id="RUN-growth",
+    )
+
+    assert "3 files changed; the plan estimated 1-2." in body
+    assert "## Outside the planned modules\n- `docs/app.md`\n- `README.md`" in body
+
+
 def test_build_pr_body_discloses_controller_accepted_findings() -> None:
     acceptance = ReviewAcceptance(
         snapshot=3,

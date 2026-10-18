@@ -53,7 +53,8 @@ NOTHING_MATCHES = "Filtered for specific mutants, but nothing matches"
 NO_MUTANTS_REASON = "no mutants in the changed modules"
 _MODULE_NAME = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", re.ASCII)
 _MUTANT_NAME = re.compile(r"[A-Za-z0-9_.ǁ]{1,200}__mutmut_\d{1,9}")
-_TEST_DIRS = frozenset({"tests", "test", "testing"})
+_TEST_DIRS = frozenset({"tests", "test", "testing", "__tests__"})
+_JS_TEST_NAME = re.compile(r".+\.(test|spec)\.[cm]?[jt]sx?")
 #: ``mutmut`` 3 exit codes per mutant. Every other code counts as ``other``.
 _KILLED = frozenset({1, 3})
 _SURVIVED = frozenset({0})
@@ -89,7 +90,7 @@ def mutation_targets(changed_files: Sequence[str]) -> tuple[MutationTarget, ...]
     targets: list[MutationTarget] = []
     for path in changed_files:
         posix = PurePosixPath(path)
-        if posix.suffix != ".py" or _is_test_path(posix):
+        if posix.suffix != ".py" or is_test_path(path):
             continue
         # mutmut drops a leading "src." and turns ".__init__." into ".".
         parts = list(posix.with_suffix("").parts)
@@ -162,6 +163,10 @@ def run_mutation_gate(
     return _judge(modules, exit_codes)
 
 
+MUTATION_CHECK_COMMAND = "mutmut run"
+"""Command prefix of the gate's check. Agents read its output, so prompts keep it."""
+
+
 def mutation_check_result(report: MutationReport, duration_seconds: float) -> CommandResult:
     """Describe the gate as one deterministic check for the verification report."""
     lines = [
@@ -178,7 +183,7 @@ def mutation_check_result(report: MutationReport, duration_seconds: float) -> Co
         if report.survived_count > len(report.survived):
             lines.append(f"- and {report.survived_count - len(report.survived)} more")
     return CommandResult(
-        command=f"mutmut run {' '.join(report.modules)}",
+        command=f"{MUTATION_CHECK_COMMAND} {' '.join(report.modules)}",
         exit_code=0,
         stdout="\n".join(lines),
         stderr="",
@@ -325,13 +330,16 @@ def _skipped(modules: tuple[str, ...], reason: str, report: VerificationReport) 
     return MutationReport(status=MutationStatus.SKIPPED, modules=modules, reason=reason + detail)
 
 
-def _is_test_path(path: PurePosixPath) -> bool:
-    name = path.name
+def is_test_path(path: str) -> bool:
+    """Return whether ``path`` is a Python, JavaScript or TypeScript test file."""
+    posix = PurePosixPath(path)
+    name = posix.name
     return (
         name.startswith("test_")
         or name.endswith("_test.py")
         or name == "conftest.py"
-        or any(part in _TEST_DIRS for part in path.parts[:-1])
+        or _JS_TEST_NAME.fullmatch(name) is not None
+        or any(part in _TEST_DIRS for part in posix.parts[:-1])
     )
 
 
