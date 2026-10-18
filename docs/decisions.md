@@ -585,6 +585,9 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 
 - While an agent call runs, the controller writes the lease heartbeat every 30 seconds.
   The heartbeat stops when the call runs past its own timeout, so a call that never ends still looks stalled.
+- During an agent call, a beat is written only when the agent printed a line or started a tool since the last beat.
+  So an agent that hangs and prints nothing looks stalled after `scheduler.stall_timeout_seconds` of silence,
+  not only at the end of its own timeout. There is no new setting. Amended on 2026-10-19.
 - The verify commands, the mutation gate, the revert check and each CI wait write the same heartbeat.
   Their timeout is the command timeout for each command they run, or the CI wait budget plus one poll.
   So a long check or a CI wait longer than the stall timeout does not look stalled. Amended on 2026-10-18.
@@ -601,6 +604,8 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 - A stalled run no longer holds a slot and an agent process for nothing.
 - The halt is in `run.json`, so it survives a restart and the dashboard shows it.
 - A stall in a check kills the check command. A stall in a CI wait stops the run at the next poll.
+- An agent that stays silent for longer than the stall timeout is stopped as stalled,
+  even when it is still working. Amended on 2026-10-19.
 - `STALLED` is a new stored value, so old readers see a code they do not know.
 
 ## ADR-047: The dashboard shows what the agent did, and can stop or steer a run

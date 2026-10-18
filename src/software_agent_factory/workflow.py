@@ -376,10 +376,10 @@ class WorkflowController:
     def _call_runtime(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
         """Run the agent while a side thread writes the lease heartbeat (dashboard X1).
 
-        The heartbeat stops once the call outlives its own timeout, so a runtime that
-        ignores its timeout still looks stalled to the service.
+        The heartbeat stops once the call outlives its timeout, and pauses while the agent
+        is silent, so a runtime that hangs looks stalled to the service (ADR-048).
         """
-        with live_activity(run) as changed, watched(self, run, request.timeout_seconds, changed):
+        with live_activity(run) as live, watched(self, run, request.timeout_seconds, live):
             return self._runtime.run(request)
 
     def with_pinned_policy(self, *, risk_assessment: bool, unattended: bool) -> WorkflowController:
