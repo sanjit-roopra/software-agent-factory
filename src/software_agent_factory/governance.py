@@ -218,10 +218,6 @@ class ScopeAssessment:
     estimated_files_max: int
     approved_sensitive_files: tuple[str, ...] = ()
 
-    @property
-    def has_sensitive_findings(self) -> bool:
-        return any(finding.sensitive for finding in self.findings)
-
 
 @dataclass(frozen=True)
 class PublishGate:

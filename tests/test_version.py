@@ -15,7 +15,6 @@ from software_agent_factory.__main__ import main
 def _clear_version_caches() -> None:
     version.get_build_info.cache_clear()
     version.get_version.cache_clear()
-    version.get_version_source.cache_clear()
     version._read_pyproject_version.cache_clear()
 
 
@@ -28,7 +27,6 @@ def test_get_version_falls_back_to_pyproject_when_metadata_is_missing(monkeypatc
     monkeypatch.setattr(version, "distribution_version", missing_distribution)
 
     assert version.get_version() == "0.5.0"
-    assert version.get_version_source() == "pyproject"
 
 
 def test_get_version_prefers_bundled_build_info_for_frozen_build(
@@ -46,7 +44,6 @@ def test_get_version_prefers_bundled_build_info_for_frozen_build(
 
     assert version.get_build_info()["tag"] == "v9.9.9"
     assert version.get_version() == "9.9.9"
-    assert version.get_version_source() == "build-info"
 
 
 def test_main_prints_version_without_loading_the_cli(monkeypatch) -> None:

@@ -308,7 +308,7 @@ def test_file_line_count_handles_non_utf8_files(source_repo: Path, data_dir: Pat
     evidence = ws.collect_evidence()
 
     assert evidence.tree_sha is not None
-    assert ws.file_line_count(evidence.tree_sha, "asset.bin") == 3
+    assert ws.file_line_counts(evidence.tree_sha, ["asset.bin"])["asset.bin"] == 3
 
 
 def test_collect_evidence_subprocess_calls_reduced(
@@ -490,8 +490,8 @@ def test_collect_evidence_handles_untracked_files(source_repo: Path, data_dir: P
     assert "untracked content 1" in evidence.diff
     assert "untracked content 2" in evidence.diff
     assert evidence.tree_sha is not None
-    assert ws.file_line_count(evidence.tree_sha, "untracked_one.txt") == 1
-    assert ws.file_line_count(evidence.tree_sha, "untracked_two.txt") == 1
+    assert ws.file_line_counts(evidence.tree_sha, ["untracked_one.txt"])["untracked_one.txt"] == 1
+    assert ws.file_line_counts(evidence.tree_sha, ["untracked_two.txt"])["untracked_two.txt"] == 1
 
 
 def test_collect_evidence_handles_empty_diff(source_repo: Path, data_dir: Path) -> None:
@@ -777,38 +777,6 @@ def _prune_lock_is_held(lock_path: Path) -> bool:
         os.close(probe)
 
 
-# -- cleanup() ------------------------------------------------------------
-
-
-def test_cleanup_removes_worktree(source_repo: Path, data_dir: Path) -> None:
-    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-8")
-    path = ws.prepare()
-    assert path.exists()
-
-    ws.cleanup(force=True)
-
-    assert not path.exists()
-    listing = _git(source_repo, "worktree", "list", "--porcelain")
-    assert str(path.resolve()) not in listing
-
-
-def test_cleanup_refuses_path_outside_workspace_root(source_repo: Path, data_dir: Path) -> None:
-    ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-9")
-    ws.prepare()
-
-    # Simulate a defect/attempted misuse that points ``path`` outside the
-    # workspace root; cleanup must refuse rather than touching source_repo.
-    ws.path = source_repo
-
-    with pytest.raises(WorkspaceSafetyError):
-        ws.cleanup(force=True)
-
-    # Source repo must remain completely intact.
-    assert source_repo.exists()
-    assert (source_repo / "README.md").exists()
-    assert _git(source_repo, "status", "--porcelain") == ""
-
-
 def test_workspace_and_lock_paths_are_root_contained(source_repo: Path, data_dir: Path) -> None:
     ws = GitWorktreeWorkspace(data_dir, source_repo, "WORK-10")
     assert ws.path.is_relative_to((data_dir / "workspaces").resolve())
@@ -856,8 +824,6 @@ def test_file_line_counts_batch_correctness(source_repo: Path, data_dir: Path) -
         "missing.txt": None,
         "subdir": None,
     }
-    # batch_file_line_counts alias returns identical result
-    assert ws.batch_file_line_counts(evidence.tree_sha, paths) == counts
 
 
 def test_file_line_counts_subprocess_calls_bounded_and_deduplicated(

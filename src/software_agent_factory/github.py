@@ -1187,13 +1187,6 @@ class GitPublisher:
                 if final_attempt:
                     raise
 
-    def has_changes(self, workspace_path: Path) -> bool:
-        """Stage everything (including untracked files) and report whether
-        anything is now staged. Never commits."""
-        self._run_git(workspace_path, ["add", "-A"])
-        staged = self._run_git(workspace_path, ["diff", "--cached", "--name-only"])
-        return any(line for line in staged.stdout.splitlines())
-
     def commit_and_push(
         self,
         workspace_path: Path,

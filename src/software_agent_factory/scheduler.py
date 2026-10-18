@@ -102,16 +102,12 @@ dispatch within its own process lifetime.
   state, not just one task's worktree. This module has no Git dependency
   and does not perform such operations, but when ``max_concurrent_tasks``
   is ``2`` a dispatch implementation that wraps per-repository worktree
-  preparation must serialize that step itself. :meth:`Scheduler.repository_lock`
-  offers a generic, git-agnostic, per-``repository_path`` mutual-exclusion
-  primitive for exactly that purpose; it is optional and unused unless a
-  dispatch implementation opts in.
+  preparation must serialize that step itself.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -508,8 +504,6 @@ class Scheduler:
         self._active: dict[str, _ActiveEntry] = {}
         self._escalated: set[str] = set()
         self._stall_attempts: dict[str, int] = {}
-        self._repository_locks: dict[str, threading.Lock] = {}
-        self._repository_locks_guard = threading.Lock()
 
     # -- introspection ----------------------------------------------------
 
@@ -517,37 +511,8 @@ class Scheduler:
     def active_count(self) -> int:
         return len(self._active)
 
-    def is_active(self, opaque_id: str) -> bool:
-        return opaque_id in self._active
-
     def is_escalated(self, opaque_id: str) -> bool:
         return opaque_id in self._escalated
-
-    def repository_lock(self, repository_path: str) -> threading.Lock:
-        """Return a process-wide mutual-exclusion lock keyed by
-        ``repository_path``.
-
-        Git worktree administration (``git worktree add``/``prune``) is a
-        repository-global operation, not scoped to one task's worktree. A
-        dispatch implementation that wraps such per-repository worktree
-        preparation should serialize just that step when
-        ``max_concurrent_tasks`` is ``2``, e.g.::
-
-            with scheduler.repository_lock(item.repository_path):
-                workspace.prepare()
-            # release before running the (possibly long) agent work itself
-
-        This module has no Git dependency and never acquires this lock
-        itself; it only hands out (and reuses) one lock per repository path
-        for dispatch implementations that opt in. Two dispatches against
-        different repositories never contend.
-        """
-        with self._repository_locks_guard:
-            lock = self._repository_locks.get(repository_path)
-            if lock is None:
-                lock = threading.Lock()
-                self._repository_locks[repository_path] = lock
-            return lock
 
     def register_active_handle(
         self,

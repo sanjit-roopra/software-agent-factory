@@ -1055,13 +1055,6 @@ class RunScanCache:
         with self._lock:
             return self._misses
 
-    def invalidate(self) -> None:
-        """Clear cached scan immediately."""
-        with self._lock:
-            self._cached_scan = None
-            self._cached_max_scanned_runs = None
-            self._cached_at = 0.0
-
     def get_scan(self, max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS) -> RunScanResult:
         """Return a validated scan, reusing the cached scan if within TTL.
 

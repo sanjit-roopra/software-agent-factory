@@ -192,7 +192,6 @@ class ThreadPoolRunHandle:
         self._store = store
         self._started_at = started_at
         self._future: Future[FactoryRun] | None = None
-        self._cancelled = threading.Event()
 
     def attach(self, future: Future[FactoryRun]) -> None:
         self._future = future
@@ -200,10 +199,6 @@ class ThreadPoolRunHandle:
     @property
     def future(self) -> Future[FactoryRun] | None:
         return self._future
-
-    @property
-    def cancel_requested(self) -> bool:
-        return self._cancelled.is_set()
 
     def is_done(self) -> bool:
         return self._future is not None and self._future.done()
@@ -235,7 +230,6 @@ class ThreadPoolRunHandle:
         return max(run.last_activity_at or run.updated_at, heartbeat, self._started_at)
 
     def cancel(self) -> None:
-        self._cancelled.set()
         if self._future is not None:
             self._future.cancel()
 

@@ -66,7 +66,6 @@ benchmark_repository_profiling = _bench.benchmark_repository_profiling
 benchmark_run_store_scan = _bench.benchmark_run_store_scan
 benchmark_dashboard_monitoring_summary = _bench.benchmark_dashboard_monitoring_summary
 benchmark_dashboard_operational_health = _bench.benchmark_dashboard_operational_health
-benchmark_dashboard_shared_cache = _bench.benchmark_dashboard_shared_cache
 benchmark_dashboard_shared_scan_cold = _bench.benchmark_dashboard_shared_scan_cold
 benchmark_dashboard_shared_cache_warm = _bench.benchmark_dashboard_shared_cache_warm
 benchmark_scheduler_drain = _bench.benchmark_scheduler_drain
@@ -474,9 +473,6 @@ def test_benchmark_harness_components() -> None:
 
     dash_health = benchmark_dashboard_operational_health(store_runs=10, iterations=1, warmup=0)
     _assert_benchmark_schema(dash_health)
-
-    dash_shared = benchmark_dashboard_shared_cache(store_runs=10, iterations=1, warmup=0)
-    _assert_benchmark_schema(dash_shared)
 
     dash_cold = benchmark_dashboard_shared_scan_cold(store_runs=10, iterations=1, warmup=0)
     _assert_benchmark_schema(dash_cold)

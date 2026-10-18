@@ -24,7 +24,6 @@ from software_agent_factory.store import FileRunStore
 from software_agent_factory.transcripts import (
     TRANSCRIPT_CUT_MARKER,
     read_call_tool_calls,
-    read_call_transcript,
     tool_calls,
     write_call_transcript,
 )
@@ -54,7 +53,6 @@ def test_write_redacts_secrets_and_returns_the_run_relative_path(tmp_path: Path)
     stored = (tmp_path / name).read_text(encoding="utf-8")
     assert SECRET not in stored
     assert "[REDACTED]" in stored
-    assert read_call_transcript(tmp_path, 3) == stored
 
 
 def test_write_cuts_a_long_transcript_at_a_line_and_marks_the_cut(
@@ -64,7 +62,9 @@ def test_write_cuts_a_long_transcript_at_a_line_and_marks_the_cut(
 
     write_call_transcript(tmp_path, 1, "aaaa\nbbbb\ncccc\n")
 
-    assert read_call_transcript(tmp_path, 1) == "aaaa\nbbbb\n" + TRANSCRIPT_CUT_MARKER
+    assert (tmp_path / "calls/0001.jsonl").read_text(
+        encoding="utf-8"
+    ) == "aaaa\nbbbb\n" + TRANSCRIPT_CUT_MARKER
 
 
 def test_write_cuts_mid_line_when_the_first_line_is_too_long(
@@ -74,11 +74,9 @@ def test_write_cuts_mid_line_when_the_first_line_is_too_long(
 
     write_call_transcript(tmp_path, 1, "abcdefgh")
 
-    assert read_call_transcript(tmp_path, 1) == "abcd" + TRANSCRIPT_CUT_MARKER
-
-
-def test_read_returns_none_without_a_transcript(tmp_path: Path) -> None:
-    assert read_call_transcript(tmp_path, 1) is None
+    assert (tmp_path / "calls/0001.jsonl").read_text(
+        encoding="utf-8"
+    ) == "abcd" + TRANSCRIPT_CUT_MARKER
 
 
 def test_write_stores_the_tool_calls_beside_the_transcript(tmp_path: Path) -> None:

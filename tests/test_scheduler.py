@@ -937,28 +937,6 @@ def test_run_forever_without_recovery_arguments_skips_reconciliation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Generic per-repository serialization primitive
-# ---------------------------------------------------------------------------
-
-
-def test_repository_lock_is_reused_per_path_and_distinct_across_paths() -> None:
-    provider = FakeProvider([])
-    scheduler = Scheduler(provider, lambda i: FakeHandle())
-
-    lock_a1 = scheduler.repository_lock("/repo/a")
-    lock_a2 = scheduler.repository_lock("/repo/a")
-    lock_b = scheduler.repository_lock("/repo/b")
-
-    assert lock_a1 is lock_a2
-    assert lock_a1 is not lock_b
-
-    # It is a real, usable mutual-exclusion lock.
-    assert lock_a1.acquire(blocking=False) is True
-    assert lock_a1.acquire(blocking=False) is False
-    lock_a1.release()
-
-
-# ---------------------------------------------------------------------------
 # Bounded daily dispatch-rate control (PLAN.md Phase 15 core safety
 # foundation): max_runs_per_day, independent of max_concurrent_tasks.
 # ---------------------------------------------------------------------------

@@ -166,30 +166,6 @@ def test_commit_and_push_raises_when_nothing_staged(tmp_path: Path) -> None:
     assert not any("push" in cmd for cmd in commands)
 
 
-def test_has_changes_reports_false_when_nothing_staged(tmp_path: Path) -> None:
-    runner = FakeRunner(
-        [
-            FakeCompletedProcess(returncode=0),  # add -A
-            FakeCompletedProcess(returncode=0, stdout=""),  # diff --cached --name-only
-        ]
-    )
-    publisher = GitPublisher(runner=runner)
-
-    assert publisher.has_changes(tmp_path) is False
-
-
-def test_has_changes_reports_true_when_files_staged(tmp_path: Path) -> None:
-    runner = FakeRunner(
-        [
-            FakeCompletedProcess(returncode=0),
-            FakeCompletedProcess(returncode=0, stdout="src/app.py\n"),
-        ]
-    )
-    publisher = GitPublisher(runner=runner)
-
-    assert publisher.has_changes(tmp_path) is True
-
-
 def test_commit_and_push_appends_copilot_trailer_and_returns_sha(tmp_path: Path) -> None:
     runner = FakeRunner(
         [
