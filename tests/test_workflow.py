@@ -90,6 +90,7 @@ from software_agent_factory.prompts import build_prompt
 from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.revert_check import REVERT_CHECK_COMMAND, TESTS_PASS_WITHOUT_CHANGE
 from software_agent_factory.store import ARTIFACT_FILENAMES, FileRunStore
+from software_agent_factory.suppression_scan import SUPPRESSION_SCAN_COMMAND
 from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
     TransitionError,
@@ -3593,3 +3594,26 @@ def test_revert_check_adds_an_advisory_check_for_a_change_with_tests(
     if enabled:
         assert last.stdout.startswith(f"revert check: {TESTS_PASS_WITHOUT_CHANGE}")
         assert "- src/app.py" in last.stdout
+
+
+def _suppressing_implementer(request: AgentRequest) -> AgentResult:
+    result = _python_editing_implementer(request)
+    assert request.workspace_path is not None
+    app = Path(request.workspace_path) / "src" / "app.py"
+    app.write_text("x = 2  # noqa: E501\n", encoding="utf-8")
+    return result
+
+
+def test_suppression_scan_adds_an_advisory_check_for_added_markers(
+    uv_python_repo: Path, data_dir: Path
+) -> None:
+    runner = _ScriptedCommandRunner()
+    controller, store = _mutation_controller(data_dir, runner, _suppressing_implementer)
+
+    run = controller.run(_work_item("WI-suppression-scan"), uv_python_repo)
+
+    verification = store.load_artifact(run.id, VerificationReport)
+    assert verification.passed is True
+    last = verification.deterministic_checks[-1]
+    assert last.command == SUPPRESSION_SCAN_COMMAND
+    assert "- src/app.py:1: x = 2  # noqa: E501" in last.stdout

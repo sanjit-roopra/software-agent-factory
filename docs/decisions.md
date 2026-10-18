@@ -1,5 +1,40 @@
 # Architecture Decisions
 
+## ADR-056: Show the suppressions and skips that a change adds
+
+Status: accepted on 2026-10-18.
+
+### Context
+
+The Implementer prompt forbids skipping tests or adding lint or type
+suppressions to make checks pass. The Reviewer prompt asks for a report of such
+a marker when the task does not need it. Nothing counted them, so a marker
+reached a pull request unseen when the reviewer missed it.
+
+### Decision
+
+- After the verify commands pass, the factory scans the added lines of the run's
+  diff for suppression and skip markers. The set is small and fixed: `# noqa`,
+  `type: ignore`, `pragma: no cover`, `# nosec`, `NOSONAR`, pytest skips and
+  `xfail`, `unittest.skip`, `it.skip(`, `test.skip(`, `describe.skip(`,
+  `eslint-disable`, `@ts-ignore`, `@ts-expect-error` and `@ts-nocheck`.
+- When it finds a marker, the scan adds one passing check, `suppression scan`,
+  to the verification report. The check gives the count and lists each line.
+  The tester and the reviewer read its output, and the dashboard checks view
+  shows it.
+- The PR body lists the place and the marker of each one under "Suppressions
+  and skips added".
+- The scan is advisory. It never fails verification, starts no repair round and
+  does not read the reason for a marker. A marker can be correct, and a person
+  or the reviewer judges it.
+- The scan lives in `suppression_scan.py`, beside the revert check (ADR-034).
+
+### Consequences
+
+- An operator sees new markers without reading the diff.
+- A marker that the set does not name is not counted. The reviewer still sees it
+  in the diff.
+
 ## ADR-055: Operator escalation leaves a finished state
 
 Status: accepted on 2026-10-17. This amends ADR-037 and ADR-040.

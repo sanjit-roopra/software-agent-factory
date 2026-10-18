@@ -2680,6 +2680,7 @@ def build_pr_body(
     specification: Specification | None,
     plan: ExecutionPlan | None,
     changed_files: Sequence[str],
+    suppressions: Sequence[str] = (),
     verification: VerificationReport | None,
     test_report: TestReport | None = None,
     review: ReviewReport | None,
@@ -2720,10 +2721,10 @@ def build_pr_body(
     lines.append("")
     if plan is not None:
         lines.extend(_scope_growth(plan, changed_files))
+    lines.extend(_bulleted_section("Suppressions and skips added", suppressions))
 
     if verification is not None:
-        lines.append("## Verification")
-        lines.append(f"Passed: {verification.passed}")
+        lines.extend(["## Verification", f"Passed: {verification.passed}"])
         if verification.failures:
             lines.extend(f"- {failure}" for failure in verification.failures)
         if verification.deterministic_checks:
@@ -2785,8 +2786,7 @@ def build_pr_body(
         )
         lines.append("")
 
-    lines.append("## Run")
-    lines.append(f"Run ID: `{run_id}`")
+    lines.extend(["## Run", f"Run ID: `{run_id}`"])
 
     return "\n".join(lines).strip() + "\n"
 

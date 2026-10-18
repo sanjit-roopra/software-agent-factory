@@ -76,6 +76,7 @@ from software_agent_factory.prompts import (
     section_hashes,
     summarize_command_result,
 )
+from software_agent_factory.suppression_scan import SUPPRESSION_SCAN_COMMAND
 from software_agent_factory.writing_policy import writing_limits_text
 
 # ---------------------------------------------------------------------------
@@ -667,6 +668,19 @@ def test_parse_collection_errors_bounds_count_and_line_size() -> None:
     assert len(limited) == 3
     assert limited[0].startswith("ERROR collecting tests/test_0.py:")
     assert limited[2].startswith("ERROR collecting tests/test_2.py:")
+
+
+def test_summarize_command_result_shows_a_passing_suppression_scan() -> None:
+    check = CommandResult(
+        command=SUPPRESSION_SCAN_COMMAND,
+        exit_code=0,
+        stdout="suppression scan: 1 suppression or skip markers on added lines",
+        duration_seconds=0.0,
+    )
+
+    summary = summarize_command_result(check)
+
+    assert summary["stdout"] == check.stdout
 
 
 def test_summarize_command_result_tail_traceback_retention() -> None:
