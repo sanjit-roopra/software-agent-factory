@@ -13,11 +13,12 @@ from pathlib import Path
 import pytest
 from test_claude_code_runtime import TRIAGE_JSON, _request, _result_event
 
+from software_agent_factory import line_stream
 from software_agent_factory.claude_code_runtime import ClaudeCodeAgentRuntime
 from software_agent_factory.line_stream import stream_process
 from software_agent_factory.models import ActiveInvocation, AgentRole, FactoryRun, WorkflowState
 from software_agent_factory.run_watch import live_activity
-from software_agent_factory.transcripts import live_tool_calls
+from software_agent_factory.transcripts import live_tool_calls, report_event_line
 
 
 def _tool_use(name: str, **arguments: str) -> str:
@@ -178,3 +179,29 @@ def test_a_claude_code_call_reports_its_tools_before_it_ends(tmp_path: Path) -> 
         {"name": "Bash", "preview": "pytest -q"},
     ]
     assert result.transcript == "".join(f"{line}\n" for line in events)
+
+
+def test_a_line_past_the_integer_digit_limit_is_not_a_tool_call() -> None:
+    seen: list[dict[str, str]] = []
+
+    with live_tool_calls(seen.append):
+        report_event_line('{"n": ' + "1" * 5000 + "}\n")
+
+    assert seen == []
+
+
+def test_a_group_left_with_only_a_zombie_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS answers EPERM when a group holds only a zombie; the stop must not raise."""
+    process = _child("pass")
+    time.sleep(0.5)
+
+    def eperm(_pid: int, _sig: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(line_stream.os, "killpg", eperm)
+
+    line_stream._Stopper(process, 0.1).expire()
+    process.wait(timeout=5)
+    for pipe in (process.stdin, process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()

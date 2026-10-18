@@ -82,7 +82,7 @@ def report_event_line(line: str) -> None:
         sink()
     try:
         event = json.loads(line)
-    except JSONDecodeError:
+    except (ValueError, RecursionError):  # not JSON, or a number past Python's digit limit
         return
     for name, arguments in _tool_uses(event):
         report_tool_call(name, arguments)

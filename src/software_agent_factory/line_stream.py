@@ -96,14 +96,15 @@ class _Stopper:
             if self._stopped:
                 return
             self._stopped = True
+        # macOS answers EPERM, not ESRCH, when only a zombie is left in the group.
         try:
             os.killpg(self._process.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return
         try:
             self._process.wait(timeout=self._grace_seconds)
         except subprocess.TimeoutExpired:
-            with suppress(ProcessLookupError):
+            with suppress(ProcessLookupError, PermissionError):
                 os.killpg(self._process.pid, signal.SIGKILL)
             self._process.wait()
 
