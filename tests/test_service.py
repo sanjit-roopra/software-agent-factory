@@ -29,6 +29,7 @@ from software_agent_factory.command_probe import ProbeLimits
 from software_agent_factory.config import FactoryConfig, PullRequestConfig, SetupConfig
 from software_agent_factory.escalation_protocol import format_resume_command
 from software_agent_factory.github import GitHubClient, GitHubCommandError, MergeNotAllowedError
+from software_agent_factory.lifecycle import is_run_finished
 from software_agent_factory.models import (
     REPLY_CURSOR_CLOSED,
     AgentRole,
@@ -60,7 +61,7 @@ from software_agent_factory.service import (
 from software_agent_factory.setup_run import SetupTrigger
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.verification import DeterministicVerifier
-from software_agent_factory.workflow import WorkflowController, is_run_finished
+from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace
 
 

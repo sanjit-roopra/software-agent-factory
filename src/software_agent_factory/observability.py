@@ -7,12 +7,9 @@ database. There is deliberately no second metrics truth source here -- this
 module only reads what :class:`~software_agent_factory.store.FileRunStore`
 already persists (``FactoryRun``, ``WorkItem``, ``TriageResult``). It has no
 import-time dependency on ``workflow.py`` (the orchestration/mutation
-authority): a run's terminal/finished status is a small, stable domain fact
-duplicated locally (see ``_is_run_finished`` below) precisely so this
-read-only monitoring path -- and the Phase 15.11 dashboard route
-that will call it -- never transitively pulls in
-``WorkflowController``/agents/publishing/routing/workspace code merely to
-classify a run.
+authority): it classifies a run with :mod:`software_agent_factory.lifecycle`,
+which imports only the models, so this read-only path never pulls in
+``WorkflowController``/agents/publishing/routing/workspace code.
 
 Two public surfaces are provided:
 
@@ -88,6 +85,7 @@ from .escalation_protocol import (
     reply_closed_cause,
 )
 from .governance import paths_outside_scope
+from .lifecycle import is_run_finished
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
@@ -225,7 +223,7 @@ DEFAULT_LOG_BACKUP_COUNT = 5
 
 #: Prefix of the durable per-source-repository worktree administration lock
 #: created by ``workspace.GitWorktreeWorkspace._prune_lock``. Duplicated as a
-#: literal (rather than imported) for the same reason ``_TERMINAL_STATES`` is:
+#: literal (rather than imported) because
 #: this read-only module must not pull in the workspace/orchestration module
 #: tree. See :func:`_find_stale_locks` for why these files are never reported
 #: as stale.
@@ -235,33 +233,6 @@ PRUNE_LOCK_PREFIX = "prune-"
 #: can be called repeatedly (once per entry point) without stacking
 #: duplicate handlers on the same logger.
 _HANDLER_MARKER = "_software_agent_factory_structured_handler"
-
-#: Terminal ``WorkflowState`` values, duplicated from ``workflow.py``'s
-#: ``TERMINAL_STATES`` rather than imported (see module docstring). Kept as
-#: a small, explicit constant instead of any dynamic derivation so a change
-#: to the canonical set in ``workflow.py`` is a conscious, grep-able,
-#: two-place edit rather than a silent drift.
-_TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
-    {WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-)
-
-
-def _is_run_finished(run: FactoryRun) -> bool:
-    """Local, dependency-free copy of ``workflow.is_run_finished``.
-
-    True when a persisted run needs no further factory work: every
-    ``_TERMINAL_STATES`` member always qualifies, and a ``PR_READY`` run
-    qualifies only once the controller has explicitly finalized it
-    (``completed_at`` stamped) -- see ``workflow.py``'s own docstring for why
-    an un-finalized ``PR_READY`` is deliberately *not* finished. Duplicated
-    here (instead of importing ``workflow.is_run_finished``) so this
-    read-only monitoring module never transitively imports the orchestration
-    module tree that pulls in agents/config/github/governance/publishing/
-    routing/workspace.
-    """
-    if run.state in _TERMINAL_STATES:
-        return True
-    return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
 def _classify_run(run: FactoryRun) -> str:
@@ -275,7 +246,7 @@ def _classify_run(run: FactoryRun) -> str:
         return "escalated"
     if run.state is WorkflowState.FAILED:
         return "failed"
-    if _is_run_finished(run):
+    if is_run_finished(run):
         return "succeeded"
     return "active"
 
@@ -332,7 +303,7 @@ class RunStateCounts(ModelBase):
 
     ``succeeded`` covers both terminal ``DONE`` runs and ``PR_READY`` runs
     the controller has explicitly finalized (``completed_at`` stamped) --
-    see the local ``_is_run_finished`` predicate above. ``active`` is every
+    see ``lifecycle.is_run_finished``. ``active`` is every
     scanned run that is not yet finished and not escalated/failed;
     ``stale_active`` is the subset of ``active`` whose most recent
     heartbeat/activity/update timestamp is older than ``stale_after``. When
@@ -1325,7 +1296,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
                 legacy_scope_replans += 1
         scope_replans += max(run.scope_replans, legacy_scope_replans)
 
-        if run.completed_at is not None and _is_run_finished(run):
+        if run.completed_at is not None and is_run_finished(run):
             durations.append(max((run.completed_at - run.created_at).total_seconds(), 0.0))
 
         if _classify_run(run) == "succeeded":
@@ -1710,7 +1681,7 @@ def _build_run_summary(
     operator_escalation: OperatorEscalation | None = None,
 ) -> RunSummary:
     signal = _last_signal_at(run) or run.created_at
-    finished = _is_run_finished(run)
+    finished = is_run_finished(run)
     implementation_attempts = sum(
         1 for attempt in run.attempt_records if attempt.budget is AttemptBudget.IMPLEMENTATION
     )
@@ -2084,7 +2055,7 @@ def build_active_invocation_summary(
     """Return safe liveness details for the invocation persisted as active."""
 
     active = run.active_invocation
-    if active is None or _is_run_finished(run):
+    if active is None or is_run_finished(run):
         return None
     current_time = _normalize_now(now)
     status = _active_invocation_status(run, current_time, stale_after)

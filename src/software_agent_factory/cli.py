@@ -1203,8 +1203,8 @@ def request_run_stop(
 
     The controller that drives the run reads it, kills the agent call and halts the run.
     """
+    from .lifecycle import is_run_finished
     from .models import RunStopRequest
-    from .workflow import is_run_finished
 
     try:
         run = store.load_run(run_id)
@@ -1226,8 +1226,8 @@ def _can_take_steer_note(run: FactoryRun) -> bool:
     A working run can. A halted run can only when its halt can resume: a note on any other
     halt would wait for a call that never comes.
     """
+    from .lifecycle import is_run_finished
     from .models import ResumeClassification, WorkflowState
-    from .workflow import is_run_finished
 
     if not is_run_finished(run):
         return True

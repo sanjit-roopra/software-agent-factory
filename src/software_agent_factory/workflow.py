@@ -7,8 +7,9 @@ outcomes; they never transition the run themselves, and their claims about
 what changed on disk are never trusted -- ``changed_files`` and the diff are
 always re-derived from :meth:`GitWorktreeWorkspace.collect_evidence`.
 
-The allowed transition table is declared as data (``ALLOWED_TRANSITIONS``)
-and enforced by :meth:`WorkflowController.transition`:
+The allowed transition table is declared as data in
+:mod:`software_agent_factory.lifecycle` (``ALLOWED_TRANSITIONS``) and enforced
+by :meth:`WorkflowController.transition`:
 
 ```text
 CREATED -> TRIAGING -> PLANNING -> IMPLEMENTING
@@ -91,6 +92,12 @@ from .governance import (
     ScopeDriftPolicy,
     assess_publish_gate,
     find_protected_matches,
+)
+from .lifecycle import (
+    ALLOWED_TRANSITIONS,
+    RECOVERY_TRANSITIONS,
+    TERMINAL_STATES,
+    is_run_finished,
 )
 from .models import (
     MAX_GUIDANCE_FINDINGS,
@@ -217,10 +224,6 @@ from .workspace import (
 
 logger = logging.getLogger(__name__)
 
-#: States from which no further transition is possible.
-TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
-    {WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-)
 #: CI failure categories that may legitimately be repaired by another code
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
 #: operator problem, not a code problem, and escalates with evidence.
@@ -246,108 +249,6 @@ _RESTART_REPAIR_CONTEXT = RepairContext(
 )
 
 _DIFF_HUNK_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
-
-# The single declared transition table. Every non-terminal state may also
-# escalate to NEEDS_HUMAN (business decision, e.g. risk/eligibility/scope) or
-# FAILED (operational agent/infrastructure failure).
-ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
-    WorkflowState.CREATED: frozenset(
-        {WorkflowState.TRIAGING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-    ),
-    WorkflowState.TRIAGING: frozenset(
-        {WorkflowState.PLANNING, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-    ),
-    # No new run enters REFINING or RESEARCHING (ADR-035). An old run halted
-    # there can only stop for a human, then reopen at PLANNING.
-    WorkflowState.REFINING: frozenset({WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}),
-    WorkflowState.RESEARCHING: frozenset({WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}),
-    WorkflowState.PLANNING: frozenset(
-        {
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.VERIFYING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    # Unattended only (ADR-040): a used-up attempt budget publishes the work
-    # as it is (PR_READY) or leaves the open pull request as it is (DONE).
-    WorkflowState.IMPLEMENTING: frozenset(
-        {
-            WorkflowState.VERIFYING,
-            WorkflowState.PR_READY,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.VERIFYING: frozenset(
-        {
-            WorkflowState.REVIEWING,
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.PLANNING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.REVIEWING: frozenset(
-        {
-            WorkflowState.PR_READY,
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    # Unattended only (ADR-041): a CI repair that cannot be published leaves
-    # the open pull request as it is (DONE).
-    WorkflowState.PR_READY: frozenset(
-        {
-            WorkflowState.PR_CREATED,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.PR_CREATED: frozenset(
-        {
-            WorkflowState.CI_RUNNING,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.CI_RUNNING: frozenset(
-        {
-            WorkflowState.DONE,
-            WorkflowState.CI_DIAGNOSIS,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.CI_DIAGNOSIS: frozenset(
-        {
-            WorkflowState.IMPLEMENTING,
-            WorkflowState.DONE,
-            WorkflowState.NEEDS_HUMAN,
-            WorkflowState.FAILED,
-        }
-    ),
-    WorkflowState.DONE: frozenset(),
-    WorkflowState.NEEDS_HUMAN: frozenset(),
-    WorkflowState.FAILED: frozenset(),
-}
-
-
-def is_run_finished(run: FactoryRun) -> bool:
-    """True when a persisted run needs no further factory work.
-
-    Terminal states always qualify. ``PR_READY`` qualifies only once the
-    controller has explicitly finalized it (``completed_at`` stamped), which
-    is what distinguishes "the manual, PR-disabled flow completed here" from
-    "a PR-enabled run was interrupted at the publishing boundary".
-    """
-    if run.state in TERMINAL_STATES:
-        return True
-    return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
 def _fold_legacy_concerns(review: ReviewReport) -> ReviewReport:
@@ -679,7 +580,7 @@ class WorkflowController:
         """
         allowed = ALLOWED_TRANSITIONS.get(run.state, frozenset())
         if operator_escalation:
-            allowed = allowed | {WorkflowState.PLANNING}
+            allowed = allowed | RECOVERY_TRANSITIONS["operator_escalation"]
         if new_state not in allowed:
             raise TransitionError(f"cannot transition from {run.state} to {new_state}")
 
@@ -1364,6 +1265,8 @@ class WorkflowController:
         The transition table has no edge back to an earlier stage from every state. The
         interrupted stage is not timed, because its duration would include the downtime.
         """
+        if state not in RECOVERY_TRANSITIONS["restart"]:
+            raise TransitionError(f"cannot restart run {run.id} at {state}")
         now = utc_now()
         run = run.model_copy(
             update={
