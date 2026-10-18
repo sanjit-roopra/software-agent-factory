@@ -274,7 +274,8 @@ then deletes the file. A run halted in `NEEDS_HUMAN` keeps the note until it
 resumes. A halt that cannot resume refuses the note.
 
 These exit with code 1: an empty, long or secret note, a halt that cannot resume,
-and a finished or missing run. A second note while one waits exits with code 1 too.
+and a finished or missing run. A second note while one waits replaces it, and the
+command says `note replaced`.
 
 ---
 

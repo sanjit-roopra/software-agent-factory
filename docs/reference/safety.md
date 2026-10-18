@@ -380,7 +380,7 @@ named write actions, not a control plane.
   and `escalate` from ADR-055.
 - `escalate` starts `factory escalate` as a detached process. The CLI gives the
   dashboard the function that starts it. Each other write creates a request file
-  only.
+  only. A `steer` note replaces the note that waits, if there is one (ADR-051).
 - A new write action needs an ADR first. A change that needs a framework or a
   package manager also needs an ADR first.
 - Token generated per process, printed once, never logged.

@@ -539,7 +539,7 @@ MAX_STEER_NOTE_CHARS = 2000
 class RunSteerNote(VersionedModel):
     """A person's note to the next agent call of a run (ADR-047).
 
-    The dashboard or ``factory steer`` creates it once, and never changes it. The
+    The dashboard or ``factory steer`` writes it, and a newer note replaces it (ADR-051). The
     controller adds it to the next agent prompt as an operator section and deletes it.
     """
 

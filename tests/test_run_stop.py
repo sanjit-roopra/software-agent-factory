@@ -16,7 +16,7 @@ from test_service import _item
 from typer.testing import CliRunner
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
-from software_agent_factory.cli import app, request_run_stop
+from software_agent_factory.cli import app
 from software_agent_factory.dashboard.actions import ResumeActions, accept_stop
 from software_agent_factory.dashboard.responses import WriteRejected
 from software_agent_factory.escalation import classify_halt_reason
@@ -28,6 +28,7 @@ from software_agent_factory.models import (
     RunStopRequest,
     WorkflowState,
 )
+from software_agent_factory.run_requests import request_run_stop
 from software_agent_factory.run_watch import heartbeat
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.subprocess_utils import release_thread, track_child

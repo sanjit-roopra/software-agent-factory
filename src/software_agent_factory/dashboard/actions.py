@@ -248,8 +248,8 @@ def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[
     """Check one steer note and store it. Returns the ``202`` body.
 
     The body is ``{"note": "..."}``. A note that is empty, longer than 2,000 characters or
-    holds a secret is a ``400``. A finished run is a ``409 not_active``, and a note that is
-    already waiting is a ``409 existing_request``.
+    holds a secret is a ``400``. A finished run is a ``409 not_active``. A newer note
+    replaces the waiting one, and the body says ``replaced`` then (ADR-051).
     """
     note = _note(body)
     if not is_valid_run_id(raw_run_id):
@@ -257,7 +257,9 @@ def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[
     if actions.steerer is None:
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     now = actions.clock()
-    return _accepted(actions.steerer(raw_run_id, note, now), now)
+    result = actions.steerer(raw_run_id, note, now)
+    accepted = _accepted(result, now)
+    return {**accepted, "status": "replaced"} if result == "replaced" else accepted
 
 
 def accept_escalate(actions: ResumeActions, raw_run_id: str, body: object) -> dict[str, object]:

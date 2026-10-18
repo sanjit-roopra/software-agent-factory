@@ -2421,16 +2421,7 @@
     existing_request: "stop already requested"
   };
 
-  // The same for a steer note (ADR-047).
-  const STEER_CONFLICT_MESSAGES = {
-    ...CONFLICT_MESSAGES,
-    existing_request: "a note is already waiting for the next agent call"
-  };
-
   function conflictMessages(action) {
-    if (action === STEER_ACTION) {
-      return STEER_CONFLICT_MESSAGES;
-    }
     if (action === STOP_ACTION) {
       return STOP_CONFLICT_MESSAGES;
     }
@@ -2689,15 +2680,29 @@
     setDisabled([button, cancel], false);
   }
 
+  // "Stop requested 3 min ago" while a stop waits for the controller (ADR-049), or null.
+  function stopRequestedText(stopRequest, nowMs) {
+    const at = stopRequest?.created_at;
+    return at ? STOP_SENT_LABEL + " " + relativeTimeText(at, nowMs) : null;
+  }
+
   // Shown only on a run that is still working. Another run, or a run that stopped,
-  // starts again from an unarmed button.
+  // starts again from an unarmed button. A waiting stop keeps the button disabled, so a
+  // reload does not offer a second one.
   function renderStopControl(detail, runId) {
-    const { box } = stopControls();
+    const { box, button, cancel } = stopControls();
     const show = runId !== null && isActiveRun(detail);
     const key = show ? runId : "";
-    if (box.dataset.runId !== key) {
+    const pending = show ? stopRequestedText(detail.stop_request, Date.now()) : null;
+    if (box.dataset.runId !== key || (pending === null && box.dataset.pending === "true")) {
       box.dataset.runId = key;
       resetStop();
+    }
+    box.dataset.pending = String(pending !== null);
+    if (pending !== null) {
+      armStop(false);
+      button.textContent = pending;
+      setDisabled([button, cancel], true);
     }
     box.hidden = !show;
   }
@@ -2734,12 +2739,28 @@
   const STEER_ACTIVE_HINT = "The agent reads this note at its next call, not in the middle of one.";
   const STEER_HALTED_HINT = "The agent reads this note at its next call, once the run resumes.";
   const NOT_RESUMABLE = "NOT_RESUMABLE";
+  const STEER_SEND_LABEL = "Send note";
+  const STEER_REPLACE_LABEL = "Replace note";
+
+  // The waiting note the next agent call reads, and the send label: a new note replaces
+  // the waiting one (ADR-051).
+  function steerWaitingView(steerNote, nowMs) {
+    if (!steerNote?.note) {
+      return { waiting: "", sendLabel: STEER_SEND_LABEL };
+    }
+    const sent = relativeTimeText(steerNote.created_at, nowMs);
+    return {
+      waiting: "Waiting for the next agent call, sent " + sent + ": " + steerNote.note,
+      sendLabel: STEER_REPLACE_LABEL
+    };
+  }
 
   function steerControls() {
     return {
       box: document.getElementById("run-steer"),
       note: document.getElementById("run-steer-note"),
       hint: document.getElementById("run-steer-hint"),
+      waiting: document.getElementById("run-steer-waiting"),
       send: document.getElementById("run-steer-send"),
       status: document.getElementById("run-steer-status")
     };
@@ -2766,12 +2787,17 @@
       setDisabled([controls.note, controls.send], false);
     }
     controls.hint.textContent = halted ? STEER_HALTED_HINT : STEER_ACTIVE_HINT;
+    const view = steerWaitingView(detail.steer_note, Date.now());
+    controls.waiting.textContent = view.waiting;
+    controls.waiting.hidden = view.waiting === "";
+    controls.send.textContent = view.sendLabel;
     controls.box.hidden = !show;
   }
 
   function onSteerSend() {
     const { box, note, send, status } = steerControls();
     status.textContent = "";
+    const replacing = send.textContent === STEER_REPLACE_LABEL;
     void sendAction({
       runId: box.dataset.runId,
       action: STEER_ACTION,
@@ -2780,7 +2806,9 @@
       onAccepted: function () {
         note.value = "";
         setDisabled([note, send], false);
-        status.textContent = "Note saved for the next agent call.";
+        status.textContent = replacing
+          ? "Note replaced for the next agent call."
+          : "Note saved for the next agent call.";
       }
     });
   }

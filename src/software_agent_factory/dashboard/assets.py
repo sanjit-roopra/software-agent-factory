@@ -201,6 +201,7 @@ def render_index_html(*, token: str) -> str:
             placeholder="Tell the agent what to do or what to avoid."
             aria-describedby="run-steer-hint"></textarea>
           <p id="run-steer-hint" class="retry-note"></p>
+          <p id="run-steer-waiting" class="steer-waiting" role="status" hidden></p>
           <p class="steer-actions">
             <button id="run-steer-send" type="button">Send note</button>
             <span id="run-steer-status" class="retry-note" role="status"></span>

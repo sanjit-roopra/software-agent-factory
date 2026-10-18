@@ -55,13 +55,13 @@ import sys
 import webbrowser
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from .agents import AgentRuntime
     from .config import FactoryConfig
@@ -72,9 +72,6 @@ if TYPE_CHECKING:
         ResumeRequestReader,
         ResumeRequestResult,
         ResumeRunReader,
-        SteerRequester,
-        StopRequester,
-        StopRequestResult,
     )
     from .models import (
         DashboardResumeRequest,
@@ -901,6 +898,7 @@ def cancel_command(
 ) -> None:
     """Ask the factory to stop a run. It keeps the commits and halts the run for you."""
     from .models import utc_now
+    from .run_requests import request_run_stop
     from .store import FileRunStore
 
     factory_config = _load_config(config, data_dir)
@@ -914,7 +912,7 @@ def cancel_command(
 
 _STEER_MESSAGES: dict[str, str] = {
     "created": "note saved for {run_id}. the agent reads it at its next call.",
-    "exists": "a note is already waiting for {run_id}; it goes with the next call.",
+    "replaced": "note replaced for {run_id}. the agent reads the new one at its next call.",
     "finished": "run {run_id} has finished or cannot resume; there is nothing to steer.",
     "run_missing": "no such run: {run_id}",
 }
@@ -934,6 +932,7 @@ def steer_command(
     """Send a note to the next agent call of a run. A halted run reads it when it resumes."""
     from .models import utc_now
     from .resume import clean_steer_note
+    from .run_requests import request_run_steer
     from .store import FileRunStore
 
     cleaned = clean_steer_note(note)
@@ -943,7 +942,7 @@ def steer_command(
     store = FileRunStore(factory_config.data_dir)
     result = request_run_steer(store, run_id, cleaned, "cli", utc_now())
     message = _STEER_MESSAGES[result].format(run_id=run_id)
-    if result != "created":
+    if result not in ("created", "replaced"):
         raise _fail(message, code=FAILURE_EXIT_CODE)
     typer.echo(message)
 
@@ -1196,84 +1195,6 @@ def build_resume_requester(store: FileRunStore) -> ResumeRequester:
     return create
 
 
-def request_run_stop(
-    store: FileRunStore, run_id: str, source: Literal["dashboard", "cli"], created_at: datetime
-) -> StopRequestResult:
-    """Store a stop request for a run that has not finished (ADR-047). Create-only.
-
-    The controller that drives the run reads it, kills the agent call and halts the run.
-    """
-    from .lifecycle import is_run_finished
-    from .models import RunStopRequest
-
-    try:
-        run = store.load_run(run_id)
-    except (FileNotFoundError, ValueError):
-        return "run_missing"
-    if is_run_finished(run):
-        return "finished"
-    request = RunStopRequest(run_id=run_id, source=source, created_at=created_at)
-    try:
-        created = store.create_stop_request(request)
-    except FileNotFoundError:
-        return "run_missing"
-    return "created" if created else "exists"
-
-
-def _can_take_steer_note(run: FactoryRun) -> bool:
-    """Whether a later agent call of ``run`` can read a steer note.
-
-    A working run can. A halted run can only when its halt can resume: a note on any other
-    halt would wait for a call that never comes.
-    """
-    from .lifecycle import is_run_finished
-    from .models import ResumeClassification, WorkflowState
-
-    if not is_run_finished(run):
-        return True
-    return (
-        run.state is WorkflowState.NEEDS_HUMAN
-        and run.escalation is not None
-        and run.escalation.resume_classification is not ResumeClassification.NOT_RESUMABLE
-    )
-
-
-def request_run_steer(
-    store: FileRunStore,
-    run_id: str,
-    note: str,
-    source: Literal["dashboard", "cli"],
-    created_at: datetime,
-) -> StopRequestResult:
-    """Store a steer note for a run that has not finished (ADR-047). Create-only.
-
-    ``note`` is already clean. The controller adds it to the next agent prompt.
-    """
-    from .models import RunSteerNote
-
-    try:
-        run = store.load_run(run_id)
-    except (FileNotFoundError, ValueError):
-        return "run_missing"
-    if not _can_take_steer_note(run):
-        return "finished"
-    request = RunSteerNote(run_id=run_id, source=source, note=note, created_at=created_at)
-    try:
-        created = store.create_steer_note(request)
-    except FileNotFoundError:
-        return "run_missing"
-    return "created" if created else "exists"
-
-
-def build_steer_requester(store: FileRunStore) -> SteerRequester:
-    """The requester of the dashboard's steer route."""
-
-    def steer(run_id: str, note: str, created_at: datetime) -> StopRequestResult:
-        return request_run_steer(store, run_id, note, "dashboard", created_at)
-
-    return steer
-
-
 def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
     """The requester of the dashboard's escalate route: a detached ``factory escalate``.
 
@@ -1326,15 +1247,6 @@ def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
         return "started"
 
     return escalate
-
-
-def build_stop_requester(store: FileRunStore) -> StopRequester:
-    """The requester of the dashboard's stop route."""
-
-    def stop(run_id: str, created_at: datetime) -> StopRequestResult:
-        return request_run_stop(store, run_id, "dashboard", created_at)
-
-    return stop
 
 
 def build_resume_request_reader(store: FileRunStore) -> ResumeRequestReader:
@@ -1497,6 +1409,7 @@ def dashboard_command(
 
     from .dashboard import LOOPBACK_HOST, DashboardConfig
     from .dashboard.actions import ResumeActions
+    from .dashboard.pending import with_pending
     from .escalation_protocol import ReplyPolicy
     from .models import RunListFilter
     from .observability import (
@@ -1510,6 +1423,7 @@ def dashboard_command(
     from .operational_health import build_operational_health
     from .projects import FileProjectStore
     from .run_metrics import resolve_usage
+    from .run_requests import build_steer_requester, build_stop_requester
     from .store import FileRunStore
 
     store = FileRunStore(factory_config.data_dir)
@@ -1537,12 +1451,8 @@ def dashboard_command(
         # escalation text, so ``dashboard.view.run_detail_view`` must redact and
         # bound them before they reach a client. It never carries a log, a
         # diff, a prompt or a raw artifact body.
-        return build_run_detail(
-            store,
-            run_id,
-            stale_after=stale_after,
-            reply_policy=reply_policy,
-        )
+        detail = build_run_detail(store, run_id, stale_after=stale_after, reply_policy=reply_policy)
+        return None if detail is None else with_pending(store, run_id, detail)
 
     def health_provider() -> object:
         return build_operational_health(
