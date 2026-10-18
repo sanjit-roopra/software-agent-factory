@@ -795,29 +795,17 @@ def summarize_command_result(
     if collection_errors:
         summary["collection_errors"] = collection_errors
 
-    if hide_output:
-        if check.stdout:
-            stdout_hash = hashlib.sha256(check.stdout.encode("utf-8")).hexdigest()
-            summary["stdout"] = f"[omitted: sha256={stdout_hash}]"
-            summary["stdout_hash"] = stdout_hash
-        else:
-            summary["stdout"] = ""
-        if check.stderr:
-            stderr_hash = hashlib.sha256(check.stderr.encode("utf-8")).hexdigest()
-            summary["stderr"] = f"[omitted: sha256={stderr_hash}]"
-            summary["stderr_hash"] = stderr_hash
-        else:
-            summary["stderr"] = ""
-    else:
+    if not hide_output:
         summary["timed_out"] = check.timed_out
-        if check.stdout:
-            summary["stdout"] = _bound_text(check.stdout, limit=max_failure_chars)
+    for name, text in (("stdout", check.stdout), ("stderr", check.stderr)):
+        if not text:
+            summary[name] = ""
+        elif hide_output:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            summary[name] = f"[omitted: sha256={digest}]"
+            summary[f"{name}_hash"] = digest
         else:
-            summary["stdout"] = ""
-        if check.stderr:
-            summary["stderr"] = _bound_text(check.stderr, limit=max_failure_chars)
-        else:
-            summary["stderr"] = ""
+            summary[name] = _bound_text(text, limit=max_failure_chars)
 
     return summary
 

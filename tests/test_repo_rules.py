@@ -26,7 +26,7 @@ OVERSIZED_MODULES = {
     "repository_profile.py": 970,
     "dashboard/handler.py": 904,
     "doctor.py": 881,
-    "prompts.py": 871,
+    "prompts.py": 866,
     "config.py": 864,
     "pi_runtime.py": 864,
     "workspace.py": 818,
