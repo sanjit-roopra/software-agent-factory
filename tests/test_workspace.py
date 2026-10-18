@@ -999,3 +999,18 @@ def test_discard_changes_undoes_a_commit_made_in_the_worktree(
 
     assert workspace.is_at_clean_base()
     assert (workspace.path / "README.md").read_text() == "hello\n"
+
+
+def _hang(args: Sequence[str], **kwargs: object) -> object:
+    raise subprocess.TimeoutExpired(args, 600.0)
+
+
+def test_a_hung_git_command_is_a_workspace_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workspace_module.subprocess, "run", _hang)
+
+    with pytest.raises(WorkspaceError, match=r"git status timed out after 600s in "):
+        workspace_module._run_git(tmp_path, ["status"])
+    with pytest.raises(WorkspaceError, match=r"git diff timed out after 600s in "):
+        workspace_module._run_git_bytes(tmp_path, ["diff"])

@@ -1077,6 +1077,21 @@ def _unattended(config: FactoryConfig) -> FactoryConfig:
     return config
 
 
+def test_run_with_no_verify_command_is_flagged_for_a_look(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    config = _config(tmp_path, merge=False)
+    config.repository.commands.verify = []
+    publisher = LocalPublisher()
+    controller, _ = _controller(config, publisher=publisher)
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE, run.failure_reason
+    assert run.needs_look == ["no verify command ran"]
+    assert publisher.flags == [run.needs_look]
+
+
 def test_unattended_clean_run_merges_without_a_label(tmp_path: Path, source_repo: Path) -> None:
     publisher = LocalPublisher()
     merger = Merger()

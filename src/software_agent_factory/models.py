@@ -2034,12 +2034,15 @@ class RepairContext(ModelBase):
     excerpt, so historical failure context is never dumped wholesale into a
     prompt (``PLAN.md`` Phase 12). The *current* diff is not carried here --
     it travels as controller-derived Git evidence on ``AgentRequest.diff``.
+    ``previous_attempts`` holds at most three one-line failure signatures from
+    earlier attempts of this run, so a stateless runtime can see it is looping.
     """
 
     trigger: AttemptTrigger
     summary: str = Field(min_length=1)
     failures: list[str] = Field(default_factory=list)
     log_excerpt: str | None = None
+    previous_attempts: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ReviewReport(VersionedModel):

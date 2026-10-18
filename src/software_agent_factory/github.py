@@ -99,9 +99,11 @@ from urllib.parse import quote, urlparse
 
 from pydantic import Field
 
+from .governance import paths_outside_scope
 from .models import (
     ExecutionPlan,
     ModelBase,
+    RejectedCommand,
     ReviewAcceptance,
     ReviewReport,
     Specification,
@@ -2689,6 +2691,7 @@ def build_pr_body(
     test_report: TestReport | None = None,
     review: ReviewReport | None,
     review_acceptance: ReviewAcceptance | None = None,
+    rejected_commands: Sequence[RejectedCommand] = (),
     run_id: str,
 ) -> str:
     """Pure function assembling a PR description from typed artifacts.
@@ -2722,6 +2725,8 @@ def build_pr_body(
     else:
         lines.append("_no changed files recorded_")
     lines.append("")
+    if plan is not None:
+        lines.extend(_scope_growth(plan, changed_files))
 
     if verification is not None:
         lines.append("## Verification")
@@ -2740,6 +2745,12 @@ def build_pr_body(
             lines.append("Tester findings:")
             lines.extend(f"- {finding}" for finding in verification.test_findings)
         lines.append("")
+
+    rejected_lines = [f"`{item.command}`: {item.reason}" for item in rejected_commands]
+    lines.extend(_bulleted_section("Checks not run", rejected_lines))
+    lines.extend(
+        _bulleted_section("Assumptions and open questions", _open_items(specification, plan))
+    )
 
     if test_report is not None:
         lines.append("## Independent tester")
@@ -2785,3 +2796,30 @@ def build_pr_body(
     lines.append(f"Run ID: `{run_id}`")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _scope_growth(plan: ExecutionPlan, changed_files: Sequence[str]) -> list[str]:
+    """How far the change grew past its plan; a growth sign, not a gate."""
+    scope = plan.expected_scope
+    lines = [
+        f"{len(changed_files)} files changed; the plan estimated "
+        f"{scope.estimated_files_min}-{scope.estimated_files_max}.",
+        "",
+    ]
+    outside = paths_outside_scope(scope.modules, changed_files)
+    return lines + _bulleted_section(
+        "Outside the planned modules", [f"`{path}`" for path in outside]
+    )
+
+
+def _bulleted_section(title: str, items: Sequence[str]) -> list[str]:
+    """Render a PR body section, or nothing when there is nothing to disclose."""
+    if not items:
+        return []
+    return [f"## {title}", *(f"- {item}" for item in items), ""]
+
+
+def _open_items(specification: Specification | None, plan: ExecutionPlan | None) -> list[str]:
+    assumptions = specification.assumptions if specification is not None else []
+    decisions = plan.unresolved_decisions if plan is not None else []
+    return [*(f"Assumption: {item}" for item in assumptions), *decisions]

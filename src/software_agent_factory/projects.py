@@ -81,7 +81,12 @@ from .workflow import (
     delivery_policy_fingerprint,
     is_run_finished,
 )
-from .workspace import GitWorktreeWorkspace, WorkspaceError, WorkspaceLockError
+from .workspace import (
+    GIT_TIMEOUT_SECONDS,
+    GitWorktreeWorkspace,
+    WorkspaceError,
+    WorkspaceLockError,
+)
 from .writing_policy import check_publication_text
 
 ProjectArtifact = TypeVar("ProjectArtifact", bound=VersionedModel)
@@ -1610,16 +1615,24 @@ def _run_git(
     *args: str,
     check: bool = True,
     env_overrides: Mapping[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = None
     if env_overrides is not None:
         env = {**os.environ, **env_overrides}
-    result = subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProjectError(
+            f"git {' '.join(args)} timed out after {exc.timeout:g}s in {cwd}"
+        ) from None
     if check and result.returncode != 0:
         raise ProjectError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
     return result
@@ -1670,12 +1683,7 @@ def _patch_id(cwd: Path, commit_sha: str) -> str | None:
     shown = _run_git(cwd, "show", "--no-color", commit_sha, check=False)
     if shown.returncode != 0 or not shown.stdout.strip():
         return None
-    computed = subprocess.run(
-        ["git", "-C", str(cwd), "patch-id", "--stable"],
-        input=shown.stdout,
-        capture_output=True,
-        text=True,
-    )
+    computed = _run_git(cwd, "patch-id", "--stable", check=False, input_text=shown.stdout)
     identity = computed.stdout.split(" ", 1)[0].strip()
     return identity or None
 

@@ -551,7 +551,13 @@ def test_repair_context_is_small_and_typed() -> None:
     )
 
     assert RepairContext.model_validate_json(context.model_dump_json()) == context
-    assert set(context.model_dump()) == {"trigger", "summary", "failures", "log_excerpt"}
+    assert set(context.model_dump()) == {
+        "trigger",
+        "summary",
+        "failures",
+        "log_excerpt",
+        "previous_attempts",
+    }
 
 
 def test_legacy_execution_plan_payload_validates_without_unresolved_decisions() -> None:

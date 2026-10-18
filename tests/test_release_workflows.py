@@ -100,10 +100,7 @@ def test_ci_workflow_has_secure_triggers_permissions_and_archive_smokes() -> Non
     assert "uv lock --check" not in text
     assert "uv run --no-sync --no-build ruff format --check ." in text
     assert "uv run --no-sync --no-build ruff check --output-format=github ." in text
-    assert (
-        "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release"
-        in text
-    )
+    assert "uv run --no-sync --no-build mypy\n" in text
     assert "--cov=src/software_agent_factory" in text
     assert '"3.13"' in text
     assert '"3.14"' in text
@@ -417,10 +414,7 @@ def test_release_workflow_has_safe_publish_shape() -> None:
     assert "gh release view" in text
     assert "uv run --no-sync --no-build ruff format --check ." in text
     assert "uv run --no-sync --no-build ruff check ." in text
-    assert (
-        "uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release"
-        in text
-    )
+    assert "uv run --no-sync --no-build mypy\n" in text
     assert (
         "uv run --no-sync --no-build pytest -q --cov=src/software_agent_factory --cov-branch"
         in text
