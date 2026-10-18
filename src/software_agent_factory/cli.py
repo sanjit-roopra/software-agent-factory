@@ -1417,11 +1417,10 @@ def dashboard_command(
         build_active_invocation_summary,
         build_monitoring_snapshot,
         build_run_detail,
-        build_run_diff,
-        build_run_evidence,
     )
     from .operational_health import build_operational_health
     from .projects import FileProjectStore
+    from .run_evidence import build_run_diff, build_run_evidence
     from .run_metrics import resolve_usage
     from .run_requests import build_steer_requester, build_stop_requester
     from .store import FileRunStore

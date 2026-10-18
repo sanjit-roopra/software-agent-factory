@@ -367,7 +367,8 @@ def ci_loop(controller: WorkflowController, run: FactoryRun, context: RunContext
                 )
         except (GitPublishError, GitHubError, OSError) as exc:
             raise controller._stop(run, context, f"could not observe CI: {exc}") from exc
-        controller._store.save_artifact(run.id, report)
+        # A per-attempt copy too, keyed by the attempt whose code CI checked (ADR-047).
+        controller._store.save_artifact(run.id, report, attempt=len(run.attempt_records) or None)
 
         if report.timed_out:
             raise controller._stop(

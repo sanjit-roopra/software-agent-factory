@@ -280,7 +280,7 @@ def mint_findings(
 ) -> list[ReviewFinding]:
     findings = [
         ReviewFinding(
-            id=_finding_id(draft),
+            id=finding_id(draft),
             category=draft.category,
             message=draft.message,
             locations=draft.locations,
@@ -303,7 +303,7 @@ def finding_paths(findings: list[ReviewFinding]) -> set[str]:
     return {location.path for finding in findings for location in finding.locations}
 
 
-def _finding_id(draft: ReviewFindingDraft) -> str:
+def finding_id(draft: ReviewFindingDraft) -> str:
     locations = ",".join(
         f"{location.path}:{location.start_line}-{location.end_line}"
         for location in sorted(

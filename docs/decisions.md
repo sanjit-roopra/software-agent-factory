@@ -681,6 +681,12 @@ Reconfigure and any other write stay banned. A new write still needs a new ADR.
   This is the same trust boundary as ADR-033: anyone who can write there can already edit `run.json`.
 - A stopped run keeps its commits, so the operator can inspect or resume it.
 
+Note added on 2026-10-19: the checks view keeps a history per attempt.
+The factory saves each CI report under `attempts/NN/`, next to the verification report of that attempt.
+The checks route also returns the verification and CI checks of the last attempts, up to `HISTORY_LIMIT` in `run_evidence.py`, with the same caps as the latest checks.
+The page has an attempt picker for them. The review view joins the findings of all rounds by finding ID.
+Each finding shows the attempt that raised it and what each later round said about it.
+
 ## ADR-046: The dashboard can show a run's full failure reason
 
 Status: accepted on 2026-10-16. This amends ADR-033.

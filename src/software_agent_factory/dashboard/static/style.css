@@ -566,6 +566,8 @@ button:disabled {
 .findings li { margin: 0.25rem 0; }
 .finding .chip { margin-left: 0; margin-right: 0.35rem; }
 .finding-where { display: block; color: var(--text-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.finding-life { display: block; color: var(--text-muted); font-size: var(--fs-sm); }
+.finding-life .badge { margin-left: 0.35rem; }
 .diff-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
 .diff-head label { color: var(--text-muted); font-size: var(--fs-sm); }
 .diff-summary { margin: 0 0 0.5rem; }

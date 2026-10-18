@@ -36,7 +36,7 @@ from software_agent_factory.models import (
     Specification,
     WorkflowState,
 )
-from software_agent_factory.observability import build_run_diff, build_run_evidence
+from software_agent_factory.run_evidence import build_run_diff, build_run_evidence
 from software_agent_factory.store import FileRunStore
 
 GH_SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"

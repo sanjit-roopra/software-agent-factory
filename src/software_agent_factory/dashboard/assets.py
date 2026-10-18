@@ -302,7 +302,12 @@ def render_index_html(*, token: str) -> str:
           aria-labelledby="run-tab-checks" hidden>
           <p class="tab-empty">Nothing to show here yet.</p>
           <section id="checks-card" class="card" aria-labelledby="checks-heading" hidden>
-            <h2 id="checks-heading">Checks</h2>
+            <div class="diff-head">
+              <h2 id="checks-heading">Checks</h2>
+              <label id="checks-attempt-label" hidden>Attempt
+                <select id="checks-attempt"></select>
+              </label>
+            </div>
             <div id="checks-body"></div>
           </section>
         </div>
