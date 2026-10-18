@@ -3437,6 +3437,7 @@ def test_runs_without_a_commands_plan_use_the_configuration(
     (store.run_dir(run.id) / ARTIFACT_FILENAMES[RepositoryCommandsPlan]).unlink()
 
     assert controller._commands_for_run(run.id).verify == ["true"]
+    assert controller._rejected_commands(run.id) == ()
 
 
 @pytest.fixture
