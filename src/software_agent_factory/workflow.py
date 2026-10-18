@@ -59,7 +59,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from . import pr_delivery, review_ledger, run_recovery, run_reopen
+from . import pr_delivery, review_ledger, run_recovery, run_reopen, scope_replan
 from .agents import (
     AgentRequest,
     AgentResult,
@@ -151,7 +151,6 @@ from .mutation_gate import (
 from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
 from .redaction import redact_secrets
 from .repair_context import (
-    MAX_REPAIR_FAILURES,
     implementer_failure_context,
     planner_clarification_context,
     polish_context,
@@ -1770,12 +1769,6 @@ class WorkflowController:
         )
         return configured + run.attempt_grants.get(budget, 0)
 
-    def _replans_used(self, run: FactoryRun) -> int:
-        legacy_scope_attempts = sum(
-            1 for attempt in run.attempt_records if attempt.triggered_by is AttemptTrigger.SCOPE
-        )
-        return max(run.scope_replans, legacy_scope_attempts)
-
     def _select_worker(
         self, run: FactoryRun, context: RunContext, budget: AttemptBudget
     ) -> tuple[RoleModelConfig | None, int]:
@@ -1824,78 +1817,87 @@ class WorkflowController:
         context: RunContext,
         budget: AttemptBudget,
         repair_context: RepairContext | None,
+        resume_evidence: WorkspaceEvidence | None = None,
     ) -> FactoryRun:
         """Drive an ``IMPLEMENTING`` run through the deterministic and
         independent gates until it reaches ``PR_READY``.
 
         Shared by the pre-PR loop and the post-CI repair loop; only the
-        consumed :class:`AttemptBudget` differs.
+        consumed :class:`AttemptBudget` differs. With ``resume_evidence`` the first
+        round verifies that work again instead of implementing.
         """
         verification_generated_paths: set[str] = set()
         while True:
-            try:
-                role_model, attempt_number = self._select_worker(run, context, budget)
-            except Exception as exc:
-                raise self._halt(
+            if resume_evidence is None:
+                try:
+                    role_model, attempt_number = self._select_worker(run, context, budget)
+                except Exception as exc:
+                    raise self._halt(
+                        run,
+                        WorkflowState.FAILED,
+                        f"worker model selection failed: {exc}",
+                    ) from exc
+                if role_model is None:
+                    reason = self._budget_exhausted_reason(budget, attempt_number - 1)
+                    if run.unattended:
+                        return pr_delivery.publish_as_is(self, run, context, reason)
+                    run = run.model_copy(update={"exhausted_repair": repair_context})
+                    raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
+
+                # Snapshot directories are keyed by the run-global attempt index so
+                # a CI repair (whose per-budget attempt_number restarts at 1) can
+                # never overwrite the pre-PR attempt's immutable evidence.
+                # attempts/NN therefore always corresponds to attempt_records[NN-1].
+                snapshot = len(run.attempt_records) + 1
+                trigger = (
+                    repair_context.trigger if repair_context is not None else AttemptTrigger.INITIAL
+                )
+                if run.review_acceptance is not None:
+                    run = run.model_copy(
+                        update={"review_acceptance": None, "updated_at": utc_now()}
+                    )
+                    self._store.save_run(run)
+                if self._is_rework_attempt(budget, attempt_number, trigger):
+                    record_rework(
+                        run.performance,
+                        "repair_attempt",
+                        stage=WorkflowState.IMPLEMENTING.value,
+                    )
+                    count_operation(
+                        run.performance,
+                        "rework.implementation",
+                        stage=WorkflowState.IMPLEMENTING.value,
+                        operation="rework",
+                    )
+                repair_context = with_repair_memory(
+                    context.repair_signatures, repair_context, snapshot - 1
+                )
+                run, implemented, evidence = self._invoke_implementer(
                     run,
-                    WorkflowState.FAILED,
-                    f"worker model selection failed: {exc}",
-                ) from exc
-            if role_model is None:
-                reason = self._budget_exhausted_reason(budget, attempt_number - 1)
-                if run.unattended:
-                    return pr_delivery.publish_as_is(self, run, context, reason)
-                run = run.model_copy(update={"exhausted_repair": repair_context})
-                raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
-
-            # Snapshot directories are keyed by the run-global attempt index so
-            # a CI repair (whose per-budget attempt_number restarts at 1) can
-            # never overwrite the pre-PR attempt's immutable evidence.
-            # attempts/NN therefore always corresponds to attempt_records[NN-1].
-            snapshot = len(run.attempt_records) + 1
-            trigger = (
-                repair_context.trigger if repair_context is not None else AttemptTrigger.INITIAL
-            )
-            if run.review_acceptance is not None:
-                run = run.model_copy(update={"review_acceptance": None, "updated_at": utc_now()})
-                self._store.save_run(run)
-            if self._is_rework_attempt(budget, attempt_number, trigger):
-                record_rework(
-                    run.performance,
-                    "repair_attempt",
-                    stage=WorkflowState.IMPLEMENTING.value,
+                    attempt_number,
+                    snapshot,
+                    role_model,
+                    context,
+                    budget,
+                    trigger,
+                    repair_context,
                 )
-                count_operation(
-                    run.performance,
-                    "rework.implementation",
-                    stage=WorkflowState.IMPLEMENTING.value,
-                    operation="rework",
-                )
-            repair_context = with_repair_memory(
-                context.repair_signatures, repair_context, snapshot - 1
-            )
-            run, implemented, evidence = self._invoke_implementer(
-                run,
-                attempt_number,
-                snapshot,
-                role_model,
-                context,
-                budget,
-                trigger,
-                repair_context,
-            )
-            if not implemented:
-                repair_context = implementer_failure_context(run.attempt_records[-1])
-                continue
-            assert evidence is not None
+                if not implemented:
+                    repair_context = implementer_failure_context(run.attempt_records[-1])
+                    continue
+                assert evidence is not None
 
-            retained_generated_paths = sorted(
-                verification_generated_paths.intersection(evidence.changed_files)
-            )
-            if retained_generated_paths:
-                repair_context = verification_artifact_repair_context(retained_generated_paths)
-                continue
-            verification_generated_paths.clear()
+                retained_generated_paths = sorted(
+                    verification_generated_paths.intersection(evidence.changed_files)
+                )
+                if retained_generated_paths:
+                    repair_context = verification_artifact_repair_context(retained_generated_paths)
+                    continue
+                verification_generated_paths.clear()
+            else:  # A person approved a wider scope (ADR-060): check the halted attempt again.
+                evidence, resume_evidence = resume_evidence, None
+                snapshot = len(run.attempt_records)
+                context.latest_evidence = evidence
 
             run = self.transition(run, WorkflowState.VERIFYING)
             verification = self._verify(run, context)
@@ -1979,11 +1981,12 @@ class WorkflowController:
                 context.execution_plan,
                 evidence.changed_files,
                 context.triage_result.risk,
+                run.approved_scope_paths,
             )
             while scope.decision is ScopeDecision.REPLAN:
                 if (
                     run.unattended
-                    and self._replans_used(run) >= self._config.scope_drift.max_replans
+                    and scope_replan.replans_used(run) >= self._config.scope_drift.max_replans
                 ):
                     break
                 record_rework(
@@ -1994,11 +1997,12 @@ class WorkflowController:
                 previous_findings = tuple(
                     (finding.category, finding.message) for finding in scope.findings
                 )
-                run = self._replan(run, context, scope, evidence)
+                run = scope_replan.replan(self, run, context, scope, evidence)
                 scope = self._scope_policy.assess(
                     context.execution_plan,
                     evidence.changed_files,
                     context.triage_result.risk,
+                    run.approved_scope_paths,
                 )
                 current_findings = tuple(
                     (finding.category, finding.message) for finding in scope.findings
@@ -2303,67 +2307,6 @@ class WorkflowController:
                     attempt=snapshot,
                 )
             return self.transition(run, WorkflowState.PR_READY)
-
-    def _replan(
-        self,
-        run: FactoryRun,
-        context: RunContext,
-        scope: ScopeAssessment,
-        evidence: WorkspaceEvidence,
-    ) -> FactoryRun:
-        """Update scope metadata for an already-green diff without reimplementation."""
-        used = self._replans_used(run)
-        if used >= self._config.scope_drift.max_replans:
-            raise self._halt(
-                run,
-                WorkflowState.NEEDS_HUMAN,
-                (
-                    f"scope drift replan budget exhausted after {used} replan(s): "
-                    + describe_scope(scope)
-                ),
-            )
-
-        repair_context = RepairContext(
-            trigger=AttemptTrigger.SCOPE,
-            summary=(
-                "The existing implementation passed deterministic verification, but its "
-                "execution-plan scope metadata does not describe the verified diff. Revise "
-                "metadata only; do not request implementation changes."
-            ),
-            failures=[finding.message for finding in scope.findings][:MAX_REPAIR_FAILURES],
-            log_excerpt=None,
-        )
-        if used == 0:
-            self._store.save_artifact_once(
-                run.id,
-                context.execution_plan,
-                filename="execution-plan.initial.json",
-            )
-        run = self.transition(run, WorkflowState.PLANNING)
-        # A scope replan changes plan metadata only. It keeps the specification.
-        context.execution_plan = self._run_planner(
-            run,
-            context.work_item,
-            context.specification,
-            workspace_path=str(context.workspace.path),
-            repair_context=repair_context,
-            diff=evidence.diff,
-            changed_files=list(evidence.changed_files),
-        ).execution_plan
-        self._store.save_artifact_once(
-            run.id,
-            context.execution_plan,
-            filename=f"execution-plan.replan-{used + 1}.json",
-        )
-        run = run.model_copy(
-            update={
-                "scope_replans": used + 1,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-            }
-        )
-        self._store.save_run(run)
-        return self.transition(run, WorkflowState.VERIFYING)
 
     def _verify(self, run: FactoryRun, context: RunContext) -> RepositoryVerificationResult:
         """Run install, verify and build with persisted logs, then the advisory checks.

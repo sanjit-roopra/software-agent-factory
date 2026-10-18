@@ -504,8 +504,13 @@ class ScopeDriftPolicy:
         execution_plan: ExecutionPlan,
         changed_files: Sequence[str],
         risk: Risk,
+        approved_paths: Iterable[str] = (),
     ) -> ScopeAssessment:
-        normalized_files = tuple(self._unique_normalized_paths(changed_files))
+        """Assess ``changed_files``. Paths a person approved for this run are not checked."""
+        approved = {_normalize_path(path) for path in approved_paths}
+        normalized_files = tuple(
+            path for path in self._unique_normalized_paths(changed_files) if path not in approved
+        )
         planned_files = self._planned_step_files(execution_plan)
         findings: list[ScopeFinding] = []
 

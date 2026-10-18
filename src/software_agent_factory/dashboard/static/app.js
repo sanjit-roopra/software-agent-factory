@@ -24,7 +24,7 @@
   const FILTER_NEEDS_YOU = "needs-you";
   const FILTER_ACTIVE = "active";
   // needs_you_action of each entry in resume_classes.py: a waiting run the page can act on.
-  const ACTIONABLE = new Set(["waiting", "retry", "grant", "accept"]);
+  const ACTIONABLE = new Set(["waiting", "retry", "grant", "accept", "widen"]);
   const RUNS_COLUMN_COUNT = 10;
   const SVG_NS = "http://www.w3.org/2000/svg";
   // The sparkline draws in the viewBox of #figure-week-trend in dashboard/assets.py.
@@ -2255,6 +2255,12 @@
     }), true);
   }
 
+  // The changed files beyond the approved scope that a scope approval adds (ADR-060).
+  function scopePathsSection(paths) {
+    const items = asArray(paths);
+    return items.length === 0 ? null : listSection("Files outside the approved scope", items);
+  }
+
   // A cut reason offers its full text in place of the note; the loaded text replaces it.
   function failureSection(step, runId) {
     const full = fullReasonFor(runId);
@@ -2360,6 +2366,7 @@
   const RETRY_ACTION = "retry";
   const GRANT_ACTION = "grant";
   const ACCEPT_ACTION = "accept";
+  const WIDEN_ACTION = "widen";
   const STOP_ACTION = "cancel";
   const STEER_ACTION = "steer";
   const ESCALATE_ACTION = "escalate";
@@ -2431,6 +2438,13 @@
     expired: "acceptance expired, accept again"
   };
 
+  // The same for approving a wider scope (ADR-060).
+  const WIDEN_CONFLICT_MESSAGES = {
+    ...CONFLICT_MESSAGES,
+    existing_request: "wider scope already approved",
+    expired: "scope approval expired, approve again"
+  };
+
   // The same for a stop (ADR-047).
   const STOP_CONFLICT_MESSAGES = {
     ...CONFLICT_MESSAGES,
@@ -2449,6 +2463,9 @@
     }
     if (action === ACCEPT_ACTION) {
       return ACCEPT_CONFLICT_MESSAGES;
+    }
+    if (action === WIDEN_ACTION) {
+      return WIDEN_CONFLICT_MESSAGES;
     }
     return action === ANSWER_ACTION ? ANSWER_CONFLICT_MESSAGES : CONFLICT_MESSAGES;
   }
@@ -2630,9 +2647,9 @@
     return section;
   }
 
-  // Publishing again, granting an attempt or accepting findings takes two clicks: the first
-  // arms the button and says what happens, the second sends it. Cancel disarms it. The pull
-  // request link shows in the run header.
+  // Publishing again, granting an attempt, accepting findings or approving a wider scope takes
+  // two clicks: the first arms the button and says what happens, the second sends it. Cancel
+  // disarms it. The pull request link shows in the run header.
   function confirmSection(step, runId, spec) {
     const section = element("div", "next-step-section");
     const note = section.appendChild(element("p", "retry-note", spec.note));
@@ -2686,6 +2703,13 @@
       confirmLabel: "Confirm accept with findings",
       note: "The factory publishes the reviewed work with the open findings accepted. " +
         "The pull request lists them and gets the factory:needs-look label, so it is not merged."
+    },
+    widen: {
+      action: WIDEN_ACTION,
+      label: "Approve wider scope",
+      confirmLabel: "Confirm wider scope",
+      note: "The listed files join the approved scope of this run. The factory checks the " +
+        "same work again and goes on to review. A new file outside the scope stops it again."
     }
   };
 
@@ -3050,6 +3074,7 @@
       reopensLine(step),
       approvalScopeSection(step.approval_scope),
       step.kind === "answer" ? null : decisionsSection(step.decisions),
+      scopePathsSection(step.scope_paths),
       actionSection(step, runId),
       commandSection(step.cli_command),
       commentLinkLine(step.comment_url),
@@ -3079,11 +3104,12 @@
     ["retry", "Retry to continue"],
     ["grant", "Grant an attempt to continue"],
     ["accept", "Accept the findings to continue"],
+    ["widen", "Approve a wider scope to continue"],
     ["queued", "Queued"],
     ["cannot_continue", "Cannot continue"],
     ["remote_approval_unavailable", "Inspect the run"]
   ]);
-  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry", "grant", "accept"]);
+  const ACTION_STEP_KINDS = new Set(["approve", "answer", "retry", "grant", "accept", "widen"]);
 
   function renderNextStepFrame(panel, step) {
     const heading = STEP_HEADINGS.get(step.kind) || "Needs you";

@@ -25,6 +25,7 @@ from software_agent_factory.models import (
     Risk,
     RiskApprovalContext,
     RiskRationale,
+    ScopeApprovalContext,
     WorkflowState,
 )
 
@@ -110,6 +111,9 @@ def _notified() -> EscalationRecord:
             finding_ids=["review-correctness-0123456789abcdef"],
             reviewed_tree_sha="a" * 40,
             context_fingerprint=FINGERPRINT,
+        ),
+        scope_approval_context=ScopeApprovalContext(
+            paths=["docs/extra.md"], patch_sha256="c" * 64, context_fingerprint=FINGERPRINT
         ),
         remote_resume_enabled=True,
         created_at=BEFORE,

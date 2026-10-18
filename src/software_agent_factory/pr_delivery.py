@@ -304,7 +304,7 @@ def _check_publish_scope(
         )
 
     scope = controller._scope_policy.assess(
-        context.execution_plan, changed_files, context.triage_result.risk
+        context.execution_plan, changed_files, context.triage_result.risk, run.approved_scope_paths
     )
     if scope.decision is not ScopeDecision.CONTINUE and not run.unattended:
         raise controller._halt(

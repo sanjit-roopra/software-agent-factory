@@ -515,7 +515,11 @@ def test_classify_halt_reason_not_resumable(reason: str, expected_code: str) -> 
         failure_reason=reason,
     )
     classification, code, summary, action = classify_halt_reason(run)
-    assert classification is ResumeClassification.NOT_RESUMABLE
+    # A scope halt is resumable from the dashboard only, when it has a context (ADR-060).
+    scope = expected_code == "SCOPE_REVIEW"
+    assert classification is (
+        ResumeClassification.SCOPE_APPROVAL if scope else ResumeClassification.NOT_RESUMABLE
+    )
     assert code == expected_code
     assert summary
     assert action

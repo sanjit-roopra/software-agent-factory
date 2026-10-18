@@ -534,6 +534,32 @@ def test_secret_in_a_decision_question_is_redacted() -> None:
 
 
 @pytest.mark.parametrize(
+    ("paths", "shown"),
+    [
+        (
+            [f"docs/{SECRET}", "migrations/0001_init.py"],
+            ["docs/[REDACTED]", "migrations/0001_init.py"],
+        ),
+        (["a.py"] * 101, []),
+        ("a.py", []),
+    ],
+    ids=["redacted", "over-the-limit", "not-a-list"],
+)
+def test_scope_paths_are_redacted_or_dropped_whole(paths: Any, shown: list[str]) -> None:
+    run = _run(
+        resume_classification="SCOPE_APPROVAL",
+        reason_code="SCOPE_REVIEW",
+        dashboard_action_refusal=None,
+        scope_paths=paths,
+    )
+
+    step = _step(run)
+
+    assert step["scope_paths"] == shown
+    assert "ghp_abcdefgh12345678" not in repr(step)
+
+
+@pytest.mark.parametrize(
     ("url", "kept"),
     [
         ("https://github.com/o/r/pull/1#c-1", True),
@@ -1041,6 +1067,24 @@ def test_a_review_impasse_gives_accept_and_queues_it() -> None:
     )
 
 
+def test_a_scope_halt_gives_widen_with_its_paths_and_queues_it() -> None:
+    paths = ["migrations/0001_init.py"]
+    run = _run(
+        resume_classification="SCOPE_APPROVAL", reason_code="SCOPE_REVIEW", scope_paths=paths
+    )
+
+    step = next_step(run)
+    queued = next_step(run, [_request("SCOPE_APPROVAL")])
+
+    assert (step["kind"], step["scope_paths"]) == ("widen", paths)
+    assert step["sentence"] == (
+        "The run stopped because its changes went beyond the approved scope."
+    )
+    assert queued["sentence"] == (
+        f"Wider scope approved at {QUEUED_AT}, queued for the factory service. {START_HINT}"
+    )
+
+
 def test_without_a_request_the_step_has_no_queued_fields() -> None:
     step = next_step(_risk_run())
 
@@ -1123,6 +1167,7 @@ def test_the_kinds_are_one_enum_and_serialize_as_plain_strings() -> None:
         "retry",
         "grant",
         "accept",
+        "widen",
         "queued",
     ]
     assert json.dumps(next_step(_risk_run())["kind"]) == '"approve"'

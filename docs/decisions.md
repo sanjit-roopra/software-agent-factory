@@ -1,5 +1,46 @@
 # Architecture Decisions
 
+## ADR-060: Approve a wider scope from the dashboard
+
+Status: accepted on 2026-10-18. This is the third class that ADR-057 planned.
+
+### Context
+
+When the changes of a run go beyond the approved scope, the scope check stops
+the run in `NEEDS_HUMAN` with `SCOPE_REVIEW`. The check stops on files outside
+the plan's modules, and on dependency, migration, CI and infrastructure files.
+Often a person can see that the extra files are fine. The only way on was to
+start a new run or to escalate.
+
+### Decision
+
+- A scope halt gets the resume class `SCOPE_APPROVAL`. Its context holds the
+  paths of every scope finding and the SHA-256 of the patch the check saw. A
+  fingerprint binds it to the run and the episode.
+- Only a scope check in the implementation loop, before a pull request exists,
+  gets a context. A scope halt at publish time or in a CI repair has none, so it
+  stays not resumable.
+- The dashboard lists the files and shows **Approve wider scope**. It takes two
+  clicks, like **Retry publishing**. The route is `POST /api/runs/<id>/widen`.
+  Only the dashboard can resume this class.
+- The reopen refuses a context whose fingerprint does not match the receipt. It
+  refuses a worktree whose patch changed since the halt.
+- The paths join `approved_scope_paths` on the run. Every later scope check of
+  the run, also the one at publish time, ignores them. The plan does not change.
+- The run resumes at `IMPLEMENTING`, but makes no new attempt. It verifies the
+  same work again, passes the scope check and goes on to review. ADR-057 named
+  `VERIFYING`. The transition table has no edge from `VERIFYING` to itself, so
+  the run enters the loop one step earlier and skips the implement step.
+- A new file beyond the scope stops the run again.
+
+### Consequences
+
+- A person can let a run go on with a few extra files, without a new run.
+- The approval holds for this run only. The pull request still lists the files
+  outside the plan's modules.
+- The dashboard has one more write action, `widen`.
+- The scope replan moved from `workflow.py` to `scope_replan.py` to make room.
+
 ## ADR-059: Accept open review findings from the dashboard
 
 Status: accepted on 2026-10-18. This is the second class that ADR-057 planned.
@@ -115,7 +156,7 @@ dashboard route and copy. A new class had to repeat all of them.
   | --- | --- | --- |
   | `ATTEMPT_BUDGET_EXHAUSTED` | Grant one more attempt | `IMPLEMENTING` |
   | `REVIEW_IMPASSE` | Accept with findings | `PR_READY` |
-  | `SCOPE_REVIEW` | Approve wider scope | `VERIFYING` |
+  | `SCOPE_REVIEW` | Approve wider scope | `VERIFYING` (see ADR-060) |
   | `CI_INTERVENTION` | Retry CI repair | `CI_DIAGNOSIS` |
 
 - Each new class works like `DELIVERY_RETRY` (ADR-042):

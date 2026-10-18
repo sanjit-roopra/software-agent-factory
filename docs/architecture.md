@@ -1609,11 +1609,12 @@ Raw), and `?tab=` in the address opens one. Keys work on every view. `g` then
 opens one. `n` and `f` jump to the next run that needs you or that failed. `/`
 searches, `r` refreshes and `?` lists the keys. Keys do nothing in a field.
 
-There are five resume actions. A person can approve a risk approval or answer
+There are six resume actions. A person can approve a risk approval or answer
 plan decisions (ADR-033). A person can retry publishing when the first pull
 request failed to open (ADR-042). A person can grant one more attempt when the
 implementation budget ran out (ADR-058). A person can accept the open findings
-of a review impasse (ADR-059). The dashboard never writes `run.json`. An action creates one
+of a review impasse (ADR-059). A person can approve the files beyond the
+approved scope (ADR-060). The dashboard never writes `run.json`. An action creates one
 request file per run, episode and context fingerprint, with a create-only
 write. The factory service ingests it, checks it again with the ADR-024 reopen
 checks, writes the receipt and reopens the run through `controller.reopen`. The
@@ -1630,11 +1631,12 @@ is as strong as the token. Any program that holds it can load the page and read
 the token, so the `Host` and `Origin` checks stop browsers only. The team
 accepts this risk: the trust boundary is anything that listens on `127.0.0.1`,
 including a forwarded port such as `ssh -L` or a container port. The
-five POST routes are `/api/runs/<id>/approve`, `/api/runs/<id>/answer`,
-`/api/runs/<id>/retry`, `/api/runs/<id>/grant` and `/api/runs/<id>/accept`. The
-run detail page offers them: a confirm dialog for an approval and one field for
-each plan decision. It also has the **Retry publishing**, **Grant +1 attempt**
-and **Accept with findings** buttons.
+six POST routes are `/api/runs/<id>/approve`, `/api/runs/<id>/answer`,
+`/api/runs/<id>/retry`, `/api/runs/<id>/grant`, `/api/runs/<id>/accept` and
+`/api/runs/<id>/widen`. The run detail page offers them: a confirm dialog for an
+approval and one field for each plan decision. It also has the **Retry
+publishing**, **Grant +1 attempt**, **Accept with findings** and **Approve wider
+scope** buttons.
 
 ```text
 dashboard POST → request file (create-only) → service ingest → controller.reopen

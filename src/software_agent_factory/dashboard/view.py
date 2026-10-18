@@ -41,6 +41,7 @@ _RESUMABLE_STEP_KINDS = frozenset(
         NextStepKind.RETRY,
         NextStepKind.GRANT,
         NextStepKind.ACCEPT,
+        NextStepKind.WIDEN,
         NextStepKind.QUEUED,
     }
 )

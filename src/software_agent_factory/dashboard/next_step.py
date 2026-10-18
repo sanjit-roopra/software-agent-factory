@@ -127,6 +127,7 @@ class NextStepKind(StrEnum):
     RETRY = "retry"
     GRANT = "grant"
     ACCEPT = "accept"
+    WIDEN = "widen"
     QUEUED = "queued"
 
 
@@ -153,6 +154,7 @@ def _empty(kind: NextStepKind) -> dict[str, Any]:
         "resume_classification": None,
         "approval_scope": None,
         "decisions": [],
+        "scope_paths": [],
         "reopens_used": None,
         "max_reopens": None,
         "comment_url": None,
@@ -319,7 +321,13 @@ def _dashboard_only(
             return _unavailable(run, escalation, f"{what} is not available.")
         _, episode_id, fingerprint = ids
         step = _halt_step(kind, _reason_sentence(escalation), escalation)
-        step.update(episode_id=episode_id, context_fingerprint=fingerprint)
+        # Only a scope approval has paths: the sanitizer keeps a list of strings or nothing.
+        paths = escalation.get("scope_paths")
+        step.update(
+            episode_id=episode_id,
+            context_fingerprint=fingerprint,
+            scope_paths=paths if isinstance(paths, list) else [],
+        )
         return step
 
     return step_for
@@ -394,6 +402,7 @@ _STEPS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = 
     "retry": _dashboard_only(NextStepKind.RETRY, "Retry"),
     "grant": _dashboard_only(NextStepKind.GRANT, "One more attempt"),
     "accept": _dashboard_only(NextStepKind.ACCEPT, "Accepting the findings"),
+    "widen": _dashboard_only(NextStepKind.WIDEN, "Approving a wider scope"),
 }
 
 

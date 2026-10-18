@@ -2,7 +2,8 @@
 
 When a run halts in ``NEEDS_HUMAN`` with a resumable class, the factory snapshots the
 context the person decides: the risk approval, the plan decisions, the reviewed work to
-publish again, the used-up attempt budget or the open review findings.
+publish again, the used-up attempt budget, the open review findings or the paths beyond
+the approved scope.
 :func:`build_resume_context` picks the builder from the class, one per entry of
 :data:`.resume_classes.RESUME_CLASSES`. The builders read the run's artifacts through the
 store, so they live here and not in the pure :mod:`.resume_classes`.
@@ -19,9 +20,12 @@ from collections.abc import Callable
 
 from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS
+from .governance import ScopeDriftPolicy
 from .models import (
+    MAX_SCOPE_APPROVAL_PATHS,
     AttemptBudget,
     AttemptGrantContext,
+    ChangeSet,
     DeliveryRetryContext,
     ExecutionPlan,
     FactoryRun,
@@ -31,6 +35,7 @@ from .models import (
     Risk,
     RiskApprovalContext,
     RiskRationale,
+    ScopeApprovalContext,
     TriageResult,
     WorkflowState,
     WorkItem,
@@ -48,6 +53,7 @@ from .resume_classes import (
     ResumeContext,
     compute_attempt_grant_context_fingerprint,
     compute_findings_acceptance_context_fingerprint,
+    compute_scope_approval_context_fingerprint,
 )
 from .store import FileRunStore
 
@@ -405,6 +411,38 @@ def build_findings_acceptance_context(
     )
 
 
+def build_scope_approval_context(
+    run: FactoryRun, store: FileRunStore, config: FactoryConfig, episode_id: str
+) -> ScopeApprovalContext | None:
+    """Snapshot the changed paths the scope check stopped on, and the patch they are in.
+
+    Only a scope check in the implementation loop before a pull request exists can be
+    approved (ADR-060). The paths are those of every scope finding, so an approval clears them.
+    """
+    if run.state is not WorkflowState.VERIFYING or run.pull_request_url is not None:
+        return None
+    try:
+        plan = store.load_artifact(run.id, ExecutionPlan)
+        changed = store.load_artifact(run.id, ChangeSet).changed_files
+        risk = store.load_artifact(run.id, TriageResult).risk
+        patch = store.load_patch(run.id)
+    except (FileNotFoundError, ValueError):
+        return None
+    policy = ScopeDriftPolicy(config.scope_drift.approved_sensitive_files)
+    scope = policy.assess(plan, changed, risk, run.approved_scope_paths)
+    paths = list(dict.fromkeys(path for finding in scope.findings for path in finding.paths))
+    if not paths or len(paths) > MAX_SCOPE_APPROVAL_PATHS:
+        return None
+    patch_sha256 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+    return ScopeApprovalContext(
+        paths=paths,
+        patch_sha256=patch_sha256,
+        context_fingerprint=compute_scope_approval_context_fingerprint(
+            run_id=run.id, episode_id=episode_id, paths=paths, patch_sha256=patch_sha256
+        ),
+    )
+
+
 #: How a halt snapshots its decision context, one builder per resumable class.
 _CONTEXT_BUILDERS: dict[
     ResumeClassification,
@@ -423,6 +461,7 @@ _CONTEXT_BUILDERS: dict[
     ResumeClassification.ACCEPT_FINDINGS: lambda run, _store, _config, episode_id: (
         build_findings_acceptance_context(run, episode_id=episode_id)
     ),
+    ResumeClassification.SCOPE_APPROVAL: build_scope_approval_context,
 }
 
 
