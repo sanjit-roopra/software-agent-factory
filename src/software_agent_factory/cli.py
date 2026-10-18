@@ -1009,7 +1009,9 @@ def save_escalation_start(
 ) -> OperatorEscalation | None:
     """Record that process ``pid`` escalates ``run_id`` now (ADR-055), and return the record.
 
-    Returns ``None`` and writes nothing when another process still escalates the run. A
+    Returns ``None`` and writes nothing when another process still escalates the run. When
+    ``pid`` already wrote its record, that record comes back unchanged: the dashboard records
+    its child after starting it, and a child that already finished must keep its outcome. A
     missing run raises ``FileNotFoundError``.
     """
     from .models import OperatorEscalation
@@ -1019,7 +1021,9 @@ def save_escalation_start(
 
     run = store.load_run(run_id)
     last = load_operator_escalation(store, run_id)
-    if last is not None and last.status == "running" and last.pid != pid:
+    if last is not None and last.pid == pid:
+        return last
+    if last is not None and last.status == "running":
         return None
     record = OperatorEscalation(
         from_route=None if run.route_decision is None else run.route_decision.effective_route,
@@ -1313,6 +1317,7 @@ def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
 
     from .models import OperatorEscalation
     from .observability import load_operator_escalation
+    from .redaction import redact_secrets
     from .resume import escalation_route
     from .store import OPERATOR_ESCALATION_FILENAME
 
@@ -1340,7 +1345,9 @@ def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
                     start_new_session=True,
                 )
             except OSError as exc:
-                failed = OperatorEscalation(note=note, status="failed", error=str(exc))
+                failed = OperatorEscalation(
+                    note=note, status="failed", error=redact_secrets(str(exc))
+                )
                 store.save_artifact(run_id, failed, OPERATOR_ESCALATION_FILENAME)
                 return "started"
             save_escalation_start(store, run_id, note, child.pid)

@@ -1767,3 +1767,19 @@ def test_an_escalation_that_cannot_start_shows_the_error(
     assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 202
     record = rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
     assert (record.status, record.error) == ("failed", "no python")
+
+
+def test_an_escalation_that_finishes_before_the_dashboard_records_it_stays_done(
+    make_rig: RigFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig(_finished_run())
+    done = OperatorEscalation(note="ok", status="done", pid=_FakeChild.pid)
+
+    def popen(command: list[str], **kwargs: object) -> _FakeChild:
+        rig.store.save_artifact(RUN_ID, done, OPERATOR_ESCALATION_FILENAME)
+        return _FakeChild()
+
+    monkeypatch.setattr("subprocess.Popen", popen)
+
+    assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 202
+    assert rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME) == done
