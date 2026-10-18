@@ -99,6 +99,8 @@ guess at a broken runner.
 Repair is bounded by `ci.repair_attempts`, a budget separate from the
 implementation retry budget. Each repair attempt receives a small explicit
 repair context: the normalized CI evidence, not the whole run history.
+It also lists one short line for each of the last few failed attempts, and it
+says so when a failure repeats an earlier one.
 
 An unrecognized `gh` check status is treated conservatively as still pending
 rather than as a pass.

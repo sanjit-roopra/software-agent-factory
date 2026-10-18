@@ -41,7 +41,7 @@ Attempt number:
 2
 
 Repair context:
-{"failures":[],"log_excerpt":null,"summary":"Deterministic verification passed. Apply a final bounded polish and simplification pass using the fixed simplify and polish guidance supplied with this request.","trigger":"POLISH"}
+{"failures":[],"log_excerpt":null,"previous_attempts":[],"summary":"Deterministic verification passed. Apply a final bounded polish and simplification pass using the fixed simplify and polish guidance supplied with this request.","trigger":"POLISH"}
 
 Current diff:
 diff --git a/src/app.py b/src/app.py

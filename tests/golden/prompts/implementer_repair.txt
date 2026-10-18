@@ -41,7 +41,7 @@ Attempt number:
 2
 
 Repair context:
-{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","summary":"Continuous integration reported a failing check.","trigger":"CI"}
+{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","previous_attempts":[],"summary":"Continuous integration reported a failing check.","trigger":"CI"}
 
 Current diff:
 diff --git a/src/app.py b/src/app.py
