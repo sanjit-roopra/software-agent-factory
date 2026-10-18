@@ -123,7 +123,7 @@ on the run.
 
 The run list puts these runs at the top, under a "Needs you" row. The state of
 each run says what it needs: **Needs approval**, **Needs answers**,
-**Needs retry**, **Needs attempt**, or **Stopped, needs you**. A filled badge means the page can
+**Needs retry**, **Needs attempt**, **Needs acceptance**, or **Stopped, needs you**. A filled badge means the page can
 act on the run. A run the page cannot act on, for example after its reply window
 expired, says **Stopped, needs you**. A stopped run gives a `factory show` command to copy and run in
 a terminal. While a run needs you, the browser tab title starts with the count,
@@ -145,13 +145,19 @@ for example `(2)`, and the tab icon shows a dot.
   and makes exactly one more attempt. That attempt sees the last failure. If it
   fails, the run stops here again. Each grant counts as a reopen. To redo the
   work with fresh attempts on a higher route, escalate the run instead.
+- For a run whose review did not settle, read the open findings on the Review
+  tab. To ship them, choose **Accept with findings**, then **Confirm accept with
+  findings**. The factory publishes the reviewed work as it is. The pull request
+  lists the findings and gets the `factory:needs-look` label, and the factory
+  does not merge it. To have the agent fix them, escalate the run with a note.
 
 The dashboard does not resume the run. It writes one request file in the run
 directory. The factory service reads it and reopens the run. The panel then
 shows "Approved at <time>, queued for the factory service". An answer shows
 "Answers sent at <time>, queued for the factory service". A retry shows "Retry
 requested at <time>, queued for the factory service". A grant shows "One more
-attempt granted at <time>, queued for the factory service". If `factory start` is not running,
+attempt granted at <time>, queued for the factory service". An acceptance shows
+"Findings accepted at <time>, queued for the factory service". If `factory start` is not running,
 start it. The request waits until it does.
 
 #### When the service refuses a request
@@ -210,7 +216,7 @@ does the same from the terminal.
 The next agent call gets the note as an operator section at the end of its
 prompt. Only that one call gets it. A working run reads it at its next call, not
 in the middle of one. A halted run keeps the note until it resumes. A halt that
-cannot resume, such as a review impasse, refuses a note: no later call reads
+cannot resume, such as a stalled run, refuses a note: no later call reads
 it. A note is at most 2,000 characters, and a note that
 holds a secret is refused. One note waits at a time. The box shows the waiting
 note, and **Replace note** sends a new one in its place.
@@ -236,7 +242,8 @@ for example when a process holds the workspace lock. The run list marks the run
 route chip, also for `FULL`.
 
 The dashboard cannot reconfigure anything. It can retry only publishing, and it
-can grant only one implementation attempt at a time.
+can grant only one implementation attempt at a time. It can accept only the open
+findings of a review impasse.
 Authority stays with the workflow controller and the factory service.
 
 It is built from the Python standard library. No framework, no npm, no bundler,

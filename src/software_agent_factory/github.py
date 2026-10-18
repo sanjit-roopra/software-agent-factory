@@ -1936,8 +1936,8 @@ def build_pr_body(
         lines.append("")
 
     if review_acceptance is not None:
-        lines.append("## Accepted findings")
-        lines.append("The controller accepted these findings under the bounded review policy.")
+        by = "A person" if review_acceptance.reason == "OPERATOR" else "The controller"
+        lines += ["## Accepted findings", f"{by} accepted these findings."]
         lines.append("The Reviewer did not approve this result.")
         lines.append(f"Reviewed tree: `{review_acceptance.reviewed_tree_sha}`")
         lines.append(f"Review rounds: {review_acceptance.review_rounds}")

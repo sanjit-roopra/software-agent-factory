@@ -2757,9 +2757,7 @@ class WorkflowController:
             )
             if latest_verification is None or not latest_verification.passed:
                 return False
-            if run.reviewed_tree_sha is None:
-                return False
-            return True
+            return run.reviewed_tree_sha is not None
 
         acceptance = run.review_acceptance
         if acceptance is None:
@@ -2770,7 +2768,8 @@ class WorkflowController:
             and acceptance.findings == run.review_ledger.accepted_findings
         ):
             return False
-        return run.unattended or self._acceptance_within_policy(acceptance, review, risk)
+        exempt = run.unattended or acceptance.reason is ReviewAcceptanceReason.OPERATOR  # ADR-059
+        return exempt or self._acceptance_within_policy(acceptance, review, risk)
 
     def _acceptance_within_policy(
         self, acceptance: ReviewAcceptance, review: ReviewReport, risk: Risk

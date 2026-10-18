@@ -174,7 +174,7 @@ def test_classify_halt_reason_reports_a_stored_review_impasse(tmp_path: Path) ->
 
     classification, code, summary, next_action = classify_halt_reason(run, store)
 
-    assert classification is ResumeClassification.NOT_RESUMABLE
+    assert classification is ResumeClassification.ACCEPT_FINDINGS
     assert code is HaltReasonCode.REVIEW_IMPASSE
     actual = (summary, next_action)
     assert actual == HALT_REASON_COPY[HaltReasonCode.REVIEW_IMPASSE]

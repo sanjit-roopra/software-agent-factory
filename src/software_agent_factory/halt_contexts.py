@@ -2,10 +2,10 @@
 
 When a run halts in ``NEEDS_HUMAN`` with a resumable class, the factory snapshots the
 context the person decides: the risk approval, the plan decisions, the reviewed work to
-publish again or the used-up attempt budget. :func:`build_resume_context` picks the builder
-from the class, one per entry of :data:`.resume_classes.RESUME_CLASSES`. The builders read
-the run's artifacts through the store, so they live here and not in the pure
-:mod:`.resume_classes`.
+publish again, the used-up attempt budget or the open review findings.
+:func:`build_resume_context` picks the builder from the class, one per entry of
+:data:`.resume_classes.RESUME_CLASSES`. The builders read the run's artifacts through the
+store, so they live here and not in the pure :mod:`.resume_classes`.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from .models import (
     DeliveryRetryContext,
     ExecutionPlan,
     FactoryRun,
+    FindingsAcceptanceContext,
     PlanDecisionContext,
     ResumeClassification,
     Risk,
@@ -46,6 +47,7 @@ from .resume_classes import (
     RESUME_CLASSES,
     ResumeContext,
     compute_attempt_grant_context_fingerprint,
+    compute_findings_acceptance_context_fingerprint,
 )
 from .store import FileRunStore
 
@@ -383,6 +385,26 @@ def build_attempt_grant_context(run: FactoryRun, *, episode_id: str) -> AttemptG
     )
 
 
+def build_findings_acceptance_context(
+    run: FactoryRun, *, episode_id: str
+) -> FindingsAcceptanceContext | None:
+    """Snapshot the open review findings a person may accept, and the tree they are on."""
+    ledger = run.review_ledger
+    if not ledger.open_findings or not ledger.last_reviewed_tree_sha:
+        return None
+    finding_ids = [finding.id for finding in ledger.open_findings]
+    return FindingsAcceptanceContext(
+        finding_ids=finding_ids,
+        reviewed_tree_sha=ledger.last_reviewed_tree_sha,
+        context_fingerprint=compute_findings_acceptance_context_fingerprint(
+            run_id=run.id,
+            episode_id=episode_id,
+            finding_ids=finding_ids,
+            reviewed_tree_sha=ledger.last_reviewed_tree_sha,
+        ),
+    )
+
+
 #: How a halt snapshots its decision context, one builder per resumable class.
 _CONTEXT_BUILDERS: dict[
     ResumeClassification,
@@ -397,6 +419,9 @@ _CONTEXT_BUILDERS: dict[
     ResumeClassification.DELIVERY_RETRY: _delivery_retry_context,
     ResumeClassification.ATTEMPT_GRANT: lambda run, _store, _config, episode_id: (
         build_attempt_grant_context(run, episode_id=episode_id)
+    ),
+    ResumeClassification.ACCEPT_FINDINGS: lambda run, _store, _config, episode_id: (
+        build_findings_acceptance_context(run, episode_id=episode_id)
     ),
 }
 

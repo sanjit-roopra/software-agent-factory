@@ -126,6 +126,7 @@ class NextStepKind(StrEnum):
     ANSWER = "answer"
     RETRY = "retry"
     GRANT = "grant"
+    ACCEPT = "accept"
     QUEUED = "queued"
 
 
@@ -392,6 +393,7 @@ _STEPS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = 
     "answer": _answer,
     "retry": _dashboard_only(NextStepKind.RETRY, "Retry"),
     "grant": _dashboard_only(NextStepKind.GRANT, "One more attempt"),
+    "accept": _dashboard_only(NextStepKind.ACCEPT, "Accepting the findings"),
 }
 
 
