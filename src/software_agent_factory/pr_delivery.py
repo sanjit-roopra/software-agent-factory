@@ -32,6 +32,7 @@ from .models import (
 from .publishing import CIObserver, PullRequestPublisher
 from .repair_context import ci_repair_context
 from .run_context import RunContext, describe_scope
+from .run_watch import watched
 from .suppression_scan import suppression_items
 from .workspace import WorkspaceError, WorkspaceEvidence
 
@@ -350,17 +351,20 @@ def ci_loop(controller: WorkflowController, run: FactoryRun, context: RunContext
     observer = resolve_ci_observer(
         controller,
     )
+    # One poll of slack past the wait budget before the heartbeat stops.
+    ci_wait = controller._config.ci.max_wait_seconds + controller._config.ci.poll_interval_seconds
     while True:
         if run.state is not WorkflowState.CI_RUNNING:
             run = controller.transition(run, WorkflowState.CI_RUNNING)
         assert run.pull_request_url is not None
         try:
-            report = observer.observe(
-                repo_path=context.workspace.path,
-                pull_request_url=run.pull_request_url,
-                repair_attempts_used=controller._attempts_used(run, AttemptBudget.CI_REPAIR),
-                before_wait=functools.partial(controller._raise_if_cancelled, run),
-            )
+            with watched(controller, run, ci_wait):
+                report = observer.observe(
+                    repo_path=context.workspace.path,
+                    pull_request_url=run.pull_request_url,
+                    repair_attempts_used=controller._attempts_used(run, AttemptBudget.CI_REPAIR),
+                    before_wait=functools.partial(controller._raise_if_cancelled, run),
+                )
         except (GitPublishError, GitHubError, OSError) as exc:
             raise controller._stop(run, context, f"could not observe CI: {exc}") from exc
         controller._store.save_artifact(run.id, report)

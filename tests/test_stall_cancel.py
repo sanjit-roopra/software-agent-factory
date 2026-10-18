@@ -25,6 +25,7 @@ from software_agent_factory.models import (
     WorkflowState,
     utc_now,
 )
+from software_agent_factory.run_watch import heartbeat
 from software_agent_factory.scheduler import StallDecision
 from software_agent_factory.service import FactoryService, ThreadPoolRunHandle
 from software_agent_factory.store import FileRunStore
@@ -135,7 +136,7 @@ def test_the_heartbeat_stops_once_the_call_outlives_its_timeout(data_dir: Path) 
     controller.heartbeat_interval_seconds = 0.01
     run = FactoryRun(id="run-late", work_item_id="w", state=WorkflowState.IMPLEMENTING)
 
-    controller._heartbeat(run, threading.Event(), 0)
+    heartbeat(controller, run, threading.Event(), 0)
 
     with pytest.raises(FileNotFoundError):
         store.load_run("run-late")
@@ -157,7 +158,7 @@ def test_the_heartbeat_marks_activity_on_a_run_without_a_lease(data_dir: Path) -
     stop = threading.Event()
     threading.Timer(0.2, stop.set).start()
 
-    controller._heartbeat(run, stop, 60)
+    heartbeat(controller, run, stop, 60)
 
     stored = store.load_run("run-free")
     assert stored.last_activity_at is not None
@@ -179,7 +180,7 @@ def test_a_heartbeat_that_cannot_be_written_is_logged(
     stop = threading.Event()
     threading.Timer(0.1, stop.set).start()
 
-    controller._heartbeat(run, stop, 60)
+    heartbeat(controller, run, stop, 60)
 
     assert "could not write the heartbeat of run run-disk" in caplog.text
 

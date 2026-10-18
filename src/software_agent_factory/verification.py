@@ -62,6 +62,7 @@ from typing import Callable, Sequence
 
 from .models import CommandResult, VerificationReport
 from .redaction import redact_secrets
+from .subprocess_utils import track_child
 
 #: Environment variables always provided to repository commands. Anything
 #: else must be named explicitly by repository configuration.
@@ -152,14 +153,17 @@ class DeterministicVerifier:
                 before_command()
             started = time.monotonic()
             timed_out = False
-            process = subprocess.Popen(
-                ["/bin/sh", "-c", command],
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                start_new_session=True,
+            # Tracked, so a stop or a stall cancel kills the command (ADR-049).
+            process = track_child(
+                subprocess.Popen(
+                    ["/bin/sh", "-c", command],
+                    cwd=cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
             )
             try:
                 stdout, stderr = process.communicate(timeout=timeout_seconds)

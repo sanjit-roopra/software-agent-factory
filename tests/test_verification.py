@@ -299,3 +299,34 @@ def test_capture_limit_applies_to_timed_out_commands(tmp_path: Path) -> None:
     result = report.deterministic_checks[0]
     assert result.timed_out is True
     assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in result.stdout
+
+
+@requires_models
+def test_a_verify_command_is_a_tracked_child_of_its_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from software_agent_factory import subprocess_utils
+
+    # A fresh table, so a live process another test left under a reused thread id
+    # cannot answer for this one.
+    monkeypatch.setattr(subprocess_utils, "_THREAD_CHILDREN", {})
+    reports: list[object] = []
+    worker = threading.Thread(
+        target=lambda: reports.append(DeterministicVerifier().run(["sleep 30"], tmp_path, 60))
+    )
+    worker.start()
+    assert worker.ident is not None
+    deadline = time.monotonic() + 10
+    while not subprocess_utils._THREAD_CHILDREN.get(worker.ident) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    try:
+        assert subprocess_utils.kill_thread_children(worker.ident) == 1
+        worker.join(timeout=10)
+    finally:
+        subprocess_utils.release_thread(worker.ident)
+
+    assert not worker.is_alive()
+    assert reports[0].passed is False  # type: ignore[attr-defined]

@@ -183,8 +183,9 @@ from .run_context import (
 from .run_context import (
     delivery_policy_fingerprint as delivery_policy_fingerprint,
 )
+from .run_watch import HEARTBEAT_INTERVAL_SECONDS, watched
 from .store import FileRunStore
-from .subprocess_utils import kill_thread_children, release_thread
+from .subprocess_utils import kill_thread_children
 from .suppression_scan import suppression_scan
 from .telemetry import (
     count_operation,
@@ -245,10 +246,6 @@ class RunCancelledError(BaseException):  # NOSONAR(S5709) must pass `except Exce
         self.run_id = run_id
 
 
-#: How often a run in an agent call writes a lease heartbeat, in seconds.
-HEARTBEAT_INTERVAL_SECONDS = 30.0
-#: How often a run in an agent call looks for a stop request, in seconds.
-STOP_POLL_INTERVAL_SECONDS = 2.0
 #: How many of the latest tool calls the active call keeps for the live tail (dashboard X6).
 LIVE_TOOL_CALLS = 20
 
@@ -390,30 +387,10 @@ class WorkflowController:
         The heartbeat stops once the call outlives its own timeout, so a runtime that
         ignores its timeout still looks stalled to the service.
         """
-        stop = threading.Event()
         changed = threading.Event()
-        beat = threading.Thread(
-            target=self._heartbeat,
-            args=(run, stop, request.timeout_seconds, threading.get_ident(), changed),
-            name=f"heartbeat-{run.id}",
-            daemon=True,
-        )
-        thread_id = threading.get_ident()
-        # Publish the thread before the cancel check: a stop that lands after the check
-        # finds the thread, and any agent process it starts later is killed at once.
-        self._agent_threads[run.id] = thread_id
-        try:
-            self._raise_if_cancelled(run)
-            beat.start()
-            try:
-                with live_tool_calls(lambda call: self._note_tool_call(run, call, changed)):
-                    return self._runtime.run(request)
-            finally:
-                stop.set()
-                beat.join()
-        finally:
-            self._agent_threads.pop(run.id, None)
-            release_thread(thread_id)
+        tool_calls = live_tool_calls(lambda call: self._note_tool_call(run, call, changed))
+        with watched(self, run, request.timeout_seconds, changed), tool_calls:
+            return self._runtime.run(request)
 
     @staticmethod
     def _note_tool_call(run: FactoryRun, call: dict[str, str], changed: threading.Event) -> None:
@@ -431,48 +408,6 @@ class WorkflowController:
             }
         )
         changed.set()
-
-    def _heartbeat(
-        self,
-        run: FactoryRun,
-        stop: threading.Event,
-        timeout_seconds: int,
-        agent_thread: int | None = None,
-        changed: threading.Event | None = None,
-    ) -> None:
-        """Persist a heartbeat on ``run`` until ``stop`` is set or the call's timeout passes.
-
-        Between beats it looks for a stop request, and kills the agent processes of
-        ``agent_thread`` when it finds one. The agent call then fails, and the controller
-        halts the run at its next check. When ``changed`` is set, a new tool call is on the
-        active call, and the run is saved at the next poll, not the next beat. The calling
-        thread waits in the agent call and changes only ``run.active_invocation`` meanwhile.
-        """
-        started = last_beat = time.monotonic()
-        poll = min(self.heartbeat_interval_seconds, STOP_POLL_INTERVAL_SECONDS)
-        while not stop.wait(poll):
-            now_monotonic = time.monotonic()
-            if now_monotonic - started > timeout_seconds:
-                return
-            if agent_thread is not None and self._store.load_stop_request(run.id) is not None:
-                kill_thread_children(agent_thread)
-            fresh_tools = changed is not None and changed.is_set()
-            if fresh_tools or now_monotonic - last_beat >= self.heartbeat_interval_seconds:
-                if changed is not None:
-                    changed.clear()
-                last_beat = now_monotonic
-                self._write_heartbeat(run)
-
-    def _write_heartbeat(self, run: FactoryRun) -> None:
-        now = utc_now()
-        if run.lease is not None:
-            run.lease = run.lease.model_copy(update={"heartbeat_at": now})
-        else:
-            run.last_activity_at = now
-        try:
-            self._store.save_run(run)
-        except OSError as exc:
-            logger.warning("could not write the heartbeat of run %s: %s", run.id, exc)
 
     def with_pinned_policy(self, *, risk_assessment: bool, unattended: bool) -> WorkflowController:
         """Return a controller that starts new runs with the given policy.
@@ -2493,29 +2428,38 @@ class WorkflowController:
         return self.transition(run, WorkflowState.VERIFYING)
 
     def _verify(self, run: FactoryRun, context: RunContext) -> RepositoryVerificationResult:
-        """Run install, verify and build with persisted logs, then the advisory checks."""
-        result = self._verifier.run(
-            self._commands_for_run(run.id),
-            cwd=context.workspace.path,
-            run_dir=self._store.run_dir(run.id),
-            timeout_seconds=self._config.repository.command_timeout_seconds,
-            env_passthrough=self._config.repository.env_passthrough,
-            capture_bytes=self._config.repository.log_capture_bytes,
-            before_command=lambda: self._raise_if_cancelled(run),
-        )
+        """Run install, verify and build with persisted logs, then the advisory checks.
+
+        Each step is watched: it writes heartbeats, and a stop kills its command.
+        """
+        commands = self._commands_for_run(run.id)
+        command_timeout = self._config.repository.command_timeout_seconds
+        all_commands = len(commands.install) + len(commands.verify) + len(commands.build)
+        with watched(self, run, command_timeout * max(all_commands, 1)):
+            result = self._verifier.run(
+                commands,
+                cwd=context.workspace.path,
+                run_dir=self._store.run_dir(run.id),
+                timeout_seconds=command_timeout,
+                env_passthrough=self._config.repository.env_passthrough,
+                capture_bytes=self._config.repository.log_capture_bytes,
+                before_command=lambda: self._raise_if_cancelled(run),
+            )
         evidence = context.latest_evidence
         if not result.report.passed or evidence is None or not result.report.deterministic_checks:
             # No verify command ran, so the repository's code is not run here either.
             return result
-        self._raise_if_cancelled(run)
-        verify = self._commands_for_run(run.id).verify
-        advisory = (
-            self._mutation_check(run, context, evidence),
-            revert_check(
-                self._command_runner, context.workspace, evidence, verify, self._config.repository
-            ),
-            suppression_scan(evidence.diff),
-        )
+        with watched(self, run, command_timeout):
+            mutation = self._mutation_check(run, context, evidence)
+        with watched(self, run, command_timeout * max(len(commands.verify), 1)):
+            reverted = revert_check(
+                self._command_runner,
+                context.workspace,
+                evidence,
+                commands.verify,
+                self._config.repository,
+            )
+        advisory = (mutation, reverted, suppression_scan(evidence.diff))
         return result.with_checks(check for check in advisory if check is not None)
 
     def _mutation_check(

@@ -189,9 +189,8 @@ A working run shows **Stop run** next to its badge. The first click arms it and
 says what happens. **Confirm stop** sends the request, and **Keep running** puts
 the button back. `factory cancel <run>` does the same from the terminal.
 
-The process that drives the run stops the agent within a few seconds. A run
-in a check stops when that check command ends. A run that waits for CI stops
-within one poll interval.
+The process that drives the run stops the agent or the running check command
+within a few seconds. A run that waits for CI stops within one poll interval.
 The run halts in Needs you with its workspace and commits kept.
 
 ### Steer a run with a note
