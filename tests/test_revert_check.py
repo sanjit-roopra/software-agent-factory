@@ -149,7 +149,8 @@ def test_failure_to_restore_the_change_is_raised(
             raise WorkspaceError("restore failed")
 
     monkeypatch.setattr(workspace, "restore_paths", _restore)
+    runner = _Runner()
 
     with pytest.raises(WorkspaceError):
-        run_revert_check(_Runner(), workspace, "abc", ["pytest"], _SOURCES, _LIMITS)
+        run_revert_check(runner, workspace, "abc", ["pytest"], _SOURCES, _LIMITS)
     assert calls == [None, "abc"]
