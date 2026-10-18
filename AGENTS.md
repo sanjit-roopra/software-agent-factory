@@ -475,6 +475,19 @@ Avoid:
 
 When a simpler solution satisfies the architecture, choose it.
 
+## Code rules
+
+- Delete code before you add code. Less code is less to maintain.
+- Remove code that your change makes dead in the same pull request.
+- Keep one source of truth for each concept, such as a state table, a classifier or a command list.
+- Fail closed and visibly. A check that ran nothing is not a pass.
+- Give each wait and each subprocess a timeout, and let it honor a stop request.
+- Split a module before it grows past 800 lines. `tests/test_repo_rules.py` checks this and the paths in this file.
+- Do not add a suppression, a skipped test or a lower threshold to make a check pass.
+- When a change alters behavior, update `AGENTS.md`, `docs/` and the ADR in the same pull request.
+- Do not hard-code counts in documentation. Name the source instead.
+- Add a configuration option or an abstraction only for a current need.
+
 ## Testing rule
 Normal unit and integration tests must not require paid LLM calls.
 
