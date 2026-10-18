@@ -1860,8 +1860,7 @@ def build_pr_body(
     if specification is not None:
         lines.append(specification.problem.strip())
         if specification.acceptance_criteria:
-            lines.append("")
-            lines.append("## Acceptance criteria")
+            lines += ["", "## Acceptance criteria"]
             lines.extend(f"- {item}" for item in specification.acceptance_criteria)
         lines.append("")
     else:
@@ -1889,15 +1888,13 @@ def build_pr_body(
         if verification.failures:
             lines.extend(f"- {failure}" for failure in verification.failures)
         if verification.deterministic_checks:
-            lines.append("")
-            lines.append("Commands:")
+            lines += ["", "Commands:"]
             lines.extend(
                 f"- `{check.command}` exited {check.exit_code}"
                 for check in verification.deterministic_checks
             )
         if verification.test_findings:
-            lines.append("")
-            lines.append("Tester findings:")
+            lines += ["", "Tester findings:"]
             lines.extend(f"- {finding}" for finding in verification.test_findings)
         lines.append("")
 
@@ -1916,8 +1913,7 @@ def build_pr_body(
             if test_report.findings:
                 lines.extend(f"- {finding}" for finding in test_report.findings)
             if test_report.suggested_tests:
-                lines.append("")
-                lines.append("Suggested tests:")
+                lines += ["", "Suggested tests:"]
                 lines.extend(f"- {suggested}" for suggested in test_report.suggested_tests)
         lines.append("")
 
@@ -1930,17 +1926,21 @@ def build_pr_body(
             if review.findings:
                 lines.extend(f"- {finding}" for finding in review.findings)
             if review.suggested_changes:
-                lines.append("")
-                lines.append("Suggested changes:")
+                lines += ["", "Suggested changes:"]
                 lines.extend(f"- {suggested}" for suggested in review.suggested_changes)
         lines.append("")
 
     if review_acceptance is not None:
         by = "A person" if review_acceptance.reason == "OPERATOR" else "The controller"
-        lines += ["## Accepted findings", f"{by} accepted these findings."]
-        lines.append("The Reviewer did not approve this result.")
-        lines.append(f"Reviewed tree: `{review_acceptance.reviewed_tree_sha}`")
-        lines.append(f"Review rounds: {review_acceptance.review_rounds}")
+        lines.extend(
+            [
+                "## Accepted findings",
+                f"{by} accepted these findings.",
+                "The Reviewer did not approve this result.",
+                f"Reviewed tree: `{review_acceptance.reviewed_tree_sha}`",
+                f"Review rounds: {review_acceptance.review_rounds}",
+            ]
+        )
         lines.extend(
             f"- `{finding.id}` ({finding.category.value}): {finding.message}"
             for finding in review_acceptance.findings
