@@ -4,7 +4,7 @@ Attempt number:
 2
 
 Repair context:
-{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected HTTP 400","summary":"Deterministic verify failed (test failure).","trigger":"VERIFICATION"}
+{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected HTTP 400","previous_attempts":[],"summary":"Deterministic verify failed (test failure).","trigger":"VERIFICATION"}
 
 Current diff:
 diff --git a/src/app.py b/src/app.py

@@ -3030,6 +3030,9 @@ class WorkflowController:
                     stage=WorkflowState.IMPLEMENTING.value,
                     operation="rework",
                 )
+            repair_context = _with_repair_memory(
+                context.repair_signatures, repair_context, snapshot - 1
+            )
             run, implemented, evidence = self._invoke_implementer(
                 run,
                 attempt_number,
@@ -4748,12 +4751,48 @@ class _RunContext:
         self.latest_verification: VerificationReport | None = None
         self.latest_test_report: TestReport | None = None
         self.latest_review: ReviewReport | None = None
+        #: ``(attempt, signature)`` of each failure a repair attempt was given.
+        self.repair_signatures: list[tuple[int, str]] = []
 
 
 def _describe_scope(scope: ScopeAssessment) -> str:
     if not scope.findings:
         return "no findings recorded"
     return "; ".join(finding.message for finding in scope.findings)
+
+
+_NO_MEMORY_TRIGGERS = frozenset({AttemptTrigger.POLISH, AttemptTrigger.OPERATOR})
+_ERROR_LINE = re.compile(r"error|fail|assert|exception", re.IGNORECASE)
+
+
+def _repair_signature(repair_context: RepairContext) -> str:
+    """One line naming a failure: the first failure plus the first error line of its log.
+
+    Digits are masked so line numbers, counts and durations do not hide a repeat.
+    """
+    head = repair_context.failures[0] if repair_context.failures else repair_context.summary
+    lines = (repair_context.log_excerpt or "").splitlines()
+    error = next((line for line in lines if _ERROR_LINE.search(line)), "")
+    text = " | ".join(part for part in (head, error) if part)
+    return re.sub(r"\d+", "#", " ".join(text.split()))[:200]
+
+
+def _with_repair_memory(
+    earlier: list[tuple[int, str]],
+    repair_context: RepairContext | None,
+    failed_attempt: int,
+) -> RepairContext | None:
+    """Add earlier failure signatures, and a fixed warning when this failure repeats one."""
+    if repair_context is None or repair_context.trigger in _NO_MEMORY_TRIGGERS:
+        return repair_context
+    signature = _repair_signature(repair_context)
+    repeat = next((n for n, seen in reversed(earlier) if seen == signature), None)
+    summary = repair_context.summary
+    if repeat is not None:
+        summary = f"Same failure as attempt {repeat}; try a different approach. {summary}"
+    previous = [f"attempt {n}: {seen}" for n, seen in earlier[-3:]]
+    earlier.append((failed_attempt, signature))
+    return repair_context.model_copy(update={"summary": summary, "previous_attempts": previous})
 
 
 def _bounded(text: str, limit: int = MAX_REPAIR_EXCERPT_CHARS) -> str:
