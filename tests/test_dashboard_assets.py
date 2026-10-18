@@ -968,8 +968,8 @@ def test_an_expanded_call_stays_open_across_a_refresh() -> None:
     # Only a different call number closes the row; the same node is reused otherwise.
     assert 'const key = runId + "/" + displayValue(call.invocation_number);' in patch
     assert (
-        "if (row.dataset.call !== key) { row.dataset.call = key; setCallOpen(row, false); }"
-        in patch
+        "if (row.dataset.call !== key) { row.dataset.call = key; setCallOpen(row, false); "
+        "resetTranscript(" in patch
     )
     timeline = function_source(js, "renderTimeline")
     assert "callAt(body, index)" in timeline

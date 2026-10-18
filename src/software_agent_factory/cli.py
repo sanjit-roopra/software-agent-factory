@@ -1425,6 +1425,7 @@ def dashboard_command(
     from .run_metrics import resolve_usage
     from .run_requests import build_steer_requester, build_stop_requester
     from .store import FileRunStore
+    from .transcripts import call_transcript_reader
 
     store = FileRunStore(factory_config.data_dir)
     stale_after = _stale_after(factory_config, None)
@@ -1446,11 +1447,9 @@ def dashboard_command(
         )
 
     def run_detail_provider(run_id: str) -> object | None:
-        # Returns None (rendered as 404) for a run that does not exist or
-        # cannot be read. The detail carries raw failure reasons and the
-        # escalation text, so ``dashboard.view.run_detail_view`` must redact and
-        # bound them before they reach a client. It never carries a log, a
-        # diff, a prompt or a raw artifact body.
+        # None (404) for a missing or unreadable run. The detail carries raw failure reasons and
+        # escalation text, which ``dashboard.view.run_detail_view`` redacts and bounds. It never
+        # carries a log, a diff, a prompt or a raw artifact body.
         detail = build_run_detail(store, run_id, stale_after=stale_after, reply_policy=reply_policy)
         return None if detail is None else with_pending(store, run_id, detail)
 
@@ -1568,6 +1567,7 @@ def dashboard_command(
                 project_provider=project_provider,
                 run_evidence_provider=lambda run_id: build_run_evidence(store, run_id),
                 run_diff_provider=lambda run_id, attempt: build_run_diff(store, run_id, attempt),
+                run_transcript_provider=call_transcript_reader(store.runs_dir),
                 resume_request_reader=build_resume_request_reader(store),
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),

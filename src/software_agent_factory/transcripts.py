@@ -4,8 +4,8 @@ A runtime hands back the raw lines its CLI printed (``AgentResult.transcript``).
 The workflow writes them to ``runs/<id>/calls/<n>.jsonl`` after
 :func:`~.redaction.redact_secrets`, cut to :data:`TRANSCRIPT_MAX_CHARS`. At the
 same time it writes the tools the call used, one short line each, to a small
-``calls/<n>.tools.json`` beside it. The dashboard reads only that small file,
-so a poll never parses a whole transcript.
+``calls/<n>.tools.json`` beside it. A dashboard poll reads only that small file.
+The whole transcript is read only when a person opens it (:func:`read_call_transcript`).
 
 A runtime that streams its events (pi, dashboard X6) also reports each tool call as it
 starts, through :func:`report_tool_call`. The workflow listens with :func:`live_tool_calls`
@@ -38,6 +38,8 @@ TRANSCRIPT_MAX_CHARS = 2_000_000
 TRANSCRIPT_CUT_MARKER = '{"type":"factory.transcript_cut"}\n'
 MAX_TOOL_CALLS = 40
 PREVIEW_CHARS = 120
+#: The longest one-line preview of a transcript event the dashboard shows (ADR-047).
+EVENT_PREVIEW_CHARS = 400
 
 # Input keys that best say what a tool call did, in order of preference.
 _PREVIEW_KEYS = ("command", "file_path", "path", "pattern", "url", "query", "description")
@@ -141,9 +143,59 @@ def read_call_tool_calls(run_dir: Path, invocation_number: int) -> list[dict[str
     ]
 
 
-def _one_line(value: str) -> str:
+def read_call_transcript(run_dir: Path, invocation_number: int) -> str | None:
+    """One call's stored transcript, or ``None`` when it is missing or unreadable."""
+    try:
+        return (run_dir / transcript_name(invocation_number)).read_text("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def call_transcript_reader(runs_dir: Path) -> Callable[[str, int], str | None]:
+    """Reads one call's transcript by run id and call number, for the dashboard."""
+    return lambda run_id, number: read_call_transcript(runs_dir / run_id, number)
+
+
+def event_preview(line: str, limit: int = EVENT_PREVIEW_CHARS) -> dict[str, str]:
+    """One transcript line as its event type and one line of what it says or does."""
+    try:
+        event = json.loads(line)
+    except JSONDecodeError:
+        event = None
+    if not isinstance(event, dict):
+        return {"type": "text", "text": _one_line(line, limit)}
+    kind = event.get("type")
+    uses = _tool_uses(event)
+    text = "; ".join(f"{name} {_preview(arguments)}".strip() for name, arguments in uses)
+    return {
+        "type": _one_line(kind, 60) if isinstance(kind, str) else "event",
+        "text": _one_line(text or _event_text(event), limit),
+    }
+
+
+def _event_text(event: dict[str, Any]) -> str:
+    """The first text an event carries, at its top level, in ``data`` or in ``message``."""
+    for source in (event, event.get("data"), event.get("message")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("result", "content", "text", "message"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+            if isinstance(value, list):
+                texts = [
+                    b["text"]
+                    for b in value
+                    if isinstance(b, dict) and isinstance(b.get("text"), str)
+                ]
+                if texts:
+                    return " ".join(texts)
+    return ""
+
+
+def _one_line(value: str, limit: int = PREVIEW_CHARS) -> str:
     line = " ".join(value.split())
-    return line if len(line) <= PREVIEW_CHARS else line[: PREVIEW_CHARS - 1] + "…"
+    return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
 def _preview(arguments: Any) -> str:

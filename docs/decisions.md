@@ -506,11 +506,18 @@ to see what a call did.
   one short line of its input. The dashboard sanitizer redacts and cuts both again.
 - The run detail also names the runtime that served each call, from its usage, and
   sends the fallback reason (ADR-045) redacted and cut.
+- `GET /api/runs/<id>/calls/<n>/transcript` serves one call's transcript when a person
+  opens it from a step. It reads at most the last 1,000,000 characters and runs
+  `redact_secrets` again first. It sends one line of up to 400 characters for each of the
+  last 500 events. It also sends the last 16,000 characters of the raw text, and
+  `truncated` when events were left out. `<n>` is 1 to 9999 with no leading zero.
+  Anything else is 404.
+  The page does not poll it. Amended on 2026-10-19.
 
 ### Consequences
 
 - A run directory grows by the size of its transcripts. The cap bounds one call.
-- The full transcript stays on disk for a person to read. The dashboard does not serve it.
+- The full transcript stays on disk. The dashboard serves only its capped, redacted end.
 - Claude Code still runs with `--no-session-persistence`, so its own session files are
   not kept. Its stdout is the full event stream, so the factory transcript replaces
   them for review.
@@ -624,6 +631,7 @@ The same rules hold for all of them:
 - A cut keeps the start and the end of the text where that helps, and a marker names the cut.
   For check output and the trace, the end is kept, since the failure is near the end.
 - Each kind has its own `GET` route per run, such as `/api/runs/<id>/diff`.
+  The agent trace route is `/api/runs/<id>/calls/<n>/transcript` (ADR-050).
   The run list, the snapshot and health never carry this text.
   The run detail carries counts and short one-line previews only.
 - Each route has its own field allowlist in the sanitizer, as ADR-016 asks.

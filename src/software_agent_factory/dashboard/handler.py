@@ -52,6 +52,7 @@ from .snapshot import (
     parse_run_filter,
     to_json_safe,
 )
+from .transcript_route import transcript_answer
 from .view import compare_view, project_view, run_detail_view, run_summary_view, summary_view
 
 if TYPE_CHECKING:
@@ -63,8 +64,7 @@ _logger = logging.getLogger("software_agent_factory.dashboard")
 def _log_failure_type(message: str, exc: BaseException, *args: object) -> None:
     """Log a failure by its exception type only.
 
-    The message and traceback of a failure can quote run data or a plan
-    answer, so neither reaches the log.
+    The message and traceback can quote run data or a plan answer, so neither reaches the log.
     """
     _logger.error(message + ": %s", *args, type(exc).__name__)
 
@@ -73,12 +73,11 @@ def _log_failure_type(message: str, exc: BaseException, *args: object) -> None:
 #: and the result. It never holds the token or the body.
 _audit_logger = logging.getLogger("software_agent_factory.dashboard.audit")
 
-#: Hard ceiling on the number of query-string fields ``parse_qs`` will
-#: accept. The dashboard only ever reads ``token``, ``limit``, ``offset``, the run list
-#: filters ``q``, ``state``, ``project`` and ``sort``, and the compare ids ``a`` and ``b``,
-#: so anything beyond a handful of fields is either a mistake or an attempt to force
-#: excessive parsing work; either way it is rejected with a clean 400 rather than left to
-#: raise an uncaught ``ValueError`` mid-request.
+#: Hard ceiling on the number of query-string fields ``parse_qs`` will accept. The dashboard
+#: only ever reads ``token``, ``limit``, ``offset``, the run list filters ``q``, ``state``,
+#: ``project`` and ``sort``, and the compare ids ``a`` and ``b``, so anything beyond a handful
+#: of fields is a mistake or an attempt to force excessive parsing work; either way it is
+#: rejected with a clean 400 rather than left to raise an uncaught ``ValueError``.
 _MAX_QUERY_FIELDS = 16
 
 
@@ -488,7 +487,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if diff_match:
             self._serve_run_diff(diff_match.group(1), query, send_body)
             return
-        self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
+        status, payload = transcript_answer(self.server.run_transcript_provider, path)
+        self._respond_json(status, payload, send_body)
 
     def _serve_index(
         self, send_body: bool, *, extra_headers: tuple[tuple[str, str], ...] = ()

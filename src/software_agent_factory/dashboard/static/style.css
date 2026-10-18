@@ -251,6 +251,9 @@ a { color: var(--accent); }
 .call-toggle::before { content: "\25B8"; content: "\25B8" / ""; margin-right: 0.4rem; }
 .call-toggle[aria-expanded="true"]::before { content: "\25BE"; content: "\25BE" / ""; }
 .call-fields { margin: 0; padding: 0.25rem 0.6rem 0.5rem 1.4rem; }
+.call-transcript { padding: 0 0.6rem 0.6rem 1.4rem; }
+.call-transcript pre { max-height: 24rem; overflow: auto; font-family: var(--font-mono); font-size: var(--fs-sm); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.5rem 0 0; }
+.transcript-raw summary { cursor: pointer; margin-top: 0.5rem; color: var(--text-muted); }
 .call-rejected > :first-child { box-shadow: inset 4px 0 0 var(--error); }
 /* Steps read as a timeline: a line down the first column, one dot per call in its outcome color. */
 .call-row > td:first-child { position: relative; padding-left: 1.6rem; white-space: nowrap; }
