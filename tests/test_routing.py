@@ -39,8 +39,9 @@ from software_agent_factory.routing import (
     determine_route,
     find_legal_full_fallback,
 )
+from software_agent_factory.run_context import RunContext
 from software_agent_factory.store import FileRunStore
-from software_agent_factory.workflow import WorkflowController, _RunContext
+from software_agent_factory.workflow import WorkflowController
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceLockError
 
 
@@ -1409,7 +1410,7 @@ def test_final_review_item9_authoritative_route_decision_ratchet_and_ci_repair(
         branch_prefix=config.repository.branch_prefix,
     )
     workspace.prepare()
-    context = _RunContext(
+    context = RunContext(
         work_item=wi,
         triage_result=store.load_artifact(run.id, TriageResult),
         specification=store.load_artifact(run.id, Specification),

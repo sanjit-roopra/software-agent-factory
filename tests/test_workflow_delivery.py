@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from factory_testing import CrashingRuntime, build_config, git, triage_hook, work_item
 
+from software_agent_factory import run_reopen
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, RiskAssessmentConfig
 from software_agent_factory.delivery import DeliveryTarget
@@ -39,9 +40,9 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
 from software_agent_factory.resume_writes import ingest_dashboard_request
+from software_agent_factory.run_recovery import MAX_RESTART_RECOVERIES
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import (
-    MAX_RESTART_RECOVERIES,
     WorkflowController,
     delivery_policy_fingerprint,
 )
@@ -1308,7 +1309,7 @@ def test_a_retry_that_no_longer_matches_its_context_cannot_reopen_the_run(
     reopening = tamper(store.load_run(halted.id))
 
     with pytest.raises(ValueError, match=message):
-        controller._transition_reopened(reopening)
+        run_reopen.transition_reopened(controller, reopening)
 
 
 @pytest.mark.parametrize(
