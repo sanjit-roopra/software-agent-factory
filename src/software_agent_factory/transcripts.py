@@ -75,11 +75,16 @@ def report_tool_call(name: str, arguments: Any) -> None:
         sink({"name": _one_line(redact_secrets(name)), "preview": _preview(arguments)})
 
 
-def report_event_line(line: str) -> None:
-    """Report one line a streaming CLI printed: output arrived, and each tool call it starts."""
+def report_output() -> None:
+    """Tell the listener, if any, that the running call printed something (ADR-048)."""
     sink = _output_sink.get()
     if sink is not None:
         sink()
+
+
+def report_event_line(line: str) -> None:
+    """Report one line a streaming CLI printed: output arrived, and each tool call it starts."""
+    report_output()
     try:
         event = json.loads(line)
     except (ValueError, RecursionError):  # not JSON, or a number past Python's digit limit

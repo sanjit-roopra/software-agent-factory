@@ -104,7 +104,7 @@ from .subprocess_utils import (
     sanitize_output,
     track_child,
 )
-from .transcripts import EventLog, report_tool_call
+from .transcripts import EventLog, report_output, report_tool_call
 from .usage_values import non_negative_float, non_negative_int
 
 if TYPE_CHECKING:
@@ -193,8 +193,7 @@ class _UnexpectedResponse(Exception):
     non-mapping ``data`` (a string, list, number, ...) is a protocol surprise
     -- not the caller's bug -- so this is a distinct type from
     :class:`~software_agent_factory.pi_rpc.PiRpcError`, mapped to a failed
-    ``AgentResult`` rather than an ``AttributeError`` from calling ``.get()``
-    on a non-mapping.
+    ``AgentResult`` rather than an ``AttributeError`` from ``.get()``.
     """
 
     def __init__(self, command: str) -> None:
@@ -651,6 +650,7 @@ class PiAgentRuntime(AgentRuntime):
 
         def on_event(record: dict[str, Any]) -> None:
             events.add(record)
+            report_output()
             _report_tool_start(record, redact)
 
         client = PiRpcClient(process, redact=redact, on_event=on_event)

@@ -586,6 +586,7 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 - While an agent call runs, the controller writes the lease heartbeat every 30 seconds.
   The heartbeat stops when the call runs past its own timeout, so a call that never ends still looks stalled.
 - During an agent call, a beat is written only when the agent printed a line or started a tool since the last beat.
+  For pi, each RPC event counts as a printed line and also sets `last_output_at`.
   So an agent that hangs and prints nothing looks stalled after `scheduler.stall_timeout_seconds` of silence,
   not only at the end of its own timeout. There is no new setting. Amended on 2026-10-19.
 - The verify commands, the mutation gate, the revert check and each CI wait write the same heartbeat.
