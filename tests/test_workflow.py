@@ -3555,8 +3555,10 @@ def test_repair_memory_lists_earlier_failures_and_flags_a_repeat() -> None:
     other = _with_repair_memory(earlier, failing(2, "E   ImportError: no module"), 2)
     repeat = _with_repair_memory(earlier, failing(1, "tests/test_a.py:99: AssertionError"), 3)
 
-    assert first is not None and first.previous_attempts == []
-    assert other is not None and not other.summary.startswith("Same failure")
+    assert first is not None
+    assert first.previous_attempts == []
+    assert other is not None
+    assert not other.summary.startswith("Same failure")
     assert repeat is not None
     assert repeat.summary.startswith("Same failure as attempt 1; try a different approach.")
     assert repeat.previous_attempts == [
