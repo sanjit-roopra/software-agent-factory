@@ -31,6 +31,11 @@ TAIL_CHARS = 16_000
 _NOT_FOUND: tuple[HTTPStatus, dict[str, Any]] = (HTTPStatus.NOT_FOUND, {"error": "not found"})
 
 
+def _log_failure_type(run_id: str, exc: BaseException) -> None:
+    """Log a provider failure by its exception type only, never its message or traceback."""
+    _logger.error("Transcript provider failed for run %s: %s", run_id, type(exc).__name__)
+
+
 def transcript_answer(
     provider: RunTranscriptProvider | None, path: str
 ) -> tuple[HTTPStatus, dict[str, Any]]:
@@ -45,7 +50,7 @@ def transcript_answer(
     try:
         text = provider(run_id, number)
     except Exception as exc:  # noqa: BLE001 - the type only: the message can quote run data
-        _logger.error("Transcript provider failed for run %s: %s", run_id, type(exc).__name__)
+        _log_failure_type(run_id, exc)
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "transcript unavailable"}
     if text is None:
         return _NOT_FOUND
