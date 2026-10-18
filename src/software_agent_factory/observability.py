@@ -84,13 +84,12 @@ from .escalation_protocol import (
     ANSWER_COMMAND_PATTERN,
     ReplyClosedCause,
     ReplyPolicy,
+    halt_code_for_reason,
     reply_closed_cause,
 )
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
-    STALLED_HALT_REASON,
-    STOPPED_HALT_REASON,
     TOKEN_CLASS_FIELDS,
     TOTAL_TOKEN_FIELDS,
     UNRESOLVED_DECISIONS_HALT_REASON,
@@ -2020,7 +2019,10 @@ def _build_run_guidance(store: RunStoreProtocol, run: FactoryRun) -> RunGuidance
     reason = (run.failure_reason or "").lower()
     if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
         return _unresolved_decisions_guidance(store, run, reason)
-    code = _halt_reason_code(reason)
+    # The code the escalation recorded at the halt, else the one the reason text selects.
+    code = (
+        HaltReasonCode.parse(run.escalation.reason_code) if run.escalation else None
+    ) or halt_code_for_reason(reason)
     copy = HALT_REASON_COPY[code]
     return RunGuidance(
         status=_ACTION_REQUIRED,
@@ -2054,27 +2056,6 @@ def _unresolved_decisions_guidance(
         artifact="execution-plan.json",
         decision_count=unresolved_count,
     )
-
-
-def _halt_reason_code(reason: str) -> HaltReasonCode:
-    """The code a lowercased failure reason selects. The run view keys on the reason text alone."""
-    if reason.startswith(STALLED_HALT_REASON):
-        return HaltReasonCode.STALLED
-    if reason.startswith(STOPPED_HALT_REASON):
-        return HaltReasonCode.MANUAL_INSPECTION
-    if "risk" in reason or "approval" in reason:
-        return HaltReasonCode.RISK_APPROVAL
-    if "scope" in reason:
-        return HaltReasonCode.SCOPE_REVIEW
-    if "budget" in reason or "attempt" in reason:
-        return HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
-    if "ci " in reason or reason.startswith("ci"):
-        return HaltReasonCode.CI_INTERVENTION
-    if any(term in reason for term in ("publish", "pull request", "merge", "permission")):
-        return HaltReasonCode.DELIVERY_INTERVENTION
-    if any(term in reason for term in ("abandon", "interrupt", "workspace")):
-        return HaltReasonCode.RECOVERY_INTERVENTION
-    return HaltReasonCode.MANUAL_INSPECTION
 
 
 def _review_category_counts(findings: Iterable[Any]) -> dict[ReviewFindingCategory, int]:

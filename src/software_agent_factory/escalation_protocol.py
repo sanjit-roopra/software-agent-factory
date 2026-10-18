@@ -2,8 +2,8 @@
 
 A leaf: it imports only the standard library and :mod:`.models` (and the config type, for
 annotations). The escalation controller, which pulls in the GitHub client, and the read-only
-dashboard both import it, so they cannot drift apart on what a reply looks like or on
-whether one is read.
+dashboard both import it, so they cannot drift apart on what a reply looks like, on
+whether one is read, or on which code a halt reason selects.
 
 :func:`reply_closed_cause` is the one reply gate. The reply poller and the reply validator in
 :mod:`.escalation` call it and act on the cause it returns, and the dashboard shows that
@@ -21,7 +21,16 @@ from typing import TYPE_CHECKING, Self
 
 from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
 from .models import MAX_PLAN_DECISIONS as MAX_PLAN_DECISIONS
-from .models import REPLY_CURSOR_CLOSED, EscalationRecord, EscalationStatus
+from .models import (
+    PUBLISH_FAILED_HALT_REASON,
+    REPLY_CURSOR_CLOSED,
+    STALLED_HALT_REASON,
+    STOPPED_HALT_REASON,
+    UNRESOLVED_DECISIONS_HALT_REASON,
+    EscalationRecord,
+    EscalationStatus,
+    HaltReasonCode,
+)
 
 if TYPE_CHECKING:
     from .config import EscalationConfig
@@ -145,3 +154,45 @@ def reply_closed_cause(
     if not policy.allows_host(policy.notice_host(record)):
         return ReplyClosedCause.HOST_NOT_ALLOWED
     return None
+
+
+#: Halt reasons the controller writes with a fixed prefix, and the code each maps to. An
+#: exact prefix comes before the word checks: a publish error text can hold "scope" or
+#: "attempt".
+_PREFIX_CODES = (
+    (STALLED_HALT_REASON, HaltReasonCode.STALLED),
+    (STOPPED_HALT_REASON, HaltReasonCode.MANUAL_INSPECTION),
+    (UNRESOLVED_DECISIONS_HALT_REASON, HaltReasonCode.UNRESOLVED_DECISIONS),
+    (PUBLISH_FAILED_HALT_REASON, HaltReasonCode.DELIVERY_INTERVENTION),
+)
+
+#: Words in a free-text halt reason, and the code they select, checked in order.
+_WORD_CODES = (
+    (("scope",), HaltReasonCode.SCOPE_REVIEW),
+    (("budget", "attempt"), HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED),
+    (("ci ",), HaltReasonCode.CI_INTERVENTION),
+    (("publish", "pull request", "merge", "permission"), HaltReasonCode.DELIVERY_INTERVENTION),
+    (("abandon", "interrupt", "workspace"), HaltReasonCode.RECOVERY_INTERVENTION),
+)
+
+_RISK_APPROVAL_REASON = re.compile(r"risk r[23] requires human approval")
+
+
+def halt_code_for_reason(reason: str) -> HaltReasonCode:
+    """The code a halt reason selects from its text alone, compared without regard to case.
+
+    The one classifier of reason text: the GitHub notice and the dashboard both read it.
+    ``REVIEW_IMPASSE`` comes from a stored artifact, so it is not selected here.
+    """
+    reason = reason.lower()
+    prefix_code = next((code for prefix, code in _PREFIX_CODES if reason.startswith(prefix)), None)
+    if prefix_code is not None:
+        return prefix_code
+    if _RISK_APPROVAL_REASON.fullmatch(reason):
+        return HaltReasonCode.RISK_APPROVAL
+    for words, code in _WORD_CODES:
+        if any(word in reason for word in words) or (
+            code is HaltReasonCode.CI_INTERVENTION and reason.startswith("ci")
+        ):
+            return code
+    return HaltReasonCode.MANUAL_INSPECTION
