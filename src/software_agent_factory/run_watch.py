@@ -94,16 +94,33 @@ def heartbeat(
         now_monotonic = time.monotonic()
         if now_monotonic - started > timeout_seconds:
             return
-        if watched_thread is not None and controller._store.load_stop_request(run.id) is not None:
-            kill_thread_children(watched_thread)
-            if killed is not None:
-                killed.set()
-        fresh_tools = changed is not None and changed.is_set()
-        if fresh_tools or now_monotonic - last_beat >= interval:
-            if changed is not None:
-                changed.clear()
+        if watched_thread is not None:
+            _kill_on_stop_request(controller, run, watched_thread, killed)
+        if _take(changed) or now_monotonic - last_beat >= interval:
             last_beat = now_monotonic
             write_heartbeat(controller, run)
+
+
+def _kill_on_stop_request(
+    controller: WorkflowController,
+    run: FactoryRun,
+    watched_thread: int,
+    killed: threading.Event | None,
+) -> None:
+    """Kill the processes of ``watched_thread`` when a stop request for ``run`` is on disk."""
+    if controller._store.load_stop_request(run.id) is None:
+        return
+    kill_thread_children(watched_thread)
+    if killed is not None:
+        killed.set()
+
+
+def _take(changed: threading.Event | None) -> bool:
+    """Clear ``changed`` and return whether it was set."""
+    if changed is None or not changed.is_set():
+        return False
+    changed.clear()
+    return True
 
 
 def write_heartbeat(controller: WorkflowController, run: FactoryRun) -> None:

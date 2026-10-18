@@ -388,9 +388,9 @@ class WorkflowController:
         ignores its timeout still looks stalled to the service.
         """
         changed = threading.Event()
-        with watched(self, run, request.timeout_seconds, changed):
-            with live_tool_calls(lambda call: self._note_tool_call(run, call, changed)):
-                return self._runtime.run(request)
+        tool_calls = live_tool_calls(lambda call: self._note_tool_call(run, call, changed))
+        with watched(self, run, request.timeout_seconds, changed), tool_calls:
+            return self._runtime.run(request)
 
     @staticmethod
     def _note_tool_call(run: FactoryRun, call: dict[str, str], changed: threading.Event) -> None:
