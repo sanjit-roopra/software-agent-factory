@@ -78,7 +78,13 @@ def _imported_modules(module: ModuleType) -> set[str]:
 
 
 # The rules module docstring promises this exact list of package imports.
-RULES_ALLOWED_PACKAGE_IMPORTS = {".models", ".config", ".escalation_protocol", ".redaction"}
+RULES_ALLOWED_PACKAGE_IMPORTS = {
+    ".models",
+    ".config",
+    ".escalation_protocol",
+    ".redaction",
+    ".resume_classes",
+}
 
 
 _PACKAGE = "software_agent_factory"

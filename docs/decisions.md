@@ -1,5 +1,59 @@
 # Architecture Decisions
 
+## ADR-057: Dashboard-only resume actions for dead-end halts
+
+Status: accepted on 2026-10-18.
+
+### Context
+
+Three halt classes can resume today: `RISK_APPROVAL`, `PLAN_DECISION` and
+`DELIVERY_RETRY`. Every other halt is a dead end. A person must read the run,
+fix it by hand or start a new run. Four of these halts have one clear next step.
+The run used its attempt budget, review did not settle, the change left its
+approved scope, or CI repair stopped.
+
+Each resumable class was wired by hand in about ten places. These include the
+escalation context, the reply receipt, the reopen state and check, and the
+dashboard route and copy. A new class had to repeat all of them.
+
+### Decision
+
+- One table, `RESUME_CLASSES` in `resume_classes.py`, holds what differs per
+  resumable class. An entry names the escalation context field, the receipt
+  fingerprint field, the context check and the reply command. It also names the
+  state a reopen resumes at, the dashboard route and copy, and whether a GitHub
+  reply can resume it.
+- The context builders live in `halt_contexts.py` and the reopen checks in
+  `run_reopen.py`, because they read run artifacts. Each is a table keyed on the
+  same classes. A test checks that every table covers every resumable class.
+- Four new resume classes will follow, one per change:
+
+  | Halt | Dashboard action | Resumes at |
+  | --- | --- | --- |
+  | `ATTEMPT_BUDGET_EXHAUSTED` | Grant one more attempt | `IMPLEMENTING` |
+  | `REVIEW_IMPASSE` | Accept with findings | `PR_READY` |
+  | `SCOPE_REVIEW` | Approve wider scope | `VERIFYING` |
+  | `CI_INTERVENTION` | Retry CI repair | `CI_DIAGNOSIS` |
+
+- Each new class works like `DELIVERY_RETRY` (ADR-042):
+  - Only the dashboard can resume it. Its halt gets no reply instructions, and a
+    GitHub reply to it is refused.
+  - The escalation stores a context with a fingerprint bound to the run and the
+    episode. A change to the context makes a queued request stale.
+  - An accepted request writes a reply receipt that carries the fingerprint.
+  - The service picks the request up as a `DashboardResumeRequest`, as today.
+  - A resume counts as a reopen. `escalation.max_reopens` and the reply window
+    bound it, as today.
+- The table lands first, with no change in behavior. Each class then adds one
+  entry, its context builder and its reopen check.
+
+### Consequences
+
+- A new resume class is one entry in each table, not a branch in each module.
+- The dashboard write actions grow by one route per class. Each route must be
+  named in `docs/reference/safety.md`, and a test checks it.
+- A GitHub reply still resumes only `RISK_APPROVAL` and `PLAN_DECISION`.
+
 ## ADR-056: Show the suppressions and skips that a change adds
 
 Status: accepted on 2026-10-18.

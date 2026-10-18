@@ -1,9 +1,10 @@
 """The "Needs you" view model: how an operator continues a halted run.
 
-Pure: no I/O, and it imports only ``models`` and the leaves ``escalation_protocol`` and
-``validators`` (no ``escalation``, which pulls in the GitHub client). ``next_step`` reads a
-run detail that already went through :mod:`software_agent_factory.dashboard.sanitize`. That
-step redacted and bounded every free text, so this module copies text and never redacts it.
+Pure: no I/O, and it imports only ``models`` and the leaves ``escalation_protocol``,
+``resume_classes`` and ``validators`` (no ``escalation``, which pulls in the GitHub client).
+``next_step`` reads a run detail that already went through
+:mod:`software_agent_factory.dashboard.sanitize`. That step redacted and bounded every free
+text, so this module copies text and never redacts it.
 
 Whether the page may offer an action is not decided here. The escalation block carries
 ``dashboard_action_refusal``, which :func:`software_agent_factory.resume.resume_refusal_within`
@@ -28,7 +29,7 @@ parser is never put into a reply: the step becomes
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -36,6 +37,7 @@ from typing import Any
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, format_answer_command, format_resume_command
 from ..models import HaltReasonCode, ResumeClassification, WorkflowState
+from ..resume_classes import RESUME_CLASSES
 from .validators import (
     RESUME_CLASSIFICATIONS,
     is_context_fingerprint,
@@ -95,17 +97,15 @@ STALE_SENTENCES: dict[str, str] = {
     "context_changed": "the run changed, review again",
     "state_changed": "the run state changed, review again",
 }
-#: The same, for a request that carried plan answers: only the expired sentence differs.
-ANSWER_STALE_SENTENCES: dict[str, str] = dict(
-    STALE_SENTENCES, expired="answers expired, send them again"
-)
-#: The same, for a request to publish again.
-RETRY_STALE_SENTENCES: dict[str, str] = dict(STALE_SENTENCES, expired="retry expired, retry again")
+#: The same, per resumable class: only the expired sentence differs.
 _STALE_SENTENCES_BY_ACTION: dict[str, dict[str, str]] = {
-    ResumeClassification.RISK_APPROVAL: STALE_SENTENCES,
-    ResumeClassification.PLAN_DECISION: ANSWER_STALE_SENTENCES,
-    ResumeClassification.DELIVERY_RETRY: RETRY_STALE_SENTENCES,
+    kind: dict(STALE_SENTENCES, expired=spec.expired_sentence)
+    for kind, spec in RESUME_CLASSES.items()
 }
+#: The sentences for a request that carried plan answers.
+ANSWER_STALE_SENTENCES = _STALE_SENTENCES_BY_ACTION[ResumeClassification.PLAN_DECISION]
+#: The sentences for a request to publish again.
+RETRY_STALE_SENTENCES = _STALE_SENTENCES_BY_ACTION[ResumeClassification.DELIVERY_RETRY]
 
 #: Why the page offers no action, one phrase per refusal code. Two reuse the reply phrases.
 REFUSAL_CAUSES: dict[str, str] = {
@@ -356,11 +356,8 @@ def _parse_time(value: Any) -> datetime | None:
 
 def _queued_sentence(request: _Request) -> str:
     moment = request.created_at.strftime("%Y-%m-%d %H:%M UTC")
-    if request.action == ResumeClassification.RISK_APPROVAL:
-        return f"Approved at {moment}, queued for the factory service. {START_HINT}"
-    if request.action == ResumeClassification.DELIVERY_RETRY:
-        return f"Retry requested at {moment}, queued for the factory service. {START_HINT}"
-    return f"Answers sent at {moment}, queued for the factory service"
+    template = RESUME_CLASSES[ResumeClassification(request.action)].queued_sentence
+    return template.format(moment=moment, start_hint=START_HINT)
 
 
 def _queued_request(
@@ -381,6 +378,14 @@ def _stale_sentence(request: _Request) -> str:
     return _STALE_SENTENCES_BY_ACTION[request.action][str(request.reason)]
 
 
+#: The step builder for each dashboard action of a resumable class.
+_STEPS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = {
+    "approve": _approve,
+    "answer": _answer,
+    "retry": _retry,
+}
+
+
 def _resume_step(
     run: dict[str, Any], escalation: dict[str, Any], requests: list[_Request]
 ) -> dict[str, Any]:
@@ -396,12 +401,8 @@ def _resume_step(
             requested_at=queued.created_at.isoformat(),
         )
         return step
-    if classification == ResumeClassification.RISK_APPROVAL:
-        step = _approve(run, escalation)
-    elif classification == ResumeClassification.DELIVERY_RETRY:
-        step = _retry(run, escalation)
-    else:
-        step = _answer(run, escalation)
+    spec = RESUME_CLASSES[ResumeClassification(str(classification))]
+    step = _STEPS[spec.dashboard_action](run, escalation)
     stale = [r for r in requests if r.status == "stale" and r.action == classification]
     if stale:
         step["stale_sentence"] = _stale_sentence(stale[-1])
@@ -422,11 +423,7 @@ def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, An
     escalation: dict[str, Any] = raw if isinstance(raw, dict) else {}
     if state != WorkflowState.NEEDS_HUMAN:
         return _empty(NextStepKind.NONE)
-    if escalation.get("resume_classification") in (
-        ResumeClassification.RISK_APPROVAL,
-        ResumeClassification.PLAN_DECISION,
-        ResumeClassification.DELIVERY_RETRY,
-    ):
+    if escalation.get("resume_classification") in RESUME_CLASSES:
         step = _resume_step(run, escalation, _parsed_requests(requests))
     else:
         step = _cannot_continue(run, _reason_sentence(escalation), escalation)

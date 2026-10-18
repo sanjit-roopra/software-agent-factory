@@ -120,7 +120,6 @@ from .models import (
     RepositoryCommandsPlan,
     RepositoryCommandsSource,
     RepositoryProfile,
-    ResumeClassification,
     ReviewAcceptance,
     ReviewAcceptanceReason,
     ReviewFinding,
@@ -482,12 +481,11 @@ class WorkflowController:
 
         if new_state is WorkflowState.NEEDS_HUMAN:
             from .escalation import (
-                build_delivery_retry_context,
-                build_plan_decision_context,
-                build_risk_approval_context,
                 classify_halt_reason,
                 generate_episode_id,
+                github_resume_enabled,
             )
+            from .halt_contexts import build_resume_context
 
             classification, code, summary, action = classify_halt_reason(
                 run.model_copy(update={"state": new_state, "failure_reason": failure_reason}),
@@ -498,63 +496,18 @@ class WorkflowController:
             reopen_count = prev_escalation.reopen_count if prev_escalation else 0
             accepted_replies = prev_escalation.accepted_replies if prev_escalation else []
             episode_id = generate_episode_id()
-            approval_context = None
-            plan_decision_context = None
-            delivery_retry_context = None
-            remote_resume_enabled = False
-            if classification is ResumeClassification.DELIVERY_RETRY:
-                # Only a publish that failed from PR_READY can be published again.
-                if run.state is WorkflowState.PR_READY:
-                    delivery_retry_context = build_delivery_retry_context(
-                        run, episode_id=episode_id
-                    )
-                if delivery_retry_context is None:
-                    classification = ResumeClassification.NOT_RESUMABLE
-            elif classification is ResumeClassification.RISK_APPROVAL:
-                approval_context = build_risk_approval_context(
-                    run=run,
-                    store=self._store,
-                    config=self._config,
-                    episode_id=episode_id,
-                )
-                if approval_context is not None:
-                    from .escalation import build_escalation_comment
-
-                    rendered = build_escalation_comment(
-                        run_id=run.id,
-                        episode_id=episode_id,
-                        classification=classification,
-                        reason_code=code,
-                        summary=summary,
-                        next_action=action,
-                        attempts_consumed=len(run.attempt_records),
-                        reopen_count=reopen_count,
-                        max_reopens=self._config.escalation.max_reopens,
-                        approval_context=approval_context,
-                    )
-                    remote_resume_enabled = getattr(rendered, "remote_resume_enabled", False)
-            elif classification is ResumeClassification.PLAN_DECISION:
-                plan_decision_context = build_plan_decision_context(
-                    run=run,
-                    store=self._store,
-                    episode_id=episode_id,
-                )
-                if plan_decision_context is not None:
-                    from .escalation import build_escalation_comment
-
-                    rendered = build_escalation_comment(
-                        run_id=run.id,
-                        episode_id=episode_id,
-                        classification=classification,
-                        reason_code=code,
-                        summary=summary,
-                        next_action=action,
-                        attempts_consumed=len(run.attempt_records),
-                        reopen_count=reopen_count,
-                        max_reopens=self._config.escalation.max_reopens,
-                        plan_decision_context=plan_decision_context,
-                    )
-                    remote_resume_enabled = getattr(rendered, "remote_resume_enabled", False)
+            classification, context_fields = build_resume_context(
+                run, self._store, self._config, classification, episode_id
+            )
+            remote_resume_enabled = github_resume_enabled(
+                run,
+                self._config,
+                episode_id=episode_id,
+                classification=classification,
+                halt=(code, summary, action),
+                reopen_count=reopen_count,
+                context_fields=context_fields,
+            )
             updates["escalation"] = EscalationRecord(
                 episode_id=episode_id,
                 episode_number=episode_num,
@@ -563,10 +516,8 @@ class WorkflowController:
                 reason_code=code,
                 reopen_count=reopen_count,
                 accepted_replies=accepted_replies,
-                approval_context=approval_context,
-                plan_decision_context=plan_decision_context,
-                delivery_retry_context=delivery_retry_context,
                 remote_resume_enabled=remote_resume_enabled,
+                **context_fields,
             )
 
         run = run.model_copy(update=updates)

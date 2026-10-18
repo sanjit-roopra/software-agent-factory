@@ -12,7 +12,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..models import TOTAL_TOKEN_FIELDS, ResumeClassification, WorkflowState
+from ..models import TOTAL_TOKEN_FIELDS, WorkflowState
+from ..resume_classes import RESUME_CLASSES
 from .aggregate import STATUS_FAILED
 from .sanitize import sanitize_usage
 from .validators import is_count, is_number
@@ -25,16 +26,10 @@ OUTCOME_ACTIVE = "active"
 #: An active run with no new signal for longer than the stale limit.
 OUTCOME_STALE = "stale"
 
-#: What a run that waits for a person needs: the ``action`` of a ``needs_you`` outcome.
-#: ``waiting`` and ``retry`` have an action on the run page; ``stopped`` has only a command.
-ACTION_WAITING = "waiting"
-ACTION_RETRY = "retry"
+#: What a run that waits for a person needs: the ``action`` of a ``needs_you`` outcome. A
+#: resumable class names its own (``RESUME_CLASSES``) and has an action on the run page;
+#: ``stopped`` has only a command.
 ACTION_STOPPED = "stopped"
-_NEEDS_YOU_ACTIONS: dict[str, tuple[str, str]] = {
-    ResumeClassification.RISK_APPROVAL: (ACTION_WAITING, "Needs approval"),
-    ResumeClassification.PLAN_DECISION: (ACTION_WAITING, "Needs answers"),
-    ResumeClassification.DELIVERY_RETRY: (ACTION_RETRY, "Needs retry"),
-}
 _STOPPED = (ACTION_STOPPED, "Stopped, needs you")
 
 #: How a call that did not fail itself relates to a failed run (see :func:`flag_failing_call`).
@@ -76,7 +71,8 @@ def _resume_classification(run: Mapping[str, Any]) -> Any:
 
 def _needs_you_outcome(run: Mapping[str, Any]) -> dict[str, str]:
     """A ``needs_you`` outcome whose label and ``action`` say what the person must do."""
-    action, label = _NEEDS_YOU_ACTIONS.get(_resume_classification(run), _STOPPED)
+    spec = RESUME_CLASSES.get(_resume_classification(run))
+    action, label = (spec.needs_you_action, spec.needs_you_label) if spec else _STOPPED
     return {**_outcome(OUTCOME_NEEDS_YOU, label), "action": action}
 
 
