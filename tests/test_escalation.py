@@ -438,10 +438,9 @@ def _has_approval_from_earlier_episode(tmp_path: Path, *, receipt_episode_id: st
     store.save_run(run)
     store.save_artifact(run.id, work_item)
     store.save_artifact(run.id, triage_result)
-    config = _make_config(tmp_path)
 
     context_a = build_risk_approval_context(
-        run, store, config=config, work_item=work_item, triage_result=triage_result, episode_id="A"
+        run, store, work_item=work_item, triage_result=triage_result, episode_id="A"
     )
     assert context_a is not None
     receipt = AcceptedReplyReceipt(
@@ -460,7 +459,7 @@ def _has_approval_from_earlier_episode(tmp_path: Path, *, receipt_episode_id: st
         update={"escalation": run.escalation.model_copy(update={"accepted_replies": [receipt]})}
     )
     return has_dispatched_risk_approval(
-        run, store, config=config, work_item=work_item, triage_result=triage_result
+        run, store, work_item=work_item, triage_result=triage_result
     )
 
 

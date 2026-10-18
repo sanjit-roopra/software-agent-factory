@@ -84,7 +84,6 @@ def build_risk_approval_context(
     run: FactoryRun,
     store: FileRunStore,
     *,
-    config: FactoryConfig | None = None,
     work_item: WorkItem | None = None,
     triage_result: TriageResult | None = None,
     episode_id: str | None = None,
@@ -239,7 +238,6 @@ def has_dispatched_risk_approval(
     run: FactoryRun,
     store: FileRunStore,
     *,
-    config: FactoryConfig,
     work_item: WorkItem,
     triage_result: TriageResult,
 ) -> bool:
@@ -272,7 +270,6 @@ def has_dispatched_risk_approval(
         context = build_risk_approval_context(
             run=run,
             store=store,
-            config=config,
             work_item=work_item,
             triage_result=triage_result,
             episode_id=receipt.episode_id,
@@ -356,8 +353,8 @@ _CONTEXT_BUILDERS: dict[
     ResumeClassification,
     Callable[[FactoryRun, FileRunStore, FactoryConfig, str], ResumeContext | None],
 ] = {
-    ResumeClassification.RISK_APPROVAL: lambda run, store, config, episode_id: (
-        build_risk_approval_context(run, store, config=config, episode_id=episode_id)
+    ResumeClassification.RISK_APPROVAL: lambda run, store, _config, episode_id: (
+        build_risk_approval_context(run, store, episode_id=episode_id)
     ),
     ResumeClassification.PLAN_DECISION: lambda run, store, _config, episode_id: (
         build_plan_decision_context(run, store, episode_id=episode_id)

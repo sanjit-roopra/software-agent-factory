@@ -28,8 +28,11 @@ def test_every_entry_names_real_fields_and_has_every_value() -> None:
         assert spec.context_field in EscalationRecord.model_fields, kind
         assert spec.receipt_field in AcceptedReplyReceipt.model_fields, kind
         assert spec.command("run-1", "episode-1"), kind
-        assert spec.dashboard_action and spec.needs_you_action and spec.needs_you_label, kind
-        assert "{moment}" in spec.queued_sentence and spec.expired_sentence, kind
+        assert spec.dashboard_action, kind
+        assert spec.needs_you_action, kind
+        assert spec.needs_you_label, kind
+        assert "{moment}" in spec.queued_sentence, kind
+        assert spec.expired_sentence, kind
 
 
 def test_context_and_receipt_fields_and_dashboard_actions_are_unique() -> None:

@@ -387,7 +387,6 @@ def triage_authorizes_delivery(
     return has_dispatched_risk_approval(
         run,
         controller._store,
-        config=controller._config,
         work_item=work_item,
         triage_result=triage,
     )
