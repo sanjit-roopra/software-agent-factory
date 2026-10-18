@@ -68,7 +68,10 @@ def added_suppressions(diff: str) -> list[Suppression]:
 def suppression_items(evidence: WorkspaceEvidence | None) -> list[str]:
     """Markdown items for the PR body: the place and the marker of each one."""
     found = added_suppressions(evidence.diff) if evidence is not None else []
-    return [f"`{item.path}:{item.line}`: `{item.marker}`" for item in found]
+    items = [f"`{item.path}:{item.line}`: `{item.marker}`" for item in found[:MAX_LISTED]]
+    if len(found) > MAX_LISTED:
+        items.append(f"and {len(found) - MAX_LISTED} more")
+    return items
 
 
 def suppression_scan(diff: str) -> CommandResult | None:

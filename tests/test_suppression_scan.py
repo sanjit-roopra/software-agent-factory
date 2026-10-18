@@ -104,3 +104,13 @@ def test_suppression_items_name_the_place_and_the_marker() -> None:
         "`src/app.py:2`: `type: ignore`",
         "`src/app.py:3`: `# noqa`",
     ]
+
+
+def test_suppression_items_cap_the_listed_markers() -> None:
+    count = MAX_LISTED + 3
+    diff = f"+++ b/a.py\n@@ -0,0 +1,{count} @@\n" + "+x = 1  # noqa\n" * count
+
+    items = suppression_items(WorkspaceEvidence(diff=diff))
+
+    assert len(items) == MAX_LISTED + 1
+    assert items[-1] == "and 3 more"

@@ -23,7 +23,8 @@ reached a pull request unseen when the reviewer missed it.
   The tester and the reviewer read its output, and the dashboard checks view
   shows it.
 - The PR body lists the place and the marker of each one under "Suppressions
-  and skips added".
+  and skips added". The check and the PR body list at most 50 and give the
+  count of the rest, so a large change cannot make the PR body too long.
 - The scan is advisory. It never fails verification, starts no repair round and
   does not read the reason for a marker. A marker can be correct, and a person
   or the reviewer judges it.
