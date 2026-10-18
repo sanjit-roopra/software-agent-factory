@@ -1531,14 +1531,15 @@ def load_operator_escalation(store: RunStoreProtocol, run_id: str) -> OperatorEs
         )
     except (OSError, ValueError):
         return None
-    if loaded.status == "running" and not _process_alive(loaded.pid):
+    if loaded.status == "running" and not process_alive(loaded.pid):
         return loaded.model_copy(
             update={"status": "failed", "error": "the escalation stopped before it finished"}
         )
     return loaded
 
 
-def _process_alive(pid: int | None) -> bool:
+def process_alive(pid: int | None) -> bool:
+    """Return true when a process with ``pid`` exists on this host."""
     if pid is None:
         return False
     try:
@@ -2111,13 +2112,7 @@ def _active_invocation_status(
     if lease is None:
         return "abandoned"
     if lease.host == socket.gethostname():
-        try:
-            os.kill(lease.pid, 0)
-        except ProcessLookupError:
-            return "crashed"
-        except PermissionError:
-            return "running"
-        return "running"
+        return "running" if process_alive(lease.pid) else "crashed"
     if _is_stale(run, now, stale_after):
         return "stale"
     return "running"
@@ -2363,14 +2358,7 @@ def _probe_lock_staleness(lock_path: Path) -> tuple[bool, datetime | None]:
     if owner_pid <= 0:
         raise ValueError(f"lock file has an invalid owner PID: {lock_path}")
 
-    try:
-        os.kill(owner_pid, 0)
-    except ProcessLookupError:
-        is_stale = True
-    except PermissionError:
-        is_stale = False
-    else:
-        is_stale = False
+    is_stale = not process_alive(owner_pid)
 
     try:
         modified_at = datetime.fromtimestamp(lock_path.stat().st_mtime, tz=timezone.utc)
