@@ -20,6 +20,7 @@ from typing import Callable
 import pytest
 from pydantic import ValidationError
 
+from software_agent_factory import run_recovery
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentHook, AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
@@ -89,13 +90,13 @@ from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.revert_check import REVERT_CHECK_COMMAND, TESTS_PASS_WITHOUT_CHANGE
+from software_agent_factory.run_context import RunContext
 from software_agent_factory.store import ARTIFACT_FILENAMES, FileRunStore
 from software_agent_factory.suppression_scan import SUPPRESSION_SCAN_COMMAND
 from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
     TransitionError,
     WorkflowController,
-    _RunContext,
 )
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
 
@@ -325,10 +326,10 @@ def test_recovery_moves_reach_only_declared_states(data_dir: Path) -> None:
 
     for state in WorkflowState:
         if state in RECOVERY_TRANSITIONS["restart"]:
-            assert controller._restart_at(run, state).state is state
+            assert run_recovery.restart_at(controller, run, state).state is state
         else:
             with pytest.raises(TransitionError):
-                controller._restart_at(run, state)
+                run_recovery.restart_at(controller, run, state)
         if state in RECOVERY_TRANSITIONS["operator_escalation"] | ALLOWED_TRANSITIONS[run.state]:
             assert controller.transition(run, state, operator_escalation=True).state is state
         else:
@@ -1301,7 +1302,7 @@ def test_tester_receives_repair_diff_and_prior_accepted_findings_during_review_r
                 open_findings=[open_finding],
             ),
         )
-        context = _RunContext(
+        context = RunContext(
             work_item=_work_item("WI-tester-repair-context"),
             triage_result=TriageResult(
                 factory_eligible=True,
@@ -1448,7 +1449,7 @@ def test_review_repair_loop_passes_repair_diff_and_prior_accepted_findings_to_te
         store.save_artifact(run.id, plan)
         store.save_artifact(run.id, profile)
 
-        context = _RunContext(
+        context = RunContext(
             work_item=work_item,
             triage_result=TriageResult(
                 factory_eligible=True,

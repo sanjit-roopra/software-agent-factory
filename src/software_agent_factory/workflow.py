@@ -1,7 +1,11 @@
 """The single authoritative :class:`WorkflowController`.
 
-Per ``AGENTS.md`` ("One authoritative workflow controller"), only this module
-mutates a :class:`~software_agent_factory.models.FactoryRun`'s state. Agents
+Per ``AGENTS.md`` ("One authoritative workflow controller"), only this
+controller mutates a :class:`~software_agent_factory.models.FactoryRun`'s state.
+Its pull request delivery (:mod:`.pr_delivery`), restart and resume
+(:mod:`.run_recovery`) and reopen and escalation (:mod:`.run_reopen`) live in
+their own modules as functions that take the controller as their first argument.
+Agents
 (via :mod:`software_agent_factory.agents`) return typed artifacts and
 outcomes; they never transition the run themselves, and their claims about
 what changed on disk are never trusted -- ``changed_files`` and the diff are
@@ -45,14 +49,9 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 from __future__ import annotations
 
 import copy
-import functools
-import hashlib
-import json
 import logging
 import os
-import secrets
 import socket
-import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -60,7 +59,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from . import review_ledger
+from . import pr_delivery, review_ledger, run_recovery, run_reopen
 from .agents import (
     AgentRequest,
     AgentResult,
@@ -77,11 +76,9 @@ from .config import (
 )
 from .delivery import DeliveryTarget, fetch_delivery_target
 from .github import (
-    SHA_PATTERN,
     GitHubClient,
     GitHubError,
     GitPublishError,
-    build_pr_body,
     resolve_github_token,
 )
 from .governance import (
@@ -90,7 +87,6 @@ from .governance import (
     ScopeAssessment,
     ScopeDecision,
     ScopeDriftPolicy,
-    assess_publish_gate,
     find_protected_matches,
 )
 from .lifecycle import (
@@ -101,8 +97,6 @@ from .lifecycle import (
 )
 from .models import (
     MAX_OPEN_REVIEW_FINDINGS,
-    PUBLISH_FAILED_HALT_REASON,
-    REPLY_CURSOR_CLOSED,
     STOPPED_HALT_REASON,
     UNRESOLVED_DECISIONS_HALT_REASON,
     ActiveInvocation,
@@ -112,7 +106,6 @@ from .models import (
     AttemptRecord,
     AttemptTrigger,
     ChangeSet,
-    CIReport,
     CommandResult,
     EscalationRecord,
     EscalationStatus,
@@ -124,7 +117,6 @@ from .models import (
     InvocationRecord,
     MutationReport,
     MutationStatus,
-    PlanDecisionAnswers,
     PlanningResult,
     PlanStep,
     RejectedCommand,
@@ -165,11 +157,8 @@ from .publishing import CIObserver, PullRequestMerger, PullRequestPublisher
 from .redaction import redact_secrets
 from .repair_context import (
     MAX_REPAIR_FAILURES,
-    PLANNING_RESULT_REQUEST,
-    ci_repair_context,
     implementer_failure_context,
     planner_clarification_context,
-    planner_human_decision_context,
     polish_context,
     review_contract_repair_context,
     review_repair_context,
@@ -184,19 +173,23 @@ from .repository_profile import (
     is_version_file,
     profile_repository,
 )
-from .resume import (
-    escalation_route,
-    is_valid_delivery_retry_context,
-    is_valid_plan_decision_answers,
-    is_valid_plan_decision_context,
-    is_valid_risk_approval_context,
-    receipt_approves_risk_context,
-)
 from .revert_check import revert_check
 from .routing import ModelRouter, derive_named_paths, determine_route
+from .run_context import (
+    SYNTHESIZED_ROUTES,
+    Halt,
+    RunContext,
+    describe_scope,
+)
+from .run_context import (
+    TransitionError as TransitionError,
+)
+from .run_context import (
+    delivery_policy_fingerprint as delivery_policy_fingerprint,
+)
 from .store import FileRunStore
 from .subprocess_utils import kill_thread_children, release_thread
-from .suppression_scan import suppression_items, suppression_scan
+from .suppression_scan import suppression_scan
 from .telemetry import (
     count_operation,
     measure_operation,
@@ -215,26 +208,6 @@ from .workspace import (
 )
 
 logger = logging.getLogger(__name__)
-
-#: CI failure categories that may legitimately be repaired by another code
-#: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
-#: operator problem, not a code problem, and escalates with evidence.
-REPAIRABLE_CI_CATEGORIES: frozenset[str] = frozenset({"CODE_FAILURE", "TEST_FAILURE"})
-#: Factory restarts one unattended run may spend before it ends as it is (ADR-043).
-MAX_RESTART_RECOVERIES = 2
-#: Routes that synthesize the specification and the plan instead of calling the planner.
-_SYNTHESIZED_ROUTES = frozenset({ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE})
-_RESTART_REASON = "interrupted by a factory restart"
-_DELIVERY_REPO_CHANGED = "delivery repository changed since this run started"
-_RESTART_REPAIR_CONTEXT = RepairContext(
-    trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
-    summary=(
-        "A factory restart interrupted the previous attempt. The working tree may contain "
-        "partial, unverified edits from it; inspect and reconcile them before continuing."
-    ),
-    failures=[_RESTART_REASON],
-    log_excerpt=None,
-)
 
 
 def _fold_legacy_concerns(review: ReviewReport) -> ReviewReport:
@@ -264,22 +237,6 @@ def _fold_legacy_concerns(review: ReviewReport) -> ReviewReport:
     )
 
 
-class TransitionError(Exception):
-    """Raised when a caller attempts a workflow state transition that is
-    not present in ``ALLOWED_TRANSITIONS``."""
-
-
-def delivery_policy_fingerprint(config: FactoryConfig) -> str:
-    """Bind recovery to the human policy under which the run was started."""
-    payload = config.model_dump(
-        mode="json",
-        include={"repository", "pull_request", "ci", "merge", "risk", "scope_drift"},
-    )
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
 class RunCancelledError(BaseException):  # NOSONAR(S5709) must pass `except Exception` guards
     """The service asked a run to stop because it stalled.
 
@@ -298,15 +255,6 @@ HEARTBEAT_INTERVAL_SECONDS = 30.0
 STOP_POLL_INTERVAL_SECONDS = 2.0
 #: How many of the latest tool calls the active call keeps for the live tail (dashboard X6).
 LIVE_TOOL_CALLS = 20
-
-
-class _Halt(Exception):
-    """Internal control-flow signal: the run has already reached a terminal
-    state and been persisted; unwind to the caller of ``run()``."""
-
-    def __init__(self, run: FactoryRun) -> None:
-        super().__init__(run.state)
-        self.run = run
 
 
 class WorkflowController:
@@ -400,7 +348,7 @@ class WorkflowController:
         if run.id in self._cancel_requests:
             raise RunCancelledError(run.id)
 
-    def _halt_on_stop_request(self, run: FactoryRun, request: RunStopRequest) -> _Halt:
+    def _halt_on_stop_request(self, run: FactoryRun, request: RunStopRequest) -> Halt:
         """Halt ``run`` for a person, keeping its workspace and commits.
 
         No escalation notice: the person who asked for the stop already knows.
@@ -412,7 +360,7 @@ class WorkflowController:
         logger.warning("run %s %s", run.id, reason)
         run = self._close_active_invocation(run, reason)
         # The terminal transition deletes the request.
-        return _Halt(self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason))
+        return Halt(self.transition(run, WorkflowState.NEEDS_HUMAN, failure_reason=reason))
 
     def _call_with_steer_note(self, run: FactoryRun, request: AgentRequest) -> AgentResult:
         """Run the agent with a person's waiting steer note added to ``request`` (ADR-047).
@@ -1037,419 +985,16 @@ class WorkflowController:
         )
 
     def resume(self, run_id: str, source_repo: Path) -> FactoryRun:
-        """Reconcile a delivery checkpoint without resetting any attempt budget.
+        """Reconcile a delivery checkpoint without resetting any attempt budget."""
+        return run_recovery.resume(self, run_id, source_repo)
 
-        Earlier interrupted agent work is deliberately not replayed: its outcome
-        is ambiguous. An unattended run interrupted before a delivery checkpoint
-        continues instead (ADR-043). A preserved terminal outcome is never reopened.
-        """
-        run = self._store.load_run(run_id)
-        if is_run_finished(run):
-            return run
-        self._require_unchanged_delivery_policy(run)
-        workspace = GitWorktreeWorkspace(
-            self._config.data_dir,
-            source_repo,
-            run.work_item_id,
-            branch_prefix=self._config.repository.branch_prefix,
-        )
-        workspace.acquire_lock()
-        try:
-            run = self._store.load_run(run_id)
-            if is_run_finished(run):
-                return run
-            if run.state not in {
-                WorkflowState.PR_READY,
-                WorkflowState.PR_CREATED,
-                WorkflowState.CI_RUNNING,
-                WorkflowState.CI_DIAGNOSIS,
-            }:
-                if run.unattended:
-                    return self._restart_interrupted_run(run, workspace, source_repo)
-                return self.recover_abandoned_run(
-                    run,
-                    "interrupted before a safe delivery checkpoint; "
-                    "workspace and attempt budgets were preserved",
-                )
-            if self._config.merge.enabled:
-                assert self._merger is not None
-                repository = self._merger.validate_repository(source_repo)
-                if repository != run.delivery_repository:
-                    raise ValueError(_DELIVERY_REPO_CHANGED)
-            if not self._workspace_matches(run, workspace):
-                return self._recover_interrupted_delivery(
-                    run,
-                    workspace,
-                    source_repo,
-                    "delivery workspace identity changed or the workspace is missing",
-                )
-            try:
-                context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
-                now = utc_now()
-                run = run.model_copy(
-                    update={
-                        "lease": RunLease(
-                            host=socket.gethostname(), pid=os.getpid(), heartbeat_at=now
-                        ),
-                        "last_activity_at": now,
-                        "updated_at": now,
-                    }
-                )
-                self._store.save_run(run)
-                if run.state is WorkflowState.PR_READY:
-                    if not self._config.pull_request.enabled:
-                        return self.finalize_pr_ready(run)
-                    return self._publish_and_observe(run, context)
-                if not self._config.pull_request.enabled:
-                    raise ValueError("cannot resume published work with pull requests disabled")
-                if not self._config.ci.enabled:
-                    if run.needs_look:
-                        return self._leave_open(run, context)
-                    return self.transition(run, WorkflowState.DONE)
-                return self._ci_loop(run, context)
-            except _Halt as halt:
-                return halt.run
-            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
-                return self._recover_interrupted_delivery(
-                    self._store.load_run(run_id),
-                    workspace,
-                    source_repo,
-                    f"could not reconcile delivery checkpoint: {exc}",
-                )
-        finally:
-            workspace.release_lock()
+    def reopen(self, run_id: str, source_repo: Path) -> FactoryRun:
+        """Controller-owned API to reopen an eligible run halted in NEEDS_HUMAN."""
+        return run_reopen.reopen(self, run_id, source_repo)
 
-    @staticmethod
-    def _workspace_matches(run: FactoryRun, workspace: GitWorktreeWorkspace) -> bool:
-        return (
-            workspace.path.is_dir()
-            and run.workspace_path == str(workspace.path)
-            and run.branch_name == workspace.branch_name
-        )
-
-    def _restart_interrupted_run(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
-    ) -> FactoryRun:
-        """Continue an unattended run that a factory restart interrupted before delivery (ADR-043).
-
-        The run keeps its id, its attempt records and its stored artifacts. The attempt an
-        interrupted Implementer was making counts as a failed attempt, so a restart never
-        widens the attempt budget. The output of interrupted work is ambiguous, so work starts
-        again at planning, or from the start when the run stored no triage or lost its
-        workspace. A run that a restart interrupted more than ``MAX_RESTART_RECOVERIES`` times
-        or while it had a pull request ends as it is, like a run that used its budget.
-        """
-        try:
-            run = self._count_restart(run)
-            work_item = self._store.load_artifact(run.id, WorkItem)
-            if run.restart_recoveries > MAX_RESTART_RECOVERIES or run.pull_request_url is not None:
-                return self._end_restarted_run(run, workspace, source_repo)
-            try:
-                triage_result = self._store.load_artifact(run.id, TriageResult)
-            except FileNotFoundError:
-                triage_result = None
-            if triage_result is None or not self._workspace_matches(run, workspace):
-                # Nothing was published, so a clean worktree on the current base loses nothing.
-                workspace.discard()
-                run = self._restart_at(run, WorkflowState.CREATED)
-                return self._prepare_and_execute(run, work_item, workspace, source_repo)
-            workspace.prepare()
-            repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
-            run = self._restart_at(run, WorkflowState.PLANNING)
-            if run.initial_route in _SYNTHESIZED_ROUTES:
-                return self._drive_synthesized(
-                    run,
-                    work_item,
-                    triage_result,
-                    run.route_decision,
-                    workspace,
-                    source_repo,
-                    repository_profile,
-                    repair_context=_RESTART_REPAIR_CONTEXT,
-                )
-            return self._drive_from_planning(
-                run,
-                work_item,
-                triage_result,
-                None,
-                workspace,
-                source_repo,
-                repository_profile,
-                route_decision=run.route_decision,
-                repair_context=_RESTART_REPAIR_CONTEXT,
-            )
-        except _Halt as halt:
-            return halt.run
-        except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
-            return self._recover_interrupted_delivery(
-                self._store.load_run(run.id),
-                workspace,
-                source_repo,
-                f"could not restart interrupted run: {exc}",
-            )
-
-    def _recover_interrupted_delivery(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path, reason: str
-    ) -> FactoryRun:
-        """Stop an interrupted run that cannot continue (ADR-043).
-
-        An unattended run with a pull request leaves it open, labelled and not merged.
-        Every other run stops for a person.
-        """
-        if run.unattended and run.pull_request_url is not None:
-            try:
-                context = self._stored_context(run, workspace, source_repo)
-            except (OSError, ValueError):
-                pass
-            else:
-                return self._leave_open(self._close_active_invocation(run, reason), context, reason)
-        return self.recover_abandoned_run(run, reason)
-
-    def _count_restart(self, run: FactoryRun) -> FactoryRun:
-        """Close the interrupted invocation and count this restart.
-
-        The last Implementer invocation with no attempt record counts as one failed attempt
-        of its budget. The controller records an attempt only after the Implementer returns,
-        so an interruption during the call, or just after it, leaves none.
-        """
-        run = self._close_active_invocation(run, _RESTART_REASON)
-        now = utc_now()
-        run = run.model_copy(
-            update={
-                "restart_recoveries": run.restart_recoveries + 1,
-                "lease": RunLease(host=socket.gethostname(), pid=os.getpid(), heartbeat_at=now),
-                "last_activity_at": now,
-                "updated_at": now,
-            }
-        )
-        self._store.save_run(run)
-        implementer = next(
-            (r for r in reversed(run.invocation_records) if r.role is AgentRole.IMPLEMENTER), None
-        )
-        recorded = {attempt.invocation_number for attempt in run.attempt_records}
-        if implementer is not None and implementer.invocation_number not in recorded:
-            run = self._record_attempt(
-                run,
-                implementer.attempt_number or 1,
-                RoleModelConfig(
-                    model=implementer.model,
-                    reasoning=implementer.reasoning,
-                    context_tier=implementer.context_tier,
-                ),
-                implementer.started_at,
-                now,
-                outcome="failed",
-                failure_reason=_RESTART_REASON,
-                budget=implementer.budget or AttemptBudget.IMPLEMENTATION,
-                trigger=AttemptTrigger.INITIAL,
-            )
-        return run
-
-    def _restart_at(self, run: FactoryRun, state: WorkflowState) -> FactoryRun:
-        """Controller-internal move of an interrupted unattended run back to ``state``.
-
-        The transition table has no edge back to an earlier stage from every state. The
-        interrupted stage is not timed, because its duration would include the downtime.
-        """
-        if state not in RECOVERY_TRANSITIONS["restart"]:
-            raise TransitionError(f"cannot restart run {run.id} at {state}")
-        now = utc_now()
-        run = run.model_copy(
-            update={
-                "state": state,
-                "updated_at": now,
-                "state_started_at": now,
-                "last_activity_at": now,
-                "completed_at": None,
-                "failure_reason": None,
-            }
-        )
-        self._store.save_run(run)
-        logger.info("run %s -> %s (restarted after a factory restart)", run.id, state.value)
-        return run
-
-    def _end_restarted_run(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
-    ) -> FactoryRun:
-        """End a restarted run as it is (ADR-043): publish its work or keep its pull request."""
-        reason = (
-            f"{_RESTART_REASON} while its pull request was open"
-            if run.pull_request_url is not None
-            else f"{_RESTART_REASON} too often to continue"
-        )
-        try:
-            self._store.load_artifact(run.id, Specification)
-            self._store.load_artifact(run.id, ExecutionPlan)
-        except FileNotFoundError:
-            return self._halt(run, WorkflowState.NEEDS_HUMAN, f"{reason}; nothing to publish").run
-        workspace.prepare()
-        context = self._stored_context(run, workspace, source_repo)
-        run = self._restart_at(run, WorkflowState.IMPLEMENTING)
-        run = self._publish_as_is(run, context, reason)
-        if run.state is not WorkflowState.PR_READY:
-            return run
-        if not self._config.pull_request.enabled:
-            return self.finalize_pr_ready(run)
-        return self._publish_and_observe(run, context)
-
-    def _require_unchanged_delivery_policy(self, run: FactoryRun) -> None:
-        if run.delivery_policy_fingerprint != delivery_policy_fingerprint(self._config):
-            raise ValueError("delivery policy changed since this run started; refusing to resume")
-
-    def _reconcile_delivery_checkpoint(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
-    ) -> _RunContext:
-        """Check the delivery workspace against the run and rebuild the delivery context.
-
-        ``resume`` and ``reopen`` of a publish retry share it. It raises when the workspace or
-        the reviewed work no longer match the run.
-        """
-        workspace.prepare()
-        self._check_delivery_workspace(run, workspace.path)
-        return self._restore_delivery_context(run, workspace, source_repo)
-
-    def _transition_reopened(self, run: FactoryRun) -> FactoryRun:
-        """Controller-internal transition from NEEDS_HUMAN to its guarded resume state.
-
-        Guarantees that the run has a durable resume-pending status (REOPENED)
-        and an accepted receipt bound to the current run and episode before
-        leaving NEEDS_HUMAN, and marks the escalation as RESUMED upon exit.
-        """
-        if run.state is not WorkflowState.NEEDS_HUMAN:
-            raise TransitionError(
-                f"cannot reopen run {run.id} in state {run.state}; must be in NEEDS_HUMAN"
-            )
-        escalation = run.escalation
-        if escalation is None:
-            raise ValueError(f"run {run.id} has no escalation record; cannot reopen")
-        if escalation.status is not EscalationStatus.REOPENED:
-            raise ValueError(
-                f"run {run.id} escalation status is {escalation.status}, "
-                "not REOPENED; cannot reopen"
-            )
-        receipt = next(
-            (
-                r
-                for r in reversed(escalation.accepted_replies)
-                if r.run_id == run.id and r.episode_id == escalation.episode_id
-            ),
-            None,
-        )
-        if receipt is None:
-            raise ValueError(
-                f"run {run.id} has no accepted reply receipt bound to "
-                f"episode {escalation.episode_id}"
-            )
-
-        target_state: WorkflowState
-        if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
-            if escalation.approval_context is None or not is_valid_risk_approval_context(
-                escalation.approval_context, run.id, escalation.episode_id
-            ):
-                raise ValueError(
-                    f"run {run.id} has missing or invalid risk approval decision context"
-                )
-            if not receipt_approves_risk_context(receipt, escalation.approval_context):
-                raise ValueError(
-                    f"run {run.id} receipt fingerprint does not match active approval context"
-                )
-            # Approval contexts written before ADR-035 name REFINING. Both resume at PLANNING.
-            target_state = WorkflowState.PLANNING
-        elif escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-            context = escalation.plan_decision_context
-            if context is None or not is_valid_plan_decision_context(
-                context, run.id, escalation.episode_id
-            ):
-                raise ValueError(f"run {run.id} has missing or invalid plan decision context")
-            answers = self._store.load_artifact(run.id, PlanDecisionAnswers)
-            if not is_valid_plan_decision_answers(
-                answers,
-                context,
-                run_id=run.id,
-                episode_id=escalation.episode_id,
-                receipt=receipt,
-            ):
-                raise ValueError(f"run {run.id} has missing or invalid plan decision answers")
-            plan = self._store.load_artifact(run.id, ExecutionPlan)
-            plan_payload = json.dumps(
-                plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-            )
-            plan_fingerprint = hashlib.sha256(plan_payload.encode("utf-8")).hexdigest()
-            if not secrets.compare_digest(plan_fingerprint, context.plan_fingerprint):
-                raise ValueError(f"run {run.id} execution plan no longer matches decision context")
-            target_state = WorkflowState.PLANNING
-        elif escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
-            retry = escalation.delivery_retry_context
-            if retry is None or not is_valid_delivery_retry_context(
-                retry, run.id, escalation.episode_id
-            ):
-                raise ValueError(f"run {run.id} has missing or invalid delivery retry context")
-            if receipt.delivery_retry_context_fingerprint is None or not secrets.compare_digest(
-                receipt.delivery_retry_context_fingerprint, retry.context_fingerprint
-            ):
-                raise ValueError(
-                    f"run {run.id} receipt fingerprint does not match active delivery context"
-                )
-            if (run.reviewed_tree_sha, run.base_commit_sha, run.branch_name) != (
-                retry.reviewed_tree_sha,
-                retry.base_commit_sha,
-                retry.branch_name,
-            ):
-                raise ValueError(f"run {run.id} no longer matches its delivery retry context")
-            target_state = WorkflowState.PR_READY
-        else:
-            raise ValueError(
-                f"run {run.id} halt category {escalation.resume_classification} cannot be reopened"
-            )
-
-        now = utc_now()
-        stage_name = run.state.value
-        stage_started_at = run.state_started_at or run.updated_at
-        stage_duration_ms = max(0.0, (now - stage_started_at).total_seconds() * 1000.0)
-        run.performance.record_duration(
-            f"stage.{stage_name}",
-            stage_duration_ms,
-            stage=stage_name,
-            operation="stage",
-            accumulate=True,
-        )
-        updated_receipts = [
-            (
-                r.model_copy(update={"dispatched_at": now})
-                if (
-                    r.run_id == run.id
-                    and r.episode_id == escalation.episode_id
-                    and r.dispatched_at is None
-                )
-                else r
-            )
-            for r in escalation.accepted_replies
-        ]
-        updated_escalation = escalation.model_copy(
-            update={
-                "status": EscalationStatus.RESUMED,
-                "accepted_replies": updated_receipts,
-                "updated_at": now,
-            }
-        )
-        updates: dict[str, object] = {
-            "state": target_state,
-            "updated_at": now,
-            "state_started_at": now,
-            "last_activity_at": now,
-            "completed_at": None,
-            "failure_reason": None,
-            "escalation": updated_escalation,
-        }
-        if run.lease is not None:
-            updates["lease"] = run.lease.model_copy(update={"heartbeat_at": now})
-
-        run = run.model_copy(update=updates)
-        # A stop request filed as the run halted must not stop the resume a person asked for.
-        self._store.delete_stop_request(run.id)
-        self._store.save_run(run)
-        logger.info("run %s -> %s (reopened from escalation)", run.id, target_state.value)
-        return run
+    def escalate(self, run_id: str, note: str) -> FactoryRun:
+        """Redo a run one route higher with a person's note (ADR-055)."""
+        return run_reopen.escalate(self, run_id, note)
 
     def _fail_reopen(
         self,
@@ -1458,434 +1003,8 @@ class WorkflowController:
         *,
         reason_code: HaltReasonCode = HaltReasonCode.RECOVERY_INTERVENTION,
     ) -> FactoryRun:
-        """Handle a failure during workspace validation or pre-transition reconciliation in reopen.
-
-        Transitions the run out of the dispatchable REOPENED state by persisting
-        a new non-resumable escalation episode (status PENDING_NOTIFICATION,
-        resume_classification NOT_RESUMABLE, reason_code RECOVERY_INTERVENTION,
-        reply_cursor closed). Preserves failure_reason, increments episode_number,
-        retains accepted_replies and reopen_count, and clears the lease.
-        Prevents tight redispatch loops while safely capturing the failure.
-        """
-        from .escalation import generate_episode_id
-
-        now = utc_now()
-        prev_escalation = run.escalation
-        episode_num = (prev_escalation.episode_number + 1) if prev_escalation else 1
-        reopen_count = prev_escalation.reopen_count if prev_escalation else 0
-        accepted_replies = prev_escalation.accepted_replies if prev_escalation else []
-
-        new_escalation = EscalationRecord(
-            episode_id=generate_episode_id(),
-            episode_number=episode_num,
-            status=EscalationStatus.PENDING_NOTIFICATION,
-            resume_classification=ResumeClassification.NOT_RESUMABLE,
-            reason_code=reason_code,
-            reopen_count=reopen_count,
-            accepted_replies=accepted_replies,
-            reply_cursor=REPLY_CURSOR_CLOSED,
-            created_at=now,
-            updated_at=now,
-        )
-
-        run = run.model_copy(
-            update={
-                "state": WorkflowState.NEEDS_HUMAN,
-                "failure_reason": reason,
-                "escalation": new_escalation,
-                "lease": None,
-                "completed_at": None,
-                "last_activity_at": now,
-                "updated_at": now,
-            }
-        )
-        self._store.save_run(run)
-        logger.warning(
-            "run %s reopen failed: %s; created non-resumable escalation episode %s",
-            run.id,
-            reason,
-            new_escalation.episode_id,
-        )
-        return run
-
-    def reopen(self, run_id: str, source_repo: Path) -> FactoryRun:
-        """Controller-owned API to reopen an eligible run halted in NEEDS_HUMAN.
-
-        This is the single controller-owned path out of NEEDS_HUMAN. Validates
-        workspace identity, reopen limits, durable resume-pending status,
-        accepted reply receipt bound to current run and episode, and the supported
-        resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING, DELIVERY_RETRY ->
-        PR_READY and publish again) without granting additional attempt budget.
-        """
-        run = self._store.load_run(run_id)
-        if run.state is not WorkflowState.NEEDS_HUMAN:
-            raise ValueError(
-                f"run {run_id} is in state {run.state}, not NEEDS_HUMAN; cannot reopen"
-            )
-
-        escalation = run.escalation
-        if escalation is None:
-            raise ValueError(f"run {run_id} has no escalation record; cannot reopen")
-
-        if escalation.status is not EscalationStatus.REOPENED:
-            raise ValueError(
-                f"run {run_id} escalation status is {escalation.status}, "
-                "not REOPENED; cannot reopen"
-            )
-
-        receipt = next(
-            (
-                r
-                for r in reversed(escalation.accepted_replies)
-                if r.run_id == run.id and r.episode_id == escalation.episode_id
-            ),
-            None,
-        )
-        if receipt is None:
-            return self._fail_reopen(
-                run,
-                f"run {run_id} has no accepted reply receipt bound to "
-                f"episode {escalation.episode_id}",
-                reason_code=HaltReasonCode.RECOVERY_INTERVENTION,
-            )
-
-        if escalation.resume_classification not in {
-            ResumeClassification.RISK_APPROVAL,
-            ResumeClassification.PLAN_DECISION,
-            ResumeClassification.DELIVERY_RETRY,
-        }:
-            return self._fail_reopen(
-                run,
-                f"halt category {escalation.resume_classification} is not resumable via reopen",
-                reason_code=HaltReasonCode.MANUAL_INSPECTION,
-            )
-
-        if escalation.reopen_count > self._config.escalation.max_reopens:
-            return self._fail_reopen(
-                run,
-                f"run {run_id} exceeded maximum reopens ({self._config.escalation.max_reopens})",
-                reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
-            )
-
-        workspace = GitWorktreeWorkspace(
-            self._config.data_dir,
-            source_repo,
-            run.work_item_id,
-            branch_prefix=self._config.repository.branch_prefix,
-        )
-        workspace.acquire_lock()
-        try:
-            run = self._store.load_run(run_id)
-            if run.state is not WorkflowState.NEEDS_HUMAN:
-                return run
-
-            if run.escalation is None or run.escalation.status is not EscalationStatus.REOPENED:
-                return run
-            reopened_class = run.escalation.resume_classification
-
-            if (
-                not workspace.path.is_dir()
-                or run.workspace_path is None
-                or Path(run.workspace_path).resolve() != workspace.path.resolve()
-                or run.branch_name != workspace.branch_name
-            ):
-                return self._fail_reopen(run, "workspace identity changed or workspace is missing")
-
-            try:
-                workspace.prepare()
-                if self._config.merge.enabled:
-                    assert self._merger is not None
-                    repository = self._merger.validate_repository(source_repo)
-                    if repository != run.delivery_repository:
-                        raise ValueError(_DELIVERY_REPO_CHANGED)
-
-                now = utc_now()
-                run = run.model_copy(
-                    update={
-                        "lease": RunLease(
-                            host=socket.gethostname(), pid=os.getpid(), heartbeat_at=now
-                        ),
-                        "last_activity_at": now,
-                        "updated_at": now,
-                    }
-                )
-                self._store.save_run(run)
-
-                if reopened_class is ResumeClassification.DELIVERY_RETRY:
-                    return self._reopen_delivery_retry(run, workspace, source_repo)
-
-                work_item = self._store.load_artifact(run.id, WorkItem)
-                triage_result = self._store.load_artifact(run.id, TriageResult)
-                repository_profile = self._store.load_artifact(run.id, RepositoryProfile)
-                try:
-                    route_decision = run.route_decision or self._store.load_artifact(
-                        run.id, RouteDecision
-                    )
-                except FileNotFoundError:
-                    route_decision = None
-
-                if route_decision is not None and run.route_decision is None:
-                    run = run.model_copy(
-                        update={
-                            "route_decision": route_decision,
-                            "initial_route": route_decision.initial_route,
-                            "effective_route": route_decision.effective_route,
-                        }
-                    )
-                    self._store.save_run(run)
-
-                if run.escalation is None:
-                    return self._fail_reopen(run, "reopened run is missing its escalation record")
-                resume_classification = run.escalation.resume_classification
-                run = self._transition_reopened(run)
-                if resume_classification is ResumeClassification.PLAN_DECISION:
-                    previous_plan = self._store.load_artifact(run.id, ExecutionPlan)
-                    decision_answers = self._store.load_artifact(run.id, PlanDecisionAnswers)
-                    specification = self._store.load_artifact(run.id, Specification)
-                    return self._drive_from_planning(
-                        run,
-                        work_item,
-                        triage_result,
-                        specification,
-                        workspace,
-                        source_repo,
-                        repository_profile,
-                        planner_context=planner_human_decision_context(
-                            previous_plan, decision_answers
-                        ),
-                        route_decision=route_decision,
-                    )
-                return self._drive_from_planning(
-                    run,
-                    work_item,
-                    triage_result,
-                    None,
-                    workspace,
-                    source_repo,
-                    repository_profile,
-                    route_decision=route_decision,
-                )
-            except _Halt as halt:
-                return halt.run
-            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
-                return self._fail_reopen(
-                    self._store.load_run(run_id), f"could not reconcile reopened run: {exc}"
-                )
-        finally:
-            workspace.release_lock()
-
-    def _reopen_delivery_retry(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
-    ) -> FactoryRun:
-        """Reopen a run to ``PR_READY`` and publish its reviewed work again.
-
-        It restores the delivery context first, so work that changed since the halt fails
-        closed before the run leaves ``NEEDS_HUMAN``. It plans nothing and spends no attempt.
-        """
-        self._require_unchanged_delivery_policy(run)
-        context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
-        run = self._transition_reopened(run)
-        return self._publish_and_observe(run, context)
-
-    def escalate(self, run_id: str, note: str) -> FactoryRun:
-        """Redo a run one route higher with a person's note (ADR-055).
-
-        The run keeps its worktree, branch and pull request. ``CRITIQUE`` implements again with
-        the note; ``FULL`` plans again with it first. Fresh attempt budgets start, so the old
-        budget does not end the escalation. ``ValueError`` refuses a run that cannot escalate
-        and ``WorkspaceLockError`` one that a live process works on.
-        """
-        run = self._store.load_run(run_id)
-        if run.source_repo is None:
-            raise ValueError(f"run {run_id} does not record its repository")
-        source_repo = Path(run.source_repo)
-        workspace = GitWorktreeWorkspace(
-            self._config.data_dir,
-            source_repo,
-            run.work_item_id,
-            branch_prefix=self._config.repository.branch_prefix,
-        )
-        workspace.acquire_lock()
-        try:
-            run = self._store.load_run(run_id)
-            route = escalation_route(run)
-            if route is None:
-                raise ValueError(f"run {run_id} cannot escalate from {run.state}")
-            self._require_unchanged_delivery_policy(run)
-            if self._config.merge.enabled:
-                assert self._merger is not None
-                if self._merger.validate_repository(source_repo) != run.delivery_repository:
-                    raise ValueError(_DELIVERY_REPO_CHANGED)
-            if not self._workspace_matches(run, workspace):
-                raise ValueError(f"run {run_id} workspace is missing or changed")
-            workspace.prepare()
-            context = self._stored_context(run, workspace, source_repo)
-            run = self._record_route(run, context, route, "operator escalation")
-            run = run.model_copy(
-                update={
-                    "lease": RunLease(
-                        host=socket.gethostname(), pid=os.getpid(), heartbeat_at=utc_now()
-                    ),
-                    "budget_start": len(run.attempt_records),
-                    "needs_look": [],
-                }
-            )
-            self._store.delete_stop_request(run.id)
-            run = self.transition(run, WorkflowState.PLANNING, operator_escalation=True)
-            repair_context = RepairContext(
-                trigger=AttemptTrigger.OPERATOR,
-                summary=(
-                    "A person was not happy with the earlier change and asked for the work "
-                    "again. Follow their note."
-                ),
-                failures=[note],
-            )
-            try:
-                if route is ExecutionRoute.CRITIQUE:
-                    return self._drive_synthesized(
-                        run,
-                        context.work_item,
-                        context.triage_result,
-                        context.route_decision,
-                        workspace,
-                        source_repo,
-                        context.repository_profile,
-                        repair_context=repair_context,
-                    )
-                return self._drive_from_planning(
-                    run,
-                    context.work_item,
-                    context.triage_result,
-                    None,
-                    workspace,
-                    source_repo,
-                    context.repository_profile,
-                    planner_context=(
-                        f"{repair_context.summary}\n\nNote: {note}\n\n{PLANNING_RESULT_REQUEST}"
-                    ),
-                    route_decision=context.route_decision,
-                    repair_context=repair_context,
-                )
-            except _Halt as halt:
-                return halt.run
-            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
-                return self._recover_interrupted_delivery(
-                    self._store.load_run(run_id),
-                    workspace,
-                    source_repo,
-                    f"escalation failed: {exc}",
-                )
-        finally:
-            workspace.release_lock()
-
-    def _triage_authorizes_delivery(
-        self, run: FactoryRun, work_item: WorkItem, triage: TriageResult
-    ) -> bool:
-        """Whether the persisted triage lets a resumed run deliver.
-
-        A risk that needs human approval authorizes delivery only when a dispatched
-        approval receipt still matches the approval context (see
-        :func:`~software_agent_factory.escalation.has_dispatched_risk_approval`).
-        """
-        from .escalation import has_dispatched_risk_approval
-
-        if not triage.factory_eligible and not run.unattended:
-            return False
-        if not self._approval_required(run, triage.risk):
-            return True
-        return has_dispatched_risk_approval(
-            run,
-            self._store,
-            config=self._config,
-            work_item=work_item,
-            triage_result=triage,
-        )
-
-    def _stored_context(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
-    ) -> _RunContext:
-        """Rebuild the run context from stored artifacts, without checking the workspace."""
-        work_item = self._store.load_artifact(run.id, WorkItem)
-        if work_item.id != run.work_item_id:
-            raise ValueError("persisted work item does not match run")
-        route_decision: RouteDecision | None = None
-        try:
-            route_decision = self._store.load_artifact(run.id, RouteDecision)
-        except FileNotFoundError:
-            pass
-        return _RunContext(
-            work_item=work_item,
-            triage_result=self._store.load_artifact(run.id, TriageResult),
-            specification=self._store.load_artifact(run.id, Specification),
-            execution_plan=self._store.load_artifact(run.id, ExecutionPlan),
-            repository_profile=self._store.load_artifact(run.id, RepositoryProfile),
-            workspace=workspace,
-            source_repo=source_repo,
-            route_decision=route_decision,
-        )
-
-    def _restore_delivery_context(
-        self, run: FactoryRun, workspace: GitWorktreeWorkspace, source_repo: Path
-    ) -> _RunContext:
-        context = self._stored_context(run, workspace, source_repo)
-        if not self._triage_authorizes_delivery(run, context.work_item, context.triage_result):
-            raise ValueError("persisted triage does not authorize delivery")
-        context.latest_evidence = workspace.collect_evidence()
-        if context.latest_evidence.diff != self._store.load_patch(run.id):
-            raise ValueError("workspace changes do not match the reviewed delivery checkpoint")
-        if not run.reviewed_tree_sha or context.latest_evidence.tree_sha != run.reviewed_tree_sha:
-            raise ValueError("workspace tree does not match the reviewed delivery checkpoint")
-        if run.base_commit_sha != workspace.base_commit:
-            raise ValueError("workspace base does not match the recorded delivery base")
-        published_as_is = (
-            run.unattended
-            and bool(run.needs_look)
-            and (
-                not run.attempt_records
-                or run.attempt_records[-1].reviewed_tree_sha != run.reviewed_tree_sha
-            )
-        )
-        if not published_as_is:
-            # A run published as it is after its attempt budget ran out has no
-            # passing review to restore (ADR-040).
-            context.latest_verification = self._store.load_artifact(run.id, VerificationReport)
-            context.latest_test_report = self._store.load_artifact(run.id, TestReport)
-            context.latest_review = self._store.load_artifact(run.id, ReviewReport)
-            if not context.latest_verification.passed or not self._review_authorizes_delivery(
-                run,
-                context.latest_review,
-                context.triage_result.risk,
-            ):
-                raise ValueError(
-                    "delivery checkpoint has not passed verification and bounded review policy"
-                )
-        context.polish_attempted = any(
-            attempt.triggered_by is AttemptTrigger.POLISH for attempt in run.attempt_records
-        )
-        return context
-
-    @staticmethod
-    def _check_delivery_workspace(run: FactoryRun, path: Path) -> None:
-        def git_output(*args: str) -> str:
-            result = subprocess.run(
-                ["git", "-C", str(path), *args],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                raise WorkspaceError(
-                    f"could not inspect delivery workspace: {result.stderr.strip()}"
-                )
-            return result.stdout.strip()
-
-        if git_output("branch", "--show-current") != run.branch_name:
-            raise WorkspaceError("delivery workspace is on a different branch")
-        if run.state in {WorkflowState.PR_CREATED, WorkflowState.CI_RUNNING}:
-            if not run.commit_sha or git_output("rev-parse", "HEAD") != run.commit_sha:
-                raise WorkspaceError("published head no longer matches the delivery workspace")
-            if git_output("status", "--porcelain"):
-                raise WorkspaceError("published delivery workspace has unreviewed changes")
+        """End a failed reopen with a non-resumable escalation episode for the service."""
+        return run_reopen.fail_reopen(self, run, reason, reason_code=reason_code)
 
     # -- internal orchestration --------------------------------------------
 
@@ -1937,7 +1056,7 @@ class WorkflowController:
     def _ratchet_route(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         to_route: ExecutionRoute,
         reason: str,
     ) -> FactoryRun:
@@ -1957,7 +1076,7 @@ class WorkflowController:
     def _record_route(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         to_route: ExecutionRoute,
         reason: str,
     ) -> FactoryRun:
@@ -2025,7 +1144,7 @@ class WorkflowController:
                 )
 
             run = self.transition(run, WorkflowState.PLANNING)
-            if route_decision.effective_route in _SYNTHESIZED_ROUTES:
+            if route_decision.effective_route in SYNTHESIZED_ROUTES:
                 # SINGLE skips the planner, tester and reviewer; CRITIQUE keeps the reviewer.
                 saved_calls = 3 if route_decision.effective_route is ExecutionRoute.SINGLE else 2
                 run.performance.record_counter(
@@ -2053,7 +1172,7 @@ class WorkflowController:
                 repository_profile,
                 route_decision=route_decision,
             )
-        except _Halt as halt:
+        except Halt as halt:
             return halt.run
 
     def _decide_route(
@@ -2107,7 +1226,7 @@ class WorkflowController:
         )
         self._store.save_artifact(run.id, execution_plan)
 
-        context = _RunContext(
+        context = RunContext(
             work_item=work_item,
             triage_result=triage_result,
             specification=specification,
@@ -2125,7 +1244,7 @@ class WorkflowController:
         if not self._config.pull_request.enabled:
             return self.finalize_pr_ready(run)
 
-        return self._publish_and_observe(run, context)
+        return pr_delivery.publish_and_observe(self, run, context)
 
     def _drive_from_planning(
         self,
@@ -2178,7 +1297,7 @@ class WorkflowController:
         if execution_plan.unresolved_decisions and not run.unattended:
             raise self._halt(run, WorkflowState.NEEDS_HUMAN, UNRESOLVED_DECISIONS_HALT_REASON)
 
-        context = _RunContext(
+        context = RunContext(
             work_item=work_item,
             triage_result=triage_result,
             specification=specification,
@@ -2195,9 +1314,9 @@ class WorkflowController:
         if not self._config.pull_request.enabled:
             return self.finalize_pr_ready(run)
 
-        return self._publish_and_observe(run, context)
+        return pr_delivery.publish_and_observe(self, run, context)
 
-    def _halt(self, run: FactoryRun, state: WorkflowState, reason: str) -> _Halt:
+    def _halt(self, run: FactoryRun, state: WorkflowState, reason: str) -> Halt:
         run = self.transition(run, state, failure_reason=reason)
         if (
             state is WorkflowState.NEEDS_HUMAN
@@ -2215,7 +1334,7 @@ class WorkflowController:
                 )
             except Exception as exc:
                 logger.warning("run %s: escalation notice delivery failed: %s", run.id, exc)
-        return _Halt(run)
+        return Halt(run)
 
     def _sensitive_scope_reason(
         self,
@@ -2400,7 +1519,7 @@ class WorkflowController:
     def _run_tester(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         evidence: WorkspaceEvidence,
         verification_report: VerificationReport,
         snapshot: int,
@@ -2456,7 +1575,7 @@ class WorkflowController:
     def _run_reviewer(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         evidence: WorkspaceEvidence,
         verification_report: VerificationReport,
         test_report: TestReport | None,
@@ -2777,7 +1896,7 @@ class WorkflowController:
         return max(run.scope_replans, legacy_scope_attempts)
 
     def _select_worker(
-        self, run: FactoryRun, context: _RunContext, budget: AttemptBudget
+        self, run: FactoryRun, context: RunContext, budget: AttemptBudget
     ) -> tuple[RoleModelConfig | None, int]:
         used = self._attempts_used(run, budget)
         attempt_number = used + 1
@@ -2829,7 +1948,7 @@ class WorkflowController:
     def _drive_to_pr_ready(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         budget: AttemptBudget,
         repair_context: RepairContext | None,
     ) -> FactoryRun:
@@ -2852,7 +1971,7 @@ class WorkflowController:
             if role_model is None:
                 reason = self._budget_exhausted_reason(budget, attempt_number - 1)
                 if run.unattended:
-                    return self._publish_as_is(run, context, reason)
+                    return pr_delivery.publish_as_is(self, run, context, reason)
                 raise self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
 
             # Snapshot directories are keyed by the run-global attempt index so
@@ -2931,7 +2050,7 @@ class WorkflowController:
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
             if not verification.report.deterministic_checks:
-                run = self._add_needs_look(run, "no verify command ran")
+                run = pr_delivery.add_needs_look(self, run, "no verify command ran")
 
             verified_evidence = context.workspace.collect_evidence()
             if (
@@ -2962,7 +2081,7 @@ class WorkflowController:
             # Monotonic post-implementation ratchets
             # 1. Evaluate unexpected scope against original synthesized scope
             # before any scope replan
-            if context.effective_route in _SYNTHESIZED_ROUTES:
+            if context.effective_route in SYNTHESIZED_ROUTES:
                 original_scope = (
                     context.original_synthesized_scope
                     if context.original_synthesized_scope is not None
@@ -3016,19 +2135,19 @@ class WorkflowController:
                     raise self._halt(
                         run,
                         WorkflowState.NEEDS_HUMAN,
-                        "scope metadata replan made no progress: " + _describe_scope(scope),
+                        "scope metadata replan made no progress: " + describe_scope(scope),
                     )
             if scope.decision is ScopeDecision.NEEDS_HUMAN and not run.unattended:
                 raise self._halt(
                     run,
                     WorkflowState.NEEDS_HUMAN,
-                    "scope drift requires human review: " + _describe_scope(scope),
+                    "scope drift requires human review: " + describe_scope(scope),
                 )
 
             # Monotonic post-implementation ratchets (continued)
             # 2. Excessive changed files
             if len(evidence.changed_files) > self._config.routing.single_max_changed_files:
-                if context.effective_route in _SYNTHESIZED_ROUTES:
+                if context.effective_route in SYNTHESIZED_ROUTES:
                     run = self._ratchet_route(
                         run,
                         context,
@@ -3196,7 +2315,9 @@ class WorkflowController:
             }
             if impasse is not None and (run.unattended or attended_accepts_impasse):
                 if not attended_accepts_impasse:
-                    run = self._add_needs_look(run, f"review impasse {impasse.kind} was accepted")
+                    run = pr_delivery.add_needs_look(
+                        self, run, f"review impasse {impasse.kind} was accepted"
+                    )
                 acceptance_reason = ReviewAcceptanceReason.REVIEW_IMPASSE
             elif (
                 impasse is None
@@ -3317,7 +2438,7 @@ class WorkflowController:
     def _replan(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         scope: ScopeAssessment,
         evidence: WorkspaceEvidence,
     ) -> FactoryRun:
@@ -3329,7 +2450,7 @@ class WorkflowController:
                 WorkflowState.NEEDS_HUMAN,
                 (
                     f"scope drift replan budget exhausted after {used} replan(s): "
-                    + _describe_scope(scope)
+                    + describe_scope(scope)
                 ),
             )
 
@@ -3375,7 +2496,7 @@ class WorkflowController:
         self._store.save_run(run)
         return self.transition(run, WorkflowState.VERIFYING)
 
-    def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
+    def _verify(self, run: FactoryRun, context: RunContext) -> RepositoryVerificationResult:
         """Run install, verify and build with persisted logs, then the advisory checks."""
         result = self._verifier.run(
             self._commands_for_run(run.id),
@@ -3402,7 +2523,7 @@ class WorkflowController:
         return result.with_checks(check for check in advisory if check is not None)
 
     def _mutation_check(
-        self, run: FactoryRun, context: _RunContext, evidence: WorkspaceEvidence
+        self, run: FactoryRun, context: RunContext, evidence: WorkspaceEvidence
     ) -> CommandResult | None:
         """Return the advisory mutation gate check for a passed verification (ADR-034).
 
@@ -3427,7 +2548,7 @@ class WorkflowController:
         return mutation_check_result(report, time.monotonic() - started)
 
     def _run_mutation_gate(
-        self, context: _RunContext, exec_prefix: str, targets: tuple[MutationTarget, ...]
+        self, context: RunContext, exec_prefix: str, targets: tuple[MutationTarget, ...]
     ) -> MutationReport:
         try:
             return run_mutation_gate(
@@ -3466,7 +2587,7 @@ class WorkflowController:
         attempt_number: int,
         snapshot: int,
         role_model: RoleModelConfig,
-        context: _RunContext,
+        context: RunContext,
         budget: AttemptBudget,
         trigger: AttemptTrigger,
         repair_context: RepairContext | None,
@@ -3587,12 +2708,12 @@ class WorkflowController:
         self,
         run: FactoryRun,
         budget: AttemptBudget,
-        context: _RunContext,
+        context: RunContext,
     ) -> bool:
         if (
             budget is not AttemptBudget.IMPLEMENTATION
             or not self._config.polish.enabled
-            or context.effective_route in _SYNTHESIZED_ROUTES
+            or context.effective_route in SYNTHESIZED_ROUTES
         ):
             return False
         if context.polish_attempted:
@@ -3689,7 +2810,7 @@ class WorkflowController:
     def _accept_review_findings(
         self,
         run: FactoryRun,
-        context: _RunContext,
+        context: RunContext,
         verification: VerificationReport,
         review: ReviewReport,
         snapshot: int,
@@ -3785,441 +2906,14 @@ class WorkflowController:
 
     # -- publishing and CI observation ---------------------------------------
 
-    def _resolve_publisher(self) -> PullRequestPublisher:
-        if self._publisher is None:
-            self._publisher = PullRequestPublisher(self._config)
-        return self._publisher
-
-    def _resolve_ci_observer(self) -> CIObserver:
-        if self._ci_observer is None:
-            self._ci_observer = CIObserver(self._config)
-        return self._ci_observer
-
-    def _publish_and_observe(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
-        run = self._publish(run, context)
-        if not self._config.ci.enabled:
-            if run.needs_look:
-                return self._leave_open(run, context)
-            return self.transition(run, WorkflowState.DONE)
-        return self._ci_loop(run, context)
-
-    def _skipped_gates(
-        self, run: FactoryRun, context: _RunContext, scope: ScopeAssessment
-    ) -> list[str]:
-        """The gates an unattended run let continue that would have stopped an
-        attended run (ADR-039, ADR-040)."""
-        triage = context.triage_result
-        reasons: list[str] = []
-        if not triage.factory_eligible:
-            reasons.append("triage marked this work item ineligible")
-        route = context.route_decision
-        if route is not None and route.effective_route is ExecutionRoute.MANUAL_TRIAGE:
-            reasons.append("routing selected manual triage")
-        if run.risk_assessment_enabled and self._config.risk[triage.risk].human_approval:
-            reasons.append(f"risk {triage.risk} requires human approval")
-        if context.execution_plan.unresolved_decisions:
-            reasons.append(UNRESOLVED_DECISIONS_HALT_REASON)
-        if scope.decision is not ScopeDecision.CONTINUE:
-            reasons.append("scope drift: " + _describe_scope(scope))
-        review = context.latest_review
-        acceptance = run.review_acceptance
-        if (
-            review is not None
-            and acceptance is not None
-            and (
-                not self._acceptance_within_policy(acceptance, review, triage.risk)
-                or not review_ledger.has_acceptable_origins(acceptance.findings)
-            )
-        ):
-            reasons.append("review findings were accepted beyond the review policy")
-        return reasons
-
-    def _add_needs_look(self, run: FactoryRun, reason: str) -> FactoryRun:
-        if reason in run.needs_look:
-            return run
-        run = run.model_copy(
-            update={"needs_look": [*run.needs_look, reason], "updated_at": utc_now()}
-        )
-        self._store.save_run(run)
-        return run
-
-    def _publish_as_is(self, run: FactoryRun, context: _RunContext, reason: str) -> FactoryRun:
-        """Unattended attempt budget used up (ADR-040).
-
-        Before a pull request exists, publish the current work as it is. After
-        one exists, leave it open as it is: the failed repair is not pushed.
-        """
-        if run.pull_request_url is not None:
-            return self._leave_open(run, context, reason)
-        run = self._adopt_current_tree(run, context, context.workspace.collect_evidence(), reason)
-        context.latest_test_report = None
-        context.latest_review = None
-        return self.transition(run, WorkflowState.PR_READY)
-
-    def _adopt_current_tree(
-        self,
-        run: FactoryRun,
-        context: _RunContext,
-        evidence: WorkspaceEvidence,
-        reason: str,
-    ) -> FactoryRun:
-        """Make the current worktree the tree an unattended run publishes."""
-        if not evidence.changed_files or not evidence.tree_sha:
-            raise self._stop(run, context, f"{reason}; nothing to publish")
-        run = self._add_needs_look(run, reason)
-        run = run.model_copy(update={"reviewed_tree_sha": evidence.tree_sha})
-        self._store.save_run(run)
-        self._store.save_patch(run.id, evidence.diff)
-        context.latest_evidence = evidence
-        return run
-
-    def _stop(self, run: FactoryRun, context: _RunContext, reason: str) -> _Halt:
+    def _stop(self, run: FactoryRun, context: RunContext, reason: str) -> Halt:
         """Stop a run. An unattended run with a pull request leaves it open
         instead of waiting for a person (ADR-040, ADR-041)."""
         if run.unattended and run.pull_request_url is not None:
-            return _Halt(self._leave_open(run, context, reason))
+            return Halt(pr_delivery.leave_open(self, run, context, reason))
         return self._halt(run, WorkflowState.NEEDS_HUMAN, reason)
-
-    def _leave_open(
-        self, run: FactoryRun, context: _RunContext, reason: str | None = None
-    ) -> FactoryRun:
-        """End an unattended run with its pull request open, labelled and not
-        merged (ADR-040)."""
-        if reason is not None:
-            run = self._add_needs_look(run, reason)
-        assert run.pull_request_url is not None
-        try:
-            self._resolve_publisher().flag_needs_look(
-                workspace_path=context.workspace.path,
-                pull_request_url=run.pull_request_url,
-                reasons=run.needs_look,
-                repository=run.delivery_repository,
-            )
-        except (GitHubError, OSError, ValueError) as exc:
-            # The label tells people to look. Skipping the merge is what keeps
-            # the pull request safe, so a labelling error does not stop the run.
-            logger.warning("could not label pull request %s: %s", run.pull_request_url, exc)
-        return self.transition(run, WorkflowState.DONE)
-
-    def _publish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
-        """PR boundary: re-run the deterministic gates, then commit/push/open."""
-        evidence = context.latest_evidence
-        assert evidence is not None
-        if context.latest_review is None:
-            # Only an unattended run whose attempt budget ran out publishes
-            # work without a review (ADR-040).
-            authorized = run.unattended and bool(run.needs_look)
-        else:
-            authorized = self._review_authorizes_delivery(
-                run, context.latest_review, context.triage_result.risk
-            )
-        if not authorized:
-            raise self._stop(
-                run,
-                context,
-                "independent review or a matching bounded controller acceptance is required "
-                "for every PR",
-            )
-        current_evidence = context.workspace.collect_evidence()
-        if (
-            current_evidence.diff != evidence.diff
-            or not run.reviewed_tree_sha
-            or current_evidence.tree_sha != run.reviewed_tree_sha
-        ):
-            if not run.unattended:
-                raise self._halt(
-                    run,
-                    WorkflowState.NEEDS_HUMAN,
-                    "repository changed after independent review; "
-                    "refusing to publish unreviewed work",
-                )
-            run = self._adopt_current_tree(
-                run, context, current_evidence, "repository changed after review"
-            )
-            evidence = current_evidence
-        changed_files = list(evidence.changed_files)
-
-        gate = assess_publish_gate(
-            changed_files,
-            max_changed_files=self._config.repository.max_changed_files,
-            protected_file_patterns=self._config.repository.protected_file_patterns,
-        )
-        if not gate.allowed:
-            raise self._stop(
-                run,
-                context,
-                "refusing to publish: " + "; ".join(gate.violations),
-            )
-
-        scope = self._scope_policy.assess(
-            context.execution_plan, changed_files, context.triage_result.risk
-        )
-        if scope.decision is not ScopeDecision.CONTINUE and not run.unattended:
-            raise self._halt(
-                run,
-                WorkflowState.NEEDS_HUMAN,
-                "scope drift requires human review before publishing: " + _describe_scope(scope),
-            )
-        if run.unattended:
-            for reason in self._skipped_gates(run, context, scope):
-                run = self._add_needs_look(run, reason)
-
-        publisher = self._resolve_publisher()
-        branch_name = run.branch_name
-        assert branch_name is not None
-        parent_sha = run.commit_sha or run.base_commit_sha
-        if not parent_sha:
-            raise self._stop(
-                run,
-                context,
-                "publication is missing its authorized parent commit",
-            )
-
-        def record_commit(commit_sha: str) -> None:
-            nonlocal run
-            if SHA_PATTERN.fullmatch(commit_sha) is None:
-                raise GitHubError("publication receipt must contain an exact commit SHA")
-            if run.pending_commit_sha is not None and run.pending_commit_sha != commit_sha:
-                raise GitHubError("a different publication commit is already recorded")
-            now = utc_now()
-            run = run.model_copy(
-                update={
-                    "pending_commit_sha": commit_sha,
-                    "updated_at": now,
-                    "last_activity_at": now,
-                }
-            )
-            self._store.save_run(run)
-
-        try:
-            if self._config.merge.enabled:
-                assert self._merger is not None
-                if (
-                    self._merger.validate_repository(context.workspace.path)
-                    != run.delivery_repository
-                ):
-                    raise GitHubError("delivery repository changed before publication")
-            base_branch = publisher.resolve_base_branch(context.source_repo)
-            if run.delivery_base_branch is not None and run.delivery_base_branch != base_branch:
-                raise GitHubError("refusing to publish to a different delivery base branch")
-            run = run.model_copy(update={"delivery_base_branch": base_branch})
-            self._store.save_run(run)
-            result = publisher.publish(
-                workspace_path=context.workspace.path,
-                branch_name=branch_name,
-                base_branch=base_branch,
-                commit_message=_commit_message(context, run.id),
-                title=context.execution_plan.summary.strip().rstrip(".").strip(),
-                body=self._build_pr_body(run, context, changed_files),
-                existing_pull_request_url=run.pull_request_url,
-                expected_tree_sha=run.reviewed_tree_sha,
-                expected_repository=run.delivery_repository,
-                expected_host=run.delivery_host,
-                expected_parent_sha=parent_sha,
-                prepared_commit_sha=run.pending_commit_sha,
-                record_commit=record_commit,
-            )
-            if result.commit_sha != run.pending_commit_sha:
-                raise GitHubError(
-                    "published commit does not match the persisted publication receipt"
-                )
-        except (GitPublishError, GitHubError, OSError) as exc:
-            raise self._stop(run, context, f"{PUBLISH_FAILED_HALT_REASON} {exc}") from exc
-
-        run = run.model_copy(
-            update={
-                "commit_sha": result.commit_sha,
-                "reviewed_commit_sha": result.commit_sha,
-                "pending_commit_sha": None,
-                "pull_request_url": result.pull_request_url,
-                "updated_at": utc_now(),
-            }
-        )
-        self._store.save_run(run)
-        return self.transition(run, WorkflowState.PR_CREATED)
-
-    def _build_pr_body(
-        self, run: FactoryRun, context: _RunContext, changed_files: list[str]
-    ) -> str:
-        body = build_pr_body(
-            work_item=context.work_item,
-            specification=context.specification,
-            plan=context.execution_plan,
-            changed_files=changed_files,
-            suppressions=suppression_items(context.latest_evidence),
-            verification=context.latest_verification,
-            test_report=context.latest_test_report,
-            review=context.latest_review,
-            review_acceptance=run.review_acceptance,
-            rejected_commands=self._rejected_commands(run.id),
-            run_id=run.id,
-        )
-        if run.reviewed_tree_sha is not None:
-            if run.needs_look:
-                label = "Git tree published without a passing review"
-            elif run.review_acceptance is not None:
-                label = "Controller-accepted reviewed Git tree"
-            else:
-                label = "Reviewer-approved Git tree"
-            body += f"\n{label}: `{run.reviewed_tree_sha}`\n"
-        return body
-
-    def _ci_loop(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
-        """Poll CI, and repair (bounded by ``ci.repair_attempts``) when the
-        failure is genuinely a code/test failure."""
-        observer = self._resolve_ci_observer()
-        while True:
-            if run.state is not WorkflowState.CI_RUNNING:
-                run = self.transition(run, WorkflowState.CI_RUNNING)
-            assert run.pull_request_url is not None
-            try:
-                report = observer.observe(
-                    repo_path=context.workspace.path,
-                    pull_request_url=run.pull_request_url,
-                    repair_attempts_used=self._attempts_used(run, AttemptBudget.CI_REPAIR),
-                    before_wait=functools.partial(self._raise_if_cancelled, run),
-                )
-            except (GitPublishError, GitHubError, OSError) as exc:
-                raise self._stop(run, context, f"could not observe CI: {exc}") from exc
-            self._store.save_artifact(run.id, report)
-
-            if report.timed_out:
-                raise self._stop(
-                    run, context, "CI checks were still pending after the configured wait budget"
-                )
-            if report.overall == "PASS":
-                return self._merge_and_finish(run, context)
-
-            run = self.transition(run, WorkflowState.CI_DIAGNOSIS)
-            stop_reason = self._ci_stop_reason(run, report)
-            if stop_reason is not None:
-                raise self._stop(run, context, stop_reason)
-
-            repair_context = ci_repair_context(report)
-            run = self.transition(run, WorkflowState.IMPLEMENTING)
-            run = self._drive_to_pr_ready(run, context, AttemptBudget.CI_REPAIR, repair_context)
-            if run.state is WorkflowState.DONE:
-                return run
-            run = self._publish(run, context)
-
-    def _ci_stop_reason(self, run: FactoryRun, report: CIReport) -> str | None:
-        """Why a red CI result cannot be repaired, or ``None`` to repair it."""
-        failed = report.failed_checks
-        if report.overall == "CANCELLED" or not failed:
-            return f"CI finished with status {report.overall} and no repairable failure"
-        if not {check.failure_category or "UNKNOWN" for check in failed} <= (
-            REPAIRABLE_CI_CATEGORIES
-        ):
-            return "CI failure is not repairable by a code change: " + ", ".join(
-                f"{check.name}={check.failure_category or 'UNKNOWN'}" for check in failed
-            )
-        used = self._attempts_used(run, AttemptBudget.CI_REPAIR)
-        if used >= self._config.ci.repair_attempts:
-            return self._budget_exhausted_reason(AttemptBudget.CI_REPAIR, used)
-        return None
-
-    def _merge_and_finish(self, run: FactoryRun, context: _RunContext) -> FactoryRun:
-        if run.needs_look:
-            return self._leave_open(run, context)
-        if self._config.merge.enabled:
-            assert self._merger is not None
-            if (
-                not run.commit_sha
-                or not run.pull_request_url
-                or not run.delivery_base_branch
-                or run.reviewed_commit_sha != run.commit_sha
-                or not run.delivery_repository
-                or not run.delivery_host
-            ):
-                raise self._stop(
-                    run,
-                    context,
-                    "missing delivery evidence or review authorization for the current head",
-                )
-            try:
-                self._check_delivery_workspace(run, context.workspace.path)
-                result = self._merger.merge(
-                    repo_path=context.workspace.path,
-                    pull_request_url=run.pull_request_url,
-                    expected_head_sha=run.commit_sha,
-                    base_branch=run.delivery_base_branch,
-                    expected_repository=run.delivery_repository,
-                    expected_host=run.delivery_host,
-                )
-            except (
-                GitHubError,
-                GitPublishError,
-                OSError,
-                WorkspaceError,
-                subprocess.TimeoutExpired,
-            ) as exc:
-                raise self._stop(run, context, f"could not merge the pull request: {exc}") from exc
-            run = run.model_copy(
-                update={"merge_commit_sha": result.commit_sha, "updated_at": utc_now()}
-            )
-            self._store.save_run(run)
-        return self.transition(run, WorkflowState.DONE)
-
-
-class _RunContext:
-    """Mutable per-run orchestration context.
-
-    Holds only what the controller needs to keep passing to agents. It never
-    holds workflow state -- that lives exclusively on the persisted
-    ``FactoryRun``.
-    """
-
-    def __init__(
-        self,
-        *,
-        work_item: WorkItem,
-        triage_result: TriageResult,
-        specification: Specification,
-        execution_plan: ExecutionPlan,
-        repository_profile: RepositoryProfile,
-        workspace: GitWorktreeWorkspace,
-        source_repo: Path,
-        route_decision: RouteDecision | None = None,
-        effective_route: ExecutionRoute = ExecutionRoute.FULL,
-        original_synthesized_scope: tuple[str, ...] | None = None,
-    ) -> None:
-        self.work_item = work_item
-        self.triage_result = triage_result
-        self.specification = specification
-        self.execution_plan = execution_plan
-        self.repository_profile = repository_profile
-        self.route_decision = route_decision
-        self.effective_route = (
-            route_decision.effective_route if route_decision is not None else effective_route
-        )
-        self.original_synthesized_scope = original_synthesized_scope
-        self.polish_attempted = False
-        self.workspace = workspace
-        self.source_repo = source_repo
-        self.latest_evidence: WorkspaceEvidence | None = None
-        self.latest_verification: VerificationReport | None = None
-        self.latest_test_report: TestReport | None = None
-        self.latest_review: ReviewReport | None = None
-        #: ``(attempt, signature)`` of each failure a repair attempt was given.
-        self.repair_signatures: list[tuple[int, str]] = []
-
-
-def _describe_scope(scope: ScopeAssessment) -> str:
-    if not scope.findings:
-        return "no findings recorded"
-    return "; ".join(finding.message for finding in scope.findings)
 
 
 def _dependency_names(profile: RepositoryProfile) -> tuple[str, ...]:
     """Return the dependency names the profile declares, for stack review lenses."""
     return tuple(sorted({dependency.name for dependency in profile.dependencies}))
-
-
-def _commit_message(context: _RunContext, run_id: str) -> str:
-    summary = context.execution_plan.summary.strip().rstrip(".").strip()
-    return (
-        f"{summary}\n\n"
-        f"{context.specification.problem.strip()}\n\n"
-        f"Factory run: `{run_id}`\n"
-        f"Work item: `{context.work_item.id}`"
-    )

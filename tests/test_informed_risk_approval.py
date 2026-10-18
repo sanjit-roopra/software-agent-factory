@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
+from software_agent_factory import run_reopen
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import load_config
 from software_agent_factory.escalation import (
@@ -904,7 +905,7 @@ def test_workflow_controller_reopen_validates_approval_context(tmp_path: Path) -
     )
     store.save_run(run)
     with pytest.raises(ValueError, match="halt category NOT_RESUMABLE cannot be reopened"):
-        controller._transition_reopened(run)
+        run_reopen.transition_reopened(controller, run)
 
     # 2. Run in NEEDS_HUMAN with RISK_APPROVAL but approval_context=None
     run_no_ctx = run.model_copy(
@@ -916,7 +917,7 @@ def test_workflow_controller_reopen_validates_approval_context(tmp_path: Path) -
     )
     store.save_run(run_no_ctx)
     with pytest.raises(ValueError, match="missing or invalid risk approval decision context"):
-        controller._transition_reopened(run_no_ctx)
+        run_reopen.transition_reopened(controller, run_no_ctx)
 
 
 def test_end_to_end_delivery_and_reply_polling_maximal_context(tmp_path: Path) -> None:
@@ -1031,7 +1032,7 @@ def test_end_to_end_delivery_and_reply_polling_maximal_context(tmp_path: Path) -
     controller = WorkflowController(config, store, FakeAgentRuntime())
     reopened_run = store.load_run(delivered_run.id)
     assert reopened_run.escalation.status is EscalationStatus.REOPENED
-    resumed_run = controller._transition_reopened(reopened_run)
+    resumed_run = run_reopen.transition_reopened(controller, reopened_run)
     assert resumed_run.state is WorkflowState.PLANNING  # ADR-035
     assert resumed_run.escalation.status is EscalationStatus.RESUMED
 
@@ -1919,7 +1920,7 @@ def test_transition_reopened_requires_matching_fingerprint(tmp_path: Path) -> No
     store.save_artifact(run.id, work_item)
 
     with pytest.raises(ValueError, match="receipt fingerprint does not match"):
-        controller._transition_reopened(run)
+        run_reopen.transition_reopened(controller, run)
 
     # 2. Receipt with mismatched fingerprint must fail
     receipt_mismatched = receipt_none_fp.model_copy(
@@ -1934,7 +1935,7 @@ def test_transition_reopened_requires_matching_fingerprint(tmp_path: Path) -> No
     )
     store.save_run(run_mismatched)
     with pytest.raises(ValueError, match="receipt fingerprint does not match"):
-        controller._transition_reopened(run_mismatched)
+        run_reopen.transition_reopened(controller, run_mismatched)
 
     # 3. Altered approval context (tampered fields) must fail
     tampered_ctx = app_ctx.model_copy(update={"work_item_title": "Tampered Title"})
@@ -1956,7 +1957,7 @@ def test_transition_reopened_requires_matching_fingerprint(tmp_path: Path) -> No
     )
     store.save_run(run_tampered)
     with pytest.raises(ValueError, match="missing or invalid risk approval decision context"):
-        controller._transition_reopened(run_tampered)
+        run_reopen.transition_reopened(controller, run_tampered)
 
     # 4. Receipt with exact matching fingerprint succeeds
     receipt_valid = receipt_none_fp.model_copy(
@@ -1968,7 +1969,7 @@ def test_transition_reopened_requires_matching_fingerprint(tmp_path: Path) -> No
         }
     )
     store.save_run(run_valid)
-    resumed = controller._transition_reopened(run_valid)
+    resumed = run_reopen.transition_reopened(controller, run_valid)
     assert resumed.state is WorkflowState.PLANNING  # ADR-035: old contexts too
     assert resumed.escalation.status is EscalationStatus.RESUMED
 
