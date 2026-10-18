@@ -486,7 +486,16 @@ to see what a call did.
 ### Decision
 
 - A runtime returns the raw lines its command printed as `AgentResult.transcript`.
-  Claude Code and Copilot do this now. pi keeps its own session files and does not.
+  Claude Code and Copilot do this now.
+- pi prints no event stream on stdout. Its runtime keeps each RPC event it reads and
+  returns those lines as the transcript. It leaves out `message_update` events, since
+  each one repeats the whole message so far. `message_end` keeps the final text.
+  The tool list reads pi `tool_execution_start` events too. Amended on 2026-10-19.
+- A pi call that runs in a kept session also returns the path of its session file,
+  relative to the data directory. The call record keeps it as `session_ref`, so a
+  person can find the full pi session of a call. Amended on 2026-10-19.
+- `factory project` stores its decomposition calls the same way, under
+  `projects/<id>/calls/<n>.jsonl`. Amended on 2026-10-19.
 - The workflow writes the lines to `runs/<id>/calls/<n>.jsonl`, with `<n>` the call
   number in four digits. The text goes through `redact_secrets` first and is cut at
   2,000,000 characters, at a line end, with a marker line. The file is private (mode 600).
@@ -502,7 +511,8 @@ to see what a call did.
 - A run directory grows by the size of its transcripts. The cap bounds one call.
 - The full transcript stays on disk for a person to read. The dashboard does not serve it.
 - Claude Code still runs with `--no-session-persistence`, so its own session files are
-  not kept. The factory transcript replaces them for review.
+  not kept. Its stdout is the full event stream, so the factory transcript replaces
+  them for review.
 
 ## ADR-049: A stop request is a file that the run's own driver reads
 

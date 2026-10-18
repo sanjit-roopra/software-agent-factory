@@ -20,33 +20,31 @@ ends ``error`` or ``aborted``, a non-zero exit or EOF before settling
 (``PiRpcProcessExited``), an unparsable protocol line
 (``PiRpcProtocolError``), a command pi rejected (``PiRpcCommandError``), a
 missing executable (``OSError`` starting the process), and a timeout
-(``PiRpcTimeout``) -- which sends a best-effort ``abort`` and closes pi's
-stdin (the trigger pi actually exits on), waits a 1 second grace period,
-then escalates to
-:func:`~software_agent_factory.subprocess_utils.kill_process_group` if pi is
-still alive. Every failure reason is sanitized with
+(``PiRpcTimeout``) -- which sends a best-effort ``abort``, closes pi's stdin
+(the trigger pi exits on), waits 1 second, then escalates to
+:func:`~software_agent_factory.subprocess_utils.kill_process_group`.
+Every failure reason is sanitized with
 :func:`~software_agent_factory.subprocess_utils.sanitize_output` against the
-credential values :meth:`PiAgentRuntime._child_env_and_scrubbed` collects --
-whether it removed them from the child environment or a provider still needs
-them and they were merely recorded for redaction -- so no credential can
-appear in a failure reason.
-Unexpected exceptions from starting or driving the process still propagate
-to the caller, exactly as they do from the Copilot runtime (the
-workflow/project/CLI layers convert them with
-``agents.runtime_exception_failure_reason``).
+credential values :meth:`PiAgentRuntime._child_env_and_scrubbed` collects
+(removed from the child environment or only recorded), so none can appear in it.
+Unexpected exceptions still propagate, as from the Copilot runtime
+(callers convert them with ``agents.runtime_exception_failure_reason``).
+
+Transcript (ADR-050): every event pi prints is kept in a
+:class:`~software_agent_factory.transcripts.EventLog` and returned as
+``AgentResult.transcript``; ``session_ref`` names the session file the call ran in.
 
 Session continuation (Slice 6): the IMPLEMENTER and REVIEWER roles keep one
-persisted pi session per work item. :func:`~software_agent_factory.pi_sessions.persists_session`
-is the single place that decides this by role. Those roles launch pi with
-``--session <path>``, where
-:class:`~software_agent_factory.pi_sessions.PiSessionStore` chooses the file
-of the previous call (resumed) or a new one. Every other role launches with
-``--no-session``. After the call, the
-store records whether pi settled cleanly: a timeout, a lost process, an RPC
-error or an assistant error makes the next round start a new session. A
-response that only fails artifact parsing still counts as settled, so the
-correction call can resume the conversation that produced it. A record that
-cannot be written is logged and never replaces the call's result.
+persisted pi session per work item (decided by role in
+:func:`~software_agent_factory.pi_sessions.persists_session`). Those roles launch pi with
+``--session <path>``, where :class:`~software_agent_factory.pi_sessions.PiSessionStore`
+chooses the previous call's file (resumed) or a new one; other roles use
+``--no-session``. After the call, the store records whether pi settled cleanly:
+a timeout, a lost process, an RPC error or an assistant error makes the next
+round start a new session. A response that only fails artifact parsing still
+counts as settled, so the correction call can resume the conversation that
+produced it. A record that cannot be written is logged and never replaces the
+call's result.
 
 Continuation prompt (Slice 7): a call that resumes a session sends
 :func:`~software_agent_factory.prompts.build_continuation_prompt`: the prompt
@@ -106,7 +104,7 @@ from .subprocess_utils import (
     sanitize_output,
     track_child,
 )
-from .transcripts import report_tool_call
+from .transcripts import EventLog, report_tool_call
 from .usage_values import non_negative_float, non_negative_int
 
 if TYPE_CHECKING:
@@ -254,17 +252,11 @@ class _CallContext:
     ) -> AgentResult:
         """Build a failed, sanitized ``AgentResult`` for one pi failure mode.
 
-        ``message`` is sanitized with
-        :func:`~software_agent_factory.subprocess_utils.sanitize_output`
-        against ``scrubbed_values`` so a credential embedded in pi's stderr,
-        an error message, or a protocol excerpt can never reach the stored
-        ``failure_reason``. ``response_chars`` defaults to ``0`` (no assistant
-        text was produced); the malformed-artifact path passes the actual
-        length of the text pi did produce. ``usage`` defaults to ``None``
-        (nothing reported yet); a failure that struck after a successful
-        ``get_messages`` read, or after
-        :meth:`PiAgentRuntime._best_effort_usage`, passes the usage recorded
-        so far (AC6).
+        ``message`` is sanitized against ``scrubbed_values`` with
+        :func:`~software_agent_factory.subprocess_utils.sanitize_output`, so no
+        credential in pi's stderr, an error or a protocol excerpt reaches
+        ``failure_reason``. ``response_chars`` is the text pi produced (``0`` for
+        none); ``usage`` is what was recorded before the failure, if anything (AC6).
         """
         return AgentResult(
             role=self.request.role,
@@ -529,6 +521,7 @@ class PiAgentRuntime(AgentRuntime):
         command_filter_path: Path = _COMMAND_FILTER_PATH,
     ) -> None:
         self._config = config
+        self._data_dir = data_dir
         self._process_factory = process_factory
         self._command_filter_path = command_filter_path
         self._sessions = PiSessionStore(
@@ -566,9 +559,11 @@ class PiAgentRuntime(AgentRuntime):
         ctx = _CallContext(request, prompt_chars, _elapsed_ms(boot_start), scrubbed_values)
 
         settled = False
+        events = EventLog(lambda text: redact_with_scrubbed_values(text, scrubbed_values))
         try:
-            result, settled = self._converse(ctx, process, prompt)
-            return result
+            result, settled = self._converse(ctx, process, prompt, events)
+            ref = session.path.relative_to(self._data_dir).as_posix() if session else None
+            return result.model_copy(update={"transcript": events.text(), "session_ref": ref})
         finally:
             if session is not None:
                 self._record_session(request, session, prepared.sections_after, success=settled)
@@ -639,9 +634,11 @@ class PiAgentRuntime(AgentRuntime):
             logger.warning("could not record the pi session outcome", exc_info=True)
 
     def _converse(
-        self, ctx: _CallContext, process: PiProcessHandle, prompt: str
+        self, ctx: _CallContext, process: PiProcessHandle, prompt: str, events: EventLog
     ) -> tuple[AgentResult, bool]:
         """Drive one started pi process; return the result and whether pi settled cleanly.
+
+        Each event pi prints is kept in ``events``, which becomes the call's transcript.
 
         The flag is ``False`` for a timeout, a lost process, an RPC error and an
         assistant error or abort. It is ``True`` once pi answered, even when the
@@ -652,9 +649,11 @@ class PiAgentRuntime(AgentRuntime):
         def redact(text: str) -> str:
             return redact_with_scrubbed_values(text, ctx.scrubbed_values)
 
-        client = PiRpcClient(
-            process, redact=redact, on_event=lambda record: _report_tool_start(record, redact)
-        )
+        def on_event(record: dict[str, Any]) -> None:
+            events.add(record)
+            _report_tool_start(record, redact)
+
+        client = PiRpcClient(process, redact=redact, on_event=on_event)
         usage: UsageMetrics | None = None
         try:
             deadline = time.monotonic() + request.timeout_seconds

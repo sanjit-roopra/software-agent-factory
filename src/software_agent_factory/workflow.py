@@ -193,7 +193,7 @@ from .telemetry import (
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
 from .toolchain_commands import candidate_commands, root_version_files, select_package_runner
-from .transcripts import live_tool_calls, write_call_transcript
+from .transcripts import live_tool_calls, store_call_transcript
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -1735,7 +1735,10 @@ class WorkflowController:
                 usage=result.usage,
                 performance=result.performance,
                 fallback_reason=result.fallback_reason,
-                transcript_path=self._save_transcript(run, invocation_number, result),
+                transcript_path=store_call_transcript(
+                    self._store.run_dir(run.id), invocation_number, result.transcript
+                ),
+                session_ref=result.session_ref,
             )
         )
         run.active_invocation = None
@@ -1743,20 +1746,6 @@ class WorkflowController:
         run.last_activity_at = completed_at
         self._store.save_run(run)
         return result
-
-    def _save_transcript(
-        self, run: FactoryRun, invocation_number: int, result: AgentResult
-    ) -> str | None:
-        """Store the call's event stream; a write failure never fails the call."""
-        if not result.transcript:
-            return None
-        try:
-            return write_call_transcript(
-                self._store.run_dir(run.id), invocation_number, result.transcript
-            )
-        except OSError:
-            logger.warning("could not store the transcript of call %d", invocation_number)
-            return None
 
     # -- bounded implementation/repair loop ---------------------------------
 

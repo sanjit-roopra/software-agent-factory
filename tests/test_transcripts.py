@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from factory_testing import REPLY_POLICY, build_config, work_item
+from factory_testing import REPLY_POLICY, FakePiProcess, build_config, work_item
+from prompt_fixtures import make_request
 
 from software_agent_factory import transcripts
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
+from software_agent_factory.config import PiConfig
 from software_agent_factory.dashboard.sanitize import sanitize_invocation
 from software_agent_factory.models import (
     AgentRole,
@@ -20,9 +22,11 @@ from software_agent_factory.models import (
     WorkflowState,
 )
 from software_agent_factory.observability import build_run_detail
+from software_agent_factory.pi_runtime import PiAgentRuntime
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.transcripts import (
     TRANSCRIPT_CUT_MARKER,
+    EventLog,
     read_call_tool_calls,
     tool_calls,
     write_call_transcript,
@@ -212,7 +216,8 @@ class _TranscriptRuntime:
         result = self._fake.run(request)
         transcript = _claude_tool_event("Bash", {"command": f"echo {SECRET}"}) + "\n"
         usage = UsageMetrics(model_usage=(ModelUsage(model="m", runtime=RuntimeName.PI),))
-        return result.model_copy(update={"transcript": transcript, "usage": usage})
+        update = {"transcript": transcript, "usage": usage, "session_ref": "pi-sessions/s.jsonl"}
+        return result.model_copy(update=update)
 
 
 def test_a_run_stores_each_call_transcript_and_the_detail_lists_its_tool_calls(
@@ -228,6 +233,7 @@ def test_a_run_stores_each_call_transcript_and_the_detail_lists_its_tool_calls(
     assert run.state is WorkflowState.PR_READY
     first = run.invocation_records[0]
     assert first.transcript_path == "calls/0001.jsonl"
+    assert first.session_ref == "pi-sessions/s.jsonl"
     stored = (store.runs_dir / run.id / first.transcript_path).read_text(encoding="utf-8")
     assert SECRET not in stored
     detail = build_run_detail(store, run.id, reply_policy=REPLY_POLICY)
@@ -243,7 +249,7 @@ def test_a_transcript_write_failure_never_fails_the_run(
     def fail(*_args: object) -> str:
         raise OSError("disk full")
 
-    monkeypatch.setattr("software_agent_factory.workflow.write_call_transcript", fail)
+    monkeypatch.setattr("software_agent_factory.transcripts.write_call_transcript", fail)
     store = FileRunStore(factory_data_dir)
 
     run = WorkflowController(build_config(factory_data_dir), store, _TranscriptRuntime()).run(
@@ -269,3 +275,95 @@ def test_a_call_without_a_transcript_lists_no_tool_calls(
     assert all(call.tool_calls == [] for call in detail.invocations)
     assert all(call.runtime is None for call in detail.invocations)
     assert AgentRole.TRIAGE in {call.role for call in detail.invocations}
+
+
+# -- pi: the RPC events are the transcript --------------------------------------------
+
+
+def _pi_process(*events: dict[str, Any]) -> FakePiProcess:
+    process = FakePiProcess()
+    process.write_records(
+        {"type": "response", "id": "c1", "success": True},
+        *events,
+        {"type": "agent_settled"},
+        {"type": "response", "id": "c2", "success": True, "data": {"messages": []}},
+        {
+            "type": "response",
+            "id": "c3",
+            "success": True,
+            "data": {"text": json.dumps({"summary": "Done."})},
+        },
+    )
+    process.exit(0)
+    return process
+
+
+def test_a_pi_call_returns_its_events_as_the_transcript_and_names_its_session(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    process = _pi_process(
+        {"type": "message_update", "message": {"content": "partial"}},
+        {"type": "tool_execution_start", "toolName": "bash", "args": {"command": f"echo {SECRET}"}},
+        {"type": "tool_execution_end", "toolName": "bash"},
+    )
+    runtime = PiAgentRuntime(
+        PiConfig(), data_dir=tmp_path, process_factory=lambda command, cwd, env: process
+    )
+
+    result = runtime.run(make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace)))
+
+    assert result.success is True
+    assert result.transcript is not None
+    assert "message_update" not in result.transcript
+    assert result.session_ref is not None
+    assert result.session_ref.startswith("pi-sessions/")
+    assert result.session_ref.endswith("/implementer.jsonl")
+    name = write_call_transcript(tmp_path / "run", 1, result.transcript)
+    assert SECRET not in (tmp_path / "run" / name).read_text(encoding="utf-8")
+    assert read_call_tool_calls(tmp_path / "run", 1) == [
+        {"name": "bash", "preview": "echo [REDACTED]"}
+    ]
+
+
+def test_a_pi_call_without_a_session_has_no_session_ref(tmp_path: Path) -> None:
+    process = _pi_process()
+    runtime = PiAgentRuntime(
+        PiConfig(), data_dir=tmp_path, process_factory=lambda command, cwd, env: process
+    )
+
+    result = runtime.run(make_request(AgentRole.TRIAGE))
+
+    assert result.session_ref is None
+    assert result.transcript is not None
+    assert '"agent_settled"' in result.transcript
+
+
+def test_event_log_redacts_each_line_and_stops_near_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcripts, "TRANSCRIPT_MAX_CHARS", 30)
+    log = EventLog(lambda text: text.replace("hunter2", "[X]"))
+
+    assert log.text() is None
+    log.add({"type": "a", "value": "hunter2"})
+    log.add({"type": "b", "value": "y" * 40})
+    log.add({"type": "c"})
+
+    assert (
+        log.text() == '{"type": "a", "value": "[X]"}\n{"type": "b", "value": "' + "y" * 40 + '"}\n'
+    )
+
+
+def test_pi_tool_calls_skip_an_event_without_a_tool_name() -> None:
+    text = json.dumps({"type": "tool_execution_start", "toolName": 7}) + "\n"
+    text += json.dumps({"type": "tool_execution_start", "toolName": "read", "args": {"path": "a"}})
+
+    assert tool_calls(text) == [{"name": "read", "preview": "a"}]
+
+
+def test_store_call_transcript_skips_an_empty_transcript(tmp_path: Path) -> None:
+    assert transcripts.store_call_transcript(tmp_path, 1, None) is None
+    assert transcripts.store_call_transcript(tmp_path, 1, "") is None
+    assert not (tmp_path / "calls").exists()

@@ -514,6 +514,40 @@ def test_project_work_item_keeps_lower_id_independent_sibling_out_of_scope(
     assert "Build first capability" in boundary
 
 
+def test_project_decomposition_stores_its_transcript_under_the_project(
+    factory_source_repo: Path,
+    factory_data_dir: Path,
+) -> None:
+    secret = "ghp_" + "b" * 36
+
+    def planner(request: AgentRequest) -> AgentResult:
+        transcript = json.dumps({"type": "tool_execution_start", "toolName": "read"})
+        result = _project_planner(request)
+        return result.model_copy(update={"transcript": f"{transcript}\n{secret}\n"})
+
+    brief = ProjectBrief(
+        id="project-transcript",
+        title="Keep the planner transcript",
+        description="Store the decomposition call's events.",
+        repository_path=str(factory_source_repo),
+    )
+    store = FileProjectStore(factory_data_dir)
+    runner = ProjectRunner(
+        build_config(factory_data_dir),
+        FileRunStore(factory_data_dir),
+        FakeAgentRuntime(planner=planner),
+        project_store=store,
+    )
+
+    execution = runner.run(brief, factory_source_repo)
+
+    [invocation] = execution.invocation_records
+    assert invocation.transcript_path == "calls/0001.jsonl"
+    stored = (store.project_dir(brief.id) / invocation.transcript_path).read_text("utf-8")
+    assert '"tool_execution_start"' in stored
+    assert secret not in stored
+
+
 def test_project_persists_failed_planner_invocation_when_runtime_raises(
     factory_source_repo: Path,
     factory_data_dir: Path,

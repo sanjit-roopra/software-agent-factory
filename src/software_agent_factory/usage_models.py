@@ -260,6 +260,8 @@ class InvocationRecord(ModelBase):
     transcript_path: str | None = None
     """Run-relative path of the call's redacted event stream
     (``calls/<n>.jsonl``), when the runtime returned one."""
+    session_ref: str | None = None
+    """Data-dir-relative path of the pi session file the call ran in, when it kept one."""
 
     @model_validator(mode="before")
     @classmethod

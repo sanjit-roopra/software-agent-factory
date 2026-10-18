@@ -208,6 +208,8 @@ class AgentResult(ModelBase):
     transcript: str | None = Field(default=None, repr=False)
     """The raw event lines the runtime CLI printed for this call. The workflow
     redacts, cuts and stores them beside the run (``transcripts``)."""
+    session_ref: str | None = None
+    """Data-dir-relative path of the runtime's own session file for this call (pi)."""
 
     def model_post_init(self, __context: object) -> None:
         if not self.success and not self.failure_reason:
