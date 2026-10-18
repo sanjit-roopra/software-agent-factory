@@ -37,9 +37,9 @@
   const COMPARE_HASH = "#compare";
   const COMPARE_ICON = "\u21c4";
   const MERGED_ICON = "\u2713";
-  // ExecutionRoute.FULL in models.py: the route most runs take, so the run list shows no chip.
+  // ExecutionRoute.FULL in model_base.py: the route most runs take, so the run list shows no chip.
   const DEFAULT_ROUTE = "FULL";
-  // OperatorEscalation.status in models.py: the run list chip and the run page line tone.
+  // OperatorEscalation.status in escalation_models.py: the run list chip and the run page line tone.
   const ESCALATION_CHIPS = {
     running: "escalating",
     done: "escalated",
@@ -53,8 +53,8 @@
   const MAX_RUNS_LIMIT = 100;
   // MAX_PAGE_OFFSET in dashboard/snapshot.py: the largest offset the server takes.
   const MAX_RUNS_OFFSET = 1000000;
-  // RUN_LIST_STATES in models.py, MAX_SEARCH_LENGTH in dashboard/snapshot.py and
-  // PROJECT_ID_PATTERN in models.py: what the run list filters on the server take.
+  // RUN_LIST_STATES in project_models.py, MAX_SEARCH_LENGTH in dashboard/snapshot.py and
+  // PROJECT_ID_PATTERN in project_models.py: what the run list filters on the server take.
   const RUN_STATES = new Set(["escalated", "active", "failed", "succeeded"]);
   const MAX_SEARCH_LENGTH = 100;
   const PROJECT_ID_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
@@ -124,7 +124,7 @@
   const ONE_DOLLAR_ROUNDED = 0.9995;
   const SMALL_USD_DECIMALS = 3;
   const USD_DECIMALS = 2;
-  // Field names and order match TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS in models.py;
+  // Field names and order match TOKEN_CLASS_FIELDS and COST_UNIT_FIELDS in usage_models.py;
   // an asset test pins them. The labels, help and phrases here are display text only.
   const TOKEN_CLASSES = [
     { key: "input_tokens", label: "Input tokens" },
@@ -538,7 +538,7 @@
     return preferDefined(entry.run_id, entry.id);
   }
 
-  // An AgentRole in models.py is upper case, "IMPLEMENTER"; the page shows "Implementer".
+  // An AgentRole in model_base.py is upper case, "IMPLEMENTER"; the page shows "Implementer".
   function roleText(role) {
     const text = displayValue(role);
     return /^[A-Z_]+$/.test(text) ? text.charAt(0) + text.slice(1).toLowerCase().replaceAll("_", " ") : text;
