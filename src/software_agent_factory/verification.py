@@ -56,7 +56,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .models import CommandResult, VerificationReport
 from .redaction import redact_secrets
@@ -131,12 +131,20 @@ class DeterministicVerifier:
         *,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = DEFAULT_CAPTURE_BYTES,
+        before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
+        """Run ``commands`` in order and stop at the first failure.
+
+        ``before_command`` runs before each command, so a caller can raise
+        there to stop between commands.
+        """
         env = build_command_env(env_passthrough)
         results: list[CommandResult] = []
         passed = True
 
         for command in commands:
+            if before_command is not None:
+                before_command()
             started = time.monotonic()
             timed_out = False
             process = subprocess.Popen(

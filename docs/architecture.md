@@ -1279,7 +1279,10 @@ Deterministically detect at least:
 
 The execution plan's file-count range remains useful planning metadata but is
 not a scope gate. The configured repository changed-file ceiling is enforced
-separately before publication.
+separately before publication. Some files outside the expected modules are
+allowed, so growth is shown instead. The PR body and the dashboard plan view
+give the changed-file count beside the estimate. They also list the changed
+files outside the expected modules.
 
 Later add:
 - public API detection
@@ -1342,7 +1345,7 @@ merged commit before `DONE`. It never overrides branch protection or turns a
 pending merge request into a success claim.
 
 GitHub credentials are read from the controller's own environment and handed to
-`gh` through the child environment only. `CopilotAgentRuntime` independently
+`gh` through the child environment only. Every agent runtime independently
 removes `GH_TOKEN`, `GITHUB_TOKEN`, and related credential variables from every
 agent subprocess, so no agent ever sees them.
 

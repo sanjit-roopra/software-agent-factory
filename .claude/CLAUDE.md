@@ -1,6 +1,7 @@
 # software-agent-factory — project conventions
 
 Read `AGENTS.md` first. It holds the architecture rules, delivery workflow and writing rules for this repository.
+Its "Code rules" section lists the rules every change must follow; `tests/test_repo_rules.py` enforces the mechanical ones.
 
 ## Stack
 
@@ -28,7 +29,7 @@ Read `AGENTS.md` first. It holds the architecture rules, delivery workflow and w
 uv sync --locked --group dev                       # install everything
 uv run --no-sync ruff format --check .             # format check
 uv run --no-sync ruff check .                      # lint
-uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
+uv run --no-sync mypy
 uv run --no-sync pytest -q                         # tests (parallel by default)
 uv run --no-sync pytest -q --cov                   # tests with coverage floor 90%
 uv run --no-sync python scripts/docs/check_simple_english.py   # after README/docs edits

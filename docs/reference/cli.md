@@ -243,7 +243,8 @@ Options: `--config`, `--data-dir`.
 
 The command writes one stop request in the run directory and returns.
 The process that drives the run reads it. During an agent call it stops the agent
-within a few seconds. Otherwise it stops the run before its next agent call.
+within a few seconds. During a check it stops the run when that check command
+ends, and during a CI wait it stops the run within one poll interval.
 The run then halts in `NEEDS_HUMAN` with `MANUAL_INSPECTION`. Its workspace and
 commits stay on disk.
 
