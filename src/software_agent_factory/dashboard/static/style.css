@@ -660,4 +660,5 @@ kbd {
 }
 .steer p { margin: 0; }
 .steer-actions { display: flex; align-items: center; gap: 0.75rem; }
+.steer-waiting { white-space: pre-wrap; overflow-wrap: anywhere; }
 

@@ -382,12 +382,28 @@ class FileRunStore:
     def create_steer_note(self, note: RunSteerNote) -> bool:
         """Create the steer note of a run. ``False`` when one is already waiting.
 
+        The controller puts a note back with this, so a newer note wins.
+
         A missing run raises ``FileNotFoundError`` and is never created.
         """
         run_dir = self._run_dir_readonly(note.run_id)
         if not run_dir.is_dir():
             raise FileNotFoundError(f"run {note.run_id} does not exist")
         return self._write_text_create_only(run_dir / _STEER_NOTE_NAME, self._model_text(note))
+
+    def replace_steer_note(self, note: RunSteerNote) -> bool:
+        """Write the steer note of a run atomically, over any waiting one (ADR-051).
+
+        Returns ``True`` when a waiting note was replaced. A missing run raises
+        ``FileNotFoundError`` and is never created.
+        """
+        run_dir = self._run_dir_readonly(note.run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run {note.run_id} does not exist")
+        destination = run_dir / _STEER_NOTE_NAME
+        replaced = destination.exists()
+        self._write_text_atomic(destination, self._model_text(note))
+        return replaced
 
     def load_steer_note(self, run_id: str) -> RunSteerNote | None:
         """The waiting steer note of a run, or ``None``. Read-only.

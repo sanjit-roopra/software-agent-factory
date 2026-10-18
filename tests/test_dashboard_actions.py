@@ -32,8 +32,6 @@ from software_agent_factory.cli import (
     build_resume_request_reader,
     build_resume_requester,
     build_resume_run_reader,
-    build_steer_requester,
-    build_stop_requester,
 )
 from software_agent_factory.dashboard import (
     DashboardConfig,
@@ -72,6 +70,7 @@ from software_agent_factory.resume import (
     compute_delivery_retry_context_fingerprint,
     compute_plan_decision_context_fingerprint,
 )
+from software_agent_factory.run_requests import build_steer_requester, build_stop_requester
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -1490,7 +1489,7 @@ STEER_ACTION = "steer"
 
 
 @pytest.mark.parametrize("state", [WorkflowState.IMPLEMENTING, WorkflowState.NEEDS_HUMAN])
-def test_a_steer_note_of_a_live_or_halted_run_is_stored_once(
+def test_a_steer_note_of_a_live_or_halted_run_is_stored_then_replaced(
     make_rig: RigFactory, state: WorkflowState
 ) -> None:
     escalation = EscalationRecord(
@@ -1501,7 +1500,6 @@ def test_a_steer_note_of_a_live_or_halted_run_is_stored_once(
     )
 
     status, payload = rig.post(_path(STEER_ACTION), {"note": "  Keep the old API.  "})
-    again, conflict = rig.post(_path(STEER_ACTION), {"note": "Another note."})
 
     assert (status, payload) == (202, {"status": "accepted", "requested_at": NOW.isoformat()})
     stored = rig.store.load_steer_note(RUN_ID)
@@ -1511,7 +1509,11 @@ def test_a_steer_note_of_a_live_or_halted_run_is_stored_once(
         "Keep the old API.",
         NOW,
     )
-    assert (again, conflict) == (409, {"error": "conflict", REASON: "existing_request"})
+    again, replaced = rig.post(_path(STEER_ACTION), {"note": "Another note."})
+    assert (again, replaced) == (202, {"status": "replaced", "requested_at": NOW.isoformat()})
+    newer = rig.store.load_steer_note(RUN_ID)
+    assert newer is not None
+    assert newer.note == "Another note."
 
 
 @pytest.mark.parametrize(

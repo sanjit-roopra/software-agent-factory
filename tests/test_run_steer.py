@@ -13,7 +13,7 @@ from test_service import _item
 from typer.testing import CliRunner
 
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
-from software_agent_factory.cli import app, request_run_steer
+from software_agent_factory.cli import app
 from software_agent_factory.dashboard.actions import ResumeActions, accept_steer
 from software_agent_factory.dashboard.responses import WriteRejected
 from software_agent_factory.models import (
@@ -27,6 +27,7 @@ from software_agent_factory.models import (
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.redaction import REDACTION_PLACEHOLDER
 from software_agent_factory.resume import clean_steer_note
+from software_agent_factory.run_requests import request_run_steer
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import WorkflowController
 
@@ -94,6 +95,22 @@ def test_a_steer_note_for_a_missing_run_creates_nothing(data_dir: Path) -> None:
     with pytest.raises(FileNotFoundError):
         store.create_steer_note(note)
 
+    assert not (data_dir / "runs" / "run-gone").exists()
+
+
+def test_a_newer_steer_note_replaces_the_waiting_one(data_dir: Path) -> None:
+    store = FileRunStore(data_dir)
+    _saved(store, "run-a", WorkflowState.IMPLEMENTING)
+    first = RunSteerNote(run_id="run-a", source="cli", note=NOTE, created_at=NOW)
+    second = RunSteerNote(run_id="run-a", source="dashboard", note="Use the new API.")
+
+    assert store.replace_steer_note(first) is False
+    assert store.replace_steer_note(second) is True
+    assert store.load_steer_note("run-a") == second
+    assert [path.name for path in (data_dir / "runs" / "run-a").glob(".*.tmp")] == []
+
+    with pytest.raises(FileNotFoundError):
+        store.replace_steer_note(RunSteerNote(run_id="run-gone", source="cli", note=NOTE))
     assert not (data_dir / "runs" / "run-gone").exists()
 
 
@@ -226,7 +243,10 @@ def test_request_run_steer_reports_each_outcome(data_dir: Path) -> None:
     _saved(store, "run-done", WorkflowState.DONE)
 
     assert request_run_steer(store, "run-live", NOTE, "cli", NOW) == "created"
-    assert request_run_steer(store, "run-live", NOTE, "cli", NOW) == "exists"
+    assert request_run_steer(store, "run-live", "A newer note.", "cli", NOW) == "replaced"
+    replaced = store.load_steer_note("run-live")
+    assert replaced is not None
+    assert replaced.note == "A newer note."
     assert request_run_steer(store, "run-wait", NOTE, "cli", NOW) == "created"
     assert request_run_steer(store, "run-stuck", NOTE, "cli", NOW) == "finished"
     assert request_run_steer(store, "run-bare", NOTE, "cli", NOW) == "finished"
@@ -258,6 +278,20 @@ def test_factory_steer_saves_a_note(data_dir: Path) -> None:
     note = store.load_steer_note("run-cli")
     assert note is not None
     assert (note.source, note.note) == ("cli", NOTE)
+
+
+def test_factory_steer_replaces_a_waiting_note(data_dir: Path) -> None:
+    store = FileRunStore(data_dir)
+    _saved(store, "run-cli", WorkflowState.REVIEWING)
+    store.create_steer_note(RunSteerNote(run_id="run-cli", source="dashboard", note=NOTE))
+
+    result = runner.invoke(app, ["steer", "run-cli", "Newer.", "--data-dir", str(data_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "note replaced for run-cli" in result.output
+    note = store.load_steer_note("run-cli")
+    assert note is not None
+    assert (note.source, note.note) == ("cli", "Newer.")
 
 
 @pytest.mark.parametrize(

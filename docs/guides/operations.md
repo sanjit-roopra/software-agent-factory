@@ -188,6 +188,8 @@ new episode or context, the form starts empty.
 A working run shows **Stop run** next to its badge. The first click arms it and
 says what happens. **Confirm stop** sends the request, and **Keep running** puts
 the button back. `factory cancel <run>` does the same from the terminal.
+While the stop waits, the button says **Stop requested** with the time, also
+after a reload, and you cannot send a second one.
 
 The process that drives the run stops the agent or the running check command
 within a few seconds. A run that waits for CI stops within one poll interval.
@@ -204,7 +206,8 @@ prompt. Only that one call gets it. A working run reads it at its next call, not
 in the middle of one. A halted run keeps the note until it resumes. A halt that
 cannot resume, such as a review impasse, refuses a note: no later call reads
 it. A note is at most 2,000 characters, and a note that
-holds a secret is refused. One note waits at a time.
+holds a secret is refused. One note waits at a time. The box shows the waiting
+note, and **Replace note** sends a new one in its place.
 
 If you do not like the change or pull request of a run, run
 `factory escalate <run> --note "<what to change>"`. The run does the work again

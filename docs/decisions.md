@@ -219,7 +219,7 @@ the GitHub reply protocol, so they wait for a later change.
 
 ### Decision
 
-- The note is one create-only file, `steer-note.json`, in the run directory. It
+- The note is one file, `steer-note.json`, in the run directory. It
   holds the run id, the source (`dashboard` or `cli`), the note and the time.
 - The dashboard route `POST /api/runs/<id>/steer` and `factory steer <run> <note>`
   create it. Both refuse an empty note, a note over 2,000 characters and a note
@@ -234,6 +234,9 @@ the GitHub reply protocol, so they wait for a later change.
   gets the note, whichever driver runs it.
 - A move to `DONE` or `FAILED` deletes the file. A halt in `NEEDS_HUMAN` keeps it,
   so the call after a resume gets it.
+- A newer note from the dashboard or `factory steer` replaces the waiting one. The
+  write is atomic, and both report `replaced`. The run page shows the waiting note,
+  redacted and cut, with **Replace note**. Amended on 2026-10-18.
 
 ### Consequences
 
@@ -307,6 +310,9 @@ Only the process that drives the run can kill its agent process group.
 - The workspace, the branch and its commits stay as they are.
 - Any move to a final state deletes the file, so a request the run never reached cannot stop a later resume.
 - A reopen out of `NEEDS_HUMAN` also deletes the file.
+- The run detail carries the waiting request: its source and time. The run page shows
+  **Stop requested** with the time and keeps the button disabled, also after a reload.
+  Amended on 2026-10-18.
 
 ### Consequences
 

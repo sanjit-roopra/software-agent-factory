@@ -159,14 +159,18 @@ class StopRequester(Protocol):
     def __call__(self, run_id: str, created_at: datetime) -> StopRequestResult: ...
 
 
+#: What a steer note comes to: stored, stored over a waiting one, the run is gone, or the
+#: run has finished and has no next prompt.
+SteerRequestResult = Literal["created", "replaced", "run_missing", "finished"]
+
+
 class SteerRequester(Protocol):
-    """Provider that stores one steer note for a run, create-only (ADR-047).
+    """Provider that stores the steer note of a run, over any waiting one (ADR-047, ADR-051).
 
     It never changes a run: the controller adds the note to the next agent prompt.
-    The results are the stop results: a finished run has no next prompt.
     """
 
-    def __call__(self, run_id: str, note: str, created_at: datetime) -> StopRequestResult: ...
+    def __call__(self, run_id: str, note: str, created_at: datetime) -> SteerRequestResult: ...
 
 
 #: What an escalation request comes to: started, the run is gone, or it cannot escalate.

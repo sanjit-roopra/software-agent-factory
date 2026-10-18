@@ -2322,14 +2322,9 @@ def test_the_run_page_shows_the_last_escalation_at_the_top_in_its_tone() -> None
 def test_steer_refusals_have_their_own_words(action: str) -> None:
     calls = [
         JsCall("failureMessage", ({"status": 400, "body": {}}, action)),
-        JsCall(
-            "failureMessage",
-            ({"status": 409, "body": {"reason": "existing_request"}}, "steer"),
-        ),
         JsCall("failureMessage", ({"status": 409, "body": {"reason": "not_active"}}, "steer")),
         JsCall("failureMessage", ({"status": 409, "body": {"reason": "not_active"}}, "approve")),
     ]
     values = [result.value for result in run_functions(_JS, calls)]
     assert values[0] == "the note is empty, too long or holds a secret"
-    assert values[1] == "a note is already waiting for the next agent call"
-    assert values[2] == values[3]
+    assert values[1] == values[2]

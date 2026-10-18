@@ -107,6 +107,8 @@ from .models import (
     ReviewReport,
     Risk,
     RunListFilter,
+    RunSteerNote,
+    RunStopRequest,
     Specification,
     TriageResult,
     UsageMetrics,
@@ -518,6 +520,9 @@ class RunDetail(ModelBase):
     #: The route ``factory escalate`` would move the run to, or ``None`` (ADR-055).
     escalation_route: ExecutionRoute | None = None
     operator_escalation: OperatorEscalation | None = None
+    #: The waiting stop request and steer note; the dashboard adds them (ADR-049, ADR-051).
+    stop_request: RunStopRequest | None = None
+    steer_note: RunSteerNote | None = None
 
 
 class MonitoringSnapshot(VersionedModel):
@@ -1307,21 +1312,12 @@ def build_run_detail(
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     reply_policy: ReplyPolicy,
 ) -> RunDetail | None:
-    """Derive one run's read-only detail view, or ``None`` if it is not
-    readable.
+    """Derive one run's read-only detail view, or ``None`` if it is not readable.
 
-    Pure and read-only in exactly the same sense as
-    :func:`build_monitoring_snapshot`: it loads one persisted run (plus the
-    same two small artifacts the summary uses for ``title``/``complexity``/
-    ``risk``) and never creates, mutates or repairs anything on disk --
-    :class:`~software_agent_factory.store.FileRunStore` read paths do not
-    create a run directory for a missing run.
-
-    ``None`` -- never an exception -- is returned for a run id that does not
-    exist, is malformed/hostile, or whose ``run.json`` cannot be parsed. That
-    is what lets an untrusted caller (the Phase 15.11 dashboard's detail
-    route) map "no such run" straight onto a 404 without distinguishing
-    "absent" from "corrupt" to the client.
+    Read-only like :func:`build_monitoring_snapshot`: it never creates, mutates or
+    repairs anything on disk. ``None``, never an exception, is returned for a run id
+    that does not exist, is malformed or hostile, or whose ``run.json`` does not
+    parse, so the dashboard maps it straight onto a 404.
     """
     try:
         run = store.load_run(run_id)

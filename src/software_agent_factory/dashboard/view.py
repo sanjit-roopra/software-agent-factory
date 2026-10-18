@@ -20,6 +20,7 @@ from .overview import (
     run_stage,
     snapshot_overview,
 )
+from .pending import sanitize_pending
 from .sanitize import (
     is_active_status,
     sanitize_project,
@@ -63,6 +64,7 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
     ``Stopped, needs you``, whatever its resume classification.
     """
     detail = sanitize_run_detail(raw)
+    detail.update(sanitize_pending(raw))
     if "invocations" in detail:
         detail["totals"] = run_totals(detail["invocations"])
         flag_failing_call(detail, detail["invocations"])
