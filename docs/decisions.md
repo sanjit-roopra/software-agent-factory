@@ -261,6 +261,8 @@ Only the process that drives the run can kill its agent process group.
     When it finds one, it kills the process group of the agent call (ADR-048).
   - Before and after each agent call, the controller checks the file.
     When it finds one, it records the open call as failed and halts the run in `NEEDS_HUMAN`.
+  - The controller also checks the file before each verify command, before the mutation gate
+    and before each pause in the CI wait. Amended on 2026-10-18.
 - The halt reason starts with `stopped on request`. It maps to `MANUAL_INSPECTION`.
   The halt sends no escalation notice: the person who stopped the run already knows.
 - The workspace, the branch and its commits stay as they are.
@@ -271,7 +273,7 @@ Only the process that drives the run can kill its agent process group.
 
 - A stop works the same way for a service run and for a run in the terminal.
 - A run that is not driven by any process stops only when something drives it again.
-- A run in a long step without an agent call, such as a check or a CI wait, stops only at its next agent call.
+- A run in a check stops when that check command ends. A run in a CI wait stops within one poll interval.
 - A stop request that lands just as the run halts for another reason can stay on disk.
   The reopen that a person asks for deletes it, so it never stops that resume.
 
@@ -302,7 +304,7 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 
 - A stalled run no longer holds a slot and an agent process for nothing.
 - The halt is in `run.json`, so it survives a restart and the dashboard shows it.
-- A stall outside an agent call, such as a slow check, stops the run only at its next agent call.
+- A stall outside an agent call stops the run at the next stop check of ADR-049, such as the next verify command.
 - `STALLED` is a new stored value, so old readers see a code they do not know.
 
 ## ADR-047: The dashboard shows what the agent did, and can stop or steer a run

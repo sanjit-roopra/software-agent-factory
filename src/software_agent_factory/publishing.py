@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -575,8 +576,13 @@ class CIObserver:
         repo_path: Path,
         pull_request_url: str,
         repair_attempts_used: int = 0,
+        before_wait: Callable[[], None] | None = None,
     ) -> CIReport:
-        """Poll until checks settle or the configured budget is spent."""
+        """Poll until checks settle or the configured budget is spent.
+
+        ``before_wait`` runs before each pause between polls, so a caller can
+        raise there to end the wait early.
+        """
         ci = self._config.ci
         try:
             pull_request, number = parse_pull_request_url(pull_request_url)
@@ -600,26 +606,23 @@ class CIObserver:
                 "persisted pull request belongs to another repository or gh host"
             )
         repository = pull_request.full_name
+        pause = self._sleep or time.sleep
+
+        def sleep(seconds: float) -> None:
+            if before_wait is not None:
+                before_wait()
+            pause(seconds)
+
         try:
-            if self._sleep is None:
-                status = self._client.poll_checks(
-                    repo_path,
-                    str(number),
-                    repository=repository,
-                    interval_seconds=float(ci.poll_interval_seconds),
-                    max_polls=self.max_polls,
-                    max_seconds=float(ci.max_wait_seconds),
-                )
-            else:
-                status = self._client.poll_checks(
-                    repo_path,
-                    str(number),
-                    repository=repository,
-                    interval_seconds=float(ci.poll_interval_seconds),
-                    max_polls=self.max_polls,
-                    max_seconds=float(ci.max_wait_seconds),
-                    sleep=self._sleep,
-                )
+            status = self._client.poll_checks(
+                repo_path,
+                str(number),
+                repository=repository,
+                interval_seconds=float(ci.poll_interval_seconds),
+                max_polls=self.max_polls,
+                max_seconds=float(ci.max_wait_seconds),
+                sleep=sleep,
+            )
         except CIPollTimeoutError as exc:
             last = exc.last_status
             return normalize_ci_status(

@@ -3292,6 +3292,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
         *,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
+        before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
         results: list[CommandResult] = []
         for command in commands:

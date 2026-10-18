@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from .config import RepositoryCommandsConfig, ScopeDriftConfig
 from .models import CommandResult, ExecutionPlan, Risk, VerificationReport
@@ -297,6 +297,7 @@ class RepositoryVerifier:
         timeout_seconds: int,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
+        before_command: Callable[[], None] | None = None,
     ) -> RepositoryVerificationResult:
         logs_dir = run_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
@@ -317,6 +318,7 @@ class RepositoryVerifier:
                 timeout_seconds=timeout_seconds,
                 env_passthrough=env_passthrough,
                 capture_bytes=capture_bytes,
+                before_command=before_command,
             )
             executed_results.extend(phase_report.deterministic_checks)
 
