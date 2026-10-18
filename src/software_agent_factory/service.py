@@ -69,6 +69,7 @@ from .github import (
     resolve_github_token,
 )
 from .github_tracker import GitHubIssueProvider
+from .lifecycle import is_run_finished
 from .models import (
     REPLY_CURSOR_CLOSED,
     STALLED_HALT_REASON,
@@ -102,7 +103,7 @@ from .scheduler import (
 from .setup_run import SetupTrigger
 from .store import FileRunStore
 from .verification import DeterministicVerifier
-from .workflow import RunCancelledError, WorkflowController, is_run_finished
+from .workflow import RunCancelledError, WorkflowController
 from .workspace import WorkspaceError, WorkspaceLockError
 
 logger = logging.getLogger(__name__)

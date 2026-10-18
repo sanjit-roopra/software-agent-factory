@@ -53,6 +53,7 @@ from .github import (
     is_safe_ref_name,
 )
 from .governance import RepositoryVerifier, assess_publish_gate
+from .lifecycle import is_run_finished
 from .models import (
     AgentPurpose,
     AgentRole,
@@ -75,12 +76,7 @@ from .publishing import PullRequestMerger, resolve_github_token
 from .repository_profile import profile_repository
 from .routing import ModelRouter
 from .store import FileRunStore, ImmutableArtifactConflictError, validate_run_id
-from .workflow import (
-    TransitionError,
-    WorkflowController,
-    delivery_policy_fingerprint,
-    is_run_finished,
-)
+from .workflow import TransitionError, WorkflowController, delivery_policy_fingerprint
 from .workspace import (
     GIT_TIMEOUT_SECONDS,
     GitWorktreeWorkspace,

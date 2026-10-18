@@ -43,6 +43,7 @@ from .governance import (
     ScopeDriftPolicy,
     assess_publish_gate,
 )
+from .lifecycle import ALLOWED_TRANSITIONS, TERMINAL_STATES, is_run_finished
 from .models import (
     ActiveInvocation,
     AgentPurpose,
@@ -122,13 +123,7 @@ from .service_install import (
 from .store import FileRunStore, InvalidRunIdError
 from .verification import DeterministicVerifier
 from .version import format_version_line, get_build_info, get_version
-from .workflow import (
-    ALLOWED_TRANSITIONS,
-    TERMINAL_STATES,
-    TransitionError,
-    WorkflowController,
-    is_run_finished,
-)
+from .workflow import TransitionError, WorkflowController
 from .workspace import GitWorktreeWorkspace
 
 __all__ = [

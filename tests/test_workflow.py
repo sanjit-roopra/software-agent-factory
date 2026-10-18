@@ -28,6 +28,12 @@ from software_agent_factory.governance import (
     RepositoryVerificationResult,
     VerificationFailureKind,
 )
+from software_agent_factory.lifecycle import (
+    ALLOWED_TRANSITIONS,
+    RECOVERY_TRANSITIONS,
+    TERMINAL_STATES,
+    is_run_finished,
+)
 from software_agent_factory.models import (
     MAX_OPEN_REVIEW_FINDINGS,
     UNRESOLVED_DECISIONS_HALT_REASON,
@@ -85,13 +91,10 @@ from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.store import ARTIFACT_FILENAMES, FileRunStore
 from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
-    ALLOWED_TRANSITIONS,
-    TERMINAL_STATES,
     TransitionError,
     WorkflowController,
     _RunContext,
     _with_repair_memory,
-    is_run_finished,
 )
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
 
@@ -313,6 +316,23 @@ def test_exhaustive_transition_matrix_matches_declared_table(data_dir: Path) -> 
         else:
             with pytest.raises(TransitionError):
                 controller.transition(run, to_state)
+
+
+def test_recovery_moves_reach_only_declared_states(data_dir: Path) -> None:
+    controller = WorkflowController(_config(data_dir), FileRunStore(data_dir), FakeAgentRuntime())
+    run = FactoryRun(id="RUN-recover", work_item_id="WI-X", state=WorkflowState.REVIEWING)
+
+    for state in WorkflowState:
+        if state in RECOVERY_TRANSITIONS["restart"]:
+            assert controller._restart_at(run, state).state is state
+        else:
+            with pytest.raises(TransitionError):
+                controller._restart_at(run, state)
+        if state in RECOVERY_TRANSITIONS["operator_escalation"] | ALLOWED_TRANSITIONS[run.state]:
+            assert controller.transition(run, state, operator_escalation=True).state is state
+        else:
+            with pytest.raises(TransitionError):
+                controller.transition(run, state, operator_escalation=True)
 
 
 def test_invalid_transition_from_terminal_state_is_rejected(data_dir: Path) -> None:
