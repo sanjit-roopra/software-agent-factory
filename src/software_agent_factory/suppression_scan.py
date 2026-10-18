@@ -36,32 +36,49 @@ class Suppression:
     text: str
 
 
+@dataclass
+class _Cursor:
+    """Where the scan is in a unified diff: the file and the hunk line counts."""
+
+    path: str | None = None
+    old_left: int = 0
+    new_left: int = 0
+    new_line: int = 0
+
+    def in_hunk(self) -> bool:
+        return self.old_left > 0 or self.new_left > 0
+
+    def read_header(self, line: str) -> None:
+        if line.startswith("+++ "):
+            self.path = line[6:] if line.startswith("+++ b/") else None
+        elif match := _HUNK.match(line):
+            self.old_left = int(match.group(1) or "1")
+            self.new_line = int(match.group(2))
+            self.new_left = int(match.group(3) or "1")
+
+    def advance(self, kind: str) -> None:
+        if kind in ("+", " "):
+            self.new_line += 1
+            self.new_left -= 1
+        if kind in ("-", " "):
+            self.old_left -= 1
+
+
 def added_suppressions(diff: str) -> list[Suppression]:
     """Return the markers on the added lines of a unified diff, in diff order."""
     found: list[Suppression] = []
-    path: str | None = None
-    old_left = new_left = new_line = 0
+    cursor = _Cursor()
     for line in diff.splitlines():
-        if old_left <= 0 and new_left <= 0:
-            if line.startswith("+++ "):
-                path = line[6:] if line.startswith("+++ b/") else None
-            elif match := _HUNK.match(line):
-                old_left = int(match.group(1) or "1")
-                new_line = int(match.group(2))
-                new_left = int(match.group(3) or "1")
+        if not cursor.in_hunk():
+            cursor.read_header(line)
             continue
-        if line.startswith("+"):
-            marker = _MARKER.search(line)
-            if marker is not None and path is not None:
-                found.append(Suppression(path, new_line, marker.group(0), line[1:].strip()))
-            new_line += 1
-            new_left -= 1
-        elif line.startswith("-"):
-            old_left -= 1
-        elif line.startswith(" "):
-            new_line += 1
-            new_left -= 1
-            old_left -= 1
+        kind = line[:1]
+        marker = _MARKER.search(line) if kind == "+" else None
+        if marker is not None and cursor.path is not None:
+            found.append(
+                Suppression(cursor.path, cursor.new_line, marker.group(0), line[1:].strip())
+            )
+        cursor.advance(kind)
     return found
 
 
