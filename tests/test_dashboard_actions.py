@@ -1286,8 +1286,16 @@ def test_the_logs_hold_neither_the_token_nor_the_body(
 PACKAGE = "software_agent_factory"
 #: The package-internal modules ``dashboard/`` may import. Each is a leaf for the dashboard:
 #: none of them runs a workflow, calls GitHub, starts a process or writes a run. ``resume`` is
-#: the pure rules module. The writers are in ``resume_writes``, which is not on the list.
-ALLOWED_PACKAGE_MODULES = {"models", RESUME, "escalation_protocol", "redaction", "store"}
+#: the pure rules module and ``resume_classes`` its pure table of resumable classes. The
+#: writers are in ``resume_writes``, which is not on the list.
+ALLOWED_PACKAGE_MODULES = {
+    "models",
+    RESUME,
+    "resume_classes",
+    "escalation_protocol",
+    "redaction",
+    "store",
+}
 WHOLE_MODULE = "*"
 
 

@@ -22,7 +22,8 @@ from io import BufferedIOBase
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from ..models import ResumeClassification, RunListFilter
+from ..models import RunListFilter
+from ..resume_classes import RESUME_CLASSES
 from . import assets
 from .actions import ResumeActions, accept_action, accept_escalate, accept_steer, accept_stop
 from .evidence import (
@@ -157,11 +158,7 @@ _UNKNOWN_RUN = _UnknownRun()
 #: The decoded path, so a run id such as ``../etc`` reaches the id check as a ``400`` and is
 #: not mistaken for an unknown route.
 _ACTION_PREFIX = "/api/runs/"
-_ACTION_KINDS = {
-    "approve": ResumeClassification.RISK_APPROVAL,
-    "answer": ResumeClassification.PLAN_DECISION,
-    "retry": ResumeClassification.DELIVERY_RETRY,
-}
+_ACTION_KINDS = {spec.dashboard_action: kind for kind, spec in RESUME_CLASSES.items()}
 #: The stop route (ADR-047). It is routed only when the server can store a stop request.
 _STOP_ACTION = "cancel"
 #: The steer route (ADR-047). It is routed only when the server can store a steer note.

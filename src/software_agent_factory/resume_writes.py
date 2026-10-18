@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Protocol
 
 from .config import FactoryConfig
-from .escalation_protocol import format_answer_command, format_resume_command
 from .models import (
     DASHBOARD_USER_LOGIN,
     AcceptedReplyReceipt,
@@ -30,7 +29,6 @@ from .models import (
     PlanDecisionAnswer,
     PlanDecisionAnswers,
     ReplySource,
-    ResumeClassification,
     ResumeRefusal,
 )
 from .resume import (
@@ -40,6 +38,7 @@ from .resume import (
     request_mismatch,
     resume_refusal,
 )
+from .resume_classes import RESUME_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +124,9 @@ def _build_receipt(
     now: datetime,
 ) -> AcceptedReplyReceipt:
     """The receipt for ``reply``, carrying the fingerprint of the context the human saw."""
-    approval = escalation.approval_context
-    plan = escalation.plan_decision_context
-    delivery = escalation.delivery_retry_context
-    is_risk = escalation.resume_classification is ResumeClassification.RISK_APPROVAL
-    is_plan = escalation.resume_classification is ResumeClassification.PLAN_DECISION
-    is_retry = escalation.resume_classification is ResumeClassification.DELIVERY_RETRY
+    # resume_refusal passed, so the class is resumable and its context is valid.
+    spec = RESUME_CLASSES[escalation.resume_classification]
+    fingerprint: dict[str, str | None] = {spec.receipt_field: spec.fingerprint(escalation)}
     return AcceptedReplyReceipt(
         source=reply.source,
         comment_id=reply.comment_id,
@@ -139,18 +135,10 @@ def _build_receipt(
         author_association=reply.author_association,
         created_at=reply.created_at,
         accepted_at=now,
-        command=(
-            format_resume_command(fresh.id, escalation.episode_id)
-            if is_risk or is_retry
-            else format_answer_command(fresh.id, escalation.episode_id)
-        ),
+        command=spec.command(fresh.id, escalation.episode_id),
         episode_id=escalation.episode_id,
         run_id=fresh.id,
-        approval_context_fingerprint=approval.context_fingerprint if is_risk and approval else None,
-        plan_decision_context_fingerprint=plan.context_fingerprint if is_plan and plan else None,
-        delivery_retry_context_fingerprint=(
-            delivery.context_fingerprint if is_retry and delivery else None
-        ),
+        **fingerprint,
     )
 
 

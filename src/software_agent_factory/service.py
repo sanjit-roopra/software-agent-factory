@@ -77,7 +77,6 @@ from .models import (
     EscalationStatus,
     FactoryRun,
     HaltReasonCode,
-    ResumeClassification,
     RunLaunch,
     WorkflowState,
     WorkItem,
@@ -86,6 +85,7 @@ from .models import (
 from .observability import process_alive
 from .publishing import PullRequestPublisher
 from .resume import awaits_human, unsettled_requests
+from .resume_classes import GITHUB_REPLY_CLASSES
 from .resume_writes import ingest_dashboard_request
 from .run_handle import ThreadPoolRunHandle
 from .scheduler import (
@@ -787,11 +787,7 @@ class FactoryService:
                 continue
             if (
                 run.escalation.status is EscalationStatus.NOTIFIED
-                and run.escalation.resume_classification
-                not in {
-                    ResumeClassification.RISK_APPROVAL,
-                    ResumeClassification.PLAN_DECISION,
-                }
+                and run.escalation.resume_classification not in GITHUB_REPLY_CLASSES
                 and run.escalation.reply_cursor != REPLY_CURSOR_CLOSED
             ):
                 escalation = run.escalation.advanced_cursor(REPLY_CURSOR_CLOSED, utc_now())
@@ -805,11 +801,7 @@ class FactoryService:
             if r.state is WorkflowState.NEEDS_HUMAN
             and r.escalation is not None
             and r.escalation.status is EscalationStatus.NOTIFIED
-            and r.escalation.resume_classification
-            in {
-                ResumeClassification.RISK_APPROVAL,
-                ResumeClassification.PLAN_DECISION,
-            }
+            and r.escalation.resume_classification in GITHUB_REPLY_CLASSES
             and r.escalation.reply_cursor != REPLY_CURSOR_CLOSED
         ]
 

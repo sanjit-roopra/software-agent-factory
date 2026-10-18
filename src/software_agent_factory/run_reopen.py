@@ -15,6 +15,7 @@ import os
 import secrets
 import socket
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,7 @@ from .resume import (
     is_valid_risk_approval_context,
     receipt_approves_risk_context,
 )
+from .resume_classes import RESUME_CLASSES
 from .run_context import Halt, TransitionError
 from .run_recovery import DELIVERY_REPO_CHANGED
 from .workspace import GitWorktreeWorkspace, WorkspaceError
@@ -156,21 +158,19 @@ def _reopen_target_state(
 ) -> WorkflowState:
     """Check the decision a person gave and return the state the run resumes at."""
     classification = escalation.resume_classification
-    if classification is ResumeClassification.RISK_APPROVAL:
-        _check_risk_approval(run, escalation, receipt)
-        # Approval contexts written before ADR-035 name REFINING. Both resume at PLANNING.
-        return WorkflowState.PLANNING
-    if classification is ResumeClassification.PLAN_DECISION:
-        _check_plan_decision(controller, run, escalation, receipt)
-        return WorkflowState.PLANNING
-    if classification is ResumeClassification.DELIVERY_RETRY:
-        _check_delivery_retry(run, escalation, receipt)
-        return WorkflowState.PR_READY
-    raise ValueError(f"run {run.id} halt category {classification} cannot be reopened")
+    spec = RESUME_CLASSES.get(classification)
+    check = _REOPEN_CHECKS.get(classification)
+    if spec is None or check is None:
+        raise ValueError(f"run {run.id} halt category {classification} cannot be reopened")
+    check(controller, run, escalation, receipt)
+    return spec.reopen_state
 
 
 def _check_risk_approval(
-    run: FactoryRun, escalation: EscalationRecord, receipt: AcceptedReplyReceipt
+    _controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
 ) -> None:
     if escalation.approval_context is None or not is_valid_risk_approval_context(
         escalation.approval_context, run.id, escalation.episode_id
@@ -208,7 +208,10 @@ def _check_plan_decision(
 
 
 def _check_delivery_retry(
-    run: FactoryRun, escalation: EscalationRecord, receipt: AcceptedReplyReceipt
+    _controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
 ) -> None:
     retry = escalation.delivery_retry_context
     if retry is None or not is_valid_delivery_retry_context(retry, run.id, escalation.episode_id):
@@ -223,6 +226,18 @@ def _check_delivery_retry(
         retry.branch_name,
     ):
         raise ValueError(f"run {run.id} no longer matches its delivery retry context")
+
+
+#: The check a reopen runs on the decision a person gave, one per resumable class. Each
+#: raises ``ValueError`` when the decision no longer matches the run.
+_REOPEN_CHECKS: dict[
+    ResumeClassification,
+    Callable[[WorkflowController, FactoryRun, EscalationRecord, AcceptedReplyReceipt], None],
+] = {
+    ResumeClassification.RISK_APPROVAL: _check_risk_approval,
+    ResumeClassification.PLAN_DECISION: _check_plan_decision,
+    ResumeClassification.DELIVERY_RETRY: _check_delivery_retry,
+}
 
 
 def fail_reopen(
@@ -387,11 +402,7 @@ def _refuse_reopen(controller: WorkflowController, run: FactoryRun) -> FactoryRu
             reason_code=HaltReasonCode.RECOVERY_INTERVENTION,
         )
 
-    if escalation.resume_classification not in {
-        ResumeClassification.RISK_APPROVAL,
-        ResumeClassification.PLAN_DECISION,
-        ResumeClassification.DELIVERY_RETRY,
-    }:
+    if escalation.resume_classification not in RESUME_CLASSES:
         return fail_reopen(
             controller,
             run,

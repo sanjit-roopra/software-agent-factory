@@ -376,9 +376,9 @@ def triage_authorizes_delivery(
 
     A risk that needs human approval authorizes delivery only when a dispatched
     approval receipt still matches the approval context (see
-    :func:`~software_agent_factory.escalation.has_dispatched_risk_approval`).
+    :func:`~software_agent_factory.halt_contexts.has_dispatched_risk_approval`).
     """
-    from .escalation import has_dispatched_risk_approval
+    from .halt_contexts import has_dispatched_risk_approval
 
     if not triage.factory_eligible and not run.unattended:
         return False

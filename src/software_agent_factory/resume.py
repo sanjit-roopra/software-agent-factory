@@ -5,17 +5,18 @@ that decide whether a run may resume, and what a valid answer looks like, live h
 the two paths cannot drift apart.
 
 This module is pure. It reads runs and requests and returns answers. It never writes, and it
-imports only :mod:`.models`, :mod:`.config`, :mod:`.escalation_protocol`, :mod:`.redaction`
-and the standard library: no store, no GitHub client, no subprocess, no workflow and no
-service. The writes live in :mod:`.resume_writes`, and only the service and the reply poller
-call those. The dashboard imports this module and never that one. Tests check both.
+imports only :mod:`.models`, :mod:`.config`, :mod:`.escalation_protocol`, :mod:`.redaction`,
+:mod:`.resume_classes` and the standard library: no store, no GitHub client, no subprocess,
+no workflow and no service. The writes live in :mod:`.resume_writes`, and only the service
+and the reply poller call those. The dashboard imports this module and never that one. Tests
+check both.
+
+The per-class context checks live in :mod:`.resume_classes`; the names below re-export them
+for the callers that import the resume rules from here.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import re
 import secrets
 from collections.abc import Sequence
 from datetime import datetime
@@ -27,7 +28,6 @@ from .models import (
     MAX_STEER_NOTE_CHARS,
     AcceptedReplyReceipt,
     DashboardResumeRequest,
-    DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
     ExecutionRoute,
@@ -37,51 +37,26 @@ from .models import (
     PlanDecisionContext,
     ResumeClassification,
     ResumeRefusal,
-    Risk,
     RiskApprovalContext,
-    RiskRationale,
     WorkflowState,
 )
 from .redaction import REDACTION_PLACEHOLDER, contains_secret
+from .resume_classes import RESUME_CLASSES
+from .resume_classes import (
+    compute_approval_context_fingerprint as compute_approval_context_fingerprint,
+)
+from .resume_classes import (
+    compute_delivery_retry_context_fingerprint as compute_delivery_retry_context_fingerprint,
+)
+from .resume_classes import (
+    compute_plan_decision_context_fingerprint as compute_plan_decision_context_fingerprint,
+)
+from .resume_classes import contains_unsafe_content as contains_unsafe_content
+from .resume_classes import is_valid_delivery_retry_context as is_valid_delivery_retry_context
+from .resume_classes import is_valid_plan_decision_context as is_valid_plan_decision_context
+from .resume_classes import is_valid_risk_approval_context as is_valid_risk_approval_context
 
 MAX_PLAN_DECISION_ANSWER_CHARS = 500
-
-# Absolute, network, and system file system paths
-_ABSOLUTE_OR_NETWORK_PATH_PATTERN = re.compile(
-    r"(?i)"
-    r"(?:(?<![A-Za-z0-9.~/@\\<])(?<!&lt;)/(?:[A-Za-z0-9_.-]+)[^\s\"'`>)]*)"
-    r"|(?:(?<![A-Za-z0-9_.-])~[\\/][^\s\"'`>)]+)"
-    r"|(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'`>)]*)"
-    r"|(?:(?<![A-Za-z0-9_.-])\\\\[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
-    r"|(?:(?<![A-Za-z0-9_.:])//[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-]+[^\s\"'`>)]*)"
-)
-
-# External URLs (http, https, ftp) and bare www. domains
-_EXTERNAL_URL_PATTERN = re.compile(
-    r"(?i)\b(?:https?|ftp)://[^\s\"'`<>)]+"
-    r"|\bwww\.[A-Za-z0-9_.-]+\.[A-Za-z]{2,}[^\s\"'`<>)]*"
-)
-
-# Raw diagnostics / stack traces / diff output
-_RAW_DIAGNOSTIC_PATTERN = re.compile(
-    r"(?i)(?:traceback \(most recent call last\)|subprocess\.calledprocesserror|"
-    r"file \"[^\"]+\", line \d+|diff --git|@@ -\d+,\d+ \+\d+,\d+ @@|\+[A-Z0-9_]+=[^\s]+)"
-)
-
-
-def contains_unsafe_content(text: str) -> tuple[bool, str]:
-    """Check whether text contains paths, embedded credentials, tokens, URLs, or diagnostics."""
-    if not text:
-        return False, ""
-    if contains_secret(text):
-        return True, "contains token or credential"
-    if _EXTERNAL_URL_PATTERN.search(text):
-        return True, "contains external URL or link"
-    if _ABSOLUTE_OR_NETWORK_PATH_PATTERN.search(text):
-        return True, "contains local or network file system path"
-    if _RAW_DIAGNOSTIC_PATTERN.search(text):
-        return True, "contains raw diagnostic or diff output"
-    return False, ""
 
 
 def clean_plan_answer(text: str) -> str | None:
@@ -169,179 +144,6 @@ def build_plan_answers(
     return answers
 
 
-def _fingerprint_dict(data: dict[str, object]) -> str:
-    """SHA-256 of ``data`` as canonical JSON: sorted keys, no spaces."""
-    payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def compute_approval_context_fingerprint(
-    *,
-    run_id: str,
-    episode_id: str,
-    work_item_id: str,
-    work_item_title: str,
-    risk: str,
-    complexity: str,
-    rationale: RiskRationale,
-    decision_requested: str,
-    next_state: str,
-    authorized_actions: Sequence[str],
-    unauthorized_actions: Sequence[str],
-    conditions_in_force: Sequence[str],
-) -> str:
-    """Compute deterministic SHA-256 binding displayed and authority fields to episode."""
-    return _fingerprint_dict(
-        {
-            "run_id": run_id,
-            "episode_id": episode_id,
-            "work_item_id": work_item_id,
-            "work_item_title": work_item_title,
-            "risk": risk,
-            "complexity": complexity,
-            "intended_outcome": rationale.intended_outcome,
-            "sensitive_boundary": rationale.sensitive_boundary,
-            "necessity": rationale.necessity,
-            "credible_scenario": rationale.credible_scenario,
-            "known_mitigations": list(rationale.known_mitigations),
-            "residual_risk": rationale.residual_risk,
-            "decision_requested": decision_requested,
-            "next_state": next_state,
-            "authorized_actions": list(authorized_actions),
-            "unauthorized_actions": list(unauthorized_actions),
-            "conditions_in_force": list(conditions_in_force),
-        }
-    )
-
-
-def is_valid_risk_approval_context(
-    context: RiskApprovalContext | None,
-    run_id: str,
-    episode_id: str,
-) -> bool:
-    """Verify that an approval context is complete, safe, and bound to this run and episode."""
-    if not isinstance(context, RiskApprovalContext):
-        return False
-    if context.risk not in {Risk.R2, Risk.R3}:
-        return False
-    # REFINING is the next state in approval contexts written before ADR-035.
-    if context.next_state not in {WorkflowState.PLANNING, WorkflowState.REFINING}:
-        return False
-
-    rationale = context.risk_rationale
-    fields = [
-        context.work_item_id,
-        context.work_item_title,
-        context.decision_requested,
-        rationale.intended_outcome,
-        rationale.sensitive_boundary,
-        rationale.necessity,
-        rationale.credible_scenario,
-        *rationale.known_mitigations,
-        rationale.residual_risk,
-        *context.authorized_actions,
-        *context.unauthorized_actions,
-        *context.conditions_in_force,
-    ]
-    for field_val in fields:
-        is_unsafe, _ = contains_unsafe_content(field_val)
-        if is_unsafe:
-            return False
-
-    expected_fp = compute_approval_context_fingerprint(
-        run_id=run_id,
-        episode_id=episode_id,
-        work_item_id=context.work_item_id,
-        work_item_title=context.work_item_title,
-        risk=context.risk.value,
-        complexity=context.complexity.value,
-        rationale=rationale,
-        decision_requested=context.decision_requested,
-        next_state=context.next_state.value,
-        authorized_actions=context.authorized_actions,
-        unauthorized_actions=context.unauthorized_actions,
-        conditions_in_force=context.conditions_in_force,
-    )
-    return secrets.compare_digest(context.context_fingerprint, expected_fp)
-
-
-def compute_plan_decision_context_fingerprint(
-    *,
-    run_id: str,
-    episode_id: str,
-    plan_fingerprint: str,
-    decisions: Sequence[str],
-) -> str:
-    """Bind a numbered decision set to one run and escalation episode."""
-    return _fingerprint_dict(
-        {
-            "run_id": run_id,
-            "episode_id": episode_id,
-            "plan_fingerprint": plan_fingerprint,
-            "decisions": list(decisions),
-        }
-    )
-
-
-def is_valid_plan_decision_context(
-    context: PlanDecisionContext | None,
-    run_id: str,
-    episode_id: str,
-) -> bool:
-    """Verify an answerable decision context is safe and bound to its episode."""
-    if not isinstance(context, PlanDecisionContext):
-        return False
-    if not 1 <= len(context.decisions) <= MAX_PLAN_DECISIONS:
-        return False
-    if any(not value or contains_unsafe_content(value)[0] for value in context.decisions):
-        return False
-    expected = compute_plan_decision_context_fingerprint(
-        run_id=run_id,
-        episode_id=episode_id,
-        plan_fingerprint=context.plan_fingerprint,
-        decisions=context.decisions,
-    )
-    return secrets.compare_digest(context.context_fingerprint, expected)
-
-
-def compute_delivery_retry_context_fingerprint(
-    *,
-    run_id: str,
-    episode_id: str,
-    reviewed_tree_sha: str,
-    base_commit_sha: str,
-    branch_name: str,
-) -> str:
-    """Bind the reviewed work a publish retry would deliver to one run and escalation episode."""
-    return _fingerprint_dict(
-        {
-            "run_id": run_id,
-            "episode_id": episode_id,
-            "reviewed_tree_sha": reviewed_tree_sha,
-            "base_commit_sha": base_commit_sha,
-            "branch_name": branch_name,
-        }
-    )
-
-
-def is_valid_delivery_retry_context(
-    context: DeliveryRetryContext | None,
-    run_id: str,
-    episode_id: str,
-) -> bool:
-    """Verify a publish retry context is bound to its run and episode."""
-    if not isinstance(context, DeliveryRetryContext):
-        return False
-    expected = compute_delivery_retry_context_fingerprint(
-        run_id=run_id,
-        episode_id=episode_id,
-        reviewed_tree_sha=context.reviewed_tree_sha,
-        base_commit_sha=context.base_commit_sha,
-        branch_name=context.branch_name,
-    )
-    return secrets.compare_digest(context.context_fingerprint, expected)
-
-
 #: Escalation states in which a run still waits for a human.
 WAITING_STATUSES = frozenset(
     {
@@ -357,19 +159,10 @@ def has_valid_resume_context(run: FactoryRun) -> bool:
     escalation = run.escalation
     if escalation is None:
         return False
-    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
-        return escalation.approval_context is not None and is_valid_risk_approval_context(
-            escalation.approval_context, run.id, escalation.episode_id
-        )
-    if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-        return escalation.plan_decision_context is not None and is_valid_plan_decision_context(
-            escalation.plan_decision_context, run.id, escalation.episode_id
-        )
-    if escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
-        return is_valid_delivery_retry_context(
-            escalation.delivery_retry_context, run.id, escalation.episode_id
-        )
-    return False
+    spec = RESUME_CLASSES.get(escalation.resume_classification)
+    return spec is not None and spec.is_valid_context(
+        spec.context(escalation), run.id, escalation.episode_id
+    )
 
 
 def awaits_human(run: FactoryRun) -> bool:
@@ -417,16 +210,8 @@ def resume_refusal_within(
 
 def current_context_fingerprint(escalation: EscalationRecord) -> str | None:
     """The fingerprint of the context ``escalation`` asks a human to decide, or ``None``."""
-    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
-        risk_context = escalation.approval_context
-        return risk_context.context_fingerprint if risk_context is not None else None
-    if escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-        plan_context = escalation.plan_decision_context
-        return plan_context.context_fingerprint if plan_context is not None else None
-    if escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
-        retry_context = escalation.delivery_retry_context
-        return retry_context.context_fingerprint if retry_context is not None else None
-    return None
+    spec = RESUME_CLASSES.get(escalation.resume_classification)
+    return spec.fingerprint(escalation) if spec is not None else None
 
 
 #: What a request names that is not what the run asks now: its episode, its context, its action.
