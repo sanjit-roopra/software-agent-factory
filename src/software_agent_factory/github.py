@@ -102,6 +102,7 @@ from pydantic import Field
 from .models import (
     ExecutionPlan,
     ModelBase,
+    RejectedCommand,
     ReviewAcceptance,
     ReviewReport,
     Specification,
@@ -2689,6 +2690,7 @@ def build_pr_body(
     test_report: TestReport | None = None,
     review: ReviewReport | None,
     review_acceptance: ReviewAcceptance | None = None,
+    rejected_commands: Sequence[RejectedCommand] = (),
     run_id: str,
 ) -> str:
     """Pure function assembling a PR description from typed artifacts.
@@ -2741,6 +2743,12 @@ def build_pr_body(
             lines.extend(f"- {finding}" for finding in verification.test_findings)
         lines.append("")
 
+    rejected_lines = [f"`{item.command}`: {item.reason}" for item in rejected_commands]
+    lines.extend(_bulleted_section("Checks not run", rejected_lines))
+    lines.extend(
+        _bulleted_section("Assumptions and open questions", _open_items(specification, plan))
+    )
+
     if test_report is not None:
         lines.append("## Independent tester")
         if test_report.skipped:
@@ -2785,3 +2793,16 @@ def build_pr_body(
     lines.append(f"Run ID: `{run_id}`")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _bulleted_section(title: str, items: Sequence[str]) -> list[str]:
+    """Render a PR body section, or nothing when there is nothing to disclose."""
+    if not items:
+        return []
+    return [f"## {title}", *(f"- {item}" for item in items), ""]
+
+
+def _open_items(specification: Specification | None, plan: ExecutionPlan | None) -> list[str]:
+    assumptions = specification.assumptions if specification is not None else []
+    decisions = plan.unresolved_decisions if plan is not None else []
+    return [*(f"Assumption: {item}" for item in assumptions), *decisions]

@@ -119,6 +119,7 @@ from .models import (
     PlanDecisionAnswers,
     PlanningResult,
     PlanStep,
+    RejectedCommand,
     RepairContext,
     RepositoryCommandsPlan,
     RepositoryCommandsSource,
@@ -1179,6 +1180,13 @@ class WorkflowController:
                     notes=(f"command derivation degraded: {type(exc).__name__}",),
                 )
         self._store.save_artifact(run.id, plan)
+
+    def _rejected_commands(self, run_id: str) -> tuple[RejectedCommand, ...]:
+        """Return the derived commands the run did not use, for the PR body."""
+        try:
+            return self._store.load_artifact(run_id, RepositoryCommandsPlan).rejected
+        except FileNotFoundError:
+            return ()
 
     def _commands_for_run(self, run_id: str) -> RepositoryCommandsConfig:
         """Return the commands a run uses. Runs without a plan use the configuration."""
@@ -4604,6 +4612,7 @@ class WorkflowController:
             test_report=context.latest_test_report,
             review=context.latest_review,
             review_acceptance=run.review_acceptance,
+            rejected_commands=self._rejected_commands(run.id),
             run_id=run.id,
         )
         if run.reviewed_tree_sha is not None:
