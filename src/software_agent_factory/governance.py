@@ -335,15 +335,16 @@ class RepositoryVerifier:
                 failed_phase = phase
                 if command_logs:
                     failed_command = command_logs[-1]
-                if phase_report.deterministic_checks:
-                    failure_kind = self.classify_failure(
-                        phase,
-                        phase_report.deterministic_checks[-1],
-                    )
-                    failures.append(self._describe_phase_failure(phase, phase_report))
+                # A failed phase with no check result is an infrastructure fault, never a pass.
+                failure_kind = (
+                    self.classify_failure(phase, phase_report.deterministic_checks[-1])
+                    if phase_report.deterministic_checks
+                    else VerificationFailureKind.INFRA
+                )
+                failures.append(self._describe_phase_failure(phase, phase_report))
                 break
 
-        passed = failure_kind is None
+        passed = failed_phase is None
         report = VerificationReport(
             passed=passed,
             deterministic_checks=executed_results,

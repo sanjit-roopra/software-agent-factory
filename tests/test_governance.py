@@ -25,7 +25,9 @@ from software_agent_factory.models import (
     ExpectedScope,
     PlanStep,
     Risk,
+    VerificationReport,
 )
+from software_agent_factory.verification import DeterministicVerifier
 
 
 def _python_command(code: str) -> str:
@@ -90,6 +92,25 @@ def test_repository_verifier_passes_when_all_command_lists_are_empty(tmp_path: P
     assert result.failed_phase is None
     assert result.failed_command is None
     assert (tmp_path / "run" / "logs").is_dir()
+
+
+def test_repository_verifier_fails_closed_when_a_phase_fails_without_a_check(
+    tmp_path: Path,
+) -> None:
+    class _FailingWithoutChecks(DeterministicVerifier):
+        def run(self, *args: object, **kwargs: object) -> VerificationReport:
+            return VerificationReport(
+                passed=False, deterministic_checks=[], failures=[], confidence=0.0
+            )
+
+    result = RepositoryVerifier(_FailingWithoutChecks()).run(
+        _commands(), cwd=tmp_path, run_dir=tmp_path / "run", timeout_seconds=5
+    )
+
+    assert result.report.passed is False
+    assert result.failure_kind is VerificationFailureKind.INFRA
+    assert result.failed_phase is CheckPhase.INSTALL
+    assert result.report.failures == ["install: verification failed"]
 
 
 def test_repository_verifier_runs_phases_in_order_and_persists_logs(tmp_path: Path) -> None:

@@ -3081,6 +3081,8 @@ class WorkflowController:
                 repair_context = self._verification_repair_context(verification)
                 run = self.transition(run, WorkflowState.IMPLEMENTING)
                 continue
+            if not verification.report.deterministic_checks:
+                run = self._add_needs_look(run, "no verify command ran")
 
             verified_evidence = context.workspace.collect_evidence()
             if (

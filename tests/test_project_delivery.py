@@ -937,7 +937,7 @@ def test_unattended_resume_does_not_refuse_a_recorded_rejection(
     factory_source_repo: Path,
     factory_data_dir: Path,
 ) -> None:
-    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 1})
+    config = _local_config(factory_data_dir, verify=["true"], scheduler={"max_concurrent_tasks": 1})
     config.factory.unattended = True
     runner, _controller, _store = _local_runner(config, crash_on_tasks=[2])
     brief = _brief(factory_source_repo)
@@ -1012,7 +1012,7 @@ def test_unattended_skips_follow_a_chain_and_name_the_unmerged_dependency(
     factory_source_repo: Path,
     factory_data_dir: Path,
 ) -> None:
-    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 2})
+    config = _local_config(factory_data_dir, verify=["true"], scheduler={"max_concurrent_tasks": 2})
     # Task 3 needs a merged task 1 and an unmerged task 2. Task 4 needs task 3.
     runner, _store = _scripted_local_runner(
         config, {2: WorkflowState.NEEDS_HUMAN}, (), (), (1, 2), (3,)
@@ -1066,7 +1066,7 @@ def test_unattended_integration_conflict_records_the_loser_and_ships_the_winner(
     factory_source_repo: Path,
     factory_data_dir: Path,
 ) -> None:
-    config = _local_config(factory_data_dir, scheduler={"max_concurrent_tasks": 2})
+    config = _local_config(factory_data_dir, verify=["true"], scheduler={"max_concurrent_tasks": 2})
     # Tasks 1 and 2 run in one wave and both create the same file.
     runner, _store = _scripted_local_runner(config, {}, (), (), (2,))
 

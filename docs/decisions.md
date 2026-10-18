@@ -629,6 +629,7 @@ Also, a pull request that skipped a gate can still be merged when `merge.enabled
   - risk approval, an ineligible triage or manual triage
   - unresolved plan decisions or scope drift
   - a review impasse, or review findings accepted beyond the review policy
+  - a verification that ran no command. The run records this one in attended mode too.
 - A pull request with reasons gets the `factory:needs-look` label and a comment that lists the reasons. The factory never merges it. The run ends `DONE`.
 - If the factory cannot add the label, it logs a warning and the run still ends `DONE`. The factory does not merge the pull request.
 - The publish gate still stops the run. It blocks secret files, such as `.env` and `*.pem`, and too many changed files. The Git publisher checks the same rules again.
