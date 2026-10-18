@@ -1342,7 +1342,7 @@ merged commit before `DONE`. It never overrides branch protection or turns a
 pending merge request into a success claim.
 
 GitHub credentials are read from the controller's own environment and handed to
-`gh` through the child environment only. `CopilotAgentRuntime` independently
+`gh` through the child environment only. Every agent runtime independently
 removes `GH_TOKEN`, `GITHUB_TOKEN`, and related credential variables from every
 agent subprocess, so no agent ever sees them.
 

@@ -1250,6 +1250,10 @@ Consequences:
 - Heredocs are not a bypass. The filter checks heredoc bodies as commands, so a blocked command in a heredoc fails closed.
   Agents write files with the write tool.
 - The filter depends on the pi `tool_call` extension API. It was verified on pi 0.99.1.
+
+Amendment on 2026-10-18: the Copilot and Claude Code children now get the same environment scrub as pi.
+`SSH_AUTH_SOCK`, every known provider credential variable and every `*_API_KEY` variable are removed from all three runtimes.
+Each runtime keeps only what it needs. Copilot keeps `COPILOT_GITHUB_TOKEN`, pi keeps the credentials of its provider, and Claude Code keeps none.
 - `factory doctor` requires pi 0.99.1 or later, the version the filter was verified on.
 - The filter tests need Node 22 or later.
 

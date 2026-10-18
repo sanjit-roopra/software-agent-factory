@@ -81,7 +81,8 @@ class CopilotAgentRuntime(AgentRuntime):
         cwd = workspace_cwd(request)
         prompt = build_prompt(request)
         prompt_chars = len(prompt)
-        child_env, scrubbed_values = build_child_env()
+        # Copilot CLI reads COPILOT_GITHUB_TOKEN before its stored login.
+        child_env, scrubbed_values = build_child_env(keep=("COPILOT_GITHUB_TOKEN",))
         started_at = utc_now()
 
         with tempfile.TemporaryDirectory(
