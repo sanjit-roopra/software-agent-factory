@@ -2670,7 +2670,7 @@ def test_build_run_detail_prioritizes_action_when_accepted_run_later_halts(
 @pytest.mark.parametrize(
     ("failure_reason", "reason_code"),
     [
-        ("risk approval required", "RISK_APPROVAL"),
+        ("risk R2 requires human approval", "RISK_APPROVAL"),
         ("scope drift requires human review", "SCOPE_REVIEW"),
         ("implementation attempt budget exhausted", "ATTEMPT_BUDGET_EXHAUSTED"),
         ("CI failure is not repairable", "CI_INTERVENTION"),

@@ -140,6 +140,23 @@ def test_build_child_env_scrubs_github_credential_env_vars(
     assert scrubbed_values == {"gho_secret_value", "ghp_other_secret"}
 
 
+def test_build_child_env_drops_other_credentials_and_keeps_only_the_named_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
+    monkeypatch.setenv("GH_TOKEN", "gho_secret_value")
+
+    env, scrubbed_values = build_child_env(keep=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"))
+
+    for name in ("SSH_AUTH_SOCK", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GH_TOKEN"):
+        assert name not in env
+    assert env["COPILOT_GITHUB_TOKEN"] == "copilot-pat"
+    assert {"openai-secret", "aws-secret", "copilot-pat", "gho_secret_value"} <= scrubbed_values
+
+
 def test_build_child_env_preserves_unrelated_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
 

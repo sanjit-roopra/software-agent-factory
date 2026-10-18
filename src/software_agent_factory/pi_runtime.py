@@ -81,11 +81,7 @@ from .agents import (
     workspace_cwd,
 )
 from .models import ModelUsage, PerformanceRecord, UsageMetrics
-from .pi_providers import (
-    API_KEY_SUFFIX,
-    PI_PROVIDER_CREDENTIAL_ENV_VARS,
-    pi_provider_credential_vars,
-)
+from .pi_providers import pi_provider_credential_vars
 from .pi_rpc import (
     PiProcessHandle,
     PiRpcClient,
@@ -774,46 +770,19 @@ class PiAgentRuntime(AgentRuntime):
     def _child_env_and_scrubbed(self, provider: str) -> tuple[dict[str, str], set[str]]:
         """Build the scrubbed environment pi's child process runs in.
 
-        ``build_child_env`` scrubs :data:`subprocess_utils.GITHUB_CREDENTIAL_ENV_VARS`.
-        On top of that, only the credential variables of ``provider``
-        (:func:`~software_agent_factory.pi_providers.pi_provider_credential_vars`)
-        stay: ``COPILOT_GITHUB_TOKEN`` for ``github-copilot`` (it authenticates
+        :func:`~software_agent_factory.subprocess_utils.build_child_env` keeps
+        only the credential variables of ``provider``
+        (:func:`~software_agent_factory.pi_providers.pi_provider_credential_vars`):
+        ``COPILOT_GITHUB_TOKEN`` for ``github-copilot`` (it authenticates
         headless when ``~/.pi/agent/auth.json`` has no interactive login), the
         API key, OAuth token or AWS variables of another provider, the derived
-        ``<PROVIDER>_API_KEY`` for a provider the map does not list. Every
-        other known credential variable and every other ``*_API_KEY`` are
-        removed. ``SSH_AUTH_SOCK`` is
-        removed too, which removes ssh-agent access only: key files and
-        credential helpers are out of scope, as they are for Copilot. It is
-        not a secret value, so it is not redacted.
+        ``<PROVIDER>_API_KEY`` for a provider the map does not list.
 
         The second return value is the credential values to redact from any
-        failure reason built from pi's stderr or protocol output (mirroring
-        ``subprocess_utils.format_failure_reason``). It holds the
-        values ``build_child_env`` removed plus *every* known credential
-        value, kept or removed, so none can leak into a failure reason.
+        failure reason built from pi's stderr or protocol output.
         """
-        env, scrubbed_values = build_child_env()
+        env, scrubbed_values = build_child_env(keep=pi_provider_credential_vars(provider))
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
-        env.pop("SSH_AUTH_SOCK", None)
-
-        own_vars = set(pi_provider_credential_vars(provider))
-        # A provider newer than the map may read a key the map does not name,
-        # so every *_API_KEY variable is treated as a credential.
-        other_api_keys = [name for name in env if name.endswith(API_KEY_SUFFIX)]
-        credential_vars = {
-            *(name for names in PI_PROVIDER_CREDENTIAL_ENV_VARS.values() for name in names),
-            *own_vars,
-            *other_api_keys,
-        }
-        for name in sorted(credential_vars):
-            value = env.get(name)
-            if not value:
-                continue
-            scrubbed_values.add(value)
-            if name not in own_vars:
-                del env[name]
-
         return env, scrubbed_values
 
     def _get_messages(self, client: PiRpcClient, *, deadline: float) -> list[dict[str, Any]]:

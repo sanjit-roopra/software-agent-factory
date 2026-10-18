@@ -302,6 +302,7 @@ def test_build_run_evidence_is_empty_without_artifacts_and_none_without_a_run(
         "specification": None,
         "execution_plan": None,
         "change_set": None,
+        "out_of_scope_paths": [],
     }
     assert build_run_evidence(store, "run-missing") is None
 

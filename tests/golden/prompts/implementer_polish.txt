@@ -19,6 +19,7 @@ Make the required changes in the current working directory.
 - Reuse existing mechanisms. Do not do unrelated cleanup.
 - Treat sibling-task constraints as hard scope boundaries.
 - Add or update a test for each acceptance criterion.
+- Do not skip tests, or add lint or type suppressions, to make checks pass.
 - Run the verification commands before you stop.
 - Return ChangeSet metadata only.
 
@@ -44,7 +45,7 @@ Verification commands:
 ["uv run pytest -q"]
 
 Repair context:
-{"failures":[],"log_excerpt":null,"summary":"Deterministic verification passed. Apply a final bounded polish and simplification pass using the fixed simplify and polish guidance supplied with this request.","trigger":"POLISH"}
+{"failures":[],"log_excerpt":null,"previous_attempts":[],"summary":"Deterministic verification passed. Apply a final bounded polish and simplification pass using the fixed simplify and polish guidance supplied with this request.","trigger":"POLISH"}
 
 Current diff:
 diff --git a/src/app.py b/src/app.py

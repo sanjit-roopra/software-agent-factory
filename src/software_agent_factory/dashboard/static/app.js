@@ -3508,6 +3508,9 @@
     const changes = payload.change_set;
     if (changes) {
       textBlock(body, "What changed", changes.summary);
+      const fileCount = asArray(changes.changed_files).length;
+      textBlock(body, "Files changed", fileCount + (fileCount === 1 ? " file" : " files"));
+      textList(body, "Outside the planned modules", payload.out_of_scope_paths);
       textList(body, "Tests added", changes.tests_added);
       textList(body, "Commands run", changes.commands_run);
     }

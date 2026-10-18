@@ -3292,6 +3292,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
         stop_on_failure: bool = True,
+        before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
         results: list[CommandResult] = []
         for command in commands:
@@ -3440,6 +3441,7 @@ def test_runs_without_a_commands_plan_use_the_configuration(
     (store.run_dir(run.id) / ARTIFACT_FILENAMES[RepositoryCommandsPlan]).unlink()
 
     assert controller._commands_for_run(run.id).verify == ["true"]
+    assert controller._rejected_commands(run.id) == ()
 
 
 @pytest.fixture

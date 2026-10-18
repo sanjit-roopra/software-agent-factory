@@ -19,6 +19,7 @@ Make the required changes in the current working directory.
 - Reuse existing mechanisms. Do not do unrelated cleanup.
 - Treat sibling-task constraints as hard scope boundaries.
 - Add or update a test for each acceptance criterion.
+- Do not skip tests, or add lint or type suppressions, to make checks pass.
 - Run the verification commands before you stop.
 - Return ChangeSet metadata only.
 
@@ -41,7 +42,7 @@ Attempt number:
 2
 
 Repair context:
-{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","summary":"Continuous integration reported a failing check.","trigger":"CI"}
+{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","previous_attempts":[],"summary":"Continuous integration reported a failing check.","trigger":"CI"}
 
 Current diff:
 diff --git a/src/app.py b/src/app.py
