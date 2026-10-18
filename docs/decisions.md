@@ -261,6 +261,8 @@ Only the process that drives the run can kill its agent process group.
     When it finds one, it kills the process group of the agent call (ADR-048).
   - Before and after each agent call, the controller checks the file.
     When it finds one, it records the open call as failed and halts the run in `NEEDS_HUMAN`.
+  - The controller also checks the file before each verify command, before the mutation gate
+    and before each pause in the CI wait. Amended on 2026-10-18.
 - The halt reason starts with `stopped on request`. It maps to `MANUAL_INSPECTION`.
   The halt sends no escalation notice: the person who stopped the run already knows.
 - The workspace, the branch and its commits stay as they are.
@@ -271,7 +273,7 @@ Only the process that drives the run can kill its agent process group.
 
 - A stop works the same way for a service run and for a run in the terminal.
 - A run that is not driven by any process stops only when something drives it again.
-- A run in a long step without an agent call, such as a check or a CI wait, stops only at its next agent call.
+- A run in a check stops when that check command ends. A run in a CI wait stops within one poll interval.
 - A stop request that lands just as the run halts for another reason can stay on disk.
   The reopen that a person asks for deletes it, so it never stops that resume.
 
@@ -302,7 +304,7 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 
 - A stalled run no longer holds a slot and an agent process for nothing.
 - The halt is in `run.json`, so it survives a restart and the dashboard shows it.
-- A stall outside an agent call, such as a slow check, stops the run only at its next agent call.
+- A stall outside an agent call stops the run at the next stop check of ADR-049, such as the next verify command.
 - `STALLED` is a new stored value, so old readers see a code they do not know.
 
 ## ADR-047: The dashboard shows what the agent did, and can stop or steer a run
@@ -868,6 +870,19 @@ Amendment on 2026-10-03 (mutation gate):
   Every passed verification writes `mutation.json`, so no report from an older attempt stays.
 - The gate always removes `mutants/`. If the repository already has `mutants/`, the gate skips and deletes nothing.
 
+Amendment on 2026-10-18 (revert check):
+
+- A change can add tests that pass without the production change. No check found this before, and the mutation gate runs only for Python.
+- The check runs when the verify commands pass on a change with test files and other files.
+  It puts the other files back to the base commit.
+  It runs the verify commands again and then puts the change back.
+- A failing verify command means the tests depend on the change. If all of them pass, the check warns that the tests pass without the production change.
+- The check adds one check to the verification report. The tester and the reviewer judge it.
+- The check is advisory and has no repair round. A refactor or a characterization test passes without the change, and that is correct.
+- A timeout or an error in the check skips it and records why. `repository.revert_check: false` turns it off.
+- If the check cannot put the change back, the error stops the run. The run never continues without its production change.
+- Test files are found by name and directory for Python, JavaScript and TypeScript, such as `test_*.py`, `*.test.ts` and `__tests__/`.
+
 The factory gets lint, format and test commands only from the YAML configuration.
 It installs no tools in the target repository.
 A research call to a model generates skill guidance, and that guidance stays in the factory data directory.
@@ -1254,6 +1269,10 @@ Consequences:
 - The filter depends on the pi `tool_call` extension API. It was verified on pi 0.99.1.
 - `factory doctor` requires pi 0.99.1 or later, the version the filter was verified on.
 - The filter tests need Node 22 or later.
+
+Amendment on 2026-10-18: the Copilot and Claude Code children now get the same environment scrub as pi.
+`SSH_AUTH_SOCK`, every known provider credential variable and every `*_API_KEY` variable are removed from all three runtimes.
+Each runtime keeps only what it needs. Copilot keeps `COPILOT_GITHUB_TOKEN`, pi keeps the credentials of its provider, and Claude Code keeps none.
 
 ## ADR-031: pi is a recommended agent runtime
 

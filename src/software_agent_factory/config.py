@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from importlib import resources
 from pathlib import Path, PurePosixPath
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 import yaml
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -63,6 +64,17 @@ DEFAULT_PROTECTED_FILE_PATTERNS: tuple[str, ...] = (
 #: Maximum scheduler concurrency the factory is validated for (PLAN.md Phase
 #: 14 deliberately stops at two concurrent tasks).
 MAX_SUPPORTED_CONCURRENT_TASKS = 2
+
+
+def _bare_hosts(value: list[str]) -> list[str]:
+    if not value:
+        raise ValueError("allowed_hosts must not be empty")
+    if any(not host.strip() or "/" in host for host in value):
+        raise ValueError("allowed_hosts entries must be bare hostnames")
+    return value
+
+
+_Hosts = Annotated[list[str], AfterValidator(_bare_hosts)]
 
 
 class ConfigModel(BaseModel):
@@ -175,6 +187,10 @@ class RepositoryConfig(ConfigModel):
             "add the surviving mutants to the verification report for review (ADR-034). "
             "The gate is advisory and never fails verification."
         ),
+    )
+    revert_check: bool = Field(
+        default=True,
+        description="Rerun verify with non-test changes at the base commit (ADR-034). Advisory.",
     )
     derive_commands: bool = Field(
         default=True,
@@ -312,17 +328,7 @@ class PullRequestConfig(ConfigModel):
     remote: str = Field(default="origin", min_length=1)
     base_branch: str | None = None
     draft: bool = True
-    allowed_hosts: list[str] = Field(default_factory=lambda: ["github.com"])
-
-    @field_validator("allowed_hosts")
-    @classmethod
-    def _validate_hosts(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("allowed_hosts must not be empty")
-        for host in value:
-            if not host.strip() or "/" in host:
-                raise ValueError("allowed_hosts entries must be bare hostnames")
-        return value
+    allowed_hosts: _Hosts = Field(default_factory=lambda: ["github.com"])
 
     @field_validator("base_branch")
     @classmethod
@@ -411,7 +417,7 @@ class EscalationConfig(ConfigModel):
     reply_window_hours: int = Field(default=168, ge=1, le=MAX_ESCALATION_REPLY_WINDOW_HOURS)
     max_reply_polls_per_tick: PositiveInt = Field(default=10)
     max_notification_attempts: PositiveInt = Field(default=3)
-    allowed_hosts: list[str] = Field(default_factory=lambda: ["github.com"])
+    allowed_hosts: _Hosts = Field(default_factory=lambda: ["github.com"])
 
     @field_validator("authorized_identities")
     @classmethod
@@ -438,16 +444,6 @@ class EscalationConfig(ConfigModel):
         if len(value) != len({assoc.strip().upper() for assoc in value}):
             raise ValueError("allowed_associations entries must be unique")
         return [assoc.strip().upper() for assoc in value]
-
-    @field_validator("allowed_hosts")
-    @classmethod
-    def _validate_hosts(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("allowed_hosts must not be empty")
-        for host in value:
-            if not host.strip() or "/" in host:
-                raise ValueError("allowed_hosts entries must be bare hostnames")
-        return value
 
     @model_validator(mode="after")
     def _validate_enabled_requirements(self) -> Self:

@@ -60,7 +60,7 @@ jobs:
             --group docs --group quality --group security --group test
           uv run --no-sync --no-build ruff format --check .
           uv run --no-sync --no-build ruff check .
-          uv run --no-sync --no-build mypy src/software_agent_factory scripts/docs scripts/release
+          uv run --no-sync --no-build mypy
           uv run --no-sync --no-build pytest -q --cov=src/software_agent_factory --cov-branch
           uv run --no-sync --no-build pip-audit --skip-editable
           uv run --no-sync --no-build mkdocs build --strict

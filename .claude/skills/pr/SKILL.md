@@ -33,13 +33,14 @@ Arguments: $ARGUMENTS
 
 ### 2. Quality gate (stop on first failure)
 
-Run sequentially from the repository root:
+Run sequentially from the repository root. These mirror
+`.github/workflows/ci.yml`; when CI changes, change them here too.
 
 ```bash
 uv sync --locked --group dev
 uv run --no-sync ruff format --check .
 uv run --no-sync ruff check --output-format=github .
-uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
+uv run --no-sync mypy
 uv run --no-sync pytest -q --cov --cov-report=term-missing
 ```
 
@@ -47,6 +48,8 @@ If `README.md` or anything under `docs/` changed:
 
 ```bash
 uv run --no-sync python scripts/docs/check_simple_english.py
+uv run --no-sync mkdocs build --strict
+uv run --no-sync python scripts/docs/check_rendered_links.py site
 ```
 
 Coverage floor is 90% (`[tool.coverage.report] fail_under`). A failing
@@ -57,13 +60,21 @@ floor is a failing gate.
 Unless `--skip-review`: invoke `/dev-team:code-review` on the diff against
 the base branch. Blocking findings must be fixed before continuing.
 
-### 4. Commit and push
+### 4. Pragmatic check
+
+Check the diff against the code rules in `AGENTS.md`. Fix any miss first:
+
+- Code that the change made dead is removed.
+- Behavior changes update `AGENTS.md`, `docs/` and the ADR.
+- No new suppression, skipped test or lowered threshold.
+
+### 5. Commit and push
 
 - Commit with a conventional, descriptive message. Keep normal prose in the
   message body (the concision rule does not apply to commit messages).
 - `git push -u origin HEAD`.
 
-### 5. Create or update the PR
+### 6. Create or update the PR
 
 ```bash
 gh pr create --base <base> [--draft] --title "<title>" --body "<body>"
@@ -78,6 +89,6 @@ run and their results), Notes for reviewers. End the body with:
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
-### 6. Report
+### 7. Report
 
 Print the gate results table and the PR URL. Nothing else.

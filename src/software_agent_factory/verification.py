@@ -12,7 +12,9 @@ Implements the Phase 1 "deterministic verification" step described in
   repository configuration, not attacker-controlled input, and may rely on
   shell features (``&&``, globs, PATH lookups via login shell profile).
 - Execution stops after the first failing (non-zero exit or timed out)
-  command. An empty command list passes trivially.
+  command. With ``stop_on_failure=False`` it runs every command and stops
+  early only on a timeout, so one report names every failing check. An
+  empty command list passes trivially.
 - A timeout produces a failed ``CommandResult`` with ``timed_out=True``; it
   is never allowed to propagate as an uncaught ``TimeoutExpired``.
 
@@ -56,7 +58,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .models import CommandResult, VerificationReport
 from .redaction import redact_secrets
@@ -131,12 +133,23 @@ class DeterministicVerifier:
         *,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = DEFAULT_CAPTURE_BYTES,
+        stop_on_failure: bool = True,
+        before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
+        """Run ``commands`` in order.
+
+        With ``stop_on_failure`` it stops at the first failure; otherwise it
+        runs every command and stops early only on a timeout.
+
+        ``before_command`` runs before each command, so a caller can raise
+        there to stop between commands.
+        """
         env = build_command_env(env_passthrough)
         results: list[CommandResult] = []
-        passed = True
 
         for command in commands:
+            if before_command is not None:
+                before_command()
             started = time.monotonic()
             timed_out = False
             process = subprocess.Popen(
@@ -172,11 +185,11 @@ class DeterministicVerifier:
             )
             results.append(result)
 
-            if timed_out or exit_code != 0:
-                passed = False
+            if timed_out or (stop_on_failure and exit_code != 0):
                 break
 
         failures = [_describe_failure(r) for r in results if r.timed_out or r.exit_code != 0]
+        passed = not failures
 
         return VerificationReport(
             passed=passed,

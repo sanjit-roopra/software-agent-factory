@@ -102,7 +102,8 @@ temporary directory access.
 
 The factory scrubs the child environment. It removes GitHub credential variables
 such as `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GIT_ASKPASS`
-before the process starts. Agents never receive GitHub credentials. Only
+before the process starts. It also removes `SSH_AUTH_SOCK` and other API keys.
+Agents never receive GitHub credentials. Only
 controller-owned code passes a token to `gh`. It passes tokens only for pull
 request and CI operations that you explicitly enabled.
 
