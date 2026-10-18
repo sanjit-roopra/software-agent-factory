@@ -554,35 +554,49 @@ class GitPublisher:
             except (GitCommandError, GitTimeoutError) as exc:
                 if not _is_transient_git_push_error(exc):
                     raise
-                try:
-                    remote_sha = self.remote_branch_sha(
-                        workspace_path,
-                        branch_name,
-                        destination=destination,
-                    )
-                except (GitCommandError, GitTimeoutError):
-                    remote_sha = ""
-                if remote_sha == commit_sha:
-                    return
                 final_attempt = attempt + 1 == MAX_GIT_PUSH_ATTEMPTS
-                delay = (
-                    GIT_PUSH_FINAL_RECONCILE_DELAY_SECONDS
-                    if final_attempt
-                    else GIT_PUSH_RETRY_DELAY_SECONDS
-                )
-                self.sleeper(delay)
-                try:
-                    remote_sha = self.remote_branch_sha(
-                        workspace_path,
-                        branch_name,
-                        destination=destination,
-                    )
-                except (GitCommandError, GitTimeoutError):
-                    remote_sha = ""
-                if remote_sha == commit_sha:
+                if self._push_landed_after_failure(
+                    workspace_path,
+                    destination=destination,
+                    branch_name=branch_name,
+                    commit_sha=commit_sha,
+                    final_attempt=final_attempt,
+                ):
                     return
                 if final_attempt:
                     raise
+
+    def _push_landed_after_failure(
+        self,
+        workspace_path: Path,
+        *,
+        destination: str,
+        branch_name: str,
+        commit_sha: str,
+        final_attempt: bool,
+    ) -> bool:
+        """Check the remote tip, wait, and check again after a failed push."""
+        if self._remote_tip_is(workspace_path, destination, branch_name, commit_sha):
+            return True
+        self.sleeper(
+            GIT_PUSH_FINAL_RECONCILE_DELAY_SECONDS
+            if final_attempt
+            else GIT_PUSH_RETRY_DELAY_SECONDS
+        )
+        return self._remote_tip_is(workspace_path, destination, branch_name, commit_sha)
+
+    def _remote_tip_is(
+        self, workspace_path: Path, destination: str, branch_name: str, commit_sha: str
+    ) -> bool:
+        try:
+            remote_sha = self.remote_branch_sha(
+                workspace_path,
+                branch_name,
+                destination=destination,
+            )
+        except (GitCommandError, GitTimeoutError):
+            remote_sha = ""
+        return remote_sha == commit_sha
 
     def commit_and_push(
         self,

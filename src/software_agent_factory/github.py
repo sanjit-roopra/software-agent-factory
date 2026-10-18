@@ -200,7 +200,7 @@ class UnknownMergeOutcomeError(GitHubError):
 #: A full, unabbreviated Git object name. The merge boundary never accepts an
 #: abbreviated revision: an expected head must be exact.
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-_SHA_PATTERN = SHA_PATTERN
+GITHUB_HOST = "github.com"
 
 #: Environment variables the controller (and only the controller) may read a
 #: GitHub token from, in priority order.
@@ -348,7 +348,7 @@ def parse_pull_request_url(url: str) -> tuple[RepositoryRef, int]:
     return RepositoryRef(host=parsed.hostname.lower(), owner=owner, name=name), int(parts[3])
 
 
-def parse_issue_reference(ref: str, default_host: str = "github.com") -> tuple[RepositoryRef, int]:
+def parse_issue_reference(ref: str, default_host: str = GITHUB_HOST) -> tuple[RepositoryRef, int]:
     """Parse an issue reference (URL or OWNER/NAME#NUMBER) into its exact
     repository identity and issue number. Raises ``ValueError`` otherwise."""
     candidate = ref.strip()
@@ -1001,7 +1001,7 @@ class GitHubClient:
             if isinstance(host, str) and str(host).strip()
         }
         selected = configured_host or (
-            next(iter(host_names)) if len(host_names) == 1 else "github.com"
+            next(iter(host_names)) if len(host_names) == 1 else GITHUB_HOST
         )
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", selected) is None:
             raise GitHubCommandError(
@@ -1132,7 +1132,7 @@ class GitHubClient:
         repository: str,
         issue_number: int,
         body: str,
-        hostname: str = "github.com",
+        hostname: str = GITHUB_HOST,
     ) -> GitHubComment:
         """Post a comment on an issue or pull request conversation."""
         target = _validate_repository_name(repository)
@@ -1173,7 +1173,7 @@ class GitHubClient:
         since: datetime | None = None,
         page: int = 1,
         per_page: int = 100,
-        hostname: str = "github.com",
+        hostname: str = GITHUB_HOST,
     ) -> list[GitHubComment]:
         """List comments for an issue or pull request conversation with bounded pagination."""
         target = _validate_repository_name(repository)
@@ -1214,7 +1214,7 @@ class GitHubClient:
         *,
         repository: str,
         comment_id: int,
-        hostname: str = "github.com",
+        hostname: str = GITHUB_HOST,
     ) -> GitHubComment:
         """Fetch and revalidate a single issue or pull request comment."""
         target = _validate_repository_name(repository)
@@ -1244,7 +1244,7 @@ class GitHubClient:
         self,
         repo_path: Path,
         *,
-        hostname: str = "github.com",
+        hostname: str = GITHUB_HOST,
         force_refresh: bool = False,
         max_age_seconds: float = DEFAULT_AUTH_CACHE_TTL_SECONDS,
     ) -> GitHubIdentity:
@@ -1470,7 +1470,7 @@ class GitHubClient:
         number: int,
         method: str,
         expected_head_sha: str,
-        hostname: str = "github.com",
+        hostname: str = GITHUB_HOST,
     ) -> MergeOutcome:
         """Merge ``number`` synchronously at exactly ``expected_head_sha``.
 
@@ -1489,7 +1489,7 @@ class GitHubClient:
         target = _validate_repository_name(repository)
         if method not in _MERGE_METHODS:
             raise ValueError(f"unsupported merge method {method!r}")
-        if _SHA_PATTERN.fullmatch(expected_head_sha or "") is None:
+        if SHA_PATTERN.fullmatch(expected_head_sha or "") is None:
             raise ValueError("expected_head_sha must be a full 40-character commit SHA")
         if number <= 0:
             raise ValueError(f"invalid pull request number {number!r}")
@@ -1519,7 +1519,7 @@ class GitHubClient:
             raw_message = payload.get("message")
             if isinstance(raw_message, str) and raw_message.strip():
                 message = raw_message.strip()
-        if merged and _SHA_PATTERN.fullmatch(commit_sha) is None:
+        if merged and SHA_PATTERN.fullmatch(commit_sha) is None:
             raise UnknownMergeOutcomeError(
                 f"GitHub reported pull request {target}#{number} as merged without a usable "
                 "merge commit"
@@ -1537,7 +1537,7 @@ class GitHubClient:
         *,
         repository: str,
         branch: str,
-        hostname: str = "github.com",
+        hostname: str = GITHUB_HOST,
     ) -> BranchPolicy:
         """Read what the server enforces on ``branch`` (read-only).
 
@@ -1660,7 +1660,7 @@ class GitHubClient:
             sources=tuple(sources),
         )
 
-    def _api_json(self, repo_path: Path, path: str, *, hostname: str = "github.com") -> object:
+    def _api_json(self, repo_path: Path, path: str, *, hostname: str = GITHUB_HOST) -> object:
         args = ["api", "--hostname", hostname, "-H", _GITHUB_API_ACCEPT, path]
         result = self._run(args, repo_path, check=False)
         if result.returncode != 0:

@@ -179,7 +179,23 @@ def _validate_branch_name(branch_name: str, *, branch_prefix: str, base_branch: 
         )
 
 
-_STATUS_TOKEN_PATTERN = re.compile(r"^[ACDMRTUX][0-9]*$")
+_STATUS_TOKEN_PATTERN = re.compile(r"^[ACDMRTUX]\d*$", re.ASCII)
+
+
+def _raw_diff_record(parts: Sequence[str], idx: int) -> tuple[Sequence[str], int]:
+    """Return the paths of the raw diff record at ``idx`` and the next index."""
+    token = parts[idx]
+    if not token.startswith(":"):
+        raise GitPublishError(f"malformed raw diff header: {token!r}")
+    header_fields = token.split()
+    status = header_fields[-1] if header_fields else ""
+    if status.startswith(("R", "C")):
+        if idx + 2 >= len(parts):
+            raise GitPublishError(f"truncated raw diff record for rename/copy: {token!r}")
+        return parts[idx + 1 : idx + 3], idx + 3
+    if idx + 1 >= len(parts):
+        raise GitPublishError(f"truncated raw diff record: {token!r}")
+    return parts[idx + 1 : idx + 2], idx + 2
 
 
 def _parse_raw_diff_changed_files(output: str) -> list[str]:
@@ -194,41 +210,16 @@ def _parse_raw_diff_changed_files(output: str) -> list[str]:
     if not output:
         return []
 
-    changed_files: list[str] = []
-    seen: set[str] = set()
-
-    def add_path(p: str) -> None:
-        if p and p not in seen:
-            seen.add(p)
-            changed_files.append(p)
-
+    changed_files: dict[str, None] = {}
     parts = output.rstrip("\0").split("\0")
-    if not parts or parts == [""]:
-        return []
-
     idx = 0
     while idx < len(parts):
-        token = parts[idx]
-        if not token:
+        if not parts[idx]:
             idx += 1
             continue
-        if not token.startswith(":"):
-            raise GitPublishError(f"malformed raw diff header: {token!r}")
-        header_fields = token.split()
-        status = header_fields[-1] if header_fields else ""
-        if status.startswith(("R", "C")):
-            if idx + 2 >= len(parts):
-                raise GitPublishError(f"truncated raw diff record for rename/copy: {token!r}")
-            add_path(parts[idx + 1])
-            add_path(parts[idx + 2])
-            idx += 3
-        else:
-            if idx + 1 >= len(parts):
-                raise GitPublishError(f"truncated raw diff record: {token!r}")
-            add_path(parts[idx + 1])
-            idx += 2
-
-    return changed_files
+        paths, idx = _raw_diff_record(parts, idx)
+        changed_files.update((path, None) for path in paths if path)
+    return list(changed_files)
 
 
 def _validate_change_scope(changed_files: Sequence[str], *, max_changed_files: int) -> None:
