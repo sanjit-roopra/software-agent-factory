@@ -188,6 +188,7 @@ def first_implementer_request(work_item_id: str = "WI-1", **overrides: object) -
                 "execution_plan": plan(),
                 "workspace_path": "/w",
                 "attempt_number": 1,
+                "verification_commands": ("uv run pytest -q",),
             },
             overrides,
         ),

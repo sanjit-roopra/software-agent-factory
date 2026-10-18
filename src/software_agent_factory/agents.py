@@ -122,6 +122,8 @@ class AgentRequest(ModelBase):
     dependency_names: tuple[str, ...] = ()
     workspace_path: str | None = None
     attempt_number: int | None = None
+    #: The repository's verify commands, shown to the implementer so it runs the same checks.
+    verification_commands: tuple[str, ...] = ()
     timeout_seconds: int
     project_brief: ProjectBrief | None = None
     #: False when ``risk_assessment.enabled`` is off: the TRIAGE prompt then stops

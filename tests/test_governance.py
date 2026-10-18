@@ -192,10 +192,8 @@ def test_repository_verifier_threads_capture_limit_to_verifier(tmp_path: Path) -
     assert "x" * 200 not in stdout
 
 
-def test_repository_verifier_stops_after_first_failure_and_reports_test_failure(
-    tmp_path: Path,
-) -> None:
-    marker = tmp_path / "should-not-run.txt"
+def test_repository_verifier_runs_every_verify_command_and_skips_build(tmp_path: Path) -> None:
+    marker = tmp_path / "build-ran.txt"
     commands = _commands(
         install=[_python_command("print('install ok')")],
         verify=[
@@ -203,9 +201,12 @@ def test_repository_verifier_stops_after_first_failure_and_reports_test_failure(
                 "import sys; sys.stderr.write('AssertionError: expected value\\n'); "
                 "raise SystemExit(1)"
             ),
-            _python_command(f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"),
+            _python_command("print('lint ok')"),
+            _python_command("raise SystemExit(2)"),
         ],
-        build=[_python_command("raise SystemExit(0)")],
+        build=[
+            _python_command(f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')")
+        ],
     )
 
     result = RepositoryVerifier().run(
@@ -216,16 +217,32 @@ def test_repository_verifier_stops_after_first_failure_and_reports_test_failure(
     )
 
     assert result.report.passed is False
-    assert len(result.report.deterministic_checks) == 2
     assert [item.phase for item in result.command_logs] == [
         CheckPhase.INSTALL,
+        CheckPhase.VERIFY,
+        CheckPhase.VERIFY,
         CheckPhase.VERIFY,
     ]
     assert result.failure_kind is VerificationFailureKind.TEST
     assert result.failed_phase is CheckPhase.VERIFY
-    assert result.failed_command is result.command_logs[-1]
-    assert result.report.failures == [f"verify: {commands.verify[0]!r} exited with code 1"]
+    assert result.failed_command is result.command_logs[1]
+    assert result.report.failures == [
+        f"verify: {commands.verify[0]!r} exited with code 1",
+        f"verify: {commands.verify[2]!r} exited with code 2",
+    ]
     assert marker.exists() is False
+
+
+def test_repository_verifier_stops_after_first_install_failure(tmp_path: Path) -> None:
+    result = RepositoryVerifier().run(
+        _commands(install=["false", "true"], verify=["true"]),
+        cwd=tmp_path,
+        run_dir=tmp_path / "run",
+        timeout_seconds=5,
+    )
+
+    assert [item.command for item in result.report.deterministic_checks] == ["false"]
+    assert result.failed_phase is CheckPhase.INSTALL
 
 
 def test_repository_verifier_records_timeout_as_infra_failure(tmp_path: Path) -> None:

@@ -3291,6 +3291,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
         *,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
+        stop_on_failure: bool = True,
         before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
         results: list[CommandResult] = []
@@ -3308,7 +3309,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
                     duration_seconds=0.0,
                 )
             )
-            if exit_code:
+            if exit_code and stop_on_failure:
                 break
         passed = all(result.exit_code == 0 for result in results)
         return VerificationReport(
@@ -3350,8 +3351,9 @@ def test_configured_commands_win_over_derived_commands(
 ) -> None:
     runner = _ScriptedCommandRunner()
     store = FileRunStore(data_dir)
+    runtime = RecordingRuntime(FakeAgentRuntime())
     controller = WorkflowController(
-        _config(data_dir, verify=["make check"]), store, FakeAgentRuntime(), verifier=runner
+        _config(data_dir, verify=["make check"]), store, runtime, verifier=runner
     )
 
     run = controller.run(_work_item("WI-config-commands"), uv_python_repo)
@@ -3361,6 +3363,8 @@ def test_configured_commands_win_over_derived_commands(
         source=RepositoryCommandsSource.CONFIG, verify=("make check",)
     )
     assert set(runner.commands) == {"make check"}
+    implementer = next(r for r in runtime.requests if r.role is AgentRole.IMPLEMENTER)
+    assert implementer.verification_commands == ("make check",)
 
 
 def test_derived_commands_are_probed_then_used_for_verification(

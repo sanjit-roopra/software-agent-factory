@@ -3594,7 +3594,8 @@ class WorkflowController:
         repair_context: RepairContext | None,
     ) -> tuple[FactoryRun, bool, WorkspaceEvidence | None]:
         started_at = utc_now()
-        current_diff = context.latest_evidence.diff if context.latest_evidence else None
+        # A first attempt starts clean: only a repair sees the current diff.
+        evidence = context.latest_evidence if repair_context is not None else None
         request = AgentRequest(
             role=AgentRole.IMPLEMENTER,
             model=role_model.model,
@@ -3607,15 +3608,12 @@ class WorkflowController:
             specification=context.specification,
             execution_plan=context.execution_plan,
             repair_context=repair_context,
-            diff=current_diff if repair_context is not None else None,
-            changed_files=(
-                list(context.latest_evidence.changed_files)
-                if repair_context is not None and context.latest_evidence is not None
-                else []
-            ),
+            diff=evidence.diff if evidence is not None else None,
+            changed_files=list(evidence.changed_files) if evidence is not None else [],
             dependency_names=_dependency_names(context.repository_profile),
             workspace_path=str(context.workspace.path),
             attempt_number=attempt_number,
+            verification_commands=tuple(self._commands_for_run(run.id).verify),
             timeout_seconds=self._config.agent_timeout_seconds,
         )
         result = self._invoke_agent(run, request, budget=budget)
