@@ -1767,3 +1767,12 @@ def test_an_escalation_that_cannot_start_shows_the_error(
     assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 202
     record = rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
     assert (record.status, record.error) == ("failed", "no python")
+
+
+def test_agents_md_names_every_dashboard_write_action() -> None:
+    from software_agent_factory.dashboard import handler
+
+    stop, steer, escalate = handler._STOP_ACTION, handler._STEER_ACTION, handler._ESCALATE_ACTION
+    names = {*handler._ACTION_KINDS, stop, steer, escalate}
+    agents = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+    assert {name for name in names if f"`{name}`" not in agents} == set()
