@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import review_ledger
-from .github import SHA_PATTERN, GitHubError, GitPublishError, build_pr_body
+from .git_safety import GitPublishError
+from .github import SHA_PATTERN, GitHubError, build_pr_body
 from .governance import ScopeAssessment, ScopeDecision, assess_publish_gate
 from .models import (
     PUBLISH_FAILED_HALT_REASON,

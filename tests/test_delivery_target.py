@@ -6,7 +6,8 @@ from factory_testing import build_config, git
 
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.delivery import fetch_delivery_target
-from software_agent_factory.github import GitTimeoutError, MergeNotAllowedError
+from software_agent_factory.git_safety import GitTimeoutError
+from software_agent_factory.github import MergeNotAllowedError
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
 
 

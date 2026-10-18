@@ -18,7 +18,8 @@ from typing import IO, Any, Callable, Mapping, Sequence
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
 from software_agent_factory.escalation_protocol import ReplyPolicy
-from software_agent_factory.github import GitHubClient, GitPublisher
+from software_agent_factory.git_publish import GitPublisher
+from software_agent_factory.github import GitHubClient
 from software_agent_factory.models import (
     AgentPurpose,
     AgentRole,

@@ -60,13 +60,12 @@ from uuid import uuid4
 from .agents import AgentRuntime
 from .command_probe import ProbeLimits
 from .config import FactoryConfig
+from .git_safety import GitPublishError, UnsafeRemoteError
 from .github import (
     GitHubClient,
     GitHubCommandError,
     GitHubError,
-    GitPublishError,
     MergeNotAllowedError,
-    UnsafeRemoteError,
     resolve_github_token,
 )
 from .github_tracker import GitHubIssueProvider

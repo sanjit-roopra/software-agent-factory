@@ -6,10 +6,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from .config import FactoryConfig
+from .git_safety import GitCommandError, GitTimeoutError
 from .github import (
     CommandRunner,
-    GitCommandError,
-    GitTimeoutError,
     MergeNotAllowedError,
     default_command_runner,
     parse_remote_repository,

@@ -75,12 +75,8 @@ from .config import (
     RoleModelConfig,
 )
 from .delivery import DeliveryTarget, fetch_delivery_target
-from .github import (
-    GitHubClient,
-    GitHubError,
-    GitPublishError,
-    resolve_github_token,
-)
+from .git_safety import GitPublishError
+from .github import GitHubClient, GitHubError, resolve_github_token
 from .governance import (
     RepositoryVerificationResult,
     RepositoryVerifier,

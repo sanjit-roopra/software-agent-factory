@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import FactoryConfig
+from .git_publish import GitPublisher
 from .github import (
     SHA_PATTERN,
     BranchPolicy,
@@ -62,7 +63,6 @@ from .github import (
     CommandRunner,
     GitHubClient,
     GitHubError,
-    GitPublisher,
     MergeNotAllowedError,
     PullRequestState,
     RepositoryRef,
@@ -125,7 +125,7 @@ class PullRequestMerger:
 
         Returns the canonical ``OWNER/REPO`` entry from
         ``merge.allowed_repositories``. Raises
-        :class:`~software_agent_factory.github.UnsafeRemoteError` when the
+        :class:`~software_agent_factory.git_safety.UnsafeRemoteError` when the
         remote host is not allowed or the remote is not an unambiguous
         repository, and :class:`MergeNotAllowedError` when the repository is
         not on the allowlist.
