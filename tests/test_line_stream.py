@@ -96,7 +96,8 @@ def test_the_deadline_stops_the_process_group_and_keeps_partial_output() -> None
     assert output.timed_out is True
     assert output.stdout == "started\n"
     assert time.monotonic() - started < 10
-    assert process.returncode is not None and process.returncode < 0
+    assert process.returncode is not None
+    assert process.returncode < 0
 
 
 def test_a_process_that_ignores_sigterm_is_killed() -> None:
@@ -145,7 +146,8 @@ def test_each_line_stamps_the_last_output_time_on_the_active_call() -> None:
 
     active = run.active_invocation
     assert active is not None
-    assert active.last_output_at is not None and active.last_output_at > started
+    assert active.last_output_at is not None
+    assert active.last_output_at > started
     assert active.recent_tool_calls == [{"name": "Edit", "preview": "b.py"}]
     assert changed.is_set()
 
