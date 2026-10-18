@@ -23,7 +23,7 @@
   const RUN_ID_PATTERN = /^[\w-]{1,128}$/;
   const FILTER_NEEDS_YOU = "needs-you";
   const FILTER_ACTIVE = "active";
-  // ACTION_WAITING and ACTION_RETRY in dashboard/overview.py: a waiting run the page can act on.
+  // needs_you_action of each entry in resume_classes.py: a waiting run the page can act on.
   const ACTIONABLE = new Set(["waiting", "retry"]);
   const RUNS_COLUMN_COUNT = 10;
   const SVG_NS = "http://www.w3.org/2000/svg";
