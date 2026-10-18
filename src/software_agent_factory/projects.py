@@ -45,13 +45,8 @@ from .agents import (
 )
 from .config import FactoryConfig
 from .delivery import DeliveryTarget, fetch_delivery_target
-from .github import (
-    GitHubClient,
-    GitHubCommandError,
-    GitHubError,
-    GitPublishError,
-    is_safe_ref_name,
-)
+from .git_safety import GitPublishError
+from .github import GitHubClient, GitHubCommandError, GitHubError, is_safe_ref_name
 from .governance import RepositoryVerifier, assess_publish_gate
 from .lifecycle import is_run_finished
 from .models import (

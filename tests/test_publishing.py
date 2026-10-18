@@ -14,18 +14,15 @@ from pathlib import Path
 import pytest
 from factory_testing import FakeCompleted, ScriptedRunner, build_config, check_payload, git
 
-from software_agent_factory.github import (
-    CheckStatus,
-    CIStatus,
-    GitHubClient,
-    GitHubCommandError,
-    GitPublisher,
+from software_agent_factory.git_publish import GitPublisher
+from software_agent_factory.git_safety import (
     GitPublishError,
     ProtectedFileError,
     UnauthorizedHistoryError,
     UnexpectedRepositoryError,
     UnreviewedContentError,
 )
+from software_agent_factory.github import CheckStatus, CIStatus, GitHubClient, GitHubCommandError
 from software_agent_factory.publishing import (
     CIObserver,
     PullRequestPublisher,

@@ -9,7 +9,8 @@ from software_agent_factory import run_reopen
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig, RiskAssessmentConfig
 from software_agent_factory.delivery import DeliveryTarget
-from software_agent_factory.github import GitHubError, UnexpectedRepositoryError
+from software_agent_factory.git_safety import UnexpectedRepositoryError
+from software_agent_factory.github import GitHubError
 from software_agent_factory.models import (
     AcceptedReplyReceipt,
     AgentRole,

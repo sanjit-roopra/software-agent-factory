@@ -26,14 +26,8 @@ from .doctor import (
     requires_gh,
     run_doctor,
 )
-from .github import (
-    CheckStatus,
-    CIStatus,
-    FailureCategory,
-    GitHubClient,
-    GitPublisher,
-    build_pr_body,
-)
+from .git_publish import GitPublisher
+from .github import CheckStatus, CIStatus, FailureCategory, GitHubClient, build_pr_body
 from .github_tracker import GitHubIssueProvider
 from .governance import (
     PublishGate,

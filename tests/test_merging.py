@@ -16,12 +16,12 @@ import pytest
 from factory_testing import build_config
 
 from software_agent_factory.config import FactoryConfig
+from software_agent_factory.git_safety import UnsafeRemoteError
 from software_agent_factory.github import (
     GitHubCommandError,
     GitHubTimeoutError,
     MergeNotAllowedError,
     UnknownMergeOutcomeError,
-    UnsafeRemoteError,
 )
 from software_agent_factory.merging import MergeResult, PullRequestMerger
 
