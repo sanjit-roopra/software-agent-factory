@@ -13,7 +13,7 @@ MAX_MODULE_LINES = 800
 # A listed module may shrink but never grow. Lower its number when you shrink
 # it, and remove it once it is under the limit.
 OVERSIZED_MODULES = {
-    "workflow.py": 4699,
+    "workflow.py": 4696,
     "github.py": 2825,
     "observability.py": 2503,
     "models.py": 2113,

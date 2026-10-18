@@ -44,7 +44,6 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 from __future__ import annotations
 
 import copy
-import dataclasses
 import functools
 import hashlib
 import json
@@ -3518,9 +3517,7 @@ class WorkflowController:
                 self._command_runner, context.workspace, evidence, verify, self._config.repository
             ),
         )
-        checks = [*result.report.deterministic_checks, *(c for c in advisory if c is not None)]
-        report = result.report.model_copy(update={"deterministic_checks": checks})
-        return dataclasses.replace(result, report=report)
+        return result.with_checks(check for check in advisory if check is not None)
 
     def _mutation_check(
         self, run: FactoryRun, context: _RunContext, evidence: WorkspaceEvidence
