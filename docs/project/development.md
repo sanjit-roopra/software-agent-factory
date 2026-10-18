@@ -99,7 +99,7 @@ uv run --no-sync mkdocs build --strict
 ```
 
 The prose gate checks `README.md` and every Markdown file in `docs/`.
-It uses the SimpleEnglish rules in `AGENTS.md`.
+It uses the rules in [Writing policy](../reference/writing-policy.md).
 `--strict` turns warnings into errors. Broken internal links become errors.
 CI runs this check, so run it before pushing.
 

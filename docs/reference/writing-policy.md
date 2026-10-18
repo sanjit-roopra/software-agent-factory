@@ -35,7 +35,7 @@ field and a short list of filler words to avoid.
 ## Repository documentation
 
 `README.md` and every Markdown file in `docs/` use the pinned SimpleEnglish skill.
-`AGENTS.md` requires its strict ASD-STE100 guidance for each documentation change.
+Apply the skill's strict ASD-STE100 guidance during the writing review.
 
 Apply these rules during the writing review:
 

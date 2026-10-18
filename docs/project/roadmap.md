@@ -95,11 +95,13 @@ constraints for V1. Do not add one unless a user asks for it:
   Persistence stays filesystem JSON.
 - cloud infrastructure, Kubernetes or distributed workers
 - chat or ticket integrations, such as Slack, Teams or Jira
-
+- a durable workflow engine, such as Temporal
+- a web UI other than the local dashboard
 - unrestricted autonomous merge (the bounded opt-in exception is ADR-022)
 - autonomous deployment
 - a hosted, multi-user or networked service
-- a control plane, or any dashboard write path
+- a control plane, or a dashboard write action not listed in
+  [Safety](../reference/safety.md)
 - telemetry, analytics or a metrics exporter
 - long-term semantic memory or a vector database
 - an agent swarm

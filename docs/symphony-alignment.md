@@ -520,7 +520,7 @@ and persists the reply before it resumes work.
 - **Durable scheduler claims.** Live reservations stay in-memory. The durable
   source of truth combines the persisted `FactoryRun` and workspace `flock`.
   This design is sufficient for one local process.
-  It also prevents the addition of a database (`AGENTS.md`: "Keep V1 small").
+  It also prevents the addition of a database ([Deliberately not planned](project/roadmap.md#deliberately-not-planned)).
 - **The Codex app-server protocol.** Execution goes through
   `CopilotAgentRuntime`.
 

@@ -18,15 +18,19 @@ whether an agent's output is accepted. `docs/reference/safety.md` has the full l
 - Choose the fastest sufficient solution. Stop when acceptance criteria and gates pass.
 - One coherent work item and one pull request per independently verifiable outcome.
 - Tests, docs and cleanup belong to the outcome they serve, not to separate items.
-- Reuse existing code and boundaries before adding abstractions, services or config.
+- Reuse existing code and boundaries before adding dependencies, abstractions,
+  services or config. Add one only for a current need.
 
 ## Implementation rules
 
 - Only the workflow controller changes a run's state. Agents return artifacts.
+  The service is the single writer of `run.json`.
 - Agents exchange typed, persisted artifacts, not one shared conversation.
   Each agent gets only the context its job needs. See `docs/architecture.md`.
 - A model never approves its own work. Deterministic checks run first, then an
-  independent reviewer, preferably from a different model family.
+  independent reviewer, preferably from a different model family. Only a SINGLE
+  route that meets every configured sufficiency condition skips review
+  (`docs/guides/adaptive-routing.md`).
 - Every retry is bounded and records its reason.
 - Complexity picks model strength. Risk picks governance. Routes and ratchets:
   `docs/guides/adaptive-routing.md` (ADR-037). The controller never downgrades a route.
@@ -53,7 +57,6 @@ whether an agent's output is accepted. `docs/reference/safety.md` has the full l
 - Tests never make paid LLM calls or reach GitHub. Use fakes for external
   boundaries, including `AgentRuntime`.
 - Do not hard-code counts in documentation. Name the source instead.
-- Add a configuration option or an abstraction only for a current need.
 - When behavior changes, update `docs/` and the ADR in `docs/decisions.md` in the same PR.
 - Implement only the requested phase. If the architecture must change, stop,
   propose the smallest correction, update the docs, then implement.
