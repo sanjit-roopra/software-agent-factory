@@ -914,6 +914,7 @@ Amendment on 2026-10-18 (revert check):
   It runs the verify commands again and then puts the change back.
 - A failing verify command means the tests depend on the change. If all of them pass, the check warns that the tests pass without the production change.
 - The check adds one check to the verification report. The tester and the reviewer judge it.
+  Their prompts show the output of the check even when it passes.
 - The check is advisory and has no repair round. A refactor or a characterization test passes without the change, and that is correct.
 - A timeout or an error in the check skips it and records why. `repository.revert_check: false` turns it off.
 - If the check cannot put the change back, the error stops the run. The run never continues without its production change.
