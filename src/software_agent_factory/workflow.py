@@ -240,7 +240,6 @@ _RESTART_REPAIR_CONTEXT = RepairContext(
 )
 
 
-
 def _fold_legacy_concerns(review: ReviewReport) -> ReviewReport:
     """Move text from the legacy string concern fields into ``suggested_changes``.
 
