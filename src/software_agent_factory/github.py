@@ -348,7 +348,7 @@ def parse_pull_request_url(url: str) -> tuple[RepositoryRef, int]:
     return RepositoryRef(host=parsed.hostname.lower(), owner=owner, name=name), int(parts[3])
 
 
-def parse_issue_reference(ref: str, default_host: str = GITHUB_HOST) -> tuple[RepositoryRef, int]:
+def parse_issue_reference(ref: str, default_host: str = "github.com") -> tuple[RepositoryRef, int]:
     """Parse an issue reference (URL or OWNER/NAME#NUMBER) into its exact
     repository identity and issue number. Raises ``ValueError`` otherwise."""
     candidate = ref.strip()
