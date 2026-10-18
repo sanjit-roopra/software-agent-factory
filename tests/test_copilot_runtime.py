@@ -135,7 +135,7 @@ def test_parse_copilot_usage_preserves_only_reported_values() -> None:
             "totalUserRequests": 1,
             "totalNanoAiu": 292470077500,
             "totalApiDurationMs": 890,
-            "currentModel": "gpt-5.6-sol",
+            "currentModel": "gpt-6.1-sol",
             "lastCallInputTokens": 1195,
             "lastCallOutputTokens": 59,
             "tokenDetails": {
@@ -146,7 +146,7 @@ def test_parse_copilot_usage_preserves_only_reported_values() -> None:
             },
             "unknown": {"secret": "ignored"},
             "modelMetrics": {
-                "gpt-5.6-sol": {
+                "gpt-6.1-sol": {
                     "requests": {"count": 1, "cost": 1.0},
                     "usage": {
                         "inputTokens": 1195,
@@ -528,7 +528,7 @@ def test_parse_copilot_artifact_reads_actual_assistant_message_data_shape() -> N
     artifact = parse_copilot_artifact(
         AgentRole.REVIEWER,
         stdout=(
-            '{"type":"assistant.message","data":{"messageId":"msg_123","model":"gpt-5.6-sol",'
+            '{"type":"assistant.message","data":{"messageId":"msg_123","model":"gpt-6.1-sol",'
             '"content":"{\\"approved\\":true,\\"findings\\":[],\\"scope_concerns\\":[],'
             '\\"security_concerns\\":[],\\"compatibility_concerns\\":[],'
             '\\"suggested_changes\\":[]}","role":"assistant"}}'

@@ -107,9 +107,9 @@ concurrency and cherry-pick integration.
                 ▼
             Agent Runtime
                 │
-     ┌──────────┼────────────┬────────────┐
-     ▼          ▼            ▼            ▼
-   Claude      Gemini        GPT          MAI
+     ┌──────────┼──────────┐
+     ▼          ▼          ▼
+   Claude      GPT        MAI
 
                 │
                 ▼
@@ -776,12 +776,12 @@ Mechanical work:
 - obvious duplication
 - simple type error
 
-Default worker: `MAI-Code-1.1-Flash`
+Default worker: `GPT-6 Luna`
 
 ### L1
 Normal isolated task.
 
-Default: `Gemini 3.8 Flash`
+Default: `GPT-6 Luna`
 
 ### L2
 Examples:
@@ -790,7 +790,7 @@ Examples:
 - significant new functionality
 - complicated integration behavior
 
-Default: `Claude Sonnet 5`
+Default: `GPT-6.1 Sol`
 
 ### L3
 Examples:
@@ -799,7 +799,7 @@ Examples:
 - large ambiguity
 - repeated failures
 
-Default: `Claude Opus 5`
+Default: `GPT-6.1 Sol`
 
 ## Risk model
 
@@ -850,7 +850,7 @@ A restart of the factory does not stop an unattended run. The run continues unde
 ## Initial agents
 
 ### Triage
-Model: `GPT-5.6 Terra`
+Model: `GPT-6 Luna`
 
 Permissions:
 - repository read
@@ -858,7 +858,7 @@ Permissions:
 Output: `TriageResult`
 
 ### Planner
-Model: `Claude Opus 5`
+Model: `GPT-6.1 Sol`
 
 Permissions:
 - repository read
@@ -888,7 +888,7 @@ polish attempt. It applies simplification first and version-specific polish
 second. The initial implementation attempt receives none.
 
 ### Tester
-Model: `Gemini 3.8 Flash`
+Model: `GPT-6 Luna`
 
 Receives:
 - WorkItem brief
@@ -908,7 +908,7 @@ point, and none when the guidance was disabled as stale.
 Output: `TestReport`
 
 ### Reviewer
-Model: `GPT-5.6 Sol`
+Model: `Claude Sonnet 5.5`
 
 Receives:
 - WorkItem brief

@@ -43,37 +43,27 @@ a command-line parameter or a configuration key.
 
 ```yaml
 models:
-  triage:     { model: "gpt-5.6-terra",        reasoning: "medium", context_tier: "default" }
-  planner:    { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
+  triage:     { model: "gpt-6-luna",        reasoning: "low",    context_tier: "default" }
+  planner:    { model: "gpt-6.1-sol",       reasoning: "high",   context_tier: "default" }
   workers:
-    L0:       { model: "mai-code-1.1-flash",   reasoning: "medium", context_tier: "default" }
-    L1:       { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
-    L2:       { model: "claude-sonnet-5",      reasoning: "high",   context_tier: "default" }
-    L3:       { model: "claude-opus-5",        reasoning: "high",   context_tier: "default" }
-  tester:     { model: "gemini-3.8-flash",     reasoning: "high",   context_tier: "default" }
-  reviewer:   { model: "gpt-5.6-sol",          reasoning: "high",   context_tier: "default" }
+    L0:       { model: "gpt-6-luna",        reasoning: "medium", context_tier: "default" }
+    L1:       { model: "gpt-6-luna",        reasoning: "high",   context_tier: "default" }
+    L2:       { model: "gpt-6.1-sol",       reasoning: "high",   context_tier: "default" }
+    L3:       { model: "gpt-6.1-sol",       reasoning: "xhigh",  context_tier: "default" }
+  tester:     { model: "gpt-6-luna",        reasoning: "medium", context_tier: "default" }
+  reviewer:   { model: "claude-sonnet-5.5", reasoning: "high",   context_tier: "default" }
 
 model_profiles:
-  economy:
-    triage:     { model: "gpt-5.6-luna",       reasoning: "medium", context_tier: "default" }
-    planner:    { model: "gpt-5.6-terra",      reasoning: "high",   context_tier: "default" }
+  mixed:
+    triage:     { model: "gpt-6-luna",  reasoning: "low",    runtime: "pi" }
+    planner:    { model: "opus",        reasoning: "high",   runtime: "claude-code" }
     workers:
-      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
-      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-      L2:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-      L3:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-    tester:     { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
-  security:
-    triage:     { model: "gpt-5.6-terra",      reasoning: "medium", context_tier: "default" }
-    planner:    { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
-    workers:
-      L0:       { model: "mai-code-1.1-flash", reasoning: "medium", context_tier: "default" }
-      L1:       { model: "gemini-3.8-flash",   reasoning: "high",   context_tier: "default" }
-      L2:       { model: "claude-sonnet-5",    reasoning: "high",   context_tier: "default" }
-      L3:       { model: "claude-opus-5",      reasoning: "high",   context_tier: "default" }
-    tester:     { model: "gpt-6-astra",        reasoning: "high",   context_tier: "default" }
-    reviewer:   { model: "gpt-5.6-sol",        reasoning: "high",   context_tier: "default" }
+      L0:       { model: "gpt-6-luna",  reasoning: "medium", runtime: "pi" }
+      L1:       { model: "gpt-6-luna",  reasoning: "high",   runtime: "pi" }
+      L2:       { model: "gpt-6.1-sol", reasoning: "high",   runtime: "pi" }
+      L3:       { model: "gpt-6.1-sol", reasoning: "xhigh",  runtime: "pi" }
+    tester:     { model: "gpt-6-luna",  reasoning: "medium", runtime: "pi" }
+    reviewer:   { model: "sonnet",      reasoning: "high",   runtime: "claude-code" }
 ```
 
 Every role takes a `model`, `reasoning` level and `context_tier`. The context
@@ -92,7 +82,7 @@ that a role uses.
 
 ```yaml
 models:
-  triage:   { model: "gpt-5.6-terra",   reasoning: "medium", runtime: "pi" }
+  triage:   { model: "gpt-6-luna",      reasoning: "low",    runtime: "pi" }
   planner:  { model: "claude-opus-5-5", reasoning: "high",   runtime: "claude-code" }
 ```
 
@@ -113,7 +103,7 @@ models:
       runtime: claude-code
       model: claude-opus-5-5
       reasoning: high
-      fallback: { runtime: pi, model: gpt-5.6-terra, reasoning: high }
+      fallback: { runtime: pi, model: gpt-6.1-sol, reasoning: high }
 ```
 
 The Planner writes the specification and the plan in one call (ADR-035).
@@ -132,8 +122,9 @@ factory start ... --model-profile economy
 `factory doctor` validates the selected profile, and `factory service install`
 stores the selected name in the LaunchAgent arguments. An unknown profile
 fails with exit code `2` before a workspace or paid call is created. Profiles
-are complete `models` blocks, not partial overlays. Use `economy` to choose
-cheaper models.
+are complete `models` blocks, not partial overlays. The packaged profiles are
+`claude` (Claude Code aliases), `mixed` (shown above) and `economy`
+(`gpt-6-luna` for every role except the reviewer).
 
 `workers` must define exactly `L0`, `L1`, `L2` and `L3`. Triage assigns the
 complexity level and that selects the worker.

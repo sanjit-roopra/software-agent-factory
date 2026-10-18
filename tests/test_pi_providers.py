@@ -47,11 +47,11 @@ def test_google_vertex_lists_its_application_credentials_and_api_key() -> None:
     }
 
 
-#: pi 0.84.4's provider -> API-key variable table, for providers whose variable
+#: pi 1.2.0's provider -> API-key variable table, for providers whose variable
 #: is not ``<PROVIDER>_API_KEY`` (``google`` reads ``GEMINI_API_KEY``, ...).
 _PI_API_KEY_VARS_NOT_DERIVABLE_FROM_NAME = {
     "ant-ling": "ANT_LING_API_KEY",
-    "azure-openai-responses": "AZURE_OPENAI_API_KEY",
+    "azure": "AZURE_OPENAI_API_KEY",
     "cloudflare-ai-gateway": "CLOUDFLARE_API_KEY",
     "cloudflare-workers-ai": "CLOUDFLARE_API_KEY",
     "kimi-coding": "KIMI_API_KEY",
@@ -68,19 +68,21 @@ _PI_API_KEY_VARS_NOT_DERIVABLE_FROM_NAME = {
     "xiaomi-token-plan-sgp": "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 }
 
-#: pi 0.84.4 providers whose variable is ``<PROVIDER>_API_KEY``.
+#: pi 1.2.0 providers whose variable is ``<PROVIDER>_API_KEY``.
 _PI_API_KEY_PROVIDERS_NAMED_AFTER_THEIR_VARIABLE = (
     "baseten",
     "cerebras",
     "deepseek",
     "fireworks",
     "groq",
+    "meta",
     "minimax",
     "minimax-cn",
     "mistral",
     "nvidia",
     "radius",
     "together",
+    "typesafe",
     "xai",
     "xiaomi",
     "zai",

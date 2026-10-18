@@ -399,7 +399,7 @@ Tester
   Claude Sonnet 5
 
 Reviewer
-  GPT-5.6 Sol
+  Claude Sonnet 5.5
 ```
 
 Tester receives:
@@ -493,7 +493,7 @@ Status: done. Triage's `needs_research` runs the researcher exactly once, the
 Enable optional Researcher:
 
 ```text
-GPT-5.6 Sol
+GPT-6.1 Sol
 ```
 
 Invoke only if triage/planning determines research is necessary.
@@ -1035,7 +1035,7 @@ factory neither follows the move nor deletes the old directory, and
 recreate.
 
 When generation is required, the controller transitions through a temporary
-`RESEARCHING` state and invokes the configured Researcher (`GPT-5.6 Sol` by
+`RESEARCHING` state and invokes the configured Researcher (`GPT-6.1 Sol` by
 default) with purpose `GENERATE_REPOSITORY_SKILL`. Any failure receives one
 bounded retry. Invalid typed output or provenance carries the exact bounded
 rejection reason into that retry. A second failure safely skips polish.
@@ -1345,7 +1345,7 @@ TESTER
 
 REVIEW
 
-GPT-5.6 Sol
+Claude Sonnet 5.5
 approved ✓
 
 RESULT

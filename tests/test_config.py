@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from software_agent_factory.config import PolishConfig, load_config
-from software_agent_factory.models import ContextTier, ReviewFindingCategory, Risk
+from software_agent_factory.models import ContextTier, ReviewFindingCategory, Risk, RuntimeName
 
 
 def _write_config(tmp_path: Path, content: str) -> Path:
@@ -35,7 +35,7 @@ def test_load_config_from_explicit_path_expands_data_dir(tmp_path: Path) -> None
             L2: {model: "claude-opus-5", reasoning: "high"}
             L3: {model: "claude-opus-5", reasoning: "high"}
           tester: {model: "claude-sonnet-5", reasoning: "high"}
-          reviewer: {model: "gpt-5.6-sol", reasoning: "high"}
+          reviewer: {model: "gpt-6.1-sol", reasoning: "high"}
         repository:
           branch_prefix: "factory/"
           command_timeout_seconds: 900
@@ -62,11 +62,12 @@ def test_load_config_uses_packaged_defaults() -> None:
     config = load_config()
 
     assert config.data_dir == Path.home() / ".software-factory"
-    assert config.models.triage.model == "gpt-5.6-terra"
-    assert config.models.planner.model == "claude-opus-5"
-    assert config.models.workers["L1"].model == "gemini-3.8-flash"
-    assert config.models.workers["L3"].model == "claude-opus-5"
-    assert config.models.reviewer.model == "gpt-5.6-sol"
+    assert config.models.triage.model == "gpt-6-luna"
+    assert config.models.triage.reasoning == "low"
+    assert config.models.planner.model == "gpt-6.1-sol"
+    assert config.models.workers["L1"].model == "gpt-6-luna"
+    assert config.models.workers["L3"].model == "gpt-6.1-sol"
+    assert config.models.reviewer.model == "claude-sonnet-5.5"
     assert config.models.reviewer.context_tier is ContextTier.DEFAULT
     assert config.repository.branch_prefix == "factory/"
     assert config.risk["R2"].human_approval is True
@@ -76,10 +77,26 @@ def test_load_config_uses_packaged_defaults() -> None:
 def test_load_config_selects_named_model_profile() -> None:
     config = load_config(model_profile="economy")
 
-    assert config.models.triage.model == "gpt-5.6-luna"
-    assert config.models.planner.model == "gpt-5.6-terra"
-    assert config.models.workers["L3"].model == "gemini-3.8-flash"
-    assert config.models.reviewer.model == "gpt-5.6-sol"
+    assert config.models.triage.model == "gpt-6-luna"
+    assert config.models.planner.model == "gpt-6-luna"
+    assert config.models.workers["L3"].model == "gpt-6-luna"
+    assert config.models.reviewer.model == "claude-sonnet-5.5"
+
+
+def test_load_config_mixed_profile_pins_claude_code_and_pi_runtimes() -> None:
+    models = load_config(model_profile="mixed").models
+
+    assert models.planner.runtime is RuntimeName.CLAUDE_CODE
+    assert models.reviewer.runtime is RuntimeName.CLAUDE_CODE
+    assert {models.triage.runtime, models.tester.runtime} == {RuntimeName.PI}
+    assert {worker.runtime for worker in models.workers.values()} == {RuntimeName.PI}
+    assert models.planner.model == "opus"
+    assert models.reviewer.model == "sonnet"
+
+
+@pytest.mark.parametrize("profile", [None, "claude", "mixed", "economy"])
+def test_every_model_profile_runs_triage_at_low_reasoning(profile: str | None) -> None:
+    assert load_config(model_profile=profile).models.triage.reasoning == "low"
 
 
 def test_load_config_rejects_unknown_model_profile() -> None:
@@ -153,7 +170,7 @@ def test_config_rejects_non_positive_limits(tmp_path: Path) -> None:
             L2: {model: "claude-opus-5", reasoning: "high"}
             L3: {model: "claude-opus-5", reasoning: "high"}
           tester: {model: "claude-sonnet-5", reasoning: "high"}
-          reviewer: {model: "gpt-5.6-sol", reasoning: "high"}
+          reviewer: {model: "gpt-6.1-sol", reasoning: "high"}
         repository:
           branch_prefix: "factory/"
           command_timeout_seconds: 900
@@ -226,7 +243,7 @@ models:
     L2: {model: "claude-opus-5", reasoning: "high"}
     L3: {model: "claude-opus-5", reasoning: "high"}
   tester: {model: "claude-sonnet-5", reasoning: "high"}
-  reviewer: {model: "gpt-5.6-sol", reasoning: "high"}
+  reviewer: {model: "gpt-6.1-sol", reasoning: "high"}
 repository:
   branch_prefix: "factory/"
   command_timeout_seconds: 900

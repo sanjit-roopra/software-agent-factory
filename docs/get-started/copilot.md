@@ -50,14 +50,14 @@ Model choice is configuration, not code. The packaged defaults:
 
 | Role | Model | Reasoning | Context |
 | --- | --- | --- | --- |
-| Triage | `gpt-5.6-terra` | medium | default |
-| Planner | `claude-opus-5` | high | default |
-| Worker L0 | `mai-code-1.1-flash` | medium | default |
-| Worker L1 | `gemini-3.8-flash` | high | default |
-| Worker L2 | `claude-sonnet-5` | high | default |
-| Worker L3 | `claude-opus-5` | high | default |
-| Tester | `gemini-3.8-flash` | high | default |
-| Reviewer | `gpt-5.6-sol` | high | default |
+| Triage | `gpt-6-luna` | low | default |
+| Planner | `gpt-6.1-sol` | high | default |
+| Worker L0 | `gpt-6-luna` | medium | default |
+| Worker L1 | `gpt-6-luna` | high | default |
+| Worker L2 | `gpt-6.1-sol` | high | default |
+| Worker L3 | `gpt-6.1-sol` | xhigh | default |
+| Tester | `gpt-6-luna` | medium | default |
+| Reviewer | `claude-sonnet-5.5` | high | default |
 
 Triage assigns a complexity level, `L0` to `L3`, and that selects the worker
 model. Cheap mechanical work gets a cheap model.

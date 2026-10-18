@@ -66,7 +66,7 @@ def _config_dict(max_total_attempts: int = 6) -> dict[str, object]:
                 "L3": {"model": "claude-opus-5", "reasoning": "high"},
             },
             "tester": {"model": "claude-sonnet-5", "reasoning": "high"},
-            "reviewer": {"model": "gpt-5.6-sol", "reasoning": "high"},
+            "reviewer": {"model": "gpt-6.1-sol", "reasoning": "high"},
         },
         "repository": {
             "branch_prefix": "factory/",
@@ -87,7 +87,7 @@ def test_model_router_routes_fixed_roles_and_risk_gate() -> None:
 
     assert router.model_for_role(AgentRole.TRIAGE).model == "claude-sonnet-5"
     assert router.model_for_role(AgentRole.PLANNER).reasoning == "high"
-    assert router.model_for_role(AgentRole.REVIEWER).model == "gpt-5.6-sol"
+    assert router.model_for_role(AgentRole.REVIEWER).model == "gpt-6.1-sol"
     assert router.requires_human_approval(Risk.R1) is False
     assert router.requires_human_approval(Risk.R2) is True
 

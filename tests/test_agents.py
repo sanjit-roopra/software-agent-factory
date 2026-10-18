@@ -172,7 +172,7 @@ def test_default_reviewer_approves() -> None:
     runtime = FakeAgentRuntime()
     request = AgentRequest(
         role=AgentRole.REVIEWER,
-        model="gpt-5.6-sol",
+        model="gpt-6.1-sol",
         reasoning="high",
         work_item=_work_item(),
         timeout_seconds=60,
@@ -210,7 +210,7 @@ def test_reviewer_consumes_test_report_and_diff_contract() -> None:
     runtime = FakeAgentRuntime()
     request = AgentRequest(
         role=AgentRole.REVIEWER,
-        model="gpt-5.6-sol",
+        model="gpt-6.1-sol",
         reasoning="high",
         work_item=_work_item(),
         diff="diff --git a/src/app.py b/src/app.py\n",
@@ -352,7 +352,7 @@ def test_reviewer_hook_can_reject() -> None:
     runtime = FakeAgentRuntime(reviewer=rejecting_reviewer)
     request = AgentRequest(
         role=AgentRole.REVIEWER,
-        model="gpt-5.6-sol",
+        model="gpt-6.1-sol",
         reasoning="high",
         work_item=_work_item(),
         timeout_seconds=60,

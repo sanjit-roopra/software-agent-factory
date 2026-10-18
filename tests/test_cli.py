@@ -551,7 +551,7 @@ def test_run_non_pr_ready_outcome_uses_nonzero_exit_code(
                 L2: {{model: "claude-opus-5", reasoning: "high"}}
                 L3: {{model: "claude-opus-5", reasoning: "high"}}
               tester: {{model: "claude-sonnet-5", reasoning: "high"}}
-              reviewer: {{model: "gpt-5.6-sol", reasoning: "high"}}
+              reviewer: {{model: "gpt-6.1-sol", reasoning: "high"}}
             repository:
               branch_prefix: "factory/"
               command_timeout_seconds: 30
