@@ -20,8 +20,8 @@ Before changing orchestration code, read these in order:
 3. [Symphony alignment](../symphony-alignment.md)
 4. [`PLAN.md`](https://github.com/sanjit-roopra/software-agent-factory/blob/main/PLAN.md)
 
-`AGENTS.md` is not advisory. It lists what V1 cannot introduce and what agents
-cannot control.
+`AGENTS.md` is not advisory. It lists what agents cannot control. The
+[roadmap](roadmap.md) lists what V1 cannot introduce.
 
 ## Local checks
 
@@ -99,7 +99,7 @@ uv run --no-sync mkdocs build --strict
 ```
 
 The prose gate checks `README.md` and every Markdown file in `docs/`.
-It uses the SimpleEnglish rules in `AGENTS.md`.
+It uses the rules in [Writing policy](../reference/writing-policy.md).
 `--strict` turns warnings into errors. Broken internal links become errors.
 CI runs this check, so run it before pushing.
 

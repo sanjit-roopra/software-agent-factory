@@ -89,12 +89,19 @@ item is deferred. Staging and deployment remain deferred.
 ## Deliberately not planned
 
 Deferred means "not now". These items are stronger than deferred: they are design
-constraints for V1:
+constraints for V1. Do not add one unless a user asks for it:
 
+- a database or a message broker, such as PostgreSQL, SQLite, Redis or Kafka.
+  Persistence stays filesystem JSON.
+- cloud infrastructure, Kubernetes or distributed workers
+- chat or ticket integrations, such as Slack, Teams or Jira
+- a durable workflow engine, such as Temporal
+- a web UI other than the local dashboard
 - unrestricted autonomous merge (the bounded opt-in exception is ADR-022)
 - autonomous deployment
 - a hosted, multi-user or networked service
-- a control plane, or any dashboard write path
+- a control plane, or a dashboard write action not listed in
+  [Safety](../reference/safety.md)
 - telemetry, analytics or a metrics exporter
 - long-term semantic memory or a vector database
 - an agent swarm
@@ -102,7 +109,7 @@ constraints for V1:
 - LangGraph
 
 The local dashboard is the single, documented exception to the V1 ban on web UIs.
-Its only writes are two resume request actions (ADR-033). Its bounds are recorded in
+Its write actions are listed in [Safety](../reference/safety.md#the-dashboard). Its bounds are recorded in
 [ADR-016](../decisions.md#adr-016-the-local-dashboard-is-a-bounded-exception-to-the-v1-ban).
 
 ## How scope changes

@@ -65,7 +65,7 @@ the base branch. Blocking findings must be fixed before continuing.
 Check the diff against the code rules in `AGENTS.md`. Fix any miss first:
 
 - Code that the change made dead is removed.
-- Behavior changes update `AGENTS.md`, `docs/` and the ADR.
+- Behavior changes update `docs/` and the ADR in the same PR.
 - No new suppression, skipped test or lowered threshold.
 
 ### 5. Commit and push

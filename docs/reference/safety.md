@@ -368,14 +368,21 @@ findings. Repairing one is an explicit operator action.
 
 ## The dashboard
 
-The only exception to the V1 ban on web UIs. It is a viewer with three named
-write actions, not a control plane.
+The only exception to the V1 ban on web UIs. It is a viewer with a short list of
+named write actions, not a control plane.
 
 - Started only by `factory dashboard`. It is the only command that opens a
   socket.
 - Binds `127.0.0.1` only. Not configurable.
-- Reads with `GET`. Three `POST` routes are the only writes: approve a risk
-  approval, answer plan decisions (ADR-033), and retry publishing (ADR-042).
+- Reads with `GET`. These `POST` routes in `dashboard/handler.py` are the only
+  writes: `approve` (risk approval), `answer` (plan decisions) and `retry`
+  (publish again) from ADR-033 and ADR-042, `cancel` and `steer` from ADR-047,
+  and `escalate` from ADR-055.
+- `escalate` starts `factory escalate` as a detached process. The CLI gives the
+  dashboard the function that starts it. Each other write creates a request file
+  only.
+- A new write action needs an ADR first. A change that needs a framework or a
+  package manager also needs an ADR first.
 - Token generated per process, printed once, never logged.
 - The first request for the printed link returns the page and sets an
   `HttpOnly`, `SameSite=Strict` session cookie. The page then removes the token
@@ -408,10 +415,15 @@ write actions, not a control plane.
   cookie never counts alone. It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
   current episode and context fingerprint. The page asks you to confirm an
   approval before it sends anything.
-- A write never changes `run.json`. It creates one request file. The factory
-  service checks it again with the ADR-024 reopen checks and reopens the run.
-  Write access to `<data_dir>/runs` is the real authority for a local approval.
-- Cannot retry, cancel or reconfigure anything.
+- A write never changes `run.json`. The factory service is the single writer of
+  `run.json`. The service checks each request file again with the ADR-024
+  reopen checks and reopens the run.
+- The token guards the HTTP route only. The service never checks the token, and
+  it trusts any request file in the run directory. Write access to
+  `<data_dir>/runs` is the real authority for a local approval.
+- Cannot change configuration or workflow state in any other way.
+- Agents work in their own workspace. The factory does not give them the data
+  directory.
 - Python standard library only. No framework, no npm, no bundler, no build step.
 
 ## The service
