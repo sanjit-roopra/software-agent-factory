@@ -176,6 +176,14 @@ class RepositoryConfig(ConfigModel):
             "The gate is advisory and never fails verification."
         ),
     )
+    revert_check: bool = Field(
+        default=True,
+        description=(
+            "After the verify commands pass on a change with tests, run them again with the "
+            "changed files that are not tests at the base commit, and report whether the tests "
+            "still pass (ADR-034). The check is advisory and never fails verification."
+        ),
+    )
     derive_commands: bool = Field(
         default=True,
         description=(

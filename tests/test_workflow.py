@@ -82,6 +82,7 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.resume_writes import ingest_dashboard_request
+from software_agent_factory.revert_check import REVERT_CHECK_COMMAND, TESTS_PASS_WITHOUT_CHANGE
 from software_agent_factory.store import ARTIFACT_FILENAMES, FileRunStore
 from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
@@ -3539,6 +3540,35 @@ def test_mutation_gate_is_off_without_the_switch_or_verify_commands(
     controller.run(_work_item("WI-mutation-off"), uv_mutmut_repo)
 
     assert not any("mutmut" in command for command in runner.commands)
+
+
+def _tested_change_implementer(request: AgentRequest) -> AgentResult:
+    result = _python_editing_implementer(request)
+    assert request.workspace_path is not None
+    tests = Path(request.workspace_path) / "tests"
+    tests.mkdir(exist_ok=True)
+    (tests / "test_app.py").write_text("def test(): pass\n", encoding="utf-8")
+    return result
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_revert_check_adds_an_advisory_check_for_a_change_with_tests(
+    uv_python_repo: Path, data_dir: Path, enabled: bool
+) -> None:
+    runner = _ScriptedCommandRunner()
+    controller, store = _mutation_controller(
+        data_dir, runner, _tested_change_implementer, revert_check=enabled
+    )
+
+    run = controller.run(_work_item("WI-revert-check"), uv_python_repo)
+
+    verification = store.load_artifact(run.id, VerificationReport)
+    assert verification.passed is True
+    last = verification.deterministic_checks[-1]
+    assert (last.command == REVERT_CHECK_COMMAND) is enabled
+    if enabled:
+        assert last.stdout.startswith(f"revert check: {TESTS_PASS_WITHOUT_CHANGE}")
+        assert "- src/app.py" in last.stdout
 
 
 def test_repair_memory_lists_earlier_failures_and_flags_a_repeat() -> None:

@@ -723,6 +723,23 @@ class GitWorktreeWorkspace:
         changed_files, diff = _parse_patch_with_raw(raw_patch)
         return WorkspaceEvidence(changed_files=changed_files, diff=diff, tree_sha=tree_sha)
 
+    def restore_paths(self, paths: Sequence[str], tree: str | None = None) -> None:
+        """Set ``paths`` in the index and worktree to ``tree``, or to the base commit.
+
+        A path that ``tree`` does not have is deleted. Raises ``WorkspaceError``
+        when the worktree does not match ``tree`` for ``paths`` afterwards.
+        """
+        if self.base_commit is None:
+            self._load_or_compute_base_commit()
+        source = tree or self.base_commit
+        assert source is not None
+        literal = ["--literal-pathspecs"]
+        _run_git(self.path, [*literal, "restore", f"--source={source}", "-SW", "--", *paths])
+        if _run_git(
+            self.path, [*literal, "diff", "--quiet", source, "--", *paths], False
+        ).returncode:
+            raise WorkspaceError(f"worktree does not match {source} after restore")
+
     def diff_trees(self, previous_tree_sha: str, current_tree_sha: str) -> str:
         """Return a zero-context patch between two immutable reviewed trees."""
         for tree_sha in (previous_tree_sha, current_tree_sha):
