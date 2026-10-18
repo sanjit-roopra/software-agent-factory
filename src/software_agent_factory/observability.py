@@ -7,12 +7,9 @@ database. There is deliberately no second metrics truth source here -- this
 module only reads what :class:`~software_agent_factory.store.FileRunStore`
 already persists (``FactoryRun``, ``WorkItem``, ``TriageResult``). It has no
 import-time dependency on ``workflow.py`` (the orchestration/mutation
-authority): a run's terminal/finished status is a small, stable domain fact
-duplicated locally (see ``_is_run_finished`` below) precisely so this
-read-only monitoring path -- and the Phase 15.11 dashboard route
-that will call it -- never transitively pulls in
-``WorkflowController``/agents/publishing/routing/workspace code merely to
-classify a run.
+authority): it classifies a run with :mod:`software_agent_factory.lifecycle`,
+which imports only the models, so this read-only path never pulls in
+``WorkflowController``/agents/publishing/routing/workspace code.
 
 Two public surfaces are provided:
 
@@ -87,6 +84,8 @@ from .escalation_protocol import (
     halt_code_for_reason,
     reply_closed_cause,
 )
+from .governance import paths_outside_scope
+from .lifecycle import is_run_finished
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
@@ -224,7 +223,7 @@ DEFAULT_LOG_BACKUP_COUNT = 5
 
 #: Prefix of the durable per-source-repository worktree administration lock
 #: created by ``workspace.GitWorktreeWorkspace._prune_lock``. Duplicated as a
-#: literal (rather than imported) for the same reason ``_TERMINAL_STATES`` is:
+#: literal (rather than imported) because
 #: this read-only module must not pull in the workspace/orchestration module
 #: tree. See :func:`_find_stale_locks` for why these files are never reported
 #: as stale.
@@ -234,33 +233,6 @@ PRUNE_LOCK_PREFIX = "prune-"
 #: can be called repeatedly (once per entry point) without stacking
 #: duplicate handlers on the same logger.
 _HANDLER_MARKER = "_software_agent_factory_structured_handler"
-
-#: Terminal ``WorkflowState`` values, duplicated from ``workflow.py``'s
-#: ``TERMINAL_STATES`` rather than imported (see module docstring). Kept as
-#: a small, explicit constant instead of any dynamic derivation so a change
-#: to the canonical set in ``workflow.py`` is a conscious, grep-able,
-#: two-place edit rather than a silent drift.
-_TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
-    {WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
-)
-
-
-def _is_run_finished(run: FactoryRun) -> bool:
-    """Local, dependency-free copy of ``workflow.is_run_finished``.
-
-    True when a persisted run needs no further factory work: every
-    ``_TERMINAL_STATES`` member always qualifies, and a ``PR_READY`` run
-    qualifies only once the controller has explicitly finalized it
-    (``completed_at`` stamped) -- see ``workflow.py``'s own docstring for why
-    an un-finalized ``PR_READY`` is deliberately *not* finished. Duplicated
-    here (instead of importing ``workflow.is_run_finished``) so this
-    read-only monitoring module never transitively imports the orchestration
-    module tree that pulls in agents/config/github/governance/publishing/
-    routing/workspace.
-    """
-    if run.state in _TERMINAL_STATES:
-        return True
-    return run.state is WorkflowState.PR_READY and run.completed_at is not None
 
 
 def _classify_run(run: FactoryRun) -> str:
@@ -274,7 +246,7 @@ def _classify_run(run: FactoryRun) -> str:
         return "escalated"
     if run.state is WorkflowState.FAILED:
         return "failed"
-    if _is_run_finished(run):
+    if is_run_finished(run):
         return "succeeded"
     return "active"
 
@@ -331,7 +303,7 @@ class RunStateCounts(ModelBase):
 
     ``succeeded`` covers both terminal ``DONE`` runs and ``PR_READY`` runs
     the controller has explicitly finalized (``completed_at`` stamped) --
-    see the local ``_is_run_finished`` predicate above. ``active`` is every
+    see ``lifecycle.is_run_finished``. ``active`` is every
     scanned run that is not yet finished and not escalated/failed;
     ``stale_active`` is the subset of ``active`` whose most recent
     heartbeat/activity/update timestamp is older than ``stale_after``. When
@@ -1324,7 +1296,7 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
                 legacy_scope_replans += 1
         scope_replans += max(run.scope_replans, legacy_scope_replans)
 
-        if run.completed_at is not None and _is_run_finished(run):
+        if run.completed_at is not None and is_run_finished(run):
             durations.append(max((run.completed_at - run.created_at).total_seconds(), 0.0))
 
         if _classify_run(run) == "succeeded":
@@ -1530,14 +1502,15 @@ def load_operator_escalation(store: RunStoreProtocol, run_id: str) -> OperatorEs
         )
     except (OSError, ValueError):
         return None
-    if loaded.status == "running" and not _process_alive(loaded.pid):
+    if loaded.status == "running" and not process_alive(loaded.pid):
         return loaded.model_copy(
             update={"status": "failed", "error": "the escalation stopped before it finished"}
         )
     return loaded
 
 
-def _process_alive(pid: int | None) -> bool:
+def process_alive(pid: int | None) -> bool:
+    """Return true when a process with ``pid`` exists on this host."""
     if pid is None:
         return False
     try:
@@ -1708,7 +1681,7 @@ def _build_run_summary(
     operator_escalation: OperatorEscalation | None = None,
 ) -> RunSummary:
     signal = _last_signal_at(run) or run.created_at
-    finished = _is_run_finished(run)
+    finished = is_run_finished(run)
     implementation_attempts = sum(
         1 for attempt in run.attempt_records if attempt.budget is AttemptBudget.IMPLEMENTATION
     )
@@ -1908,7 +1881,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
     a client (ADR-047). The checks are the latest verification and CI reports.
     The review has one round per attempt that saved a review, plus the open and
     accepted findings of the review ledger. The plan part is the latest saved
-    specification, execution plan and change set, each ``None`` when absent.
+    specification, execution plan and change set, each ``None`` when absent, and
+    the changed files outside the plan's modules.
     """
     try:
         run = store.load_run(run_id)
@@ -1923,6 +1897,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
         if review is not None:
             rounds.append({"attempt_number": number, **review.model_dump(mode="json")})
     ledger = run.review_ledger
+    plan = _load_optional_artifact(store, run.id, ExecutionPlan)
+    change_set = _load_optional_artifact(store, run.id, ChangeSet)
     return {
         "run_id": run.id,
         "branch_name": run.branch_name,
@@ -1932,8 +1908,13 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
         "open_findings": _dumped(ledger.open_findings),
         "accepted_findings": _dumped(ledger.accepted_findings),
         "specification": _dumped_optional(store, run.id, Specification),
-        "execution_plan": _dumped_optional(store, run.id, ExecutionPlan),
-        "change_set": _dumped_optional(store, run.id, ChangeSet),
+        "execution_plan": None if plan is None else plan.model_dump(mode="json"),
+        "change_set": None if change_set is None else change_set.model_dump(mode="json"),
+        "out_of_scope_paths": (
+            []
+            if plan is None or change_set is None
+            else list(paths_outside_scope(plan.expected_scope.modules, change_set.changed_files))
+        ),
     }
 
 
@@ -2074,7 +2055,7 @@ def build_active_invocation_summary(
     """Return safe liveness details for the invocation persisted as active."""
 
     active = run.active_invocation
-    if active is None or _is_run_finished(run):
+    if active is None or is_run_finished(run):
         return None
     current_time = _normalize_now(now)
     status = _active_invocation_status(run, current_time, stale_after)
@@ -2102,13 +2083,7 @@ def _active_invocation_status(
     if lease is None:
         return "abandoned"
     if lease.host == socket.gethostname():
-        try:
-            os.kill(lease.pid, 0)
-        except ProcessLookupError:
-            return "crashed"
-        except PermissionError:
-            return "running"
-        return "running"
+        return "running" if process_alive(lease.pid) else "crashed"
     if _is_stale(run, now, stale_after):
         return "stale"
     return "running"
@@ -2354,14 +2329,7 @@ def _probe_lock_staleness(lock_path: Path) -> tuple[bool, datetime | None]:
     if owner_pid <= 0:
         raise ValueError(f"lock file has an invalid owner PID: {lock_path}")
 
-    try:
-        os.kill(owner_pid, 0)
-    except ProcessLookupError:
-        is_stale = True
-    except PermissionError:
-        is_stale = False
-    else:
-        is_stale = False
+    is_stale = not process_alive(owner_pid)
 
     try:
         modified_at = datetime.fromtimestamp(lock_path.stat().st_mtime, tz=timezone.utc)

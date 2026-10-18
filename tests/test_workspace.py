@@ -308,7 +308,7 @@ def test_file_line_count_handles_non_utf8_files(source_repo: Path, data_dir: Pat
     evidence = ws.collect_evidence()
 
     assert evidence.tree_sha is not None
-    assert ws.file_line_count(evidence.tree_sha, "asset.bin") == 3
+    assert ws.file_line_counts(evidence.tree_sha, ["asset.bin"])["asset.bin"] == 3
 
 
 def test_collect_evidence_subprocess_calls_reduced(
@@ -490,8 +490,8 @@ def test_collect_evidence_handles_untracked_files(source_repo: Path, data_dir: P
     assert "untracked content 1" in evidence.diff
     assert "untracked content 2" in evidence.diff
     assert evidence.tree_sha is not None
-    assert ws.file_line_count(evidence.tree_sha, "untracked_one.txt") == 1
-    assert ws.file_line_count(evidence.tree_sha, "untracked_two.txt") == 1
+    assert ws.file_line_counts(evidence.tree_sha, ["untracked_one.txt"])["untracked_one.txt"] == 1
+    assert ws.file_line_counts(evidence.tree_sha, ["untracked_two.txt"])["untracked_two.txt"] == 1
 
 
 def test_collect_evidence_handles_empty_diff(source_repo: Path, data_dir: Path) -> None:
@@ -856,8 +856,6 @@ def test_file_line_counts_batch_correctness(source_repo: Path, data_dir: Path) -
         "missing.txt": None,
         "subdir": None,
     }
-    # batch_file_line_counts alias returns identical result
-    assert ws.batch_file_line_counts(evidence.tree_sha, paths) == counts
 
 
 def test_file_line_counts_subprocess_calls_bounded_and_deduplicated(

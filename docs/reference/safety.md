@@ -107,14 +107,13 @@ subscription does not bill each call.
 - The `copilot` child process starts with GitHub credential variables removed:
   `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
   `GITHUB_PAT`, `GIT_ASKPASS` and the Actions token variables. Agents never
-  receive GitHub credentials.
-- The `pi` child process also starts with GitHub credential variables removed.
-  Only the credential variables of the call's pi provider stay (the role's
-  `provider`, else `pi.provider`). For
-  `github-copilot`, that is `COPILOT_GITHUB_TOKEN`. Other provider keys and
-  every other `*_API_KEY` variable are removed.
-- The `claude` child process also starts with GitHub credential variables
-  removed. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`
+  receive GitHub credentials. `SSH_AUTH_SOCK`, the known provider keys and
+  every `*_API_KEY` variable are removed too. `COPILOT_GITHUB_TOKEN` stays.
+- The `pi` child process starts with the same variables removed. Only the
+  credential variables of the call's pi provider stay (the role's `provider`,
+  else `pi.provider`). For `github-copilot`, that is `COPILOT_GITHUB_TOKEN`.
+- The `claude` child process starts with the same variables removed, and no
+  provider key stays. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`
   and `CLAUDE_CODE_USE_VERTEX` are removed too, so `claude` uses the logged-in
   subscription.
 - Only controller code passes a token to `gh`. It uses the subprocess
@@ -230,9 +229,9 @@ The filter was verified on pi 0.99.1. `factory doctor` requires pi 1.2.0 or late
 
 ### SSH keys
 
-The factory removes `SSH_AUTH_SOCK` from the environment of the pi process. Git
-over SSH then cannot use keys from ssh-agent. Key files and HTTPS credential
-helpers are out of scope. Copilot has the same limit.
+The factory removes `SSH_AUTH_SOCK` from the environment of every agent process.
+Git over SSH then cannot use keys from ssh-agent. Key files and HTTPS credential
+helpers are out of scope.
 
 ### What the filter does not stop
 

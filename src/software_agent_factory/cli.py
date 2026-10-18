@@ -80,7 +80,6 @@ if TYPE_CHECKING:
         DashboardResumeRequest,
         FactoryRun,
         InvocationRecord,
-        OperatorEscalation,
         RunLaunch,
         RuntimeName,
         ToolchainSetupPlan,
@@ -969,6 +968,7 @@ def escalate_command(
     """
     import os
 
+    from .operator_escalation import save_escalation_start
     from .redaction import redact_secrets
     from .resume import clean_steer_note
     from .store import OPERATOR_ESCALATION_FILENAME, FileRunStore
@@ -1002,33 +1002,6 @@ def escalate_command(
     done = record.model_copy(update={"status": "done"})
     store.save_artifact(run_id, done, OPERATOR_ESCALATION_FILENAME)
     _report_run(store, run)
-
-
-def save_escalation_start(
-    store: FileRunStore, run_id: str, note: str, pid: int
-) -> OperatorEscalation | None:
-    """Record that process ``pid`` escalates ``run_id`` now (ADR-055), and return the record.
-
-    Returns ``None`` and writes nothing when another process still escalates the run. A
-    missing run raises ``FileNotFoundError``.
-    """
-    from .models import OperatorEscalation
-    from .observability import load_operator_escalation
-    from .resume import escalation_route
-    from .store import OPERATOR_ESCALATION_FILENAME
-
-    run = store.load_run(run_id)
-    last = load_operator_escalation(store, run_id)
-    if last is not None and last.status == "running" and last.pid != pid:
-        return None
-    record = OperatorEscalation(
-        from_route=None if run.route_decision is None else run.route_decision.effective_route,
-        to_route=escalation_route(run),
-        note=note,
-        pid=pid,
-    )
-    store.save_artifact(run_id, record, OPERATOR_ESCALATION_FILENAME)
-    return record
 
 
 def _escalate(store: FileRunStore, data_dir: Path, run_id: str, note: str) -> FactoryRun:
@@ -1230,8 +1203,8 @@ def request_run_stop(
 
     The controller that drives the run reads it, kills the agent call and halts the run.
     """
+    from .lifecycle import is_run_finished
     from .models import RunStopRequest
-    from .workflow import is_run_finished
 
     try:
         run = store.load_run(run_id)
@@ -1253,8 +1226,8 @@ def _can_take_steer_note(run: FactoryRun) -> bool:
     A working run can. A halted run can only when its halt can resume: a note on any other
     halt would wait for a call that never comes.
     """
+    from .lifecycle import is_run_finished
     from .models import ResumeClassification, WorkflowState
-    from .workflow import is_run_finished
 
     if not is_run_finished(run):
         return True
@@ -1313,6 +1286,8 @@ def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
 
     from .models import OperatorEscalation
     from .observability import load_operator_escalation
+    from .operator_escalation import save_escalation_start
+    from .redaction import redact_secrets
     from .resume import escalation_route
     from .store import OPERATOR_ESCALATION_FILENAME
 
@@ -1340,7 +1315,9 @@ def build_escalator(store: FileRunStore, data_dir: Path) -> EscalateRequester:
                     start_new_session=True,
                 )
             except OSError as exc:
-                failed = OperatorEscalation(note=note, status="failed", error=str(exc))
+                failed = OperatorEscalation(
+                    note=note, status="failed", error=redact_secrets(str(exc))
+                )
                 store.save_artifact(run_id, failed, OPERATOR_ESCALATION_FILENAME)
                 return "started"
             save_escalation_start(store, run_id, note, child.pid)

@@ -142,8 +142,9 @@ def verification_repair_context(verification: RepositoryVerificationResult) -> R
     ]
     excerpt = None
     if failed:
-        last = failed[-1]
-        excerpt = bounded(f"$ {last.command}\n{last.stdout}\n{last.stderr}")
+        # The first failure is the one the failure kind describes.
+        first = failed[0]
+        excerpt = bounded(f"$ {first.command}\n{first.stdout}\n{first.stderr}")
     phase = verification.failed_phase.value if verification.failed_phase else "verify"
     kind = verification.failure_kind.value if verification.failure_kind else "unknown"
     return RepairContext(

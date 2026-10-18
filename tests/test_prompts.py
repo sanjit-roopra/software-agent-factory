@@ -47,6 +47,8 @@ from software_agent_factory.models import (
     AttemptTrigger,
     ChangeSet,
     CommandResult,
+    MutationReport,
+    MutationStatus,
     PlanningResult,
     ProjectBrief,
     RepairContext,
@@ -60,6 +62,7 @@ from software_agent_factory.models import (
     TriageResult,
     VerificationReport,
 )
+from software_agent_factory.mutation_gate import mutation_check_result
 from software_agent_factory.prompts import (
     MAX_COLLECTION_ERROR_CHARS,
     MAX_COLLECTION_ERRORS,
@@ -573,6 +576,34 @@ def test_verification_report_concise_successful_command_evidence() -> None:
     assert f'"stdout_hash":"{expected_hash}"' in prompt
     # Verbose output is omitted
     assert "test session starts" not in prompt
+
+
+@pytest.mark.parametrize("role", [AgentRole.TESTER, AgentRole.REVIEWER])
+def test_mutation_survivors_reach_tester_and_reviewer(role: AgentRole) -> None:
+    survivor = "app.x_clamp__mutmut_3"
+    check = mutation_check_result(
+        MutationReport(
+            status=MutationStatus.PASSED,
+            modules=("app",),
+            killed=4,
+            survived=(survivor,),
+            survived_count=1,
+        ),
+        duration_seconds=2.0,
+    )
+    report = VerificationReport(passed=True, confidence=1.0, deterministic_checks=[check])
+    prompt = build_prompt(
+        make_request(
+            role,
+            specification=specification(),
+            execution_plan=plan(),
+            diff=DIFF,
+            changed_files=["src/app.py"],
+            verification_report=report,
+        )
+    )
+
+    assert survivor in prompt
 
 
 def test_verification_report_parsed_collection_errors_and_bounded_failure() -> None:

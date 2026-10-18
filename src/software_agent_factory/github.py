@@ -99,6 +99,7 @@ from urllib.parse import quote, urlparse
 
 from pydantic import Field
 
+from .governance import paths_outside_scope
 from .models import (
     ExecutionPlan,
     ModelBase,
@@ -2724,6 +2725,8 @@ def build_pr_body(
     else:
         lines.append("_no changed files recorded_")
     lines.append("")
+    if plan is not None:
+        lines.extend(_scope_growth(plan, changed_files))
 
     if verification is not None:
         lines.append("## Verification")
@@ -2793,6 +2796,20 @@ def build_pr_body(
     lines.append(f"Run ID: `{run_id}`")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _scope_growth(plan: ExecutionPlan, changed_files: Sequence[str]) -> list[str]:
+    """How far the change grew past its plan; a growth sign, not a gate."""
+    scope = plan.expected_scope
+    lines = [
+        f"{len(changed_files)} files changed; the plan estimated "
+        f"{scope.estimated_files_min}-{scope.estimated_files_max}.",
+        "",
+    ]
+    outside = paths_outside_scope(scope.modules, changed_files)
+    return lines + _bulleted_section(
+        "Outside the planned modules", [f"`{path}`" for path in outside]
+    )
 
 
 def _bulleted_section(title: str, items: Sequence[str]) -> list[str]:

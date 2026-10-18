@@ -257,7 +257,7 @@ def _change_set(data: Any, run_id: str | None) -> dict[str, Any] | None:
 
 
 def sanitize_run_plan(raw: Any) -> dict[str, Any]:
-    """The run's specification, plan and change set, text redacted and cut."""
+    """The run's specification, plan, change set and out-of-scope paths, text redacted and cut."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
         raise TypeError(_NOT_AN_OBJECT)
@@ -267,6 +267,7 @@ def sanitize_run_plan(raw: Any) -> dict[str, Any]:
         "specification": _specification(data.get("specification"), run_id),
         "execution_plan": _execution_plan(data.get("execution_plan"), run_id),
         "change_set": _change_set(data.get("change_set"), run_id),
+        "out_of_scope_paths": _text_items(data.get("out_of_scope_paths"), run_id),
     }
 
 

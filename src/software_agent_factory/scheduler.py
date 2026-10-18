@@ -120,9 +120,9 @@ from typing import Callable, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .lifecycle import is_run_finished
 from .models import FactoryRun, UtcDateTime, WorkflowState, utc_now
 from .store import FileRunStore
-from .workflow import is_run_finished
 
 logger = logging.getLogger(__name__)
 
@@ -646,7 +646,7 @@ class Scheduler:
         computed once per tick (not once per candidate) to avoid repeated
         store scans. Empty when no ``store`` was configured.
 
-        "Unfinished" is ``workflow.is_run_finished``: terminal states plus an
+        "Unfinished" is ``lifecycle.is_run_finished``: terminal states plus an
         explicitly finalized ``PR_READY`` (the completed endpoint of the
         manual, pull-request-disabled flow)."""
         return frozenset(

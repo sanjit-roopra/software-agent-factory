@@ -28,6 +28,12 @@ from software_agent_factory.governance import (
     RepositoryVerificationResult,
     VerificationFailureKind,
 )
+from software_agent_factory.lifecycle import (
+    ALLOWED_TRANSITIONS,
+    RECOVERY_TRANSITIONS,
+    TERMINAL_STATES,
+    is_run_finished,
+)
 from software_agent_factory.models import (
     MAX_OPEN_REVIEW_FINDINGS,
     UNRESOLVED_DECISIONS_HALT_REASON,
@@ -82,15 +88,13 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.resume_writes import ingest_dashboard_request
+from software_agent_factory.revert_check import REVERT_CHECK_COMMAND, TESTS_PASS_WITHOUT_CHANGE
 from software_agent_factory.store import ARTIFACT_FILENAMES, FileRunStore
 from software_agent_factory.verification import DeterministicVerifier
 from software_agent_factory.workflow import (
-    ALLOWED_TRANSITIONS,
-    TERMINAL_STATES,
     TransitionError,
     WorkflowController,
     _RunContext,
-    is_run_finished,
 )
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
 
@@ -312,6 +316,23 @@ def test_exhaustive_transition_matrix_matches_declared_table(data_dir: Path) -> 
         else:
             with pytest.raises(TransitionError):
                 controller.transition(run, to_state)
+
+
+def test_recovery_moves_reach_only_declared_states(data_dir: Path) -> None:
+    controller = WorkflowController(_config(data_dir), FileRunStore(data_dir), FakeAgentRuntime())
+    run = FactoryRun(id="RUN-recover", work_item_id="WI-X", state=WorkflowState.REVIEWING)
+
+    for state in WorkflowState:
+        if state in RECOVERY_TRANSITIONS["restart"]:
+            assert controller._restart_at(run, state).state is state
+        else:
+            with pytest.raises(TransitionError):
+                controller._restart_at(run, state)
+        if state in RECOVERY_TRANSITIONS["operator_escalation"] | ALLOWED_TRANSITIONS[run.state]:
+            assert controller.transition(run, state, operator_escalation=True).state is state
+        else:
+            with pytest.raises(TransitionError):
+                controller.transition(run, state, operator_escalation=True)
 
 
 def test_invalid_transition_from_terminal_state_is_rejected(data_dir: Path) -> None:
@@ -3291,6 +3312,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
         *,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
+        stop_on_failure: bool = True,
         before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
         results: list[CommandResult] = []
@@ -3308,7 +3330,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
                     duration_seconds=0.0,
                 )
             )
-            if exit_code:
+            if exit_code and stop_on_failure:
                 break
         passed = all(result.exit_code == 0 for result in results)
         return VerificationReport(
@@ -3350,8 +3372,9 @@ def test_configured_commands_win_over_derived_commands(
 ) -> None:
     runner = _ScriptedCommandRunner()
     store = FileRunStore(data_dir)
+    runtime = RecordingRuntime(FakeAgentRuntime())
     controller = WorkflowController(
-        _config(data_dir, verify=["make check"]), store, FakeAgentRuntime(), verifier=runner
+        _config(data_dir, verify=["make check"]), store, runtime, verifier=runner
     )
 
     run = controller.run(_work_item("WI-config-commands"), uv_python_repo)
@@ -3361,6 +3384,8 @@ def test_configured_commands_win_over_derived_commands(
         source=RepositoryCommandsSource.CONFIG, verify=("make check",)
     )
     assert set(runner.commands) == {"make check"}
+    implementer = next(r for r in runtime.requests if r.role is AgentRole.IMPLEMENTER)
+    assert implementer.verification_commands == ("make check",)
 
 
 def test_derived_commands_are_probed_then_used_for_verification(
@@ -3539,3 +3564,32 @@ def test_mutation_gate_is_off_without_the_switch_or_verify_commands(
     controller.run(_work_item("WI-mutation-off"), uv_mutmut_repo)
 
     assert not any("mutmut" in command for command in runner.commands)
+
+
+def _tested_change_implementer(request: AgentRequest) -> AgentResult:
+    result = _python_editing_implementer(request)
+    assert request.workspace_path is not None
+    tests = Path(request.workspace_path) / "tests"
+    tests.mkdir(exist_ok=True)
+    (tests / "test_app.py").write_text("def test(): pass\n", encoding="utf-8")
+    return result
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_revert_check_adds_an_advisory_check_for_a_change_with_tests(
+    uv_python_repo: Path, data_dir: Path, enabled: bool
+) -> None:
+    runner = _ScriptedCommandRunner()
+    controller, store = _mutation_controller(
+        data_dir, runner, _tested_change_implementer, revert_check=enabled
+    )
+
+    run = controller.run(_work_item("WI-revert-check"), uv_python_repo)
+
+    verification = store.load_artifact(run.id, VerificationReport)
+    assert verification.passed is True
+    last = verification.deterministic_checks[-1]
+    assert (last.command == REVERT_CHECK_COMMAND) is enabled
+    if enabled:
+        assert last.stdout.startswith(f"revert check: {TESTS_PASS_WITHOUT_CHANGE}")
+        assert "- src/app.py" in last.stdout

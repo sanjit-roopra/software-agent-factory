@@ -615,6 +615,12 @@ class GitWorktreeWorkspace:
         self._meta_path.write_text(json.dumps({"base_commit": base, "branch": self.branch_name}))
         self.base_commit = base
 
+    def _base(self) -> str:
+        if self.base_commit is None:
+            self._load_or_compute_base_commit()
+        assert self.base_commit is not None
+        return self.base_commit
+
     def _commit_exists(self, commit: str) -> bool:
         if not commit:
             return False
@@ -684,10 +690,8 @@ class GitWorktreeWorkspace:
 
     def is_at_clean_base(self) -> bool:
         """Return whether the worktree is clean and its HEAD is the base commit."""
-        if self.base_commit is None:
-            self._load_or_compute_base_commit()
         head = _run_git(self.path, ["rev-parse", "HEAD"]).stdout.strip()
-        return head == self.base_commit and self.is_clean()
+        return head == self._base() and self.is_clean()
 
     def discard_changes(self) -> None:
         """Return the worktree to its base commit, removing untracked files that are not ignored.
@@ -695,10 +699,7 @@ class GitWorktreeWorkspace:
         Resetting to the base commit, not HEAD, also undoes commits that
         repository code made during the command probe.
         """
-        if self.base_commit is None:
-            self._load_or_compute_base_commit()
-        assert self.base_commit is not None
-        _run_git(self.path, ["reset", "--hard", self.base_commit])
+        _run_git(self.path, ["reset", "--hard", self._base()])
         _run_git(self.path, ["clean", "-fd"])
 
     def collect_evidence(self) -> WorkspaceEvidence:
@@ -710,10 +711,7 @@ class GitWorktreeWorkspace:
         evidence always describes the *whole* change since the run started.
         Never commits.
         """
-        if self.base_commit is None:
-            self._load_or_compute_base_commit()
-        assert self.base_commit is not None
-
+        base = self._base()
         _run_git(self.path, ["add", "-A"])
         tree_sha = _run_git(self.path, ["write-tree"]).stdout.strip()
         raw_patch = _run_git(
@@ -724,12 +722,21 @@ class GitWorktreeWorkspace:
                 "-z",
                 "--find-copies=1%",
                 "--find-copies-harder",
-                self.base_commit,
+                base,
                 tree_sha,
             ],
         ).stdout
         changed_files, diff = _parse_patch_with_raw(raw_patch)
         return WorkspaceEvidence(changed_files=changed_files, diff=diff, tree_sha=tree_sha)
+
+    def restore_paths(self, paths: Sequence[str], tree: str | None = None) -> None:
+        """Set ``paths`` to ``tree`` or the base commit; raise if they differ afterwards."""
+        source = tree or self._base()
+        literal = ["--literal-pathspecs"]
+        _run_git(self.path, [*literal, "restore", f"--source={source}", "-SW", "--", *paths])
+        check = [*literal, "diff", "--quiet", source, "--", *paths]
+        if _run_git(self.path, check, False).returncode:
+            raise WorkspaceError(f"worktree does not match {source} after restore")
 
     def diff_trees(self, previous_tree_sha: str, current_tree_sha: str) -> str:
         """Return a zero-context patch between two immutable reviewed trees."""
@@ -771,16 +778,6 @@ class GitWorktreeWorkspace:
             result.update(parsed)
 
         return result
-
-    def batch_file_line_counts(
-        self, tree_sha: str, relative_paths: Sequence[str]
-    ) -> dict[str, int | None]:
-        """Return line counts for files in ``tree_sha`` in bounded batches."""
-        return self.file_line_counts(tree_sha, relative_paths)
-
-    def file_line_count(self, tree_sha: str, relative_path: str) -> int | None:
-        """Return line count for a file in ``tree_sha``, or ``None`` when absent."""
-        return self.file_line_counts(tree_sha, [relative_path]).get(relative_path)
 
     def discard(self) -> None:
         """Remove the worktree, its metadata file and its branch, when they exist.

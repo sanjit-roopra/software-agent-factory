@@ -83,11 +83,6 @@ UNAVAILABLE_ERRORS = frozenset(
 #: ``api_error_status`` values on the ``result`` event with the same meaning:
 #: unauthorized, rate or usage limit, overloaded.
 UNAVAILABLE_STATUSES = frozenset({401, 429, 529})
-#: The subset of :data:`ANTHROPIC_BILLING_ENV_VARS` that holds a secret, so its
-#: value is redacted from failure reasons. The others are switches and URLs.
-ANTHROPIC_SECRET_ENV_VARS = frozenset(
-    {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_FOUNDRY_API_KEY"}
-)
 
 
 class ClaudeCodeAgentRuntime(AgentRuntime):
@@ -260,12 +255,14 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
 
 
 def _child_env() -> tuple[dict[str, str], set[str]]:
-    """The child environment without GitHub or Anthropic billing credentials."""
+    """The child environment without provider credentials or Anthropic billing switches.
+
+    ``build_child_env`` removes and redacts the secrets; the switches and URLs
+    left in :data:`ANTHROPIC_BILLING_ENV_VARS` are not secret values.
+    """
     child_env, scrubbed_values = build_child_env()
     for name in ANTHROPIC_BILLING_ENV_VARS:
-        value = child_env.pop(name, None)
-        if value and name in ANTHROPIC_SECRET_ENV_VARS:
-            scrubbed_values.add(value)
+        child_env.pop(name, None)
     child_env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return child_env, scrubbed_values
 

@@ -275,7 +275,7 @@ def test_counts_classify_every_terminal_and_active_state(tmp_path: Path) -> None
 
     # DONE and the *finalized* PR_READY run both count as succeeded; the
     # interrupted (unfinalized) PR_READY run counts as active instead, per
-    # workflow.is_run_finished.
+    # lifecycle.is_run_finished.
     assert snapshot.counts.succeeded == 2
     assert snapshot.counts.escalated == 1
     assert snapshot.counts.failed == 1
