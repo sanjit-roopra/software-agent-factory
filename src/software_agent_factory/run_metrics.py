@@ -234,6 +234,45 @@ def _duration_summary(durations_seconds: list[float]) -> DurationSummary:
     )
 
 
+def _attempt_counts(run: FactoryRun) -> tuple[int, int, int]:
+    """Per-run ``(counted implementation, CI repair, legacy scope replan)`` attempts.
+
+    Counted implementation attempts leave out polish attempts. Legacy scope replans
+    count attempts triggered by scope, for runs saved before ``scope_replans`` existed.
+    """
+    implementation = 0
+    ci_repair = 0
+    scope = 0
+    for attempt in run.attempt_records:
+        if attempt.budget is AttemptBudget.IMPLEMENTATION:
+            implementation += int(attempt.triggered_by is not AttemptTrigger.POLISH)
+        elif attempt.budget is AttemptBudget.CI_REPAIR:
+            ci_repair += 1
+        scope += int(attempt.triggered_by is AttemptTrigger.SCOPE)
+    return implementation, ci_repair, scope
+
+
+def _collect_performance_samples(
+    run: FactoryRun,
+    stage_samples: dict[str, list[float]],
+    operation_samples: dict[str, list[float]],
+    counters: dict[str, int],
+) -> None:
+    """Add ``run``'s stage and operation durations (in seconds) and counters to the totals."""
+    for key, value in run.performance.durations_ms.items():
+        if key.startswith("stage."):
+            stage_samples.setdefault(key.removeprefix("stage."), []).append(value / 1000.0)
+        elif key.startswith("operation."):
+            operation_samples.setdefault(key.removeprefix("operation."), []).append(value / 1000.0)
+    for key, count in run.performance.counters.items():
+        counters[key] = counters.get(key, 0) + count
+
+
+def _gate_failures(counters: dict[str, int], gate: str, state: str) -> int:
+    """Gate failures counted under the gate name plus the older workflow-state name."""
+    return counters.get(f"gate_failure.{gate}", 0) + counters.get(f"gate_failure.{state}", 0)
+
+
 def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
     """See :class:`AggregateMetrics` for the exact, deterministic definition
     of each field. Pure function of ``runs`` (the scanned readable subset);
@@ -259,61 +298,38 @@ def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
     runs_with_rework = 0
 
     for run in runs:
-        run_implementation_attempts = 0
-        run_ci_repair_attempts = 0
-        legacy_scope_replans = 0
-        for attempt in run.attempt_records:
-            total_attempts += 1
-            if attempt.budget is AttemptBudget.IMPLEMENTATION:
-                implementation_attempts += 1
-                if attempt.triggered_by is not AttemptTrigger.POLISH:
-                    run_implementation_attempts += 1
-            elif attempt.budget is AttemptBudget.CI_REPAIR:
-                ci_repair_attempts += 1
-                run_ci_repair_attempts += 1
-            if attempt.triggered_by is AttemptTrigger.SCOPE:
-                legacy_scope_replans += 1
-        scope_replans += max(run.scope_replans, legacy_scope_replans)
+        counted_implementation, run_ci_repair_attempts, legacy_scope_replans = _attempt_counts(run)
+        total_attempts += len(run.attempt_records)
+        implementation_attempts += sum(
+            attempt.budget is AttemptBudget.IMPLEMENTATION for attempt in run.attempt_records
+        )
+        ci_repair_attempts += run_ci_repair_attempts
+        run_scope_replans = max(run.scope_replans, legacy_scope_replans)
+        scope_replans += run_scope_replans
 
         if run.completed_at is not None and is_run_finished(run):
             durations.append(max((run.completed_at - run.created_at).total_seconds(), 0.0))
 
         if _classify_run(run) == "succeeded":
             succeeded_total += 1
-            if run_implementation_attempts == 1:
-                first_pass_numerator += 1
+            first_pass_numerator += int(counted_implementation == 1)
 
-        for k, v in run.performance.durations_ms.items():
-            if k.startswith("stage."):
-                stage_name = k.removeprefix("stage.")
-                stage_duration_samples.setdefault(stage_name, []).append(v / 1000.0)
-            elif k.startswith("operation."):
-                op_name = k.removeprefix("operation.")
-                operation_duration_samples.setdefault(op_name, []).append(v / 1000.0)
-
-        for k, v in run.performance.counters.items():
-            aggregated_counters[k] = aggregated_counters.get(k, 0) + v
-
+        _collect_performance_samples(
+            run, stage_duration_samples, operation_duration_samples, aggregated_counters
+        )
         total_prompt_chars += run.performance.prompt_chars or 0
         total_response_chars += run.performance.response_chars or 0
 
-        gate_failures = run.performance.counters.get("gate_failures_total", 0)
-        total_gate_failures += gate_failures
-        verification_gate_failures += run.performance.counters.get(
-            "gate_failure.verification", 0
-        ) + run.performance.counters.get("gate_failure.VERIFYING", 0)
-        review_gate_failures += run.performance.counters.get(
-            "gate_failure.review", 0
-        ) + run.performance.counters.get("gate_failure.REVIEWING", 0)
+        counters = run.performance.counters
+        total_gate_failures += counters.get("gate_failures_total", 0)
+        verification_gate_failures += _gate_failures(counters, "verification", "VERIFYING")
+        review_gate_failures += _gate_failures(counters, "review", "REVIEWING")
         fallback_rework = (
-            max(0, run_implementation_attempts - 1)
-            + run_ci_repair_attempts
-            + max(run.scope_replans, legacy_scope_replans)
+            max(0, counted_implementation - 1) + run_ci_repair_attempts + run_scope_replans
         )
-        run_rework = run.performance.counters.get("rework_total", 0) or fallback_rework
+        run_rework = counters.get("rework_total", 0) or fallback_rework
         total_rework_attempts += run_rework
-        if run_rework > 0:
-            runs_with_rework += 1
+        runs_with_rework += int(run_rework > 0)
 
     average_attempts_per_run = (total_attempts / len(runs)) if runs else None
     first_pass_success = FirstPassSuccessMetric(
