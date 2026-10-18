@@ -39,7 +39,7 @@ Run sequentially from the repository root:
 uv sync --locked --group dev
 uv run --no-sync ruff format --check .
 uv run --no-sync ruff check --output-format=github .
-uv run --no-sync mypy src/software_agent_factory scripts/docs scripts/release
+uv run --no-sync mypy
 uv run --no-sync pytest -q --cov --cov-report=term-missing
 ```
 
@@ -47,6 +47,8 @@ If `README.md` or anything under `docs/` changed:
 
 ```bash
 uv run --no-sync python scripts/docs/check_simple_english.py
+uv run --no-sync mkdocs build --strict
+uv run --no-sync python scripts/docs/check_rendered_links.py site
 ```
 
 Coverage floor is 90% (`[tool.coverage.report] fail_under`). A failing

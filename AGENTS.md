@@ -42,7 +42,8 @@ Polish once if enabled
 
 The initial version runs on a developer MacBook.
 
-The LLMs run remotely through GitHub Copilot.
+The LLMs run remotely through an agent runtime: GitHub Copilot, pi or Claude Code
+(ADR-031, ADR-045). Each role can name its own runtime.
 
 Repository work, shell commands, Git worktrees, tests, builds and orchestration run locally.
 
@@ -365,11 +366,13 @@ amended by ADR-033). It is the only exception to the ban above and is allowed
 only as:
 
 - bound to `127.0.0.1`, started by an explicit command, disabled by default
-- read-only, except three named write actions: approve a risk approval,
-  answer plan decisions, and retry publishing a run whose first pull request
-  failed to open (ADR-042). They only create a request file. The factory service
-  ingests it and is the single writer of `run.json`. No endpoint may change
-  configuration or workflow state in any other way
+- read-only, except the named write actions in `dashboard/handler.py`:
+  `approve`, `answer`, `retry` (ADR-033, ADR-042), `cancel`, `steer` (ADR-047)
+  and `escalate` (ADR-055). All but `escalate` only create a request file; the
+  factory service ingests it and is the single writer of `run.json`. `escalate`
+  starts `factory escalate` as a detached process through a function the CLI
+  gives the dashboard. No endpoint may change configuration or workflow state in
+  any other way
 - token protected. The per-start token guards the HTTP route only. The factory
   service never checks it and trusts any request file in the run directory. So
   write access to `<data_dir>/runs` is the real authority for a local approval,
@@ -381,7 +384,7 @@ only as:
 
 Everything else in the list stays banned. Nothing may become a hosted service,
 a multi-user application or a control plane. If a dashboard change would need a
-framework, a package manager or a fourth write action, stop and update the ADR first.
+framework, a package manager or a new write action, stop and update the ADR first.
 
 ## Initial technologies
 Prefer:
@@ -395,7 +398,7 @@ Prefer:
 - Git CLI
 - Git worktrees
 - filesystem JSON persistence
-- GitHub Copilot for agents
+- GitHub Copilot, pi or Claude Code for agents
 - GitHub CLI/API when PR support is introduced
 
 Avoid large frameworks unless they solve a real demonstrated requirement.

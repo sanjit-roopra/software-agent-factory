@@ -35,7 +35,12 @@ from software_agent_factory.cli import (
     build_steer_requester,
     build_stop_requester,
 )
-from software_agent_factory.dashboard import DashboardConfig, DashboardServer, create_server
+from software_agent_factory.dashboard import (
+    DashboardConfig,
+    DashboardServer,
+    create_server,
+    handler,
+)
 from software_agent_factory.dashboard.actions import ResumeActions
 from software_agent_factory.dashboard.handler import MAX_BODY_BYTES
 from software_agent_factory.dashboard.security import TOKEN_HEADER, cookie_name
@@ -1767,3 +1772,10 @@ def test_an_escalation_that_cannot_start_shows_the_error(
     assert rig.post(_path(ESCALATE_ACTION), {"note": "ok"})[0] == 202
     record = rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME)
     assert (record.status, record.error) == ("failed", "no python")
+
+
+def test_agents_md_names_every_dashboard_write_action() -> None:
+    names = {*handler._ACTION_KINDS, handler._STOP_ACTION, handler._STEER_ACTION}
+    names.add(handler._ESCALATE_ACTION)
+    agents = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+    assert {name for name in names if f"`{name}`" not in agents} == set()
