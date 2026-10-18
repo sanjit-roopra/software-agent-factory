@@ -81,6 +81,8 @@ A typo appears here before you start a run.
 Verification classifies a failure instead of reporting only a nonzero exit.
 It distinguishes lint, type check, test, dependency, and build failures.
 The category is saved in `verification.json`.
+Every verify command runs, even after one fails, so one repair attempt sees every failing check.
+Install and build commands stop at the first failure.
 
 The tester and reviewer run only after deterministic verification succeeds.
 A broken build cannot reach them. A model cannot bypass a failing test.
