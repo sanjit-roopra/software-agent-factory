@@ -1979,3 +1979,31 @@ def test_unattended_delivery_checkpoint_that_cannot_resume_leaves_the_pull_reque
     assert "workspace identity changed" in recovered.needs_look[0]
     assert publisher.flags == [recovered.needs_look]
     assert merger.calls == []
+
+
+def test_a_run_writes_heartbeats_while_it_waits_for_ci(tmp_path: Path, source_repo: Path) -> None:
+    import threading
+    import time
+
+    class SlowObserver(Observer):
+        def observe(self, **kwargs) -> CIReport:
+            time.sleep(0.3)
+            return super().observe(**kwargs)
+
+    config = _config(tmp_path)
+    controller, store = _controller(config, observer=SlowObserver())
+    controller.heartbeat_interval_seconds = 0.01
+    beats: list[WorkflowState] = []
+    save_run = store.save_run
+
+    def recording_save(run: FactoryRun) -> None:
+        if threading.current_thread().name.startswith("heartbeat-"):
+            beats.append(run.state)
+        save_run(run)
+
+    store.save_run = recording_save  # type: ignore[method-assign]
+
+    run = controller.run(work_item(), source_repo)
+
+    assert run.state is WorkflowState.DONE
+    assert WorkflowState.CI_RUNNING in beats

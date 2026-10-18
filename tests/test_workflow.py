@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import os
 import subprocess
+import threading
 from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -3618,3 +3619,28 @@ def test_suppression_scan_adds_an_advisory_check_for_added_markers(
     last = verification.deterministic_checks[-1]
     assert last.command == SUPPRESSION_SCAN_COMMAND
     assert "- src/app.py:1: x = 2  # noqa: E501" in last.stdout
+
+
+def test_a_run_writes_heartbeats_while_its_verify_commands_run(
+    source_repo: Path, data_dir: Path
+) -> None:
+    class BeatRecordingStore(FileRunStore):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.beats: list[WorkflowState] = []
+
+        def save_run(self, run: FactoryRun) -> None:
+            if threading.current_thread().name.startswith("heartbeat-"):
+                self.beats.append(run.state)
+            super().save_run(run)
+
+    store = BeatRecordingStore(data_dir)
+    controller = WorkflowController(
+        _config(data_dir, verify=["sleep 0.3"]), store, FakeAgentRuntime()
+    )
+    controller.heartbeat_interval_seconds = 0.01
+
+    run = controller.run(_work_item(), source_repo)
+
+    assert run.state is WorkflowState.PR_READY
+    assert WorkflowState.VERIFYING in store.beats

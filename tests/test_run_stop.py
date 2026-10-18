@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -27,6 +28,7 @@ from software_agent_factory.models import (
     RunStopRequest,
     WorkflowState,
 )
+from software_agent_factory.run_watch import heartbeat
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.subprocess_utils import release_thread, track_child
 from software_agent_factory.workflow import WorkflowController
@@ -156,6 +158,27 @@ def test_a_stop_request_halts_the_run_between_verify_commands(
     assert not marker.exists()
 
 
+def test_a_stop_request_kills_a_running_verify_command(
+    source_repo: Path, data_dir: Path, tmp_path: Path
+) -> None:
+    store = FileRunStore(data_dir)
+    request = tmp_path / "stop.json"
+    request.write_text(RunStopRequest(run_id="run-long", source="cli").model_dump_json())
+    stop_file = store._run_dir_readonly("run-long") / "stop-request.json"
+    config = build_config(data_dir, verify=[f"cp {request} {stop_file}; sleep 30"])
+    controller = WorkflowController(config, store, FakeAgentRuntime())
+    controller.heartbeat_interval_seconds = 0.01
+    started = time.monotonic()
+
+    run = controller.run(_work_item(source_repo), source_repo, run_id="run-long")
+
+    assert time.monotonic() - started < 20
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.failure_reason is not None
+    assert run.failure_reason.startswith(f"{STOPPED_HALT_REASON} from the cli at ")
+    assert classify_halt_reason(run)[1] is HaltReasonCode.MANUAL_INSPECTION
+
+
 def test_a_finished_run_drops_a_stop_request_it_never_reached(data_dir: Path) -> None:
     store = FileRunStore(data_dir)
     controller = WorkflowController(build_config(data_dir), store, FakeAgentRuntime())
@@ -180,7 +203,7 @@ def test_the_heartbeat_kills_the_agent_when_a_stop_request_appears(data_dir: Pat
     threading.Thread(target=lambda: (process.wait(timeout=10), stop.set()), daemon=True).start()
 
     try:
-        controller._heartbeat(run, stop, 60, threading.get_ident())
+        heartbeat(controller, run, stop, 60, threading.get_ident())
     finally:
         release_thread(threading.get_ident())
 

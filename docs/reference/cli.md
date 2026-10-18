@@ -242,9 +242,9 @@ factory cancel run-9bb36bbbdf114f53bd9599a103122976
 Options: `--config`, `--data-dir`.
 
 The command writes one stop request in the run directory and returns.
-The process that drives the run reads it. During an agent call it stops the agent
-within a few seconds. During a check it stops the run when that check command
-ends, and during a CI wait it stops the run within one poll interval.
+The process that drives the run reads it. During an agent call or a check it
+kills the agent or the check command within a few seconds. During a CI wait it
+stops the run within one poll interval.
 The run then halts in `NEEDS_HUMAN` with `MANUAL_INSPECTION`. Its workspace and
 commits stay on disk.
 

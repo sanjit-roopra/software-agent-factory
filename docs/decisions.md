@@ -299,6 +299,9 @@ Only the process that drives the run can kill its agent process group.
     When it finds one, it records the open call as failed and halts the run in `NEEDS_HUMAN`.
   - The controller also checks the file before each verify command, before the mutation gate
     and before each pause in the CI wait. Amended on 2026-10-18.
+  - The same heartbeat thread runs during the verify commands, the mutation gate, the revert check
+    and each CI wait. When it finds the file, it kills the running check command, and the run halts.
+    Amended on 2026-10-18.
 - The halt reason starts with `stopped on request`. It maps to `MANUAL_INSPECTION`.
   The halt sends no escalation notice: the person who stopped the run already knows.
 - The workspace, the branch and its commits stay as they are.
@@ -309,7 +312,7 @@ Only the process that drives the run can kill its agent process group.
 
 - A stop works the same way for a service run and for a run in the terminal.
 - A run that is not driven by any process stops only when something drives it again.
-- A run in a check stops when that check command ends. A run in a CI wait stops within one poll interval.
+- A run in a check stops within a few seconds. A run in a CI wait stops within one poll interval.
 - A stop request that lands just as the run halts for another reason can stay on disk.
   The reopen that a person asks for deletes it, so it never stops that resume.
 
@@ -329,8 +332,12 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 
 - While an agent call runs, the controller writes the lease heartbeat every 30 seconds.
   The heartbeat stops when the call runs past its own timeout, so a call that never ends still looks stalled.
+- The verify commands, the mutation gate, the revert check and each CI wait write the same heartbeat.
+  Their timeout is the command timeout for each command they run, or the CI wait budget plus one poll.
+  So a long check or a CI wait longer than the stall timeout does not look stalled. Amended on 2026-10-18.
 - On a stall, the service asks the controller to cancel the run.
-  The controller kills the process group of the live agent call, and the run stops before its next agent call.
+  The controller kills the process group of the live agent call or check command.
+  The run stops before its next agent call or check.
 - The service then settles the run on its own thread:
   - An unattended run is queued to continue under its own run id, like a run that a restart interrupted (ADR-043).
     `MAX_RESTART_RECOVERIES` bounds how often that can happen.
@@ -340,7 +347,7 @@ With the stall timeout and the agent timeout both at 900 seconds, a long but hea
 
 - A stalled run no longer holds a slot and an agent process for nothing.
 - The halt is in `run.json`, so it survives a restart and the dashboard shows it.
-- A stall outside an agent call stops the run at the next stop check of ADR-049, such as the next verify command.
+- A stall in a check kills the check command. A stall in a CI wait stops the run at the next poll.
 - `STALLED` is a new stored value, so old readers see a code they do not know.
 
 ## ADR-047: The dashboard shows what the agent did, and can stop or steer a run
