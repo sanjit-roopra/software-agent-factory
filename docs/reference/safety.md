@@ -382,7 +382,7 @@ named write actions, not a control plane.
   (publish again) from ADR-033 and ADR-042, `cancel` and `steer` from ADR-047,
   and `escalate` from ADR-055. ADR-058 adds `grant` (one more attempt).
   ADR-059 adds `accept` (accept open review findings). ADR-060 adds `widen`
-  (approve a wider scope).
+  (approve a wider scope). ADR-061 adds `repair` (retry CI).
 - `escalate` starts `factory escalate` as a detached process. The CLI gives the
   dashboard the function that starts it. Each other write creates a request file
   only. A `steer` note replaces the note that waits, if there is one (ADR-051).

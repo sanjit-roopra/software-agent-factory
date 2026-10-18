@@ -2,8 +2,8 @@
 
 When a run halts in ``NEEDS_HUMAN`` with a resumable class, the factory snapshots the
 context the person decides: the risk approval, the plan decisions, the reviewed work to
-publish again, the used-up attempt budget, the open review findings or the paths beyond
-the approved scope.
+publish again, the used-up attempt budget, the open review findings, the paths beyond
+the approved scope or the CI result of an open pull request.
 :func:`build_resume_context` picks the builder from the class, one per entry of
 :data:`.resume_classes.RESUME_CLASSES`. The builders read the run's artifacts through the
 store, so they live here and not in the pure :mod:`.resume_classes`.
@@ -22,10 +22,13 @@ from .config import FactoryConfig
 from .escalation_protocol import MAX_PLAN_DECISIONS
 from .governance import ScopeDriftPolicy
 from .models import (
+    MAX_CI_RETRY_CHECKS,
     MAX_SCOPE_APPROVAL_PATHS,
     AttemptBudget,
     AttemptGrantContext,
     ChangeSet,
+    CIRepairRetryContext,
+    CIReport,
     DeliveryRetryContext,
     ExecutionPlan,
     FactoryRun,
@@ -52,6 +55,7 @@ from .resume_classes import (
     RESUME_CLASSES,
     ResumeContext,
     compute_attempt_grant_context_fingerprint,
+    compute_ci_repair_retry_context_fingerprint,
     compute_findings_acceptance_context_fingerprint,
     compute_scope_approval_context_fingerprint,
 )
@@ -443,6 +447,46 @@ def build_scope_approval_context(
     )
 
 
+def build_ci_repair_retry_context(
+    run: FactoryRun, store: FileRunStore, _config: FactoryConfig, episode_id: str
+) -> CIRepairRetryContext | None:
+    """Snapshot the open pull request head and the CI result a person may retry (ADR-061).
+
+    Only a CI wait that ran out, or red CI with failed checks to repair, can be retried. A
+    pull request the factory merged, a cancelled run of CI or a failed read of CI has none.
+    """
+    if not run.pull_request_url or not run.commit_sha or run.merge_commit_sha:
+        return None
+    try:
+        report = store.load_artifact(run.id, CIReport)
+    except (FileNotFoundError, ValueError):
+        return None
+    waited = run.state is WorkflowState.CI_RUNNING and report.timed_out
+    names = [check.name for check in report.failed_checks]
+    red = run.state is WorkflowState.CI_DIAGNOSIS and report.overall != "CANCELLED" and bool(names)
+    if not (waited or red):
+        return None
+    names = [name for name in names if not contains_unsafe_content(name)[0]]
+    failed_checks = names[:MAX_CI_RETRY_CHECKS]
+    used = run.attempts_used(AttemptBudget.CI_REPAIR)
+    return CIRepairRetryContext(
+        pull_request_url=run.pull_request_url,
+        head_sha=run.commit_sha,
+        failed_checks=failed_checks,
+        repair_attempts_used=used,
+        timed_out=waited,
+        context_fingerprint=compute_ci_repair_retry_context_fingerprint(
+            run_id=run.id,
+            episode_id=episode_id,
+            pull_request_url=run.pull_request_url,
+            head_sha=run.commit_sha,
+            failed_checks=failed_checks,
+            repair_attempts_used=used,
+            timed_out=waited,
+        ),
+    )
+
+
 #: How a halt snapshots its decision context, one builder per resumable class.
 _CONTEXT_BUILDERS: dict[
     ResumeClassification,
@@ -462,6 +506,7 @@ _CONTEXT_BUILDERS: dict[
         build_findings_acceptance_context(run, episode_id=episode_id)
     ),
     ResumeClassification.SCOPE_APPROVAL: build_scope_approval_context,
+    ResumeClassification.CI_REPAIR_RETRY: build_ci_repair_retry_context,
 }
 
 

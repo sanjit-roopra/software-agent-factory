@@ -126,6 +126,7 @@ class ResumeClassification(StrEnum):
     ATTEMPT_GRANT = "ATTEMPT_GRANT"
     ACCEPT_FINDINGS = "ACCEPT_FINDINGS"
     SCOPE_APPROVAL = "SCOPE_APPROVAL"
+    CI_REPAIR_RETRY = "CI_REPAIR_RETRY"
     NOT_RESUMABLE = "NOT_RESUMABLE"
 
 
@@ -231,6 +232,11 @@ PUBLISH_FAILED_HALT_REASON = "could not publish the pull request:"
 #: The start of the halt reason of a run that used its implementation attempt budget.
 IMPLEMENTATION_BUDGET_HALT_REASON = "implementation attempt budget exhausted"
 
+#: The starts of the CI halt reasons a person may retry: the CI repair budget ran out, or
+#: the checks did not finish in time (ADR-061). Compared without regard to case.
+CI_REPAIR_BUDGET_HALT_REASON = "ci repair budget exhausted"
+CI_TIMEOUT_HALT_REASON = "ci checks were still pending"
+
 #: The next action when no reply can resume a run that stopped on unresolved decisions.
 UNRESOLVED_DECISIONS_REPLACE_ACTION = (
     "Inspect execution-plan.json, resolve the decisions, then start a replacement run."
@@ -320,6 +326,7 @@ class AcceptedReplyReceipt(ModelBase):
     attempt_grant_context_fingerprint: str | None = None
     findings_acceptance_context_fingerprint: str | None = None
     scope_approval_context_fingerprint: str | None = None
+    ci_repair_retry_context_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def _require_reply_source_fields(self) -> AcceptedReplyReceipt:
@@ -441,6 +448,23 @@ class ScopeApprovalContext(ModelBase):
     context_fingerprint: str = Field(min_length=64, max_length=64)
 
 
+#: The most failed check names a CI repair retry context keeps (ADR-061).
+MAX_CI_RETRY_CHECKS = 20
+
+
+class CIRepairRetryContext(ModelBase):
+    """The red or unfinished CI of an open pull request a person may retry (ADR-061)."""
+
+    pull_request_url: str = Field(min_length=1)
+    #: The pull request head CI ran on. A new head makes the retry stale.
+    head_sha: str = Field(min_length=40, max_length=64)
+    failed_checks: list[str] = Field(default_factory=list, max_length=MAX_CI_RETRY_CHECKS)
+    repair_attempts_used: int = Field(ge=0)
+    #: The checks did not finish in time: the retry watches CI again and grants nothing.
+    timed_out: bool = False
+    context_fingerprint: str = Field(min_length=64, max_length=64)
+
+
 class PlanDecisionAnswer(ModelBase):
     """One validated answer to a numbered plan decision."""
 
@@ -501,6 +525,7 @@ DashboardRequestAction = Literal[
     ResumeClassification.ATTEMPT_GRANT,
     ResumeClassification.ACCEPT_FINDINGS,
     ResumeClassification.SCOPE_APPROVAL,
+    ResumeClassification.CI_REPAIR_RETRY,
 ]
 DashboardRequestStatus = Literal["pending", "stale"]
 #: Why a run cannot take a resume. A dashboard request is marked stale with the same code.
@@ -636,6 +661,7 @@ class EscalationRecord(ModelBase):
     attempt_grant_context: AttemptGrantContext | None = None
     findings_acceptance_context: FindingsAcceptanceContext | None = None
     scope_approval_context: ScopeApprovalContext | None = None
+    ci_repair_retry_context: CIRepairRetryContext | None = None
     remote_resume_enabled: bool = False
     created_at: UtcDateTime = Field(default_factory=utc_now)
     updated_at: UtcDateTime = Field(default_factory=utc_now)

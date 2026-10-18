@@ -19,9 +19,9 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Self
 
-from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
-from .models import MAX_PLAN_DECISIONS as MAX_PLAN_DECISIONS
 from .models import (
+    CI_REPAIR_BUDGET_HALT_REASON,
+    CI_TIMEOUT_HALT_REASON,
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
     STALLED_HALT_REASON,
@@ -31,6 +31,8 @@ from .models import (
     EscalationStatus,
     HaltReasonCode,
 )
+from .models import EPISODE_ID_PATTERN as EPISODE_ID_PATTERN
+from .models import MAX_PLAN_DECISIONS as MAX_PLAN_DECISIONS
 
 if TYPE_CHECKING:
     from .config import EscalationConfig
@@ -158,8 +160,10 @@ def reply_closed_cause(
 
 #: Halt reasons the controller writes with a fixed prefix, and the code each maps to. An
 #: exact prefix comes before the word checks: a publish error text can hold "scope" or
-#: "attempt".
+#: "attempt", and a CI halt reason "budget".
 _PREFIX_CODES = (
+    (CI_REPAIR_BUDGET_HALT_REASON, HaltReasonCode.CI_INTERVENTION),
+    (CI_TIMEOUT_HALT_REASON, HaltReasonCode.CI_INTERVENTION),
     (STALLED_HALT_REASON, HaltReasonCode.STALLED),
     (STOPPED_HALT_REASON, HaltReasonCode.MANUAL_INSPECTION),
     (UNRESOLVED_DECISIONS_HALT_REASON, HaltReasonCode.UNRESOLVED_DECISIONS),

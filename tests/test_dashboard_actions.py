@@ -48,6 +48,7 @@ from software_agent_factory.escalation_protocol import ReplyPolicy
 from software_agent_factory.models import (
     AttemptBudget,
     AttemptGrantContext,
+    CIRepairRetryContext,
     Complexity,
     DashboardResumeRequest,
     DeliveryRetryContext,
@@ -76,6 +77,7 @@ from software_agent_factory.resume import (
 )
 from software_agent_factory.resume_classes import (
     compute_attempt_grant_context_fingerprint,
+    compute_ci_repair_retry_context_fingerprint,
     compute_findings_acceptance_context_fingerprint,
     compute_scope_approval_context_fingerprint,
 )
@@ -93,6 +95,7 @@ RETRY = ResumeClassification.DELIVERY_RETRY
 GRANT = ResumeClassification.ATTEMPT_GRANT
 ACCEPT = ResumeClassification.ACCEPT_FINDINGS
 WIDEN = ResumeClassification.SCOPE_APPROVAL
+REPAIR = ResumeClassification.CI_REPAIR_RETRY
 ORIGIN_HEADER = "Origin"
 CONTENT_TYPE = "Content-Type"
 HOST_HEADER = "Host"
@@ -126,6 +129,7 @@ RETRY_ACTION = "retry"
 GRANT_ACTION = "grant"
 ACCEPT_ACTION = "accept"
 WIDEN_ACTION = "widen"
+REPAIR_ACTION = "repair"
 
 
 # -- runs ---------------------------------------------------------------------------------
@@ -238,6 +242,22 @@ def _widen_context() -> ScopeApprovalContext:
     )
 
 
+def _repair_context() -> CIRepairRetryContext:
+    fields: dict[str, Any] = {
+        "pull_request_url": "https://github.com/acme/repo/pull/42",
+        "head_sha": "d" * 40,
+        "failed_checks": ["tests"],
+        "repair_attempts_used": 2,
+        "timed_out": False,
+    }
+    return CIRepairRetryContext(
+        **fields,
+        context_fingerprint=compute_ci_repair_retry_context_fingerprint(
+            run_id=RUN_ID, episode_id=EPISODE, **fields
+        ),
+    )
+
+
 def _run(
     kind: ResumeClassification = RISK,
     *,
@@ -255,6 +275,7 @@ def _run(
         "attempt_grant_context": _grant_context() if kind is GRANT else None,
         "findings_acceptance_context": _accept_context() if kind is ACCEPT else None,
         "scope_approval_context": _widen_context() if kind is WIDEN else None,
+        "ci_repair_retry_context": _repair_context() if kind is REPAIR else None,
     }
     escalation = EscalationRecord.model_validate({**fields, **record})
     return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
@@ -269,6 +290,7 @@ def _fingerprint(run: FactoryRun) -> str:
         or run.escalation.attempt_grant_context
         or run.escalation.findings_acceptance_context
         or run.escalation.scope_approval_context
+        or run.escalation.ci_repair_retry_context
     )
     assert context is not None
     return context.context_fingerprint
@@ -495,6 +517,16 @@ def test_a_scope_approval_is_accepted_and_stored(make_rig: RigFactory) -> None:
     assert (status, payload["status"]) == (202, "accepted")
     (stored,) = rig.requests()
     assert (stored.action, stored.context_fingerprint) == (WIDEN, _fingerprint(rig.run))
+
+
+def test_a_ci_repair_retry_is_accepted_and_stored(make_rig: RigFactory) -> None:
+    rig = make_rig(_run(REPAIR))
+
+    status, payload = rig.post(_path(REPAIR_ACTION), rig.body(), headers=rig.headers())
+
+    assert (status, payload["status"]) == (202, "accepted")
+    (stored,) = rig.requests()
+    assert (stored.action, stored.context_fingerprint) == (REPAIR, _fingerprint(rig.run))
 
 
 def test_a_findings_acceptance_for_a_changed_context_is_409(make_rig: RigFactory) -> None:

@@ -155,6 +155,12 @@ for example `(2)`, and the tab icon shows a dot.
   The factory checks the same work again, then reviews and publishes it. It
   makes no new attempt. If the work changed in the worktree since the stop, the
   service refuses. A new file outside the scope stops the run again.
+- For a run that CI stopped while its pull request is open, choose **Retry CI
+  repair**, then **Confirm CI repair retry**. If the checks did not finish in
+  time, the factory watches CI again. If CI failed, the factory makes one more
+  CI repair attempt on top of the budget and pushes the fix. If the pull request
+  was closed, merged or got a new commit since the stop, the service refuses. If
+  CI fails again, the run stops here again.
 
 The dashboard does not resume the run. It writes one request file in the run
 directory. The factory service reads it and reopens the run. The panel then
@@ -163,7 +169,9 @@ shows "Approved at <time>, queued for the factory service". An answer shows
 requested at <time>, queued for the factory service". A grant shows "One more
 attempt granted at <time>, queued for the factory service". An acceptance shows
 "Findings accepted at <time>, queued for the factory service". A scope approval
-shows "Wider scope approved at <time>, queued for the factory service". If `factory start` is not running,
+shows "Wider scope approved at <time>, queued for the factory service". A CI
+retry shows "CI repair retry requested at <time>, queued for the factory
+service". If `factory start` is not running,
 start it. The request waits until it does.
 
 #### When the service refuses a request
@@ -250,7 +258,8 @@ route chip, also for `FULL`.
 The dashboard cannot reconfigure anything. It can retry only publishing, and it
 can grant only one implementation attempt at a time. It can accept only the open
 findings of a review impasse. It can widen the scope only by the files listed in
-the panel, and only for that run.
+the panel, and only for that run. It can retry CI only on the commit CI stopped
+on, with one CI repair attempt at a time.
 Authority stays with the workflow controller and the factory service.
 
 It is built from the Python standard library. No framework, no npm, no bundler,

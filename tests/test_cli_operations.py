@@ -514,7 +514,7 @@ def test_dashboard_binds_loopback_on_the_default_port_and_prints_the_token_url(
     assert "http://127.0.0.1:8765/?token=test-token" in result.output
     assert (
         "loopback only. it can queue an approval, answers, a retry, a grant, an acceptance, "
-        "a scope approval, a stop or a note" in result.output
+        "a scope approval, a CI retry, a stop or a note" in result.output
     )
     assert server.served is True
     assert server.closed is True

@@ -515,11 +515,13 @@ def test_classify_halt_reason_not_resumable(reason: str, expected_code: str) -> 
         failure_reason=reason,
     )
     classification, code, summary, action = classify_halt_reason(run)
-    # A scope halt is resumable from the dashboard only, when it has a context (ADR-060).
-    scope = expected_code == "SCOPE_REVIEW"
-    assert classification is (
-        ResumeClassification.SCOPE_APPROVAL if scope else ResumeClassification.NOT_RESUMABLE
-    )
+    # A scope or CI halt is resumable from the dashboard only, when it has a context
+    # (ADR-060, ADR-061).
+    dashboard_only = {
+        "SCOPE_REVIEW": ResumeClassification.SCOPE_APPROVAL,
+        "CI_INTERVENTION": ResumeClassification.CI_REPAIR_RETRY,
+    }
+    assert classification is dashboard_only.get(expected_code, ResumeClassification.NOT_RESUMABLE)
     assert code == expected_code
     assert summary
     assert action

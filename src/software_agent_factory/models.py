@@ -12,11 +12,14 @@ from typing import Any, Literal, Self
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from software_agent_factory.escalation_models import (
+    CI_REPAIR_BUDGET_HALT_REASON,
+    CI_TIMEOUT_HALT_REASON,
     CONTEXT_FINGERPRINT_PATTERN,
     DASHBOARD_USER_LOGIN,
     EPISODE_ID_PATTERN,
     HALT_REASON_COPY,
     IMPLEMENTATION_BUDGET_HALT_REASON,
+    MAX_CI_RETRY_CHECKS,
     MAX_PLAN_DECISIONS,
     MAX_SCOPE_APPROVAL_PATHS,
     MAX_STEER_NOTE_CHARS,
@@ -29,6 +32,7 @@ from software_agent_factory.escalation_models import (
     AcceptedReplyReceipt,
     ActiveInvocationStatus,
     AttemptGrantContext,
+    CIRepairRetryContext,
     DashboardRequestStaleReason,
     DashboardResumeRequest,
     DeliveryRetryContext,
@@ -175,6 +179,10 @@ __all__ = [
     "AttemptGrantContext",
     "FindingsAcceptanceContext",
     "ScopeApprovalContext",
+    "CIRepairRetryContext",
+    "CI_REPAIR_BUDGET_HALT_REASON",
+    "CI_TIMEOUT_HALT_REASON",
+    "MAX_CI_RETRY_CHECKS",
     "IMPLEMENTATION_BUDGET_HALT_REASON",
     "DependencyEcosystem",
     "EPISODE_ID_PATTERN",

@@ -380,13 +380,22 @@ def ci_loop(controller: WorkflowController, run: FactoryRun, context: RunContext
         stop_reason = ci_stop_reason(controller, run, report)
         if stop_reason is not None:
             raise controller._stop(run, context, stop_reason)
-
-        repair_context = ci_repair_context(report)
-        run = controller.transition(run, WorkflowState.IMPLEMENTING)
-        run = controller._drive_to_pr_ready(run, context, AttemptBudget.CI_REPAIR, repair_context)
+        run = repair_ci(controller, run, context, report)
         if run.state is WorkflowState.DONE:
             return run
-        run = publish(controller, run, context)
+
+
+def repair_ci(
+    controller: WorkflowController, run: FactoryRun, context: RunContext, report: CIReport
+) -> FactoryRun:
+    """Repair a red CI result from ``CI_DIAGNOSIS`` on the CI repair budget and publish it."""
+    run = controller.transition(run, WorkflowState.IMPLEMENTING)
+    run = controller._drive_to_pr_ready(
+        run, context, AttemptBudget.CI_REPAIR, ci_repair_context(report)
+    )
+    if run.state is WorkflowState.DONE:
+        return run
+    return publish(controller, run, context)
 
 
 def ci_stop_reason(controller: WorkflowController, run: FactoryRun, report: CIReport) -> str | None:
@@ -399,7 +408,7 @@ def ci_stop_reason(controller: WorkflowController, run: FactoryRun, report: CIRe
             f"{check.name}={check.failure_category or 'UNKNOWN'}" for check in failed
         )
     used = run.attempts_used(AttemptBudget.CI_REPAIR)
-    if used >= controller._config.ci.repair_attempts:
+    if used >= controller._attempt_limit(run, AttemptBudget.CI_REPAIR):
         return controller._budget_exhausted_reason(AttemptBudget.CI_REPAIR, used)
     return None
 

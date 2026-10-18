@@ -1,15 +1,13 @@
 """Controller-owned GitHub escalation notices and authorized human reply loop.
 
-Implements the core escalation and authorized human reply loop:
-- When a run enters ``NEEDS_HUMAN``, the factory posts a concise, safe status
-  comment on the persisted open factory PR if available, falling back to the
-  source GitHub issue reference.
+- When a run enters ``NEEDS_HUMAN``, the factory posts a concise, safe status comment on
+  the persisted open factory PR if available, else on the source GitHub issue.
 - An authorized human contributor may reply on that exact thread with:
   ``@factory resume v1 run=<run-id> episode=<opaque-id>``
 - The controller validates the comment, author, timing, target, and episode,
   records a durable decision receipt, and reopens the run (see ``RESUME_CLASSES``).
-- Comment text never enters agent prompts and cannot alter models, commands,
-  paths, URLs, retry policy, or arbitrary workflow state.
+- Comment text never enters agent prompts and cannot change models, commands, paths,
+  URLs, retry policy or workflow state.
 """
 
 from __future__ import annotations
@@ -296,6 +294,8 @@ def _resume_classification(run: FactoryRun, code: HaltReasonCode) -> ResumeClass
         return ResumeClassification.RISK_APPROVAL
     if code is HaltReasonCode.SCOPE_REVIEW:
         return ResumeClassification.SCOPE_APPROVAL
+    if code is HaltReasonCode.CI_INTERVENTION:
+        return ResumeClassification.CI_REPAIR_RETRY
     publish_failed = reason.startswith(PUBLISH_FAILED_HALT_REASON) and not run.pull_request_url
     if publish_failed and run.reviewed_tree_sha:
         return ResumeClassification.DELIVERY_RETRY
