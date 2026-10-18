@@ -71,6 +71,8 @@ _DASHBOARD_REQUEST_PREFIX = "dashboard-approval-"
 _STOP_REQUEST_NAME = "stop-request.json"
 #: The one waiting steer note a run can have (ADR-047).
 _STEER_NOTE_NAME = "steer-note.json"
+#: The last operator escalation of a run and how it went (ADR-055).
+OPERATOR_ESCALATION_FILENAME = "operator-escalation.json"
 #: A request file name carries this many leading hex characters of its context fingerprint.
 _FINGERPRINT_PREFIX_CHARS = 16
 

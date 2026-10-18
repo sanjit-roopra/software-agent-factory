@@ -82,7 +82,7 @@ This is the only thing in the factory that ever opens a socket. Nothing in
 `factory run` or `factory start` listens on a port.
 
 - Binds `127.0.0.1` and nothing else.
-- Reads with `GET`. The only writes are the two actions below.
+- Reads with `GET`. The only writes are the actions below.
 - Requires a token generated for that process. The tokenized URL is printed to
   stdout once and never written to the log.
 - Returns the page and sets a session cookie on the first request for that URL.
@@ -212,7 +212,21 @@ one route higher on the same branch and pushes to the same pull request. It uses
 the repository, runtime and models it started with. A run that a process works on, or whose change is merged, cannot
 escalate. See [factory escalate](../reference/cli.md#factory-escalate).
 
-The dashboard cannot reconfigure anything, and it can retry only publishing.
+### Escalate a run
+
+A run that can escalate shows **Escalate this run** on its page, with a note
+box. The button names the new route, for example **Escalate to CRITIQUE**. Type
+what to change, then select it. The dashboard starts `factory escalate` for the
+run as its own process. You do not need `factory start` for this.
+
+A line at the top of the run page then shows the escalation, for example
+"Escalated SINGLE → CRITIQUE · 2026-10-17 18:42 UTC · Use the shared
+validator. · running". It ends in "finished", or in "failed:" and the error,
+for example when a process holds the workspace lock. The run list marks the run
+"escalating", "escalated" or "escalation failed". The run page always shows the
+route chip, also for `FULL`.
+
+The dashboard cannot reconfigure anything. It can retry only publishing.
 Authority stays with the workflow controller and the factory service.
 
 It is built from the Python standard library. No framework, no npm, no bundler,

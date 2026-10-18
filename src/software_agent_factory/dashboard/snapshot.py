@@ -169,6 +169,19 @@ class SteerRequester(Protocol):
     def __call__(self, run_id: str, note: str, created_at: datetime) -> StopRequestResult: ...
 
 
+#: What an escalation request comes to: started, the run is gone, or it cannot escalate.
+EscalateRequestResult = Literal["started", "run_missing", "not_escalatable"]
+
+
+class EscalateRequester(Protocol):
+    """Provider that starts ``factory escalate`` for a run with a note (ADR-055).
+
+    It never changes a run itself: the started command does, under the workspace lock.
+    """
+
+    def __call__(self, run_id: str, note: str) -> EscalateRequestResult: ...
+
+
 #: The real ``build_monitoring_snapshot`` (``observability.py``) rejects
 #: ``limit <= 0``, so ``/api/summary`` -- which only needs counts/health, not
 #: the run page -- must still request at least one row rather than zero.

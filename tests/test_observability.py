@@ -101,7 +101,7 @@ from software_agent_factory.observability import (
     scan_readable_runs,
     summarize_usage,
 )
-from software_agent_factory.store import FileRunStore
+from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
 try:
     import fcntl
@@ -1341,7 +1341,10 @@ def _resolved_facts(snapshot: MonitoringSnapshot) -> list[tuple[Any, ...]]:
 # The real FileRunStore still opens every artifact file underneath.
 # double-waiver: B1 — FileRunStore opens run artifact files; the subclass only counts reads
 class _ArtifactReadCountingStore(FileRunStore):
-    """A run store that counts how often each artifact of each run is read."""
+    """A run store that counts how often each artifact of each run is read.
+
+    The operator escalation changes while a run escalates, so every page reads it again.
+    """
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__(data_dir)
@@ -1355,7 +1358,8 @@ class _ArtifactReadCountingStore(FileRunStore):
         *,
         attempt: int | None = None,
     ) -> Any:
-        self.reads[(run_id, artifact_type.__name__)] += 1
+        if filename != OPERATOR_ESCALATION_FILENAME:
+            self.reads[(run_id, artifact_type.__name__)] += 1
         return super().load_artifact(run_id, artifact_type, filename, attempt=attempt)
 
 

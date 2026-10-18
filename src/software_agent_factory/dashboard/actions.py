@@ -1,4 +1,4 @@
-"""The writes the dashboard asks for: approve, answer, retry publishing, stop and steer.
+"""The writes the dashboard asks for: approve, answer, retry publishing, stop, steer, escalate.
 
 ``POST /api/runs/<id>/approve``, ``/answer`` and ``/retry`` end in one create-only request file
 that the factory service reads later. This module checks the body and the run, and hands the
@@ -9,7 +9,8 @@ request that passes here is one the service would accept now. It imports only th
 functions of ``resume``: the write functions stay with the service, and a test checks it.
 
 ``POST /api/runs/<id>/cancel`` hands a stop request to the injected ``StopRequester``, and
-``POST /api/runs/<id>/steer`` hands a note to the injected ``SteerRequester``.
+``POST /api/runs/<id>/steer`` hands a note to the injected ``SteerRequester``, and
+``POST /api/runs/<id>/escalate`` hands one to the injected ``EscalateRequester``.
 
 Transport checks (route, ``Host``, ``Origin``, token, content type, length, JSON) live in
 ``handler.py``. Everything here starts with a decoded JSON body.
@@ -42,6 +43,7 @@ from ..resume import (
 )
 from .responses import ConflictReason, WriteRejected
 from .snapshot import (
+    EscalateRequester,
     ResumeRequester,
     ResumeRunReader,
     SteerRequester,
@@ -86,6 +88,8 @@ class ResumeActions:
     stopper: StopRequester | None = None
     #: Stores a steer note (ADR-047). Without it the steer route is not routed.
     steerer: SteerRequester | None = None
+    #: Starts an operator escalation (ADR-055). Without it the escalate route is not routed.
+    escalator: EscalateRequester | None = None
 
 
 def _bad_request(error: str, *, decision: int | None = None) -> WriteRejected:
@@ -229,6 +233,17 @@ def accept_stop(actions: ResumeActions, raw_run_id: str, body: object) -> dict[s
     return _accepted(actions.stopper(raw_run_id, now), now)
 
 
+def _note(body: object) -> str:
+    """The cleaned note of a ``{"note": "..."}`` body, or ``400``."""
+    if not isinstance(body, dict) or set(body) != {"note"}:
+        raise _bad_request("the body must be a JSON object with one note")
+    raw_note = body["note"]
+    note = clean_steer_note(raw_note) if isinstance(raw_note, str) else None
+    if note is None:
+        raise _bad_request("the note is empty, too long or holds a secret")
+    return note
+
+
 def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[str, object]:
     """Check one steer note and store it. Returns the ``202`` body.
 
@@ -236,12 +251,7 @@ def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[
     holds a secret is a ``400``. A finished run is a ``409 not_active``, and a note that is
     already waiting is a ``409 existing_request``.
     """
-    if not isinstance(body, dict) or set(body) != {"note"}:
-        raise _bad_request("the body must be a JSON object with one note")
-    raw_note = body["note"]
-    note = clean_steer_note(raw_note) if isinstance(raw_note, str) else None
-    if note is None:
-        raise _bad_request("the note is empty, too long or holds a secret")
+    note = _note(body)
     if not is_valid_run_id(raw_run_id):
         raise _bad_request(_BAD_RUN_ID)
     if actions.steerer is None:
@@ -250,8 +260,26 @@ def accept_steer(actions: ResumeActions, raw_run_id: str, body: object) -> dict[
     return _accepted(actions.steerer(raw_run_id, note, now), now)
 
 
+def accept_escalate(actions: ResumeActions, raw_run_id: str, body: object) -> dict[str, object]:
+    """Check one escalation note and start the escalation. Returns the ``202`` body.
+
+    The body and its ``400`` are the steer ones. A run that cannot escalate is a
+    ``409 not_escalatable``.
+    """
+    note = _note(body)
+    if not is_valid_run_id(raw_run_id):
+        raise _bad_request(_BAD_RUN_ID)
+    if actions.escalator is None:
+        raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
+    now = actions.clock()
+    result = actions.escalator(raw_run_id, note)
+    if result == "not_escalatable":
+        raise _conflict("not_escalatable")
+    return _accepted(result, now)
+
+
 def _accepted(result: str, now: datetime) -> dict[str, object]:
-    """The ``202`` body of a stored stop or steer request, or the refusal it comes to."""
+    """The ``202`` body of a stop, steer or escalate request, or the refusal it comes to."""
     if result == "run_missing":
         raise WriteRejected(HTTPStatus.NOT_FOUND, _NOT_FOUND)
     if result == "finished":

@@ -30,6 +30,7 @@ from .models import (
     DeliveryRetryContext,
     EscalationRecord,
     EscalationStatus,
+    ExecutionRoute,
     FactoryRun,
     PlanDecisionAnswer,
     PlanDecisionAnswers,
@@ -113,6 +114,41 @@ def clean_steer_note(text: str) -> str | None:
     if REDACTION_PLACEHOLDER in note or contains_secret(note):
         return None
     return note
+
+
+#: States ``factory escalate`` takes a run out of, when nothing works on it (ADR-055).
+_ESCALATABLE_STATES: frozenset[WorkflowState] = frozenset(
+    {
+        WorkflowState.PR_READY,
+        WorkflowState.PR_CREATED,
+        WorkflowState.CI_RUNNING,
+        WorkflowState.CI_DIAGNOSIS,
+        WorkflowState.NEEDS_HUMAN,
+        WorkflowState.DONE,
+    }
+)
+#: The route an operator escalation moves a run to (ADR-055). ``FULL`` stays ``FULL``.
+_ESCALATION_ROUTES: dict[ExecutionRoute, ExecutionRoute] = {
+    ExecutionRoute.SINGLE: ExecutionRoute.CRITIQUE,
+    ExecutionRoute.CRITIQUE: ExecutionRoute.FULL,
+    ExecutionRoute.FULL_REVIEW: ExecutionRoute.FULL,
+    ExecutionRoute.MANUAL_TRIAGE: ExecutionRoute.FULL,
+    ExecutionRoute.FULL: ExecutionRoute.FULL,
+}
+
+
+def escalation_route(run: FactoryRun) -> ExecutionRoute | None:
+    """The route ``factory escalate`` moves ``run`` to, or ``None`` when it cannot escalate.
+
+    It does not check for a live process: the workspace lock does that (ADR-055).
+    """
+    if (
+        run.state not in _ESCALATABLE_STATES
+        or run.merge_commit_sha is not None
+        or run.route_decision is None
+    ):
+        return None
+    return _ESCALATION_ROUTES[run.route_decision.effective_route]
 
 
 def build_plan_answers(

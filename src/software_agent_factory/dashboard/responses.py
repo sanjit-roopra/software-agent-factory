@@ -21,6 +21,7 @@ ConflictReason = Literal[
     "expired",
     "existing_request",
     "not_active",
+    "not_escalatable",
 ]
 
 
