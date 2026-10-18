@@ -3,7 +3,7 @@
 It serves one agent call's stored transcript: a one-line preview of each of the last
 :data:`MAX_EVENTS` events, and the last :data:`TAIL_CHARS` characters of the raw text.
 The text goes through ``redact_secrets`` again before any cut, and only the last
-:data:`MAX_TRANSCRIPT_CHARS` characters are read. ``truncated`` says that events were
+:data:`MAX_TRANSCRIPT_CHARS` characters are kept. ``truncated`` says that events were
 left out. The text comes from a :class:`~.snapshot.RunTranscriptProvider`, never from a
 store this package reads itself.
 """

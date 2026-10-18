@@ -507,9 +507,9 @@ to see what a call did.
 - The run detail also names the runtime that served each call, from its usage, and
   sends the fallback reason (ADR-045) redacted and cut.
 - `GET /api/runs/<id>/calls/<n>/transcript` serves one call's transcript when a person
-  opens it from a step. It reads at most the last 1,000,000 characters and runs
-  `redact_secrets` again first. It sends one line of up to 400 characters for each of the
-  last 500 events. It also sends the last 16,000 characters of the raw text, and
+  opens it from a step. It runs `redact_secrets` again first, then keeps at most the last
+  1,000,000 characters. It sends one line of up to 400 characters for each of the last
+  500 events. It also sends the last 16,000 characters of the raw text, and
   `truncated` when events were left out. `<n>` is 1 to 9999 with no leading zero.
   Anything else is 404.
   The page does not poll it. Amended on 2026-10-19.

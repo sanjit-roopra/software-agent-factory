@@ -179,18 +179,21 @@ def _event_text(event: dict[str, Any]) -> str:
         if not isinstance(source, dict):
             continue
         for key in ("result", "content", "text", "message"):
-            value = source.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-            if isinstance(value, list):
-                texts = [
-                    b["text"]
-                    for b in value
-                    if isinstance(b, dict) and isinstance(b.get("text"), str)
-                ]
-                if texts:
-                    return " ".join(texts)
+            text = _text_of(source.get(key))
+            if text:
+                return text
     return ""
+
+
+def _text_of(value: Any) -> str:
+    """A non-blank string, or the joined ``text`` of a list of content blocks."""
+    if isinstance(value, str):
+        return value if value.strip() else ""
+    if not isinstance(value, list):
+        return ""
+    return " ".join(
+        b["text"] for b in value if isinstance(b, dict) and isinstance(b.get("text"), str)
+    )
 
 
 def _one_line(value: str, limit: int = PREVIEW_CHARS) -> str:

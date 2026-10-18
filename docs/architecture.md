@@ -1592,8 +1592,8 @@ with its added and removed line counts. `?attempt=n` picks the patch of one
 attempt. The file text stops at 256 KB, and a file past that keeps only its
 counts. Each step of the call list has a View transcript button. It asks
 `GET /api/runs/<id>/calls/<n>/transcript` once for one line per event, at most
-the last 500, and the end of the raw text (ADR-050). A finished run also shows a Result card with the files, the lines, the
-run time, the checks, the branch and the pull request. All of these redact
+the last 500, and the end of the raw text (ADR-050). A finished run also shows
+a Result card with the files, the lines, the run time, the checks, the branch and the pull request. All of these redact
 before they cut, and each has its own allowlist (ADR-047). A run
 that does not exist, or whose id is not even shaped like one, is a 404.
 
