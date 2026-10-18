@@ -37,6 +37,7 @@ from .escalation_protocol import (
     ReplyPolicy,
     format_answer_command,
     format_resume_command,
+    halt_code_for_reason,
     reply_closed_cause,
 )
 from .github import (
@@ -51,9 +52,6 @@ from .models import (
     HALT_REASON_COPY,
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
-    STALLED_HALT_REASON,
-    STOPPED_HALT_REASON,
-    UNRESOLVED_DECISIONS_HALT_REASON,
     AcceptedReplyReceipt,
     DeliveryRetryContext,
     EscalationRecord,
@@ -527,13 +525,6 @@ def _load_optional(store: FileRunStore | None, run_id: str, artifact_type: type[
         return None
 
 
-#: Halt reasons the controller writes with a fixed prefix, and the code each maps to.
-_PREFIX_HALTS = (
-    (STALLED_HALT_REASON, HaltReasonCode.STALLED),
-    (STOPPED_HALT_REASON, HaltReasonCode.MANUAL_INSPECTION),
-)
-
-
 def classify_halt_reason(
     run: FactoryRun,
     store: FileRunStore | None = None,
@@ -554,39 +545,30 @@ def classify_halt_reason(
     if _load_optional(store, run.id, ReviewImpasse) is not None:
         return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.REVIEW_IMPASSE)
 
-    reason = (run.failure_reason or "").lower()
-    prefix_code = next((code for prefix, code in _PREFIX_HALTS if reason.startswith(prefix)), None)
-    if prefix_code is not None:
-        return _halt(ResumeClassification.NOT_RESUMABLE, prefix_code)
-    if reason.startswith(UNRESOLVED_DECISIONS_HALT_REASON):
+    reason = run.failure_reason or ""
+    code = halt_code_for_reason(reason)
+    if code is HaltReasonCode.UNRESOLVED_DECISIONS:
         plan = _load_optional(store, run.id, ExecutionPlan)
         return (
             ResumeClassification.PLAN_DECISION,
-            HaltReasonCode.UNRESOLVED_DECISIONS,
-            unresolved_decisions_summary(unresolved_decisions_count(plan, reason)),
+            code,
+            unresolved_decisions_summary(unresolved_decisions_count(plan, reason.lower())),
             _GITHUB_REPLY_ACTION,
         )
+    return _halt(_resume_classification(run, code), code)
+
+
+def _resume_classification(run: FactoryRun, code: HaltReasonCode) -> ResumeClassification:
+    """How a halt with ``code``, other than a plan decision, can resume."""
+    if code is HaltReasonCode.RISK_APPROVAL:
+        return ResumeClassification.RISK_APPROVAL
     if (
-        reason.startswith(PUBLISH_FAILED_HALT_REASON)
+        (run.failure_reason or "").lower().startswith(PUBLISH_FAILED_HALT_REASON)
         and run.pull_request_url is None
         and run.reviewed_tree_sha
     ):
-        # The prefix is exact, so it comes before the word checks: an error text can hold
-        # "scope" or "attempt".
-        return _halt(ResumeClassification.DELIVERY_RETRY, HaltReasonCode.DELIVERY_INTERVENTION)
-    if "scope" in reason:
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.SCOPE_REVIEW)
-    if re.fullmatch(r"risk r[23] requires human approval", reason):
-        return _halt(ResumeClassification.RISK_APPROVAL, HaltReasonCode.RISK_APPROVAL)
-    if "budget" in reason or "attempt" in reason:
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED)
-    if "ci " in reason or reason.startswith("ci"):
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.CI_INTERVENTION)
-    if any(term in reason for term in ("publish", "pull request", "merge", "permission")):
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.DELIVERY_INTERVENTION)
-    if any(term in reason for term in ("abandon", "interrupt", "workspace")):
-        return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.RECOVERY_INTERVENTION)
-    return _halt(ResumeClassification.NOT_RESUMABLE, HaltReasonCode.MANUAL_INSPECTION)
+        return ResumeClassification.DELIVERY_RETRY
+    return ResumeClassification.NOT_RESUMABLE
 
 
 def build_escalation_comment(

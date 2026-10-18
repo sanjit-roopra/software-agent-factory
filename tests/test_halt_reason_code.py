@@ -10,6 +10,7 @@ import pytest
 from software_agent_factory.dashboard.next_step import REASON_SENTENCES
 from software_agent_factory.dashboard.sanitize import sanitize_run_detail
 from software_agent_factory.escalation import classify_halt_reason
+from software_agent_factory.escalation_protocol import halt_code_for_reason
 from software_agent_factory.models import (
     HALT_REASON_COPY,
     STALLED_HALT_REASON,
@@ -66,6 +67,16 @@ CLASSIFIED_REASONS = [
         HaltReasonCode.MANUAL_INSPECTION,
     ),
 ]
+#: Reasons that hold the words of more than one code. The first match wins.
+MIXED_REASONS = [
+    ("scope drift needs approval", HaltReasonCode.SCOPE_REVIEW),
+    ("risk r2 requires human approval; scope drift", HaltReasonCode.SCOPE_REVIEW),
+    (
+        "could not publish the pull request: scope check after 3 attempts",
+        HaltReasonCode.DELIVERY_INTERVENTION,
+    ),
+    ("ci failed after the attempt budget", HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED),
+]
 COPIED_REASONS = [
     case for case in CLASSIFIED_REASONS if case[1] is not HaltReasonCode.UNRESOLVED_DECISIONS
 ]
@@ -108,6 +119,33 @@ def test_classify_halt_reason_returns_the_exact_code(reason: str, code: HaltReas
     _, actual, _, _ = classify_halt_reason(_halted(reason))
 
     assert actual is code
+
+
+@pytest.mark.parametrize(("reason", "code"), CLASSIFIED_REASONS + MIXED_REASONS)
+def test_the_notice_and_the_run_view_select_the_same_code(
+    tmp_path: Path, reason: str, code: HaltReasonCode
+) -> None:
+    _, notice_code, _, _ = classify_halt_reason(_halted(reason))
+    guidance = _build_run_guidance(FileRunStore(tmp_path), _halted(reason))
+
+    assert guidance is not None
+    actual = (halt_code_for_reason(reason), notice_code, guidance.reason_code)
+    assert actual == (code, code, code)
+
+
+def test_run_guidance_prefers_the_code_the_escalation_recorded(tmp_path: Path) -> None:
+    run = _halted("workspace was abandoned").model_copy(
+        update={
+            "escalation": EscalationRecord(
+                episode_id="ep-1", reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
+            )
+        }
+    )
+
+    guidance = _build_run_guidance(FileRunStore(tmp_path), run)
+
+    assert guidance is not None
+    assert guidance.reason_code is HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED
 
 
 @pytest.mark.parametrize(("reason", "code"), COPIED_REASONS)
