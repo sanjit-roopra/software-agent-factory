@@ -362,6 +362,7 @@ def _role_instructions(
 - Make the narrowest change that meets the acceptance criteria.
 - Reuse existing mechanisms. Do not do unrelated cleanup.
 - Treat sibling-task constraints as hard scope boundaries.
+- Do not skip tests, or add lint or type suppressions, to make checks pass.
 - Stop when the required behavior and configured checks pass.
 - Return ChangeSet metadata only."""
     if role == "TESTER":
@@ -384,6 +385,8 @@ def _role_instructions(
 - Report work outside the work item only when it harms the current change.
 - SIMPLICITY means a new file, class, layer, or option inside the work item that no
   acceptance criterion needs. Report it as a blocker. Name the simpler change.
+- Report a new test skip or lint or type suppression that the task does not need as a
+  blocker.
 - Cite each blocker with exact paths and current line ranges.
 - Leave legacy string concern fields empty. Use typed finding fields.
 - Put non-blocking improvements only in suggested_changes."""
