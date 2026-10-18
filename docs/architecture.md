@@ -1284,6 +1284,13 @@ allowed, so growth is shown instead. The PR body and the dashboard plan view
 give the changed-file count beside the estimate. They also list the changed
 files outside the expected modules.
 
+Suppressions and skips are shown the same way (ADR-056). After the verify
+commands pass, the factory counts markers such as `# noqa`, `type: ignore`,
+`pytest.mark.skip` and `eslint-disable` on the added lines of the diff. The
+count and the lines are one more check in the verification report, which the
+tester, the reviewer and the dashboard checks view show. The PR body lists each
+place and marker. The scan never fails a run.
+
 Later add:
 - public API detection
 - authentication/authorization changes

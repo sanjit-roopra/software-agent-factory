@@ -46,6 +46,7 @@ from .models import (
 )
 from .mutation_gate import MUTATION_CHECK_COMMAND
 from .review_lenses import ReviewLens, render_review_lenses, select_review_lenses
+from .suppression_scan import SUPPRESSION_SCAN_COMMAND
 from .writing_policy import writing_limits_text
 
 type RoleName = AgentRole | str
@@ -781,15 +782,14 @@ def summarize_command_result(
         "duration_seconds": check.duration_seconds,
     }
     is_success = check.exit_code == 0 and not check.timed_out
-    # The mutation check passes but lists survivors the TESTER and REVIEWER must read.
-    hide_output = is_success and not check.command.startswith(MUTATION_CHECK_COMMAND)
+    # These checks pass but list what the TESTER and REVIEWER must read.
+    shown = (MUTATION_CHECK_COMMAND, SUPPRESSION_SCAN_COMMAND)
+    hide_output = is_success and not check.command.startswith(shown)
     test_counts = parse_test_counts(check.stdout, check.stderr)
     if test_counts:
         summary["test_counts"] = test_counts
     collection_errors = parse_collection_errors(
-        check.stdout,
-        check.stderr,
-        limit=max_collection_errors,
+        check.stdout, check.stderr, limit=max_collection_errors
     )
     if collection_errors:
         summary["collection_errors"] = collection_errors

@@ -974,6 +974,21 @@ def test_build_pr_body_shows_scope_growth_against_the_plan() -> None:
     assert "## Outside the planned modules\n- `docs/app.md`\n- `README.md`" in body
 
 
+def test_build_pr_body_lists_suppressions_and_skips_added() -> None:
+    body = build_pr_body(
+        work_item=_work_item(),
+        specification=None,
+        plan=None,
+        changed_files=["src/app.py"],
+        suppressions=["`src/app.py:3`: `# noqa`"],
+        verification=None,
+        review=None,
+        run_id="RUN-suppressions",
+    )
+
+    assert "## Suppressions and skips added\n- `src/app.py:3`: `# noqa`\n" in body
+
+
 def test_build_pr_body_discloses_controller_accepted_findings() -> None:
     acceptance = ReviewAcceptance(
         snapshot=3,

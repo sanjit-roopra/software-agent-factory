@@ -193,13 +193,10 @@ from .resume import (
     receipt_approves_risk_context,
 )
 from .revert_check import revert_check
-from .routing import (
-    ModelRouter,
-    derive_named_paths,
-    determine_route,
-)
+from .routing import ModelRouter, derive_named_paths, determine_route
 from .store import FileRunStore
 from .subprocess_utils import kill_thread_children, release_thread
+from .suppression_scan import suppression_items, suppression_scan
 from .telemetry import (
     count_operation,
     measure_operation,
@@ -3400,6 +3397,7 @@ class WorkflowController:
             revert_check(
                 self._command_runner, context.workspace, evidence, verify, self._config.repository
             ),
+            suppression_scan(evidence.diff),
         )
         return result.with_checks(check for check in advisory if check is not None)
 
@@ -4048,6 +4046,7 @@ class WorkflowController:
             specification=context.specification,
             plan=context.execution_plan,
             changed_files=changed_files,
+            suppressions=suppression_items(context.latest_evidence),
             verification=context.latest_verification,
             test_report=context.latest_test_report,
             review=context.latest_review,
