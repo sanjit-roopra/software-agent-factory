@@ -136,12 +136,14 @@ def test_a_pi_call_reports_its_tool_calls_while_it_runs(tmp_path: Path) -> None:
         PiConfig(), data_dir=tmp_path, process_factory=lambda command, cwd, env: process
     )
     seen: list[dict[str, str]] = []
+    outputs: list[None] = []
 
-    with live_tool_calls(seen.append):
+    with live_tool_calls(seen.append, lambda: outputs.append(None)):
         result = runtime.run(make_request(AgentRole.IMPLEMENTER, workspace_path=str(workspace)))
 
     assert result.success is True
     assert seen == [{"name": "read", "preview": "src/a.py"}]
+    assert len(outputs) >= 2  # each pi event counts as output for the silence check
 
 
 # -- the workflow keeps the latest tool calls on the active call --------------------

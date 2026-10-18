@@ -2,7 +2,9 @@
 
 An agent call, the verify commands, the advisory checks and the CI wait can each
 take many minutes. :func:`watched` keeps the run's lease heartbeat fresh during
-that work, so the scheduler does not take a healthy run for a stalled one. It
+that work, so the scheduler does not take a healthy run for a stalled one. During
+an agent call the heartbeat goes on only while the agent prints output or starts
+tools, so an agent that hangs in silence looks stalled (ADR-048). It
 also looks for a stop request, and kills the processes the run's thread started
 when it finds one, so a stop does not wait for a long command to end.
 """
@@ -14,6 +16,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .models import FactoryRun, utc_now
@@ -33,15 +36,32 @@ STOP_POLL_INTERVAL_SECONDS = 2.0
 LIVE_TOOL_CALLS = 20
 
 
-@contextmanager
-def live_activity(run: FactoryRun) -> Iterator[threading.Event]:
-    """Keep the running agent's tool calls and output time on the active call (dashboard X6).
+@dataclass(frozen=True)
+class LiveSignals:
+    """What the running agent did since the heartbeat last looked."""
 
-    Yields the event that is set when a new tool call is on the active call.
-    """
-    changed = threading.Event()
-    with live_tool_calls(lambda call: note_tool_call(run, call, changed), lambda: note_output(run)):
-        yield changed
+    #: Set when a new tool call is on the active call.
+    changed: threading.Event = field(default_factory=threading.Event)
+    #: Set when the agent printed a line or started a tool; set at the start too.
+    heard: threading.Event = field(default_factory=threading.Event)
+
+
+@contextmanager
+def live_activity(run: FactoryRun) -> Iterator[LiveSignals]:
+    """Keep the running agent's tool calls and output time on the active call (dashboard X6)."""
+    live = LiveSignals()
+    live.heard.set()
+
+    def on_tool_call(call: dict[str, str]) -> None:
+        live.heard.set()
+        note_tool_call(run, call, live.changed)
+
+    def on_output() -> None:
+        live.heard.set()
+        note_output(run)
+
+    with live_tool_calls(on_tool_call, on_output):
+        yield live
 
 
 def note_tool_call(run: FactoryRun, call: dict[str, str], changed: threading.Event) -> None:
@@ -73,12 +93,13 @@ def watched(
     controller: WorkflowController,
     run: FactoryRun,
     timeout_seconds: int,
-    changed: threading.Event | None = None,
+    live: LiveSignals | None = None,
 ) -> Iterator[None]:
     """Write heartbeats on ``run`` and honor a stop request while the body runs.
 
     The heartbeat stops once the body outlives ``timeout_seconds``, so work that
-    ignores its own timeout still looks stalled to the service. When a stop or a
+    ignores its own timeout still looks stalled to the service. With ``live``, a beat
+    is written only when the agent was heard since the last beat. When a stop or a
     stall cancel killed the body's processes, the run halts or raises
     :class:`~software_agent_factory.workflow.RunCancelledError` after the body.
     """
@@ -87,7 +108,7 @@ def watched(
     thread_id = threading.get_ident()
     beat = threading.Thread(
         target=heartbeat,
-        args=(controller, run, stop, timeout_seconds, thread_id, changed, killed),
+        args=(controller, run, stop, timeout_seconds, thread_id, live, killed),
         name=f"heartbeat-{run.id}",
         daemon=True,
     )
@@ -115,15 +136,17 @@ def heartbeat(
     stop: threading.Event,
     timeout_seconds: int,
     watched_thread: int | None = None,
-    changed: threading.Event | None = None,
+    live: LiveSignals | None = None,
     killed: threading.Event | None = None,
 ) -> None:
     """Persist a heartbeat on ``run`` until ``stop`` is set or ``timeout_seconds`` pass.
 
     Between beats it looks for a stop request, and kills the processes of
-    ``watched_thread`` when it finds one. When ``changed`` is set, a new tool call is
-    on the active call, and the run is saved at the next poll, not the next beat. The
-    watched thread changes only ``run.active_invocation`` meanwhile.
+    ``watched_thread`` when it finds one. When ``live.changed`` is set, a new tool call
+    is on the active call, and the run is saved at the next poll, not the next beat.
+    With ``live``, a beat is skipped when the agent was not heard since the last one,
+    so the scheduler's stall timeout counts the agent's silence. The watched thread
+    changes only ``run.active_invocation`` meanwhile.
     """
     interval = controller.heartbeat_interval_seconds
     started = last_beat = time.monotonic()
@@ -134,9 +157,12 @@ def heartbeat(
             return
         if watched_thread is not None:
             _kill_on_stop_request(controller, run, watched_thread, killed)
-        if _take(changed) or now_monotonic - last_beat >= interval:
-            last_beat = now_monotonic
+        if live is not None and _take(live.changed):
             write_heartbeat(controller, run)
+        elif now_monotonic - last_beat >= interval:
+            last_beat = now_monotonic
+            if live is None or _take(live.heard):
+                write_heartbeat(controller, run)
 
 
 def _kill_on_stop_request(

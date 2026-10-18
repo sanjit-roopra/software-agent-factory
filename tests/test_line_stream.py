@@ -141,7 +141,7 @@ def test_each_line_stamps_the_last_output_time_on_the_active_call() -> None:
     )
     process = _child(_printer(["plain text", _tool_use("Edit", file_path="b.py")]))
 
-    with live_activity(run) as changed:
+    with live_activity(run) as live:
         stream_process(process, timeout_seconds=30)
 
     active = run.active_invocation
@@ -149,7 +149,8 @@ def test_each_line_stamps_the_last_output_time_on_the_active_call() -> None:
     assert active.last_output_at is not None
     assert active.last_output_at > started
     assert active.recent_tool_calls == [{"name": "Edit", "preview": "b.py"}]
-    assert changed.is_set()
+    assert live.changed.is_set()
+    assert live.heard.is_set()
 
 
 def test_a_claude_code_call_reports_its_tools_before_it_ends(tmp_path: Path) -> None:

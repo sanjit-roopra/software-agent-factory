@@ -42,6 +42,13 @@ Two bounds worth knowing:
   `scheduler.stall_timeout_seconds`.
 - `--max-scanned-runs` (default `1000`) caps how many run files one call parses.
 
+A run that shows no activity for `scheduler.stall_timeout_seconds` is stalled.
+While a check or a CI wait runs, the run writes a heartbeat every 30 seconds.
+While an agent works, the run writes a heartbeat only when the agent prints output
+or starts a tool. So an agent that hangs and prints nothing is stalled after that time.
+The service stops a stalled run. An unattended run continues under its own run id.
+Any other run halts in `NEEDS_HUMAN` as `STALLED`.
+
 A scan that was truncated, or that hit an unreadable run, reports `DEGRADED`
 instead of presenting itself as a complete picture. Do not treat a `DEGRADED`
 report as a clean bill of health.
