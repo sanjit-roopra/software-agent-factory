@@ -37,6 +37,18 @@ field and a short list of filler words to avoid.
 `README.md` and every Markdown file in `docs/` use the pinned SimpleEnglish skill.
 `AGENTS.md` requires its strict ASD-STE100 guidance for each documentation change.
 
+Apply these rules during the writing review:
+
+- Classify each passage as procedural or descriptive.
+- Use active voice, simple sentences and American spelling.
+- Put each condition before its instruction.
+- Put one action or fact in each sentence.
+- Use one term for one meaning.
+- Define each unfamiliar concept at its first use.
+- Do not use bold lead-ins or decorative emphasis.
+- In a warning, put the command or the condition before the risk.
+- Keep facts, uncertainty, code, identifiers, paths, commands and quoted errors.
+
 The documentation gate adds these mechanical rules:
 
 - Do not use contractions.

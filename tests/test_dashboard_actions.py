@@ -1790,8 +1790,9 @@ def test_an_escalation_that_finishes_before_the_dashboard_records_it_stays_done(
     assert rig.store.load_artifact(RUN_ID, OperatorEscalation, OPERATOR_ESCALATION_FILENAME) == done
 
 
-def test_agents_md_names_every_dashboard_write_action() -> None:
+def test_safety_doc_names_every_dashboard_write_action() -> None:
     names = {*handler._ACTION_KINDS, handler._STOP_ACTION, handler._STEER_ACTION}
     names.add(handler._ESCALATE_ACTION)
-    agents = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
-    assert {name for name in names if f"`{name}`" not in agents} == set()
+    root = Path(__file__).resolve().parents[1]
+    safety = (root / "docs" / "reference" / "safety.md").read_text(encoding="utf-8")
+    assert {name for name in names if f"`{name}`" not in safety} == set()

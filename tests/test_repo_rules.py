@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "software_agent_factory"
 MAX_MODULE_LINES = 800
+MAX_AGENTS_MD_LINES = 100
 
 # Modules already over the limit, at their line count when the rule started.
 # A listed module may shrink but never grow. Lower its number when you shrink
@@ -70,3 +71,11 @@ def test_agents_md_paths_exist() -> None:
     )
     assert tokens
     assert missing == [], f"AGENTS.md names paths that do not exist: {missing}"
+
+
+def test_agents_md_stays_short() -> None:
+    lines = _line_count(ROOT / "AGENTS.md")
+    assert lines <= MAX_AGENTS_MD_LINES, (
+        f"AGENTS.md has {lines} lines, limit {MAX_AGENTS_MD_LINES}. "
+        "Keep it short and move detail to docs/."
+    )

@@ -1545,9 +1545,10 @@ intact.
 
 ## Local dashboard
 
-`AGENTS.md` bans web dashboards in V1. One narrow, explicitly requested
-exception exists (ADR-016, amended by ADR-033 and ADR-042). It is a viewer with
-three named write actions, not a control plane.
+The V1 design constraints in the [roadmap](project/roadmap.md) ban web dashboards.
+One narrow, explicitly requested exception exists (ADR-016, amended by ADR-033,
+ADR-042, ADR-047 and ADR-055). It is a viewer with named write actions, not a
+control plane. [Safety](reference/safety.md#the-dashboard) lists the actions.
 
 ```text
 factory dashboard          explicit command, disabled by default
