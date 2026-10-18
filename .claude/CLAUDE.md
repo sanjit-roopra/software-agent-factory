@@ -1,6 +1,6 @@
 # software-agent-factory — project conventions
 
-@AGENTS.md
+@../AGENTS.md
 
 `AGENTS.md` (imported above) is the tool-neutral source of truth. This file adds only what is specific to Claude Code.
 

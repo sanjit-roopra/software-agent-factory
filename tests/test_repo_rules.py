@@ -79,3 +79,12 @@ def test_agents_md_stays_short() -> None:
         f"AGENTS.md has {lines} lines, limit {MAX_AGENTS_MD_LINES}. "
         "Keep it short and move detail to docs/."
     )
+
+
+def test_claude_md_imports_resolve() -> None:
+    # Claude Code resolves an @import relative to the file that contains it.
+    claude_md = ROOT / ".claude" / "CLAUDE.md"
+    imports = re.findall(r"^@(\S+)$", claude_md.read_text(encoding="utf-8"), re.MULTILINE)
+    assert imports
+    missing = [path for path in imports if not (claude_md.parent / path).is_file()]
+    assert missing == [], f".claude/CLAUDE.md imports files that do not exist: {missing}"
