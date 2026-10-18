@@ -114,6 +114,22 @@ def test_a_newer_steer_note_replaces_the_waiting_one(data_dir: Path) -> None:
     assert not (data_dir / "runs" / "run-gone").exists()
 
 
+def test_taking_a_steer_note_moves_it_aside_so_a_newer_one_survives(data_dir: Path) -> None:
+    store = FileRunStore(data_dir)
+    _saved(store, "run-a", WorkflowState.IMPLEMENTING)
+    first = RunSteerNote(run_id="run-a", source="cli", note=NOTE, created_at=NOW)
+    store.replace_steer_note(first)
+
+    assert store.take_steer_note("run-a") == first
+    assert store.take_steer_note("run-a") is None
+    newer = RunSteerNote(run_id="run-a", source="dashboard", note="Use the new API.")
+    store.replace_steer_note(newer)
+    assert store.load_steer_note("run-a") == newer
+    (data_dir / "runs" / "run-a" / "steer-note.json").write_text("{", encoding="utf-8")
+    assert store.take_steer_note("run-a") is None
+    assert [path.name for path in (data_dir / "runs" / "run-a").glob(".steer-note*")] == []
+
+
 def test_a_damaged_steer_note_reads_as_none(data_dir: Path) -> None:
     store = FileRunStore(data_dir)
     _saved(store, "run-bad", WorkflowState.IMPLEMENTING)

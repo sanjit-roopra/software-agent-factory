@@ -2797,6 +2797,7 @@
   function onSteerSend() {
     const { box, note, send, status } = steerControls();
     status.textContent = "";
+    const replacing = send.textContent === STEER_REPLACE_LABEL;
     void sendAction({
       runId: box.dataset.runId,
       action: STEER_ACTION,
@@ -2805,7 +2806,9 @@
       onAccepted: function () {
         note.value = "";
         setDisabled([note, send], false);
-        status.textContent = "Note saved for the next agent call.";
+        status.textContent = replacing
+          ? "Note replaced for the next agent call."
+          : "Note saved for the next agent call.";
       }
     });
   }

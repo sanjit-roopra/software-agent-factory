@@ -362,10 +362,9 @@ class WorkflowController:
         sent. A call that raises puts the note back, create-only, so a newer note wins and
         the retry or the next attempt still gets it.
         """
-        note = self._store.load_steer_note(run.id)
+        note = self._store.take_steer_note(run.id)
         if note is None:
             return self._call_runtime(run, request)
-        self._store.delete_steer_note(run.id)
         logger.info("run %s sends the %s steer note to the %s", run.id, note.source, request.role)
         steered = request.model_copy(update={"operator_note": redact_secrets(note.note)})
         try:

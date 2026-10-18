@@ -419,6 +419,27 @@ class FileRunStore:
             logger.warning("skipped the steer note of run %s: %s", run_id, type(exc).__name__)
             return None
 
+    def take_steer_note(self, run_id: str) -> RunSteerNote | None:
+        """Read and remove the waiting steer note of a run in one step, or ``None``.
+
+        The file moves aside by rename first, so a newer note written at the same time
+        stays for the next call instead of being deleted unread (ADR-051). A file that
+        does not load is logged and dropped. Only the controller calls this.
+        """
+        path = self._run_dir_readonly(run_id) / _STEER_NOTE_NAME
+        taken = path.with_name(f".{path.name}.{uuid4().hex}.taken")
+        try:
+            path.rename(taken)
+        except FileNotFoundError:
+            return None
+        try:
+            return RunSteerNote.model_validate_json(taken.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("dropped the steer note of run %s: %s", run_id, type(exc).__name__)
+            return None
+        finally:
+            taken.unlink(missing_ok=True)
+
     def delete_steer_note(self, run_id: str) -> None:
         """Forget the steer note of a run, if any. Only the controller calls this."""
         (self._run_dir_readonly(run_id) / _STEER_NOTE_NAME).unlink(missing_ok=True)

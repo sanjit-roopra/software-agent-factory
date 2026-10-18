@@ -2284,6 +2284,8 @@ def test_another_run_starts_the_steer_box_empty() -> None:
     assert "action: STEER_ACTION" in send
     assert "payload: { note: note.value }" in send
     assert "Note saved for the next agent call." in send
+    assert "Note replaced for the next agent call." in send
+    assert "send.textContent === STEER_REPLACE_LABEL" in send
 
 
 def test_the_escalate_box_names_the_route_and_shows_only_when_the_run_can_escalate() -> None:
