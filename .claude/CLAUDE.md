@@ -1,7 +1,8 @@
 # software-agent-factory — project conventions
 
-Read `AGENTS.md` first. It holds the architecture rules, delivery workflow and writing rules for this repository.
-Its "Code rules" section lists the rules every change must follow; `tests/test_repo_rules.py` enforces the mechanical ones.
+@AGENTS.md
+
+`AGENTS.md` (imported above) is the tool-neutral source of truth. This file adds only what is specific to Claude Code.
 
 ## Stack
 
@@ -144,6 +145,13 @@ Critical files:
 
 <!-- REPOWISE:END -->
 
-# graphify
-- **graphify** (`.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+The **graphify** skill (`.claude/skills/graphify/SKILL.md`) turns any input into a knowledge graph. When the user types `/graphify`, use it before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
