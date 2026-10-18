@@ -456,7 +456,7 @@ Do not automatically continue into later phases.
 Prefer:
 - explicit domain concepts
 - strong typing
-- small cohesive modules under 800 lines
+- small cohesive modules
 - simple functions
 - straightforward control flow
 - testability

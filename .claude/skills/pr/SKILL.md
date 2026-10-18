@@ -67,7 +67,6 @@ Check the diff against the code rules in `AGENTS.md`. Fix any miss first:
 - Code that the change made dead is removed.
 - Behavior changes update `AGENTS.md`, `docs/` and the ADR.
 - No new suppression, skipped test or lowered threshold.
-- No module grows past its limit in `tests/test_repo_rules.py`.
 
 ### 5. Commit and push
 
