@@ -8,6 +8,7 @@ model calls, and every remote-touching ``git``/``gh`` invocation goes through
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -604,3 +605,46 @@ class ScriptedController:
 
     def resume(self, run_id: str, source_repo: Path) -> FactoryRun:
         return self._delegate.resume(run_id, source_repo)
+
+
+class _RecordingStdin(io.StringIO):
+    """Stdin that keeps what was written once it is closed."""
+
+    written: str | None = None
+
+    def close(self) -> None:
+        self.written = self.getvalue()
+        super().close()
+
+
+class FakeStreamPopen:
+    """A ``Popen`` double for :func:`software_agent_factory.line_stream.stream_process`.
+
+    ``wait`` raises each of ``wait_raises`` in turn, then the process exits with ``returncode``.
+    """
+
+    def __init__(
+        self,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        returncode: int = 0,
+        wait_raises: Sequence[BaseException] = (),
+    ) -> None:
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.stdin = _RecordingStdin()
+        self.pid = 43210
+        self.returncode: int | None = None
+        self._exit_code = returncode
+        self._wait_raises = list(wait_raises)
+
+    @property
+    def stdin_input(self) -> str | None:
+        return self.stdin.written
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._wait_raises:
+            raise self._wait_raises.pop(0)
+        self.returncode = self._exit_code
+        return self._exit_code

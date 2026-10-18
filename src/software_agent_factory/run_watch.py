@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from .models import FactoryRun, utc_now
 from .subprocess_utils import kill_thread_children, release_thread
+from .transcripts import live_tool_calls
 
 if TYPE_CHECKING:
     from .workflow import WorkflowController
@@ -28,6 +29,43 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 #: How often a watched run looks for a stop request, in seconds.
 STOP_POLL_INTERVAL_SECONDS = 2.0
+#: How many of the latest tool calls the active call keeps for the live tail (dashboard X6).
+LIVE_TOOL_CALLS = 20
+
+
+@contextmanager
+def live_activity(run: FactoryRun) -> Iterator[threading.Event]:
+    """Keep the running agent's tool calls and output time on the active call (dashboard X6).
+
+    Yields the event that is set when a new tool call is on the active call.
+    """
+    changed = threading.Event()
+    with live_tool_calls(lambda call: note_tool_call(run, call, changed), lambda: note_output(run)):
+        yield changed
+
+
+def note_tool_call(run: FactoryRun, call: dict[str, str], changed: threading.Event) -> None:
+    """Keep a tool call the running agent started on the active call.
+
+    Only the active call is replaced, in one assignment; the heartbeat thread saves it.
+    """
+    active = run.active_invocation
+    if active is None:
+        return
+    run.active_invocation = active.model_copy(
+        update={
+            "recent_tool_calls": [*active.recent_tool_calls, call][-LIVE_TOOL_CALLS:],
+            "tool_call_count": active.tool_call_count + 1,
+        }
+    )
+    changed.set()
+
+
+def note_output(run: FactoryRun) -> None:
+    """Stamp the time the running agent last printed a line; the next heartbeat saves it."""
+    active = run.active_invocation
+    if active is not None:
+        run.active_invocation = active.model_copy(update={"last_output_at": utc_now()})
 
 
 @contextmanager

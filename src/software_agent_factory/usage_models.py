@@ -297,6 +297,8 @@ class ActiveInvocation(ModelBase):
     recent_tool_calls: list[dict[str, str]] = Field(default_factory=list)
     #: Every tool call the call started so far, not only the recent ones.
     tool_call_count: int = Field(default=0, ge=0)
+    #: When the call last printed a line of output; only a streaming runtime sets it.
+    last_output_at: UtcDateTime | None = None
 
 
 class AttemptRecord(ModelBase):

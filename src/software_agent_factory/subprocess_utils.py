@@ -250,21 +250,6 @@ def _timestamp_seconds(raw_ts: object) -> float | None:
     return None
 
 
-def _decode_timeout_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
-
-
-def merge_timeout_output(previous: object, final: str) -> str:
-    prefix = _decode_timeout_text(previous)
-    if not prefix or final.startswith(prefix):
-        return final
-    return f"{prefix}{final}"
-
-
 def format_failure_reason(
     *,
     role: AgentRole,

@@ -27,9 +27,10 @@ from software_agent_factory.models import (
 from software_agent_factory.observability import build_active_invocation_summary
 from software_agent_factory.pi_rpc import PiRpcClient
 from software_agent_factory.pi_runtime import PiAgentRuntime, _report_tool_start
+from software_agent_factory.run_watch import LIVE_TOOL_CALLS, note_tool_call
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.transcripts import live_tool_calls, report_tool_call
-from software_agent_factory.workflow import LIVE_TOOL_CALLS, WorkflowController
+from software_agent_factory.workflow import WorkflowController
 
 _STARTED = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -153,7 +154,7 @@ def test_the_active_call_keeps_the_latest_tool_calls_and_counts_them_all(tmp_pat
     changed = threading.Event()
 
     for number in range(LIVE_TOOL_CALLS + 5):
-        WorkflowController._note_tool_call(run, {"name": f"t{number}", "preview": ""}, changed)
+        note_tool_call(run, {"name": f"t{number}", "preview": ""}, changed)
 
     assert changed.is_set()
     assert run.active_invocation is not None
@@ -167,7 +168,7 @@ def test_a_tool_call_after_the_call_ended_is_ignored() -> None:
     run = FactoryRun(id="run-done", work_item_id="w", state=WorkflowState.IMPLEMENTING)
     changed = threading.Event()
 
-    WorkflowController._note_tool_call(run, {"name": "late", "preview": ""}, changed)
+    note_tool_call(run, {"name": "late", "preview": ""}, changed)
 
     assert run.active_invocation is None
     assert not changed.is_set()

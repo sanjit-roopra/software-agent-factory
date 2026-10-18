@@ -52,7 +52,6 @@ import copy
 import logging
 import os
 import socket
-import threading
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -181,7 +180,7 @@ from .run_context import (
 from .run_context import (
     delivery_policy_fingerprint as delivery_policy_fingerprint,
 )
-from .run_watch import HEARTBEAT_INTERVAL_SECONDS, watched
+from .run_watch import HEARTBEAT_INTERVAL_SECONDS, live_activity, watched
 from .store import FileRunStore
 from .subprocess_utils import kill_thread_children
 from .suppression_scan import suppression_scan
@@ -193,7 +192,7 @@ from .telemetry import (
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
 from .toolchain_commands import candidate_commands, root_version_files, select_package_runner
-from .transcripts import live_tool_calls, store_call_transcript
+from .transcripts import store_call_transcript
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -242,10 +241,6 @@ class RunCancelledError(BaseException):  # NOSONAR(S5709) must pass `except Exce
     def __init__(self, run_id: str) -> None:
         super().__init__(run_id)
         self.run_id = run_id
-
-
-#: How many of the latest tool calls the active call keeps for the live tail (dashboard X6).
-LIVE_TOOL_CALLS = 20
 
 
 class WorkflowController:
@@ -384,27 +379,8 @@ class WorkflowController:
         The heartbeat stops once the call outlives its own timeout, so a runtime that
         ignores its timeout still looks stalled to the service.
         """
-        changed = threading.Event()
-        tool_calls = live_tool_calls(lambda call: self._note_tool_call(run, call, changed))
-        with watched(self, run, request.timeout_seconds, changed), tool_calls:
+        with live_activity(run) as changed, watched(self, run, request.timeout_seconds, changed):
             return self._runtime.run(request)
-
-    @staticmethod
-    def _note_tool_call(run: FactoryRun, call: dict[str, str], changed: threading.Event) -> None:
-        """Keep a tool call the running agent started on the active call (dashboard X6).
-
-        Only the active call is replaced, in one assignment; the heartbeat thread saves it.
-        """
-        active = run.active_invocation
-        if active is None:
-            return
-        run.active_invocation = active.model_copy(
-            update={
-                "recent_tool_calls": [*active.recent_tool_calls, call][-LIVE_TOOL_CALLS:],
-                "tool_call_count": active.tool_call_count + 1,
-            }
-        )
-        changed.set()
 
     def with_pinned_policy(self, *, risk_assessment: bool, unattended: bool) -> WorkflowController:
         """Return a controller that starts new runs with the given policy.

@@ -27,17 +27,16 @@ from .agents import (
     validate_runtime_request,
     workspace_cwd,
 )
+from .line_stream import stream_process
 from .models import CLAUDE_CODE_EFFORT_LEVELS, ModelUsage, PerformanceRecord, UsageMetrics, utc_now
 from .prompts import build_prompt
 from .subprocess_utils import (
     build_child_env,
     extract_first_event_ms,
     format_failure_reason,
-    merge_timeout_output,
     sanitize_output,
     track_child,
 )
-from .subprocess_utils import kill_process_group as _kill_process_group
 from .usage_values import non_negative_float, non_negative_int
 
 #: The values ``claude --effort`` accepts; ``reasoning`` passes through 1:1.
@@ -168,18 +167,8 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             )
         boot_ms = (time.perf_counter() - boot_start) * 1000.0
 
-        timed_out = False
-        try:
-            stdout, stderr = process.communicate(input=prompt, timeout=request.timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            stdout, stderr = _kill_process_group(process)
-            stdout = merge_timeout_output(exc.stdout, stdout)
-            stderr = merge_timeout_output(exc.stderr, stderr)
-        except BaseException:
-            _kill_process_group(process)
-            raise
-
+        output = stream_process(process, timeout_seconds=request.timeout_seconds, prompt=prompt)
+        stdout, stderr, timed_out = output.stdout, output.stderr, output.timed_out
         events = _parse_events(stdout)
         result_event = _final_result_event(events)
         usage = usage_from_result_event(result_event) if result_event is not None else None

@@ -223,10 +223,10 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: The active call has the same shape as a finished call, without telemetry.
-#: It also counts the tool calls it started, of which ``tool_calls`` holds the latest.
+#: The active call: a finished call's shape without telemetry, plus a tool count and last output.
 ACTIVE_INVOCATION_FIELDS: frozenset[str] = (INVOCATION_FIELDS - {"performance"}) | {
-    "tool_call_count"
+    "tool_call_count",
+    "last_output_at",
 }
 
 _RUNTIME_NAMES: frozenset[str] = frozenset(runtime.value for runtime in RuntimeName)
@@ -670,10 +670,10 @@ def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str,
     if not isinstance(data, dict):
         return {}
     call = _sanitize_call({key: data.get(key) for key in _ACTIVE_INPUT_KEYS}, run_id)
-    status = data.get("status")
-    call["status"] = status if is_active_status(status) else "running"
+    call["status"] = status if is_active_status(status := data.get("status")) else "running"
     count = data.get("tool_call_count")
     call["tool_call_count"] = count if is_count(count) else len(call["tool_calls"])
+    call["last_output_at"] = _timestamp(data.get("last_output_at"))
     return call
 
 
