@@ -10,11 +10,17 @@ so a poll never parses a whole transcript.
 A runtime that streams its events (pi, dashboard X6) also reports each tool call as it
 starts, through :func:`report_tool_call`. The workflow listens with :func:`live_tool_calls`
 and keeps the latest ones on the active call, so the dashboard can show a live tail.
+pi prints no stream of its own on stdout, so its runtime keeps the RPC events in an
+:class:`EventLog` and returns those lines as the transcript.
+
+``factory project`` stores its decomposition calls the same way, under
+``projects/<id>/calls/<n>.jsonl``, through :func:`store_call_transcript`.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -24,6 +30,8 @@ from typing import Any
 
 from .atomic_write import write_text_atomic
 from .redaction import redact_secrets
+
+logger = logging.getLogger(__name__)
 
 CALLS_DIRNAME = "calls"
 TRANSCRIPT_MAX_CHARS = 2_000_000
@@ -79,6 +87,41 @@ def write_call_transcript(run_dir: Path, invocation_number: int, text: str) -> s
     tools = json.dumps(tool_calls(redacted), ensure_ascii=False)
     write_text_atomic(run_dir / tool_calls_name(invocation_number), tools, mode=0o600)
     return name
+
+
+def store_call_transcript(directory: Path, invocation_number: int, text: str | None) -> str | None:
+    """Write one call's transcript when there is one; a write failure is only logged."""
+    if not text:
+        return None
+    try:
+        return write_call_transcript(directory, invocation_number, text)
+    except OSError:
+        logger.warning("could not store the transcript of call %d", invocation_number)
+        return None
+
+
+# pi repeats everything so far in each streaming update; the matching ``*_end`` event keeps it once.
+_SKIPPED_EVENTS = frozenset({"message_update", "tool_execution_update"})
+
+
+class EventLog:
+    """Keep a streaming runtime's event records as JSON lines, cut near the transcript cap."""
+
+    def __init__(self, redact: Callable[[str], str] = str) -> None:
+        self._redact = redact
+        self._lines: list[str] = []
+        self._chars = 0
+
+    def add(self, record: dict[str, Any]) -> None:
+        if record.get("type") in _SKIPPED_EVENTS or self._chars > TRANSCRIPT_MAX_CHARS:
+            return
+        line = self._redact(json.dumps(record, ensure_ascii=False))
+        self._lines.append(line)
+        self._chars += len(line) + 1
+
+    def text(self) -> str | None:
+        """The kept lines, or ``None`` when no event arrived."""
+        return "".join(f"{line}\n" for line in self._lines) or None
 
 
 def read_call_tool_calls(run_dir: Path, invocation_number: int) -> list[dict[str, str]]:
@@ -138,6 +181,12 @@ def _copilot_tool_uses(event: dict[str, Any]) -> list[tuple[str, Any]]:
     return [(data["toolName"], data.get("arguments"))]
 
 
+def _pi_tool_uses(event: dict[str, Any]) -> list[tuple[str, Any]]:
+    """The tool a pi ``tool_execution_start`` event starts."""
+    name = event.get("toolName")
+    return [(name, event.get("args"))] if isinstance(name, str) else []
+
+
 def _tool_uses(event: Any) -> list[tuple[str, Any]]:
     if not isinstance(event, dict):
         return []
@@ -146,6 +195,8 @@ def _tool_uses(event: Any) -> list[tuple[str, Any]]:
         return _claude_tool_uses(event)
     if kind == "tool.execution_start":
         return _copilot_tool_uses(event)
+    if kind == "tool_execution_start":
+        return _pi_tool_uses(event)
     return []
 
 

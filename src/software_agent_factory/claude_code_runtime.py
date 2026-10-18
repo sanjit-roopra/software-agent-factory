@@ -240,6 +240,7 @@ class ClaudeCodeAgentRuntime(AgentRuntime):
             request.model,
             "--effort",
             request.reasoning,
+            # No session files: stdout is the whole event stream and is the transcript (ADR-050).
             "--no-session-persistence",
             "--strict-mcp-config",
             "--setting-sources",

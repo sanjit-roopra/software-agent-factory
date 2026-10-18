@@ -40,6 +40,7 @@ from pydantic_core import from_json
 
 from .agents import (
     AgentRequest,
+    AgentResult,
     AgentRuntime,
     runtime_exception_failure_reason,
 )
@@ -71,6 +72,7 @@ from .publishing import PullRequestMerger, resolve_github_token
 from .repository_profile import profile_repository
 from .routing import ModelRouter
 from .store import FileRunStore, ImmutableArtifactConflictError, validate_run_id
+from .transcripts import store_call_transcript
 from .workflow import TransitionError, WorkflowController, delivery_policy_fingerprint
 from .workspace import (
     GIT_TIMEOUT_SECONDS,
@@ -684,31 +686,19 @@ class ProjectRunner:
                 timeout_seconds=self._config.agent_timeout_seconds,
             )
             started_at = utc_now()
+            error: Exception | None = None
             try:
                 result = self._runtime.run(request)
             except (OSError, RuntimeError, ValueError) as exc:
-                completed_at = utc_now()
-                execution.invocation_records.append(
-                    InvocationRecord(
-                        invocation_number=len(execution.invocation_records) + 1,
-                        role=request.role,
-                        purpose=request.purpose,
-                        model=request.model,
-                        reasoning=request.reasoning,
-                        context_tier=request.context_tier,
-                        started_at=started_at,
-                        completed_at=completed_at,
-                        success=False,
-                        failure_reason=runtime_exception_failure_reason(exc),
-                    )
-                )
-                execution.updated_at = completed_at
-                self._project_store.save_execution(execution)
-                raise
+                error = exc
+                reason = runtime_exception_failure_reason(exc)
+                result = AgentResult(role=request.role, success=False, failure_reason=reason)
             completed_at = utc_now()
+            number = len(execution.invocation_records) + 1
+            project_dir = self._project_store.project_dir(brief.id)
             execution.invocation_records.append(
                 InvocationRecord(
-                    invocation_number=len(execution.invocation_records) + 1,
+                    invocation_number=number,
                     role=request.role,
                     purpose=request.purpose,
                     model=request.model,
@@ -720,10 +710,14 @@ class ProjectRunner:
                     failure_reason=result.failure_reason,
                     usage=result.usage,
                     fallback_reason=result.fallback_reason,
+                    transcript_path=store_call_transcript(project_dir, number, result.transcript),
+                    session_ref=result.session_ref,
                 )
             )
             execution.updated_at = completed_at
             self._project_store.save_execution(execution)
+            if error is not None:
+                raise error
             if result.success and result.project_plan is not None:
                 return result.project_plan.model_copy(update={"project_id": brief.id})
             rejection = result.failure_reason or "project planner failed to produce a ProjectPlan"
