@@ -107,6 +107,7 @@ from .models import (
     AttemptTrigger,
     ChangeSet,
     CIReport,
+    CommandResult,
     EscalationRecord,
     EscalationStatus,
     ExecutionPlan,
@@ -189,6 +190,7 @@ from .resume import (
     is_valid_risk_approval_context,
     receipt_approves_risk_context,
 )
+from .revert_check import revert_check
 from .routing import (
     ModelRouter,
     derive_named_paths,
@@ -3493,7 +3495,7 @@ class WorkflowController:
         return self.transition(run, WorkflowState.VERIFYING)
 
     def _verify(self, run: FactoryRun, context: _RunContext) -> RepositoryVerificationResult:
-        """Run install, verify and build with persisted logs, then the mutation gate."""
+        """Run install, verify and build with persisted logs, then the advisory checks."""
         result = self._verifier.run(
             self._commands_for_run(run.id),
             cwd=context.workspace.path,
@@ -3503,18 +3505,24 @@ class WorkflowController:
             capture_bytes=self._config.repository.log_capture_bytes,
             before_command=lambda: self._raise_if_cancelled(run),
         )
-        if not result.report.passed:
+        evidence = context.latest_evidence
+        if not result.report.passed or evidence is None or not result.report.deterministic_checks:
+            # No verify command ran, so the repository's code is not run here either.
             return result
         self._raise_if_cancelled(run)
-        return self._apply_mutation_gate(run, context, result)
+        verify = self._commands_for_run(run.id).verify
+        advisory = (
+            self._mutation_check(run, context, evidence),
+            revert_check(
+                self._command_runner, context.workspace, evidence, verify, self._config.repository
+            ),
+        )
+        return result.with_checks(check for check in advisory if check is not None)
 
-    def _apply_mutation_gate(
-        self,
-        run: FactoryRun,
-        context: _RunContext,
-        result: RepositoryVerificationResult,
-    ) -> RepositoryVerificationResult:
-        """Add the advisory mutation gate to a passed verification (ADR-034).
+    def _mutation_check(
+        self, run: FactoryRun, context: _RunContext, evidence: WorkspaceEvidence
+    ) -> CommandResult | None:
+        """Return the advisory mutation gate check for a passed verification (ADR-034).
 
         The gate runs only for changed Python modules in a lane whose mutation
         tool and package runner are known. Its result is one more check in the
@@ -3522,10 +3530,8 @@ class WorkflowController:
         fails verification, because a surviving mutant can be equivalent.
         """
         exec_prefix = self._mutation_exec_prefix(run)
-        evidence = context.latest_evidence
-        if exec_prefix is None or evidence is None or not result.report.deterministic_checks:
-            # No verify command ran, so the repository's code is not run here either.
-            return result
+        if exec_prefix is None:
+            return None
         targets = mutation_targets(evidence.changed_files)
         started = time.monotonic()
         if not targets:
@@ -3536,17 +3542,7 @@ class WorkflowController:
             report = self._run_mutation_gate(context, exec_prefix, targets)
         # Saved on every passed verification, so no report from an older attempt stays.
         self._store.save_artifact(run.id, report)
-        check = mutation_check_result(report, time.monotonic() - started)
-        verification = result.report.model_copy(
-            update={"deterministic_checks": [*result.report.deterministic_checks, check]}
-        )
-        return RepositoryVerificationResult(
-            report=verification,
-            command_logs=result.command_logs,
-            failure_kind=result.failure_kind,
-            failed_phase=result.failed_phase,
-            failed_command=result.failed_command,
-        )
+        return mutation_check_result(report, time.monotonic() - started)
 
     def _run_mutation_gate(
         self, context: _RunContext, exec_prefix: str, targets: tuple[MutationTarget, ...]

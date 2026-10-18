@@ -869,6 +869,19 @@ Amendment on 2026-10-03 (mutation gate):
   Every passed verification writes `mutation.json`, so no report from an older attempt stays.
 - The gate always removes `mutants/`. If the repository already has `mutants/`, the gate skips and deletes nothing.
 
+Amendment on 2026-10-18 (revert check):
+
+- A change can add tests that pass without the production change. No check found this before, and the mutation gate runs only for Python.
+- The check runs when the verify commands pass on a change with test files and other files.
+  It puts the other files back to the base commit.
+  It runs the verify commands again and then puts the change back.
+- A failing verify command means the tests depend on the change. If all of them pass, the check warns that the tests pass without the production change.
+- The check adds one check to the verification report. The tester and the reviewer judge it.
+- The check is advisory and has no repair round. A refactor or a characterization test passes without the change, and that is correct.
+- A timeout or an error in the check skips it and records why. `repository.revert_check: false` turns it off.
+- If the check cannot put the change back, the error stops the run. The run never continues without its production change.
+- Test files are found by name and directory for Python, JavaScript and TypeScript, such as `test_*.py`, `*.test.ts` and `__tests__/`.
+
 The factory gets lint, format and test commands only from the YAML configuration.
 It installs no tools in the target repository.
 A research call to a model generates skill guidance, and that guidance stays in the factory data directory.

@@ -201,6 +201,15 @@ class RepositoryVerificationResult:
     failed_phase: CheckPhase | None
     failed_command: CommandLogMetadata | None
 
+    def with_checks(self, checks: Iterable[CommandResult]) -> RepositoryVerificationResult:
+        """Return a copy whose report also lists ``checks``."""
+        report = self.report.model_copy(
+            update={"deterministic_checks": [*self.report.deterministic_checks, *checks]}
+        )
+        return RepositoryVerificationResult(
+            report, self.command_logs, self.failure_kind, self.failed_phase, self.failed_command
+        )
+
 
 @dataclass(frozen=True)
 class ScopeFinding:

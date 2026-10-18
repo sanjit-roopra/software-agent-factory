@@ -13,7 +13,7 @@ MAX_MODULE_LINES = 800
 # A listed module may shrink but never grow. Lower its number when you shrink
 # it, and remove it once it is under the limit.
 OVERSIZED_MODULES = {
-    "workflow.py": 4700,
+    "workflow.py": 4696,
     "github.py": 2825,
     "observability.py": 2503,
     "models.py": 2113,
@@ -27,9 +27,9 @@ OVERSIZED_MODULES = {
     "dashboard/handler.py": 904,
     "doctor.py": 881,
     "prompts.py": 865,
-    "config.py": 864,
+    "config.py": 860,
     "pi_runtime.py": 864,
-    "workspace.py": 818,
+    "workspace.py": 815,
 }
 
 _PATH_TOKEN = re.compile(
