@@ -549,7 +549,7 @@ class PiAgentRuntime(AgentRuntime):
             request, session_arg=session.args if session else _NO_SESSION_ARG
         )
         cwd = workspace_cwd(request)
-        env, scrubbed_values = self._child_env_and_scrubbed()
+        env, scrubbed_values = self._child_env_and_scrubbed(self._provider(request))
         prompt_chars = len(prompt)
 
         if self._filter_is_missing(capability_for(request)):
@@ -590,7 +590,7 @@ class PiAgentRuntime(AgentRuntime):
         if not persists_session(request.role):
             return None
         settings = SessionSettings(
-            model=request.model, provider=self._config.provider, reasoning=request.reasoning
+            model=request.model, provider=self._provider(request), reasoning=request.reasoning
         )
         decision = self._sessions.resolve(request.work_item.id, request.role, settings)
         if isinstance(decision, Continue):
@@ -752,7 +752,7 @@ class PiAgentRuntime(AgentRuntime):
             "--mode",
             "rpc",
             "--provider",
-            self._config.provider,
+            self._provider(request),
             "--model",
             request.model,
             "--thinking",
@@ -767,11 +767,15 @@ class PiAgentRuntime(AgentRuntime):
             *session_arg,
         ]
 
-    def _child_env_and_scrubbed(self) -> tuple[dict[str, str], set[str]]:
+    def _provider(self, request: AgentRequest) -> str:
+        """The role's pi provider, or ``pi.provider`` when the role names none."""
+        return request.provider or self._config.provider
+
+    def _child_env_and_scrubbed(self, provider: str) -> tuple[dict[str, str], set[str]]:
         """Build the scrubbed environment pi's child process runs in.
 
         ``build_child_env`` scrubs :data:`subprocess_utils.GITHUB_CREDENTIAL_ENV_VARS`.
-        On top of that, only the credential variables of ``self._config.provider``
+        On top of that, only the credential variables of ``provider``
         (:func:`~software_agent_factory.pi_providers.pi_provider_credential_vars`)
         stay: ``COPILOT_GITHUB_TOKEN`` for ``github-copilot`` (it authenticates
         headless when ``~/.pi/agent/auth.json`` has no interactive login), the
@@ -793,7 +797,7 @@ class PiAgentRuntime(AgentRuntime):
         env["PI_CACHE_RETENTION"] = self._config.cache_retention
         env.pop("SSH_AUTH_SOCK", None)
 
-        own_vars = set(pi_provider_credential_vars(self._config.provider))
+        own_vars = set(pi_provider_credential_vars(provider))
         # A provider newer than the map may read a key the map does not name,
         # so every *_API_KEY variable is treated as a credential.
         other_api_keys = [name for name in env if name.endswith(API_KEY_SUFFIX)]

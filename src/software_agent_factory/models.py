@@ -225,6 +225,12 @@ def check_claude_code_effort(runtime: RuntimeName | None, reasoning: str) -> Non
         )
 
 
+def check_pi_provider(runtime: RuntimeName | None, provider: str | None) -> None:
+    """Reject a ``provider`` on a runtime other than pi, which would ignore it."""
+    if provider is not None and runtime not in (None, RuntimeName.PI):
+        raise ValueError(f"provider is a pi setting; runtime {runtime} does not use it")
+
+
 class RuntimeFallback(ModelBase):
     """The runtime and model that serve a call its first runtime cannot serve (ADR-045).
 
@@ -236,10 +242,13 @@ class RuntimeFallback(ModelBase):
     model: str = Field(min_length=1)
     reasoning: str = Field(min_length=1)
     context_tier: ContextTier = ContextTier.DEFAULT
+    provider: str | None = Field(default=None, min_length=1)
+    """The pi provider; ``None`` uses ``pi.provider``."""
 
     @model_validator(mode="after")
-    def _validate_claude_code_effort(self) -> Self:
+    def _validate_runtime_settings(self) -> Self:
         check_claude_code_effort(self.runtime, self.reasoning)
+        check_pi_provider(self.runtime, self.provider)
         return self
 
 

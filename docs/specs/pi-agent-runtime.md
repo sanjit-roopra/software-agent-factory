@@ -49,7 +49,7 @@ tracked as a follow-up.
   as JSONL on stdin, reads JSONL records from stdout, then closes stdin and reaps the
   process. The runtime holds no live processes between calls.
 - Working directory is `request.workspace_path` (same rule as `agents.workspace_cwd`).
-- Flags always passed: `--mode rpc`, `--provider <pi.provider>`, `--model <id>`,
+- Flags always passed: `--mode rpc`, `--provider <role provider or pi.provider>`, `--model <id>`,
   `--thinking <level>`, `--tools <role allowlist>` (or `--no-tools`), `--no-extensions`,
   `--no-skills`, `--no-prompt-templates`, `--no-context-files`, `--no-approve`, and
   either `--session <file>` or `--no-session`.

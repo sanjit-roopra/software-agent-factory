@@ -684,6 +684,7 @@ class ProjectRunner:
                 reasoning=model.reasoning,
                 context_tier=model.context_tier,
                 runtime=model.runtime,
+                provider=model.provider,
                 fallback=model.fallback,
                 work_item=synthetic_work_item,
                 project_brief=brief,

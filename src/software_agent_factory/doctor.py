@@ -485,6 +485,7 @@ def check_pi(
     config: PiConfig,
     *,
     required: bool,
+    providers: Collection[str] = (),
     accept_env_credentials: bool = True,
 ) -> CheckResult:
     """``pi`` is only required when ``--runtime pi`` is requested.
@@ -495,7 +496,8 @@ def check_pi(
     1. ``config.executable`` resolves on ``PATH``.
     2. ``pi --version`` is at least :data:`PI_MIN_VERSION`.
     3. ``node --version`` is at least :data:`NODE_MIN_VERSION`.
-    4. A credential for ``config.provider`` is present.
+    4. A credential for each of ``providers`` is present (``config.provider``
+       when empty).
 
     Every failure message names what was found (where applicable) and what
     is required, plus a fix. Not required (``--runtime pi`` was not
@@ -553,26 +555,32 @@ def check_pi(
     if node_version_failure is not None:
         return node_version_failure
 
-    if not _pi_provider_credential_present(
-        env, config.provider, accept_env_credentials=accept_env_credentials
-    ):
-        message = f"no credential found for pi provider '{config.provider}'"
-        if not accept_env_credentials:
-            message += " in auth.json (environment-variable credentials do not reach the service)"
-        return CheckResult(
-            name="pi",
-            status=CheckStatus.ERROR,
-            message=message,
-            remediation=f"Run 'pi' then '/login' and choose {config.provider}.",
-        )
+    names = sorted(providers) or [config.provider]
+    for provider in names:
+        if not _pi_provider_credential_present(
+            env, provider, accept_env_credentials=accept_env_credentials
+        ):
+            return _missing_pi_credential(provider, accept_env_credentials=accept_env_credentials)
 
     return CheckResult(
         name="pi",
         status=CheckStatus.OK,
         message=(
-            f"'{config.executable}' found at {resolved_pi}, Node and a "
-            f"'{config.provider}' credential are present"
+            f"'{config.executable}' found at {resolved_pi}, Node and a credential for "
+            f"{', '.join(repr(name) for name in names)} are present"
         ),
+    )
+
+
+def _missing_pi_credential(provider: str, *, accept_env_credentials: bool) -> CheckResult:
+    message = f"no credential found for pi provider '{provider}'"
+    if not accept_env_credentials:
+        message += " in auth.json (environment-variable credentials do not reach the service)"
+    return CheckResult(
+        name="pi",
+        status=CheckStatus.ERROR,
+        message=message,
+        remediation=f"Run 'pi' then '/login' and choose {provider}.",
     )
 
 
@@ -802,8 +810,10 @@ def run_doctor(
     data_dir = data_dir_override
     pi_config = config.pi if config is not None else PiConfig()
     runtimes = frozenset([requested_runtime] if requested_runtime is not None else [])
+    pi_providers: frozenset[str] = frozenset()
     if config is not None:
         runtimes = config.runtimes_for(requested_runtime)
+        pi_providers = config.pi_providers_for(requested_runtime)
         gh_required = requires_gh(config)
         verification_commands = [
             *config.repository.commands.install,
@@ -820,6 +830,7 @@ def run_doctor(
             env,
             pi_config,
             required=RuntimeName.PI in runtimes,
+            providers=pi_providers,
             accept_env_credentials=accept_pi_env_credentials,
         )
     )

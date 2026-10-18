@@ -368,6 +368,20 @@ def test_check_pi_missing_credential_is_error() -> None:
     assert result.remediation == "Run 'pi' then '/login' and choose github-copilot."
 
 
+def test_check_pi_needs_a_credential_for_every_provider() -> None:
+    env, _ = make_env(
+        available=_pi_ready_available(),
+        runner=_pi_ready_runner(),
+        getenv=make_getenv({"COPILOT_GITHUB_TOKEN": "secret-token"}),
+    )
+    providers = {"github-copilot", "openai"}
+
+    result = check_pi(env, PiConfig(), required=True, providers=providers)
+
+    assert result.status is CheckStatus.ERROR
+    assert result.remediation == "Run 'pi' then '/login' and choose openai."
+
+
 def test_check_pi_credential_via_provider_env_var_passes() -> None:
     env, _ = make_env(
         available=_pi_ready_available(),
@@ -873,6 +887,25 @@ def test_run_doctor_forwards_accept_pi_env_credentials_to_check_pi() -> None:
     pi_check = next(c for c in report.checks if c.name == "pi")
     assert pi_check.status is CheckStatus.ERROR
     assert "do not reach the service" in pi_check.message
+
+
+def test_run_doctor_checks_the_provider_of_each_pi_role(tmp_path: Path) -> None:
+    import yaml
+
+    payload = build_config(tmp_path / "data").model_dump(mode="json")
+    payload["models"]["workers"]["L3"].update(runtime="pi", provider="openai-codex")
+    config_path = tmp_path / "factory.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    env, _ = make_env(
+        available={"git": "/usr/bin/git", **_pi_ready_available()}, runner=_pi_ready_runner()
+    )
+
+    report = run_doctor(
+        config_path=config_path, requested_runtime=RuntimeName.COPILOT, environment=env
+    )
+
+    pi_check = next(c for c in report.checks if c.name == "pi")
+    assert pi_check.message == "no credential found for pi provider 'openai-codex'"
 
 
 def test_run_doctor_default_runtime_never_requires_pi() -> None:
