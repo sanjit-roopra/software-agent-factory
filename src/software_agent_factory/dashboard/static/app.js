@@ -2120,8 +2120,88 @@
     detail.hidden = true;
     const cell = detail.appendChild(element("td"));
     cell.colSpan = CALL_COLUMN_COUNT;
-    cell.appendChild(element("dl", "call-fields"));
+    cell.append(element("dl", "call-fields"), buildTranscript());
     return row;
+  }
+
+  // ---- Run detail: call transcript ----------------------------------------
+
+  function transcriptPath(runId, number) {
+    return runDetailPath(runId) + "/calls/" + encodeURIComponent(number) + "/transcript";
+  }
+
+  function transcriptLine(event) {
+    return event.text ? event.type + "  " + event.text : event.type;
+  }
+
+  // One line per event, after a note when the server left earlier events out.
+  function transcriptText(body) {
+    const lines = asArray(body.events).map(transcriptLine);
+    if (body.truncated === true) {
+      lines.unshift("(earlier events left out)");
+    }
+    return lines.length === 0 ? "No events." : lines.join("\n");
+  }
+
+  function buildTranscript() {
+    const box = element("div", "call-transcript");
+    const button = box.appendChild(element("button", "", "View transcript"));
+    button.type = "button";
+    button.setAttribute("aria-expanded", "false");
+    box.appendChild(element("pre", "transcript-events")).hidden = true;
+    const raw = box.appendChild(element("details", "transcript-raw"));
+    raw.append(element("summary", "", "Raw text (end)"), element("pre", "transcript-tail"));
+    raw.hidden = true;
+    button.addEventListener("click", function () {
+      toggleTranscript(box);
+    });
+    return box;
+  }
+
+  // A different call in the slot starts closed and loads its own transcript.
+  function resetTranscript(box, runId, number) {
+    box.hidden = typeof number !== "number";
+    box.dataset.key = runId + "/" + number;
+    box.dataset.loaded = "";
+    showTranscript(box, false);
+  }
+
+  function showTranscript(box, open) {
+    const [button, events, raw] = box.children;
+    button.setAttribute("aria-expanded", String(open));
+    setText(button, open ? "Hide transcript" : "View transcript");
+    events.hidden = !open;
+    raw.hidden = !open || box.dataset.loaded !== "yes";
+  }
+
+  // The transcript loads once, when a person opens it. It is not polled.
+  function toggleTranscript(box) {
+    const [button, events, raw] = box.children;
+    const open = button.getAttribute("aria-expanded") !== "true";
+    showTranscript(box, open);
+    if (!open || box.dataset.loaded === "yes") {
+      return;
+    }
+    const key = box.dataset.key;
+    const slash = key.lastIndexOf("/");
+    setText(events, "Loading the transcript...");
+    button.disabled = true;
+    apiFetch(transcriptPath(key.slice(0, slash), key.slice(slash + 1)))
+      .then(function (body) {
+        if (box.dataset.key === key) {
+          box.dataset.loaded = "yes";
+          setText(events, transcriptText(body));
+          setText(raw.lastElementChild, typeof body.tail === "string" ? body.tail : "");
+          showTranscript(box, button.getAttribute("aria-expanded") === "true");
+        }
+      }, function () {
+        if (box.dataset.key === key) {
+          setText(events, "No transcript was kept for this call, or it could not load.");
+        }
+      })
+      .finally(function () {
+        button.disabled = false;
+      });
   }
 
   function callAt(body, index) {
@@ -2135,6 +2215,8 @@
     if (row.dataset.call !== key) {
       row.dataset.call = key;
       setCallOpen(row, false);
+      resetTranscript(row.nextElementSibling.firstElementChild.lastElementChild, runId,
+        call.invocation_number);
     }
     const [number, ...columns] = callCells(call);
     setText(row.firstElementChild.firstElementChild.lastElementChild, number);

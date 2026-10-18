@@ -86,6 +86,15 @@ class RunDiffProvider(Protocol):
     def __call__(self, run_id: str, attempt: int | None) -> Any | None: ...
 
 
+class RunTranscriptProvider(Protocol):
+    """Called for ``/api/runs/{run_id}/calls/{n}/transcript`` with a validated id and number.
+
+    Returns the stored transcript text, or ``None`` when the run or the file is missing.
+    """
+
+    def __call__(self, run_id: str, invocation_number: int, /) -> str | None: ...
+
+
 class HealthProvider(Protocol):
     """Optional injectable for operational health findings (data directory
     writable, git/gh/copilot present, launchd service state, and so on --

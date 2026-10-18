@@ -1452,7 +1452,8 @@ PACKAGE = "software_agent_factory"
 #: The package-internal modules ``dashboard/`` may import. Each is a leaf for the dashboard:
 #: none of them runs a workflow, calls GitHub, starts a process or writes a run. ``resume`` is
 #: the pure rules module and ``resume_classes`` its pure table of resumable classes. The
-#: writers are in ``resume_writes``, which is not on the list.
+#: writers are in ``resume_writes``, which is not on the list. From ``transcripts`` the
+#: dashboard takes only the event preview and the cut marker.
 ALLOWED_PACKAGE_MODULES = {
     "models",
     RESUME,
@@ -1460,6 +1461,7 @@ ALLOWED_PACKAGE_MODULES = {
     "escalation_protocol",
     "redaction",
     "store",
+    "transcripts",
 }
 WHOLE_MODULE = "*"
 
