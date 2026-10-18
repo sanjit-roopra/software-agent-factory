@@ -1256,6 +1256,10 @@ Consequences:
 - `factory doctor` requires pi 0.99.1 or later, the version the filter was verified on.
 - The filter tests need Node 22 or later.
 
+Amendment on 2026-10-18: the Copilot and Claude Code children now get the same environment scrub as pi.
+`SSH_AUTH_SOCK`, every known provider credential variable and every `*_API_KEY` variable are removed from all three runtimes.
+Each runtime keeps only what it needs. Copilot keeps `COPILOT_GITHUB_TOKEN`, pi keeps the credentials of its provider, and Claude Code keeps none.
+
 ## ADR-031: pi is a recommended agent runtime
 
 Status: accepted on 2026-09-30. This amends ADR-017 and ADR-022.
