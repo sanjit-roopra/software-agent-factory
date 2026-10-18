@@ -16,7 +16,7 @@ from software_agent_factory.revert_check import (
     revert_check_sources,
     run_revert_check,
 )
-from software_agent_factory.workspace import GitWorktreeWorkspace
+from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
 
 _LIMITS = ProbeLimits(timeout_seconds=60, env_passthrough=(), capture_bytes=65536)
 _SOURCES = ("app.py", "new.py", "old.py")
@@ -112,7 +112,9 @@ def test_check_runs_verify_at_the_base_and_restores_the_change(
     assert workspace.collect_evidence().tree_sha == tree
 
 
-def test_check_restores_the_change_when_verify_raises(workspace: GitWorktreeWorkspace) -> None:
+def test_check_skips_and_restores_the_change_when_verify_raises(
+    workspace: GitWorktreeWorkspace,
+) -> None:
     tree = workspace.collect_evidence().tree_sha
     assert tree is not None
 
@@ -120,9 +122,9 @@ def test_check_restores_the_change_when_verify_raises(workspace: GitWorktreeWork
         def run(self, *args: object, **kwargs: object) -> VerificationReport:
             raise OSError("spawn failed")
 
-    with pytest.raises(OSError):
-        run_revert_check(_Raising(), workspace, tree, ["pytest"], _SOURCES, _LIMITS)
+    verdict = run_revert_check(_Raising(), workspace, tree, ["pytest"], _SOURCES, _LIMITS)
 
+    assert verdict == "skipped: revert check error: OSError"
     assert workspace.collect_evidence().tree_sha == tree
 
 
@@ -134,3 +136,20 @@ def test_result_is_one_passing_check_that_lists_the_reverted_files() -> None:
     assert result.stdout == f"revert check: {TESTS_PASS_WITHOUT_CHANGE}\n" + (
         "reverted to the base commit:\n- app.py"
     )
+
+
+def test_failure_to_restore_the_change_is_raised(
+    workspace: GitWorktreeWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str | None] = []
+
+    def _restore(paths: Sequence[str], tree: str | None = None) -> None:
+        calls.append(tree)
+        if tree is not None:
+            raise WorkspaceError("restore failed")
+
+    monkeypatch.setattr(workspace, "restore_paths", _restore)
+
+    with pytest.raises(WorkspaceError):
+        run_revert_check(_Runner(), workspace, "abc", ["pytest"], _SOURCES, _LIMITS)
+    assert calls == [None, "abc"]

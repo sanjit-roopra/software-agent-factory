@@ -7,7 +7,8 @@ change. If all of them pass, the tests do not exercise the change.
 
 The check is advisory. It never fails verification: a refactor or a
 characterization test passes without the change, as it should. The tester and
-the reviewer judge the result. A timeout skips the check and records why.
+the reviewer judge the result. A timeout or an error skips the check and
+records why.
 """
 
 from __future__ import annotations
@@ -39,10 +40,12 @@ def run_revert_check(
 ) -> str:
     """Run ``verify`` with ``sources`` at the base commit and return the verdict.
 
-    ``tree`` is the reviewed tree. The sources always go back to it.
+    ``tree`` is the reviewed tree. The sources always go back to it. An error
+    before that skips the check. An error while putting the change back is
+    raised, so a run never goes on without its production change.
     """
-    workspace.restore_paths(sources)
     try:
+        workspace.restore_paths(sources)
         report = command_runner.run(
             verify,
             workspace.path,
@@ -50,6 +53,8 @@ def run_revert_check(
             env_passthrough=limits.env_passthrough,
             capture_bytes=limits.capture_bytes,
         )
+    except Exception as exc:  # The check is advisory. Its own error never fails the run.
+        return f"skipped: revert check error: {type(exc).__name__}"
     finally:
         workspace.restore_paths(sources, tree)
     failed = next((c for c in report.deterministic_checks if c.exit_code != 0), None)

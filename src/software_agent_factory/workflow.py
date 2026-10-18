@@ -3616,18 +3616,14 @@ class WorkflowController:
         if not (self._config.repository.revert_check and sources and verify and evidence.tree_sha):
             return None
         started = time.monotonic()
-        try:
-            verdict = run_revert_check(
-                self._command_runner,
-                context.workspace,
-                evidence.tree_sha,
-                verify,
-                sources,
-                ProbeLimits.from_repository(self._config.repository),
-            )
-        except Exception as exc:
-            # The check is advisory. Its own failure never fails the run.
-            verdict = f"skipped: revert check error: {type(exc).__name__}"
+        verdict = run_revert_check(
+            self._command_runner,
+            context.workspace,
+            evidence.tree_sha,
+            verify,
+            sources,
+            ProbeLimits.from_repository(self._config.repository),
+        )
         return revert_check_result(verdict, sources, time.monotonic() - started)
 
     def _run_mutation_gate(

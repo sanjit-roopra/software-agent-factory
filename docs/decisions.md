@@ -877,6 +877,7 @@ Amendment on 2026-10-18 (revert check):
 - The check adds one check to the verification report. The tester and the reviewer judge it.
 - The check is advisory and has no repair round. A refactor or a characterization test passes without the change, and that is correct.
 - A timeout or an error in the check skips it and records why. `repository.revert_check: false` turns it off.
+- If the check cannot put the change back, the error stops the run. The run never continues without its production change.
 - Test files are found by name and directory for Python, JavaScript and TypeScript, such as `test_*.py`, `*.test.ts` and `__tests__/`.
 
 The factory gets lint, format and test commands only from the YAML configuration.
