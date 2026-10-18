@@ -983,7 +983,7 @@ class FactoryService:
                         poll_interval,
                     )
                 except Exception as exc:  # noqa: BLE001 - a failed tick dispatches nothing
-                    logger.error(
+                    logger.exception(
                         "factory tick failed (%s: %s); retrying after %.1f seconds",
                         type(exc).__name__,
                         exc,
