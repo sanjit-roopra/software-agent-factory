@@ -163,6 +163,10 @@ def run_mutation_gate(
     return _judge(modules, exit_codes)
 
 
+MUTATION_CHECK_COMMAND = "mutmut run"
+"""Command prefix of the gate's check. Agents read its output, so prompts keep it."""
+
+
 def mutation_check_result(report: MutationReport, duration_seconds: float) -> CommandResult:
     """Describe the gate as one deterministic check for the verification report."""
     lines = [
@@ -179,7 +183,7 @@ def mutation_check_result(report: MutationReport, duration_seconds: float) -> Co
         if report.survived_count > len(report.survived):
             lines.append(f"- and {report.survived_count - len(report.survived)} more")
     return CommandResult(
-        command=f"mutmut run {' '.join(report.modules)}",
+        command=f"{MUTATION_CHECK_COMMAND} {' '.join(report.modules)}",
         exit_code=0,
         stdout="\n".join(lines),
         stderr="",

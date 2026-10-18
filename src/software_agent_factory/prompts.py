@@ -44,6 +44,7 @@ from .models import (
     VerificationReport,
     WorkItem,
 )
+from .mutation_gate import MUTATION_CHECK_COMMAND
 from .review_lenses import ReviewLens, render_review_lenses, select_review_lenses
 from .writing_policy import writing_limits_text
 
@@ -362,13 +363,18 @@ def _role_instructions(
 - Make the narrowest change that meets the acceptance criteria.
 - Reuse existing mechanisms. Do not do unrelated cleanup.
 - Treat sibling-task constraints as hard scope boundaries.
+- Add or update a test for each acceptance criterion.
 - Do not skip tests, or add lint or type suppressions, to make checks pass.
-- Stop when the required behavior and configured checks pass.
+- Run the verification commands before you stop.
 - Return ChangeSet metadata only."""
     if role == "TESTER":
-        return """Test the implementation independently.
+        return """Check the tests of the implementation independently. You cannot run commands.
 - Use the specification, plan, repository, diff, changed files, and deterministic results.
 - Do not use or request an implementer self-assessment.
+- Map each acceptance criterion to the test that proves it.
+- Report each criterion that no test proves as a missing test.
+- Treat a surviving mutant on a changed line as a missing test, unless the mutant is
+  equivalent.
 - Report concrete failures and missing tests.
 - Do not require a broader redesign when the requested behavior works."""
     if role == "REVIEWER":
@@ -505,6 +511,7 @@ def _implementer_sections(request: AgentRequest) -> list[tuple[str, object]]:
             (_SPECIFICATION_TITLE, request.specification),
             (_EXECUTION_PLAN_TITLE, request.execution_plan),
             ("Attempt number", request.attempt_number),
+            ("Verification commands", list(request.verification_commands) or None),
             (_REPAIR_CONTEXT_TITLE, request.repair_context),
             (_CURRENT_DIFF_TITLE, _diff_or_none(request.diff)),
         ),
@@ -606,10 +613,7 @@ def _review_lens_sections(
     return [
         (
             _REVIEW_LENSES_TITLE,
-            {
-                "rule": rule,
-                "lenses": render_review_lenses(lenses),
-            },
+            {"rule": rule, "lenses": render_review_lenses(lenses)},
         )
     ]
 
@@ -777,6 +781,8 @@ def summarize_command_result(
         "duration_seconds": check.duration_seconds,
     }
     is_success = check.exit_code == 0 and not check.timed_out
+    # The mutation check passes but lists survivors the TESTER and REVIEWER must read.
+    hide_output = is_success and not check.command.startswith(MUTATION_CHECK_COMMAND)
     test_counts = parse_test_counts(check.stdout, check.stderr)
     if test_counts:
         summary["test_counts"] = test_counts
@@ -788,29 +794,17 @@ def summarize_command_result(
     if collection_errors:
         summary["collection_errors"] = collection_errors
 
-    if is_success:
-        if check.stdout:
-            stdout_hash = hashlib.sha256(check.stdout.encode("utf-8")).hexdigest()
-            summary["stdout"] = f"[omitted: sha256={stdout_hash}]"
-            summary["stdout_hash"] = stdout_hash
-        else:
-            summary["stdout"] = ""
-        if check.stderr:
-            stderr_hash = hashlib.sha256(check.stderr.encode("utf-8")).hexdigest()
-            summary["stderr"] = f"[omitted: sha256={stderr_hash}]"
-            summary["stderr_hash"] = stderr_hash
-        else:
-            summary["stderr"] = ""
-    else:
+    if not hide_output:
         summary["timed_out"] = check.timed_out
-        if check.stdout:
-            summary["stdout"] = _bound_text(check.stdout, limit=max_failure_chars)
+    for name, text in (("stdout", check.stdout), ("stderr", check.stderr)):
+        if not text:
+            summary[name] = ""
+        elif hide_output:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            summary[name] = f"[omitted: sha256={digest}]"
+            summary[f"{name}_hash"] = digest
         else:
-            summary["stdout"] = ""
-        if check.stderr:
-            summary["stderr"] = _bound_text(check.stderr, limit=max_failure_chars)
-        else:
-            summary["stderr"] = ""
+            summary[name] = _bound_text(text, limit=max_failure_chars)
 
     return summary
 

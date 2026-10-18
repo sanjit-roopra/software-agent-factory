@@ -1,0 +1,91 @@
+{
+  "planner_clarification": "The previous execution plan listed these unresolved decisions:\n- Keep v1?\n- Rename it?\n\nResolve any item that repository evidence or existing constraints answer. Retain only genuinely human-owned choices. Return a complete PlanningResult JSON object with the specification and the execution plan.",
+  "planner_human_decision": "An authorized human resolved these previous plan decisions. Treat each answer as a hard planning constraint. Do not change scope, policy, budgets, or delivery settings.\n\n[{\"decision_number\": 1, \"question\": \"Keep v1?\", \"answer\": \"No\"}, {\"decision_number\": 2, \"question\": \"Rename it?\", \"answer\": \"Yes\"}]\n\nReturn a complete PlanningResult JSON object with the specification and the execution plan.",
+  "typed_artifact": "Your previous response failed deterministic schema validation.\nbad json\nCorrect only the output shape. Return one complete ReviewReport JSON object. Do not add markdown or text outside the JSON.",
+  "typed_artifact_after_text": "Earlier.\n\nYour previous response failed deterministic schema validation.\nbad\nCorrect only the output shape. Return one complete Plan JSON object. Do not add markdown or text outside the JSON.",
+  "typed_artifact_after_context": "{\"trigger\":\"CI\",\"summary\":\"CI failed.\",\"failures\":[\"lint\"],\"log_excerpt\":null,\"previous_attempts\":[]}\n\nYour previous response failed deterministic schema validation.\nbad\nCorrect only the output shape. Return one complete Plan JSON object. Do not add markdown or text outside the JSON.",
+  "review_contract": "Your previous ReviewReport passed JSON schema validation but violated the deterministic review contract. Contract error: missing disposition. Correct the complete ReviewReport using the typed blocker, disposition, and regression fields exactly as instructed. Do not change repository files.",
+  "implementer_failure": {
+    "trigger": "IMPLEMENTER_FAILURE",
+    "summary": "The previous implementation attempt did not complete. The working tree may contain partial, unverified edits from that attempt; inspect and reconcile them before continuing.",
+    "failures": [
+      "runtime crashed"
+    ],
+    "log_excerpt": null,
+    "previous_attempts": []
+  },
+  "implementer_failure_polish": {
+    "trigger": "IMPLEMENTER_FAILURE",
+    "summary": "The optional polish attempt did not complete. Restore or preserve the last verified behavior and resolve any partial polish edits.",
+    "failures": [
+      "polish implementer reported failure"
+    ],
+    "log_excerpt": null,
+    "previous_attempts": []
+  },
+  "polish": {
+    "trigger": "POLISH",
+    "summary": "Deterministic verification passed. Apply a final bounded polish and simplification pass using the fixed simplify and polish guidance supplied with this request. Simplify first, then polish. Preserve required behavior, public interfaces, scope, dependencies, security checks, and verification policy. Make no edit when no safe improvement exists.",
+    "failures": [],
+    "log_excerpt": null,
+    "previous_attempts": []
+  },
+  "verification": {
+    "trigger": "VERIFICATION",
+    "summary": "Deterministic verify failed (test failure).",
+    "failures": [
+      "pytest -q: 1"
+    ],
+    "log_excerpt": "$ pytest -q\nE   AssertionError: expected 400\nboom",
+    "previous_attempts": []
+  },
+  "verification_mutation": {
+    "trigger": "VERIFICATION",
+    "summary": "Deterministic verification modified the repository.",
+    "failures": [
+      "Repository verification commands changed the Git tree after implementation evidence was captured. Verification must leave source contents unchanged. Remove generated artifacts from the worktree and Git index, then add appropriate ignore rules so verification cannot stage them again.",
+      "Newly tracked after verification: coverage.xml",
+      "No longer tracked after verification: b.py"
+    ],
+    "log_excerpt": null,
+    "previous_attempts": []
+  },
+  "verification_mutation_same_files": {
+    "trigger": "VERIFICATION",
+    "summary": "Deterministic verification modified the repository.",
+    "failures": [
+      "Repository verification commands changed the Git tree after implementation evidence was captured. Verification must leave source contents unchanged. Remove generated artifacts from the worktree and Git index, then add appropriate ignore rules so verification cannot stage them again.",
+      "One or more already-changed files were modified during verification."
+    ],
+    "log_excerpt": null,
+    "previous_attempts": []
+  },
+  "verification_artifact": {
+    "trigger": "VERIFICATION",
+    "summary": "Verification-generated artifacts are still part of the proposed change.",
+    "failures": [
+      "Remove these generated paths from the worktree and Git index before retrying: dist/, x.log"
+    ],
+    "log_excerpt": null,
+    "previous_attempts": []
+  },
+  "review": {
+    "trigger": "REVIEW",
+    "summary": "The independent reviewer rejected the change.",
+    "failures": [
+      "[F1] Finding F1."
+    ],
+    "log_excerpt": "Whitespace is accepted.",
+    "previous_attempts": []
+  },
+  "ci": {
+    "trigger": "CI",
+    "summary": "Continuous integration reported a failing check.",
+    "failures": [
+      "lint: UNKNOWN",
+      "tests: TEST_FAILURE"
+    ],
+    "log_excerpt": "E501 line too long",
+    "previous_attempts": []
+  }
+}

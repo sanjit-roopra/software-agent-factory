@@ -298,6 +298,9 @@ def test_run_uses_workspace_cwd_and_scrubs_github_credentials(
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret_token_value")
     monkeypatch.setenv("GH_TOKEN", "gho_another_secret")
     monkeypatch.setenv("GIT_ASKPASS", "secret-helper")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "copilot-pat")
     monkeypatch.setattr("software_agent_factory.copilot_runtime.subprocess.Popen", fake_popen)
 
     runtime = CopilotAgentRuntime()
@@ -316,6 +319,9 @@ def test_run_uses_workspace_cwd_and_scrubs_github_credentials(
     assert "GITHUB_TOKEN" not in env
     assert "GH_TOKEN" not in env
     assert "GIT_ASKPASS" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "SSH_AUTH_SOCK" not in env
+    assert env["COPILOT_GITHUB_TOKEN"] == "copilot-pat"
 
 
 def test_run_returns_usage_from_temporary_usage_output_file(

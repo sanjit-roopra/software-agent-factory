@@ -13,15 +13,36 @@ records why.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 
 from .command_probe import CommandRunner, ProbeLimits
+from .config import RepositoryConfig
 from .models import CommandResult
 from .mutation_gate import is_test_path
-from .workspace import GitWorktreeWorkspace
+from .workspace import GitWorktreeWorkspace, WorkspaceEvidence
 
 REVERT_CHECK_COMMAND = "revert check"
 TESTS_PASS_WITHOUT_CHANGE = "warning: the tests pass without the production change"
+
+
+def revert_check(
+    command_runner: CommandRunner,
+    workspace: GitWorktreeWorkspace,
+    evidence: WorkspaceEvidence,
+    verify: Sequence[str],
+    repository: RepositoryConfig,
+) -> CommandResult | None:
+    """Return the check for a passed verification, or ``None`` when it does not apply."""
+    sources = revert_check_sources(evidence.changed_files)
+    if not (repository.revert_check and sources and verify and evidence.tree_sha):
+        return None
+    started = time.monotonic()
+    limits = ProbeLimits.from_repository(repository)
+    verdict = run_revert_check(
+        command_runner, workspace, evidence.tree_sha, verify, sources, limits
+    )
+    return revert_check_result(verdict, sources, time.monotonic() - started)
 
 
 def revert_check_sources(changed_files: Sequence[str]) -> tuple[str, ...]:

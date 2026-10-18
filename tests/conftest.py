@@ -58,7 +58,7 @@ _ALLOW_REAL_BINARIES_MARKER = "allow_real_binaries"
 #: ``git`` is exercised as a real subprocess throughout this suite (see the
 #: module docstring above) and is never blocked. Only the binaries that can
 #: reach a real remote GitHub account or spend real money are guarded.
-_GUARDED_EXECUTABLES = frozenset({"gh", "copilot"})
+_GUARDED_EXECUTABLES = frozenset({"gh", "copilot", "pi", "claude"})
 
 _real_socket_connect = socket.socket.connect
 _real_socket_connect_ex = socket.socket.connect_ex
@@ -73,7 +73,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         f"{_ALLOW_REAL_BINARIES_MARKER}: permit this test to exec the real "
-        "'gh'/'copilot' binaries.",
+        "'gh'/'copilot'/'pi'/'claude' binaries.",
     )
 
 

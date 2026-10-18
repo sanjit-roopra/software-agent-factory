@@ -190,7 +190,8 @@ says what happens. **Confirm stop** sends the request, and **Keep running** puts
 the button back. `factory cancel <run>` does the same from the terminal.
 
 The process that drives the run stops the agent within a few seconds. A run
-outside an agent call, such as one in a check, stops before its next agent call.
+in a check stops when that check command ends. A run that waits for CI stops
+within one poll interval.
 The run halts in Needs you with its workspace and commits kept.
 
 ### Steer a run with a note

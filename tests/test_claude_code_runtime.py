@@ -230,7 +230,8 @@ def test_child_env_has_no_github_or_anthropic_billing_credentials(
     captured = _install_fake_popen(
         monkeypatch, _FakePopen(stdout=_stream(_result_event(TRIAGE_JSON)))
     )
-    for name in ("GH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+    secrets = ("GH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
+    for name in (*secrets, "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK"):
         monkeypatch.setenv(name, f"secret-{name}")
     for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
         monkeypatch.setenv(name, "1")
@@ -242,9 +243,9 @@ def test_child_env_has_no_github_or_anthropic_billing_credentials(
     assert isinstance(env, dict)
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     for name in (
-        "GH_TOKEN",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
+        *secrets,
+        "AWS_SECRET_ACCESS_KEY",
+        "SSH_AUTH_SOCK",
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_USE_FOUNDRY",

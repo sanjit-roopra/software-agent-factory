@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from .config import RepositoryCommandsConfig, ScopeDriftConfig
 from .models import CommandResult, ExecutionPlan, Risk, VerificationReport
@@ -297,6 +297,7 @@ class RepositoryVerifier:
         timeout_seconds: int,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
+        before_command: Callable[[], None] | None = None,
     ) -> RepositoryVerificationResult:
         logs_dir = run_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
@@ -317,9 +318,13 @@ class RepositoryVerifier:
                 timeout_seconds=timeout_seconds,
                 env_passthrough=env_passthrough,
                 capture_bytes=capture_bytes,
+                # Every verify command runs, so one attempt sees every failing check.
+                stop_on_failure=phase is not CheckPhase.VERIFY,
+                before_command=before_command,
             )
             executed_results.extend(phase_report.deterministic_checks)
 
+            first_failure: tuple[CommandResult, CommandLogMetadata] | None = None
             for phase_index, result in enumerate(phase_report.deterministic_checks, start=1):
                 overall_index += 1
                 command_log = self._persist_command_log(
@@ -330,18 +335,20 @@ class RepositoryVerifier:
                     result=result,
                 )
                 command_logs.append(command_log)
+                if first_failure is None and (result.timed_out or result.exit_code != 0):
+                    first_failure = (result, command_log)
 
             if not phase_report.passed:
                 failed_phase = phase
-                if command_logs:
-                    failed_command = command_logs[-1]
-                # A failed phase with no check result is an infrastructure fault, never a pass.
-                failure_kind = (
-                    self.classify_failure(phase, phase_report.deterministic_checks[-1])
-                    if phase_report.deterministic_checks
-                    else VerificationFailureKind.INFRA
+                # A failed phase with no failed check is an infrastructure fault, never a pass.
+                failure_kind = VerificationFailureKind.INFRA
+                if first_failure is not None:
+                    failure_kind = self.classify_failure(phase, first_failure[0])
+                    failed_command = first_failure[1]
+                failures.extend(
+                    f"{phase.value}: {failure}"
+                    for failure in phase_report.failures or ["verification failed"]
                 )
-                failures.append(self._describe_phase_failure(phase, phase_report))
                 break
 
         passed = failed_phase is None
@@ -437,15 +444,6 @@ class RepositoryVerifier:
         slug = slug[:40].strip("-")
         return slug or "command"
 
-    def _describe_phase_failure(
-        self,
-        phase: CheckPhase,
-        report: VerificationReport,
-    ) -> str:
-        if not report.failures:
-            return f"{phase.value}: verification failed"
-        return f"{phase.value}: {report.failures[0]}"
-
     @staticmethod
     def _contains_any(text: str, candidates: Iterable[str]) -> bool:
         return any(candidate in text for candidate in candidates)
@@ -457,6 +455,29 @@ class RepositoryVerifier:
         if self._contains_any(command, _TEST_COMMAND_MARKERS):
             return True
         return self._contains_any(combined_output, _TEST_MARKERS)
+
+
+def _normalize_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.strip("/")
+
+
+def paths_outside_scope(modules: Iterable[str], changed_files: Iterable[str]) -> tuple[str, ...]:
+    """The changed files under none of the plan's expected modules, in order.
+
+    A plan that names no module puts nothing out of scope.
+    """
+    prefixes = {prefix for module in modules if (prefix := _normalize_path(module))}
+    if not prefixes:
+        return ()
+    paths = dict.fromkeys(path for item in changed_files if (path := _normalize_path(item)))
+    return tuple(
+        path
+        for path in paths
+        if not any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+    )
 
 
 class ScopeDriftPolicy:
@@ -483,33 +504,19 @@ class ScopeDriftPolicy:
         planned_files = self._planned_step_files(execution_plan)
         findings: list[ScopeFinding] = []
 
-        expected_modules = self._expected_path_prefixes(execution_plan)
-        if expected_modules:
-            expected_files = tuple(
-                path
-                for path in normalized_files
-                if any(
-                    path == prefix or path.startswith(f"{prefix}/") for prefix in expected_modules
+        unexpected_files = paths_outside_scope(
+            execution_plan.expected_scope.modules, normalized_files
+        )
+        if unexpected_files and len(unexpected_files) == len(normalized_files):
+            findings.append(
+                ScopeFinding(
+                    category="unexpected-module",
+                    message=(
+                        f"Changed files outside expected path scope: {', '.join(unexpected_files)}"
+                    ),
+                    paths=unexpected_files,
                 )
             )
-            unexpected_files = tuple(
-                path
-                for path in normalized_files
-                if not any(
-                    path == prefix or path.startswith(f"{prefix}/") for prefix in expected_modules
-                )
-            )
-            if unexpected_files and not expected_files:
-                findings.append(
-                    ScopeFinding(
-                        category="unexpected-module",
-                        message=(
-                            "Changed files outside expected path scope: "
-                            f"{', '.join(unexpected_files)}"
-                        ),
-                        paths=unexpected_files,
-                    )
-                )
 
         max_files = execution_plan.expected_scope.estimated_files_max
 
@@ -596,16 +603,8 @@ class ScopeDriftPolicy:
             normalized
             for step in execution_plan.steps
             for path in step.likely_files
-            if (normalized := self._normalize_path(path))
+            if (normalized := _normalize_path(path))
         }
-
-    def _expected_path_prefixes(self, execution_plan: ExecutionPlan) -> set[str]:
-        expected: set[str] = set()
-        for module in execution_plan.expected_scope.modules:
-            normalized = self._normalize_path(module)
-            if normalized:
-                expected.add(normalized)
-        return expected
 
     def _decide(self, findings: Sequence[ScopeFinding], risk: Risk) -> ScopeDecision:
         if not findings:
@@ -618,17 +617,11 @@ class ScopeDriftPolicy:
         unique: list[str] = []
         seen: set[str] = set()
         for path in changed_files:
-            normalized = self._normalize_path(path)
+            normalized = _normalize_path(path)
             if normalized and normalized not in seen:
                 unique.append(normalized)
                 seen.add(normalized)
         return unique
-
-    def _normalize_path(self, path: str) -> str:
-        normalized = path.replace("\\", "/").strip()
-        while normalized.startswith("./"):
-            normalized = normalized[2:]
-        return normalized.strip("/")
 
     def _top_level_name(self, path: str) -> str:
         return PurePosixPath(path).parts[0]

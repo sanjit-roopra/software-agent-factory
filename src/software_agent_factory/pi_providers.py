@@ -1,8 +1,8 @@
 """Credential environment variables per pi provider.
 
 A leaf module (constants and one pure function, no imports beyond the
-standard library) so both the runtime (:mod:`~software_agent_factory.pi_runtime`,
-which scrubs pi's environment) and the preflight
+standard library) so both the child-environment scrub
+(:func:`~software_agent_factory.subprocess_utils.build_child_env`) and the preflight
 (:mod:`~software_agent_factory.doctor`, which checks a credential exists) read
 one map instead of two that drift apart.
 """

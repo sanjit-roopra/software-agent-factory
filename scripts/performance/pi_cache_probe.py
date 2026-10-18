@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from software_agent_factory.pi_providers import pi_provider_credential_vars
 from software_agent_factory.pi_rpc import PiProcessHandle, PiRpcClient, messages_since_last_prompt
 from software_agent_factory.subprocess_utils import build_child_env
 
@@ -114,11 +115,9 @@ ProcessFactory = Callable[[Sequence[str]], PiProcessHandle]
 
 
 def _default_process_factory(cmd: Sequence[str]) -> PiProcessHandle:
-    # pi's github-copilot auth is read from ~/.pi/agent/auth.json, not these
-    # env vars, so dropping them cannot break auth -- it only keeps a GitHub
-    # credential in the factory's own environment from leaking into the
-    # child's environment or transcript.
-    env, _ = build_child_env()
+    # Keep only the probed provider's credentials, as the pi runtime does.
+    provider = cmd[list(cmd).index("--provider") + 1]
+    env, _ = build_child_env(keep=pi_provider_credential_vars(provider))
     try:
         return subprocess.Popen(
             list(cmd),

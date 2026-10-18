@@ -91,7 +91,6 @@ from software_agent_factory.workflow import (
     TransitionError,
     WorkflowController,
     _RunContext,
-    _with_repair_memory,
     is_run_finished,
 )
 from software_agent_factory.workspace import GitWorktreeWorkspace, WorkspaceError
@@ -3293,6 +3292,8 @@ class _ScriptedCommandRunner(DeterministicVerifier):
         *,
         env_passthrough: Sequence[str] = (),
         capture_bytes: int = 32768,
+        stop_on_failure: bool = True,
+        before_command: Callable[[], None] | None = None,
     ) -> VerificationReport:
         results: list[CommandResult] = []
         for command in commands:
@@ -3309,7 +3310,7 @@ class _ScriptedCommandRunner(DeterministicVerifier):
                     duration_seconds=0.0,
                 )
             )
-            if exit_code:
+            if exit_code and stop_on_failure:
                 break
         passed = all(result.exit_code == 0 for result in results)
         return VerificationReport(
@@ -3351,8 +3352,9 @@ def test_configured_commands_win_over_derived_commands(
 ) -> None:
     runner = _ScriptedCommandRunner()
     store = FileRunStore(data_dir)
+    runtime = RecordingRuntime(FakeAgentRuntime())
     controller = WorkflowController(
-        _config(data_dir, verify=["make check"]), store, FakeAgentRuntime(), verifier=runner
+        _config(data_dir, verify=["make check"]), store, runtime, verifier=runner
     )
 
     run = controller.run(_work_item("WI-config-commands"), uv_python_repo)
@@ -3362,6 +3364,8 @@ def test_configured_commands_win_over_derived_commands(
         source=RepositoryCommandsSource.CONFIG, verify=("make check",)
     )
     assert set(runner.commands) == {"make check"}
+    implementer = next(r for r in runtime.requests if r.role is AgentRole.IMPLEMENTER)
+    assert implementer.verification_commands == ("make check",)
 
 
 def test_derived_commands_are_probed_then_used_for_verification(
@@ -3569,34 +3573,3 @@ def test_revert_check_adds_an_advisory_check_for_a_change_with_tests(
     if enabled:
         assert last.stdout.startswith(f"revert check: {TESTS_PASS_WITHOUT_CHANGE}")
         assert "- src/app.py" in last.stdout
-
-
-def test_repair_memory_lists_earlier_failures_and_flags_a_repeat() -> None:
-    earlier: list[tuple[int, str]] = []
-
-    def failing(code: int, error: str) -> RepairContext:
-        return RepairContext(
-            trigger=AttemptTrigger.VERIFICATION,
-            summary="Deterministic verify failed (test failure).",
-            failures=[f"'pytest' exited with code {code}"],
-            log_excerpt=f"$ pytest\ncollected 3 items\n{error}",
-        )
-
-    first = _with_repair_memory(earlier, failing(1, "tests/test_a.py:10: AssertionError"), 1)
-    other = _with_repair_memory(earlier, failing(2, "E   ImportError: no module"), 2)
-    repeat = _with_repair_memory(earlier, failing(1, "tests/test_a.py:99: AssertionError"), 3)
-
-    assert first is not None
-    assert first.previous_attempts == []
-    assert other is not None
-    assert not other.summary.startswith("Same failure")
-    assert repeat is not None
-    assert repeat.summary.startswith("Same failure as attempt 1; try a different approach.")
-    assert repeat.previous_attempts == [
-        "attempt 1: 'pytest' exited with code # | tests/test_a.py:#: AssertionError",
-        "attempt 2: 'pytest' exited with code # | E ImportError: no module",
-    ]
-    polish = RepairContext(trigger=AttemptTrigger.POLISH, summary="polish")
-    assert _with_repair_memory(earlier, polish, 4) is polish
-    assert _with_repair_memory(earlier, None, 4) is None
-    assert len(earlier) == 3

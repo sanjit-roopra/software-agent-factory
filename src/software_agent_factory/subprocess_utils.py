@@ -23,8 +23,11 @@ from json import JSONDecodeError
 from typing import TYPE_CHECKING, Protocol
 
 from . import redaction
+from .pi_providers import API_KEY_SUFFIX, PI_PROVIDER_CREDENTIAL_ENV_VARS
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from .models import AgentRole
 
 #: Environment variables scrubbed from a child agent process's environment so
@@ -128,19 +131,41 @@ def _terminate_group(process: subprocess.Popen[str]) -> bool:
     return True
 
 
-def build_child_env() -> tuple[dict[str, str], set[str]]:
-    """Copy the current environment with GitHub credentials scrubbed.
+def build_child_env(keep: Collection[str] = ()) -> tuple[dict[str, str], set[str]]:
+    """Copy the current environment without credentials the child does not need.
 
-    Returns the scrubbed environment mapping alongside the set of credential
-    values removed, so callers can also redact those values from process
-    output (see :func:`sanitize_output`).
+    Removes :data:`GITHUB_CREDENTIAL_ENV_VARS`, ``SSH_AUTH_SOCK`` (ssh-agent
+    access only; key files and credential helpers are out of scope), every
+    variable of :data:`~software_agent_factory.pi_providers.PI_PROVIDER_CREDENTIAL_ENV_VARS`
+    and every ``*_API_KEY`` variable, except the provider credentials named in
+    ``keep``. A GitHub credential is removed even when ``keep`` names it.
+
+    Returns the environment alongside every credential value found, kept or
+    removed, so callers can redact them from process output (see
+    :func:`sanitize_output`). ``SSH_AUTH_SOCK`` is not a secret value and is
+    not redacted.
     """
     env = dict(os.environ)
+    env.pop("SSH_AUTH_SOCK", None)
     scrubbed_values: set[str] = set()
     for name in GITHUB_CREDENTIAL_ENV_VARS:
         value = env.pop(name, None)
         if value:
             scrubbed_values.add(value)
+    # A provider newer than the map may read a key the map does not name, so
+    # every *_API_KEY variable is treated as a credential.
+    credential_vars = {
+        *(name for names in PI_PROVIDER_CREDENTIAL_ENV_VARS.values() for name in names),
+        *keep,
+        *(name for name in env if name.endswith(API_KEY_SUFFIX)),
+    }
+    for name in credential_vars:
+        value = env.get(name)
+        if not value:
+            continue
+        scrubbed_values.add(value)
+        if name not in keep:
+            del env[name]
     return env, scrubbed_values
 
 

@@ -94,6 +94,25 @@ def test_stops_after_first_failure(tmp_path: Path) -> None:
 
 
 @requires_models
+def test_runs_every_command_without_stop_on_failure_until_a_timeout(tmp_path: Path) -> None:
+    report = DeterministicVerifier().run(
+        ["false", "true", "exit 3", "sleep 5", "true"],
+        cwd=tmp_path,
+        timeout_seconds=1,
+        stop_on_failure=False,
+    )
+
+    assert report.passed is False
+    assert [check.command for check in report.deterministic_checks] == [
+        "false",
+        "true",
+        "exit 3",
+        "sleep 5",
+    ]
+    assert len(report.failures) == 3
+
+
+@requires_models
 def test_timeout_is_recorded_as_failed_result_not_raised(tmp_path: Path) -> None:
     started = time.monotonic()
     report = DeterministicVerifier().run(["sleep 5"], cwd=tmp_path, timeout_seconds=1)
