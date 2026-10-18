@@ -277,6 +277,42 @@ and a finished or missing run. A second note while one waits exits with code 1 t
 
 ---
 
+## factory escalate
+
+Redo a run one route higher with your note, on the same branch and pull request
+(ADR-055).
+
+```bash
+factory escalate run-9bb36bbbdf114f53bd9599a103122976 --note "Use the shared validator."
+```
+
+| Argument or option | Required | Effect |
+| --- | --- | --- |
+| `run_id` | yes | The run id to redo. |
+| `--note` | yes | What to change, at most 2,000 characters. |
+
+Options: `--config`, `--data-dir`. They only find the run.
+
+The run keeps the repository, `--runtime`, `--model-profile` and `--config` it
+started with, so the command uses those again. Roles that name their own runtime
+still use it.
+
+The route moves up one step: `SINGLE` to `CRITIQUE`, and every other route to
+`FULL`. `FULL` stays `FULL`. `CRITIQUE` implements again with the note and then
+reviews. `FULL` plans again with the note and the saved triage result, then
+implements, tests and reviews. The run gets fresh attempt budgets. It pushes to
+the same pull request and watches CI as usual. The command waits for the run and
+prints where it ended, as `factory run` does.
+
+Only a run in `PR_READY`, `PR_CREATED`, `CI_RUNNING`, `CI_DIAGNOSIS`,
+`NEEDS_HUMAN` or `DONE` can escalate, and only when its change is not merged. A
+process that works on the run holds its workspace lock, so the command refuses
+it. These exit with code 1: a bad note, a missing run, a run with no saved plan,
+and a run that cannot escalate. A run that started before runs kept their
+settings cannot escalate.
+
+---
+
 ## factory doctor
 
 Check this machine's prerequisites for the configured feature set.

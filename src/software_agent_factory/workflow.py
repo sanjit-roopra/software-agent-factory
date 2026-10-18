@@ -136,6 +136,7 @@ from .models import (
     ReviewSourceLocation,
     Risk,
     RouteDecision,
+    RunLaunch,
     RunLease,
     RunSteerNote,
     RunStopRequest,
@@ -199,6 +200,25 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATES: frozenset[WorkflowState] = frozenset(
     {WorkflowState.DONE, WorkflowState.NEEDS_HUMAN, WorkflowState.FAILED}
 )
+#: States ``factory escalate`` takes a run out of, when nothing works on it (ADR-055).
+ESCALATABLE_STATES: frozenset[WorkflowState] = frozenset(
+    {
+        WorkflowState.PR_READY,
+        WorkflowState.PR_CREATED,
+        WorkflowState.CI_RUNNING,
+        WorkflowState.CI_DIAGNOSIS,
+        WorkflowState.NEEDS_HUMAN,
+        WorkflowState.DONE,
+    }
+)
+#: The route an operator escalation moves a run to (ADR-055). ``FULL`` stays ``FULL``.
+_ESCALATION_ROUTES: dict[ExecutionRoute, ExecutionRoute] = {
+    ExecutionRoute.SINGLE: ExecutionRoute.CRITIQUE,
+    ExecutionRoute.CRITIQUE: ExecutionRoute.FULL,
+    ExecutionRoute.FULL_REVIEW: ExecutionRoute.FULL,
+    ExecutionRoute.MANUAL_TRIAGE: ExecutionRoute.FULL,
+    ExecutionRoute.FULL: ExecutionRoute.FULL,
+}
 
 #: CI failure categories that may legitimately be repaired by another code
 #: change. Everything else (flaky/infra/dependency/unknown/cancelled) is an
@@ -213,6 +233,7 @@ MAX_RESTART_RECOVERIES = 2
 #: Routes that synthesize the specification and the plan instead of calling the planner.
 _SYNTHESIZED_ROUTES = frozenset({ExecutionRoute.SINGLE, ExecutionRoute.CRITIQUE})
 _RESTART_REASON = "interrupted by a factory restart"
+_DELIVERY_REPO_CHANGED = "delivery repository changed since this run started"
 _RESTART_REPAIR_CONTEXT = RepairContext(
     trigger=AttemptTrigger.IMPLEMENTER_FAILURE,
     summary=(
@@ -335,6 +356,20 @@ def is_run_finished(run: FactoryRun) -> bool:
 _PLANNING_RESULT_REQUEST = (
     "Return a complete PlanningResult JSON object with the specification and the execution plan."
 )
+
+
+def escalation_route(run: FactoryRun) -> ExecutionRoute | None:
+    """The route ``factory escalate`` moves ``run`` to, or ``None`` when it cannot escalate.
+
+    It does not check for a live process: the workspace lock does that (ADR-055).
+    """
+    if (
+        run.state not in ESCALATABLE_STATES
+        or run.merge_commit_sha is not None
+        or run.route_decision is None
+    ):
+        return None
+    return _ESCALATION_ROUTES[run.route_decision.effective_route]
 
 
 def _planner_clarification_context(unresolved_decisions: Sequence[str]) -> str:
@@ -488,10 +523,12 @@ class WorkflowController:
         repository_profiler: Callable[[Path], RepositoryProfile] | None = None,
         toolchain_inventory: Callable[[Path, RepositoryProfile], ToolchainInventory] | None = None,
         github_client: GitHubClient | None = None,
+        launch: RunLaunch | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._runtime = runtime
+        self._launch = launch
         self._router = router if router is not None else ModelRouter(config)
         self._command_runner = verifier if verifier is not None else DeterministicVerifier()
         self._verifier = (
@@ -710,16 +747,20 @@ class WorkflowController:
         new_state: WorkflowState,
         *,
         failure_reason: str | None = None,
+        operator_escalation: bool = False,
     ) -> FactoryRun:
         """Move ``run`` to ``new_state``, persisting the result.
 
         Raises :class:`TransitionError` if ``new_state`` is not reachable
-        from ``run.state`` per ``ALLOWED_TRANSITIONS``. Every transition
+        from ``run.state`` per ``ALLOWED_TRANSITIONS``. Only an operator
+        escalation may also move a run to ``PLANNING`` (ADR-055). Every transition
         refreshes ``last_activity_at`` (the scheduler's stall signal) and
         either stamps (terminal) or clears (active) ``completed_at`` so a
         repaired run never keeps a stale completion timestamp.
         """
         allowed = ALLOWED_TRANSITIONS.get(run.state, frozenset())
+        if operator_escalation:
+            allowed = allowed | {WorkflowState.PLANNING}
         if new_state not in allowed:
             raise TransitionError(f"cannot transition from {run.state} to {new_state}")
 
@@ -969,6 +1010,8 @@ class WorkflowController:
             risk_assessment_enabled=self._config.risk_assessment.enabled,
             unattended=self._config.factory.unattended,
             delivery_policy_fingerprint=delivery_policy_fingerprint(self._config),
+            source_repo=str(source_repo.expanduser().resolve()),
+            launch=self._launch,
         )
         if not run.risk_assessment_enabled:
             logger.warning(
@@ -1219,7 +1262,7 @@ class WorkflowController:
                 assert self._merger is not None
                 repository = self._merger.validate_repository(source_repo)
                 if repository != run.delivery_repository:
-                    raise ValueError("delivery repository changed since this run started")
+                    raise ValueError(_DELIVERY_REPO_CHANGED)
             if not self._workspace_matches(run, workspace):
                 return self._recover_interrupted_delivery(
                     run,
@@ -1739,7 +1782,7 @@ class WorkflowController:
                     assert self._merger is not None
                     repository = self._merger.validate_repository(source_repo)
                     if repository != run.delivery_repository:
-                        raise ValueError("delivery repository changed since this run started")
+                        raise ValueError(_DELIVERY_REPO_CHANGED)
 
                 now = utc_now()
                 run = run.model_copy(
@@ -1828,6 +1871,97 @@ class WorkflowController:
         context = self._reconcile_delivery_checkpoint(run, workspace, source_repo)
         run = self._transition_reopened(run)
         return self._publish_and_observe(run, context)
+
+    def escalate(self, run_id: str, note: str) -> FactoryRun:
+        """Redo a run one route higher with a person's note (ADR-055).
+
+        The run keeps its worktree, branch and pull request. ``CRITIQUE`` implements again with
+        the note; ``FULL`` plans again with it first. Fresh attempt budgets start, so the old
+        budget does not end the escalation. ``ValueError`` refuses a run that cannot escalate
+        and ``WorkspaceLockError`` one that a live process works on.
+        """
+        run = self._store.load_run(run_id)
+        if run.source_repo is None:
+            raise ValueError(f"run {run_id} does not record its repository")
+        source_repo = Path(run.source_repo)
+        workspace = GitWorktreeWorkspace(
+            self._config.data_dir,
+            source_repo,
+            run.work_item_id,
+            branch_prefix=self._config.repository.branch_prefix,
+        )
+        workspace.acquire_lock()
+        try:
+            run = self._store.load_run(run_id)
+            route = escalation_route(run)
+            if route is None:
+                raise ValueError(f"run {run_id} cannot escalate from {run.state}")
+            self._require_unchanged_delivery_policy(run)
+            if self._config.merge.enabled:
+                assert self._merger is not None
+                if self._merger.validate_repository(source_repo) != run.delivery_repository:
+                    raise ValueError(_DELIVERY_REPO_CHANGED)
+            if not self._workspace_matches(run, workspace):
+                raise ValueError(f"run {run_id} workspace is missing or changed")
+            workspace.prepare()
+            context = self._stored_context(run, workspace, source_repo)
+            run = self._record_route(run, context, route, "operator escalation")
+            run = run.model_copy(
+                update={
+                    "lease": RunLease(
+                        host=socket.gethostname(), pid=os.getpid(), heartbeat_at=utc_now()
+                    ),
+                    "budget_start": len(run.attempt_records),
+                    "needs_look": [],
+                }
+            )
+            self._store.delete_stop_request(run.id)
+            run = self.transition(run, WorkflowState.PLANNING, operator_escalation=True)
+            repair_context = RepairContext(
+                trigger=AttemptTrigger.OPERATOR,
+                summary=(
+                    "A person was not happy with the earlier change and asked for the work "
+                    "again. Follow their note."
+                ),
+                failures=[note],
+            )
+            try:
+                if route is ExecutionRoute.CRITIQUE:
+                    return self._drive_synthesized(
+                        run,
+                        context.work_item,
+                        context.triage_result,
+                        context.route_decision,
+                        workspace,
+                        source_repo,
+                        context.repository_profile,
+                        repair_context=repair_context,
+                    )
+                return self._drive_from_planning(
+                    run,
+                    context.work_item,
+                    context.triage_result,
+                    None,
+                    workspace,
+                    source_repo,
+                    context.repository_profile,
+                    planner_context=(
+                        f"{repair_context.summary}\n\nNote: {note}\n\n{_PLANNING_RESULT_REQUEST}"
+                    ),
+                    route_decision=context.route_decision,
+                    repair_context=repair_context,
+                )
+            except _Halt as halt:
+                return halt.run
+            except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
+                return self._recover_interrupted_delivery(
+                    self._store.load_run(run_id),
+                    workspace,
+                    source_repo,
+                    f"escalation failed: {exc}",
+                )
+        finally:
+            workspace.release_lock()
 
     def _triage_authorizes_delivery(
         self, run: FactoryRun, work_item: WorkItem, triage: TriageResult
@@ -2003,11 +2137,20 @@ class WorkflowController:
         }
         if route_precedence.get(to_route, 0) <= route_precedence.get(current, 0):
             return run  # Monotonic: never downgrade
+        return self._record_route(run, context, to_route, reason)
 
+    def _record_route(
+        self,
+        run: FactoryRun,
+        context: _RunContext,
+        to_route: ExecutionRoute,
+        reason: str,
+    ) -> FactoryRun:
+        """Move the effective route to ``to_route`` and record the adjustment."""
         logger.info(
             "Ratcheting route for run %s: %s -> %s (reason: %s)",
             run.id,
-            current,
+            context.effective_route,
             to_route,
             reason,
         )
@@ -2808,7 +2951,7 @@ class WorkflowController:
         state so a restart can never reset it (``ADR-003``)."""
         return sum(
             1
-            for attempt in run.attempt_records
+            for attempt in run.attempt_records[run.budget_start :]
             if attempt.budget is budget and attempt.role is AgentRole.IMPLEMENTER
         )
 
@@ -4052,7 +4195,7 @@ class WorkflowController:
     def _review_rounds_used(self, run: FactoryRun, budget: AttemptBudget) -> int:
         return sum(
             1
-            for attempt in run.attempt_records
+            for attempt in run.attempt_records[run.budget_start :]
             if attempt.budget is budget and attempt.reviewed_tree_sha is not None
         )
 
