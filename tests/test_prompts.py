@@ -76,6 +76,7 @@ from software_agent_factory.prompts import (
     section_hashes,
     summarize_command_result,
 )
+from software_agent_factory.revert_check import REVERT_CHECK_COMMAND, TESTS_PASS_WITHOUT_CHANGE
 from software_agent_factory.suppression_scan import SUPPRESSION_SCAN_COMMAND
 from software_agent_factory.writing_policy import writing_limits_text
 
@@ -681,6 +682,19 @@ def test_summarize_command_result_shows_a_passing_suppression_scan() -> None:
     summary = summarize_command_result(check)
 
     assert summary["stdout"] == check.stdout
+
+
+def test_summarize_command_result_shows_a_passing_revert_check() -> None:
+    check = CommandResult(
+        command=REVERT_CHECK_COMMAND,
+        exit_code=0,
+        stdout=f"revert check: {TESTS_PASS_WITHOUT_CHANGE}\nreverted to the base commit:\n- a.py",
+        duration_seconds=0.0,
+    )
+    ordinary = CommandResult(command="pytest", exit_code=0, stdout="1 passed", duration_seconds=0.0)
+
+    assert summarize_command_result(check)["stdout"] == check.stdout
+    assert summarize_command_result(ordinary)["stdout"] != ordinary.stdout
 
 
 def test_summarize_command_result_tail_traceback_retention() -> None:

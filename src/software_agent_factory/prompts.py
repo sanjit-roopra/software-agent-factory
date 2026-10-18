@@ -45,6 +45,7 @@ from .models import (
     WorkItem,
 )
 from .mutation_gate import MUTATION_CHECK_COMMAND
+from .revert_check import REVERT_CHECK_COMMAND
 from .review_lenses import ReviewLens, render_review_lenses, select_review_lenses
 from .suppression_scan import SUPPRESSION_SCAN_COMMAND
 from .writing_policy import writing_limits_text
@@ -782,9 +783,8 @@ def summarize_command_result(
         "duration_seconds": check.duration_seconds,
     }
     is_success = check.exit_code == 0 and not check.timed_out
-    # These checks pass but list what the TESTER and REVIEWER must read.
-    shown = (MUTATION_CHECK_COMMAND, SUPPRESSION_SCAN_COMMAND)
-    hide_output = is_success and not check.command.startswith(shown)
+    read_by_reviewers = (MUTATION_CHECK_COMMAND, SUPPRESSION_SCAN_COMMAND, REVERT_CHECK_COMMAND)
+    hide_output = is_success and not check.command.startswith(read_by_reviewers)
     test_counts = parse_test_counts(check.stdout, check.stderr)
     if test_counts:
         summary["test_counts"] = test_counts
