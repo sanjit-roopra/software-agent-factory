@@ -25,7 +25,9 @@ the run.
 - The service reopens the run at `PR_READY` on the same reviewed tree. The
   reopen check refuses a context whose fingerprint does not match the receipt,
   or a ledger whose open findings or reviewed tree changed. The delivery
-  checkpoint check refuses a worktree that changed since the review.
+  checkpoint check refuses a worktree that changed since the review. Like a
+  publish retry, the reopen refuses a delivery policy that changed since the run
+  started.
 - The open findings move to accepted in the ledger. A `ReviewAcceptance` with
   the reason `OPERATOR` records them. A person's acceptance passes the delivery
   check even when it is beyond the review policy.

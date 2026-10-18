@@ -625,13 +625,10 @@ def reopen_findings_acceptance(
     )
     # The checkpoint check reads the acceptance from the run, so it runs before any save. The
     # reopen check still needs the open findings, so they are cleared after the transition.
+    run_recovery.require_unchanged_delivery_policy(controller, run)
     context = run_recovery.reconcile_delivery_checkpoint(controller, run, workspace, source_repo)
     run = transition_reopened(controller, run)
-    run = run.model_copy(
-        update={"review_ledger": review_ledger.clear_open_findings(run.review_ledger)}
-    )
-    controller._store.save_run(run)
-    controller._store.save_artifact(run.id, acceptance, attempt=acceptance.snapshot)
+    run = controller._persist_review_acceptance(run, acceptance)
     if not controller._config.pull_request.enabled:
         return controller.finalize_pr_ready(run)
     return pr_delivery.publish_and_observe(controller, run, context)

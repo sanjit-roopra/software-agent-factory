@@ -230,3 +230,20 @@ def test_a_changed_worktree_refuses_the_acceptance(tmp_path: Path, source_repo: 
     assert refused.review_acceptance is None
     assert refused.escalation is not None
     assert refused.escalation.resume_classification is ResumeClassification.NOT_RESUMABLE
+
+
+def test_a_changed_delivery_policy_refuses_the_acceptance(
+    tmp_path: Path, source_repo: Path
+) -> None:
+    controller, store, config = _local(tmp_path)
+    halted = _halt(controller, source_repo)
+    _accept(halted, store, config)
+    store.save_run(
+        store.load_run(halted.id).model_copy(update={"delivery_policy_fingerprint": "e" * 64})
+    )
+
+    refused = controller.reopen(halted.id, source_repo)
+
+    assert refused.state is WorkflowState.NEEDS_HUMAN
+    assert refused.review_acceptance is None
+    assert "delivery policy changed" in (refused.failure_reason or "")
