@@ -406,7 +406,11 @@ even when nothing was new.
 - A runtime that streams its events reports each tool call as it starts. pi does
   this now. Its RPC client passes each `tool_execution_start` event to the runtime.
   The runtime redacts the tool arguments and reports the tool name and one short line.
-  Claude Code and Copilot wait for their whole output, so they do not report yet.
+  Claude Code and Copilot now report too. Their runtimes read stdout one line at a
+  time while the process runs, not all at once at the end. Each line that starts a
+  tool reports it, and each line also sets `last_output_at` on the active call. The
+  whole stdout is still the transcript. A timer stops the process group at the
+  timeout. Amended on 2026-10-19.
 - The workflow controller listens for the length of the agent call. It keeps the
   latest 20 tool calls and a count of all of them on the active call. The heartbeat
   thread saves the run within two seconds of a new tool call. It is the only thread
@@ -425,7 +429,7 @@ even when nothing was new.
 
 ### Consequences
 
-- A person sees what a pi call does while it runs.
+- A person sees what a call does while it runs, on all three runtimes.
 - An unchanged poll costs a hash on the server, not a JSON parse on the page.
 - The run file is written more often during a busy call: at most once per poll
   interval, not once per tool call.

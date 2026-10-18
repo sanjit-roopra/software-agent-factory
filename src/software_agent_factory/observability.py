@@ -385,6 +385,7 @@ class ActiveInvocationSummary(ModelBase):
     """The latest tool calls the call started, oldest first (dashboard X6)."""
     tool_call_count: int = Field(default=0, ge=0)
     """Every tool call the call started so far."""
+    last_output_at: UtcDateTime | None = None
 
 
 class RunGuidance(ModelBase):
@@ -1569,12 +1570,10 @@ def build_active_invocation_summary(
     stale_after: timedelta = DEFAULT_STALE_AFTER,
 ) -> ActiveInvocationSummary | None:
     """Return safe liveness details for the invocation persisted as active."""
-
     active = run.active_invocation
     if active is None or is_run_finished(run):
         return None
-    current_time = _normalize_now(now)
-    status = _active_invocation_status(run, current_time, stale_after)
+    status = _active_invocation_status(run, _normalize_now(now), stale_after)
     return ActiveInvocationSummary(
         invocation_number=active.invocation_number,
         role=active.role,
@@ -1587,6 +1586,7 @@ def build_active_invocation_summary(
         attempt_number=active.attempt_number,
         tool_calls=list(active.recent_tool_calls),
         tool_call_count=active.tool_call_count,
+        last_output_at=active.last_output_at,
     )
 
 

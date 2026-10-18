@@ -32,6 +32,7 @@ from .agents import (
     validate_runtime_request,
     workspace_cwd,
 )
+from .line_stream import stream_process
 from .models import (
     AgentPurpose,
     ModelBase,
@@ -48,10 +49,8 @@ from .subprocess_utils import (
     build_child_env,
     extract_first_event_ms,
     format_failure_reason,
-    merge_timeout_output,
     track_child,
 )
-from .subprocess_utils import kill_process_group as _kill_process_group
 from .usage_values import non_negative_float, non_negative_int
 
 logger = logging.getLogger(__name__)
@@ -135,40 +134,8 @@ class CopilotAgentRuntime(AgentRuntime):
                     runtime_unavailable=isinstance(exc, FileNotFoundError),
                 )
             boot_ms = (time.perf_counter() - boot_start) * 1000.0
-            try:
-                stdout, stderr = process.communicate(timeout=request.timeout_seconds)
-            except subprocess.TimeoutExpired as exc:
-                stdout, stderr = _kill_process_group(process)
-                stdout = merge_timeout_output(exc.stdout, stdout)
-                stderr = merge_timeout_output(exc.stderr, stderr)
-                usage = _load_usage_metrics(usage_path, stdout=stdout)
-                first_event_ms = extract_first_event_ms(stdout, started_at)
-                perf = PerformanceRecord(
-                    prompt_chars=prompt_chars,
-                    response_chars=len(stdout),
-                    process_boot_ms=boot_ms,
-                    first_event_ms=first_event_ms,
-                )
-                reason = format_failure_reason(
-                    role=request.role,
-                    message=f"copilot timed out after {request.timeout_seconds}s",
-                    stdout=stdout,
-                    stderr=stderr,
-                    scrubbed_values=scrubbed_values,
-                    limit=self._max_error_chars,
-                )
-                return AgentResult(
-                    role=request.role,
-                    success=False,
-                    failure_reason=reason,
-                    usage=usage,
-                    performance=perf,
-                    transcript=stdout or None,
-                )
-            except BaseException:
-                _kill_process_group(process)
-                raise
-
+            output = stream_process(process, timeout_seconds=request.timeout_seconds)
+            stdout, stderr = output.stdout, output.stderr
             usage = _load_usage_metrics(usage_path, stdout=stdout)
             first_event_ms = extract_first_event_ms(stdout, started_at)
             perf = PerformanceRecord(
@@ -177,10 +144,14 @@ class CopilotAgentRuntime(AgentRuntime):
                 process_boot_ms=boot_ms,
                 first_event_ms=first_event_ms,
             )
-            if process.returncode != 0:
+            if output.timed_out or process.returncode != 0:
                 reason = format_failure_reason(
                     role=request.role,
-                    message=f"copilot exited with code {process.returncode}",
+                    message=(
+                        f"copilot timed out after {request.timeout_seconds}s"
+                        if output.timed_out
+                        else f"copilot exited with code {process.returncode}"
+                    ),
                     stdout=stdout,
                     stderr=stderr,
                     scrubbed_values=scrubbed_values,

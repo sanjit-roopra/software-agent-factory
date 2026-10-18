@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import typer
+from factory_testing import FakeStreamPopen
 
 from software_agent_factory import cli
 from software_agent_factory.agents import AgentRequest, AgentResult
@@ -86,7 +87,7 @@ def _stream(*events: dict[str, object]) -> str:
     return "\n".join(json.dumps(e) for e in (init, *events)) + "\n"
 
 
-class _FakePopen:
+class _FakePopen(FakeStreamPopen):
     def __init__(
         self,
         *,
@@ -95,22 +96,12 @@ class _FakePopen:
         returncode: int = 0,
         raises: BaseException | None = None,
     ) -> None:
-        self._stdout = stdout
-        self._stderr = stderr
-        self._raises = raises
-        self.returncode = returncode
-        self.pid = 43210
-        self.stdin_input: str | None = None
-
-    def communicate(
-        self, input: str | None = None, timeout: float | None = None
-    ) -> tuple[str, str]:
-        if input is not None:
-            self.stdin_input = input
-        if self._raises is not None:
-            exc, self._raises = self._raises, None
-            raise exc
-        return self._stdout, self._stderr
+        super().__init__(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            wait_raises=() if raises is None else (raises,),
+        )
 
 
 def _install_fake_popen(monkeypatch: pytest.MonkeyPatch, popen: _FakePopen) -> dict[str, object]:
@@ -415,8 +406,8 @@ def test_result_event_without_text_fails(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_timeout_kills_the_process_group_and_keeps_partial_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    timeout = subprocess.TimeoutExpired(cmd="claude", timeout=30, output="partial output")
-    _install_fake_popen(monkeypatch, _FakePopen(raises=timeout))
+    timeout = subprocess.TimeoutExpired(cmd="claude", timeout=30)
+    _install_fake_popen(monkeypatch, _FakePopen(stdout="partial output", raises=timeout))
     killed = _record_killpg(monkeypatch)
 
     _assert_failed(
@@ -522,8 +513,8 @@ def test_unavailability_comes_from_the_reported_error_type(
 
 def test_a_timeout_is_not_unavailability(monkeypatch: pytest.MonkeyPatch) -> None:
     partial = _stream({"type": "assistant", "error": "rate_limit", "message": {}})
-    timeout = subprocess.TimeoutExpired(cmd="claude", timeout=30, output=partial)
-    _install_fake_popen(monkeypatch, _FakePopen(raises=timeout))
+    timeout = subprocess.TimeoutExpired(cmd="claude", timeout=30)
+    _install_fake_popen(monkeypatch, _FakePopen(stdout=partial, raises=timeout))
     _record_killpg(monkeypatch)
 
     result = ClaudeCodeAgentRuntime().run(_request(AgentRole.TRIAGE))

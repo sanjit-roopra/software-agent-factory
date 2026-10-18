@@ -7,9 +7,11 @@ same time it writes the tools the call used, one short line each, to a small
 ``calls/<n>.tools.json`` beside it. A dashboard poll reads only that small file.
 The whole transcript is read only when a person opens it (:func:`read_call_transcript`).
 
-A runtime that streams its events (pi, dashboard X6) also reports each tool call as it
-starts, through :func:`report_tool_call`. The workflow listens with :func:`live_tool_calls`
-and keeps the latest ones on the active call, so the dashboard can show a live tail.
+Every runtime also reports each tool call as it starts, through :func:`report_tool_call`
+(dashboard X6). pi reports from its RPC events; Claude Code and Copilot report from each
+stdout line as it arrives (:func:`report_event_line`). The workflow listens with
+:func:`live_tool_calls` and keeps the latest ones on the active call, so the dashboard can
+show a live tail.
 pi prints no stream of its own on stdout, so its runtime keeps the RPC events in an
 :class:`EventLog` and returns those lines as the transcript.
 
@@ -49,15 +51,20 @@ _PREVIEW_KEYS = ("command", "file_path", "path", "pattern", "url", "query", "des
 ToolCallSink = Callable[[dict[str, str]], None]
 
 _tool_call_sink: ContextVar[ToolCallSink | None] = ContextVar("tool_call_sink", default=None)
+_output_sink: ContextVar[Callable[[], None] | None] = ContextVar("output_sink", default=None)
 
 
 @contextmanager
-def live_tool_calls(sink: ToolCallSink) -> Iterator[None]:
-    """Send each tool call reported in this context to ``sink``."""
+def live_tool_calls(
+    sink: ToolCallSink, on_output: Callable[[], None] | None = None
+) -> Iterator[None]:
+    """Send each tool call reported in this context to ``sink``; call ``on_output`` per line."""
     token = _tool_call_sink.set(sink)
+    output_token = _output_sink.set(on_output)
     try:
         yield
     finally:
+        _output_sink.reset(output_token)
         _tool_call_sink.reset(token)
 
 
@@ -66,6 +73,19 @@ def report_tool_call(name: str, arguments: Any) -> None:
     sink = _tool_call_sink.get()
     if sink is not None:
         sink({"name": _one_line(redact_secrets(name)), "preview": _preview(arguments)})
+
+
+def report_event_line(line: str) -> None:
+    """Report one line a streaming CLI printed: output arrived, and each tool call it starts."""
+    sink = _output_sink.get()
+    if sink is not None:
+        sink()
+    try:
+        event = json.loads(line)
+    except (ValueError, RecursionError):  # not JSON, or a number past Python's digit limit
+        return
+    for name, arguments in _tool_uses(event):
+        report_tool_call(name, arguments)
 
 
 def transcript_name(invocation_number: int) -> str:

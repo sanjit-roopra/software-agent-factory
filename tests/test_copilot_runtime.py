@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from factory_testing import FakeStreamPopen
 
 from software_agent_factory.agents import AgentRequest
 from software_agent_factory.copilot_runtime import (
@@ -52,7 +53,7 @@ def _request(role: AgentRole, **overrides: object) -> AgentRequest:
     return AgentRequest(**defaults)
 
 
-class _FakePopen:
+class _FakePopen(FakeStreamPopen):
     def __init__(
         self,
         *,
@@ -62,19 +63,12 @@ class _FakePopen:
         timeout: subprocess.TimeoutExpired | None = None,
         timeout_calls: int = 1,
     ) -> None:
-        self._stdout = stdout
-        self._stderr = stderr
-        self._timeout = timeout
-        self._timeout_calls = timeout_calls
-        self._communicate_calls = 0
-        self.returncode = returncode
-        self.pid = 43210
-
-    def communicate(self, timeout: int | None = None) -> tuple[str, str]:
-        self._communicate_calls += 1
-        if self._timeout is not None and self._communicate_calls <= self._timeout_calls:
-            raise self._timeout
-        return self._stdout, self._stderr
+        super().__init__(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            wait_raises=[timeout] * timeout_calls if timeout is not None else (),
+        )
 
 
 @pytest.mark.parametrize(
@@ -801,19 +795,15 @@ def test_timeout_kills_process_group_and_returns_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     killed: list[tuple[int, signal.Signals]] = []
-    timeout = subprocess.TimeoutExpired(
-        cmd=["copilot"],
-        timeout=5,
-        output=(
-            '{"type":"session.usage_checkpoint","data":'
-            '{"totalNanoAiu":22456000,"totalPremiumRequests":1}}\n'
-            "partial stdout"
-        ),
-        stderr="partial stderr",
+    timeout = subprocess.TimeoutExpired(cmd=["copilot"], timeout=5)
+    partial = (
+        '{"type":"session.usage_checkpoint","data":'
+        '{"totalNanoAiu":22456000,"totalPremiumRequests":1}}\n'
+        "partial stdout"
     )
 
     def fake_popen(*args: object, **kwargs: object) -> _FakePopen:
-        return _FakePopen(stdout="", stderr="", timeout=timeout)
+        return _FakePopen(stdout=partial, stderr="partial stderr", timeout=timeout)
 
     def fake_killpg(pid: int, sig: signal.Signals) -> None:
         killed.append((pid, sig))
@@ -837,15 +827,10 @@ def test_timeout_uncooperative_process_escalates_to_sigkill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     killed: list[tuple[int, signal.Signals]] = []
-    timeout = subprocess.TimeoutExpired(
-        cmd=["copilot"],
-        timeout=5,
-        output="partial stdout",
-        stderr="partial stderr",
-    )
+    timeout = subprocess.TimeoutExpired(cmd=["copilot"], timeout=5)
 
     def fake_popen(*args: object, **kwargs: object) -> _FakePopen:
-        return _FakePopen(stdout="", stderr="", timeout=timeout, timeout_calls=2)
+        return _FakePopen(stdout="partial stdout", timeout=timeout, timeout_calls=2)
 
     def fake_killpg(pid: int, sig: signal.Signals) -> None:
         killed.append((pid, sig))
