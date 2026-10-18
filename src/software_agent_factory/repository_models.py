@@ -18,6 +18,8 @@ from software_agent_factory.model_base import (
     without_blank_entries,
 )
 
+SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
+
 
 class RepositoryTechnology(StrEnum):
     PYTHON = "python"
@@ -67,9 +69,9 @@ class RepositoryProfile(VersionedModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     detector_version: Literal[2] = 2
-    manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    dependency_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    shape_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    manifest_fingerprint: str = Field(pattern=SHA256_HEX_PATTERN)
+    dependency_fingerprint: str = Field(pattern=SHA256_HEX_PATTERN)
+    shape_fingerprint: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
     markers: tuple[str, ...] = ()
     version_files: tuple[str, ...] = ()
     technologies: tuple[RepositoryTechnology, ...] = ()
@@ -243,7 +245,7 @@ class ToolchainSetupPlan(VersionedModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_fingerprint: str = Field(pattern=SHA256_HEX_PATTERN)
     commands: tuple[str, ...] = ()
     packages: tuple[str, ...] = ()
     #: Repository files the setup writes: AGENTS.md, skills and their links.
