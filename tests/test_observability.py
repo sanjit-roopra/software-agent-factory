@@ -93,9 +93,7 @@ from software_agent_factory.observability import (
     RunSummary,
     build_monitoring_snapshot,
     build_run_detail,
-    resolve_usage,
     scan_readable_runs,
-    summarize_usage,
 )
 from software_agent_factory.operational_health import (
     OperationalHealthReport,
@@ -104,7 +102,11 @@ from software_agent_factory.operational_health import (
     StaleRunFinding,
     build_operational_health,
 )
-from software_agent_factory.run_metrics import _compute_aggregate_metrics
+from software_agent_factory.run_metrics import (
+    _compute_aggregate_metrics,
+    resolve_usage,
+    summarize_usage,
+)
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
 try:

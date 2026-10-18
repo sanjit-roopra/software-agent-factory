@@ -88,8 +88,6 @@ from .models import (
 )
 from .observability import (
     MonitoringSnapshot,
-    PerformanceSummary,
-    ReworkMetrics,
     RunDetail,
     RunSummary,
     build_monitoring_snapshot,
@@ -100,6 +98,7 @@ from .projects import FileProjectStore, ProjectError, ProjectRunner
 from .publishing import CIObserver, MergeResult, PullRequestMerger, PullRequestPublisher
 from .repository_profile import profile_repository
 from .routing import ModelRouter
+from .run_metrics import PerformanceSummary, ReworkMetrics
 from .scheduler import Scheduler, TrackerItem, TrackerProvider, deterministic_work_item_id
 from .service import FactoryService
 from .service_install import (

@@ -1506,10 +1506,10 @@ def dashboard_command(
         build_run_detail,
         build_run_diff,
         build_run_evidence,
-        resolve_usage,
     )
     from .operational_health import build_operational_health
     from .projects import FileProjectStore
+    from .run_metrics import resolve_usage
     from .store import FileRunStore
 
     store = FileRunStore(factory_config.data_dir)
