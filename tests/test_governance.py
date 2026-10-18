@@ -772,3 +772,16 @@ def test_find_protected_matches_normalizes_separators_and_prefixes() -> None:
     assert find_protected_matches(["/src/.env"], ["**/.env"]) == ("/src/.env",)
     assert find_protected_matches(["src\\.env"], ["**/.env"]) == ("src\\.env",)
     assert find_protected_matches(["src/app.py"], ["**/.env"]) == ()
+
+
+def test_scope_drift_ignores_only_the_paths_a_person_approved() -> None:
+    plan = _plan(modules=["src"], estimated_files_max=3)
+    policy = ScopeDriftPolicy()
+    changed = ["src/app.py", "migrations/0001_init.py", "migrations/0002_more.py"]
+
+    assessment = policy.assess(plan, changed, Risk.R1, ["./migrations/0001_init.py"])
+
+    assert [path for finding in assessment.findings for path in finding.paths] == [
+        "migrations/0002_more.py"
+    ]
+    assert policy.assess(plan, changed, Risk.R1, changed[1:]).findings == ()

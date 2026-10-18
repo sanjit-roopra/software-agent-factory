@@ -223,7 +223,7 @@ def test_a_grant_that_no_longer_matches_its_context_cannot_reopen_the_run(
 
 @pytest.mark.parametrize(
     "reason",
-    ["CI repair budget exhausted after 2 attempt(s)", "scope drift requires human review: x"],
+    ["CI repair budget exhausted after 2 attempt(s)", "workspace identity changed"],
 )
 def test_other_halts_are_not_attempt_grants(reason: str) -> None:
     run = FactoryRun(

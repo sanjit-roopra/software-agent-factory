@@ -55,7 +55,7 @@ def render_index_html(*, token: str) -> str:
       <p class="brand">Software Agent Factory</p>
       <p class="subtitle">
         Local dashboard &mdash; loopback only. Can approve, answer, retry, grant an attempt,
-        accept findings, stop, steer or escalate a run.
+        accept findings, widen the scope, stop, steer or escalate a run.
       </p>
       <button id="theme-toggle" type="button">Switch theme</button>
       <button id="keys-help-open" type="button" aria-keyshortcuts="?">Keyboard shortcuts</button>

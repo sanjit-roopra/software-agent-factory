@@ -18,6 +18,7 @@ from software_agent_factory.escalation_models import (
     HALT_REASON_COPY,
     IMPLEMENTATION_BUDGET_HALT_REASON,
     MAX_PLAN_DECISIONS,
+    MAX_SCOPE_APPROVAL_PATHS,
     MAX_STEER_NOTE_CHARS,
     PUBLISH_FAILED_HALT_REASON,
     REPLY_CURSOR_CLOSED,
@@ -53,6 +54,7 @@ from software_agent_factory.escalation_models import (
     RiskRationale,
     RunSteerNote,
     RunStopRequest,
+    ScopeApprovalContext,
     unresolved_decisions_count,
     unresolved_decisions_summary,
 )
@@ -172,6 +174,7 @@ __all__ = [
     "DeliveryRetryContext",
     "AttemptGrantContext",
     "FindingsAcceptanceContext",
+    "ScopeApprovalContext",
     "IMPLEMENTATION_BUDGET_HALT_REASON",
     "DependencyEcosystem",
     "EPISODE_ID_PATTERN",
@@ -193,6 +196,7 @@ __all__ = [
     "MAX_PERFORMANCE_METRICS",
     "MAX_PERFORMANCE_NAME_LENGTH",
     "MAX_PLAN_DECISIONS",
+    "MAX_SCOPE_APPROVAL_PATHS",
     "MAX_STEER_NOTE_CHARS",
     "ModelBase",
     "ModelUsage",
@@ -427,6 +431,9 @@ class FactoryRun(VersionedModel):
     attempt_grants: dict[AttemptBudget, int] = Field(default_factory=dict)
     #: The repair the next attempt would have had when the budget ran out (ADR-058).
     exhausted_repair: RepairContext | None = None
+    #: Changed paths a person approved beyond the plan's scope (ADR-060). The scope check
+    #: ignores them for this run.
+    approved_scope_paths: list[str] = Field(default_factory=list)
     #: The repository the run started from and the command settings (ADR-055).
     #: ``None`` on runs recorded before ``factory escalate`` read them.
     source_repo: str | None = None

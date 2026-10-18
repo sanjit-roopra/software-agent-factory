@@ -64,6 +64,7 @@ from software_agent_factory.models import (
     RiskApprovalContext,
     RiskRationale,
     RouteDecision,
+    ScopeApprovalContext,
     WorkflowState,
 )
 from software_agent_factory.observability import build_run_detail
@@ -76,6 +77,7 @@ from software_agent_factory.resume import (
 from software_agent_factory.resume_classes import (
     compute_attempt_grant_context_fingerprint,
     compute_findings_acceptance_context_fingerprint,
+    compute_scope_approval_context_fingerprint,
 )
 from software_agent_factory.run_requests import build_steer_requester, build_stop_requester
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
@@ -90,6 +92,7 @@ PLAN = ResumeClassification.PLAN_DECISION
 RETRY = ResumeClassification.DELIVERY_RETRY
 GRANT = ResumeClassification.ATTEMPT_GRANT
 ACCEPT = ResumeClassification.ACCEPT_FINDINGS
+WIDEN = ResumeClassification.SCOPE_APPROVAL
 ORIGIN_HEADER = "Origin"
 CONTENT_TYPE = "Content-Type"
 HOST_HEADER = "Host"
@@ -122,6 +125,7 @@ ANSWER = "answer"
 RETRY_ACTION = "retry"
 GRANT_ACTION = "grant"
 ACCEPT_ACTION = "accept"
+WIDEN_ACTION = "widen"
 
 
 # -- runs ---------------------------------------------------------------------------------
@@ -223,6 +227,17 @@ def _accept_context() -> FindingsAcceptanceContext:
     )
 
 
+def _widen_context() -> ScopeApprovalContext:
+    paths = ["migrations/0001_init.py"]
+    return ScopeApprovalContext(
+        paths=paths,
+        patch_sha256="c" * 64,
+        context_fingerprint=compute_scope_approval_context_fingerprint(
+            run_id=RUN_ID, episode_id=EPISODE, paths=paths, patch_sha256="c" * 64
+        ),
+    )
+
+
 def _run(
     kind: ResumeClassification = RISK,
     *,
@@ -239,6 +254,7 @@ def _run(
         "delivery_retry_context": _retry_context() if kind is RETRY else None,
         "attempt_grant_context": _grant_context() if kind is GRANT else None,
         "findings_acceptance_context": _accept_context() if kind is ACCEPT else None,
+        "scope_approval_context": _widen_context() if kind is WIDEN else None,
     }
     escalation = EscalationRecord.model_validate({**fields, **record})
     return FactoryRun(id=RUN_ID, work_item_id=WORK_ITEM_ID, state=state, escalation=escalation)
@@ -252,6 +268,7 @@ def _fingerprint(run: FactoryRun) -> str:
         or run.escalation.delivery_retry_context
         or run.escalation.attempt_grant_context
         or run.escalation.findings_acceptance_context
+        or run.escalation.scope_approval_context
     )
     assert context is not None
     return context.context_fingerprint
@@ -468,6 +485,16 @@ def test_a_findings_acceptance_is_accepted_and_stored(make_rig: RigFactory) -> N
     assert (status, payload["status"]) == (202, "accepted")
     (stored,) = rig.requests()
     assert (stored.action, stored.context_fingerprint) == (ACCEPT, _fingerprint(rig.run))
+
+
+def test_a_scope_approval_is_accepted_and_stored(make_rig: RigFactory) -> None:
+    rig = make_rig(_run(WIDEN))
+
+    status, payload = rig.post(_path(WIDEN_ACTION), rig.body(), headers=rig.headers())
+
+    assert (status, payload["status"]) == (202, "accepted")
+    (stored,) = rig.requests()
+    assert (stored.action, stored.context_fingerprint) == (WIDEN, _fingerprint(rig.run))
 
 
 def test_a_findings_acceptance_for_a_changed_context_is_409(make_rig: RigFactory) -> None:

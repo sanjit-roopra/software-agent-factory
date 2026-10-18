@@ -59,6 +59,7 @@ from .resume_classes import (
     RESUME_CLASSES,
     is_valid_attempt_grant_context,
     is_valid_findings_acceptance_context,
+    is_valid_scope_approval_context,
 )
 from .run_context import Halt, TransitionError
 from .run_recovery import DELIVERY_REPO_CHANGED
@@ -276,6 +277,23 @@ def _check_findings_acceptance(
         raise ValueError(f"run {run.id} no longer matches its findings acceptance context")
 
 
+def _check_scope_approval(
+    _controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
+) -> None:
+    approval = escalation.scope_approval_context
+    if approval is None or not is_valid_scope_approval_context(
+        approval, run.id, escalation.episode_id
+    ):
+        raise ValueError(f"run {run.id} has missing or invalid scope approval context")
+    if receipt.scope_approval_context_fingerprint is None or not secrets.compare_digest(
+        receipt.scope_approval_context_fingerprint, approval.context_fingerprint
+    ):
+        raise ValueError(f"run {run.id} receipt fingerprint does not match active scope approval")
+
+
 #: The check a reopen runs on the decision a person gave, one per resumable class. Each
 #: raises ``ValueError`` when the decision no longer matches the run.
 _REOPEN_CHECKS: dict[
@@ -287,6 +305,7 @@ _REOPEN_CHECKS: dict[
     ResumeClassification.DELIVERY_RETRY: _check_delivery_retry,
     ResumeClassification.ATTEMPT_GRANT: _check_attempt_grant,
     ResumeClassification.ACCEPT_FINDINGS: _check_findings_acceptance,
+    ResumeClassification.SCOPE_APPROVAL: _check_scope_approval,
 }
 
 
@@ -356,7 +375,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
     accepted reply receipt bound to current run and episode, and the supported
     resumable class (RISK_APPROVAL or PLAN_DECISION -> PLANNING, DELIVERY_RETRY ->
     PR_READY and publish again, ATTEMPT_GRANT -> IMPLEMENTING with one more attempt,
-    ACCEPT_FINDINGS -> PR_READY with the open findings accepted). Only ATTEMPT_GRANT adds
+    ACCEPT_FINDINGS -> PR_READY with the open findings accepted, SCOPE_APPROVAL ->
+    IMPLEMENTING to verify the same work again with a wider scope). Only ATTEMPT_GRANT adds
     attempt budget, and only one attempt per reopen.
     """
     run = controller._store.load_run(run_id)
@@ -417,6 +437,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
                 return reopen_attempt_grant(controller, run, workspace, source_repo)
             if reopened_class is ResumeClassification.ACCEPT_FINDINGS:
                 return reopen_findings_acceptance(controller, run, workspace, source_repo)
+            if reopened_class is ResumeClassification.SCOPE_APPROVAL:
+                return reopen_scope_approval(controller, run, workspace, source_repo)
 
             return _resume_reopened(controller, run, workspace, source_repo)
         except Halt as halt:
@@ -629,6 +651,38 @@ def reopen_findings_acceptance(
     context = run_recovery.reconcile_delivery_checkpoint(controller, run, workspace, source_repo)
     run = transition_reopened(controller, run)
     run = controller._persist_review_acceptance(run, acceptance)
+    if not controller._config.pull_request.enabled:
+        return controller.finalize_pr_ready(run)
+    return pr_delivery.publish_and_observe(controller, run, context)
+
+
+def reopen_scope_approval(
+    controller: WorkflowController,
+    run: FactoryRun,
+    workspace: GitWorktreeWorkspace,
+    source_repo: Path,
+) -> FactoryRun:
+    """Reopen a run that stopped on its scope check with the paths a person approved
+    (ADR-060).
+
+    The paths join ``approved_scope_paths``, which every later scope check of the run ignores.
+    The run verifies the same work again without a new attempt, passes the scope check and goes
+    on to review. A worktree that changed since the halt fails closed. A new path beyond the
+    scope stops the run again.
+    """
+    approval = run.escalation.scope_approval_context if run.escalation else None
+    if approval is None:
+        raise ValueError(f"run {run.id} has no scope approval context")
+    context = run_recovery.stored_context(controller, run, workspace, source_repo)
+    evidence = workspace.collect_evidence()
+    patch_sha256 = hashlib.sha256(evidence.diff.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(patch_sha256, approval.patch_sha256):
+        raise ValueError("workspace changes do not match the work the scope check stopped on")
+    approved = list(dict.fromkeys([*run.approved_scope_paths, *approval.paths]))
+    run = transition_reopened(controller, run.model_copy(update={"approved_scope_paths": approved}))
+    run = controller._drive_to_pr_ready(
+        run, context, AttemptBudget.IMPLEMENTATION, None, resume_evidence=evidence
+    )
     if not controller._config.pull_request.enabled:
         return controller.finalize_pr_ready(run)
     return pr_delivery.publish_and_observe(controller, run, context)

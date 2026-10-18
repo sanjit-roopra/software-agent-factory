@@ -85,7 +85,7 @@ def run_outcome(run: Mapping[str, Any]) -> dict[str, str]:
     A done run with ``needs_look`` reasons says ``Done, needs look``. A run that waits for a
     person also has an ``action``: ``waiting`` to approve or answer, ``retry`` to publish
     again, ``grant`` to grant one more attempt, ``accept`` to accept open review findings,
-    ``stopped`` when only a command can help.
+    ``widen`` to approve a wider scope, ``stopped`` when only a command can help.
     Its label says the same in words.
     """
     state = _state(run)

@@ -7,9 +7,7 @@ Implements the core escalation and authorized human reply loop:
 - An authorized human contributor may reply on that exact thread with:
   ``@factory resume v1 run=<run-id> episode=<opaque-id>``
 - The controller validates the comment, author, timing, target, and episode,
-  records a durable decision receipt, and reopens the run when the halt category
-  is supported (``RISK_APPROVAL`` -> ``PLANNING`` or
-  ``PLAN_DECISION`` -> ``PLANNING``).
+  records a durable decision receipt, and reopens the run (see ``RESUME_CLASSES``).
 - Comment text never enters agent prompts and cannot alter models, commands,
   paths, URLs, retry policy, or arbitrary workflow state.
 """
@@ -296,6 +294,8 @@ def _resume_classification(run: FactoryRun, code: HaltReasonCode) -> ResumeClass
     reason = (run.failure_reason or "").lower()
     if code is HaltReasonCode.RISK_APPROVAL:
         return ResumeClassification.RISK_APPROVAL
+    if code is HaltReasonCode.SCOPE_REVIEW:
+        return ResumeClassification.SCOPE_APPROVAL
     publish_failed = reason.startswith(PUBLISH_FAILED_HALT_REASON) and not run.pull_request_url
     if publish_failed and run.reviewed_tree_sha:
         return ResumeClassification.DELIVERY_RETRY

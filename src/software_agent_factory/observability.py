@@ -24,11 +24,9 @@ Public surfaces:
 - :func:`build_run_detail` -- the single-run counterpart, returning a
   :class:`RunDetail` (summary fields, completion facts and the attempt
   history) or ``None`` for a run that does not exist or cannot be read.
-- Operational health findings live in
-  :mod:`software_agent_factory.operational_health`, structured logging in
-  :mod:`software_agent_factory.factory_logging`, and run classification,
-  usage totals and aggregate metrics in
-  :mod:`software_agent_factory.run_metrics`.
+- Operational health lives in :mod:`.operational_health`, structured logging in
+  :mod:`.factory_logging`, and run classification, usage totals and aggregate metrics
+  in :mod:`.run_metrics`.
 
 Health is always derived at read time and never persisted as a boolean: a
 run's "stale" or "finished" status is recomputed from its timestamps against
@@ -459,6 +457,7 @@ class EscalationSummary(ModelBase):
     dashboard_action_refusal: ResumeRefusal | None = None
     approval_scope: ApprovalScopeSummary | None = None
     decisions: list[str] = Field(default_factory=list)
+    scope_paths: list[str] = Field(default_factory=list)
 
 
 class RunDetail(ModelBase):
@@ -1131,6 +1130,7 @@ def _escalation_summary(
             else None
         ),
         decisions=list(plan.decisions) if plan is not None else [],
+        scope_paths=list(scope.paths) if (scope := escalation.scope_approval_context) else [],
     )
 
 

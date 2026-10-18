@@ -36,6 +36,7 @@ from .models import (
     Risk,
     RiskApprovalContext,
     RiskRationale,
+    ScopeApprovalContext,
     WorkflowState,
 )
 from .redaction import contains_secret
@@ -47,6 +48,7 @@ ResumeContext = (
     | DeliveryRetryContext
     | AttemptGrantContext
     | FindingsAcceptanceContext
+    | ScopeApprovalContext
 )
 
 # Absolute, network, and system file system paths
@@ -337,6 +339,35 @@ def is_valid_findings_acceptance_context(
     return secrets.compare_digest(context.context_fingerprint, expected)
 
 
+def compute_scope_approval_context_fingerprint(
+    *, run_id: str, episode_id: str, paths: Sequence[str], patch_sha256: str
+) -> str:
+    """Bind the paths a person may approve, and the patch they are in, to one episode."""
+    return _fingerprint_dict(
+        {
+            "run_id": run_id,
+            "episode_id": episode_id,
+            "paths": list(paths),
+            "patch_sha256": patch_sha256,
+        }
+    )
+
+
+def is_valid_scope_approval_context(
+    context: ScopeApprovalContext | None, run_id: str, episode_id: str
+) -> bool:
+    """Verify a scope approval context is bound to its run and episode."""
+    if not isinstance(context, ScopeApprovalContext):
+        return False
+    expected = compute_scope_approval_context_fingerprint(
+        run_id=run_id,
+        episode_id=episode_id,
+        paths=context.paths,
+        patch_sha256=context.patch_sha256,
+    )
+    return secrets.compare_digest(context.context_fingerprint, expected)
+
+
 @dataclass(frozen=True)
 class ResumeClass:
     """How one resumable halt class asks for, records and applies a person's decision."""
@@ -445,6 +476,22 @@ RESUME_CLASSES: Mapping[ResumeClassification, ResumeClass] = {
             "Findings accepted at {moment}, queued for the factory service. {start_hint}"
         ),
         expired_sentence="acceptance expired, accept again",
+        github_replies=False,
+    ),
+    ResumeClassification.SCOPE_APPROVAL: ResumeClass(
+        context_field="scope_approval_context",
+        receipt_field="scope_approval_context_fingerprint",
+        is_valid_context=is_valid_scope_approval_context,
+        command=format_resume_command,
+        # The run verifies the same work again, then goes on past the scope check (ADR-060).
+        reopen_state=WorkflowState.IMPLEMENTING,
+        dashboard_action="widen",
+        needs_you_action="widen",
+        needs_you_label="Needs scope approval",
+        queued_sentence=(
+            "Wider scope approved at {moment}, queued for the factory service. {start_hint}"
+        ),
+        expired_sentence="scope approval expired, approve again",
         github_replies=False,
     ),
 }

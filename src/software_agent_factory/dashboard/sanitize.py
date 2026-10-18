@@ -46,6 +46,7 @@ from ..models import (
     COST_UNIT_FIELDS,
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
+    MAX_SCOPE_APPROVAL_PATHS,
     TOKEN_CLASS_FIELDS,
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     ActiveInvocationStatus,
@@ -172,6 +173,7 @@ ESCALATION_FIELDS: frozenset[str] = frozenset(
         "dashboard_action_refusal",
         "approval_scope",
         "decisions",
+        "scope_paths",
     }
 )
 
@@ -771,23 +773,21 @@ def _sanitize_escalation(escalation: dict[str, Any], run_id: str | None) -> dict
 
 
 def _clean_escalation_text(safe: dict[str, Any], run_id: str | None) -> None:
-    """Redact and bound the approval scope and the decision questions, or drop them when malformed.
+    """Redact and bound the approval scope, decision questions and scope paths, else drop them.
 
-    Decisions are all or nothing: a reply must answer every numbered question, so a
-    list over :data:`MAX_PLAN_DECISIONS` is dropped, never cut.
+    A list over its limit is dropped, never cut: a reply answers every question and an
+    approval covers every path.
     """
-    if "approval_scope" in safe:
-        scope = _clean_approval_scope(safe["approval_scope"], run_id)
-        if scope is None:
-            del safe["approval_scope"]
-        else:
-            safe["approval_scope"] = scope
-    if "decisions" in safe:
-        decisions = _text_list(safe["decisions"], run_id, MAX_PLAN_DECISIONS)
-        if decisions is None:
-            del safe["decisions"]
-        else:
-            safe["decisions"] = decisions
+    scope = _clean_approval_scope(safe.pop("approval_scope", None), run_id)
+    if scope is not None:
+        safe["approval_scope"] = scope
+    for key, limit in (
+        ("decisions", MAX_PLAN_DECISIONS),
+        ("scope_paths", MAX_SCOPE_APPROVAL_PATHS),
+    ):
+        items = _text_list(safe.pop(key, None), run_id, limit)
+        if items is not None:
+            safe[key] = items
 
 
 def sanitize_run_detail(raw: Any) -> dict[str, Any]:
