@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Sequence
 
@@ -14,6 +15,7 @@ from factory_testing import (
     triage_hook,
 )
 
+from software_agent_factory import projects as projects_module
 from software_agent_factory.agent_artifact import parse_agent_artifact
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.config import FactoryConfig
@@ -41,6 +43,7 @@ from software_agent_factory.projects import (
     ProjectError,
     ProjectRunner,
     ProjectTargetError,
+    _run_git,
     _target_git,
 )
 from software_agent_factory.store import FileRunStore
@@ -1192,3 +1195,15 @@ def test_a_git_failure_that_keeps_the_worktree_on_the_target_is_a_target_error(
 
     with pytest.raises(ProjectTargetError, match="rev-parse HEAD"):
         _target_git(not_a_repository, "rev-parse", "HEAD")
+
+
+def test_a_hung_git_command_is_a_project_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def hang(args: Sequence[str], **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(args, 600.0)
+
+    monkeypatch.setattr(projects_module.subprocess, "run", hang)
+
+    with pytest.raises(ProjectError, match=r"git commit -m x timed out after 600s in "):
+        _run_git(tmp_path, "commit", "-m", "x")

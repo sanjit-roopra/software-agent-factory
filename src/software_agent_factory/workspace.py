@@ -51,6 +51,10 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterator, Sequence
 
+#: Ceiling for one local ``git`` command. A worktree checkout of a large repository
+#: or a target repository's commit hooks can be slow, but a hang must still end.
+GIT_TIMEOUT_SECONDS = 600.0
+
 
 class WorkspaceError(Exception):
     """Base error for workspace operations."""
@@ -126,14 +130,22 @@ def _ensure_strictly_within(path: Path, root: Path) -> Path:
 def _run_git(
     cwd: Path, args: Sequence[str], check: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _git_timeout(cwd, args, exc) from None
     if check and completed.returncode != 0:
         raise WorkspaceError(f"git {' '.join(args)} failed in {cwd}: {completed.stderr.strip()}")
     return completed
+
+
+def _git_timeout(cwd: Path, args: Sequence[str], exc: subprocess.TimeoutExpired) -> WorkspaceError:
+    return WorkspaceError(f"git {' '.join(args)} timed out after {exc.timeout:g}s in {cwd}")
 
 
 def _run_git_bytes(
@@ -142,11 +154,15 @@ def _run_git_bytes(
     check: bool = True,
     input_bytes: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    completed = subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        input=input_bytes,
-        capture_output=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            input=input_bytes,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _git_timeout(cwd, args, exc) from None
     if check and completed.returncode != 0:
         stderr = completed.stderr.decode("utf-8", errors="replace").strip()
         raise WorkspaceError(f"git {' '.join(args)} failed in {cwd}: {stderr}")
@@ -349,11 +365,7 @@ class GitWorktreeWorkspace:
             raise WorkspaceError("explicit workspace base must be an exact commit SHA")
 
     def _git_common_dir(self) -> Path:
-        completed = subprocess.run(
-            ["git", "-C", str(self.source_repo), "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-        )
+        completed = _run_git(self.source_repo, ["rev-parse", "--git-common-dir"], check=False)
         if completed.returncode != 0:
             raise WorkspaceError(
                 f"could not resolve Git common directory for {self.source_repo}: "
@@ -369,11 +381,7 @@ class GitWorktreeWorkspace:
         resolved = source_repo.resolve()
         if not resolved.is_dir():
             raise WorkspaceError(f"source repo {resolved} is not a directory")
-        completed = subprocess.run(
-            ["git", "-C", str(resolved), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-        )
+        completed = _run_git(resolved, ["rev-parse", "--is-inside-work-tree"], check=False)
         if completed.returncode != 0 or completed.stdout.strip() != "true":
             raise WorkspaceError(f"{resolved} is not a Git working tree")
         return resolved

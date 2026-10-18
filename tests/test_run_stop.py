@@ -137,6 +137,25 @@ def test_a_stop_request_halts_the_run_for_a_person_and_keeps_its_workspace(
     assert Path(run.workspace_path).is_dir()
 
 
+def test_a_stop_request_halts_the_run_between_verify_commands(
+    source_repo: Path, data_dir: Path, tmp_path: Path
+) -> None:
+    store = FileRunStore(data_dir)
+    request = tmp_path / "stop.json"
+    request.write_text(RunStopRequest(run_id="run-verify", source="cli").model_dump_json())
+    stop_file = store._run_dir_readonly("run-verify") / "stop-request.json"
+    marker = tmp_path / "second-command-ran"
+    config = build_config(data_dir, verify=[f"cp {request} {stop_file}", f"touch {marker}"])
+    controller = WorkflowController(config, store, FakeAgentRuntime())
+
+    run = controller.run(_work_item(source_repo), source_repo, run_id="run-verify")
+
+    assert run.state is WorkflowState.NEEDS_HUMAN
+    assert run.failure_reason is not None
+    assert run.failure_reason.startswith(f"{STOPPED_HALT_REASON} from the cli at ")
+    assert not marker.exists()
+
+
 def test_a_finished_run_drops_a_stop_request_it_never_reached(data_dir: Path) -> None:
     store = FileRunStore(data_dir)
     controller = WorkflowController(build_config(data_dir), store, FakeAgentRuntime())

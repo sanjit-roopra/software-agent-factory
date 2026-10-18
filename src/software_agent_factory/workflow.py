@@ -44,6 +44,7 @@ restarted process can never grant a run a fresh retry budget (``ADR-003``):
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -3554,9 +3555,11 @@ class WorkflowController:
             timeout_seconds=self._config.repository.command_timeout_seconds,
             env_passthrough=self._config.repository.env_passthrough,
             capture_bytes=self._config.repository.log_capture_bytes,
+            before_command=lambda: self._raise_if_cancelled(run),
         )
         if not result.report.passed:
             return result
+        self._raise_if_cancelled(run)
         return self._apply_mutation_gate(run, context, result)
 
     def _apply_mutation_gate(
@@ -4638,6 +4641,7 @@ class WorkflowController:
                     repo_path=context.workspace.path,
                     pull_request_url=run.pull_request_url,
                     repair_attempts_used=self._attempts_used(run, AttemptBudget.CI_REPAIR),
+                    before_wait=functools.partial(self._raise_if_cancelled, run),
                 )
             except (GitPublishError, GitHubError, OSError) as exc:
                 raise self._stop(run, context, f"could not observe CI: {exc}") from exc
