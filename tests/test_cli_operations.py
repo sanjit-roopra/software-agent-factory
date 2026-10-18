@@ -51,10 +51,10 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import (
     MonitoringSnapshot,
-    OperationalHealthReport,
     RunDetail,
     RunScanResult,
 )
+from software_agent_factory.operational_health import OperationalHealthReport
 from software_agent_factory.projects import FileProjectStore
 from software_agent_factory.service_install import (
     DEFAULT_LABEL,
@@ -409,6 +409,7 @@ def test_status_performs_single_bounded_scan_shared_with_snapshot_and_health(
     make_run(source_repo, data_dir, title="Second")
 
     import software_agent_factory.observability as obs_module
+    import software_agent_factory.operational_health as health_module
     from software_agent_factory.store import FileRunStore
 
     scan_calls: list[int] = []
@@ -418,7 +419,7 @@ def test_status_performs_single_bounded_scan_shared_with_snapshot_and_health(
 
     real_scan = obs_module.scan_readable_runs
     real_snapshot = obs_module.build_monitoring_snapshot
-    real_health = obs_module.build_operational_health
+    real_health = health_module.build_operational_health
     real_load = FileRunStore.load_run
 
     def spy_scan(store: object, max_scanned_runs: int = 1000) -> RunScanResult:
@@ -440,7 +441,7 @@ def test_status_performs_single_bounded_scan_shared_with_snapshot_and_health(
 
     monkeypatch.setattr(obs_module, "scan_readable_runs", spy_scan)
     monkeypatch.setattr(obs_module, "build_monitoring_snapshot", spy_snapshot)
-    monkeypatch.setattr(obs_module, "build_operational_health", spy_health)
+    monkeypatch.setattr(health_module, "build_operational_health", spy_health)
     monkeypatch.setattr(FileRunStore, "load_run", spy_load)
 
     result = runner.invoke(app, ["status", "--data-dir", str(data_dir), "--max-scanned-runs", "1"])

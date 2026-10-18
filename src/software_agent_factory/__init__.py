@@ -26,6 +26,7 @@ from .doctor import (
     requires_gh,
     run_doctor,
 )
+from .factory_logging import configure_factory_logging, log_run_event
 from .git_publish import GitPublisher
 from .github import CheckStatus, CIStatus, FailureCategory, GitHubClient, build_pr_body
 from .github_tracker import GitHubIssueProvider
@@ -87,17 +88,14 @@ from .models import (
 )
 from .observability import (
     MonitoringSnapshot,
-    OperationalHealthReport,
     PerformanceSummary,
     ReworkMetrics,
     RunDetail,
     RunSummary,
     build_monitoring_snapshot,
-    build_operational_health,
     build_run_detail,
-    configure_factory_logging,
-    log_run_event,
 )
+from .operational_health import OperationalHealthReport, build_operational_health
 from .projects import FileProjectStore, ProjectError, ProjectRunner
 from .publishing import CIObserver, MergeResult, PullRequestMerger, PullRequestPublisher
 from .repository_profile import profile_repository

@@ -32,6 +32,10 @@ import pytest
 from factory_testing import REPLY_POLICY
 from pydantic import ValidationError
 
+from software_agent_factory.factory_logging import (
+    configure_factory_logging,
+    log_run_event,
+)
 from software_agent_factory.models import (
     MAX_GUIDANCE_FINDINGS,
     AcceptedReplyReceipt,
@@ -82,25 +86,25 @@ from software_agent_factory.observability import (
     DEFAULT_STALE_AFTER,
     ActiveInvocationSummary,
     MonitoringSnapshot,
-    OperationalHealthReport,
-    OrphanedWorkspaceFinding,
     RunGuidance,
     RunScanCache,
     RunScanResult,
     RunStoreProtocol,
     RunSummary,
-    StaleLockFinding,
-    StaleRunFinding,
-    _compute_aggregate_metrics,
     build_monitoring_snapshot,
-    build_operational_health,
     build_run_detail,
-    configure_factory_logging,
-    log_run_event,
     resolve_usage,
     scan_readable_runs,
     summarize_usage,
 )
+from software_agent_factory.operational_health import (
+    OperationalHealthReport,
+    OrphanedWorkspaceFinding,
+    StaleLockFinding,
+    StaleRunFinding,
+    build_operational_health,
+)
+from software_agent_factory.run_metrics import _compute_aggregate_metrics
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
 try:
@@ -1886,7 +1890,7 @@ def test_actively_held_lock_is_not_reported_as_stale(tmp_path: Path) -> None:
 def test_lock_health_probe_never_acquires_the_workspace_flock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import software_agent_factory.observability as observability_module
+    import software_agent_factory.operational_health as health_module
 
     locks_dir = tmp_path / "locks"
     locks_dir.mkdir(parents=True)
@@ -1895,7 +1899,7 @@ def test_lock_health_probe_never_acquires_the_workspace_flock(
     def forbidden_flock(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("monitoring must not acquire a workspace flock")
 
-    monkeypatch.setattr(observability_module.fcntl, "flock", forbidden_flock)
+    monkeypatch.setattr(health_module.fcntl, "flock", forbidden_flock)
 
     report = build_operational_health(_fake_store(tmp_path), now=T0)
 
@@ -1918,13 +1922,13 @@ def test_non_lock_files_under_locks_dir_are_ignored(tmp_path: Path) -> None:
 def test_lock_check_unsupported_platform_is_reported_honestly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import software_agent_factory.observability as observability_module
+    import software_agent_factory.operational_health as health_module
 
     locks_dir = tmp_path / "locks"
     locks_dir.mkdir(parents=True)
     (locks_dir / "some-key.lock").write_text(str(os.getpid()), encoding="utf-8")
 
-    monkeypatch.setattr(observability_module, "_FCNTL_AVAILABLE", False)
+    monkeypatch.setattr(health_module, "_FCNTL_AVAILABLE", False)
     store = _fake_store(tmp_path)
 
     report = build_operational_health(store, now=T0)
@@ -2039,7 +2043,10 @@ def test_fake_run_store_satisfies_run_store_protocol(tmp_path: Path) -> None:
 
 
 def test_build_run_detail_returns_summary_fields_plus_attempts(tmp_path: Path) -> None:
-    from software_agent_factory.observability import RunDetail, build_run_detail
+    from software_agent_factory.observability import (
+        RunDetail,
+        build_run_detail,
+    )
 
     store = _fake_store(tmp_path)
     run = _run(
@@ -2721,7 +2728,7 @@ def test_prune_administration_locks_are_never_reported_as_stale(tmp_path: Path) 
     """``workspace._prune_lock`` deliberately never unlinks its file, so a
     holder-less ``prune-*.lock`` is the normal healthy state and must not be
     reported after every successful run."""
-    from software_agent_factory.observability import PRUNE_LOCK_PREFIX
+    from software_agent_factory.operational_health import PRUNE_LOCK_PREFIX
 
     data_dir = tmp_path / "data"
     locks_dir = data_dir / "locks"
@@ -3121,7 +3128,10 @@ def test_a_run_summary_without_a_failure_reason_has_none(tmp_path: Path) -> None
 def test_run_detail_keeps_its_failure_reason_and_leaves_the_call_list_to_its_invocations(
     tmp_path: Path,
 ) -> None:
-    from software_agent_factory.observability import RunDetail, build_run_detail
+    from software_agent_factory.observability import (
+        RunDetail,
+        build_run_detail,
+    )
 
     store = _fake_store(tmp_path)
     run = _run("run-detail-reason", state=WorkflowState.FAILED, completed_at=T0)

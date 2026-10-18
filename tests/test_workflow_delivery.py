@@ -38,9 +38,9 @@ from software_agent_factory.models import (
     WorkflowState,
     utc_now,
 )
-from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.publishing import MergeResult, PublishResult
 from software_agent_factory.resume_writes import ingest_dashboard_request
+from software_agent_factory.run_metrics import _compute_aggregate_metrics
 from software_agent_factory.run_recovery import MAX_RESTART_RECOVERIES
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.workflow import (

@@ -35,9 +35,8 @@ work runs at once, and ``scheduler.max_runs_per_day`` bounds how much work may
 be *claimed* per UTC calendar day. Both are passed to the scheduler by this
 composition root; the scheduler owns their enforcement.
 
-Dispatch and completion are also logged as structured, ``run_id``-tagged records
-(``observability.log_run_event``), leaving a durable, bounded audit trail under
-``<data_dir>/logs/factory.log`` without any workflow change.
+Dispatch and completion are logged as ``run_id``-tagged records (``log_run_event``)
+to ``<data_dir>/logs/factory.log`` without any workflow change.
 """
 
 from __future__ import annotations
@@ -60,6 +59,7 @@ from uuid import uuid4
 from .agents import AgentRuntime
 from .command_probe import ProbeLimits
 from .config import FactoryConfig
+from .factory_logging import log_run_event
 from .git_safety import GitPublishError, UnsafeRemoteError
 from .github import (
     GitHubClient,
@@ -83,7 +83,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
-from .observability import log_run_event, process_alive
+from .observability import process_alive
 from .publishing import PullRequestPublisher
 from .resume import awaits_human, unsettled_requests
 from .resume_writes import ingest_dashboard_request
