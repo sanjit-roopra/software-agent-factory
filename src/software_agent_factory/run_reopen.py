@@ -431,16 +431,8 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
             )
             controller._store.save_run(run)
 
-            if reopened_class is ResumeClassification.DELIVERY_RETRY:
-                return reopen_delivery_retry(controller, run, workspace, source_repo)
-            if reopened_class is ResumeClassification.ATTEMPT_GRANT:
-                return reopen_attempt_grant(controller, run, workspace, source_repo)
-            if reopened_class is ResumeClassification.ACCEPT_FINDINGS:
-                return reopen_findings_acceptance(controller, run, workspace, source_repo)
-            if reopened_class is ResumeClassification.SCOPE_APPROVAL:
-                return reopen_scope_approval(controller, run, workspace, source_repo)
-
-            return _resume_reopened(controller, run, workspace, source_repo)
+            reopener = _CLASS_REOPENERS.get(reopened_class, _resume_reopened)
+            return reopener(controller, run, workspace, source_repo)
         except Halt as halt:
             return halt.run
         except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
@@ -686,6 +678,18 @@ def reopen_scope_approval(
     if not controller._config.pull_request.enabled:
         return controller.finalize_pr_ready(run)
     return pr_delivery.publish_and_observe(controller, run, context)
+
+
+#: How a reopen continues, one function per class that does not restart at ``PLANNING``.
+_CLASS_REOPENERS: dict[
+    ResumeClassification,
+    Callable[[WorkflowController, FactoryRun, GitWorktreeWorkspace, Path], FactoryRun],
+] = {
+    ResumeClassification.DELIVERY_RETRY: reopen_delivery_retry,
+    ResumeClassification.ATTEMPT_GRANT: reopen_attempt_grant,
+    ResumeClassification.ACCEPT_FINDINGS: reopen_findings_acceptance,
+    ResumeClassification.SCOPE_APPROVAL: reopen_scope_approval,
+}
 
 
 def escalate(controller: WorkflowController, run_id: str, note: str) -> FactoryRun:

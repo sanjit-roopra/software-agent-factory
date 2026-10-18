@@ -1087,8 +1087,8 @@ def _escalation_summary(
 ) -> EscalationSummary | None:
     if escalation is None:
         return None
-    approval = escalation.approval_context
-    plan = escalation.plan_decision_context
+    approval, plan = escalation.approval_context, escalation.plan_decision_context
+    scope = escalation.scope_approval_context
     last_reply = escalation.accepted_replies[-1] if escalation.accepted_replies else None
     is_resumed = escalation.status in {EscalationStatus.REOPENED, EscalationStatus.RESUMED}
     return EscalationSummary(
@@ -1130,7 +1130,7 @@ def _escalation_summary(
             else None
         ),
         decisions=list(plan.decisions) if plan is not None else [],
-        scope_paths=list(scope.paths) if (scope := escalation.scope_approval_context) else [],
+        scope_paths=list(scope.paths) if scope is not None else [],
     )
 
 

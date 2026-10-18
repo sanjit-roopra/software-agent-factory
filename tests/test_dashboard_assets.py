@@ -1221,6 +1221,7 @@ def test_the_callout_lists_the_files_a_scope_approval_adds() -> None:
     section = function_source(_JS, "scopePathsSection")
     assert 'listSection("Files outside the approved scope", items)' in section
     assert "scopePathsSection(step.scope_paths)" in function_source(_JS, "nextStepSections")
+    assert ".next-step li { overflow-wrap: anywhere; }" in dashboard_assets.STYLE_CSS
 
 
 def test_the_page_maps_every_conflict_reason_the_server_sends() -> None:
