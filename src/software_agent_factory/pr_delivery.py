@@ -168,69 +168,11 @@ def leave_open(
 
 def publish(controller: WorkflowController, run: FactoryRun, context: RunContext) -> FactoryRun:
     """PR boundary: re-run the deterministic gates, then commit/push/open."""
-    evidence = context.latest_evidence
-    assert evidence is not None
-    if context.latest_review is None:
-        # Only an unattended run whose attempt budget ran out publishes
-        # work without a review (ADR-040).
-        authorized = run.unattended and bool(run.needs_look)
-    else:
-        authorized = controller._review_authorizes_delivery(
-            run, context.latest_review, context.triage_result.risk
-        )
-    if not authorized:
-        raise controller._stop(
-            run,
-            context,
-            "independent review or a matching bounded controller acceptance is required "
-            "for every PR",
-        )
-    current_evidence = context.workspace.collect_evidence()
-    if (
-        current_evidence.diff != evidence.diff
-        or not run.reviewed_tree_sha
-        or current_evidence.tree_sha != run.reviewed_tree_sha
-    ):
-        if not run.unattended:
-            raise controller._halt(
-                run,
-                WorkflowState.NEEDS_HUMAN,
-                "repository changed after independent review; refusing to publish unreviewed work",
-            )
-        run = adopt_current_tree(
-            controller, run, context, current_evidence, "repository changed after review"
-        )
-        evidence = current_evidence
+    run, evidence = _reviewed_evidence(controller, run, context)
     changed_files = list(evidence.changed_files)
+    run = _check_publish_scope(controller, run, context, changed_files)
 
-    gate = assess_publish_gate(
-        changed_files,
-        max_changed_files=controller._config.repository.max_changed_files,
-        protected_file_patterns=controller._config.repository.protected_file_patterns,
-    )
-    if not gate.allowed:
-        raise controller._stop(
-            run,
-            context,
-            "refusing to publish: " + "; ".join(gate.violations),
-        )
-
-    scope = controller._scope_policy.assess(
-        context.execution_plan, changed_files, context.triage_result.risk
-    )
-    if scope.decision is not ScopeDecision.CONTINUE and not run.unattended:
-        raise controller._halt(
-            run,
-            WorkflowState.NEEDS_HUMAN,
-            "scope drift requires human review before publishing: " + describe_scope(scope),
-        )
-    if run.unattended:
-        for reason in skipped_gates(controller, run, context, scope):
-            run = add_needs_look(controller, run, reason)
-
-    publisher = resolve_publisher(
-        controller,
-    )
+    publisher = resolve_publisher(controller)
     branch_name = run.branch_name
     assert branch_name is not None
     parent_sha = run.commit_sha or run.base_commit_sha
@@ -301,6 +243,77 @@ def publish(controller: WorkflowController, run: FactoryRun, context: RunContext
     )
     controller._store.save_run(run)
     return controller.transition(run, WorkflowState.PR_CREATED)
+
+
+def _reviewed_evidence(
+    controller: WorkflowController, run: FactoryRun, context: RunContext
+) -> tuple[FactoryRun, WorkspaceEvidence]:
+    """Require a review that authorizes delivery and return the evidence to publish."""
+    evidence = context.latest_evidence
+    assert evidence is not None
+    if context.latest_review is None:
+        # Only an unattended run whose attempt budget ran out publishes
+        # work without a review (ADR-040).
+        authorized = run.unattended and bool(run.needs_look)
+    else:
+        authorized = controller._review_authorizes_delivery(
+            run, context.latest_review, context.triage_result.risk
+        )
+    if not authorized:
+        raise controller._stop(
+            run,
+            context,
+            "independent review or a matching bounded controller acceptance is required "
+            "for every PR",
+        )
+    current_evidence = context.workspace.collect_evidence()
+    if (
+        current_evidence.diff != evidence.diff
+        or not run.reviewed_tree_sha
+        or current_evidence.tree_sha != run.reviewed_tree_sha
+    ):
+        if not run.unattended:
+            raise controller._halt(
+                run,
+                WorkflowState.NEEDS_HUMAN,
+                "repository changed after independent review; refusing to publish unreviewed work",
+            )
+        run = adopt_current_tree(
+            controller, run, context, current_evidence, "repository changed after review"
+        )
+        evidence = current_evidence
+    return run, evidence
+
+
+def _check_publish_scope(
+    controller: WorkflowController, run: FactoryRun, context: RunContext, changed_files: list[str]
+) -> FactoryRun:
+    """Re-run the publish gate and the scope policy on the files a pull request changes."""
+    gate = assess_publish_gate(
+        changed_files,
+        max_changed_files=controller._config.repository.max_changed_files,
+        protected_file_patterns=controller._config.repository.protected_file_patterns,
+    )
+    if not gate.allowed:
+        raise controller._stop(
+            run,
+            context,
+            "refusing to publish: " + "; ".join(gate.violations),
+        )
+
+    scope = controller._scope_policy.assess(
+        context.execution_plan, changed_files, context.triage_result.risk
+    )
+    if scope.decision is not ScopeDecision.CONTINUE and not run.unattended:
+        raise controller._halt(
+            run,
+            WorkflowState.NEEDS_HUMAN,
+            "scope drift requires human review before publishing: " + describe_scope(scope),
+        )
+    if run.unattended:
+        for reason in skipped_gates(controller, run, context, scope):
+            run = add_needs_look(controller, run, reason)
+    return run
 
 
 def _build_pr_body(

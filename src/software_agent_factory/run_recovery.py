@@ -125,17 +125,7 @@ def resume(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
                 }
             )
             controller._store.save_run(run)
-            if run.state is WorkflowState.PR_READY:
-                if not controller._config.pull_request.enabled:
-                    return controller.finalize_pr_ready(run)
-                return pr_delivery.publish_and_observe(controller, run, context)
-            if not controller._config.pull_request.enabled:
-                raise ValueError("cannot resume published work with pull requests disabled")
-            if not controller._config.ci.enabled:
-                if run.needs_look:
-                    return pr_delivery.leave_open(controller, run, context)
-                return controller.transition(run, WorkflowState.DONE)
-            return pr_delivery.ci_loop(controller, run, context)
+            return _continue_delivery(controller, run, context)
         except Halt as halt:
             return halt.run
         except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
@@ -148,6 +138,23 @@ def resume(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
             )
     finally:
         workspace.release_lock()
+
+
+def _continue_delivery(
+    controller: WorkflowController, run: FactoryRun, context: RunContext
+) -> FactoryRun:
+    """Go on from a reconciled delivery checkpoint: publish, watch CI or finish."""
+    if run.state is WorkflowState.PR_READY:
+        if not controller._config.pull_request.enabled:
+            return controller.finalize_pr_ready(run)
+        return pr_delivery.publish_and_observe(controller, run, context)
+    if not controller._config.pull_request.enabled:
+        raise ValueError("cannot resume published work with pull requests disabled")
+    if not controller._config.ci.enabled:
+        if run.needs_look:
+            return pr_delivery.leave_open(controller, run, context)
+        return controller.transition(run, WorkflowState.DONE)
+    return pr_delivery.ci_loop(controller, run, context)
 
 
 def workspace_matches(run: FactoryRun, workspace: GitWorktreeWorkspace) -> bool:

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from . import pr_delivery, run_recovery
 from .models import (
     REPLY_CURSOR_CLOSED,
+    AcceptedReplyReceipt,
     AttemptTrigger,
     EscalationRecord,
     EscalationStatus,
@@ -70,84 +71,8 @@ def transition_reopened(controller: WorkflowController, run: FactoryRun) -> Fact
         raise TransitionError(
             f"cannot reopen run {run.id} in state {run.state}; must be in NEEDS_HUMAN"
         )
-    escalation = run.escalation
-    if escalation is None:
-        raise ValueError(f"run {run.id} has no escalation record; cannot reopen")
-    if escalation.status is not EscalationStatus.REOPENED:
-        raise ValueError(
-            f"run {run.id} escalation status is {escalation.status}, not REOPENED; cannot reopen"
-        )
-    receipt = next(
-        (
-            r
-            for r in reversed(escalation.accepted_replies)
-            if r.run_id == run.id and r.episode_id == escalation.episode_id
-        ),
-        None,
-    )
-    if receipt is None:
-        raise ValueError(
-            f"run {run.id} has no accepted reply receipt bound to episode {escalation.episode_id}"
-        )
-
-    target_state: WorkflowState
-    if escalation.resume_classification is ResumeClassification.RISK_APPROVAL:
-        if escalation.approval_context is None or not is_valid_risk_approval_context(
-            escalation.approval_context, run.id, escalation.episode_id
-        ):
-            raise ValueError(f"run {run.id} has missing or invalid risk approval decision context")
-        if not receipt_approves_risk_context(receipt, escalation.approval_context):
-            raise ValueError(
-                f"run {run.id} receipt fingerprint does not match active approval context"
-            )
-        # Approval contexts written before ADR-035 name REFINING. Both resume at PLANNING.
-        target_state = WorkflowState.PLANNING
-    elif escalation.resume_classification is ResumeClassification.PLAN_DECISION:
-        context = escalation.plan_decision_context
-        if context is None or not is_valid_plan_decision_context(
-            context, run.id, escalation.episode_id
-        ):
-            raise ValueError(f"run {run.id} has missing or invalid plan decision context")
-        answers = controller._store.load_artifact(run.id, PlanDecisionAnswers)
-        if not is_valid_plan_decision_answers(
-            answers,
-            context,
-            run_id=run.id,
-            episode_id=escalation.episode_id,
-            receipt=receipt,
-        ):
-            raise ValueError(f"run {run.id} has missing or invalid plan decision answers")
-        plan = controller._store.load_artifact(run.id, ExecutionPlan)
-        plan_payload = json.dumps(
-            plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        )
-        plan_fingerprint = hashlib.sha256(plan_payload.encode("utf-8")).hexdigest()
-        if not secrets.compare_digest(plan_fingerprint, context.plan_fingerprint):
-            raise ValueError(f"run {run.id} execution plan no longer matches decision context")
-        target_state = WorkflowState.PLANNING
-    elif escalation.resume_classification is ResumeClassification.DELIVERY_RETRY:
-        retry = escalation.delivery_retry_context
-        if retry is None or not is_valid_delivery_retry_context(
-            retry, run.id, escalation.episode_id
-        ):
-            raise ValueError(f"run {run.id} has missing or invalid delivery retry context")
-        if receipt.delivery_retry_context_fingerprint is None or not secrets.compare_digest(
-            receipt.delivery_retry_context_fingerprint, retry.context_fingerprint
-        ):
-            raise ValueError(
-                f"run {run.id} receipt fingerprint does not match active delivery context"
-            )
-        if (run.reviewed_tree_sha, run.base_commit_sha, run.branch_name) != (
-            retry.reviewed_tree_sha,
-            retry.base_commit_sha,
-            retry.branch_name,
-        ):
-            raise ValueError(f"run {run.id} no longer matches its delivery retry context")
-        target_state = WorkflowState.PR_READY
-    else:
-        raise ValueError(
-            f"run {run.id} halt category {escalation.resume_classification} cannot be reopened"
-        )
+    escalation, receipt = _reopen_receipt(run)
+    target_state = _reopen_target_state(controller, run, escalation, receipt)
 
     now = utc_now()
     stage_name = run.state.value
@@ -197,6 +122,107 @@ def transition_reopened(controller: WorkflowController, run: FactoryRun) -> Fact
     controller._store.save_run(run)
     logger.info("run %s -> %s (reopened from escalation)", run.id, target_state.value)
     return run
+
+
+def _reopen_receipt(run: FactoryRun) -> tuple[EscalationRecord, AcceptedReplyReceipt]:
+    """Return the REOPENED escalation and the accepted receipt bound to its episode."""
+    escalation = run.escalation
+    if escalation is None:
+        raise ValueError(f"run {run.id} has no escalation record; cannot reopen")
+    if escalation.status is not EscalationStatus.REOPENED:
+        raise ValueError(
+            f"run {run.id} escalation status is {escalation.status}, not REOPENED; cannot reopen"
+        )
+    receipt = next(
+        (
+            r
+            for r in reversed(escalation.accepted_replies)
+            if r.run_id == run.id and r.episode_id == escalation.episode_id
+        ),
+        None,
+    )
+    if receipt is None:
+        raise ValueError(
+            f"run {run.id} has no accepted reply receipt bound to episode {escalation.episode_id}"
+        )
+    return escalation, receipt
+
+
+def _reopen_target_state(
+    controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
+) -> WorkflowState:
+    """Check the decision a person gave and return the state the run resumes at."""
+    classification = escalation.resume_classification
+    if classification is ResumeClassification.RISK_APPROVAL:
+        _check_risk_approval(run, escalation, receipt)
+        # Approval contexts written before ADR-035 name REFINING. Both resume at PLANNING.
+        return WorkflowState.PLANNING
+    if classification is ResumeClassification.PLAN_DECISION:
+        _check_plan_decision(controller, run, escalation, receipt)
+        return WorkflowState.PLANNING
+    if classification is ResumeClassification.DELIVERY_RETRY:
+        _check_delivery_retry(run, escalation, receipt)
+        return WorkflowState.PR_READY
+    raise ValueError(f"run {run.id} halt category {classification} cannot be reopened")
+
+
+def _check_risk_approval(
+    run: FactoryRun, escalation: EscalationRecord, receipt: AcceptedReplyReceipt
+) -> None:
+    if escalation.approval_context is None or not is_valid_risk_approval_context(
+        escalation.approval_context, run.id, escalation.episode_id
+    ):
+        raise ValueError(f"run {run.id} has missing or invalid risk approval decision context")
+    if not receipt_approves_risk_context(receipt, escalation.approval_context):
+        raise ValueError(f"run {run.id} receipt fingerprint does not match active approval context")
+
+
+def _check_plan_decision(
+    controller: WorkflowController,
+    run: FactoryRun,
+    escalation: EscalationRecord,
+    receipt: AcceptedReplyReceipt,
+) -> None:
+    context = escalation.plan_decision_context
+    if context is None or not is_valid_plan_decision_context(
+        context, run.id, escalation.episode_id
+    ):
+        raise ValueError(f"run {run.id} has missing or invalid plan decision context")
+    answers = controller._store.load_artifact(run.id, PlanDecisionAnswers)
+    if not is_valid_plan_decision_answers(
+        answers,
+        context,
+        run_id=run.id,
+        episode_id=escalation.episode_id,
+        receipt=receipt,
+    ):
+        raise ValueError(f"run {run.id} has missing or invalid plan decision answers")
+    plan = controller._store.load_artifact(run.id, ExecutionPlan)
+    plan_payload = json.dumps(plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    plan_fingerprint = hashlib.sha256(plan_payload.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(plan_fingerprint, context.plan_fingerprint):
+        raise ValueError(f"run {run.id} execution plan no longer matches decision context")
+
+
+def _check_delivery_retry(
+    run: FactoryRun, escalation: EscalationRecord, receipt: AcceptedReplyReceipt
+) -> None:
+    retry = escalation.delivery_retry_context
+    if retry is None or not is_valid_delivery_retry_context(retry, run.id, escalation.episode_id):
+        raise ValueError(f"run {run.id} has missing or invalid delivery retry context")
+    if receipt.delivery_retry_context_fingerprint is None or not secrets.compare_digest(
+        receipt.delivery_retry_context_fingerprint, retry.context_fingerprint
+    ):
+        raise ValueError(f"run {run.id} receipt fingerprint does not match active delivery context")
+    if (run.reviewed_tree_sha, run.base_commit_sha, run.branch_name) != (
+        retry.reviewed_tree_sha,
+        retry.base_commit_sha,
+        retry.branch_name,
+    ):
+        raise ValueError(f"run {run.id} no longer matches its delivery retry context")
 
 
 def fail_reopen(
@@ -270,50 +296,9 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
     if run.state is not WorkflowState.NEEDS_HUMAN:
         raise ValueError(f"run {run_id} is in state {run.state}, not NEEDS_HUMAN; cannot reopen")
 
-    escalation = run.escalation
-    if escalation is None:
-        raise ValueError(f"run {run_id} has no escalation record; cannot reopen")
-
-    if escalation.status is not EscalationStatus.REOPENED:
-        raise ValueError(
-            f"run {run_id} escalation status is {escalation.status}, not REOPENED; cannot reopen"
-        )
-
-    receipt = next(
-        (
-            r
-            for r in reversed(escalation.accepted_replies)
-            if r.run_id == run.id and r.episode_id == escalation.episode_id
-        ),
-        None,
-    )
-    if receipt is None:
-        return fail_reopen(
-            controller,
-            run,
-            f"run {run_id} has no accepted reply receipt bound to episode {escalation.episode_id}",
-            reason_code=HaltReasonCode.RECOVERY_INTERVENTION,
-        )
-
-    if escalation.resume_classification not in {
-        ResumeClassification.RISK_APPROVAL,
-        ResumeClassification.PLAN_DECISION,
-        ResumeClassification.DELIVERY_RETRY,
-    }:
-        return fail_reopen(
-            controller,
-            run,
-            f"halt category {escalation.resume_classification} is not resumable via reopen",
-            reason_code=HaltReasonCode.MANUAL_INSPECTION,
-        )
-
-    if escalation.reopen_count > controller._config.escalation.max_reopens:
-        return fail_reopen(
-            controller,
-            run,
-            f"run {run_id} exceeded maximum reopens ({controller._config.escalation.max_reopens})",
-            reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
-        )
+    refused = _refuse_reopen(controller, run)
+    if refused is not None:
+        return refused
 
     workspace = GitWorktreeWorkspace(
         controller._config.data_dir,
@@ -362,55 +347,7 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
             if reopened_class is ResumeClassification.DELIVERY_RETRY:
                 return reopen_delivery_retry(controller, run, workspace, source_repo)
 
-            work_item = controller._store.load_artifact(run.id, WorkItem)
-            triage_result = controller._store.load_artifact(run.id, TriageResult)
-            repository_profile = controller._store.load_artifact(run.id, RepositoryProfile)
-            try:
-                route_decision = run.route_decision or controller._store.load_artifact(
-                    run.id, RouteDecision
-                )
-            except FileNotFoundError:
-                route_decision = None
-
-            if route_decision is not None and run.route_decision is None:
-                run = run.model_copy(
-                    update={
-                        "route_decision": route_decision,
-                        "initial_route": route_decision.initial_route,
-                        "effective_route": route_decision.effective_route,
-                    }
-                )
-                controller._store.save_run(run)
-
-            if run.escalation is None:
-                return fail_reopen(controller, run, "reopened run is missing its escalation record")
-            resume_classification = run.escalation.resume_classification
-            run = transition_reopened(controller, run)
-            if resume_classification is ResumeClassification.PLAN_DECISION:
-                previous_plan = controller._store.load_artifact(run.id, ExecutionPlan)
-                decision_answers = controller._store.load_artifact(run.id, PlanDecisionAnswers)
-                specification = controller._store.load_artifact(run.id, Specification)
-                return controller._drive_from_planning(
-                    run,
-                    work_item,
-                    triage_result,
-                    specification,
-                    workspace,
-                    source_repo,
-                    repository_profile,
-                    planner_context=planner_human_decision_context(previous_plan, decision_answers),
-                    route_decision=route_decision,
-                )
-            return controller._drive_from_planning(
-                run,
-                work_item,
-                triage_result,
-                None,
-                workspace,
-                source_repo,
-                repository_profile,
-                route_decision=route_decision,
-            )
+            return _resume_reopened(controller, run, workspace, source_repo)
         except Halt as halt:
             return halt.run
         except (OSError, ValueError, WorkspaceError, subprocess.TimeoutExpired) as exc:
@@ -421,6 +358,113 @@ def reopen(controller: WorkflowController, run_id: str, source_repo: Path) -> Fa
             )
     finally:
         workspace.release_lock()
+
+
+def _refuse_reopen(controller: WorkflowController, run: FactoryRun) -> FactoryRun | None:
+    """Check a reopen before taking the lock; return the failed run, or None to go on."""
+    escalation = run.escalation
+    if escalation is None:
+        raise ValueError(f"run {run.id} has no escalation record; cannot reopen")
+
+    if escalation.status is not EscalationStatus.REOPENED:
+        raise ValueError(
+            f"run {run.id} escalation status is {escalation.status}, not REOPENED; cannot reopen"
+        )
+
+    receipt = next(
+        (
+            r
+            for r in reversed(escalation.accepted_replies)
+            if r.run_id == run.id and r.episode_id == escalation.episode_id
+        ),
+        None,
+    )
+    if receipt is None:
+        return fail_reopen(
+            controller,
+            run,
+            f"run {run.id} has no accepted reply receipt bound to episode {escalation.episode_id}",
+            reason_code=HaltReasonCode.RECOVERY_INTERVENTION,
+        )
+
+    if escalation.resume_classification not in {
+        ResumeClassification.RISK_APPROVAL,
+        ResumeClassification.PLAN_DECISION,
+        ResumeClassification.DELIVERY_RETRY,
+    }:
+        return fail_reopen(
+            controller,
+            run,
+            f"halt category {escalation.resume_classification} is not resumable via reopen",
+            reason_code=HaltReasonCode.MANUAL_INSPECTION,
+        )
+
+    if escalation.reopen_count > controller._config.escalation.max_reopens:
+        return fail_reopen(
+            controller,
+            run,
+            f"run {run.id} exceeded maximum reopens ({controller._config.escalation.max_reopens})",
+            reason_code=HaltReasonCode.ATTEMPT_BUDGET_EXHAUSTED,
+        )
+    return None
+
+
+def _resume_reopened(
+    controller: WorkflowController,
+    run: FactoryRun,
+    workspace: GitWorktreeWorkspace,
+    source_repo: Path,
+) -> FactoryRun:
+    """Resume a reopened risk approval or plan decision run at PLANNING."""
+    work_item = controller._store.load_artifact(run.id, WorkItem)
+    triage_result = controller._store.load_artifact(run.id, TriageResult)
+    repository_profile = controller._store.load_artifact(run.id, RepositoryProfile)
+    try:
+        route_decision = run.route_decision or controller._store.load_artifact(
+            run.id, RouteDecision
+        )
+    except FileNotFoundError:
+        route_decision = None
+
+    if route_decision is not None and run.route_decision is None:
+        run = run.model_copy(
+            update={
+                "route_decision": route_decision,
+                "initial_route": route_decision.initial_route,
+                "effective_route": route_decision.effective_route,
+            }
+        )
+        controller._store.save_run(run)
+
+    if run.escalation is None:
+        return fail_reopen(controller, run, "reopened run is missing its escalation record")
+    resume_classification = run.escalation.resume_classification
+    run = transition_reopened(controller, run)
+    if resume_classification is ResumeClassification.PLAN_DECISION:
+        previous_plan = controller._store.load_artifact(run.id, ExecutionPlan)
+        decision_answers = controller._store.load_artifact(run.id, PlanDecisionAnswers)
+        specification = controller._store.load_artifact(run.id, Specification)
+        return controller._drive_from_planning(
+            run,
+            work_item,
+            triage_result,
+            specification,
+            workspace,
+            source_repo,
+            repository_profile,
+            planner_context=planner_human_decision_context(previous_plan, decision_answers),
+            route_decision=route_decision,
+        )
+    return controller._drive_from_planning(
+        run,
+        work_item,
+        triage_result,
+        None,
+        workspace,
+        source_repo,
+        repository_profile,
+        route_decision=route_decision,
+    )
 
 
 def reopen_delivery_retry(
