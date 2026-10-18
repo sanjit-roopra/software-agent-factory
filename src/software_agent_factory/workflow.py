@@ -2374,7 +2374,7 @@ class WorkflowController:
                     run, self._store, self._config, self._github, workspace_path
                 )
             except Exception as exc:
-                logger.debug("escalation notice delivery failed: %s", exc)
+                logger.warning("run %s: escalation notice delivery failed: %s", run.id, exc)
         return _Halt(run)
 
     def _sensitive_scope_reason(

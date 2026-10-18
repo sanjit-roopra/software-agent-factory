@@ -544,6 +544,7 @@ The scheduler also never dispatches a work item that has a stored run. So a new 
 - The attempt budget and the review limits still bound the paid work. At most two restarts add planning and triage calls.
 - The persisted run has one new field. A run written earlier loads with the value 0.
 - A run can still stop for a person when its workspace or its stored artifacts are not usable.
+- Recovery leaves a run alone while another live process on the same host holds its lease, for example a manual `factory run`. After a reboot, a reused process id can make a dead run look live.
 
 ## ADR-042: Retry publishing from the dashboard
 

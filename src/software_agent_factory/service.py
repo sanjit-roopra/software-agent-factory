@@ -46,6 +46,8 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import os
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -82,7 +84,7 @@ from .models import (
     WorkItem,
     utc_now,
 )
-from .observability import log_run_event
+from .observability import log_run_event, process_alive
 from .publishing import PullRequestPublisher
 from .resume import awaits_human, unsettled_requests
 from .resume_writes import ingest_dashboard_request
@@ -241,12 +243,26 @@ class ThreadPoolRunHandle:
 
 
 def default_recovery_decision(run: FactoryRun) -> ReconciliationAction:
-    """Continue an abandoned unattended run. Escalate every other unfinished run to a human."""
-    if is_run_finished(run):
+    """Continue an abandoned unattended run. Escalate every other unfinished run to a human.
+
+    A run still held by another live process on this host (a manual ``factory run``) is
+    not abandoned, so it is left alone. A reused pid after a reboot reads as live too.
+    """
+    if is_run_finished(run) or _held_by_other_live_process(run):
         return ReconciliationAction.LEAVE
     if run.unattended:
         return ReconciliationAction.REQUEUE
     return ReconciliationAction.NEEDS_HUMAN
+
+
+def _held_by_other_live_process(run: FactoryRun) -> bool:
+    lease = run.lease
+    return (
+        lease is not None
+        and lease.host == socket.gethostname()
+        and lease.pid != os.getpid()
+        and process_alive(lease.pid)
+    )
 
 
 @dataclass
@@ -964,6 +980,13 @@ class FactoryService:
                 except GitHubCommandError:
                     logger.exception(
                         "GitHub backlog polling failed; retrying after %.1f seconds",
+                        poll_interval,
+                    )
+                except Exception as exc:  # noqa: BLE001 - a failed tick dispatches nothing
+                    logger.error(
+                        "factory tick failed (%s: %s); retrying after %.1f seconds",
+                        type(exc).__name__,
+                        exc,
                         poll_interval,
                     )
                 else:
